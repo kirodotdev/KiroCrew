@@ -46,6 +46,10 @@ interface Props {
   onSelectDevice: (deviceId: string) => void
   /** True when a switch applies immediately rather than to the next recording. */
   deviceSwitchIsLive?: boolean
+  /** True for streaming STT (live transcript in the composer → Enter sends). In
+   *  batch STT there is no transcript until the mic is stopped, so the hint must
+   *  point at the mic instead of promising Enter can send. */
+  streaming?: boolean
 }
 
 /**
@@ -55,7 +59,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, onSelectDevice, deviceSwitchIsLive }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, onSelectDevice, deviceSwitchIsLive, streaming }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -95,7 +99,9 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
             </span>
           )}
           <span className="ml-auto text-muted font-normal font-mono text-[11px]">
-            {i18nT('components.voiceDictationPanel.esc_to_stop_enter_to_send')}
+            {streaming
+              ? i18nT('components.voiceDictationPanel.esc_to_cancel_enter_to_send')
+              : i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish')}
           </span>
         </div>
         {/* Text sits over a live shader, so it carries its own shadow floor

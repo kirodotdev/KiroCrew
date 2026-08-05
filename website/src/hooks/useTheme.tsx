@@ -749,11 +749,13 @@ export interface ThemeContextValue {
   /**
    * Has the user seen the mandatory first-run Privacy chapter?
    *
-   * Browser-local on purpose, unlike `onboarded` / `importOnboarded`: it only
-   * ever gates a screen INSIDE first run, and a finished first run (`onboarded`,
-   * which IS server-backed) implies it — so a second machine never re-shows the
-   * chapter to someone who already completed onboarding, and no config field is
-   * needed to say so.
+   * Server-backed like `onboarded` / `importOnboarded`, because the GATEWAY reads
+   * it: the boot-time heartbeat withholds its first send until this is true, and
+   * the gateway cannot see localStorage. A browser-local-only flag would leave
+   * the beacon waiting forever on a signal that never reaches it.
+   *
+   * localStorage stays as the render cache so first run does not flash the
+   * chapter while the boot fetch is in flight.
    */
   privacyAcked: boolean
   themeBootReady: boolean
@@ -893,6 +895,7 @@ function useThemeState(): ThemeContextValue {
       color?: string
       onboarded?: boolean
       import_onboarded?: boolean
+      privacy_acked?: boolean
     }) => api.updateThemeConfig(body),
   })
 
@@ -931,7 +934,7 @@ function useThemeState(): ThemeContextValue {
         setPrivacyAcked(true)
         safeSetItem('mc-privacy-acked', '1')
         persistTheme(
-          { onboarded: true, import_onboarded: true },
+          { onboarded: true, import_onboarded: true, privacy_acked: true },
           {
             onSuccess: () => {
               safeSetItem('mc-import-onboarded', '1')
@@ -951,6 +954,13 @@ function useThemeState(): ThemeContextValue {
           } else {
             localStorage.removeItem('mc-onboarded')
           }
+        }
+        // Server value wins so a second machine does not re-show a chapter this
+        // user already passed. Only ever set forward from the server: clearing it
+        // locally would re-open the chapter mid-session on a stale read.
+        if (bootData.privacy_acked === true) {
+          setPrivacyAcked(true)
+          safeSetItem('mc-privacy-acked', '1')
         }
         if (typeof bootData.import_onboarded === 'boolean') {
           setImportOnboarded(bootData.import_onboarded)
@@ -1112,13 +1122,29 @@ function useThemeState(): ThemeContextValue {
       return
     }
     if (!customThemesLoaded) return
-    if (
-      colorTheme.startsWith('custom-') &&
-      !customThemeDataMap.has(colorTheme.slice('custom-'.length))
-    ) {
-      setColorTheme(DEFAULT_COLOR_THEME)
+    //   3. A custom-<slug> that a REGISTERED theme shadows. The pack is still
+    //      installed, so case 2 does not fire, but the pack row is filtered out of
+    //      `allThemes` — leaving the user on the near-unstyled pack rendering with
+    //      no selected row in the picker and no way back. Migrate to the registered
+    //      slug, which is the same theme properly styled, rather than resetting to
+    //      the default and losing their choice entirely.
+    //      Scoped to INSTALLED packs, matching the `allThemes` filter: an
+    //      editor-created theme is never filtered out, so it is still selectable
+    //      and must not be migrated away from the user.
+    if (colorTheme.startsWith('custom-')) {
+      const slug = colorTheme.slice('custom-'.length)
+      const shadowed =
+        REGISTERED_THEMES.some(t => t.value === slug) &&
+        customThemes.some(t => t.value === colorTheme && t.installed)
+      if (shadowed) {
+        setColorTheme(slug)
+        return
+      }
+      if (!customThemeDataMap.has(slug)) {
+        setColorTheme(DEFAULT_COLOR_THEME)
+      }
     }
-  }, [customThemesLoaded, colorTheme, customThemeDataMap, setColorTheme])
+  }, [customThemesLoaded, colorTheme, customThemeDataMap, customThemes, setColorTheme])
 
   /** Add a new custom theme via API, inject CSS, and select it. */
   const addCustomTheme = useCallback(async (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => {
@@ -1143,10 +1169,34 @@ function useThemeState(): ThemeContextValue {
     broadcastCustomThemesChanged()
   }, [colorTheme, setColorTheme, loadCustomThemes])
 
-  // Combined themes list: built-in + custom. `builtinThemes()` (not `THEMES`) so
-  // a descriptive built-in name is resolved for the current language on every
-  // render; every consumer reads `allThemes`, so none of them needs a resolver.
-  const allThemes: ThemeEntry[] = [...builtinThemes(), ...REGISTERED_THEMES, ...customThemes]
+  // Combined themes list: built-in + registered + custom. `builtinThemes()` (not
+  // `THEMES`) so a descriptive built-in name is resolved for the current language
+  // on every render; every consumer reads `allThemes`, so none of them needs a
+  // resolver.
+  //
+  // An installed pack whose slug matches a REGISTERED theme is dropped, because
+  // the two would render as two picker rows for one theme and the pack row is the
+  // broken one. `registerTheme()` de-duplicates against `THEMES` and
+  // `REGISTERED_THEMES`, but an installed pack arrives asynchronously from
+  // `GET /api/themes` — long after registration — so it cannot be caught there.
+  // The values differ (`lcars` vs `custom-lcars`), which is exactly why nothing
+  // flagged it: a registered theme's CSS is keyed to `[data-theme="lcars-dark"]`
+  // while a pack renders under `[data-theme="custom-lcars-dark"]`, so the pack
+  // copy shows only the flat variables in its `variables.json` and loses every
+  // structural rule the registered theme ships. Registration wins: it is the
+  // build-time contribution that carries the real stylesheet.
+  // Scoped to INSTALLED packs. An editor-created custom theme that happens to
+  // share a slug is the user's own object with edit/delete affordances keyed off
+  // this list, so filtering it would hide it from the editor with no way to reach
+  // or remove it — a worse failure than the duplicate row.
+  const registeredSlugs = new Set(REGISTERED_THEMES.map(t => t.value))
+  const allThemes: ThemeEntry[] = [
+    ...builtinThemes(),
+    ...REGISTERED_THEMES,
+    ...customThemes.filter(
+      t => !(t.installed && registeredSlugs.has(t.value.replace(/^custom-/, ''))),
+    ),
+  ]
 
   const markOnboarded = useCallback(() => {
     safeSetItem('mc-onboarded', '1')
@@ -1159,10 +1209,14 @@ function useThemeState(): ThemeContextValue {
     setImportOnboarded(true)
   }, [])
 
+  // Persisted server-side as well as locally: the gateway gates the first
+  // heartbeat on `dashboard.privacy_acked`, so a local-only mark would leave the
+  // beacon permanently withheld on an install whose user did pass the chapter.
   const markPrivacyAcked = useCallback(() => {
     safeSetItem('mc-privacy-acked', '1')
     setPrivacyAcked(true)
-  }, [])
+    persistTheme({ privacy_acked: true })
+  }, [persistTheme])
 
   return {
     theme: resolved,

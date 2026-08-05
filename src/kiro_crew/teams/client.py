@@ -286,12 +286,39 @@ class TeamsClient:
         """
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        # request.remote is the peer IP when present (real aiohttp request); the
+        # bearer failed before any Activity is parsed, so it is the only caller
+        # correlator available. getattr keeps this safe for lightweight test
+        # doubles that omit .remote.
+        peer = getattr(request, "remote", "") or "unknown"
+
+        def _audit_denied(outcome: str) -> None:
+            # Detective-control audit for a failed inbound authentication
+            # (CWE-778), mirroring the serviceUrl-mismatch deny below. Best-effort
+            # by design: the 401 denial is the security decision and MUST stand
+            # even if the audit sink is unavailable (e.g. a corrupt SEL key), so a
+            # sink failure is swallowed to a warning rather than surfacing as a
+            # 500 that masks the denial.
+            try:
+                sel().log_api_access(
+                    caller=peer,
+                    operation="teams_client.on_activity",
+                    outcome=outcome,
+                    source="teams",
+                )
+            except Exception:
+                logger.warning(
+                    "Teams: failed to audit inbound auth denial (%s)", outcome
+                )
+
         try:
             claims = await asyncio.to_thread(self._validator.verify, token)
         except TeamsAuthError:
+            _audit_denied("denied_invalid_token")
             return web.Response(status=401, text="invalid bearer token")
         except Exception:
             logger.exception("Teams: unexpected error validating inbound token")
+            _audit_denied("denied_token_validation_error")
             return web.Response(status=401, text="token validation error")
 
         try:

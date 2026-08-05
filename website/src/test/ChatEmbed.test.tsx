@@ -15,18 +15,35 @@ vi.mock('../app-sdk/index', () => ({
 interface MockChatMessageListProps {
   messages: unknown[]
   running: boolean
+  onApprove?: (approvalId: string, decision: string) => void
 }
 
 vi.mock('./ChatMessageList', () => ({
-  default: ({ messages, running }: MockChatMessageListProps) => (
-    <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)} />
+  default: ({ messages, running, onApprove }: MockChatMessageListProps) => (
+    <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)}
+      data-can-approve={String(!!onApprove)}>
+      {onApprove && (
+        <>
+          <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
+          <button data-testid="mock-trust" onClick={() => onApprove('appr-1', 'trust')}>trust</button>
+        </>
+      )}
+    </div>
   ),
 }))
 
 // Mock ChatMessageList from the correct path (ChatEmbed imports from ./ChatMessageList)
 vi.mock('../app-sdk/ChatMessageList', () => ({
-  default: ({ messages, running }: MockChatMessageListProps) => (
-    <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)} />
+  default: ({ messages, running, onApprove }: MockChatMessageListProps) => (
+    <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)}
+      data-can-approve={String(!!onApprove)}>
+      {onApprove && (
+        <>
+          <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
+          <button data-testid="mock-trust" onClick={() => onApprove('appr-1', 'trust')}>trust</button>
+        </>
+      )}
+    </div>
   ),
 }))
 
@@ -259,6 +276,45 @@ describe('ChatEmbed', () => {
     })
   })
 
+  describe('onSend routing', () => {
+    it('routes the composer through onSend instead of POST /api/chat', async () => {
+      // POST /api/chat keys off slotKey alone and CREATES the slot when it is
+      // missing -- with no app ownership and no project. A host app that owns its
+      // slots must be able to keep sends on its own endpoint, so a stale tab
+      // cannot resurrect an unscoped session.
+      const onSend = vi.fn().mockResolvedValue(undefined)
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" onSend={onSend} />)
+      })
+      await act(async () => {
+        fireEvent.change(screen.getByLabelText('Chat message'), { target: { value: 'hi' } })
+      })
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText('Send message'))
+      })
+
+      expect(onSend).toHaveBeenCalledWith('hi')
+      expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+    })
+
+    it('still posts to /api/chat when no onSend is supplied', async () => {
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      await act(async () => {
+        fireEvent.change(screen.getByLabelText('Chat message'), { target: { value: 'hi' } })
+      })
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText('Send message'))
+      })
+
+      expect(mockPost).toHaveBeenCalledWith(
+        '/api/chat',
+        expect.objectContaining({ message: 'hi', slot: 'slot-1' }),
+      )
+    })
+  })
+
   describe('polling', () => {
     it('loads messages on mount', async () => {
       mockGet.mockResolvedValue({
@@ -391,3 +447,53 @@ describe('ChatEmbed', () => {
     })
   })
 })
+
+describe('ChatEmbed approvals', () => {
+  // An embedded agent that hits a permission prompt must be actionable. The
+  // group header only renders Approve/Reject when an onApprove handler is
+  // supplied; the embed used to supply none, so "Approval needed" was a dead
+  // label and the worker blocked until the runner timed out.
+  it('supplies an approval handler to the message list', async () => {
+    await act(async () => {
+      renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getByTestId('chat-message-list')).toHaveAttribute('data-can-approve', 'true')
+  })
+
+  it('POSTs the decision to the slot approval endpoint with the request id', async () => {
+    await act(async () => {
+      renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await act(async () => {
+      screen.getByTestId('mock-approve').click()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', {
+      action: 'approved',
+      request_id: 'appr-1',
+    })
+  })
+
+  // Regression: /api/approvals/{id}/{action} accepts only approve|reject, so
+  // routing 'trust' through it downgraded the decision to a one-shot approve --
+  // the card read "Trusted" while the next tool call prompted again. The slot
+  // endpoint carries the decision verbatim.
+  it('sends Trust as trust, not as a plain approve', async () => {
+    await act(async () => {
+      renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await act(async () => {
+      screen.getByTestId('mock-trust').click()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', {
+      action: 'trust',
+      request_id: 'appr-1',
+    })
+    expect(mockPost).not.toHaveBeenCalledWith(expect.stringContaining('/api/approvals/'), expect.anything())
+  })
+})
+

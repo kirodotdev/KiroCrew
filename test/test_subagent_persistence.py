@@ -349,18 +349,27 @@ class TestSpawnCreatesFolder:
             info1 = manager.spawn("task1", parent_session_key="dashboard:default")
             # Second spawn gets queued
             info2 = manager.spawn("task2", parent_session_key="dashboard:default")
-            # Ensure info1's background task completes while patches are active
-            await manager._tasks[info1.id]
 
-        assert info2 is not None
-        assert info2.queued is True
-        # No folder for a queued agent: the sandbox is created when the agent
-        # actually STARTS, not when it is accepted. Asserted against the queued
-        # member's real id — it no longer carries a `q<n>` name to filter on,
-        # because that sentinel destroyed the identity it was reporting on.
-        folders = list(agent_root.iterdir()) if agent_root.exists() else []
-        assert not any(f.name == info2.id for f in folders)
-        assert not (agent_root / info2.id).exists()
+            # Assert the invariant WHILE info2 is still queued — a queued agent has no
+            # folder, because the sandbox is created when the agent actually STARTS, not
+            # when it is accepted. This MUST run before draining info1: completing info1's
+            # task frees the slot, which promotes info2 and lets it create its folder. The
+            # earlier version awaited first and then asserted "no folder", which is a
+            # wall-clock race — it passed only when info2's promotion had not finished yet,
+            # and failed on a slow (Windows) runner where it had. Asserted against info2's
+            # real id, which no longer carries a `q<n>` sentinel name to filter on.
+            assert info2 is not None
+            assert info2.queued is True
+            folders = list(agent_root.iterdir()) if agent_root.exists() else []
+            assert not any(f.name == info2.id for f in folders)
+            assert not (agent_root / info2.id).exists()
+
+            # Now drain BOTH tasks under the active patches: info1 to release the slot, then
+            # info2 which its release promotes. Draining both avoids a "task was destroyed
+            # but it is pending" warning that pytest reports against a LATER test.
+            await manager._tasks[info1.id]
+            for task in list(manager._tasks.values()):
+                await task
 
 
 # ── Slice 3: Result streaming to agent folder ────────────────────────

@@ -392,6 +392,77 @@ describe('SecurityPanel — governance policy viewer', () => {
 
     expect(await screen.findByText(/Governance status is temporarily unavailable/)).toBeInTheDocument()
   })
+
+  // The host profile pins OFF capabilities the host process never performs (cron,
+  // messaging, spawn), while the surfaces that do perform them enable those under
+  // their own profiles. Labelling such a row "Disabled by policy" reported a
+  // working feature as switched off, so the row must name whose ceiling it is.
+  it('labels a host-profile capability pin as surface-scoped, not install-wide', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          {
+            scope: 'capabilities.cron',
+            archetype: 'capability',
+            governed: true,
+            source: 'profile',
+            scope_note: 'host_profile',
+            detail: { enabled: false, inner: {} },
+          },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText('Disabled for the host surface')).toBeInTheDocument()
+    // The unqualified claim must be gone, not merely supplemented.
+    expect(screen.queryByText('Disabled by policy')).not.toBeInTheDocument()
+  })
+
+  it('still labels a policy-wide capability pin as policy-disabled', async () => {
+    // The caveat must not over-apply: a Level-1 ceiling DOES bind every surface.
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          {
+            scope: 'capabilities.cron',
+            archetype: 'capability',
+            governed: true,
+            source: 'policy',
+            scope_note: 'policy_wide',
+            detail: { enabled: false, inner: {} },
+          },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    expect(await screen.findByText('Disabled by policy')).toBeInTheDocument()
+    expect(screen.queryByText('Disabled for the host surface')).not.toBeInTheDocument()
+  })
+
+  it('names the surfaces that carry their own profile', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({ other_bound_surfaces: ['cron', 'subagent'] }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    // Joined via `fmtList` (Intl.ListFormat), not a hardcoded ', ' — zh joins
+    // with 、 and no spaces, so a literal separator would render wrong there.
+    expect(await screen.findByText(/cron and subagent/)).toBeInTheDocument()
+  })
+
+  it('omits the surfaces footnote when no other surface is bound', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({ other_bound_surfaces: [] }),
+    )
+    renderWithProviders(<SecurityPanel />)
+
+    await screen.findByText('Policy v1')
+    expect(
+      screen.queryByText(/A surface with its own profile can allow what the host cannot/),
+    ).not.toBeInTheDocument()
+  })
 })
 
 describe('SecurityPanel — posture disclosure', () => {

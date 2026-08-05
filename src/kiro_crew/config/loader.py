@@ -140,6 +140,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "discord",
         "webex",
         "wecom",
+        "weixin",
         "teams",
         "dashboard",
         "tunnel",
@@ -789,7 +790,12 @@ class AgentConfig:
             "RuntimeError if no sandbox backend is available and mode is not 'off', "
             "preventing unsandboxed execution entirely (fail-closed). This is "
             "distinct from sandbox_allow_no_isolation which only controls warning "
-            "severity — this field controls whether execution proceeds at all.",
+            "severity — this field controls whether execution proceeds at all. "
+            "The default is platform-independent: on a host with no backend (any "
+            "Windows host, a Linux kernel refusing user namespaces) `kirocrew "
+            "setup` OFFERS this opt-in interactively and writes it only on an "
+            "explicit yes, so unconfined execution stays operator-declared and is "
+            "never enabled implicitly by the platform.",
         ),
     )
     apps_allow_third_party: bool = field(
@@ -1865,6 +1871,17 @@ class DashboardConfig:
             "Whether the user has completed or skipped foreign-agent import onboarding.",
         ),
     )
+    privacy_acked: bool = field(
+        default=False,
+        metadata=_meta(
+            "Privacy Acknowledged",
+            "Whether the user has seen the mandatory first-run Privacy chapter, which "
+            "discloses the anonymous heartbeat and offers the opt-out. Server-backed "
+            "rather than browser-local because the gateway gates the very FIRST "
+            "heartbeat on it: until this is true the user has not yet been shown the "
+            "opt-out, and a ping sent before the offer makes the offer meaningless.",
+        ),
+    )
     user_role: str = field(
         default="",
         metadata=_meta(
@@ -2615,7 +2632,7 @@ class ChannelConfig:
         )
 
 
-_VALID_STT_PROVIDERS = ("whisper", "mlx", "transcribe")
+_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "transcribe")
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
@@ -2871,7 +2888,10 @@ class SttConfig:
         default=False,
         metadata=_meta(
             "Streaming",
-            "Stream partial transcripts live to the dashboard input (transcribe provider only).",
+            "Stream partial transcripts live to the dashboard input. Supported by the "
+            "streaming providers only: `transcribe` (AWS, cloud) and `apple` "
+            "(on-device, macOS 26+). The whisper/mlx CLIs have no partial-result "
+            "channel.",
         ),
     )
     endpointing: bool = field(
@@ -2880,7 +2900,8 @@ class SttConfig:
             "Semantic endpointing",
             "While streaming dictation, run a fast background model on each stable "
             "transcript segment to detect when you have finished a complete request, "
-            "then auto-submit. Transcribe streaming only; off by default.",
+            "then auto-submit. Streaming providers only (transcribe, apple); "
+            "off by default.",
         ),
     )
     dictation_panel: bool = field(
@@ -4673,6 +4694,14 @@ class KiroCrewConfig:
                     dashboard_data.get("import_onboarded"),
                     _safe_bool(dashboard_data.get("onboarded"), False),
                 ),
+                # Falls back to `onboarded`: a user who finished first run before
+                # this chapter existed has already reached the product, and
+                # re-gating their heartbeat on a screen they will never be shown
+                # would suppress it forever.
+                privacy_acked=_safe_bool(
+                    dashboard_data.get("privacy_acked"),
+                    _safe_bool(dashboard_data.get("onboarded"), False),
+                ),
                 user_role=str(dashboard_data.get("user_role", "")),
                 user_role_other=str(dashboard_data.get("user_role_other", "")),
                 user_technical_level=str(dashboard_data.get("user_technical_level", "")),
@@ -4972,6 +5001,7 @@ class KiroCrewConfig:
             "discord": asdict(self.discord),
             "webex": asdict(self.webex),
             "wecom": asdict(self.wecom),
+            "weixin": asdict(self.weixin),
             "teams": asdict(self.teams),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),

@@ -104,9 +104,32 @@ def _python3_bin_dir() -> str:
         return ""
 
 
+def _find_script_in_dir(bin_dir: str, name: str) -> str | None:
+    """Return an executable ``name`` inside ``bin_dir``, trying Windows suffixes.
+
+    A pip console script is materialized as ``<name>.exe`` in ``Scripts\\`` on
+    Windows, so the extensionless POSIX name never exists there. Sweep the
+    known launcher suffixes (the idiom in dev_fleet ``_trusted_bin``).
+    """
+    suffixes = ("", ".exe", ".cmd", ".bat") if platform_compat.IS_WINDOWS else ("",)
+    for suffix in suffixes:
+        p = os.path.join(bin_dir, name + suffix)
+        # On Windows there is no execute bit, so gate on isfile only there.
+        if os.path.isfile(p) and (platform_compat.IS_WINDOWS or os.access(p, os.X_OK)):
+            return p
+    return None
+
+
 _WHISPER_SEARCH_PATHS = [
     os.path.expanduser("~/.local/bin/whisper"),
-    "/usr/local/bin/whisper",
+    # Homebrew prefixes: a GUI-launched gateway inherits a minimal PATH
+    # (/usr/bin:/bin:/usr/sbin:/sbin) with no Homebrew, so shutil.which("whisper")
+    # misses a `brew install`ed binary. Probing the prefixes directly — the same
+    # reason _MLX_WHISPER_SEARCH_PATHS and _BREW_CANDIDATE_PATHS list them — is
+    # what keeps STT available without depending on the ensure_ffmpeg_in_path()
+    # PATH side effect happening to run first.
+    "/opt/homebrew/bin/whisper",  # Apple Silicon macOS
+    "/usr/local/bin/whisper",  # Intel macOS / Linuxbrew-less installs
     "/usr/bin/whisper",
 ]
 
@@ -122,9 +145,9 @@ def _find_whisper(configured_path: str = "") -> str | None:
     # Check system python3's scripts dir (pip install target)
     py3_bin = _python3_bin_dir()
     if py3_bin:
-        p = os.path.join(py3_bin, "whisper")
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+        found_script = _find_script_in_dir(py3_bin, "whisper")
+        if found_script:
+            return found_script
     for p in _WHISPER_SEARCH_PATHS:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
@@ -197,9 +220,9 @@ def _find_mlx_whisper() -> str | None:
         return found
     py3_bin = _python3_bin_dir()
     if py3_bin:
-        p = os.path.join(py3_bin, "mlx_whisper")
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+        found_script = _find_script_in_dir(py3_bin, "mlx_whisper")
+        if found_script:
+            return found_script
     for p in _MLX_WHISPER_SEARCH_PATHS:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
@@ -231,6 +254,14 @@ def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
     if provider == "mlx":
         ensure_ffmpeg_in_path()
         return _find_mlx_whisper() is not None
+    if provider == "apple":
+        from kiro_crew import apple_speech
+
+        # NOT a build check: this function runs on the event loop (config GET,
+        # the transcribe endpoint, Slack voice), and compiling the Swift helper
+        # there would freeze the gateway for up to 180s. `availability()` is
+        # stats-only; the build happens inside the offloaded transcribe path.
+        return apple_speech.availability().ok
     ensure_ffmpeg_in_path()
     return _find_whisper(stt_config.whisper_path) is not None
 
@@ -277,6 +308,8 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
     elif provider == "mlx":
         await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_mlx(audio_path, stt_config)
+    elif provider == "apple":
+        result = await _transcribe_apple(audio_path, stt_config)
     else:
         await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_native(audio_path, stt_config)
@@ -591,6 +624,37 @@ async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: i
         stt_config.timeout_secs,
         label="mlx_whisper",
     )
+
+
+async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """Transcribe with Apple's on-device SpeechAnalyzer (macOS 26+).
+
+    Delegates to :mod:`kiro_crew.apple_speech`, which owns the Swift-helper seam.
+    The framework needs a language *locale* rather than whisper's bare language
+    code, so ``stt_config.language_code`` (already BCP-47, e.g. ``en-US``) is passed
+    straight through; the helper falls back to another installed dialect of the same
+    language before it refuses.
+
+    Unlike whisper/mlx this needs no model download on a supported host — the OS
+    ships the assets — so a failure here is a real error, not a missing-model state.
+    """
+    from kiro_crew import apple_speech
+
+    text, metrics = await apple_speech.transcribe(
+        audio_path,
+        locale=stt_config.language_code or "en-US",
+        timeout_secs=stt_config.timeout_secs or apple_speech.DEFAULT_TIMEOUT_SECS,
+    )
+    if text is None:
+        logger.error("Apple speech transcription failed: %s", metrics.get("error", "unknown"))
+        return None
+    logger.debug(
+        "Apple speech: %.2fs for %.1fs of audio (locale=%s)",
+        metrics.get("transcribe_secs", 0.0),
+        metrics.get("audio_secs", 0.0),
+        metrics.get("locale", "?"),
+    )
+    return text
 
 
 async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]

@@ -550,3 +550,110 @@ class TestDiffScopedRun:
         )
         assert result.returncode == 0, result.stdout
         assert "self-test passed" in result.stdout
+
+
+class TestExplicitPathFailsClosed:
+    """A path handed to the gate directly must be read, or the run must fail.
+
+    The diff-scoped path already refuses to pass on an unreadable file. The
+    explicit-path branch did not, so a typo'd or moved argument printed the
+    success line and exited 0 — a false green that looks exactly like a real one.
+    """
+
+    @staticmethod
+    def _run(*args: str) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env.pop("BRAND_BASE_REF", None)
+        return subprocess.run(
+            [sys.executable, _SCRIPT_PATH, *args],
+            cwd=_REPO_ROOT,
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def test_a_nonexistent_path_fails_instead_of_reporting_clean(self) -> None:
+        result = self._run("definitely/not/a/file.md")
+        assert result.returncode == 1, result.stdout
+        assert "never checked" in result.stdout
+        assert "definitely/not/a/file.md" in result.stdout
+        assert "no misspellings" not in result.stdout
+
+    def test_an_undecodable_path_fails_closed(self, tmp_path) -> None:
+        blob = tmp_path / "notes.md"
+        blob.write_bytes(b"\xff\xfe\x00KiroCrew")
+        result = self._run(str(blob))
+        assert result.returncode == 1, result.stdout
+        assert "never checked" in result.stdout
+
+    def test_a_readable_clean_path_still_passes(self, tmp_path) -> None:
+        doc = tmp_path / "clean.md"
+        doc.write_text("Prose about Kiro Crew.\n", encoding="utf-8")
+        result = self._run(str(doc))
+        assert result.returncode == 0, result.stdout
+        assert "no misspellings" in result.stdout
+
+    def test_a_readable_dirty_path_still_fails_on_the_finding(self, tmp_path) -> None:
+        doc = tmp_path / "dirty.md"
+        doc.write_text("Prose about KiroCrew.\n", encoding="utf-8")
+        result = self._run(str(doc))
+        assert result.returncode == 1, result.stdout
+        assert "dirty.md:1" in result.stdout
+        # Failing on the finding, not on readability.
+        assert "never checked" not in result.stdout
+
+
+class TestReportDisclosesTruncation:
+    """The whole-tree report must not hide the backlog it claims to report.
+
+    The listing is path-sorted, so a silent cut showed only the alphabetically
+    first paths. That is how UI-visible strings under src/ and website/ stayed
+    invisible while the report cheerfully printed a four-digit total.
+    """
+
+    def test_a_truncated_report_says_so_and_tallies_by_path(self, capsys) -> None:
+        violations = [
+            gate.Violation(f"{top}/f{i}.md", 1, "KiroCrew", "KiroCrew")
+            # 'zzz' sorts last, so a silent head-slice would drop it entirely.
+            for top, count in (("aaa", 40), ("zzz", 5))
+            for i in range(count)
+        ]
+        assert gate.report(violations, enforcing=False, base=None) == 0
+        out = capsys.readouterr().out
+
+        assert "... and 5 more" in out
+        # The tally must carry the paths the listing could not reach.
+        assert "zzz/" in out
+        assert "   40  aaa/" in out
+        assert "    5  zzz/" in out
+        assert "all 45 lines" in out
+
+    def test_an_untruncated_report_adds_no_tally_or_notice(self, capsys) -> None:
+        violations = [gate.Violation("a.md", 1, "KiroCrew", "KiroCrew")]
+        assert gate.report(violations, enforcing=False, base=None) == 0
+        out = capsys.readouterr().out
+        assert "more" not in out
+        assert "by top-level path" not in out
+        assert "a.md:1" in out
+
+    def test_the_enforcing_path_keeps_its_own_cap_and_notice(self, capsys) -> None:
+        violations = [
+            gate.Violation(f"f{i}.md", 1, "KiroCrew", "KiroCrew") for i in range(205)
+        ]
+        assert gate.report(violations, enforcing=True, base="HEAD") == 1
+        out = capsys.readouterr().out
+        assert "... and 5 more" in out
+        # The per-path tally is a report-path affordance; enforcement stays terse.
+        assert "by top-level path" not in out
+
+    def test_a_root_level_path_is_tallied_without_a_trailing_slash(self, capsys) -> None:
+        violations = [
+            gate.Violation("install.sh" if i % 2 else "docs/a.md", 1, "KiroCrew", "KiroCrew")
+            for i in range(50)
+        ]
+        assert gate.report(violations, enforcing=False, base=None) == 0
+        out = capsys.readouterr().out
+        assert "install.sh" in out
+        assert "install.sh/" not in out
+        assert "docs/" in out

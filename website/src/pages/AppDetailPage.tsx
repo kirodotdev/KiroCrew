@@ -19,8 +19,10 @@ import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
+import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
+import { appDisplayName, appDescription, appHighlights } from '../components/appstore/appManifest'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -507,7 +509,7 @@ export default function AppDetailPage() {
 
   return (
     <>
-      <PageHeader title={i18nT('pages.appDetailPage.apps')} subtitle={app.displayName} />
+      <PageHeader title={i18nT('pages.appDetailPage.apps')} subtitle={appDisplayName(app)} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Back link */}
         <button className="flex items-center gap-1.5 text-[13px] text-muted hover:text-text mb-5 bg-transparent border-none cursor-pointer p-0 font-body transition-colors" onClick={() => navigate('/apps')}>
@@ -528,11 +530,18 @@ export default function AppDetailPage() {
                   ? i18nT('pages.appDetailPage.third_party_blocked')
                   : error}
               </span>
-              {deniedByPolicy && (
+              {deniedByPolicy ? (
                 <div className="mt-2">
                   <Btn danger onClick={() => navigate('/settings?tab=security')}>
                     {i18nT('pages.appDetailPage.open_security_settings')}
                   </Btn>
+                </div>
+              ) : (
+                // The unrecognized-failure branch above renders raw backend prose
+                // and is otherwise a dead end — hand it to the agent with the
+                // status/endpoint/code the journal captured at the transport.
+                <div className="mt-2">
+                  <AskAgentButton message={error} />
                 </div>
               )}
             </div>
@@ -558,7 +567,7 @@ export default function AppDetailPage() {
                   <Trash2 size={20} className="text-danger" />
                 </div>
                 <div>
-                  <div className="font-medium text-text">{i18nT('pages.appDetailPage.uninstall')} {app.displayName}?</div>
+                  <div className="font-medium text-text">{i18nT('pages.appDetailPage.uninstall')} {appDisplayName(app)}?</div>
                   <div className="text-[12px] text-muted">{i18nT('pages.appDetailPage.v')}{app.installedVersion || app.version}</div>
                 </div>
               </div>
@@ -601,7 +610,7 @@ export default function AppDetailPage() {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1 flex-wrap">
-              <span className="text-xl font-medium text-text">{app.displayName}</span>
+              <span className="text-xl font-medium text-text">{appDisplayName(app)}</span>
               {app.installed && isBuiltin && <Badge variant="aim">{i18nT('pages.appDetailPage.built_in')}</Badge>}
               {app.installed && isBuiltin && <Badge variant={app.enabled ? 'ok' : 'warn'}>{app.enabled ? i18nT('pages.appDetailPage.enabled') : i18nT('pages.appDetailPage.disabled')}</Badge>}
               {app.installed && isSelfManaged && !isBuiltin && <Badge variant="ok">{i18nT('pages.appDetailPage.self_managed')}</Badge>}
@@ -787,7 +796,7 @@ export default function AppDetailPage() {
 
         {/* Description */}
         <Card>
-          <p className="text-sm text-muted leading-relaxed">{app.description}</p>
+          <p className="text-sm text-muted leading-relaxed">{appDescription(app)}</p>
         </Card>
 
         {/* Screenshots */}
@@ -802,7 +811,7 @@ export default function AppDetailPage() {
           <Card>
             <CardTitle>{i18nT('pages.appDetailPage.features')}</CardTitle>
             <div className="grid gap-2 mt-2">
-              {app.highlights!.map((h, i) => (
+              {appHighlights(app).map((h, i) => (
                 <div key={i} className="flex items-start gap-2.5 text-[13px] text-text">
                   <Check size={13} className="text-ok mt-0.5 shrink-0" />
                   <span>{h}</span>

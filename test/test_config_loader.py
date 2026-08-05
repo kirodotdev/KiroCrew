@@ -180,6 +180,23 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
 
+def test_sandbox_allow_unsandboxed_exec_default_is_platform_independent(monkeypatch) -> None:
+    """No platform may flip this default on its own.
+
+    Deriving the fallback from ``sys.platform`` turns a documented fail-closed
+    refusal into an unconfined spawn wherever no backend exists — which is every
+    Windows host — so an agent-selected repo's ``include.path`` could reach
+    ``~/.aws/credentials`` with no operator having declared anything. The
+    discoverable path to the opt-in is the ``kirocrew setup`` consent step
+    (``test_sandbox_unsandboxed_exec_consent.py``), not a platform default.
+    """
+    for plat in ("win32", "linux", "darwin"):
+        monkeypatch.setattr("sys.platform", plat)
+        assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False, plat
+        with_section = _load_from_dict({"agent": {"approval_mode": "auto"}})
+        assert with_section.agent.sandbox_allow_unsandboxed_exec is False, plat
+
+
 def test_registry_branchless_legacy_entry_preserves_mainline():
     # Regression: URL registries changed new-entry branch default to "main",
     # but a legacy config entry that OMITS "branch" relied on the historical

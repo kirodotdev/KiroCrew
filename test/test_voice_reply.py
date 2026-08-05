@@ -589,6 +589,12 @@ class TestSynthesizePolly:
         monkeypatch.setattr(
             "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
         )
+        # Polly short-circuits to None when the `aws` CLI is not on PATH, so
+        # stub which() -- otherwise these tests only pass on hosts that happen
+        # to have the AWS CLI installed (they silently no-op on Windows CI).
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.shutil.which", lambda *a, **k: "/usr/bin/aws"
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_engine_falls_back_to_default(self, tmp_path) -> None:
@@ -976,6 +982,9 @@ class TestTextTypeAutoDetection:
         # See TestSynthesizePolly._passthrough_sandbox.
         monkeypatch.setattr(
             "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.shutil.which", lambda *a, **k: "/usr/bin/aws"
         )
 
     @pytest.mark.asyncio

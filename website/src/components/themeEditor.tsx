@@ -4,6 +4,7 @@ import { Input, Btn } from './ui'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from './ErrorNotice'
 /* ── CSS variable groups for the color picker ── */
 
 /**
@@ -306,7 +307,9 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
         {isEditing && <span className="ml-auto text-[12px] text-muted">{i18nT('components.themeEditor.editing')} {themeName || editingSlug}</span>}
       </div>
 
-      {error && <div className="mb-3 bg-danger/10 border border-danger/20 rounded-lg p-2.5 text-[13px] text-danger animate-rise">{error}</div>}
+      {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+      <ErrorNotice message={error} className="mb-3 animate-rise" />
 
       {creatorMode === 'picker' ? (
         <div>

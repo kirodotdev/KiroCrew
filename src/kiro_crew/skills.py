@@ -1287,6 +1287,13 @@ class SkillsLoader:
         # for BOTH new and update candidates, from every producer that stages
         # through this choke point. Best-effort: an observer failure must never
         # fail the staging that already succeeded on disk.
+        #
+        # ``description``/``triggers`` ride along because the observer's only
+        # other option is to re-read ``.meta.json`` off disk (a second read of
+        # what was just written, on the staging path) -- and without them a
+        # notification can only say THAT a skill was generated, never what it
+        # does, which is the one fact a reviewer needs to decide whether to open
+        # the queue at all.
         _emit_pending_staged(
             {
                 "name": name,
@@ -1295,6 +1302,8 @@ class SkillsLoader:
                 "target": target,
                 "source": source,
                 "has_scripts": bool(script_names),
+                "description": description,
+                "triggers": triggers,
             }
         )
         return name

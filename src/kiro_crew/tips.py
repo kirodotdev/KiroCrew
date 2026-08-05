@@ -43,7 +43,7 @@ _REFRESH_INTERVAL_SECS = 6 * 60 * 60
 _MAX_GENERATED_TIPS = 8
 
 _PROMPT_TEMPLATE = """\
-You are generating personalized feature tips for a developer assistant called KiroCrew.
+You are generating personalized feature tips for a developer assistant called Kiro Crew.
 
 Based on the user context and the feature catalog below, generate {max_tips} tips \
 for features the user would benefit from but may not know about.
@@ -69,7 +69,7 @@ like the product documentation, not like marketing:
   "Spawn parallel background workers for fan-out research and multi-package work"
   "Persistent preferences, project context, and learned corrections across sessions"
 
-ACTION — every tip must be immediately usable. Many KiroCrew features are \
+ACTION — every tip must be immediately usable. Many Kiro Crew features are \
 triggered by a keyboard shortcut or a Settings/config toggle, NOT by chatting; \
 when so, name the EXACT key, Settings path, or config command in the body so the \
 reader can act without opening docs. If the feature is invoked by asking the \
@@ -435,8 +435,9 @@ def _select_tip(
 ) -> dict | None:  # type: ignore[type-arg]
     """Pick one tip via weighted-random with newer-biased weights.
 
-    Weight = recency_decay ** rank, where rank orders eligible tips newest-first
-    by catalog recency (doc file mtime).
+    Weight = recency_decay ** tier, where the tier ranks a tip's catalog recency
+    (doc file mtime) among the distinct mtimes present, newest first. Tips
+    sharing an mtime are equally recent and so share a tier and a weight.
     """
     if not candidates:
         return None
@@ -471,8 +472,21 @@ def _select_tip(
         candidates, key=lambda t: mtimes[id(t)], reverse=True
     )
 
-    # Compute weights: recency_decay ** rank (rank 0 = newest)
-    weights = [recency_decay ** rank for rank in range(len(sorted_candidates))]
+    # Compute weights: recency_decay ** tier, where the tier is the rank of the
+    # candidate's mtime among the DISTINCT mtimes (tier 0 = newest).
+    #
+    # Ranking by list position instead would make a stable sort's tie order --
+    # catalog insertion order, i.e. alphabetical by doc filename -- decide
+    # exposure among tips that are equally recent. That is not hypothetical: one
+    # sweeping commit that edits many docs at once gives every doc it touches the
+    # same git commit time, collapsing them into a single large tie group whose
+    # tail then sits at 0.6**20 and is effectively never surfaced. Tips that are
+    # equally recent must carry equal weight.
+    tier_of = {
+        mtime: tier
+        for tier, mtime in enumerate(sorted({mtimes[id(t)] for t in candidates}, reverse=True))
+    }
+    weights = [recency_decay ** tier_of[mtimes[id(t)]] for t in sorted_candidates]
     total = sum(weights)
     if total == 0:
         return sorted_candidates[0]

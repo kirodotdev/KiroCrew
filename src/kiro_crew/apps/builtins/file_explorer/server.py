@@ -15,9 +15,9 @@ the root since KiroCrew strips the prefix):
   GET  /git-status?path=<p>                     → {"repoRoot","branch","statuses":{relpath: code}}
   GET  /complete?path=<p>&kind=<dir|all>&limit=<n> → {"parent","prefix","entries":[...]}
 
-Path safety: callers may only access paths under ``$HOME``, ``/home/``,
-``/tmp/``, or ``/opt/`` (after symlink resolution).  Paths outside the
-allow-list return 403.
+Path safety: callers may only access paths under the user's home dir or the
+system temp dir on any OS, plus ``/home/`` and ``/opt/`` on POSIX (after
+symlink resolution).  Paths outside the allow-list return 403.
 
 Size / depth caps are tunable via env vars but have safe defaults.
 """
@@ -34,6 +34,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import uuid
@@ -62,17 +63,24 @@ SEARCH_TIMEOUT_SEC = int(os.environ.get("FE_SEARCH_TIMEOUT_SEC", 15))
 GIT_TIMEOUT_SEC = int(os.environ.get("FE_GIT_TIMEOUT_SEC", 5))
 
 # Allow-list of root paths (resolved). Anything outside is denied.
-_HOME_RAW = os.environ.get("HOME", "")
-if not _HOME_RAW or Path(_HOME_RAW).resolve() == Path("/"):
-    _HOME = Path("/tmp").resolve()
-else:
-    _HOME = Path(_HOME_RAW).resolve()
-ALLOWED_ROOTS = [
-    _HOME,
-    Path("/home").resolve(),
-    Path("/tmp").resolve(),
-    Path("/opt").resolve() if Path("/opt").exists() else _HOME,
-]
+#
+# ``Path.home()`` reads $HOME on POSIX and %USERPROFILE% on Windows, so it
+# resolves correctly on both — a raw ``os.environ["HOME"]`` is usually unset on
+# Windows and would collapse the whole allow-list to a nonexistent C:\tmp.
+try:
+    _HOME = Path.home().resolve()
+except (RuntimeError, OSError):
+    _HOME = Path(tempfile.gettempdir()).resolve()
+if _HOME == Path(_HOME.anchor):  # home resolved to the filesystem root — unusable
+    _HOME = Path(tempfile.gettempdir()).resolve()
+
+# The system temp dir is /tmp on POSIX and %TEMP% on Windows.
+_TMP = Path(tempfile.gettempdir()).resolve()
+ALLOWED_ROOTS = [_HOME, _TMP]
+if platform_compat.IS_POSIX:
+    # /home and /opt are POSIX-only conventions; on Windows they resolve to
+    # nonexistent C:\home / C:\opt and would be dropped by the exists() filter.
+    ALLOWED_ROOTS += [Path("/home").resolve(), Path("/opt").resolve()]
 # De-dupe and only keep ones that exist
 ALLOWED_ROOTS = list({p for p in ALLOWED_ROOTS if p.exists()})
 

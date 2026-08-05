@@ -10,6 +10,7 @@ import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
+import { secureRandomId } from '../utils/secureId'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -26,9 +27,24 @@ const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has
  *  append survives Immer's structural sharing for the message's whole life,
  *  including the streaming→assistant finalization that later sets a server
  *  `ts`. (This is the "durable id stamped in the reducer at append" that
- *  ChatPage's stableMsgKey comment points at.) */
-let bornKeySeq = 0
-const mintBornKey = (): string => `born-${Date.now()}-${bornKeySeq++}`
+ *  ChatPage's stableMsgKey comment points at.)
+ *
+ *  Uses a cryptographically-strong UUID (via secureRandomId) so message identity
+ *  is exact and collision-free — no timestamp heuristics, no sequence numbers.
+ *  The field is `meta.clientTs` for backward compatibility with existing
+ *  renderers and the mergePreservedClientTs rehydration path. */
+const mintMsgId = (): string => `msg-${secureRandomId()}`
+
+/** Stamp a stable `meta.clientTs` on a message that has no server `ts` and no
+ *  pre-existing client id. This makes every ts-less message carry a durable
+ *  identity from birth, surviving Immer structural sharing, refetch/rehydration,
+ *  and list replacement — closing the identity gap for error/system/permission
+ *  messages that were previously only stable via WeakMap (object identity). */
+const ensureMsgId = (msg: ChatMessage): ChatMessage => {
+  if (msg.ts || (msg.meta as Record<string, unknown> | undefined)?.clientTs) return msg
+  msg.meta = { ...(msg.meta || {}), clientTs: mintMsgId() }
+  return msg
+}
 
 /** Finalize the most recent live `streaming` message in place (streaming →
  *  assistant), or drop it entirely when its content is a trivial placeholder
@@ -415,7 +431,7 @@ function applyNonActiveFrame(
   if (effectiveKind === 'stop_event') {
     const id = (meta?.id as string) ?? ''
     const idx = id ? msgs.findIndex(m => m.meta?.id === id) : -1
-    const msg: ChatMessage = { role, content, cls: cls || '', ts, meta: { ...meta, kind: 'stop_event' }, kind: 'stop_event' }
+    const msg: ChatMessage = ensureMsgId({ role, content, cls: cls || '', ts, meta: { ...meta, kind: 'stop_event' }, kind: 'stop_event' })
     if (idx >= 0) msgs[idx] = msg
     else msgs.push(msg)
     return
@@ -461,7 +477,7 @@ function applyNonActiveFrame(
       msg.content += content
       msg.rawText = msg.content
     } else {
-      msgs.push({ role: 'streaming', content, cls: 'msg msg-a', rawText: content, meta: { clientTs: mintBornKey() } })
+      msgs.push({ role: 'streaming', content, cls: 'msg msg-a', rawText: content, meta: { clientTs: mintMsgId() } })
     }
     if (seq !== undefined) run.lastChunkSeq = seq
     return
@@ -479,11 +495,11 @@ function applyNonActiveFrame(
     run.state = 'tool_running'
     let insertIdx = msgs.length
     if (insertIdx > 0 && msgs[insertIdx - 1]?.role === 'streaming') insertIdx--
-    msgs.splice(insertIdx, 0, { role, content, cls: cls || '', ts, meta })
+    msgs.splice(insertIdx, 0, ensureMsgId({ role, content, cls: cls || '', ts, meta }))
     return
   }
   if (role === 'thinking') {
-    if (!msgs.some(m => m.role === 'thinking')) msgs.push({ role: 'thinking', content: '', cls: '', meta: { clientTs: mintBornKey() } })
+    if (!msgs.some(m => m.role === 'thinking')) msgs.push({ role: 'thinking', content: '', cls: '', meta: { clientTs: mintMsgId() } })
     return
   }
   if (role === 'assistant') {
@@ -515,7 +531,7 @@ function applyNonActiveFrame(
       }
     } catch { /* not JSON cls, ignore */ }
   }
-  msgs.push({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind })
+  msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
 }
 
 /** Path B selectors: read a slot's messages / stream-state, falling back to the
@@ -1203,7 +1219,7 @@ const chatSlice = createSlice({
       // persisted transcript and the chat_done refresh doesn't reorder it.
       const m = action.payload
       if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreaming(state.messages)
-      state.messages.push(m)
+      state.messages.push(ensureMsgId(m))
     },
     /** Optimistically append a message to a specific slot's store — global
      *  `messages` when it's the active slot, else `slotMessages[slot]`. Lets a
@@ -1267,12 +1283,12 @@ const chatSlice = createSlice({
       if (message.role === 'user' && message.meta?.steer && message.meta?.optimistic) {
         finalizeTrailingStreaming(msgs)
       }
-      msgs.push(message)
+      msgs.push(ensureMsgId(message))
     },
     updateStreamingMessage(state, action: PayloadAction<string>) {
       const last = state.messages[state.messages.length - 1]
       if (last?.role === 'streaming') { last.content = action.payload }
-      else { state.messages.push({ role: 'streaming', content: action.payload, cls: 'msg msg-a', meta: { clientTs: mintBornKey() } }) }
+      else { state.messages.push({ role: 'streaming', content: action.payload, cls: 'msg msg-a', meta: { clientTs: mintMsgId() } }) }
     },
     finalizeAssistant(state, action: PayloadAction<string | { content: string; ts?: string }>) {
       const payload = typeof action.payload === 'string' ? { content: action.payload } : action.payload
@@ -1918,7 +1934,7 @@ const chatSlice = createSlice({
         if (state.messages[i].role === 'thinking') { state.messages[i].content += content; return }
         if (state.messages[i].role === 'user') break
       }
-      state.messages.push({ role: 'thinking', content, cls: '', meta: { clientTs: mintBornKey() } })
+      state.messages.push({ role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
     sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean }>) {
       const { slot, role, content, ts, seq, cls, meta, kind, batched } = action.payload
@@ -1928,7 +1944,7 @@ const chatSlice = createSlice({
       if (effectiveKind === 'stop_event') {
         const id = (meta?.id as string) ?? ''
         const idx = id ? state.messages.findIndex(m => m.meta?.id === id) : -1
-        const msg: ChatMessage = { role, content, cls: cls || '', ts, meta: { ...meta, kind: 'stop_event' }, kind: 'stop_event' }
+        const msg: ChatMessage = ensureMsgId({ role, content, cls: cls || '', ts, meta: { ...meta, kind: 'stop_event' }, kind: 'stop_event' })
         if (idx >= 0) { state.messages[idx] = msg } else { state.messages.push(msg) }
         return
       }
@@ -1971,7 +1987,7 @@ const chatSlice = createSlice({
           msg.content += content
           msg.rawText = msg.content
         } else {
-          state.messages.push({ role: 'streaming', content, cls: 'msg msg-a', rawText: content, meta: { clientTs: mintBornKey() } })
+          state.messages.push({ role: 'streaming', content, cls: 'msg msg-a', rawText: content, meta: { clientTs: mintMsgId() } })
         }
         if (seq !== undefined) state.lastChunkSeq = seq
         return
@@ -2010,13 +2026,13 @@ const chatSlice = createSlice({
         if (insertIdx > 0 && state.messages[insertIdx - 1]?.role === 'streaming') {
           insertIdx--
         }
-        state.messages.splice(insertIdx, 0, { role, content, cls: cls || '', ts, meta })
+        state.messages.splice(insertIdx, 0, ensureMsgId({ role, content, cls: cls || '', ts, meta }))
         return
       }
       // Thinking — deduplicate, only keep one
       if (role === 'thinking') {
         if (state.messages.some(m => m.role === 'thinking')) return
-        state.messages.push({ role: 'thinking', content: '', cls: '', meta: { clientTs: mintBornKey() } })
+        state.messages.push({ role: 'thinking', content: '', cls: '', meta: { clientTs: mintMsgId() } })
         return
       }
       // Replace streaming placeholder with final assistant message
@@ -2057,7 +2073,7 @@ const chatSlice = createSlice({
           if (entry?.rejected) effectiveMeta = { ...effectiveMeta, resolved: 'rejected' }
         }
       }
-      state.messages.push({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind })
+      state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
     },
     /** Patch an existing message identified by ts. Used by the `chat_message_update`
      * server event to flip an mcp_oauth banner from "needs auth" to "authenticated"

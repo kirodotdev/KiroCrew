@@ -138,6 +138,23 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
         "acp/runtime.py::_get_rss_tree_mb",
+        # Ops Mission Control ledger-sync tests: fixed `git` argv (init --bare / ls-files)
+        # against a per-test tempdir. Nothing here is agent-influenced — the repo path is
+        # `tempfile.mkdtemp()` and every argument is a literal in the test file. These are
+        # the TEST harness, not shipped code; the module under test (`ledger_sync._git`)
+        # is itself routed through `sandboxed_spawn_argv` and is asserted to be.
+        # Sandboxing them would defeat the point: the tests exist to exercise real git
+        # against a real bare remote, which is how four fatal sync bugs were found that
+        # every mocked-git test passed.
+        "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::_git",
+        "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::setUp",
+        # Syntax-checks the auth recipe the SOPs hand to an agent, via `bash -n` on the
+        # extracted code block. Fixed argv, no shell, input piped on stdin and never
+        # executed. The snippet contains `${URL%%\?*}`, whose backslash is easy to
+        # mangle when editing markdown, and a recipe that will not parse sends the cron
+        # agent back to improvising — which is the failure this whole test exists for.
+        "apps/builtins/ops_mission_control/tests/test_config_routes.py"
+        "::test_the_auth_recipe_is_runnable_shell",
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",
@@ -351,6 +368,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/port_reclaim.py::_listeners_on_port",
         "env.py::_run",
         "env.py::activate_mise",
+        # Fixed argv (`npm run build`) in the operator's own checkout. The npm
+        # binary and project path arrive from the caller: the Dev Fleet sync
+        # resolves npm via its trusted-bin allowlist and the path from the
+        # operator-registered worktree, never from agent input.
+        "frontend.py::_npm_build_and_stage_locked",
         "frontend.py::build_frontend_async",
         "frontend.py::build_frontend_sync",
         "instances/diagnostics.py::_run_ok",
@@ -375,6 +397,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform/update_governance.py::_git",
         "mcp_shared.py::_get_ppid",
         "platform_compat.py::_current_user_sid",
+        "platform_compat.py::_posix_process_parent_map",
         "platform_compat.py::find_listening_pids",
         "platform_compat.py::find_python_interpreter",
         "platform_compat.py::kill_pid",
@@ -429,6 +452,30 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "slack/gateway.py::_check_missing_deps",
         "slack/gateway.py::_init_services",
         "testing/harness.py::spawn_feature_gateway",
+        # Apple on-device speech (macOS only). None of these takes an agent-authored
+        # command: the argv is a fixed toolchain path, the helper Kiro Crew itself
+        # compiled, or ffmpeg — and every variable part is a positional argument to
+        # execve (no shell), so a hostile value can only be a bad filename, not a
+        # second command. `_to_native_audio` mirrors the already-allowlisted
+        # `transcribe.py::_run_whisper_cli`: same ffmpeg invocation on the same
+        # user-supplied audio path. `_build_helper` runs swiftc over a file that ships
+        # inside the package, writing to the data home's `run/` dir (sensitive-path
+        # fenced, 0700). The three spawns that EXECUTE the compiled helper
+        # (`transcribe`, `inventory`, `StreamingSession.start`) now route through
+        # `sandbox.sandboxed_spawn_argv(mode="strict")` via `_sandboxed`, so they are
+        # wrapped rather than merely declared; `strict` was verified to leave batch,
+        # inventory and streaming all working. `_swiftc` and `_sdk_path` spawn only `/usr/bin/xcrun` with a
+        # fixed flag and no agent input; both pass `env=_build_env()`, which strips
+        # `DEVELOPER_DIR`/`SDKROOT`/`TOOLCHAINS`/`SWIFT_EXEC` and pins PATH, and both
+        # trust-check the returned path via `_is_trusted_toolchain` before it is used
+        # — so a redirected toolchain is refused rather than compiled with.
+        "apple_speech/__init__.py::_build_helper",
+        "apple_speech/__init__.py::_sdk_path",
+        "apple_speech/__init__.py::_swiftc",
+        "apple_speech/__init__.py::_to_native_audio",
+        "apple_speech/__init__.py::inventory",
+        "apple_speech/__init__.py::start",
+        "apple_speech/__init__.py::transcribe",
         "transcribe.py::_python3_bin_dir",
         "transcribe.py::_run_whisper_cli",
         "transcribe.py::_transcribe_aws",

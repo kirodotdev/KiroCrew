@@ -388,14 +388,14 @@ def test_gateway_home_follows_the_configured_data_home(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "isolated"))
     from kiro_crew.config import paths as paths_mod
 
-    resolved = paths_mod.config_dir()
+    resolved = paths_mod.data_home()
     assert str(tmp_path / "isolated") in str(resolved)
 
     # The gateway must resolve the home through the canonical helper, not a
     # hardcoded path, so overriding the data home actually moves the state.
     import kiro_crew.weixin.gateway as gw
 
-    assert gw.config_dir is paths_mod.config_dir
+    assert gw.data_home is paths_mod.data_home
 
 
 def test_rejected_sender_does_not_get_context_persisted(tmp_path, monkeypatch):

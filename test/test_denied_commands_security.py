@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,132 @@ class TestCatalog:
         assert len(BUILTIN_DENIED_RULES) == 139
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == 139
+
+    def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
+        """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
+        route — including the ops-mission-control autonomy-ceiling PUT — so a prompt-injected
+        agent that shells out to it raises its own security ceiling.
+
+        Asserted through `is_denied`, the real enforcement path, NOT against `rule.pattern`.
+        That distinction is the point: this rule is one of `_SELF_PROTECTION_FLOOR_RULE_IDS`,
+        so its regex is a human-auditable statement of intent while the actual matching is a
+        UNION of that regex and the argv-structural floor. An earlier version of this test
+        searched the pattern directly and would have gone green on a floor that had stopped
+        running at all.
+
+        The module form is why the union matters. `python -m kiro_crew token` mints the
+        identical token, but its argv PROGRAM is the interpreter and the underscored import
+        name is not a console-script spelling — so neither the command-position regex nor
+        `_is_self_program` saw it. `_is_self_module_invocation` closes it structurally.
+        """
+        from kiro_crew import security
+
+        effective = list(
+            security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
+        )
+
+        for blocked in (
+            "kirocrew token",
+            "kirocrew token --port 6777",
+            'kirocrew "token"',
+            "kirocrew -v --no-jail token",
+            "kiro-crew token",
+            # The module form, in the spellings a shell accepts.
+            "python -m kiro_crew token",
+            "python3 -m kiro_crew token --port 6777",
+            "python -mkiro_crew token",
+            "python -m kiro_crew pod token",
+            # Interpreter flags that take a SEPARATE operand. The first version of the module
+            # check stopped at the first token not starting with `-`, so the operand (`dev`)
+            # ended the scan and the mint went through one flag deeper. Review caught it.
+            "python -X dev -m kiro_crew token",
+            "python -W ignore -m kiro_crew token",
+            "python -Q new -m kiro_crew token",
+            "python -X utf8 -X dev -m kiro_crew token",
+            "python3 -B -X dev -m kiro_crew pod token",
+            # ATTACHED operands are one token and need no skip — covered because the
+            # separate-operand fix must not break them.
+            "python -Xdev -m kiro_crew token",
+            "python -Wignore -m kiro_crew token",
+            # `-x` is a real flag that takes NO operand, and the skip set is lowercased (the
+            # floor sees an already-lowercased command, so `-X` arrives as `-x`). A bare `-m`
+            # after it must still register as the marker rather than be eaten as an operand.
+            "python -x -m kiro_crew token",
+            # `-c` is the same escape one flag over: an inline program that imports the
+            # package reaches the identical mint. Two defects had to be fixed together —
+            # the module check read the payload as a script name and bailed, and the verb
+            # scan treated the `;` INSIDE the quoted payload as a command separator, ending
+            # one token before `token`. Both found in review.
+            'python -c "from kiro_crew.cli import main; main()" token',
+            "python3 -c 'import kiro_crew.cli; kiro_crew.cli.main()' token",
+            'python -c "from kiro_crew import cli; cli.main()" token --port 6777',
+            # Attached spelling: payload inside the same token.
+            'python -c"import kiro_crew.cli;kiro_crew.cli.main()" token',
+            # Behind an interpreter flag that takes a separate operand.
+            'python -X dev -c "import kiro_crew.cli; kiro_crew.cli.main()" token',
+            # Reached without a literal `import` statement.
+            "python -c \"__import__('kiro_crew.cli').cli.main()\" token",
+            # NO `token` ARGV WORD AT ALL. An inline payload is arbitrary Python running with
+            # the interpreter's authority, so it can BUILD the verb instead of passing it —
+            # which is why the `-c` form is denied on the IMPORT rather than on the verb. The
+            # verb requirement holds everywhere else (`kirocrew doctor` is legitimate) but is
+            # not enforceable here. Found in review (GPT 5.6).
+            "python -c \"import sys; sys.argv.append('token'); "
+            'from kiro_crew.cli import main; main()"',
+            "python -c \"from kiro_crew.cli import main; import sys; "
+            "sys.argv=['x','token']; main()\"",
+            'python -c "from kiro_crew.cli import main; main([\'token\'])"',
+            'python -c "import kiro_crew.cli as c; c.main()"',
+            'python -X dev -c "import kiro_crew.cli"',
+            # STDIN forms: `python -` and a bare interpreter read the program from stdin, so a
+            # heredoc body or a pipe producer reaches the CLI with nothing in argv. The program
+            # text is visible on the command line (heredoc body → later tokens; pipe source →
+            # earlier tokens), and matching the import there is the same fail-closed call.
+            "python - <<'PY'\nfrom kiro_crew.cli import main; main()\nPY",
+            "python3 - <<EOF\nimport kiro_crew.cli\nEOF",
+            "echo 'from kiro_crew.cli import main; main()' | python -",
+            "python -X dev - <<'PY'\nimport kiro_crew.cli\nPY",
+            "python << 'PY'\nimport kiro_crew.cli; kiro_crew.cli.main()\nPY",
+        ):
+            assert security.is_denied(
+                blocked, denied_regexes=effective
+            ), f"token mint not blocked: {blocked!r}"
+
+        for allowed in (
+            "ls kirocrew",
+            "echo tokens",
+            "grep token app.log",
+            # Mentions the name AND the verb, but as another program's data.
+            "echo kirocrew token",
+            "pytest test/test_token_auth.py",
+            # The product as a module, but not the mint verb.
+            "python -m kiro_crew gateway",
+            "python -X dev -m kiro_crew gateway",
+            # A flag operand that happens to look like a path, and a script that is not the
+            # product: neither is a module invocation.
+            "python -X dev script.py token",
+            "python -c 'print(1)' token",
+            # `token` as an argument to something that is not the product.
+            "python script.py token",
+            "python -m pytest test_token.py",
+            # A `-c` payload that does not reach for this package stays allowed, verb present
+            # or not — the deny is scoped to the import, so ordinary inline Python is untouched.
+            "python -c 'print(1)' token",
+            # STDIN forms that do not import the package: the deny is scoped, not blanket.
+            "python - <<'PY'\nprint(1)\nPY",
+            "echo 'print(1)' | python -",
+            # The import name is in a FILENAME being catted to stdin, not the program itself,
+            # and `\bkiro_crew\b` does not match inside `kiro_crew_notes`.
+            "cat kiro_crew_notes.txt | python -",
+            "python -c 'import json; print(json.dumps({}))'",
+            "python -c 'import sys; print(sys.version)'",
+            # Mentions the import name as DATA for another program, not as code we will run.
+            "grep -r kiro_crew src/",
+            "echo 'import kiro_crew.cli' > /tmp/note.txt",
+        ):
+            assert not security.is_denied(
+                allowed, denied_regexes=effective
+            ), f"false positive on {allowed!r}"
 
     def test_rules_are_frozen_dataclass_with_four_fields(self):
         rule = BUILTIN_DENIED_RULES[0]
@@ -370,18 +497,47 @@ class TestIsDeniedReDoSResistance:
     that bypass — see ``test_padded_single_segment_needle_not_bypassed``).
     """
 
-    # The fix resolves each of these in well under a millisecond locally. The
-    # ceiling only has to separate LINEAR from CATASTROPHIC: the pre-fix ReDoS
-    # took many seconds to minutes (exponential/polynomial). A wide 5s bound is
-    # deliberately load-tolerant — a shared CI runner under parallel xdist load
-    # can inflate a sub-ms scan to a few hundred ms, which is NOT a regression;
-    # only a return to seconds-scale would trip this.
+    # The ceiling only has to separate LINEAR from CATASTROPHIC: the pre-fix ReDoS
+    # took many seconds to minutes (exponential/polynomial), so a wide 5s bound is
+    # all the resolution this needs.
     _BUDGET_SECONDS = 5.0
 
+    #: Growth factor allowed when the input DOUBLES. Linear is ~2.0; the measured spread on an
+    #: idle machine is 1.7–2.2 across n=1000..8000, so 3.0 leaves real headroom while still
+    #: separating linear from quadratic (4.0) and from anything exponential.
+    _MAX_DOUBLING_RATIO = 3.0
+
     def _elapsed(self, command: str) -> float:
-        start = time.perf_counter()
+        """CPU time, not wall-clock — the property under test is algorithmic complexity.
+
+        Wall-clock measures this process's work PLUS however long the OS gave the core to
+        someone else, so on a loaded CI runner (four xdist workers over two vCPUs) a scan that
+        burns ~2s of CPU can report >5s elapsed and fail a test whose subject never regressed.
+        ``process_time`` counts only CPU consumed by this process, which is exactly what a
+        backtracking blow-up inflates: measured 1:1 against wall-clock when idle (2.228s vs
+        2.230s), and a genuinely catastrophic pattern burns CPU rather than waiting.
+        """
+        start = time.process_time()
         is_denied(command)
-        return time.perf_counter() - start
+        return time.process_time() - start
+
+    def _doubling_ratio(self, build: Callable[[int], str], n: int) -> float:
+        """CPU cost at ``2n`` divided by cost at ``n`` — the shape, not the magnitude.
+
+        Absolute budgets cannot express "is this linear?" on instrumented runs. Coverage
+        (`--cov`, which CI enables on 3.12 only) multiplies the cost of every executed line, so
+        the same un-regressed matcher measured ~2s bare and >5s under coverage — which is why
+        3.12 shard 2 failed while 3.10 passed on the identical commit. Raising the budget would
+        have hidden a future real regression behind the instrumentation overhead; a RATIO is the
+        honest expression of the property, because a roughly constant multiplier cancels.
+
+        Best-of-3 per point: this is a floor measurement, and scheduler noise only ever adds.
+        """
+        best = min(self._elapsed(build(n)) for _ in range(3))
+        double = min(self._elapsed(build(2 * n)) for _ in range(3))
+        # Guard a degenerate denominator: if the small case is unmeasurable the ratio is
+        # meaningless, so report a passing value rather than dividing by ~0.
+        return double / best if best > 1e-6 else 1.0
 
     def test_git_prefixed_flag_spam_returns_fast(self):
         # The historical regression input: whitespace/flag spam after ``git``.
@@ -398,13 +554,30 @@ class TestIsDeniedReDoSResistance:
         assert self._elapsed("aws " + ("-x " * 5000)) < self._BUDGET_SECONDS
         assert self._elapsed("aws " + ("--foo=bar " * 5000)) < self._BUDGET_SECONDS
 
-    def test_mid_dotstar_chain_spam_returns_fast(self):
-        # ``python.*open.*/\.ssh/`` is polynomial per pattern under a single
-        # ``re.search``; fragment-splitting on the top-level ``.*`` gaps keeps it
-        # linear even when every literal (``python``/``open``/``/.ssh/``) is
-        # present (which defeats a literal pre-filter).
-        assert self._elapsed("/.ssh/ " + ("python open " * 8000)) < self._BUDGET_SECONDS
-        assert self._elapsed("/.ssh/ open " + ("python open " * 8000)) < self._BUDGET_SECONDS
+    def test_mid_dotstar_chain_spam_stays_linear(self):
+        """``python.*open.*/\\.ssh/`` is polynomial per pattern under a single ``re.search``;
+        fragment-splitting on the top-level ``.*`` gaps keeps it linear even when every literal
+        (``python``/``open``/``/.ssh/``) is present, which defeats a literal pre-filter.
+
+        Asserted as a SCALING ratio rather than an absolute budget. This is the one input in
+        this class expensive enough that instrumentation changes the answer: the same
+        un-regressed matcher costs ~1.7s of CPU bare and >5s under ``--cov``, which CI enables
+        on 3.12 only — so an absolute 5s ceiling failed 3.12 shard 2 while 3.10 passed on the
+        identical commit. Raising the budget would bank the instrumentation overhead as
+        headroom and hide the next real regression; the ratio states the actual property and is
+        insensitive to a constant multiplier. The absolute bound is still asserted at the
+        smaller size, where there is real margin either way.
+        """
+        for build in (
+            lambda n: "/.ssh/ " + ("python open " * n),
+            lambda n: "/.ssh/ open " + ("python open " * n),
+        ):
+            assert self._elapsed(build(2000)) < self._BUDGET_SECONDS
+            ratio = self._doubling_ratio(build, 2000)
+            assert ratio < self._MAX_DOUBLING_RATIO, (
+                f"cost grew {ratio:.1f}x when the input doubled — linear is ~2x, so this "
+                "is the super-linear backtracking the fragment split exists to prevent"
+            )
 
     def test_long_leading_junk_then_real_deny_needle_still_caught(self):
         # A legitimate destructive command sits AFTER a long junk prefix in its
@@ -1238,20 +1411,44 @@ class TestInterpreterArgvLiteralMint:
         )
         assert _denied_by(assembled) == _RULE_MINT + "-argv"
 
-    def test_runtime_computed_name_is_the_residual_gap(self):
-        """What remains uncovered: a name no longer PRESENT in the command text.
+    def test_a_dynamic_exec_inline_payload_is_denied_as_opaque(self):
+        """An inline payload using a decode/exec primitive is DENIED even without the literal.
 
-        Joining adjacent literals is now handled, because the name is still there to
-        find.  A name COMPUTED at runtime -- decoded from base64, built with `chr()`,
-        fetched over HTTP -- never appears in any spelling, so no command-text rule
-        can reach it.  That is why the un-disableable guarantee for this credential is
-        the sensitive-path floor over the signing key rather than these rules.
+        `base64.b64decode(...)` / `exec(...)` / `__import__(...)` are how a payload reaches the
+        CLI with the package name never appearing as a token. A command-text rule cannot see
+        THROUGH them, so on the credential-mint path the fail-closed reading is "an inline
+        program I cannot decode is refused" — the dynamic-exec verbs are matched and the whole
+        `-c` invocation denied. `os.system("kirocrew token")` with the verb literal is caught by
+        the argv floor; a base64-wrapped one is caught because the wrapper itself is the tell.
+        Found in review (GPT 5.6).
         """
         computed = (
             "python -c 'import os,base64; os.system(base64.b64decode("
             + Q + "a2lyb2NyZXcgdG9rZW4=" + Q + ").decode())'"
         )
-        assert _denied_by(computed) is None
+        assert _denied_by(computed) is not None
+
+    def test_the_true_residual_gap_is_a_name_no_matcher_can_see(self):
+        """What genuinely remains uncovered, and why the real guarantee is elsewhere.
+
+        The dynamic-exec deny catches the COMMON primitives, but a determined payload can
+        still avoid every one of them — build the string with `chr()` arithmetic, read it from
+        a file, fetch it over a socket, or simply write a script and run it as a second
+        command. None of those names anything a static command-text rule matches, and no such
+        rule ever could: arbitrary code running as the same OS user is outside a string
+        matcher's reach. That is precisely why the UN-DISABLEABLE guarantee for this credential
+        is the sensitive-path floor over the signing key (`.local_secret` is read+write blocked
+        on both the tool and shell gates), not these defense-in-depth deny rules.
+        """
+        # A name assembled by `chr()` arithmetic — no decode/exec/import verb, no literal.
+        chr_built = (
+            "python -c 'import os; os.system("
+            "chr(107)+chr(105)+chr(114)+chr(111)+chr(99)+chr(114)+chr(101)+chr(119))'"
+        )
+        assert _denied_by(chr_built) is None
+        # Write-then-run: the program text is in a file the deny rules never see.
+        two_step = "printf 'x' > /tmp/s.py && python /tmp/s.py"
+        assert _denied_by(two_step) is None
 
 
 class TestRuleIdentityIsTheId:

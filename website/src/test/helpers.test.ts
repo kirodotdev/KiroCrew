@@ -1,3 +1,10 @@
+// @vitest-environment jsdom
+//
+// Runs under jsdom, NOT the suite-default happy-dom: the `md()` cases below assert
+// DOMPurify-sanitized markdown output, and DOMPurify >=3.4.10 mis-parses under
+// happy-dom (strips benign markup while leaving <script>/on* through — an upstream
+// happy-dom bug, not a DOMPurify one; the same build is correct under jsdom and in
+// real browsers). See src/test/sanitizeXss.jsdom.test.ts and vite.config.ts.
 import { describe, it, expect } from 'vitest'
 import { esc, md, fmtSpeed } from '../api/helpers'
 

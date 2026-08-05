@@ -18,7 +18,7 @@ const EMPTY = '[Empty response — automatic recovery]'
 function refusalBody(items: string[]): string {
   return [
     REFUSAL,
-    'One or more tool calls in your previous turn were blocked by a KiroCrew safety policy, which ended the turn early. This was NOT a user action — do not treat it as a cancellation or interruption by the user.',
+    'One or more tool calls in your previous turn were blocked by a Kiro Crew safety policy, which ended the turn early. This was NOT a user action — do not treat it as a cancellation or interruption by the user.',
     '',
     'Blocked:',
     ...items.map(i => `  - ${i}`),

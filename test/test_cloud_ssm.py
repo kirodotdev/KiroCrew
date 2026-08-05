@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.cloud import aws, ssm
 
 
@@ -87,21 +88,29 @@ class TestKillPortForward:
             f"open({str(pidfile)!r},'w').write(str(c.pid));"
             "time.sleep(30)"
         )
-        proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+        # Group isolation the platform way: bare `start_new_session=True` is a no-op on
+        # Windows, and `taskkill /T` (the Windows branch of kill_port_forward) needs the
+        # wrapper to own a real process group for the grandchild to be in its tree.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            start_new_session=platform_compat.IS_POSIX,
+            **(
+                {}
+                if platform_compat.IS_POSIX
+                else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            ),
+        )
         for _ in range(50):
             if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
                 break
             time.sleep(0.1)
         child_pid = int(pidfile.read_text(encoding="utf-8").strip())
 
-        def _alive(pid):
-            import os
-
-            try:
-                os.kill(pid, 0)
-                return True
-            except OSError:
-                return False
+        # `platform_compat.pid_exists`, NOT `os.kill(pid, 0)`: on Windows that call
+        # TERMINATES the target rather than probing it, so the helper this test used to
+        # define killed the very process whose survival it was asserting about — the probe
+        # was the experiment. The shim uses OpenProcess(QUERY_LIMITED_INFORMATION) there.
+        _alive = platform_compat.pid_exists
 
         assert _alive(child_pid)
         ssm.kill_port_forward(proc)

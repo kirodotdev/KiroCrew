@@ -1,3 +1,12 @@
+// @vitest-environment jsdom
+//
+// Runs under jsdom, NOT the suite-default happy-dom: DOMPurify >=3.4.10 mishandles
+// happy-dom's DOM parser (it strips benign markup while LEAVING <script>/on*
+// through — the exact inversion of a sanitizer), so a happy-dom run of these
+// assertions is a false negative. jsdom is DOMPurify's own reference DOM and
+// matches real-browser behaviour; the real-Chromium guard is the Playwright spec
+// `website/playwright/sanitize-xss.spec.ts`. See vite.config.ts for why the rest
+// of the suite stays on happy-dom.
 /**
  * SVG sanitising for the slide preview.
  *

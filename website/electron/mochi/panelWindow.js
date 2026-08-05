@@ -145,6 +145,23 @@ function createPanelWindow(baseUrl, token = "") {
     y: wa.y + wa.height - PANEL_H - PANEL_MARGIN,
     width: PANEL_W,
     height: PANEL_H,
+    // A NON-ACTIVATING panel, macOS only. There it adds
+    // NSWindowStyleMaskNonactivatingPanel, so showing/focusing the panel gives
+    // it keyboard focus WITHOUT activating the app -- the Spotlight/Alfred
+    // behavior. That matters because the shell's `app.on("activate")` restores
+    // the dashboard window, so without this a single click on the pet resurrects
+    // a dashboard the user had deliberately hidden: they asked for the chat
+    // panel, not the whole app. Fixing it here keeps the shell out of it,
+    // instead of teaching the generic activate handler to recognize this one
+    // window.
+    //
+    // Gated on darwin because `type` is not a macOS-only option that other
+    // platforms ignore -- its legal VALUES differ per platform ("panel" is not
+    // one of Linux's desktop/dock/toolbar/splash/notification, nor Windows'
+    // toolbar). The panel is reachable off macOS via the CommandOrControl+Shift+M
+    // shortcut even though the pet overlay itself is darwin-only, so this really
+    // does run there.
+    ...(process.platform === "darwin" ? { type: "panel" } : {}),
     frame: false,
     titleBarStyle: "hidden",
     // Off-screen traffic lights: frameless, but macOS still treats it as a

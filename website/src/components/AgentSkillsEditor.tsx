@@ -9,6 +9,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from './ErrorNotice'
 /** A row from `GET /api/skills` — only the fields this editor needs. */
 export interface CatalogSkill {
   key: string
@@ -212,7 +213,9 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
           {i18nT('components.agentSkillsEditor.no_skills_mapped_this_agent_uses_the_default_beh')}
         </div>
       )}
-      {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}
+      {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+      <ErrorNotice message={error} className="mt-1.5" />
     </div>
   )
 }

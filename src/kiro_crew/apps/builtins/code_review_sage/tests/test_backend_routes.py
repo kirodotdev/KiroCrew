@@ -17,6 +17,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from kiro_crew import platform_compat
+
 _APP_ROOT = Path(__file__).resolve().parent.parent
 _ROUTES = _APP_ROOT / "backend" / "routes.py"
 if str(_APP_ROOT) not in sys.path:
@@ -66,6 +68,11 @@ class TestRunsPersistence(unittest.TestCase):
         self.assertIn("restart", self.mod._RUNS[0]["error"].lower())
         self.assertIn("finished_at", self.mod._RUNS[0])
 
+    @unittest.skipUnless(
+        platform_compat.IS_POSIX,
+        "POSIX mode bits are unobservable on Windows: the owner-only lockdown there is an "
+        "ACL (platform_compat.restrict_to_owner), and st_mode always reports 0o666.",
+    )
     def test_runs_file_is_0600(self):
         self.mod._RUNS = [{"run_id": "c3", "status": "done"}]
         self.mod._save_runs()

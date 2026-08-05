@@ -14,6 +14,7 @@ import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { installApiTransport } from './apiTransport'
 import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
+import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -370,6 +371,13 @@ export interface GovernanceScope {
   /** false = neither policy nor profile governs it → the scope permits. */
   governed: boolean
   source: 'policy' | 'profile' | 'policy+profile' | 'ungoverned'
+  /** WHOSE ceiling this row describes, so a host-only pin is not read as
+   *  install-wide. `host_profile` = the host-surface profile contributes, so the
+   *  value is that ONE surface's posture (the host profile disables cron and
+   *  messaging because the host process performs neither; the cron and messaging
+   *  surfaces enable them under their own profiles). `policy_wide` = policy alone
+   *  governs, which applies to every surface. Absent/'' = ungoverned. */
+  scope_note?: '' | 'host_profile' | 'policy_wide'
   detail: GovernanceScopeDetail
 }
 
@@ -384,6 +392,10 @@ export interface GovernancePolicyData {
   /** The surface this snapshot resolved (always "host"); narrower per-surface/
    *  app/task profiles can tighten a scope further at runtime. */
   surface?: string
+  /** Surfaces OTHER than host that carry their own bound profile — names only.
+   *  Rendered so a reader can see that a host row's "disabled" is one surface's
+   *  posture, not the whole install's. */
+  other_bound_surfaces?: string[]
   /** True when governance resolution failed — the viewer shows a soft notice. */
   unavailable: boolean
   scopes: GovernanceScope[]
@@ -625,12 +637,34 @@ export const friendlyErrText = (status: number, body: string): string => {
   return body
 }
 
+/**
+ * Build the ApiError AND journal it.
+ *
+ * `j`/`jNullable` are the single chokepoint every dashboard API failure passes
+ * through, which makes this the one place that can capture the full context
+ * (status, path, backend `code`, raw body) before call sites collapse it to
+ * `e.message`. `utils/errorReport` then lets a shared error banner recover that
+ * context from the message alone — see AskAgentButton / ErrorNotice.
+ */
+const apiFailure = (r: Response, errText: string): ApiError => {
+  const message = friendlyErrText(r.status, errText) || `HTTP ${r.status}`
+  recordError({
+    source: 'api',
+    message,
+    status: r.status,
+    code: parseErrorCode(errText),
+    endpoint: requestPath(r.url),
+    detail: errText,
+  })
+  return new ApiError(r.status, message, errText)
+}
+
 const j = async (r: Response) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`, errText)
+    throw apiFailure(r, errText)
   }
   return r.json()
 }
@@ -645,7 +679,7 @@ const jNullable = async (r: Response) => {
   if (r.status === 204) return null
   if (!r.ok) {
     const errText = await r.text()
-    throw new ApiError(r.status, friendlyErrText(r.status, errText) || `HTTP ${r.status}`, errText)
+    throw apiFailure(r, errText)
   }
   return r.json()
 }
@@ -1444,6 +1478,8 @@ export const api = {
     language?: string
     onboarded?: boolean
     import_onboarded?: boolean
+    /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
+    privacy_acked?: boolean
   }) =>
     put('/api/config/theme', body).then(j),
   // Voice

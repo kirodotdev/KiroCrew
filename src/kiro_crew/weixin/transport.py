@@ -101,6 +101,10 @@ class WeixinTransport(MessagingTransport):
         self._sync_buf = ""
         self._seen: dict[str, float] = {}
         self._running = False
+        # Optional observer called with (connected, error) when the poll loop
+        # dies without a shutdown — lets the gateway keep the dashboard badge
+        # truthful after boot (mirrors DiscordClient.on_state_change).
+        self.on_state_change: Callable[[bool, str], None] | None = None
 
     @property
     def client(self) -> WeixinClient:
@@ -164,10 +168,52 @@ class WeixinTransport(MessagingTransport):
 
     async def _poll_loop(self) -> None:
         """Long-poll ``getupdates`` and dispatch each inbound message."""
+        cancelled = False
+        try:
+            await self._poll_forever()
+        except asyncio.CancelledError:
+            # Task cancellation IS the production shutdown path: gateway
+            # teardown cancels the poll task without calling ``disconnect()``,
+            # so ``_running`` alone cannot distinguish teardown from death.
+            cancelled = True
+            raise
+        finally:
+            # Reached on a normal return and on a non-cancel escape alike: a
+            # loop that ended any way other than cancellation/shutdown means
+            # inbound is dead. Make that loud (default log level is WARNING)
+            # and flip the dashboard badge, which otherwise reports the
+            # startup outcome forever.
+            if not cancelled and self._running:
+                logger.warning("weixin: inbound poll loop ended unexpectedly — inbound is dead")
+                if self.on_state_change is not None:
+                    try:
+                        self.on_state_change(False, "poll loop ended unexpectedly")
+                    except Exception:
+                        logger.debug("weixin on_state_change observer raised", exc_info=True)
+
+    async def _poll_forever(self) -> None:
         failures = 0
+        timeouts = 0
         while self._running:
             try:
                 resp = await self._client.get_updates(self._sync_buf)
+                if resp.pop("_timed_out", False):
+                    # Zero server contact for a full client-deadline window.
+                    # Warn ONCE per streak, at a threshold well past normal
+                    # long-poll behavior, so this stays quiet whether the
+                    # server answers early when idle or holds requests to the
+                    # deadline — only a sustained black-hole crosses it.
+                    timeouts += 1
+                    if timeouts == 20:
+                        logger.warning(
+                            "weixin: %d consecutive long-poll timeouts (~%d min without "
+                            "a single server response) — either the network path is dead "
+                            "or the server is holding polls past the client deadline",
+                            timeouts,
+                            timeouts * 35 // 60,
+                        )
+                else:
+                    timeouts = 0
                 # iLink reports failure as `errcode` on some endpoints and `ret`
                 # on others (getupdates uses `ret`), both HTTP 200. Read BOTH via
                 # the shared helper: inspecting only `errcode` let a `ret`-keyed
@@ -204,7 +250,10 @@ class WeixinTransport(MessagingTransport):
                     await self.receive(msg)
                 failures = 0
             except asyncio.CancelledError:
-                break
+                # Propagate: cancellation is shutdown, and swallowing it here
+                # would make teardown indistinguishable from loop death in
+                # ``_poll_loop``'s unexpected-end detection.
+                raise
             except Exception as exc:
                 failures += 1
                 delay = 2 if failures < 3 else 30

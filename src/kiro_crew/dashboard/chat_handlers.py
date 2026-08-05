@@ -59,6 +59,7 @@ from kiro_crew.dashboard.state import (
     _normalize_slot_key,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.history import carry_provenance
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
@@ -2720,6 +2721,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 _redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None
             ),
         )
+        # See the equivalent call in _rehydrate_slot_from_history: resume loads
+        # the window that the next save re-serializes.
+        carry_provenance(slot.messages[-1], m)
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)

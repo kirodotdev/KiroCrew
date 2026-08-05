@@ -40,6 +40,18 @@ DISCORD_CHUNK_LIMIT = 1900
 _API_BASE = "https://discord.com/api/v10"
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
+# Transport-level WS ping interval (seconds). Deliberately a SECOND liveness
+# layer under Discord's op-1 application heartbeat, because the two have
+# different failure domains: op-1 runs in a cancellable user task and proves
+# the Discord session is alive, while the aiohttp ping runs inside the
+# library's read loop and proves the TCP path (host -> NAT -> edge) is alive.
+# Without it, a NAT-evicted half-open connection blocks the dispatch loop
+# forever with no error while outbound REST keeps working. 60s is longer than
+# Discord's ~41s heartbeat so healthy traffic keeps the path warm anyway, and
+# generous enough that a briefly stalled event loop does not flap the
+# connection with false-positive pong timeouts.
+_WS_HEARTBEAT_SECS = 60.0
+
 # Attachment URLs are signed but unauthenticated. Keep the exact CDN host
 # allow-list here at the channel boundary; redirects are disabled during fetch
 # so an allowed URL cannot bounce the downloader to an arbitrary host.
@@ -384,38 +396,63 @@ class DiscordClient:
         """One Gateway connection: hello -> identify/resume -> dispatch loop."""
         session = await self._ensure_session()
         url = self._resume_url if (self._session_id and self._resume_url) else _GATEWAY_URL
-        async with session.ws_connect(url, proxy=self._proxy, heartbeat=None, max_msg_size=0) as ws:
-            self._ws = ws
-            try:
-                async for raw in ws:
-                    if raw.type == aiohttp.WSMsgType.TEXT:
-                        await self._handle_frame(ws, json.loads(raw.data))
-                    elif raw.type in (
-                        aiohttp.WSMsgType.CLOSED,
-                        aiohttp.WSMsgType.CLOSE,
-                        aiohttp.WSMsgType.ERROR,
-                    ):
-                        break
-            finally:
-                self._ws = None
-        # Close code 4004 (auth failed) etc. surfaces via ws.close_code.
-        self.ready.clear()
-        code = ws.close_code or 0
-        if code in (4004, 4010, 4011, 4012, 4013, 4014):
-            # Non-recoverable (bad token / bad intents). Stop rather than
-            # hammering the gateway forever; the failure is already logged.
-            logger.error(
-                "Discord gateway closed with non-recoverable code %s — "
-                "check the bot token and intents. Channel stopped.",
-                code,
-            )
-            self._closed = True
-            self.fatal_error = f"gateway close {code} (check bot token/intents)"
-            self._notify_state(False, self.fatal_error)
-        elif code in (4007, 4009):
-            # Invalid seq / session timed out — must re-identify from scratch.
-            self._session_id = ""
-            self._seq = None
+        ws: Any = None
+        try:
+            async with session.ws_connect(
+                url, proxy=self._proxy, heartbeat=_WS_HEARTBEAT_SECS, max_msg_size=0
+            ) as ws:
+                self._ws = ws
+                try:
+                    async for raw in ws:
+                        if raw.type == aiohttp.WSMsgType.TEXT:
+                            await self._handle_frame(ws, json.loads(raw.data))
+                        elif raw.type in (
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.CLOSE,
+                            aiohttp.WSMsgType.ERROR,
+                        ):
+                            break
+                finally:
+                    self._ws = None
+            # Clean close only: classify the close code (4004 etc. surfaces
+            # via ws.close_code). An exception path skips this block and gets
+            # its log line from the gateway loop's reconnect handler instead.
+            code = ws.close_code or 0
+            if code in (4004, 4010, 4011, 4012, 4013, 4014):
+                # Non-recoverable (bad token / bad intents). Stop rather than
+                # hammering the gateway forever; the failure is already logged.
+                logger.error(
+                    "Discord gateway closed with non-recoverable code %s — "
+                    "check the bot token and intents. Channel stopped.",
+                    code,
+                )
+                self._closed = True
+                self.fatal_error = f"gateway close {code} (check bot token/intents)"
+                self._notify_state(False, self.fatal_error)
+            elif code in (4007, 4009):
+                # Invalid seq / session timed out — must re-identify from scratch.
+                self._session_id = ""
+                self._seq = None
+            if not self._closed:
+                # Every connection end is WARNING-visible: the default log
+                # level hides INFO, and an unlogged silent reconnect loop is
+                # indistinguishable from a dead channel when diagnosing
+                # "Discord stopped responding".
+                logger.warning(
+                    "Discord gateway connection ended (close code %s) — reconnecting",
+                    code or "none",
+                )
+        finally:
+            # Runs on clean closes AND exception escapes (a send raising
+            # mid-dispatch would otherwise skip this): the READY flag and the
+            # dashboard badge must never keep asserting a connection that no
+            # longer exists. The 4004 branch sets _closed before its own
+            # fatal notify, so this cannot overwrite that reason; deliberate
+            # close() also sets _closed and is skipped the same way.
+            self.ready.clear()
+            if not self._closed:
+                close_code = ws.close_code if ws is not None else None
+                self._notify_state(False, f"reconnecting (close {close_code or 'none'})")
 
     async def _handle_frame(self, ws: Any, frame: dict) -> None:
         op = frame.get("op")
@@ -494,7 +531,17 @@ class DiscordClient:
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.debug("Discord heartbeat loop error", exc_info=True)
+            # This task is the only sender of Discord's mandatory op-1
+            # heartbeat: if it dies and the connection stays up, the server
+            # eventually drops the session and — behind NAT, where the close
+            # frame can be lost — the dispatch loop blocks on a half-open
+            # socket with heartbeats gone. Close the socket so the gateway
+            # loop reconnects instead of carrying a heartbeat-less connection.
+            logger.warning("Discord heartbeat loop failed — recycling connection", exc_info=True)
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("Discord heartbeat close failed", exc_info=True)
 
     # ── Dispatch normalization ──
 

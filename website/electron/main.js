@@ -38,6 +38,7 @@ const { createBrowserViewManager, isUntrustedContents } = require("./browser-vie
 // chooseControlTransport is exercised by the routing layer (see Stage 6 notes),
 // not here — main.js only owns the plane and its gate.
 const { canAgentControl, createControlPlane, OWNER } = require("./browser-control");
+const { createBrowserOps } = require("./browser-ops");
 const { createAgentCommandChannel } = require("./browser-agent-channel");
 const { secretCandidates } = require("./home-dir");
 
@@ -834,23 +835,40 @@ function hardenBrowserPartition(sessionApi) {
 }
 
 /**
- * Dispatch one browser-control op onto a control plane.
+ * Dispatch one browser-control op onto a panel's native op layer.
  *
- * A CLOSED verb set, deliberately — never a raw CDP method from the caller, so
- * the control surface cannot be widened by whoever is calling. Shared by the
- * renderer IPC handler and the agent command channel so both are limited to
- * exactly the same capabilities.
+ * `entry` is a browser panel (has `.control` + `.manager`). The FULL wire-op
+ * vocabulary (navigate/snapshot/click/type/press_key/hover/select_option/
+ * screenshot/evaluate/wait_for/back/console) is served natively over the panel's
+ * CDP debugger by browser-ops.js — never a raw CDP method from the caller, so
+ * the surface cannot be widened by whoever calls it. Shared by the renderer IPC
+ * handler and the agent command channel so both are limited to exactly the same
+ * capabilities.
+ *
+ * The op layer is built once per panel and cached, so its console buffer (fed by
+ * the panel's CDP event stream) persists across calls. `sendCommand` is the
+ * control plane's raw passthrough, valid only while LIGHT holds control — which
+ * the caller guarantees by taking the owner (and running the gate) first.
  */
-async function dispatchBrowserOp(plane, op, args) {
-  const a = args || {};
-  switch (op) {
-    case "navigate": return plane.navigate(String(a.url || ""));
-    case "click": return plane.click(Number(a.x), Number(a.y));
-    case "type": return plane.type(String(a.text || ""));
-    case "evaluate": return plane.evaluate(String(a.expression || ""));
-    case "snapshot": return plane.snapshot();
-    default: throw new Error(`unsupported browser control op: ${op}`);
-  }
+function browserOpsFor(entry) {
+  if (entry._ops) return entry._ops;
+  entry._ops = createBrowserOps({
+    sendCommand: (method, params) => entry.control.send(method, params),
+    // Buffer the panel's console/log stream. The debugger object is stable per
+    // webContents, so a listener registered once survives attach/detach.
+    subscribe: (handler) => {
+      const wc = entry.manager.getWebContents();
+      const dbg = wc && wc.debugger;
+      if (dbg && typeof dbg.on === "function") {
+        dbg.on("message", (_event, method, params) => handler(method, params));
+      }
+    },
+  });
+  return entry._ops;
+}
+
+async function dispatchBrowserOp(entry, op, args) {
+  return browserOpsFor(entry).run(op, args);
 }
 
 function setupWindowContents(win, backendUrl) {
@@ -1066,11 +1084,39 @@ function setupWindowContents(win, backendUrl) {
     dispatch: async (sessionKey, op, args) => {
       const entry = browserPanel(sessionKey, { create: false });
       if (!entry) throw new Error(`no native browser panel for session ${sessionKey}`);
+      // A `navigate` is what BOOTSTRAPS the view, and the ORDER here matters.
+      // `canAgentControl` refuses with `no-browser-view` when nothing is open, so
+      // acquiring LIGHT first would refuse before any bootstrap could run — the
+      // agent's very first "open this page" would fall back to Playwright and
+      // never reach the native browser, defeating the point of routing natively.
+      //
+      // Authorization is still enforced first and separately: agent-act must
+      // already be granted. Only the "a view exists" precondition is satisfied by
+      // creating one, never the permission itself.
+      if (op === "navigate" && !entry.manager.getWebContents()) {
+        const pre = entry.gate();
+        if (!pre || !pre.agentActEnabled) {
+          throw new Error("browser control refused: agent-act-not-authorized");
+        }
+        // `manager.navigate` creates the view when none is open and applies the
+        // same non-web URL guard as the CDP path.
+        const opened = entry.manager.navigate(String((args && args.url) || ""));
+        if (opened && opened.refused) {
+          return { ok: false, code: "bad_url", error: `refused non-web URL: ${args && args.url}` };
+        }
+        // Take LIGHT now that a view exists, so ownership is recorded for the ops
+        // that follow and the same gate runs against the real post-open state.
+        const takenAfterOpen = await entry.control.setOwner(OWNER.LIGHT, entry.gate());
+        if (takenAfterOpen.refused) {
+          throw new Error(`browser control refused: ${takenAfterOpen.refused}`);
+        }
+        return { ok: true, url: (opened && opened.url) || String((args && args.url) || "") };
+      }
       // The agent is acting unattended, so it must hold LIGHT — and taking it
       // runs the same gate (agent-act authorization) as any other transition.
       const taken = await entry.control.setOwner(OWNER.LIGHT, entry.gate());
       if (taken.refused) throw new Error(`browser control refused: ${taken.refused}`);
-      return dispatchBrowserOp(entry.control, op, args);
+      return dispatchBrowserOp(entry, op, args);
     },
     onError: (err, context) =>
       console.warn(`[browser-agent-channel] ${context}: ${err && err.message}`),
@@ -2328,7 +2374,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("browser:control", async (event, panelId, op, args) => {
     const p = panelFor(event, panelId, { create: false });
     if (!p) return null;
-    return dispatchBrowserOp(p.control, op, args);
+    return dispatchBrowserOp(p, op, args);
   });
 
   // Enable the chat input's screen-snip tool inside the Electron shell.

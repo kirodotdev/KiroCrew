@@ -10,6 +10,8 @@ from sage_lib import pipeline as P  # noqa: N812
 from sage_lib import results as R  # noqa: N812
 from sage_lib import store
 
+from kiro_crew import platform_compat
+
 
 class TestBatchParse(unittest.TestCase):
     def test_mixed_separators_and_dedup(self):
@@ -161,6 +163,11 @@ class TestResultStore(unittest.TestCase):
         got = R.read_result("GH-o-r-555", self.root)
         self.assertEqual(got["phase1"]["gate_verdict"], "CONCERNS")
 
+    @unittest.skipUnless(
+        platform_compat.IS_POSIX,
+        "POSIX mode bits are unobservable on Windows: the owner-only lockdown there is an "
+        "ACL (platform_compat.restrict_to_owner), and st_mode always reports 0o666.",
+    )
     def test_mode_0600(self):
         p = R.write_result(self.rec, self.root)
         self.assertEqual(p.stat().st_mode & 0o777, 0o600)

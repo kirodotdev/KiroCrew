@@ -49,6 +49,11 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   const switchGenRef = useRef(0)
   const levelStopRef = useRef<(() => void) | null>(null)
   const finalsRef = useRef<string[]>([])
+  // Per-start() cancel flag. cancel() flips the CURRENT session's flag; the
+  // socket's onclose (which closes over its own session object) reads it to
+  // discard instead of delivering. Per-session, not a shared boolean, so a
+  // socket superseded by a restart can never mistake a new session for its own.
+  const sessionRef = useRef<{ cancelled: boolean } | null>(null)
   // Keep callback refs fresh so the long-lived WS handlers (`ws.onmessage`
   // / `ws.onclose`) always invoke the latest caller-supplied callbacks,
   // not the versions captured when `start()` was invoked.
@@ -84,11 +89,26 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   const start = useCallback(async () => {
     if (!streamingSupported || wsRef.current) return
     finalsRef.current = []
+    // Claim this start()'s session token BEFORE getUserMedia. A restart during
+    // the (async) acquire immediately replaces sessionRef.current, so a stale
+    // socket's onclose can detect supersession via `sessionRef.current !== session`
+    // even in the window where wsRef is transiently null (old cleanup nulled it,
+    // the new ws not created yet). onclose closes over this object; cancel() sets
+    // its .cancelled flag.
+    const session = { cancelled: false }
+    sessionRef.current = session
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
     } catch (e) {
-      onErrorRef.current?.(humanizeMicError(e))
+      // Only the still-current start surfaces the error; a superseded one is moot.
+      if (sessionRef.current === session) onErrorRef.current?.(humanizeMicError(e))
+      return
+    }
+    // Superseded or cancelled DURING the acquire — don't build a live socket for a
+    // session the user already restarted or cancelled. Release the mic and bail.
+    if (sessionRef.current !== session || session.cancelled) {
+      stream.getTracks().forEach(t => t.stop())
       return
     }
     streamRef.current = stream
@@ -143,6 +163,23 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
       } catch { /* ignore */ }
     }
     ws.onclose = () => {
+      // Settle the startup promise FIRST — always, even on cancel — so a cancel
+      // that fires before `ready` unblocks start()'s `await readyPromise` and
+      // never wedges the caller's startingRef. (No-op once already resolved.)
+      rejectReady(new Error('ws closed before ready'))
+      // Only the socket that is still the current one may tear down the shared
+      // refs; a socket superseded by a restart must not cleanup() the new
+      // session's stream. On cancel, cleanup() already nulled wsRef, so this is
+      // false and the redundant teardown is skipped.
+      const isCurrent = wsRef.current === ws
+      // Supersession is detected via the SESSION TOKEN, not wsRef: a restart
+      // claims sessionRef.current BEFORE its getUserMedia resolves, so in that
+      // window wsRef is transiently null yet this socket IS superseded. Keying on
+      // wsRef would wrongly deliver this stale transcript into the restarting
+      // session. When sessionRef still points at THIS session (no successor),
+      // the timeout-hang fallback below still delivers.
+      const superseded = sessionRef.current !== session
+      if (session.cancelled || superseded) { if (isCurrent) cleanup(); return }
       // Prefer Transcribe's finals. If none arrived (user stopped before
       // Transcribe finalized), fall back to the last partial so the
       // user's words aren't lost.
@@ -151,8 +188,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
         : lastPartial.trim()
       if (combined) onFinalRef.current(combined)
       else onPartialRef.current('')  // clear any dangling partial when nothing transcribed
-      rejectReady(new Error('ws closed before ready'))
-      cleanup()
+      if (isCurrent) cleanup()
     }
 
     // Wait only for the WS handshake here — we start the audio graph
@@ -337,5 +373,24 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     prevStream.getTracks().forEach(t => t.stop())
   }, [sampleRef])
 
-  return { recording, start, stop, switchDevice }
+  // Immediate discard (Esc). Unlike stop(), does NOT drain: tears down the
+  // socket, mic tracks and AudioContext right away so capture ends the instant
+  // the user cancels — no 8s graceful-drain window keeping the mic live. Marks
+  // the current session cancelled so the resulting onclose delivers no final;
+  // onclose still runs (settling any pending startup promise so the caller is
+  // never wedged), it just discards.
+  const cancel = useCallback(() => {
+    if (sessionRef.current) sessionRef.current.cancelled = true
+    // Detach onmessage so a partial/endpoint message already queued on THIS
+    // socket cannot fire after cancel. Otherwise, if the user Escapes and
+    // immediately restarts, the restart re-arms the shared onPartial/onEndpoint
+    // callbacks, and a late message from the discarded socket would inject or
+    // submit the abandoned dictation into the NEW session. onclose stays
+    // attached so it still settles readyPromise (no startup wedge).
+    const ws = wsRef.current
+    if (ws) ws.onmessage = null
+    cleanup()
+  }, [cleanup])
+
+  return { recording, start, stop, switchDevice, cancel }
 }

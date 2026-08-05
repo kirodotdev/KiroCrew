@@ -318,22 +318,22 @@ class TestInstallAgent:
         cfg_dir = _bundled_defaults(tmp_path)
         mcps = {
             **_DEFAULT_MANAGED_MCPS,
-            "arcc-governance": {
-                "command": "/usr/bin/arcc",
+            "playwright-mcp": {
+                "command": "/usr/bin/playwright-mcp",
                 "args": ["mcp", "start"],
-                "autoApprove": ["search_arcc"],
+                "autoApprove": ["browser_navigate"],
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
         config = json.loads(path.read_text(encoding="utf-8"))
-        assert config["mcpServers"]["arcc-governance"]["autoApprove"] == ["search_arcc"]
+        assert config["mcpServers"]["playwright-mcp"]["autoApprove"] == ["browser_navigate"]
 
     def test_new_managed_server_seeds_auto_approve_on_refresh(self, tmp_path: Path):
         """When a managed server is new to an existing config, autoApprove is seeded."""
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
-        # Existing config has kirocrew-cron/core but NOT arcc-governance
+        # Existing config has kirocrew-cron/core but NOT playwright-mcp
         existing = {
             "model": "claude-user-custom",
             "tools": [],
@@ -349,30 +349,30 @@ class TestInstallAgent:
 
         mcps = {
             **_DEFAULT_MANAGED_MCPS,
-            "arcc-governance": {
-                "command": "/usr/bin/arcc",
+            "playwright-mcp": {
+                "command": "/usr/bin/playwright-mcp",
                 "args": ["mcp", "start"],
-                "autoApprove": ["search_arcc"],
+                "autoApprove": ["browser_navigate"],
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
         config = json.loads(path.read_text(encoding="utf-8"))
-        # arcc-governance is genuinely new → autoApprove should be seeded
-        assert config["mcpServers"]["arcc-governance"]["autoApprove"] == ["search_arcc"]
+        # playwright-mcp is genuinely new → autoApprove should be seeded
+        assert config["mcpServers"]["playwright-mcp"]["autoApprove"] == ["browser_navigate"]
 
     def test_user_removed_auto_approve_not_re_added(self, tmp_path: Path):
         """If user deliberately removed autoApprove, refresh must not re-add it."""
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
         kiro_dir.mkdir(exist_ok=True)
-        # Existing config has arcc-governance but user removed autoApprove
+        # Existing config has playwright-mcp but user removed autoApprove
         existing = {
             "model": "claude-user-custom",
             "tools": [],
             "allowedTools": [],
             "mcpServers": {
-                "arcc-governance": {
-                    "command": "/old/arcc",
+                "playwright-mcp": {
+                    "command": "/old/playwright-mcp",
                     "args": ["mcp", "start"],
                 },
             },
@@ -383,17 +383,17 @@ class TestInstallAgent:
 
         mcps = {
             **_DEFAULT_MANAGED_MCPS,
-            "arcc-governance": {
-                "command": "/usr/bin/arcc",
+            "playwright-mcp": {
+                "command": "/usr/bin/playwright-mcp",
                 "args": ["mcp", "start"],
-                "autoApprove": ["search_arcc"],
+                "autoApprove": ["browser_navigate"],
             },
         }
         path = _run_install(tmp_path, cfg_dir, managed_mcps=mcps)
         config = json.loads(path.read_text(encoding="utf-8"))
         # command/args refreshed, but autoApprove NOT re-added
-        assert config["mcpServers"]["arcc-governance"]["command"] == "/usr/bin/arcc"
-        assert "autoApprove" not in config["mcpServers"]["arcc-governance"]
+        assert config["mcpServers"]["playwright-mcp"]["command"] == "/usr/bin/playwright-mcp"
+        assert "autoApprove" not in config["mcpServers"]["playwright-mcp"]
 
     def test_clean_flag_ignores_existing(self, tmp_path: Path):
         """clean=True → regenerates from defaults even if file exists."""

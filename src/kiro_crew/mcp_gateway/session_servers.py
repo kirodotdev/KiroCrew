@@ -31,13 +31,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 
 logger = logging.getLogger(__name__)
 
 # Keys that are positional in the ACP element shape (``name``) or that we
 # always re-derive (``env``), so they must not be copied verbatim.
-_ACP_RESERVED = frozenset({"name", "env", _WRAPPER_MARKER})
+_ACP_RESERVED = frozenset({"name", "env", _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY})
 
 
 def _acp_env(raw: Any) -> list[dict[str, str]]:
@@ -180,10 +180,42 @@ def pooled_session_servers(
         return []
     out: list[dict[str, Any]] = []
     for name, entry in sorted(servers.items()):
-        if not isinstance(entry, dict) or not entry.get(_WRAPPER_MARKER):
+        if not isinstance(entry, dict) or not (
+            entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
+        ):
             # Not a broker stub: leave it to the agent spec entirely.
             continue
         shaped = _acp_server_entry(str(name), entry, channel_id)
         if shaped is not None:
             out.append(shaped)
     return out
+
+
+def injection_server_names(
+    overlay_dir: str | Path | None,
+    agent: str | None,
+) -> frozenset[str]:
+    """Return the set of server names that WILL be injected for *agent*.
+
+    Callers use this to detect an additive-injection regression: if a launched
+    session reports MCP servers whose names overlap with this set, injection has
+    become additive rather than overriding and every pooled server is running
+    twice. See #927.
+
+    This is deliberately cheap (one file read, no shaping) so it can be called
+    as a post-launch health check without adding latency to the session path.
+    """
+    if not overlay_dir or not agent:
+        return frozenset()
+    spec = _load_overlay_for_agent(Path(overlay_dir), agent)
+    if not isinstance(spec, dict):
+        return frozenset()
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return frozenset()
+    return frozenset(
+        name for name, entry in servers.items()
+        if isinstance(entry, dict) and (
+            entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
+        )
+    )

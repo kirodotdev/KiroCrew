@@ -271,7 +271,10 @@ the runtime boundary instead of relying only on prompt instructions.
   the underlying deny and sensitive-path controls.
 - **OS sandbox.** On Linux and macOS, `kiro-cli` can run inside namespace or
   Seatbelt isolation. Standard, strict, and off modes make the tradeoff
-  explicit. Windows does not currently provide this OS-level layer.
+  explicit. Windows offers no equivalent OS-level layer, so Kiro Crew fails
+  closed there: agent subprocesses are refused rather than run unconfined, until
+  you declare the
+  [`sandbox_allow_unsandboxed_exec` opt-in](docs/guides/windows-install.md#the-unsandboxed-exec-opt-in).
 - **Sensitive data guards.** Kiro Crew blocks direct access to protected paths,
   strips sensitive environment variables, and redacts credential patterns from
   output before it reaches a chat surface.
@@ -380,6 +383,28 @@ confirm `kiro-cli` is on `PATH` and logged in, then allow extra time for the
 first MCP startup. For memory search, check that the embedding
 model finished downloading under `~/.kiro/crew/models`. For a stale MCP configuration, run
 `kirocrew setup --agent-only`, or add `--clean` to rebuild it.
+
+**Find the logs.** When you need to debug, the fastest path is
+`kirocrew logs` (tail the most recent gateway output) or `kirocrew logs -f` to
+follow it live; `kirocrew logs -n 200` prints more history. `kirocrew logs`
+reads the right source automatically — the systemd journal when the Linux
+service is installed, the launchd stdout file on macOS, or the foreground
+gateway log otherwise. Raise verbosity with `kirocrew gateway -v` (INFO:
+session lifecycle and context usage) or `-vv` (DEBUG: full ACP events and
+message traces); set the persistent default with
+`kirocrew config set agent.log_level`, or change it at runtime from the
+dashboard **Logs** page. Under `~/.kiro/crew` (or your `KIROCREW_HOME`) you can
+also read the raw files directly:
+
+| File | What it holds |
+|---|---|
+| `~/.kiro/crew/gateway.log` | Main gateway log when running in the foreground. |
+| `~/.kiro/crew/security_events.jsonl` | Append-only security and tool-access events. Inspect with `kirocrew security events`, `audit`, and `verify`. |
+| `~/.kiro/crew/audit.log` | Human-readable audit trail of privileged operations. |
+| `~/.kiro/crew/subagents/<agent_id>/result.txt` | Full transcript of a completed subagent, kept for a grace window after it finishes. |
+
+See the [Troubleshooting guide](src/kiro_crew/docs/troubleshooting.md) for the
+full log-level reference and emergency recovery steps.
 
 ## Anonymous usage telemetry
 

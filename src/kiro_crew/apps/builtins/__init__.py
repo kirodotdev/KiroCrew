@@ -5,9 +5,11 @@ BUILTIN_NAMES: list[str] = [
     "code_review_sage",
     "issue_radar",
     "meetings",
+    "ops_mission_control",
     "papyrus",
     "mochi",
     "pptx_maker",
+    "spec_builder",
 ]
 
 # Deploy-web lives in the core deploy module, not as a separate builtin.

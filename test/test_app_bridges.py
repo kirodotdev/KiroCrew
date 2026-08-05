@@ -15,6 +15,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.bridges import (
     RegistrationResult,
     _deregister_agents,
@@ -309,9 +310,10 @@ class TestSkillRegistration:
         assert len(registered) == 1
         assert "test-app/my-skill" in registered
 
-        # Verify symlink exists under ~/.kirocrew/skills/test-app/my-skill
+        # A link exists under ~/.kiro/crew/skills/test-app/my-skill: a symlink on
+        # POSIX, a directory junction on non-admin Windows (both resolve through).
         skill_link = app_env["home"] / "skills" / "test-app" / "my-skill"
-        assert skill_link.is_symlink()
+        assert platform_compat.is_link_or_junction(skill_link)
         assert (skill_link / "SKILL.md").is_file()
 
     def test_deregister_skills(self, tmp_path, app_env):
@@ -335,6 +337,86 @@ class TestSkillRegistration:
         app_root = app_env["home"] / "apps" / "test-app"
         registered = _register_skills("test-app", manifest, app_root)
         assert registered == []
+
+    def test_no_skills_creates_no_directory(self, tmp_path, app_env):
+        """An app with no manifest skills must not leave an empty skills dir.
+
+        When a PACKAGED builtin skill shares the app's name, that empty directory
+        MASKS it: `_ensure_builtin_skills` copies the skill at gateway start, app
+        registration runs afterwards, and the unconditional mkdir then leaves a
+        directory with no `SKILL.md` — so every SOP the app's cron prompts reference
+        silently does not exist on disk. Hit for real by ops-mission-control, whose
+        skill ships under `builtin_skills/` precisely because a builtin app's own
+        directory is never copied into the data home.
+        """
+        src = _make_app_source(tmp_path, skills=[])
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+
+        registered = _register_skills("test-app", manifest, app_root)
+        assert registered == []
+        assert not (app_env["home"] / "skills" / "test-app").exists()
+
+    def test_no_skills_does_not_clobber_a_packaged_skill(self, tmp_path, app_env):
+        """The regression itself: registration must not empty a same-named skill."""
+        packaged = app_env["home"] / "skills" / "test-app"
+        packaged.mkdir(parents=True)
+        (packaged / "SKILL.md").write_text("---\nname: test-app\n---\nbody\n")
+        (packaged / "sops").mkdir()
+        (packaged / "sops" / "dispatch.md").write_text("# SOP\n")
+
+        src = _make_app_source(tmp_path, skills=[])
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        _register_skills("test-app", manifest, app_env["home"] / "apps" / "test-app")
+
+        assert (packaged / "SKILL.md").is_file()
+        assert (packaged / "sops" / "dispatch.md").is_file()
+
+    def test_deregister_preserves_a_same_named_packaged_skill(self, tmp_path, app_env):
+        """Deregister is the path that actually destroyed the shipped skill.
+
+        `sync_app_skills` calls `_deregister_skills` for any app whose manifest
+        declares no skills, to clean up stale symlinks from a prior version. It used
+        to `rmtree` the whole `skills/<app_name>/` dir — but for a builtin whose
+        packaged skill shares that name, that dir holds real files, not links. This
+        deleted the skill and every SOP under it, so the app's cron prompts pointed
+        at files that were gone. Silent, because a missing skill file errors nowhere.
+        """
+        packaged = app_env["home"] / "skills" / "test-app"
+        packaged.mkdir(parents=True)
+        (packaged / "SKILL.md").write_text("---\nname: test-app\n---\nbody\n")
+        (packaged / "sops").mkdir()
+        (packaged / "sops" / "reconcile.md").write_text("# SOP\n")
+
+        removed = _deregister_skills("test-app")
+
+        assert removed == 0, "no app-owned links existed to remove"
+        assert (packaged / "SKILL.md").is_file(), "packaged skill must survive"
+        assert (packaged / "sops" / "reconcile.md").is_file()
+
+    def test_deregister_removes_only_symlinks_leaving_real_files(self, tmp_path, app_env):
+        """The mixed case: an app link AND a packaged file under the same dir."""
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        _register_skills("test-app", manifest, app_env["home"] / "apps" / "test-app")
+
+        # A real file lands in the same namespaced dir (as a packaged builtin would).
+        app_dir_path = app_env["home"] / "skills" / "test-app"
+        (app_dir_path / "real.md").write_text("not a link\n")
+
+        _deregister_skills("test-app")
+
+        assert not (app_dir_path / "my-skill").exists(), "the app symlink is gone"
+        assert (app_dir_path / "real.md").is_file(), "the real file survives"
 
 
 # ---------------------------------------------------------------------------

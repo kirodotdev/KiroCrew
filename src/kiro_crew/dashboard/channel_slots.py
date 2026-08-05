@@ -60,6 +60,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import _normalize_slot_key
+from kiro_crew.history import carry_provenance
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -329,6 +330,12 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
             broadcast=False,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
         )
+        # This transcript is the CHANNEL's, so most of these lines arrived from
+        # Slack/Discord and carry a real origin. Provenance is not a
+        # slot.append() argument, so copy it onto the message the append just
+        # created — the save path re-serializes this window and would otherwise
+        # restamp every line "dashboard".
+        carry_provenance(slot.messages[-1], msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)
@@ -424,8 +431,15 @@ def refresh_channel_window(
             content,
             cls,
             ts=msg.get("ts", ""),
+            # These lines came from the channel, not from this dashboard's
+            # composer, so nothing has rendered them optimistically -- ask for
+            # the user rows to be broadcast or the tab shows the reply without
+            # the message that prompted it.
+            broadcast_user=True,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
         )
+        # See the equivalent call in _rebuild_window.
+        carry_provenance(slot.messages[-1], msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)
@@ -761,18 +775,32 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
     return surfaced
 
 
+async def surface_channel_state(state: object | None, dashboard_cfg: object) -> None:
+    """Surface/refresh channel-session slots against an explicit state + config.
+
+    The dispatcher-free entry point. Most transports own a dispatcher object and
+    call :func:`surface_dispatcher_session`, but Slack drives its turns through
+    ``handle_message_transport`` with no dispatcher to hand over -- which is why
+    it was the only transport with no dashboard hook at all, leaving the
+    30-second reconciler as the sole path by which a Slack turn reached an open
+    tab.
+    """
+    if state is None:
+        return
+    if dashboard_cfg is None or not getattr(dashboard_cfg, "surface_channel_sessions", True):
+        return
+    await reconcile_channel_slots(
+        state,  # type: ignore[arg-type]
+        int(getattr(dashboard_cfg, "restore_window_minutes", 30)),
+    )
+
+
 async def surface_dispatcher_session(dispatcher: object) -> None:
     """Surface a channel dispatcher's just-persisted session immediately."""
     cfg = getattr(dispatcher, "cfg", None)
-    dashboard_cfg = getattr(cfg, "dashboard", None)
-    if dashboard_cfg is None or not getattr(dashboard_cfg, "surface_channel_sessions", True):
-        return
-    state = getattr(dispatcher, "dashboard_state", None)
-    if state is None:
-        return
-    await reconcile_channel_slots(
-        state,
-        int(getattr(dashboard_cfg, "restore_window_minutes", 30)),
+    await surface_channel_state(
+        getattr(dispatcher, "dashboard_state", None),
+        getattr(cfg, "dashboard", None),
     )
 
 

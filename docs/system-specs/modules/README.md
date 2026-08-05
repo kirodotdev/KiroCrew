@@ -80,6 +80,7 @@ agent loads only the one it needs.
 | [pptx-maker.md](pptx-maker.md) | Deck generation. |
 | [meetings.md](meetings.md) | Meeting capture and summarization. |
 | [issue-radar.md](issue-radar.md) | Issue triage and grouping. |
+| [ops-mission-control.md](ops-mission-control.md) | Autonomous ops first responder: alarms, pages and monitors. |
 | [mochi.md](mochi.md) | The Mochi app. |
 
 ## Operations

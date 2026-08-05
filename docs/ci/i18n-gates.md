@@ -25,7 +25,7 @@ build over loopback and answers every `/api/**` call from fixtures.
 
 ## `npm run i18n:check` is a RUNNER, not an `&&` chain
 
-`scripts/i18n-check.mjs` spawns seven scripts, keeps every byte of their output,
+`scripts/i18n-check.mjs` spawns eight scripts, keeps every byte of their output,
 then reports the twelve checks they contain in one table.
 
 An `&&` chain short-circuits. With twelve checks that means a PR only ever learns
@@ -58,7 +58,7 @@ conversion path.
 
 ## The table
 
-Twelve checks over seven scripts. The split is by the only question an author
+Thirteen checks over eight scripts. The split is by the only question an author
 has: **is this mine to fix?** A `diff`-scoped finding is on a line this branch
 wrote or in a file it touched. A `repo`-scoped finding is a whole-repo measurement
 the branch may simply have inherited.
@@ -73,6 +73,7 @@ the branch may simply have inherited.
 | `[plurals]` | repo | hard zero | a plural suffix concatenated outside the translation call |
 | `[pseudolocale]` | repo | hard zero | `en-XA.json` stale relative to its generator |
 | `[dnt]` | repo | hard zero | a do-not-translate term respelt in a shipped catalog |
+| `[manifest-sync]` | repo | hard zero | a built-in `app.json` string and its `en.json` value stopped matching |
 | `[dynamic-keys]` | repo | report only | a call site whose key cannot be resolved statically |
 | `[extractable]` | repo | report only | a literal in markup the codemod could have extracted |
 | `[untranslated]` | repo | report only | per-file ceilings over the frozen untranslated debt |

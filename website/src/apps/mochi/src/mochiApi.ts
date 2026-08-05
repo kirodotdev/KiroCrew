@@ -330,19 +330,54 @@ async function getMcpServers(): Promise<McpServerRow[]> {
 
 async function discoverMcpTools(
   name: string,
-): Promise<{ tools: { name: string; description?: string }[]; fromCache: boolean } | null> {
+): Promise<{
+  tools: { name: string; description?: string }[]
+  fromCache: boolean
+  errorCode?: string
+} | null> {
+  // Mochi's OWN route, not core's. Core has GET /api/mcp (whole inventory) and
+  // PUT/DELETE on /api/mcp/servers/{name} — no per-server read, so this used to
+  // resolve the path, miss on method, take a 405, and return null. Same class of
+  // bug as the inventory fetch above.
+  //
+  // POST because the route spawns a process: CSRF exempts GET, so a discover
+  // reachable by GET could be triggered by a cross-site navigation.
   try {
-    const res = await fetch(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    const res = await fetch(`/api/apps/mochi/mcp-tools/${encodeURIComponent(name)}`, {
+      method: 'POST',
       credentials: 'same-origin',
     })
-    if (!res.ok) return null
-    const body = (await res.json()) as {
+    const body = (await res.json().catch(() => ({}))) as {
       tools?: { name: string; description?: string }[]
       cached?: boolean
+      code?: string
+      status?: string
+    }
+    // Report a CODE, never the server's prose: the panel renders in 10 locales,
+    // so an English `error` string (or a raw "HTTP 405") is untranslatable at the
+    // point of display. The backend already emits a machine-readable `code` for
+    // exactly this; fall back to a synthetic one so the panel always has a key.
+    //
+    // The fallback is one FIXED token, not `http_${status}`: every code here has
+    // to be a member of a closed set the panel can map to a catalog key, and an
+    // arbitrary status number is unmappable by construction -- it would land on
+    // the generic line anyway. Named failures (403 app_disabled, 409 disabled)
+    // already arrive as `body.code`, so this only fires for genuinely unexpected
+    // HTTP failures, which share one message.
+    if (!res.ok) {
+      return { tools: [], fromCache: false, errorCode: body.code || 'http_error' }
+    }
+    // A probe that reached the server but failed (missing binary, handshake
+    // error) answers 200 with status != "ok" and no tools. Without this it read
+    // as "this server simply has no tools" -- the same silent-success shape this
+    // fix set out to remove, just one layer down.
+    const status = body.status
+    if (status && status !== 'ok') {
+      return { tools: body.tools ?? [], fromCache: false, errorCode: 'probe_failed' }
     }
     return { tools: body.tools ?? [], fromCache: body.cached === true }
   } catch {
-    return null
+    return { tools: [], fromCache: false, errorCode: 'network' }
   }
 }
 

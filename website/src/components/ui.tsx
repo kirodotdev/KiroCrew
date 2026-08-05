@@ -2,6 +2,7 @@ import React from 'react'
 import { twMerge } from 'tailwind-merge'
 import { motion, useMotionValue, useSpring, useMotionTemplate, useReducedMotion } from 'framer-motion'
 import InfoTip from './InfoTip'
+import { i18nT } from '../i18n/t'
 
 /* ── Shared UI primitives ── */
 
@@ -250,13 +251,43 @@ export function FormSkeleton({ rows }: { rows: SkeletonRowKind[] }) {
  *   plus NotificationFeed's), so a single shared id makes a Playwright lookup
  *   ambiguous. Consumers on such pages pass a specific base; the title and
  *   subtitle derive `<base>-title` / `<base>-subtitle` from it.
+ * @param action Optional CTA rendered below the subtitle. Accepts a ReactNode
+ *   (typically a `<SendBtn>` or `<Btn>`) so the empty state guides the user
+ *   toward populating the surface.
  */
-export function EmptyState({ icon, title, subtitle, testId = 'empty-state' }: { icon: React.ReactNode; title: string; subtitle?: string; testId?: string }) {
+export function EmptyState({ icon, title, subtitle, action, testId = 'empty-state' }: { icon: React.ReactNode; title: string; subtitle?: string; action?: React.ReactNode; testId?: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-12 gap-2 animate-rise" data-testid={testId}>
       <div className="text-[40px] opacity-[.12] select-none">{icon}</div>
       <div className="text-muted text-sm font-medium" data-testid={`${testId}-title`}>{title}</div>
-      {subtitle && <div className="text-muted/60 text-[13px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
+      {subtitle && <div className="text-muted/60 text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
+      {action && <div className="mt-2" data-testid={`${testId}-action`}>{action}</div>}
+    </div>
+  )
+}
+
+/**
+ * Shown when a filter/search reduces a non-empty list to zero results.
+ * Echoes the query back so the user sees what excluded everything, and offers
+ * a clear-filter action. Visually lighter than EmptyState (no large icon) to
+ * signal "your data exists, your filter hid it" rather than "nothing here yet".
+ */
+export function FilteredEmpty({ query, onClear, noun, testId = 'filtered-empty' }: { query: string; onClear: () => void; noun?: string; testId?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-8 gap-1.5 animate-rise" data-testid={testId}>
+      <div className="text-muted text-sm">
+        {noun
+          ? i18nT('components.ui.no_noun_match', { noun })
+          : i18nT('components.ui.no_matches_for')}{' '}
+        <span className="font-medium text-text">&ldquo;{query}&rdquo;</span>
+      </div>
+      <button
+        onClick={onClear}
+        className="text-accent text-[13px] hover:underline cursor-pointer bg-transparent border-none p-0"
+        data-testid={`${testId}-clear`}
+      >
+        {i18nT('components.ui.clear_filter')}
+      </button>
     </div>
   )
 }

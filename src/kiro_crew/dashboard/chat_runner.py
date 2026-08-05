@@ -32,7 +32,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
-    config_dir,
+    data_home,
     normalize_agent_model,
     resolve_agent_bindings,
 )
@@ -2005,7 +2005,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
             body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
         else:
             _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(config_dir() / "goal-stop" / f"{_slug}.stop")
+            _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
             Path(_sentinel).unlink(missing_ok=True)
             _nudge = (
                 f"Goal: {_objective}\n"

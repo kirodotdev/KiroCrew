@@ -14,11 +14,12 @@ import {
   Code,
   FileText,
   ListFilter,
-  PanelLeftClose,
-  PanelLeftOpen,
   Plus,
   RefreshCw,
 } from 'lucide-react'
+// Same collapse glyphs the sessions sidebar uses (ChatPage), so the Notes
+// panel's hide/show control reads as the identical affordance.
+import { PanelLeftLight, PanelLeftSolid } from '../../components/icons/panels'
 import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import {
@@ -1227,7 +1228,7 @@ export default function MdNotebookPage() {
       {/* Floating panel toggle: stays put when the panel hides. */}
       <button
         type="button"
-        className="mdnb-collapse"
+        className="pi-morph mdnb-collapse"
         onClick={togglePanel}
         aria-label={
           panelOpen
@@ -1236,22 +1237,30 @@ export default function MdNotebookPage() {
         }
         style={{
           position: 'absolute',
-          top: '20px',
+          // Same rect as the sessions sidebar's floating collapse button
+          // (ChatPage: top-[9px] left-2 w-7 h-7): a 28px control whose center
+          // lands on the 23px shared control baseline, so this button, the
+          // sessions toggle, and the left-nav collapse arrow all line up.
+          top: '9px',
           left: '8px',
           zIndex: 10,
-          width: '34px',
-          height: '34px',
-          borderRadius: '16px',
+          width: '28px',
+          height: '28px',
+          borderRadius: '8px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
-          background: 'transparent',
+          // No inline `background`: `.mdnb-collapse` (styles.ts) owns rest +
+          // hover painting. An inline `background: transparent` would outrank
+          // the `:hover` rule (inline beats author stylesheet), leaving the
+          // hover tint dead — the sessions toggle gets its tint from a
+          // stylesheet class for the same reason.
           border: 'none',
-          transition: 'color .15s',
+          transition: 'color .15s, background .15s',
         }}
       >
-        {panelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+        {panelOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
       </button>
 
       {panelOpen && (
@@ -1262,18 +1271,25 @@ export default function MdNotebookPage() {
             position: 'relative',
             display: 'flex',
             flexDirection: 'column',
-            margin: '8px 0',
+            // Top edge flush with the pane, mirroring the dashboard's left-nav
+            // card (`mt-0 mb-2`): both cards sit in the same grid row, so a top
+            // margin here would make this panel start lower than the nav beside it.
+            margin: '0 0 8px',
             background: 'var(--bg-elevated)',
             border: '1px solid var(--border)',
             borderRadius: '16px',
             boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
           }}
         >
-          {/* Header: the vault selector doubles as the panel title. */}
+          {/* Header: the vault selector doubles as the panel title. Mirrors the
+              sessions sidebar header (mt-0.5 h-10 → 40px row, its content on the
+              23px baseline); the vault trigger starts at 36px to clear the
+              floating collapse button (left 8px + 28px), same as the sidebar's
+              pl-9 content inset. */}
           <div
             style={{
               height: '40px',
-              marginTop: '8px',
+              marginTop: '2px',
               display: 'flex',
               alignItems: 'center',
               padding: '0 14px 0 8px',
@@ -1292,7 +1308,7 @@ export default function MdNotebookPage() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
-                marginLeft: '32px',
+                marginLeft: '28px',
                 minWidth: 0,
                 background: 'transparent',
                 border: 'none',

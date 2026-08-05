@@ -192,7 +192,7 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
   ]
   return (
     <LayoutGroup id={layoutId}>
-      <div className="glass-surface glass-static inline-flex rounded-lg p-0.5 gap-0.5">
+      <div className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
         {segments.map(s => {
           const isActive = s.key === active
           const disabled = !s.enabled
@@ -205,7 +205,6 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
               title={disabled ? `${s.label} not yet available` : s.label}
               aria-disabled={disabled || undefined}
               onClick={() => { if (!disabled) onChange(s.key) }}
-              whileTap={isActive && !disabled ? { scale: 0.95 } : undefined}
               transition={{ duration: 0.15 }}
               className={`relative flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium border-none transition-colors z-[1] ${
                 disabled
@@ -218,7 +217,7 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
               {isActive && !disabled && (
                 <motion.div
                   layoutId={`${layoutId}-indicator`}
-                  className="glass-surface glass-static absolute inset-0 rounded-md"
+                  className="absolute inset-0 bg-card rounded-md shadow-sm"
                   transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                 />
               )}
@@ -246,7 +245,7 @@ function ViewModeToggle({ mode, onChange, layoutId }: {
   ]
   return (
     <LayoutGroup id={layoutId}>
-      <div className="glass-surface glass-static inline-flex rounded-lg p-0.5 gap-0.5">
+      <div className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
         {segments.map(s => {
           const isActive = s.key === mode
           return (
@@ -256,7 +255,6 @@ function ViewModeToggle({ mode, onChange, layoutId }: {
               type="button"
               title={s.key === 'raw' ? i18nT('pages.chat.toolDetails.show_the_exact_payload_escaping_preserved') : i18nT('pages.chat.toolDetails.render_escaped_whitespace_as_real_line_breaks')}
               onClick={() => onChange(s.key)}
-              whileTap={isActive ? { scale: 0.95 } : undefined}
               transition={{ duration: 0.15 }}
               className={`relative flex items-center px-2.5 py-1 rounded-md text-[12px] font-medium border-none transition-colors z-[1] ${
                 isActive
@@ -267,7 +265,7 @@ function ViewModeToggle({ mode, onChange, layoutId }: {
               {isActive && (
                 <motion.div
                   layoutId={`${layoutId}-indicator`}
-                  className="glass-surface glass-static absolute inset-0 rounded-md"
+                  className="absolute inset-0 bg-card rounded-md shadow-sm"
                   transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                 />
               )}

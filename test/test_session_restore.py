@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -943,3 +944,228 @@ class TestRehydrateSlotFromHistory:
         state = _make_state(tmp_path)
         state.conversation_log = None
         assert _rehydrate_slot_from_history(state, "anything") is None
+
+
+# ── rehydrate_slot_from_history_async (async twin) ──
+
+
+class TestAsyncRehydrateSlotFromHistory:
+    """The async twin used by app backends resolving a cold worker slot on the
+    request path. Same result as the sync helper, but the transcript read happens
+    in a worker thread: a multi-megabyte session file read on the event loop
+    stalls chat, WebSockets and the heartbeat for every connected client.
+
+    The slot mutation deliberately stays on the loop — ``slot.append`` sets an
+    ``asyncio.Event``, which is not safe to touch from another thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_matches_the_sync_helper(self, tmp_path, monkeypatch):
+        """Parity: title, metadata and full message history, same as sync."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _write_session(
+            tmp_path,
+            "dashboard_asyncchat",
+            [
+                {"role": "user", "content": "first", "ts": "2026-03-23T10:00:00"},
+                {"role": "assistant", "content": "reply", "ts": "2026-03-23T10:00:01"},
+            ],
+            meta={"title": "Async Tab", "agent": "general"},
+        )
+        from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+        state = _make_state(tmp_path)
+        slot = await rehydrate_slot_from_history_async(state, "asyncchat")
+        assert slot is not None
+        assert slot.title == "Async Tab"
+        assert [m["content"] for m in slot.messages] == ["first", "reply"]
+        assert state._slots["asyncchat"] is slot
+
+    @pytest.mark.asyncio
+    async def test_the_transcript_read_is_off_the_loop(self, tmp_path, monkeypatch):
+        """The whole point: no message read may run on the event-loop thread."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _write_session(
+            tmp_path,
+            "dashboard_offloop",
+            [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+            meta={"title": "Off Loop"},
+        )
+        from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+        state = _make_state(tmp_path)
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        real_read = state.conversation_log.read_messages_chained
+
+        def _spy(key):
+            read_threads.append(threading.get_ident())
+            return real_read(key)
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained", _spy)
+        slot = await rehydrate_slot_from_history_async(state, "offloop")
+
+        assert slot is not None
+        assert read_threads, "the transcript was never read"
+        assert loop_thread not in read_threads, "the transcript was read ON the event loop"
+
+    @pytest.mark.asyncio
+    async def test_closed_sessions_need_an_explicit_opt_in(self, tmp_path, monkeypatch):
+        """A session the user closed stays closed by default. ``adopt_closed``
+        exists for app-owned worker slots, whose lifecycle belongs to the app —
+        idle-slot cleanup archives them with closed=True without the user ever
+        asking, and that must not permanently hide the transcript."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _write_session(
+            tmp_path,
+            "dashboard_archived",
+            [{"role": "user", "content": "mid-build", "ts": "2026-03-23T10:00:00"}],
+            meta={"title": "Spec: x", "app": "spec-builder", "closed": True},
+        )
+        from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+        state = _make_state(tmp_path)
+        assert await rehydrate_slot_from_history_async(state, "archived") is None
+        assert "archived" not in state._slots, "a closed session created a phantom slot"
+
+        revived = await rehydrate_slot_from_history_async(state, "archived", adopt_closed=True)
+        assert revived is not None
+        assert [m["content"] for m in revived.messages] == ["mid-build"]
+        # Ownership travels with the transcript so callers can police it.
+        assert revived._app == "spec-builder"
+
+    @pytest.mark.asyncio
+    async def test_a_slot_created_during_the_read_is_not_double_populated(
+        self, tmp_path, monkeypatch
+    ):
+        """The await opens a window the sync helper never had: another task can
+        materialize this slot while we are reading. Applying the snapshot on top
+        would duplicate its messages, so the post-await recheck returns the live
+        slot untouched."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _write_session(
+            tmp_path,
+            "dashboard_racy",
+            [{"role": "user", "content": "from disk", "ts": "2026-03-23T10:00:00"}],
+            meta={"title": "Racy"},
+        )
+        from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+        state = _make_state(tmp_path)
+        real_read = state.conversation_log.read_messages_chained
+
+        def _read_then_race(key):
+            out = real_read(key)
+            # Simulate the concurrent creation landing while we are off-loop.
+            state.get_or_create_slot("racy").append("user", "from the other task", "msg msg-u")
+            return out
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained", _read_then_race)
+        slot = await rehydrate_slot_from_history_async(state, "racy")
+
+        assert slot is state._slots["racy"]
+        assert [m["content"] for m in slot.messages] == ["from the other task"], (
+            "the snapshot was applied on top of a concurrently created slot"
+        )
+
+
+class TestPartialRehydrateRollsBack:
+    """A raise partway through populating a slot must leave NOTHING registered.
+
+    ``_rehydrate_slot_from_history`` registers the slot via ``get_or_create_slot`` before
+    any of its fallible work (title redaction, model canonicalization, the message
+    replay). A failure after that used to leave a half-populated slot in
+    ``state._slots`` -- and every rehydrate entry point short-circuits on
+    ``slot_name in state._slots``, so the next caller received the partial slot as
+    a complete restore with ``_disk_older_count`` still 0, after which a save
+    rewrote the frozen on-disk prefix it had never loaded.
+    """
+
+    def _boom(self, *_a, **_k):
+        raise RuntimeError("malformed persisted content")
+
+    def test_sync_rehydrate_leaves_no_partial_slot(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat import _rehydrate_slot_from_history
+
+        state = _make_state(tmp_path)
+        _write_session(tmp_path, "dashboard_doomed", [{"role": "user", "content": "hi"}],
+                       meta={"title": "T", "memory_mode": "ephemeral"})
+        # Fail inside the population, after the slot is registered.
+        monkeypatch.setattr(chat_persistence, "redact_credentials", self._boom)
+
+        with pytest.raises(RuntimeError):
+            _rehydrate_slot_from_history(state, "doomed")
+
+        assert "doomed" not in state._slots, "a partial slot was left registered"
+        assert "dashboard:doomed" not in state._restricted_keys, (
+            "restricted key left behind: a later persistent slot would inherit it "
+            "and silently lose consolidation + lessons"
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_rehydrate_leaves_no_partial_slot(self, tmp_path, monkeypatch):
+        """The async twin -- the path app-owned worker slots use. This is the one
+        that had no protection at all before the rollback moved into the callee."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_persistence
+
+        state = _make_state(tmp_path)
+        _write_session(tmp_path, "dashboard_doomed-async", [{"role": "user", "content": "hi"}],
+                       meta={"title": "T", "memory_mode": "ephemeral"})
+        monkeypatch.setattr(chat_persistence, "redact_credentials", self._boom)
+
+        with pytest.raises(RuntimeError):
+            await chat_persistence.rehydrate_slot_from_history_async(state, "doomed-async")
+
+        assert "doomed-async" not in state._slots
+        assert "dashboard:doomed-async" not in state._restricted_keys
+
+    def test_a_preexisting_restricted_key_is_never_discarded(self, tmp_path, monkeypatch):
+        """The rollback must undo only what its own call added.
+
+        A restricted key can outlive the slot it was recorded for, so a failed
+        restore must leave one it found in place. Discarding it would let a later
+        get_or_create_slot (default memory_mode 'persistent') treat an ephemeral
+        session as a normal one.
+
+        The slot half needs no equivalent test: _rehydrate_slot_from_history
+        returns early when the slot already exists, so its body only ever runs
+        for a slot the call created itself.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat import _rehydrate_slot_from_history
+
+        state = _make_state(tmp_path)
+        state._restricted_keys.add("dashboard:keeper")
+        _write_session(tmp_path, "dashboard_keeper", [{"role": "user", "content": "hi"}],
+                       meta={"title": "T", "memory_mode": "ephemeral"})
+        monkeypatch.setattr(chat_persistence, "redact_credentials", self._boom)
+
+        with pytest.raises(RuntimeError):
+            _rehydrate_slot_from_history(state, "keeper")
+
+        assert "dashboard:keeper" in state._restricted_keys, (
+            "rollback discarded a restricted key it did not add"
+        )
+
+    def test_the_rollback_lives_in_the_callee_not_the_caller(self):
+        """Source guard: the rollback belongs at the creation site so EVERY caller
+        gets it. restore_open_slots used to carry its own copy, which protected
+        only itself -- the async twin had none. Asserts on the code, not comments."""
+        import inspect
+
+        from kiro_crew.dashboard import chat_persistence
+
+        callee = inspect.getsource(chat_persistence._rehydrate_slot_from_history)
+        assert "state._slots.pop(" in callee, "the callee no longer rolls back its own slot"
+        assert "_restricted_keys.discard(" in callee, "the callee no longer rolls back its key"
+
+        caller = inspect.getsource(chat_persistence.restore_open_slots)
+        body = caller.split('"""')[-1]
+        assert "state._slots.pop(" not in body, (
+            "restore_open_slots re-grew its own rollback: two copies of the same "
+            "undo will drift, and the callee's is the one every caller reaches"
+        )

@@ -171,6 +171,33 @@ predate this subsystem and remain the color-theme surface.)
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
 | Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator |
 
+### One theme, one picker row (registered vs installed)
+
+`allThemes` is `[...builtinThemes(), ...REGISTERED_THEMES, ...customThemes]`. A
+downstream edition contributes a built-in theme through the `registerTheme()` seam
+(see [`extension-seams`](../../../website/docs/extension-seams.md)), and that
+registrar de-duplicates against `THEMES` and `REGISTERED_THEMES` — but **not**
+against installed packs, which arrive asynchronously from `GET /api/themes` long
+after registration. Their `value`s differ too (`lcars` vs `custom-lcars`), so an
+edition that ships a theme BOTH ways gets two picker rows for one theme with
+nothing flagging it.
+
+The pack row is the broken one, which is why registration wins: a registered
+theme's CSS is keyed to `[data-theme="<slug>-dark"]` and lives in the edition's
+compiled stylesheet, while a pack renders under
+`[data-theme="custom-<slug>-dark"]` — a selector that stylesheet does not define.
+The pack copy therefore shows only the flat variables in its `variables.json` and
+loses every structural rule (nav shapes, `body::before` overlays, message
+bubbles), which `variables.json` cannot express at all. `allThemes` drops an
+installed pack whose slug matches a registered theme; matching is on the whole
+slug, so `kr-extended` is not evicted by a registered `kr`. Pinned by
+`website/src/test/themeRegisteredPackDedupe.test.tsx`.
+
+Contribute a theme ONE way. A pack is the right vehicle when it needs a persona
+(`_maybe_inject_persona` gates on the `custom-` prefix, so a registered theme
+cannot carry one); registration is the right vehicle when the theme needs
+structural CSS beyond the variable set.
+
 ## Sample / Test Packs
 
 No theme-bearing packs ship in the code package (wheel/sdist/frozen). Sample

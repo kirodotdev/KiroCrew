@@ -4,6 +4,7 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { api } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 type SkillsCfg = { auto_create_from_sessions?: boolean; approval_required?: boolean }
 
 /**
@@ -67,7 +68,7 @@ export function SkillsPanel() {
           disabled={disabled || !autoCreate}
         />
       </SettingsCard>
-      {saveError && <p className="text-[12px] text-danger mt-2">{saveError}</p>}
+      <ErrorNotice message={saveError} className="mt-2" askAgent />
     </SettingsSection>
   )
 }

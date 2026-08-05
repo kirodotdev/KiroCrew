@@ -3,7 +3,7 @@
   "_totals": {
     "missing_code": 1465,
     "opaque_body": 18,
-    "dynamic_status": 41
+    "dynamic_status": 43
   },
   "_compliant": 223,
   "files": {
@@ -22,6 +22,9 @@
     },
     "apps/builtins/issue_radar/backend/routes.py": {
       "missing_code": 136
+    },
+    "apps/builtins/ops_mission_control/backend/routes.py": {
+      "dynamic_status": 2
     },
     "apps/route_registry.py": {
       "missing_code": 3

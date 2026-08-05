@@ -201,7 +201,7 @@ check (`dashboard/handlers/cron.py`).
 | Method | Purpose |
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm + background sessions. `blocking=False` for non-blocking mode. |
-| `get_or_create(key, agent=None, approval_policy="")` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. |
+| `get_or_create(key, agent=None, approval_policy="")` | Returns `(LLMProvider, is_new, resumed)`. Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Non-default agents skip warm pool and resolve their model by precedence via `_model_fallback()` — caller model > per-agent pin > global default: `model=None` (defer to kiro's agent-JSON resolution) only when the agent pins its own model, otherwise the global default, unless that default is the `"auto"` sentinel (also `None`). The per-agent pin is resolved off the event loop via `run_in_executor` using `_resolve_named_agent_model`; blank agents inherit the global, and `kirocrew` is excluded (tracks the global). `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 90%), warns at 75%. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
 | `release(key)` | Release per-session semaphore (must call in `finally`). |
@@ -502,6 +502,12 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 - `SessionManager.set_mirror_link(key, link)` / `clear_mirror_link(key)` /
   `get_mirror_link(key)` — persist/read the outbound `ChannelLink` (Slack routes
   to `set_slack_link` so its reverse index stays intact).
+- `SessionManager.clear_mirror_links_at(link)` — value-keyed sweep: clears
+  EVERY session whose mirror targets that exact non-Slack location and returns
+  the cleared keys. The write counterpart of `find_mirror_sessions`, and the
+  only clear that reaches a binding stranded under a key spelling the
+  conversation no longer derives (a rotated DM generation, a pre-unification
+  `dashboard:` row).
 - `POST /api/chat/slots/{name}/mirror-link` | `mirror-unlink` — dashboard-side
   endpoints (auth posture matches `slack-link`: under the `/api/chat`
   `mixed_internal_paths` prefix, never the strict `internal_paths` set).
@@ -516,10 +522,17 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   silently omitted (Teams before first inbound; WeCom proactive send); the menu
   keeps those rows keyboard-focusable, shows the reason inline, and announces
   the same reason instead of presenting an unexplained disabled action.
-- In-channel `/link` / `/unlink` — write/clear the link on the current
-  conversation's `dashboard_mirror_key`. `/link` does not control display,
-  history, or the inbound direction — only the outbound echo; `/unlink` changes
-  nothing else, since the two sids already exist independently.
+- In-channel `/link` / `/unlink` — `/link` writes the link on the current
+  conversation's `dashboard_mirror_key`; it does not control display, history,
+  or the inbound direction — only the outbound echo. `/unlink` frees the
+  LOCATION via the shared `messaging.link.release_conversation_location`
+  helper (one implementation for every DM dispatcher): after the key-addressed
+  clears it sweeps every binding whose mirror targets this conversation
+  (`clear_mirror_links_at`), including a binding stranded under a rotated DM
+  generation and another dashboard session's outbound mirror into the
+  conversation — the same occupant set the Discord resume conflict check
+  refuses on, so its "Run `!unlink` first" guidance is always followable. The
+  reply reports the count when more than one binding was cleared.
 
 **Delivery** (`chat_runner._deliver_cross_surface_reply` /
 `_deliver_cross_surface_user_message`, via the shared `_resolve_mirror_target`
@@ -755,7 +768,15 @@ In-place compaction (both backends) keeps the `_sessions` entry healthy:
 a concurrent `get_or_create()` reuses it, queueing on the session
 semaphore behind the compact, then continues on the compacted session.
 
-Only the kiro-cli recycle fallback tears the entry down. It records the
+Only the kiro-cli failure recycle tears the entry down, and it runs inside
+`_compact_in_place` under the turn semaphore that the compact attempt
+already holds — never after releasing it. That is load-bearing: releasing
+first and re-acquiring for the recycle leaves a gap a queued turn wins, and
+that turn is then dispatched into a kiro-cli still finishing its compaction,
+receives the late `completed` status instead of an `end_turn`, and hangs
+holding the semaphore until the prompt timeout.
+
+The recycle records the
 exact session object under teardown in `_recycling` (distinct from
 `_compacting`, which is just the trigger dedup gate): `get_or_create()`
 skips reuse only when the map still holds that exact object, then

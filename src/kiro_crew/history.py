@@ -422,6 +422,32 @@ _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
 # can't silently diverge between surfaces.
 INCOGNITO_MEMORY_MODES = frozenset({"incognito", "temporary"})
 
+# The fields that record where a message came from: the session key it arrived
+# on (``source_thread``, e.g. ``slack:1785861252.833429``) and the platform user
+# who sent it (``source_user``). Written by :meth:`ConversationLog.append`, read
+# by :meth:`ConversationLog.get_source_threads` for cross-session citation and
+# by SEL attribution.
+PROVENANCE_FIELDS = ("source_thread", "source_user")
+
+
+def carry_provenance(dest: dict, src: dict) -> None:
+    """Copy *src*'s recorded provenance onto *dest*, leaving absent fields out.
+
+    A message's origin is a property of the message, not of the file it happens
+    to be stored in, so any path that copies or re-serializes a persisted line
+    must carry these fields across or the copy claims a different origin than
+    the original.
+
+    Absent stays absent, and an empty or non-string value is treated as absent:
+    :meth:`ConversationLog.append` writes each field only when it is truthy and
+    :meth:`get_source_threads` filters on the same truthiness, so writing
+    ``""`` would create a third state that reads as present-but-unusable.
+    """
+    for field in PROVENANCE_FIELDS:
+        value = src.get(field)
+        if isinstance(value, str) and value:
+            dest[field] = value
+
 
 def _safe_mtime(path: Path) -> float | None:
     """Return a file's mtime, or None if it can't be stat'd."""

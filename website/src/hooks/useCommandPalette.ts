@@ -13,12 +13,15 @@ import {
  * reads the stored {@link QuickSearchConfig} live per keystroke and dispatches
  * accordingly. The three preset modes are:
  *
- *  - **`double-shift`** (default): two bare `Shift` keydowns within
+ *  - **`mod-k`** (default): ⌘K (macOS) / Ctrl+K (Windows/Linux) toggles the
+ *    palette; double-Shift is off.
+ *  - **`double-shift`** (opt-in): two bare `Shift` keydowns within
  *    {@link DOUBLE_SHIFT_WINDOW_MS}. This is the IntelliJ "Search Everywhere"
  *    gesture and is page-safe — a lone Shift has no default browser action, so
- *    nothing needs cancelling and it never collides with a real shortcut.
- *  - **`mod-k`**: ⌘K (macOS) / Ctrl+K (Windows/Linux) toggles the palette;
- *    double-Shift is off.
+ *    nothing needs cancelling and it never collides with a real shortcut. It was
+ *    the shipped default until remote-desktop sessions (RDP/ICA/PCoIP) were found
+ *    to synthesise spurious repeat Shift events and open the palette by
+ *    themselves.
  *  - **`custom`**: a user-recorded chord toggles the palette; double-Shift is
  *    off.
  *
@@ -29,8 +32,9 @@ import {
  * tab switch) which Chrome will NOT let a page cancel. Keeping it live until the
  * user sets their OWN chord guarantees the palette is always reachable from the
  * keyboard — so selecting `custom` before recording never strands the user.
- * This also makes the default (`double-shift` + the ⌘K alias) identical to the
- * previously shipped hard-coded behavior.
+ * Because ⌘K is live in the default (`mod-k`) mode too, a user who relied on the
+ * previously shipped double-Shift default still has a working keyboard route to
+ * the palette after the default moved, even before they visit Settings.
  *
  * All bindings honour the global "Enable shortcuts" toggle
  * ({@link SHORTCUTS_ENABLED_KEY}, shared with useKeyboardShortcuts /

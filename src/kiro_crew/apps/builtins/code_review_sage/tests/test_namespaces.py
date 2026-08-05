@@ -48,7 +48,10 @@ class TestNamespaceManagement(unittest.TestCase):
 
     def test_default_maps_to_common(self):
         # 'default' resolves to the common/ dir (backward compat with pre-namespace data).
-        self.assertTrue(str(L.common_file(self.root, "default")).endswith("/common/learned-patterns.md"))
+        # `as_posix()` so the suffix assert holds on Windows, where str() renders backslashes.
+        self.assertTrue(
+            L.common_file(self.root, "default").as_posix().endswith("/common/learned-patterns.md")
+        )
         self.assertEqual(L.common_file(self.root, "default"), L.common_file(self.root))
 
     def test_create_and_list(self):
@@ -56,7 +59,11 @@ class TestNamespaceManagement(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertIn("proj-a", L.list_namespaces(self.root))
         # non-default namespaces live under namespaces/<name>/
-        self.assertTrue(str(L.common_file(self.root, "proj-a")).endswith("/namespaces/proj-a/learned-patterns.md"))
+        self.assertTrue(
+            L.common_file(self.root, "proj-a")
+            .as_posix()
+            .endswith("/namespaces/proj-a/learned-patterns.md")
+        )
 
     def test_create_rejects_invalid_name(self):
         self.assertFalse(L.create_namespace("x", self.root)["ok"])           # too short

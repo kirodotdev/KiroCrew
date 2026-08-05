@@ -1730,3 +1730,70 @@ class TestSentinelPathRepair:
             assert "abc123" not in svc._loops, "sentinel did not remove the loop"
         finally:
             svc.stop()
+
+
+class TestPersistenceIsOffLoopAndOrdered:
+    """`remove()` used to fsync inline (freezing chat and heartbeats on a Pause
+    click or a spec delete), and the offloaded version had to keep the service
+    lock until the write SETTLES: `run_in_executor` leaves the worker running after
+    a cancellation, so releasing the lock early let a later mutation persist first
+    and then be erased by the older payload."""
+
+    @pytest.mark.asyncio
+    async def test_remove_persists_off_the_loop(self, tmp_path):
+        svc = AutoNudgeService(base_dir=tmp_path)
+        loop = await svc.add(
+            slot_key="dashboard:x", message="go", idle_secs=60, max_cycles=1
+        )
+
+        writes: list[str] = []
+        real_write = svc._write_state
+
+        def _spy(payload):
+            writes.append("w")
+            real_write(payload)
+
+        svc._write_state = _spy  # type: ignore[method-assign]
+
+        await svc.remove(loop.id)
+        assert svc.get_by_slot("dashboard:x") is None, "loop was not removed"
+        assert writes, "removal was not persisted"
+
+        # An unknown id must not write at all.
+        writes.clear()
+        await svc.remove("does-not-exist")
+        assert writes == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_removal_holds_the_lock_until_the_write_settles(self, tmp_path):
+        svc = AutoNudgeService(base_dir=tmp_path)
+        doomed = await svc.add(
+            slot_key="dashboard:a", message="a", idle_secs=60, max_cycles=1
+        )
+
+        order: list[str] = []
+        release = threading.Event()
+        real_write = svc._write_state
+
+        def _slow_write(payload):
+            order.append("write-start")
+            release.wait(2.0)
+            real_write(payload)
+            order.append("write-done")
+
+        svc._write_state = _slow_write  # type: ignore[method-assign]
+
+        remover = asyncio.create_task(svc.remove(doomed.id))
+        await asyncio.sleep(0.05)
+        remover.cancel()
+        await asyncio.sleep(0.05)
+
+        assert svc._lock.locked(), "lock released while the write was in flight"
+
+        release.set()
+        try:
+            await remover
+        except (asyncio.CancelledError, BaseException):
+            pass
+
+        assert order == ["write-start", "write-done"], order

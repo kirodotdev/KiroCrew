@@ -6436,6 +6436,8 @@ class TestFormatAcpError:
         assert "weird" in out
 
     def test_model_not_available_rewrite(self):
+        # With NO advertised list the caller cannot know whether this is an
+        # entitlement or a capacity failure, so it keeps the capacity wording.
         err = {
             "code": -32603,
             "message": "Internal error",
@@ -6446,14 +6448,76 @@ class TestFormatAcpError:
             ),
         }
         out = _format_acp_error(err)
-        assert "unavailable on Bedrock" in out
+        assert "unavailable on the backend" in out
         assert "'opus'" in out
         assert "model picker" in out
-        assert "settings.json" in out
+        # Must NOT point at ~/.claude/settings.json — KiroCrew never reads it;
+        # the model lives in config.json / the agent spec.
+        assert "settings.json" not in out
+        assert "config.json" in out
         # Request id is preserved for support correlation.
         assert "3ce0318a-24d6-4b1a-a4a7-ee81f1a3991e" in out
         # Should not leak the raw dict prefix when we have a real rewrite.
         assert "Prompt error: {" not in out
+
+    def test_unentitled_model_names_what_the_account_can_use(self):
+        """The free-tier case: say it is an access problem and list the options.
+
+        Upstream sends the SAME string for entitlement and capacity failures,
+        so the advertised list is the only thing that distinguishes them.
+        """
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "The model 'opus-4.8-1m' is not available. (request_id: abc-123)",
+        }
+        out = _format_acp_error(err, ["claude-sonnet-4-6", "claude-haiku-4-5"])
+        assert "does not have access" in out
+        assert "'opus-4.8-1m'" in out
+        # The actionable part: what they CAN pick.
+        assert "claude-sonnet-4-6" in out
+        assert "claude-haiku-4-5" in out
+        # Must NOT blame capacity or tell them to wait — no retry will help.
+        assert "capacity" not in out
+        assert "wait a minute" not in out
+        assert "abc-123" in out
+
+    def test_advertised_model_still_reads_as_capacity(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # The model IS on offer, so a rejection really is a transient blip and
+        # must keep the capacity wording (and stay retryable).
+        err = {"code": -32603, "message": "x", "data": "The model 'opus' is not available."}
+        out = _format_acp_error(err, ["opus", "sonnet"])
+        assert "unavailable on the backend" in out
+        assert "does not have access" not in out
+        assert _is_transient_raw_error(err, ["opus", "sonnet"]) is True
+
+    def test_unentitled_model_is_terminal_not_retried(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # The retry verdict must move with the wording -- retrying a model the
+        # account was never offered just reproduces the same rejection.
+        err = {"code": -32603, "message": "x", "data": "The model 'opus' is not available."}
+        assert _is_transient_raw_error(err, ["sonnet", "haiku"]) is False
+        # Unknown entitlement -> unchanged (transient), never a false accusation.
+        assert _is_transient_raw_error(err, None) is True
+        assert _is_transient_raw_error(err, []) is True
+
+    def test_unentitled_match_is_case_insensitive(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # An entitled-but-differently-cased model must not be called unentitled.
+        err = {"code": -32603, "message": "x", "data": "The model 'Opus' is not available."}
+        assert _is_transient_raw_error(err, ["opus"]) is True
+        assert "does not have access" not in _format_acp_error(err, ["opus"])
+
+    def test_long_available_list_is_capped(self):
+        err = {"code": -32603, "message": "x", "data": "The model 'nope' is not available."}
+        out = _format_acp_error(err, [f"model-{i}" for i in range(12)])
+        assert "+4 more" in out
+        assert "model-7" in out
+        assert "model-8" not in out
 
     def test_throttling_exception_rewrite(self):
         err = {

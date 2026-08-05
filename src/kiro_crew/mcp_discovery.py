@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import shutil
 import signal
 import subprocess
@@ -44,6 +46,27 @@ _PROBE_TIMEOUT_SECS = 15  # fallback if config not loaded yet
 # process-group reap runs, which is why it is a named constant -- tests that
 # deliberately probe a never-exiting child shrink it instead of waiting it out.
 _PROBE_TEARDOWN_WAIT_SECS = 5
+
+# Cap on a probe error string stored on server.error and surfaced by doctor /
+# the dashboard. Sized to hold a full SandboxUnavailableError, whose message
+# ends with the ~400-char remedy sentence naming
+# agent.sandbox_allow_unsandboxed_exec; the old 200-char cap chopped that tail
+# mid-word, so a Windows user saw "…Probe detail: not Linux. I" and no fix.
+_PROBE_ERROR_MAX_CHARS = 1200
+
+
+def _sanitize_probe_error(exc: BaseException) -> str:
+    """Redact THEN truncate a probe exception for server.error / doctor / logs.
+
+    A probe exception can carry untrusted, credential-bearing text — e.g. a
+    malformed remote MCP URL with an embedded token in the message. Redact
+    before truncating (the stderr-tail path already does), so raising the cap to
+    hold the sandbox remedy sentence never widens a credential-disclosure hole.
+    """
+    text = str(exc)
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text[:_PROBE_ERROR_MAX_CHARS]
 
 
 def _get_probe_timeout() -> int:
@@ -276,7 +299,7 @@ class McpServerInfo:
     env: dict[str, str] = field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
-    status: str = "unknown"  # unknown | ok | error | probing | outdated
+    status: str = "unknown"  # unknown | ok | error | probing | outdated | disabled
     tools: list[str] = field(default_factory=list)
     error: str = ""
     source: str = "agent"  # agent | mcp.json | discovered  (legacy field, prefer presence)
@@ -288,9 +311,13 @@ class McpServerInfo:
         }
     )
     disabled_tools: list[str] = field(default_factory=list)
-    # True for a row surfaced from a scope entry carrying ``disabled: true``
-    # (consent-disabled installs/custom adds). Disabled rows are NEVER probed
-    # — probing spawns the server process, which is what consent gates.
+    # True when ANY scope's entry for this server carries ``disabled: true``
+    # (a consent-disabled install/custom add, or a server the user switched off
+    # in the dashboard — ``/api/mcp/toggle`` writes the flag into the Kiro-global
+    # ``mcp.json``). Disabled rows are NEVER probed — probing spawns the server
+    # process, which is what consent gates. The refusal is enforced inside
+    # ``probe_server`` itself, so setting this flag is sufficient no matter which
+    # entry point does the probing.
     disabled: bool = False
 
     @property
@@ -679,6 +706,32 @@ def list_servers() -> list[McpServerInfo]:
         canonical_servers[canon] = chosen
     servers = canonical_servers
 
+    # 3c. Consent is per SCOPE: a ``disabled: true`` ANYWHERE withholds the
+    #     spawn, not only the branch above that INTRODUCES a Kiro-Crew-scope row
+    #     which exists nowhere else. ``/api/mcp/toggle`` writes the flag into the
+    #     Kiro-global ``mcp.json``, and a row that step 1 already introduced from
+    #     the agent config would otherwise keep ``disabled = False`` and stay
+    #     probeable: the user switches a server off in the dashboard and
+    #     discovery still spawns it.
+    #
+    #     Runs AFTER 3b so both sides are canonical. Scope dicts are keyed by the
+    #     RAW name, so a server configured as ``npm:@playwright/mcp`` is reported
+    #     as ``playwright-mcp`` — matching before canonicalization would miss the
+    #     raw-keyed disable whenever the agent config retained the canonical row.
+    #
+    #     Only ever SETS the flag, so scope priority is irrelevant: one disable
+    #     is enough, and no scope can re-enable what another disabled. The flag
+    #     now IS the safety property (``probe_server`` refuses on it), which is
+    #     why populating it correctly matters more than when each caller filtered
+    #     rows for itself.
+    for scope_specs in by_source.values():
+        for raw_name, spec in scope_specs.items():
+            if not isinstance(spec, dict) or not spec.get("disabled"):
+                continue
+            row = servers.get(mcp_server_alias(raw_name))
+            if row is not None:
+                row.disabled = True
+
     # 4. Merge cached probe results
     for s in servers.values():
         status, tools, error = _get_cached(s.name)
@@ -769,7 +822,7 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
         logger.warning("MCP probe failed [%s]: timeout", server.name)
     except Exception as exc:
         server.status = "error"
-        server.error = str(exc)[:200]
+        server.error = _sanitize_probe_error(exc)
         logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
 
     _cache_probe(server)
@@ -865,7 +918,32 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
     Updates server.status and server.tools in place and returns it.
+
+    A consent-disabled server is refused HERE, ahead of the local/remote
+    dispatch, because probing is the act that runs it: the local branch spawns
+    the command and the remote branch opens the connection. Enforcement used to
+    live in each caller (``probe_all`` filtered disabled rows before building
+    coroutines), which made the guarantee only as good as the newest call
+    site's memory — so a second entry point had to restate the check or become
+    a way around the consent gate. Keeping the rule in the one function every
+    probe must pass through removes that whole class; callers keep their own
+    filters and error surfaces as behaviour and UX, not as the safety property.
     """
+    if server.disabled:
+        server.status = "disabled"
+        # Truthy rather than ``is True``: a hand-built McpServerInfo may carry
+        # anything here, and any non-empty value should withhold the spawn.
+        #
+        # No probe ran, so there is nothing to record — deliberately NOT
+        # calling _cache_probe(). That cache is keyed by name and shared with
+        # ``GET /api/mcp`` via _get_cached(), so writing an empty "disabled"
+        # entry would erase the tool list a real probe stored before the user
+        # disabled the server. ``tools`` is left untouched for the same reason
+        # (last known list, still worth showing); ``error`` is cleared because
+        # a stale probe failure is not why this returned.
+        server.error = ""
+        return server
+
     if server.is_remote:
         return await _probe_remote(server)
 
@@ -1033,7 +1111,7 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         _warn_unresolvable_once(server.name, server.command)
     except Exception as exc:
         server.status = "error"
-        server.error = str(exc)[:200]
+        server.error = _sanitize_probe_error(exc)
         logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
     finally:
         # When the probe failed, drain any stderr the child wrote and append
@@ -1099,7 +1177,18 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             probe_pid = proc.pid
             if isinstance(probe_pid, int) and probe_pid > 1:
                 try:
-                    platform_compat.kill_process_tree(probe_pid, platform_compat.SIGKILL)
+                    # OFF the event loop: on Windows kill_process_tree shells
+                    # out to ``taskkill /T /F`` via a blocking
+                    # ``subprocess.run``. Awaited inline it stalls the loop for
+                    # the whole spawn+kill of taskkill — once per failed probe,
+                    # and ``probe_all`` fans out across every configured server,
+                    # so a discovery pass with several unreachable servers
+                    # serializes that many process spawns onto the loop and the
+                    # dashboard's health check starts dropping. The POSIX branch
+                    # above is a bare ``killpg`` syscall and needs no offload.
+                    await asyncio.to_thread(
+                        platform_compat.kill_process_tree, probe_pid, platform_compat.SIGKILL
+                    )
                 except (ProcessLookupError, OSError):
                     logger.debug(
                         "Probe tree reap failed for %s (pid %s)",
@@ -1124,6 +1213,12 @@ async def probe_all() -> list[McpServerInfo]:
 
     Consent-disabled rows are excluded: probing spawns the server process,
     and a disabled server must never run until the user enables it.
+
+    ``probe_server`` now refuses a disabled server on its own, so this filter
+    is defense-in-depth (the idiom ``sync_to_agent_config`` already uses) plus
+    the thing that shapes the RESULT: disabled rows are left out of the
+    returned list entirely rather than reported with ``status="disabled"``,
+    which is the response shape ``GET /api/mcp/probe`` has always had.
     """
     servers = [s for s in list_servers() if not s.disabled]
     # Keep the warn-once ledger bounded by the config rather than by config
@@ -1156,7 +1251,7 @@ async def probe_all() -> list[McpServerInfo]:
     for i, r in enumerate(results):
         if isinstance(r, Exception):
             servers[i].status = "error"
-            servers[i].error = str(r)[:200]
+            servers[i].error = _sanitize_probe_error(r)
             logger.warning("MCP probe failed [%s]: %s", servers[i].name, servers[i].error)
             out.append(servers[i])
         else:
@@ -1174,12 +1269,28 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     """
     if source_cmd == agent_cmd:
         return False
-    # If one is an absolute resolved path of the other, they match.
-    if os.path.isabs(agent_cmd) and os.path.basename(agent_cmd) == source_cmd:
+    # If one is an absolute resolved path of the other, they match. Test both
+    # path flavors regardless of host OS: on Windows ``os.path is ntpath`` and
+    # would treat a POSIX-absolute config path (/usr/bin/server) as relative,
+    # so a resolved-vs-short pair authored on POSIX would spuriously read as
+    # diverged and trigger an endless re-sync.
+    if _is_abs_any(agent_cmd) and _basename_any(agent_cmd) == source_cmd:
         return False
-    if os.path.isabs(source_cmd) and os.path.basename(source_cmd) == agent_cmd:
+    if _is_abs_any(source_cmd) and _basename_any(source_cmd) == agent_cmd:
         return False
     return True
+
+
+def _is_abs_any(cmd: str) -> bool:
+    """True if ``cmd`` is absolute under POSIX or Windows path rules."""
+    return posixpath.isabs(cmd) or ntpath.isabs(cmd)
+
+
+def _basename_any(cmd: str) -> str:
+    """Basename of ``cmd`` under whichever path flavor treats it as absolute."""
+    if ntpath.isabs(cmd):
+        return ntpath.basename(cmd)
+    return posixpath.basename(cmd)
 
 
 def discover_servers_to_sync() -> list[McpServerInfo]:

@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 from sage_lib import adapters, pipeline, results, review_driver, store
 
+from kiro_crew import platform_compat
+
 
 class TestParseRepoUrl(unittest.TestCase):
     def test_plain_repo_url(self):
@@ -134,6 +136,11 @@ class TestReviewedIndex(unittest.TestCase):
             idx = results.read_reviewed(root)
             self.assertEqual(idx["GH-o-r-1"]["head_sha"], "xyz")
 
+    @unittest.skipUnless(
+        platform_compat.IS_POSIX,
+        "POSIX mode bits are unobservable on Windows: the owner-only lockdown there is an "
+        "ACL (platform_compat.restrict_to_owner), and st_mode always reports 0o666.",
+    )
     def test_index_file_is_0600(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "apps" / "code-review-sage"

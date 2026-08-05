@@ -125,6 +125,9 @@ describe('App routing', () => {
       expect(api.updateThemeConfig).toHaveBeenCalledWith({
         onboarded: true,
         import_onboarded: true,
+        // A finished legacy first run implies the disclosure is behind the user.
+        // Persisted server-side so the gateway's first-heartbeat gate can see it.
+        privacy_acked: true,
       })
       expect(localStorage.getItem('mc-import-onboarded')).toBe('1')
     })
@@ -192,6 +195,14 @@ describe('App routing', () => {
 
       expect(await screen.findByText('Pick your look')).toBeInTheDocument()
       expect(localStorage.getItem('mc-privacy-acked')).toBe('1')
+      // Persisted SERVER-side too, not just locally: the gateway withholds the
+      // very first heartbeat until `dashboard.privacy_acked` is true, and it
+      // cannot read localStorage. A local-only mark would leave the beacon
+      // permanently silent on an install whose user did pass this chapter.
+      const { api: clientApi } = await import('../api/client')
+      await waitFor(() => {
+        expect(clientApi.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true })
+      })
     })
 
     it('"Skip all" from the Customize chapter ends first run without re-showing Privacy', async () => {
@@ -748,14 +759,6 @@ describe('App routing', () => {
 })
 
 describe('TopbarMetrics widget', () => {
-  beforeEach(() => {
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-  })
-
-  afterEach(() => {
-    localStorage.removeItem('mc-privacy-notice-v1')
-  })
-
   it('shows only the Activity toggle button when metricsOpen is not set', () => {
     localStorage.removeItem('mc-topbar-metrics')
     renderWithProviders(<App />, { route: '/chat' })

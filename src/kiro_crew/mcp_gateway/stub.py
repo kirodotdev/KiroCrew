@@ -96,7 +96,13 @@ def _crew_home() -> Path:
 
 def _default_socket_path() -> str:
     """Resolve the default gateway socket under KIROCREW_HOME (0700 dir)."""
-    return str(_crew_home() / "mc-mcp-gateway.sock")
+    home = _crew_home()
+    new_path = home / "kirocrew-mcp-gateway.sock"
+    # Accept legacy socket name written by older versions (#928).
+    legacy_path = home / "mc-mcp-gateway.sock"
+    if not new_path.exists() and legacy_path.exists():
+        return str(legacy_path)
+    return str(new_path)
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -107,7 +113,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     compatible with on-disk agent overlays written by earlier rewriter
     revisions."""
     p = argparse.ArgumentParser(
-        prog="mc-mcp-stub",
+        prog="kirocrew-mcp-stub",
         description="KiroCrew MCP shim: proxies kiro-cli stdio to the local gateway",
     )
     p.add_argument("--server", required=True)
@@ -139,7 +145,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--channel-id", default=None, dest="channel_id")
     p.add_argument(
         "--socket",
-        default=os.environ.get("MC_MCP_SOCKET") or _default_socket_path(),
+        default=os.environ.get("KIROCREW_MCP_SOCKET") or os.environ.get("MC_MCP_SOCKET") or _default_socket_path(),
     )
     p.add_argument("--real-stub", default=None, dest="real_stub")
     return p.parse_args(argv)
@@ -678,14 +684,14 @@ async def run_bridge(
                     pass
 
     tasks = {
-        asyncio.create_task(stdin_pump(), name="mc-mcp-stub-stdin"),
-        asyncio.create_task(stdout_pump(), name="mc-mcp-stub-stdout"),
-        asyncio.create_task(stop_event.wait(), name="mc-mcp-stub-stop"),
+        asyncio.create_task(stdin_pump(), name="kirocrew-mcp-stub-stdin"),
+        asyncio.create_task(stdout_pump(), name="kirocrew-mcp-stub-stdout"),
+        asyncio.create_task(stop_event.wait(), name="kirocrew-mcp-stub-stop"),
         # Wakes when the stdout writer thread dies, so the bridge tears down
         # even if no further upstream line arrives to trip _emit's fast-path
         # check.
         asyncio.create_task(
-            writer_failed_evt.wait(), name="mc-mcp-stub-writer-failed"
+            writer_failed_evt.wait(), name="kirocrew-mcp-stub-writer-failed"
         ),
     }
     try:
@@ -853,7 +859,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # An invalid MC_MCP_LOG (e.g. "verbose") would make basicConfig raise
     # "Unknown level" and kill the stub BEFORE its fallback-to-per-session-exec
     # path can run. Fall back to WARNING on any unrecognised level.
-    _log_level = os.environ.get("MC_MCP_LOG", "warning").upper()
+    _log_level = os.environ.get("KIROCREW_MCP_LOG", os.environ.get("MC_MCP_LOG", "warning")).upper()
     if not isinstance(logging.getLevelName(_log_level), int):
         _log_level = "WARNING"
     logging.basicConfig(
@@ -960,7 +966,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     if not payload.get("session_key"):
         recaller_task = asyncio.create_task(
             _recaller_loop(writer, _resolve_channel_id(args.channel_id), stop_event),
-            name="mc-mcp-stub-recaller",
+            name="kirocrew-mcp-stub-recaller",
         )
     try:
         await run_bridge(reader, writer, stop_event)

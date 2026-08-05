@@ -196,6 +196,60 @@ def _internal_secret() -> str:
 # disk for the agent's Read tool; only the dashboard mirror is skipped).
 _EXTENSION_MODE = "--extension" in sys.argv
 
+# `browser_*` tool name -> the closed wire-op verb the native control plane accepts.
+#
+# The embedded Electron ``WebContentsView`` now serves the agent's core browsing
+# workflow over the ``webContents.debugger`` + command-bus channel. The proxy does
+# NOT rewrite ``tools/list``, so the tool NAMES are Playwright's, but their
+# SEMANTICS are ours: ``snapshot`` mints our own ``eN`` refs and
+# ``click``/``type``/``hover``/``select_option`` resolve those same refs, so the
+# pair is internally consistent without any Playwright ref compatibility.
+#
+# The vocabulary here is the authoritative shared contract with the Electron
+# handler (``navigate, snapshot, click, type, press_key, hover, select_option,
+# screenshot, evaluate, wait_for, back, console``). See ``_translate_native_args``
+# for the per-op argument shape sent over the wire.
+_NATIVE_OPS: dict[str, str] = {
+    "browser_navigate": "navigate",
+    "browser_snapshot": "snapshot",
+    "browser_click": "click",
+    "browser_type": "type",
+    "browser_press_key": "press_key",
+    "browser_hover": "hover",
+    "browser_select_option": "select_option",
+    "browser_take_screenshot": "screenshot",
+    "browser_evaluate": "evaluate",
+    "browser_wait_for": "wait_for",
+    "browser_navigate_back": "back",
+    "browser_console_messages": "console",
+}
+
+# Native mode: this build routes the agent's ``browser_*`` ops to the embedded
+# Electron view (``_NATIVE_OPS`` non-empty). When active, the screenshot-mirror
+# pump is disabled exactly like extension mode -- the native ``WebContentsView`` is
+# already visible in the dashboard panel, so injecting/mirroring a Playwright
+# screenshot would paint a stale surface over the live page. ``_maybe_compress_response``
+# stays active for the warm-pool fallback path and for ``tools/list``.
+# Set once the native command endpoint answers in a way that PROVES a live panel
+# is driving a page: ok:true, or an ok:false that is a genuine authorization deny.
+# An ok:false that merely names an ABSENT view does NOT count -- a mounted-but-
+# empty Browser panel registers a poller and answers `no-browser-view`, and
+# latching on that would both suppress the legitimate Playwright fallback and
+# strip every unmapped browser_* tool for the rest of the process. Transport
+# failures clear it, so closing the panel restores full Playwright behaviour.
+_native_panel_seen = False
+
+# Error text from the Electron side meaning "no view/panel to drive" rather than
+# "not allowed to drive it". An absent panel is a transport gap; a deny is not.
+_NATIVE_ABSENT_MARKERS = ("no-browser-view", "no native browser panel", "no-native-panel")
+
+
+def _names_absent_panel(detail: str) -> bool:
+    """True when a refusal is really an absent panel, not an authorization deny."""
+    low = (detail or "").lower()
+    return any(marker in low for marker in _NATIVE_ABSENT_MARKERS)
+
+
 # Shared lock around writes to the Playwright subprocess stdin. Both the client→
 # subprocess forwarder and the active-pump thread (below) write JSON-RPC there;
 # an unlocked interleave could split a message on the pipe.
@@ -230,9 +284,17 @@ def _post_frame_to_gateway(img_bytes: bytes, fmt: str, source: str = "agent") ->
     other MCP-side callers use, and read back the live subscriber count.
 
     No-op in extension mode: the user is watching their own Chrome, so mirroring a
-    sparse, downscaled copy to the dashboard adds load with no benefit.
+    sparse, downscaled copy to the dashboard adds load with no benefit. Also a
+    no-op in native mode: the embedded ``WebContentsView`` is already visible, so a
+    mirrored frame would paint a stale surface over the live page.
     """
-    if _EXTENSION_MODE:
+    # Suppress the mirror only once native routing is PROVEN live for this
+    # session. A static module constant would be wrong here (the op map is
+    # never empty),
+    # so gating on it silenced the mirror on every host -- including a remote
+    # gateway, where the proxy is the only frame producer and the panel would
+    # therefore render nothing at all.
+    if _EXTENSION_MODE or _native_panel_seen:
         return
 
     def _send() -> None:
@@ -293,9 +355,10 @@ def _post_pump_audit() -> bool:
     (HTTP 2xx); the caller MUST gate the injection on this result so an
     unacknowledged audit skips the injection rather than executing an unaudited
     tool call. Returns ``False`` in extension mode (the pump is disabled there;
-    the user already sees their own Chrome).
+    the user already sees their own Chrome) and in native mode (the pump is
+    disabled; the embedded view is already visible).
     """
-    if _EXTENSION_MODE:
+    if _EXTENSION_MODE or _native_panel_seen:
         return False
     try:
         headers = {"Content-Type": "application/json"}
@@ -392,6 +455,13 @@ def _clear_pump_inflight(req_id: Any) -> None:
 def _should_pump(now: float) -> bool:
     """Whether to inject an active-pump screenshot now (pure; all gates)."""
     if not _pump_enabled:
+        return False
+    # Once native routing is proven live the embedded view is directly visible,
+    # so a mirror frame would paint a stale surface over the real page -- and the
+    # injected screenshot RPC is pointless work besides. Checked at call time, not
+    # as a static constant, so hosts that still fall back to Playwright (remote
+    # gateway, or before the user opens a page) keep a working mirror.
+    if _native_panel_seen:
         return False
     if _PENDING_REQUESTS:
         return False
@@ -593,57 +663,193 @@ def _gateway_command_url() -> str:
     return f"http://127.0.0.1:{port}/api/browser/command"
 
 
-# `browser_*` tool name -> the closed op verb the native control plane accepts.
-#
-# INTENTIONALLY EMPTY. Interception is wired end-to-end and tested, but routing
-# ANY op natively today would split the agent's world across two browsers:
-# `browser_snapshot` / `browser_click` / `browser_type` / `browser_evaluate`
-# address elements by `ref`, an opaque handle minted by PLAYWRIGHT's own
-# accessibility snapshot of PLAYWRIGHT's page. Serving only `browser_navigate`
-# natively would mean the agent navigates the embedded view and then snapshots a
-# different, un-navigated Playwright page -- confidently wrong rather than
-# broken, which is worse.
-#
-# Mapping the rest requires a real translation layer (mint refs from the native
-# a11y tree, resolve a ref back to view-relative coordinates) so one browser
-# serves the whole workflow. Until that exists the agent keeps using Playwright,
-# which honours its own contract coherently. Populate this map only together with
-# that translation layer.
-#
-# The HUMAN path is unaffected: the panel's URL bar drives the native view
-# directly (see WebPreviewPanel), independent of this map.
-_NATIVE_OPS: dict[str, str] = {}
+# `browser_*` tool name -> wire-op mapping lives at module top (``_NATIVE_OPS``,
+# ~line 212) so the mirror-suppression state (``_native_panel_seen``) can be read
+# pump section is defined. The interception logic is here.
+
+# Element-addressing ref shape minted by our native ``snapshot`` op (``e5`` ...).
+# ``@playwright/mcp`` sends the element as ``target`` (a snapshot ref OR a CSS/text
+# selector) plus an optional human-readable ``element`` description. We only accept
+# our own refs; a selector cannot be resolved against ``window.__kcRefs`` and must
+# error rather than silently mis-target.
+_NATIVE_REF_RE = re.compile(r"^e\d+$")
+
+# Ops whose semantics REQUIRE an element ref (Playwright marks ``target`` required).
+_NATIVE_REF_REQUIRED_OPS = frozenset({"click", "type", "hover", "select_option"})
+# Ops that MAY carry an element ref (element-scoped evaluate); ``target`` optional.
+_NATIVE_REF_OPTIONAL_OPS = frozenset({"evaluate"})
+
+
+def _native_error(req_id: Any, message: str) -> dict[str, Any]:
+    """Build a JSON-RPC error response (surfaced to the agent as an MCP error)."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32000, "message": message},
+    }
+
+
+def _native_text_result(req_id: Any, text: str) -> dict[str, Any]:
+    """Build a JSON-RPC tools/call result carrying a single text block."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {"content": [{"type": "text", "text": text}], "isError": False},
+    }
+
+
+def _translate_native_args(op: str, arguments: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Map a Playwright tool's arguments onto the native wire-op's arg shape.
+
+    Returns ``(args, None)`` on success or ``(None, error_message)`` to REFUSE the
+    call with an MCP error (never a Playwright fall-back). The element-addressing
+    param is Playwright's ``target`` (ref OR selector); we translate a valid ``eN``
+    ref to the wire field ``ref`` and reject a selector, because the native side
+    resolves elements only via ``window.__kcRefs.get(ref)``. The human-readable
+    ``element`` description is dropped -- it exists only for Playwright's own
+    permission prompt.
+
+    Field RENAMES matter as much as the ref translation: Playwright and the native
+    handler spell some payloads differently, and a mismatch fails SILENTLY (an
+    unread field just reads as absent), which no per-side unit test can catch.
+    ``browser_evaluate`` sends ``function`` where the native handler reads
+    ``expression`` -- without this rename it would evaluate the empty string and
+    report success. ``browser_take_screenshot`` sends ``type`` (png|jpeg) where the
+    handler reads ``format``.
+    """
+    args = dict(arguments or {})
+    args.pop("element", None)
+    target = args.pop("target", None)
+
+    if op == "evaluate" and "function" in args:
+        args["expression"] = args.pop("function")
+    elif op == "screenshot":
+        if "type" in args:
+            args["format"] = args.pop("type")
+        # The native view composites at its own size; Playwright's page-scaling
+        # and full-page stitching have no native analogue, so drop them rather
+        # than imply they were honoured.
+        args.pop("scale", None)
+        args.pop("fullPage", None)
+
+    if op in _NATIVE_REF_REQUIRED_OPS:
+        if not isinstance(target, str) or not target:
+            return None, (
+                f"native browser: '{op}' needs a 'target' element reference; "
+                "call browser_snapshot first to get 'eN' refs"
+            )
+        if not _NATIVE_REF_RE.match(target):
+            return None, (
+                f"native browser: '{op}' 'target' must be a snapshot ref like 'e5', got "
+                f"{target!r}. The native browser resolves elements by refs minted by "
+                "browser_snapshot, not selectors -- call browser_snapshot and use its refs."
+            )
+        args["ref"] = target
+        return args, None
+
+    if op in _NATIVE_REF_OPTIONAL_OPS:
+        if target is not None:
+            if not isinstance(target, str) or not _NATIVE_REF_RE.match(target):
+                return None, (
+                    f"native browser: '{op}' element 'target' must be a snapshot ref like "
+                    f"'e5', got {target!r}. Call browser_snapshot and use its refs."
+                )
+            args["ref"] = target
+        return args, None
+
+    # Any remaining op (navigate/snapshot/screenshot/press_key/wait_for/back/console)
+    # does not address a single element. If a caller nonetheless passed ``target``,
+    # honouring it would be a silent mis-target, so refuse explicitly.
+    if target is not None:
+        return None, (
+            f"native browser: '{op}' does not support element targeting; omit 'target'"
+        )
+    return args, None
+
+
+def _extract_screenshot_payload(result: Any) -> tuple[str, str] | None:
+    """Pull ``(base64_data, media_type)`` out of a native ``screenshot`` result.
+
+    The Electron handler returns the frame as ``{"data": "<base64>", "mimeType":
+    "image/png"|"image/jpeg"}``. Returns ``None`` if the shape does not match, so
+    the caller falls back to rendering the result as text.
+    """
+    if isinstance(result, dict):
+        data = result.get("data")
+        if isinstance(data, str) and data:
+            media_type = result.get("mimeType") or result.get("media_type") or "image/png"
+            return data, str(media_type)
+    return None
 
 
 def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
-    """Run a ``browser_*`` tools/call on the native embedded panel, if there is one.
+    """Route a ``browser_*`` tools/call to the native embedded panel.
 
     Returns a JSON-RPC response to send back to the client, or ``None`` to mean
-    "not handled — forward to the Playwright subprocess as usual".
+    "not handled -- forward to the Playwright subprocess as usual".
 
-    The topology decision is made by the GATEWAY, not guessed here: it answers
-    503 ``no-native-panel`` unless an Electron poller is currently registered for
-    this session, and we fall back on anything other than a clean result. That
-    keeps the remote-gateway case (where the browser genuinely lives elsewhere)
-    on the streamed-mirror path with no extra state to keep in sync.
+    No-split-brain rule: once this session routes ANY op natively (session key
+    known -> mapped ops go to the embedded view), a page-touching ``browser_*``
+    tool that is NOT mapped must never reach Playwright -- it would act on a
+    DIFFERENT page than the native view the agent is driving and report success.
+    Such tools are refused with an explicit MCP error naming the tool. Only when
+    native routing is inactive for this session (no session key -> warm-pool
+    worker that cannot identify a panel) does everything fall through to
+    Playwright, which then coherently owns the whole workflow.
+
+    Fall-back is confined to TRANSPORT unavailability (no panel / 503 / timeout /
+    connection error): a panel that ANSWERS and refuses (``ok:false``) is surfaced
+    as an MCP error, never re-routed to Playwright, so a revoked "let the agent
+    act" cannot be bypassed by another route.
     """
     if msg.get("method") != "tools/call":
         return None
+    global _native_panel_seen
     params = msg.get("params") or {}
-    op = _NATIVE_OPS.get(params.get("name") or "")
-    if not op:
+    name = params.get("name") or ""
+    if not name.startswith(_BROWSE_TOOL_PREFIX):
+        # Not a browser tool (e.g. tools/list plumbing) -- never our concern.
         return None
+
     session_key = _SESSION_KEY
     if not session_key:
         # A warm-pool worker never had KIROCREW_SESSION_KEY frozen in, so we
-        # cannot say which panel to drive. Fall back rather than guess. (The
-        # frame path handles this by having the GATEWAY resolve the key from the
-        # session_pid sidecar; doing the same here is a follow-up.)
+        # cannot say which panel to drive and native routing is INACTIVE for this
+        # session. Fall everything back to Playwright -- with nothing going
+        # native there is no split brain to guard against. (The frame path
+        # resolves the key from the session_pid sidecar via the gateway; doing
+        # the same here is a follow-up.)
         return None
 
-    body = json.dumps(
-        {"session_key": session_key, "op": op, "args": params.get("arguments") or {}}
-    ).encode()
+    op = _NATIVE_OPS.get(name)
+    if op is None:
+        # A page-touching browser_* tool with no native mapping.
+        #
+        # Split brain is only REACHABLE once a native panel is actually driving a
+        # page: that is what makes "read via Playwright" answer about a different
+        # page than the agent is looking at. Until we have seen a panel answer,
+        # there is no native page to be inconsistent with, so Playwright coherently
+        # owns the whole workflow and must keep working -- that is the case on a
+        # remote gateway or any non-Electron host, which has a session key but no
+        # panel and would otherwise lose every unmapped browser_* tool.
+        #
+        # So refuse only once presence is PROVEN (see _native_panel_seen below).
+        if not _native_panel_seen:
+            return None
+        return _native_error(
+            msg.get("id"),
+            f"{name} is not supported on the native browser. Supported operations: "
+            + ", ".join(sorted(_NATIVE_OPS)),
+        )
+
+    args, arg_error = _translate_native_args(op, params.get("arguments") or {})
+    if arg_error is not None:
+        # A client-input problem (selector where a ref is required, stray target).
+        # This is a definite refusal, not a transport gap -- surface it, do not
+        # fall back and silently mis-target on Playwright.
+        return _native_error(msg.get("id"), arg_error)
+
+    body = json.dumps({"session_key": session_key, "op": op, "args": args}).encode()
     req = urllib.request.Request(
         _gateway_command_url(),
         data=body,
@@ -654,34 +860,77 @@ def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (http://127.0.0.1 + the fixed /api/browser/command path from _gateway_command_url); only the port varies, from KIROCREW_PORT local config, never user/agent/request input, so no file:// or arbitrary-read is reachable  # noqa: E501
         with urllib.request.urlopen(req, timeout=_NATIVE_CALL_TIMEOUT_S) as resp:
             payload = json.loads(resp.read() or b"{}")
-    except Exception:
-        # TRANSPORT unavailable -- 503 no-native-panel, a timeout, a connection
-        # error. There is no native panel able to answer, so Playwright is the
-        # correct destination. This is the ONLY case that may fall back.
+    except urllib.error.HTTPError as exc:
+        # The gateway ANSWERED with a status. Only "there is no panel to drive"
+        # may fall back; anything else must surface.
+        #
+        # A blanket `except Exception` here would be an authorization hole: a 403
+        # (internal-secret mismatch) or 429 comes from a REACHABLE gateway, and
+        # treating it as absent transport would re-run the op on Playwright --
+        # converting a refusal into an allow by another route, which is exactly
+        # what invariant 2 forbids.
+        if exc.code in (503, 504):
+            _native_panel_seen = False
+            return None
+        return _native_error(
+            msg.get("id"),
+            f"native browser command failed with HTTP {exc.code}: {name}",
+        )
+    except (TimeoutError, urllib.error.URLError, OSError):
+        # TRANSPORT unavailable -- connection refused, DNS/socket error, timeout.
+        # Nothing native can answer, so Playwright is the correct destination.
+        # This and 503/504 are the ONLY cases that may fall back.
+        _native_panel_seen = False
         return None
+    except (ValueError, json.JSONDecodeError):
+        # The panel answered with something undecodable. It IS reachable, so
+        # falling back would again risk running a refused op elsewhere.
+        return _native_error(
+            msg.get("id"), f"native browser returned an undecodable response: {name}"
+        )
     if not isinstance(payload, dict):
-        return None
+        return _native_error(
+            msg.get("id"), f"native browser returned a malformed response: {name}"
+        )
 
     if not payload.get("ok"):
-        # The panel ANSWERED and refused. Falling back here would convert a deny
-        # into an allow by another route: when the user revokes "let the agent
-        # act", the control plane refuses, and forwarding to Playwright would run
-        # the very operation authorization just withheld. Surface it as an MCP
-        # error instead, so the refusal is what the agent sees.
-        detail = payload.get("error") or "native browser refused the operation"
-        return {
-            "jsonrpc": "2.0",
-            "id": msg.get("id"),
-            "error": {"code": -32000, "message": str(detail)},
-        }
+        detail = str(payload.get("error") or "native browser refused the operation")
+        # An answered refusal that names an ABSENT panel/view is a transport gap
+        # wearing a refusal's clothes, not an authorization decision: a mounted
+        # but empty Browser panel registers a poller while no view is open, so it
+        # answers `no-browser-view`. Latching presence on that would (a) suppress
+        # the legitimate Playwright fallback and (b) leave every unmapped
+        # browser_* tool refused for the life of the proxy once the user closes
+        # the panel. Treat it as unavailable instead: do not latch, and fall back.
+        if _names_absent_panel(detail):
+            _native_panel_seen = False
+            return None
+        # A genuine refusal (e.g. the user revoked "let the agent act") proves a
+        # panel exists, so latch presence and surface the refusal. Falling back
+        # here would convert a deny into an allow by another route.
+        _native_panel_seen = True
+        return _native_error(msg.get("id"), detail)
+
+    # An `ok:true` answer likewise proves the panel is live and driving the page.
+    _native_panel_seen = True
 
     result = payload.get("result")
+
+    # Screenshots come back as base64. Route them through the same save-to-file
+    # path the subprocess->client direction uses (_save_screenshot), so the agent
+    # receives a PATH to Read, not inline image bytes flooding its context. The
+    # dashboard mirror POST inside _save_screenshot is a no-op in native mode.
+    if op == "screenshot":
+        shot = _extract_screenshot_payload(result)
+        if shot is not None:
+            filepath = _save_screenshot(shot[0], shot[1])
+            return _native_text_result(
+                msg.get("id"),
+                f"Screenshot saved: {filepath}\nUse Read tool to view it if needed.",
+            )
+
     text = result if isinstance(result, str) else json.dumps(result, default=str)
-    return {
-        "jsonrpc": "2.0",
-        "id": msg.get("id"),
-        "result": {"content": [{"type": "text", "text": text}], "isError": False},
-    }
+    return _native_text_result(msg.get("id"), text)
 
 
 def _forward_stdin_to_subprocess_tracked(client_stdin, proc_stdin) -> None:
@@ -745,8 +994,13 @@ def _resolve_playwright_cmd() -> str | None:
         found = shutil.which(binary)
         if found:
             return found
-    if shutil.which("npx"):
-        return "npx"
+    # Return the RESOLVED path, never the bare name: on Windows npx ships only
+    # as ``npx.CMD`` and CreateProcess does not apply PATHEXT, so spawning the
+    # literal "npx" raises FileNotFoundError even though PATHEXT-aware
+    # shutil.which found it.
+    npx = shutil.which("npx")
+    if npx:
+        return npx
     return None
 
 
@@ -770,7 +1024,9 @@ def run_proxy(args: list[str]) -> None:
         sys.exit(1)
     if playwright_cmd.endswith(".js"):
         cmd = ["node", playwright_cmd] + args
-    elif os.path.basename(playwright_cmd) == "npx":
+    elif os.path.splitext(os.path.basename(playwright_cmd))[0].lower() == "npx":
+        # Extension-insensitive: the resolved launcher is ``npx.CMD`` on Windows
+        # and bare ``npx`` on POSIX; both must still get the @playwright/mcp arg.
         cmd = [playwright_cmd, "@playwright/mcp"] + args
     else:
         cmd = [playwright_cmd] + args

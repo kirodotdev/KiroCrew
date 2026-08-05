@@ -84,6 +84,7 @@
       "permission-handler.js",
       "browser-view.js",
       "browser-control.js",
+      "browser-ops.js",
       "browser-agent-channel.js",
       "external-scheme.js",
       "validation.js",

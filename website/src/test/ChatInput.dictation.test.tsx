@@ -127,11 +127,24 @@ describe('ChatInput — Escape while recording', () => {
   it('stops recording when focus is NOT in the composer', () => {
     // Starting a recording means clicking the mic BUTTON, so focus sits there,
     // not in the textarea. A textarea-scoped handler never fires, and the
-    // panel's "Esc to stop" hint would be a lie.
+    // panel's "Esc to cancel" hint would be a lie.
     const onVoiceToggle = vi.fn()
     renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(onVoiceToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('prefers onVoiceCancel (discard) over onVoiceToggle (commit) when both exist', () => {
+    // Esc CANCELS: it must route to the discard path, not the mic-button commit
+    // path, so an abandoned dictation is thrown away rather than transcribed.
+    const onVoiceToggle = vi.fn()
+    const onVoiceCancel = vi.fn()
+    renderWithProviders(
+      <ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} onVoiceCancel={onVoiceCancel} />,
+    )
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(onVoiceCancel).toHaveBeenCalledTimes(1)
+    expect(onVoiceToggle).not.toHaveBeenCalled()
   })
 
   it('detaches the listener when recording stops', () => {
@@ -250,5 +263,26 @@ describe('ChatInput — Escape while recording', () => {
   it('does not fire without an onVoiceToggle handler', () => {
     renderWithProviders(<ChatInput {...base} voiceRecording />)
     expect(() => fireEvent.keyDown(document.body, { key: 'Escape' })).not.toThrow()
+  })
+})
+
+describe('ChatInput — send is gated while a batch transcript is pending', () => {
+  it('does NOT send on Enter while voiceTranscribing (transcript not landed yet)', () => {
+    const onSend = vi.fn()
+    renderWithProviders(<ChatInput {...base} value="foo" connected voiceTranscribing onSend={onSend} />)
+    fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('sends on Enter once transcription has finished', () => {
+    const onSend = vi.fn()
+    const { rerender } = renderWithProviders(
+      <ChatInput {...base} value="foo bar" connected voiceTranscribing onSend={onSend} />,
+    )
+    fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    rerender(<ChatInput {...base} value="foo bar" connected voiceTranscribing={false} onSend={onSend} />)
+    fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledTimes(1)
   })
 })

@@ -207,34 +207,40 @@ describe('useNativeBrowser control handoff', () => {
     await waitFor(() => expect(calls.agentAct.at(-1)?.enabled).toBe(true))
   })
 
-  it('hands control to PLAYWRIGHT while an external browser is driving', async () => {
+  it('acquires LIGHT (in-process) control of the native view when the Globe turns on', async () => {
     const { calls } = installBridge()
     const { rerender } = renderHook(
-      ({ ext }) => useNativeBrowser(PANEL, !ext, { externalActive: ext }),
-      { initialProps: { ext: false } },
+      ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
+      { initialProps: { act: false } },
     )
-    await waitFor(() => expect(calls.owner).toEqual([{ panelId: PANEL, owner: 'none' }]))
-    rerender({ ext: true })
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('playwright'))
+    // Globe off → no agent owner.
+    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('none'))
+    // Globe on → request LIGHT: the native view is driven in-process over CDP,
+    // never PLAYWRIGHT (that owner is a separate external browser process).
+    rerender({ act: true })
+    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
+    expect(calls.owner.some(c => c.owner === 'playwright')).toBe(false)
   })
 
-  it('releases control back when the external browser stops driving', async () => {
+  it('releases control back to NONE when the Globe turns off', async () => {
     const { calls } = installBridge()
     const { rerender } = renderHook(
-      ({ ext }) => useNativeBrowser(PANEL, !ext, { externalActive: ext }),
-      { initialProps: { ext: true } },
+      ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
+      { initialProps: { act: true } },
     )
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('playwright'))
-    rerender({ ext: false })
+    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
+    rerender({ act: false })
     await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('none'))
   })
 
-  it('pushes the handoff even though the native path is disabled while streaming', async () => {
-    // The streaming case is exactly when `enabled` is false, so the owner effect
-    // must not be gated on it — otherwise LIGHT would keep holding the page.
+  it('drives the control owner even while the panel is disabled (hidden, not destroyed)', async () => {
+    // Control ownership is orthogonal to visibility: a hidden-but-alive view the
+    // agent is mid-task on must keep LIGHT. So the owner effect must NOT be gated
+    // on `enabled` — otherwise glancing at another side-panel tab would drop the
+    // agent's hold on the page.
     const { calls } = installBridge()
-    renderHook(() => useNativeBrowser(PANEL, false, { externalActive: true }))
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('playwright'))
+    renderHook(() => useNativeBrowser(PANEL, false, { agentActEnabled: true }))
+    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
   })
 })
 

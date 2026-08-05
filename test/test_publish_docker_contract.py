@@ -11,8 +11,9 @@ The lane's documented guarantees:
 * A VERSION tag, once published, is never rebuilt or repointed — and a
   transient registry failure must never be misread as "tag absent" (that
   would rebuild different bytes under a published version).
-* The package remains private unless callers explicitly opt into the
-  anonymous-pull release gate.
+* Every canonical caller requires the anonymous-pull gate, so a GHCR
+  visibility regression fails the lane instead of shipping an image the
+  documented ``docker pull`` cannot reach.
 * The lane needs no repository secrets beyond the implicit GITHUB_TOKEN —
   callers must not ``secrets: inherit`` into it.
 
@@ -184,18 +185,27 @@ def test_existing_tag_check_distinguishes_not_found_from_transport_failure() -> 
     )
 
 
-def test_public_access_gate_is_opt_in_and_callers_keep_package_private() -> None:
-    """Anonymous pulls are a release-policy choice, not a publish invariant.
+def test_public_access_gate_is_required_by_every_canonical_caller() -> None:
+    """Anonymous pullability is a release invariant for the canonical repo.
 
-    GHCR packages default to private and KiroCrew intentionally retains that
-    posture for now. Public distribution must be enabled explicitly in both
-    the reusable workflow contract and each canonical caller.
+    GHCR creates packages private and never inherits visibility from the
+    linked repository, so a public repo does not imply a pullable image. The
+    README tells users to ``docker pull`` anonymously, so every canonical
+    caller must arm the gate — otherwise a visibility regression ships
+    silently and the step merely reports ``skipped``.
+
+    The reusable workflow's input still DEFAULTS to false: forks legitimately
+    keep private packages, and the gate is additionally scoped to the
+    canonical owner.
     """
     import yaml
 
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     inputs = workflow[True]["workflow_call"]["inputs"]
-    assert inputs["require_public_access"]["default"] is False
+    assert inputs["require_public_access"]["default"] is False, (
+        "the input must stay opt-in so forks with private packages are "
+        "unaffected; canonical callers opt in explicitly"
+    )
 
     lines = _lines()
     public_gate = _step_index(lines, "Verify anonymous pull")
@@ -215,9 +225,10 @@ def test_public_access_gate_is_opt_in_and_callers_keep_package_private() -> None
         }
         assert docker_jobs, f"{caller.name}: publish-docker call site not found"
         for name, job in docker_jobs.items():
-            assert job["with"]["require_public_access"] is False, (
-                f"{caller.name}: job {name!r} must keep GHCR private until "
-                "public distribution is explicitly approved"
+            assert job["with"]["require_public_access"] is True, (
+                f"{caller.name}: job {name!r} must require anonymous pull — "
+                "the published image is documented as publicly pullable, so a "
+                "private package is a broken release, not a valid posture"
             )
 
 

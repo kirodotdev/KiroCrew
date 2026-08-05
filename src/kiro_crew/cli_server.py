@@ -1151,7 +1151,10 @@ def _update() -> None:
         sys.exit(1)
 
     proj_path = Path(proj)
-    if not (proj_path / ".git").is_dir():
+    # A git worktree or submodule stores ``.git`` as a FILE (a ``gitdir:``
+    # pointer), not a directory, so accept both — otherwise `kirocrew update`
+    # run from a worktree wrongly refuses with "No git repo".
+    if not (proj_path / ".git").exists():
         print(f"❌ No git repo at {proj}")
         sys.exit(1)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -180,6 +181,193 @@ class TestGuards:
             assert resp.status == 503
 
 
+class TestAppleStreamingSession:
+    """The `apple` provider's own WebSocket path (`_run_apple_session`).
+
+    It reuses the endpoint, the event shapes and the endpointer, but has its own
+    lifecycle code — so the invariants the AWS path already guards need their own
+    coverage here rather than being assumed shared.
+    """
+
+    def _install(self, monkeypatch, *, session=None, start_error="", feed_ok=True):
+        """Point the endpoint at the apple provider with a stubbed helper session."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
+            classmethod(lambda cls: _cfg(provider="apple")),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
+
+        events: asyncio.Queue = asyncio.Queue()
+        fed: list[bytes] = []
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            async def start(self):
+                return start_error
+
+            async def feed(self, pcm):
+                fed.append(pcm)
+                return feed_ok
+
+            async def events(self):
+                while True:
+                    ev = await events.get()
+                    if ev is None:
+                        return
+                    yield ev
+
+            async def finish(self, **kwargs):
+                await events.put(None)
+                return ""
+
+            async def close(self):
+                pass
+
+        fake_module = SimpleNamespace(
+            StreamingSession=session or FakeSession,
+            STREAM_SAMPLE_RATE_HZ=16000,
+        )
+        # BOTH, deliberately. `_run_apple_session` does `from kiro_crew import
+        # apple_speech`, which resolves the ATTRIBUTE on the already-imported
+        # `kiro_crew` package rather than consulting sys.modules — so patching
+        # sys.modules alone works when this file runs alone and is silently
+        # bypassed once any other test module has imported the real one.
+        monkeypatch.setitem(sys.modules, "kiro_crew.apple_speech", fake_module)
+        monkeypatch.setattr("kiro_crew.apple_speech", fake_module, raising=False)
+        return events, fed
+
+    @pytest.mark.asyncio
+    async def test_duration_cap_fires_for_a_client_that_sends_nothing(self, monkeypatch):
+        """Regression: the cap MUST run on a dedicated task, not per-message.
+
+        `async for msg in ws` only yields on client data and aiohttp answers
+        heartbeat ping/pong internally, so a message-driven deadline never
+        evaluates for an idle-but-alive client — leaking the helper process, an OS
+        speech session, and one of `_MAX_CONCURRENT_SESSIONS` slots indefinitely.
+        """
+        self._install(monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            # Deliberately send NO audio — only the deadline task can end this.
+            msg = await ws.receive_json()
+            assert msg == {"type": "error", "message": "max stream duration exceeded"}
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_cap_teardown_is_audited_as_a_timeout(self, monkeypatch):
+        """A cap-driven teardown must be distinguishable from a clean stop.
+
+        Otherwise `stt_stream_end` reads identically for both, operators cannot
+        see cap-driven teardowns, and the audit trail diverges from the AWS path
+        for the same event.
+        """
+        self._install(monkeypatch)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
+        outcomes: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream._emit_end_audit",
+            lambda caller, *, outcome: outcomes.append(outcome),
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await ws.receive_json()  # the cap's error frame
+            await ws.close()
+        for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
+            if outcomes:
+                break
+            await asyncio.sleep(0.02)
+        assert outcomes == ["timeout"], outcomes
+
+    @pytest.mark.asyncio
+    async def test_clean_stop_is_not_audited_as_a_timeout(self, monkeypatch):
+        """The mirror of the above: `{"type":"stop"}` must not read as a timeout."""
+        self._install(monkeypatch)
+        outcomes: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream._emit_end_audit",
+            lambda caller, *, outcome: outcomes.append(outcome),
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+        for _ in range(int(_AUDIT_WAIT_TIMEOUT_SECS / 0.02)):
+            if outcomes:
+                break
+            await asyncio.sleep(0.02)
+        assert outcomes == ["ok"], outcomes
+
+    @pytest.mark.asyncio
+    async def test_partials_and_finals_are_relayed_redacted(self, monkeypatch):
+        """A partial reaches the browser DOM, so it is an external surface even
+        though the next partial replaces it and nothing is persisted."""
+        events, _ = self._install(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await events.put({"type": "partial", "text": "  my key is AKIAIOSFODNN7EXAMPLE  "})
+            got = await ws.receive_json()
+            assert got["type"] == "partial"
+            assert "AKIAIOSFODNN7EXAMPLE" not in got["text"]
+            # Edge whitespace is stripped: the frontend re-joins finals with a
+            # space of its own, so a leading space would double it.
+            assert got["text"] == got["text"].strip()
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_fatal_helper_error_reaches_the_client(self, monkeypatch):
+        """A mid-session helper failure must surface, not go quiet.
+
+        The helper stops producing results after emitting `error`, so dropping the
+        event leaves the client on a live socket that will never transcribe again —
+        indistinguishable from a silent microphone.
+        """
+        events, _ = self._install(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await events.put({"type": "error", "message": "result stream failed: boom"})
+            msg = await ws.receive_json()
+            assert msg["type"] == "error"
+            assert "result stream failed" in msg["message"]
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_helper_death_on_the_write_side_surfaces(self, monkeypatch):
+        """A helper that stops ACCEPTING audio must not look like a clean stop.
+
+        Breaking out of the read loop alone audits the session as `ok` and leaves the
+        client believing it is still recording, with everything said from then on
+        silently dropped — the same failure as swallowing an `error` event, reached
+        through the write side instead of the read side.
+        """
+        self._install(monkeypatch, feed_ok=False)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json()) == {"type": "ready"}
+            await ws.send_bytes(b"\x00\x01" * 32)
+            msg = await ws.receive_json()
+            assert msg["type"] == "error"
+            assert "stopped" in msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_helper_start_failure_surfaces_and_closes(self, monkeypatch):
+        self._install(monkeypatch, start_error="the Xcode Command Line Tools are required")
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            msg = await ws.receive_json()
+            assert msg["type"] == "error"
+            assert "Command Line Tools" in msg["message"]
+            await ws.close()
+
+
 class TestStreamLifecycle:
     """Mock TranscribeStreamingClient to verify lifecycle + redaction."""
 
@@ -286,9 +474,7 @@ class TestStreamLifecycle:
             classmethod(lambda cls: _cfg()),
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.stt_stream.TranscribeStreamingClient", None
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.TranscribeStreamingClient", None)
         calls: list[dict] = []
         fake_sel = MagicMock()
         fake_sel.log_api_access = lambda **kw: calls.append(kw)
@@ -408,9 +594,7 @@ class TestStreamLifecycle:
         only) must still be torn down after the cap.
         """
         _, input_stream = self._install_stubs(monkeypatch)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             assert (await ws.receive_json()) == {"type": "ready"}
@@ -469,6 +653,7 @@ class TestConfigPutRoundTrip:
             cfg_file = tmp_path / "config.json"
             assert cfg_file.exists()
             import json as _json
+
             on_disk = _json.loads(cfg_file.read_text(encoding="utf-8"))
             assert on_disk["stt"]["streaming"] is True
             # Assert KiroCrewConfig.load() correctly deserializes — guards
@@ -576,6 +761,7 @@ class TestDefensiveGuards:
 
         def _raising_sel():
             raise RuntimeError("SEL not initialized")
+
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", _raising_sel)
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/ws/stt")
@@ -600,6 +786,7 @@ class TestDefensiveGuards:
 
         def _raising_client(**kw):
             raise RuntimeError("bad region")
+
         monkeypatch.setattr(
             "kiro_crew.dashboard.stt_stream.TranscribeStreamingClient",
             _raising_client,
@@ -617,9 +804,9 @@ class TestDefensiveGuards:
         # the error frame / client close is not a barrier for it.
         await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
-        assert "stt_stream_start" in ops and "stt_stream_end" in ops, (
-            f"both start and end audit events required; got {ops}"
-        )
+        assert (
+            "stt_stream_start" in ops and "stt_stream_end" in ops
+        ), f"both start and end audit events required; got {ops}"
         end = next(c for c in calls if c["operation"] == "stt_stream_end")
         assert end["outcome"] == "error"
 
@@ -646,6 +833,7 @@ class TestDefensiveGuards:
             calls.append(kw)
             if kw.get("operation") == "stt_stream_start":
                 raise RuntimeError("SEL unavailable")
+
         fake_sel.log_api_access = _log
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", lambda: fake_sel)
         async with TestClient(TestServer(_make_app())) as client:
@@ -657,9 +845,9 @@ class TestDefensiveGuards:
         # the error frame / client close is not a barrier for it.
         await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
-        assert "stt_stream_start" in ops and "stt_stream_end" in ops, (
-            f"both start and end audit events required; got {ops}"
-        )
+        assert (
+            "stt_stream_start" in ops and "stt_stream_end" in ops
+        ), f"both start and end audit events required; got {ops}"
         end = next(c for c in calls if c["operation"] == "stt_stream_end")
         assert end["outcome"] == "error"
 
@@ -709,6 +897,7 @@ class TestDefensiveGuards:
             if call_count["n"] == 1:
                 raise ConnectionResetError("transport gone")
             return await real_close(self, *a, **kw)
+
         monkeypatch.setattr(_web.WebSocketResponse, "close", _raising_close)
 
         calls: list[dict] = []
@@ -725,9 +914,9 @@ class TestDefensiveGuards:
         # the error frame / client close is not a barrier for it.
         await _wait_for_operation(calls, "stt_stream_end")
         ops = [c["operation"] for c in calls]
-        assert "stt_stream_start" in ops and "stt_stream_end" in ops, (
-            f"both start and end audit events required; got {ops}"
-        )
+        assert (
+            "stt_stream_start" in ops and "stt_stream_end" in ops
+        ), f"both start and end audit events required; got {ops}"
 
 
 class TestSttProviderGating:
@@ -775,18 +964,51 @@ class TestSttProviderGating:
         assert core._is_apple_silicon() is False
 
     def test_providers_include_mlx_on_apple_silicon(self, monkeypatch):
+        from kiro_crew import apple_speech
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
+        # `apple` has its own gate (macOS 26 + Swift toolchain); pin it off here so
+        # this test measures only the Apple-Silicon gate.
+        monkeypatch.setattr(
+            apple_speech, "availability", lambda: apple_speech.Availability(False, "pinned off")
+        )
         assert core._stt_providers() == ["whisper", "mlx", "transcribe"]
 
     def test_providers_exclude_mlx_off_apple_silicon(self, monkeypatch):
+        from kiro_crew import apple_speech
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: False)
+        monkeypatch.setattr(
+            apple_speech, "availability", lambda: apple_speech.Availability(False, "pinned off")
+        )
         providers = core._stt_providers()
         assert "mlx" not in providers
         assert providers == ["whisper", "transcribe"]
+
+    def test_providers_include_apple_when_supported(self, monkeypatch):
+        """`apple` is advertised only where SpeechAnalyzer can actually run."""
+        from kiro_crew import apple_speech
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(apple_speech, "availability", lambda: apple_speech.Availability(True))
+        assert core._stt_providers() == ["whisper", "mlx", "apple", "transcribe"]
+
+    def test_providers_exclude_apple_when_toolchain_missing(self, monkeypatch):
+        """A host that could run the framework but has no Swift toolchain must not be
+        offered the option — picking it would fail at transcription time."""
+        from kiro_crew import apple_speech
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(
+            apple_speech,
+            "availability",
+            lambda: apple_speech.Availability(False, "no toolchain", needs_toolchain=True),
+        )
+        assert "apple" not in core._stt_providers()
 
     def test_mlx_prereqs_empty_when_brew_present(self, monkeypatch):
         """The Install button installs ffmpeg/pipx/mlx-whisper, so when brew is
@@ -892,10 +1114,8 @@ class TestSttInstallScriptPath:
         brew.write_text("#!/bin/sh\necho 'export PATH=\"$PATH\"'\n", encoding="utf-8")
         brew.chmod(0o755)
 
-        prelude = core._stt_install_path_prelude().replace(
-            "/opt/homebrew/bin", str(fake_prefix)
-        )
-        script = prelude + '\ncommand -v brew >/dev/null && echo FOUND || echo MISSING\n'
+        prelude = core._stt_install_path_prelude().replace("/opt/homebrew/bin", str(fake_prefix))
+        script = prelude + "\ncommand -v brew >/dev/null && echo FOUND || echo MISSING\n"
         out = subprocess.run(
             ["bash", "-c", script],
             capture_output=True,

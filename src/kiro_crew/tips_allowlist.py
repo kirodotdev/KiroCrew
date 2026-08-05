@@ -9,6 +9,13 @@ incident write-ups, and design documents must NOT be listed — the exploration
 blend picks uniformly from the catalog, so anything listed can surface as a
 user-facing tip.
 
+Onboarding docs do not belong here either. Tips are feature DISCOVERY —
+"a feature you have not used yet" (see feature-tips.md and the generation
+prompt in tips.py) — and they render above the chat composer of a running
+dashboard session. Anyone who can see a tip has already installed, started,
+and opened Kiro Crew, so a product-overview tip like "Getting Started" can
+only ever be redundant there.
+
 Deliberately dependency-free so the maintainer script can import it without
 pulling in the full kiro_crew runtime.
 """
@@ -25,7 +32,6 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "discord-integration.md",
         "dynamic-subagent-sizing.md",
         "feature-tips.md",
-        "getting-started.md",
         "knowledge-library-how-it-works.md",
         "mcp-apps.md",
         "memory-and-learning.md",

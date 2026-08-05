@@ -72,9 +72,9 @@ const OVERLAY_SELECTOR = '[role="dialog"],[role="alertdialog"],[data-native-over
 export function useNativeBrowser(
   panelId: string,
   enabled: boolean,
-  opts: { externalActive?: boolean; agentActEnabled?: boolean } = {},
+  opts: { agentActEnabled?: boolean } = {},
 ) {
-  const { externalActive = false, agentActEnabled = false } = opts
+  const { agentActEnabled = false } = opts
   const api = useMemo(bridge, [])
   const available = !!api && !!panelId
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -92,19 +92,31 @@ export function useNativeBrowser(
     void api.setAgentAct(panelId, agentActEnabled)
   }, [api, panelId, agentActEnabled])
 
-  // ── Control handoff ──
-  // Exactly one agent owner may hold a page. When frames are streaming, an
-  // external Playwright-driven browser is the agent's target, so PLAYWRIGHT
-  // takes ownership and the in-process debugger lets go of the embedded view.
-  // Deliberately NOT gated on `enabled`: the streaming case is precisely when
-  // the native path is disabled, and that is exactly when the handoff matters.
+  // ── Control handoff: the Globe toggle acquires/releases agent control ──
+  // The native view is driven IN-PROCESS over CDP, so the agent owner for a
+  // chat-opened page is LIGHT (never PLAYWRIGHT — that owner is for a SEPARATE
+  // external browser process, which is only relevant when NO native view is
+  // available and this hook is inert). Acquiring is UNATTENDED action, so it is
+  // gated on the app's "let the agent use the browser" authorization (the Globe
+  // toggle): Globe ON requests LIGHT (acquire); Globe OFF requests NONE
+  // (actively release). The main process enforces release-before-acquire and,
+  // deliberately, re-evaluates the authorization gate on EVERY request —
+  // including the no-op of re-requesting the current owner — so flipping the
+  // Globe off genuinely detaches the debugger instead of leaving a stale owner.
+  //
+  // Deliberately NOT gated on `enabled`: a hidden-but-alive view the agent is
+  // mid-task on must keep its owner (visibility via setInactive is orthogonal to
+  // who controls the page). `state?.open` is a dependency so control is
+  // (re)acquired once the page actually exists — the gate refuses LIGHT while
+  // the view is not yet open, so the first request right after `open()` would
+  // otherwise be dropped.
   useEffect(() => {
     if (!api || !panelId) return
     void api.setControlOwner(
       panelId,
-      externalActive ? CONTROL_OWNER.PLAYWRIGHT : CONTROL_OWNER.NONE,
+      agentActEnabled ? CONTROL_OWNER.LIGHT : CONTROL_OWNER.NONE,
     )
-  }, [api, panelId, externalActive])
+  }, [api, panelId, agentActEnabled, state?.open])
 
   /** Measure the host element and report it. Cheap and idempotent — the main
    *  process drops reports identical to the applied bounds. */

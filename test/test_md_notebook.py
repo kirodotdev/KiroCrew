@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Optional
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
 
 SECRET = "test-proxy-secret"
@@ -754,7 +755,10 @@ async def test_delete_refuses_an_in_vault_trash_symlink(fixtures) -> None:
         vault = await _clone(client, remote)
         root = Path(vault["localPath"])
         (root / "public").mkdir()
-        (root / git_ops.TRASH_DIR).symlink_to("public")
+        # Directory redirect: a symlink on POSIX, a junction on non-admin Windows
+        # — the guard must refuse both (is_link_or_junction), else it is
+        # POSIX-only and a Windows junction slips a trashed note into `public/`.
+        platform_compat.symlink_or_junction(str(root / "public"), str(root / git_ops.TRASH_DIR))
 
         status, body = await client.delete("/api/note?path=One.md")
         assert status >= 400, body
@@ -1327,10 +1331,16 @@ async def test_reads_a_note_with_aliased_frontmatter_fast(fixtures) -> None:
         # The listing path (note_title/tags) parses frontmatter but does not
         # serialize it; with memoization this stays fast, without it 2**21 nodes
         # would be materialized and wedge the loop.
+        #
+        # The bound guards against EXPONENTIAL blowup, not ordinary latency: an
+        # uncontained expansion materializes 2**21 nodes and takes minutes / OOMs,
+        # so a generous deadline still catches the regression while tolerating a
+        # loaded parallel runner (a 5s bound false-failed under -n auto on
+        # Windows purely from scheduler contention — a wall-clock race).
         start = time.monotonic()
         status, body = await client.get("/api/notes")
         assert status == 200, body
-        assert time.monotonic() - start < 5, "alias amplification was not contained"
+        assert time.monotonic() - start < 30, "alias amplification was not contained"
 
 
 def test_json_safe_collapses_repeated_aliases(fixtures) -> None:
@@ -1538,10 +1548,12 @@ async def test_delete_refuses_a_trash_symlink_escaping_the_vault(fixtures, tmp_p
         root = Path(vault["localPath"])
         outside = tmp_path / "outside"
         outside.mkdir()
-        (root / ".trash").symlink_to(outside, target_is_directory=True)
+        # Directory redirect out of the vault: symlink on POSIX, junction on
+        # non-admin Windows. The guard refuses either as a `.trash` reparse point.
+        platform_compat.symlink_or_junction(str(outside), str(root / ".trash"))
         status, body = await client.delete("/api/note?path=One.md")
         assert status == 400, body
-        assert "escapes vault" in body["error"]
+        assert "symlink" in body["error"] or "escapes vault" in body["error"]
         # The note stayed put and nothing was written outside the vault.
         assert (root / "One.md").exists()
         assert list(outside.iterdir()) == []

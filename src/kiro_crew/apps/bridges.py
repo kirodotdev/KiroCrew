@@ -993,6 +993,17 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
     Returns list of registered skill names (namespaced).
     """
     registered: list[str] = []
+    if not manifest.skills:
+        # Nothing to link. Creating the namespaced dir anyway leaves an EMPTY
+        # ``skills/<app_name>/`` behind, and when a PACKAGED builtin skill shares
+        # the app's name that empty dir masks it: ``_ensure_builtin_skills`` copies
+        # at gateway start, app registration runs after, and the mkdir then leaves a
+        # directory whose ``SKILL.md`` is gone — so every SOP the app's cron prompts
+        # point at silently does not exist on disk. Observed with ops-mission-control,
+        # whose skill ships under ``builtin_skills/`` precisely because a builtin's
+        # app dir is never copied into the data home.
+        return registered
+
     skills_root = _skills_dir()
     app_skills_dir = skills_root / app_name
     app_skills_dir.mkdir(parents=True, exist_ok=True)
@@ -1010,9 +1021,10 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
 
         # Namespaced link: ~/.kiro/crew/skills/{app_name}/{skill_name}
         link_path = app_skills_dir / skill_name
-        if link_path.exists() or link_path.is_symlink():
-            if link_path.is_symlink():
-                link_path.unlink()
+        if link_path.exists() or platform_compat.is_link_or_junction(link_path):
+            if platform_compat.is_link_or_junction(link_path):
+                # Symlink OR Windows junction — remove the link, not its target.
+                platform_compat.unlink_link_or_junction(link_path)
             else:
                 shutil.rmtree(link_path)
 
@@ -1022,9 +1034,9 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
             flat_link = None
         else:
             flat_link = skills_root / skill_name
-            if flat_link.exists() or flat_link.is_symlink():
-                if flat_link.is_symlink():
-                    flat_link.unlink()
+            if flat_link.exists() or platform_compat.is_link_or_junction(flat_link):
+                if platform_compat.is_link_or_junction(flat_link):
+                    platform_compat.unlink_link_or_junction(flat_link)
                 else:
                     logger.info(
                         "App %s: skipping flat link for %s — non-symlink dir exists",
@@ -1034,14 +1046,17 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
                     flat_link = None  # type: ignore[assignment]
 
         try:
-            os.symlink(str(skill_path), str(link_path))
+            # symlink on POSIX; directory junction on non-admin Windows (a plain
+            # os.symlink there raises WinError 1314 and would silently drop every
+            # app skill for the ordinary user).
+            platform_compat.symlink_or_junction(str(skill_path), str(link_path))
             if flat_link is not None:
-                os.symlink(str(skill_path), str(flat_link))
+                platform_compat.symlink_or_junction(str(skill_path), str(flat_link))
             namespaced = _namespace(app_name, skill_name)
             registered.append(namespaced)
             logger.info("Registered skill: %s -> %s", namespaced, skill_path)
         except OSError as exc:
-            logger.warning("Failed to symlink skill %s: %s", skill_name, exc)
+            logger.warning("Failed to link skill %s: %s", skill_name, exc)
 
     if registered:
         sel().log_tool_invocation(
@@ -1067,22 +1082,56 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
 
 
 def _deregister_skills(app_name: str) -> int:
-    """Remove the app's skill symlinks from ~/.kiro/crew/skills/."""
+    """Remove the app's skill symlinks from ~/.kiro/crew/skills/.
+
+    Removes **only what registration created** — the symlinks, and the directory
+    itself once it holds nothing else. It must NOT ``rmtree`` unconditionally: when a
+    PACKAGED builtin skill shares the app's name, ``skills/<app_name>/`` is that
+    skill's real directory, not an app-owned link farm. Blowing it away deleted a
+    shipped skill and every SOP under it, leaving the app's cron prompts pointing at
+    files that no longer existed — silently, since a missing skill file is not an
+    error anywhere. Hit for real by ops-mission-control, whose skill ships under
+    ``builtin_skills/`` because a builtin app's own directory is never copied into
+    the data home.
+    """
     skills_root = _skills_dir()
     app_skills_dir = skills_root / app_name
     if not app_skills_dir.exists():
         return 0
     try:
-        removed_skills = [item.name for item in app_skills_dir.iterdir() if item.is_symlink()]
+        removed_skills = [
+            item.name
+            for item in app_skills_dir.iterdir()
+            if platform_compat.is_link_or_junction(item)
+        ]
         for item in app_skills_dir.iterdir():
-            if item.is_symlink():
+            # Symlink on POSIX, directory junction on non-admin Windows.
+            if platform_compat.is_link_or_junction(item):
                 if item.name in _RESERVED_SKILL_DIRS:
                     continue
                 target = item.resolve()
                 flat_link = skills_root / item.name
-                if flat_link.is_symlink() and flat_link.resolve() == target:
-                    flat_link.unlink()
-        shutil.rmtree(app_skills_dir)
+                # is_link_or_junction: a junction (non-admin Windows) is not a
+                # symlink, and unlink_link_or_junction removes the link, never
+                # the target it points at.
+                if (
+                    platform_compat.is_link_or_junction(flat_link)
+                    and flat_link.resolve() == target
+                ):
+                    platform_compat.unlink_link_or_junction(flat_link)
+                platform_compat.unlink_link_or_junction(item)
+        # Only prune the directory if registration is all that was ever in it.
+        # Any surviving real file means this path belongs to something else.
+        if any(app_skills_dir.iterdir()):
+            logger.info(
+                "Deregistered %d app skill link(s) for %s; keeping %s "
+                "(contains files this app does not own)",
+                len(removed_skills),
+                app_name,
+                app_skills_dir,
+            )
+            return 1 if removed_skills else 0
+        app_skills_dir.rmdir()
         logger.info("Deregistered skills for app %s", app_name)
         sel().log_tool_invocation(
             session_key="",
@@ -1158,16 +1207,19 @@ def reconcile_app_skills(app_name: str) -> list[str]:
     if app_skills_dir.is_dir():
         manifest_skill_names = {Path(s).name for s in manifest.skills}
         for entry in list(app_skills_dir.iterdir()):
-            if entry.is_symlink() and entry.name not in manifest_skill_names:
+            # is_link_or_junction: a junction (non-admin Windows) is not a symlink.
+            if platform_compat.is_link_or_junction(entry) and (
+                entry.name not in manifest_skill_names
+            ):
                 # Stale link — skill was removed from manifest
                 target = entry.resolve()
-                entry.unlink()
+                platform_compat.unlink_link_or_junction(entry)
                 # Also remove the flat link if it points to the same target
                 flat_link = skills_root / entry.name
-                if flat_link.is_symlink():
+                if platform_compat.is_link_or_junction(flat_link):
                     try:
                         if flat_link.resolve() == target:
-                            flat_link.unlink()
+                            platform_compat.unlink_link_or_junction(flat_link)
                     except OSError:
                         pass
                 logger.info(

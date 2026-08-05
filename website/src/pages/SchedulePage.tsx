@@ -5,7 +5,7 @@ import Clickable from '../components/Clickable'
 import { AnimatePresence, motion } from 'framer-motion'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
-import { PageHeader, Card, CardTitle, Btn, SendBtn, Badge, SearchInput, EmptyState, Skeleton } from '../components/ui'
+import { PageHeader, Card, CardTitle, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton } from '../components/ui'
 import SegmentedControl from '../components/SegmentedControl'
 import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
@@ -377,7 +377,7 @@ export default function SchedulePage() {
             <tbody>{jobs.length === 0
               ? <tr><td colSpan={10}><EmptyState icon={<ClipboardList className="lucide-inline" />} title={i18nT('pages.schedulePage.no_cron_jobs')} /></td></tr>
               : sortedScheduleJobs.length === 0
-              ? <tr><td colSpan={10} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.schedulePage.no_matching_jobs')}</td></tr>
+              ? <tr><td colSpan={10}><FilteredEmpty query={cronFilter} onClear={() => setCronFilter('')} noun={i18nT('pages.schedulePage.jobs_noun')} /></td></tr>
               : sortedScheduleJobs.map(j => (
               <tr key={j.id} className={`hover:bg-bg-hover transition-colors cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} onClick={() => { setCreating(false); setSelected(selected?.id === j.id ? null : j) }}>
                 <td className="px-2.5 py-2 border-b border-border text-center" onClick={e => e.stopPropagation()}>

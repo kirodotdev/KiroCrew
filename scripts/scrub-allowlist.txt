@@ -52,6 +52,12 @@ CHANGELOG.md
 # that self-documenting line must be allowed to name what it forbids.
 CLAUDE.md:.*internal marker names
 
+# AGENTS.md's matching "Never re-introduce" list, for the same reason: the rule
+# forbidding an internal service has to be able to name the service. Anchored to
+# the one bullet that enumerates them, so a NEW internal reference elsewhere in
+# AGENTS.md is still caught.
+AGENTS.md:.*device-posture tunnels
+
 # This script and its allowlist
 scripts/scrub-lint.sh
 scripts/scrub-allowlist.txt
@@ -175,12 +181,13 @@ src/kiro_crew/slack/handler.py:.*~/\.aim/cc-plugins
 src/kiro_crew/slack/handler.py:.*Path.home() / "\.aim" / "cc-plugins"
 src/kiro_crew/dashboard/handlers/files.py:.*"\.kirocrew", "\.kiro", "\.aim"
 
-# Upstream home-path references in docstrings/tests that predate this branch and
-# are unrelated to it (they arrived with the artifact-source work). The scrub's
-# identity scan was added afterwards, so `main` itself is red on these four
-# lines and every open PR inherits the failure. Waived narrowly — path plus the
-# exact pattern — to unblock; the real fix is to scrub the paths at the source,
-# which belongs in its own change rather than an unrelated refactor's diff.
-src/kiro_crew/artifacts.py:.*/workplace/nrb
-src/kiro_crew/artifact_source.py:.*/workplace/nrb
-test/test_artifact_source.py:.*/workplace/nrb
+# Public AWS console deep-link in the Ops Mission Control CloudWatch adapter.
+# ``<region>.console.aws.amazon.com`` is the PUBLIC AWS console — the same domain
+# any external AWS customer uses — and is matched only because INTERNAL_PATTERN
+# carries a broad ``amazon\.com`` alternative. Allowlisted line-anchored to the
+# console host so a genuinely internal ``*.amazon.com`` reference added to this
+# file is still caught.
+src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py:.*console\.aws\.amazon\.com
+# ...and its test, which asserts the console host is what a validated region produces and
+# that an injected one cannot move it. Same public domain, same line-anchored narrowing.
+src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers.py:.*console\.aws\.amazon\.com

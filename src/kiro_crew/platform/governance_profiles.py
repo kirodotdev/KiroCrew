@@ -712,6 +712,27 @@ class ProfileStore:
 _STORE = ProfileStore()
 
 
+def bound_surfaces() -> Tuple[str, ...]:
+    """Surface ids that have a profile bound to them, sorted.
+
+    Names only — no control, count, or rule contents — so a read-only display
+    surface can say WHICH surfaces are separately governed without widening what
+    it may expose. The Security page needs exactly this: a host-surface row that
+    pins ``capabilities.cron`` off is the host's posture, and knowing that ``cron``
+    carries its own profile is what stops that row reading as install-wide.
+
+    Returns ``()`` when the store cannot be trusted yet (never-loaded, mid
+    first-load), matching the fail-quiet contract a display caller needs: an
+    empty list renders as "no other bound surfaces", never as a wrong name.
+    """
+    if not _STORE.resolved():
+        return ()
+    snap = _STORE.snapshot()
+    return tuple(
+        sorted({bind_id for (bind_type, bind_id) in snap.by_bind if bind_type == "surface"})
+    )
+
+
 def any_configured_profile_governs(ref: str) -> bool:
     """True if ANY loaded profile has an opinion on *ref*.
 

@@ -51,6 +51,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     build_dm_session_key,
     legacy_dashboard_mirror_key,
+    release_conversation_location,
     seed_generation,
 )
 from kiro_crew.messaging.transport import InboundMessage
@@ -975,14 +976,18 @@ class DiscordDispatcher:
             )
             return
         key = self._session_key(user_id, thread_id)
-        was_linked = self.sessions.clear_mirror_link(key)
-        was_linked = (
-            self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)) or was_linked
+        reply, swept = release_conversation_location(
+            self.sessions,
+            key=key,
+            location=ChannelLink("discord", channel_id=channel_id),
+            channel="discord",
         )
-        await self.client.send_message(
-            channel_id,
-            "✅ Unlinked." if was_linked else "This conversation wasn't linked.",
-        )
+        if swept:
+            # A swept binding can belong to a dashboard slot whose link chip is
+            # projected at push time — nudge the dashboard like every other
+            # binding mutation does.
+            self._session_resume._push_slots()
+        await self.client.send_message(channel_id, reply)
 
     def _live_dashboard_slot(self, session_key: str) -> Any | None:
         """The OPEN dashboard slot for *session_key*, or ``None``.

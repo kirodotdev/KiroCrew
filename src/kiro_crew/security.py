@@ -166,7 +166,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "attacker could use to authenticate to the gateway. Matches the CLI name and the "
             "token verb within one command segment -- including nested forms such as `kirocrew "
             "pod token` and the hyphenated `kiro-crew` spelling -- so an incidental mention of "
-            "the word in a later command, a comment, or a file path is not a mint."
+            "the word in a later command, a comment, or a file path is not a mint. The argv "
+            "floor additionally covers `python -m kiro_crew ... token`, which mints the same "
+            "token through the interpreter rather than the console script."
         ),
     ),
     DeniedCommandRule(
@@ -1189,8 +1191,8 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         pattern=".*cat.*/(?:\\.kiro/crew|\\.kirocrew)/\\.env.*",
         category="sensitive-file-read",
         description=(
-            "Blocks using cat to read KiroCrew's own credential file (~/.kiro/crew/.env, "
-            "or the pre-move ~/.kirocrew/.env), which holds KiroCrew's own secrets and "
+            "Blocks using cat to read Kiro Crew's own credential file (~/.kiro/crew/.env, "
+            "or the pre-move ~/.kirocrew/.env), which holds Kiro Crew's own secrets and "
             "environment credentials."
         ),
     ),
@@ -2388,6 +2390,161 @@ def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") 
     return any(expandable.fullmatch(name) for name in names)
 
 
+#: Interpreter names that accept ``-m <module>``. Versioned spellings (``python3``,
+#: ``python3.12``) and the Windows launcher included; ``.exe`` is stripped by
+#: ``_program_basename`` before this is applied.
+_PYTHON_PROGRAM_RE = re.compile(r"\Apy(?:thon)?[0-9.]*(?:\.exe)?\Z")
+
+#: Interpreter flags that consume the NEXT token as their operand. Their operand must be
+#: skipped when scanning for ``-m <module>``, or it terminates the scan and the mint slips
+#: through (``python -X dev -m kiro_crew token``). ``-c`` and ``-m`` are deliberately absent:
+#: both END the option list, and `-m` is what this scan is looking for.
+#:
+#: LOWERCASE, because the floor runs over an already-lowercased command (`_is_credential_mint`
+#: takes `text_lower`), so a `-X` in the operator's shell reaches this set as `-x`. Storing the
+#: uppercase spelling made every separate-operand form match nothing — the bypass stayed open
+#: while the ATTACHED spellings (`-Xdev`) passed, which is the shape of a fix that looks tested.
+#: Python's real flags are case-sensitive (`-x` skips the first line, `-X` sets an
+#: implementation option), so this over-matches `-x` slightly: `python -x -m kiro_crew token`
+#: would skip `-m` as an operand and MISS. Guarded by also treating a bare `-m` as the marker
+#: on the next iteration — see the loop.
+_PYTHON_OPERAND_FLAGS = frozenset({"-x", "-w", "-q", "--check-hash-based-pycs"})
+
+#: Module path of the product package, for the ``python -m kiro_crew ... token`` form.
+#: Underscored, because that is the IMPORT name — `_SELF_PROGRAM_SPELLINGS` covers the
+#: console script (`kirocrew`, `kiro-crew`) and deliberately does not admit `_`, since no
+#: executable is spelled that way.
+_SELF_MODULE_SPELLINGS = ("kiro_crew",)
+
+#: Interpreter flags that take an INLINE PROGRAM as their operand: ``-c`` a statement string,
+#: ``-`` / no flag a stdin script. ``python -c "from kiro_crew.cli import main; main()" token``
+#: mints the identical token as ``python -m kiro_crew token`` — the payload is one argv word
+#: carrying the import name, so the ``-m`` marker scan never fires and the "not a flag ⇒ not
+#: the module shape" bail treated the payload as a script name and returned False. Same escape,
+#: one flag over. Found in review (GPT 5.6).
+_PYTHON_INLINE_PROGRAM_FLAGS = ("-c",)
+
+#: The import name as it appears INSIDE a ``-c`` payload. A payload that both names the package
+#: and calls something is the module form written longhand; matching the bare package name is
+#: enough, because reaching the CLI at all requires importing it under one of these spellings —
+#: PROVIDED the name is written literally, which the split/base64 forms below deliberately avoid.
+_SELF_IMPORT_RE = re.compile(r"\bkiro_crew\b")
+
+#: Dynamic-execution primitives that let an inline Python payload REACH the CLI without the
+#: package name ever appearing as a literal token: string-concatenated imports
+#: (``__import__('kiro'+'_crew')``), name-computed imports (``importlib.import_module(...)``),
+#: and second-stage decode/eval (``exec(base64.b64decode(...))``). ``_SELF_IMPORT_RE`` cannot
+#: see through any of these, so a payload combining an inline-program interpreter with one of
+#: them is treated as opaque and DENIED — the same fail-closed reading as a literal import,
+#: because "I cannot tell what this imports" is not "it is safe". Kept as a NARROW list of the
+#: dynamic-exec verbs, not a blanket deny on all inline Python: ``python -c "print(1)"`` and
+#: routine one-liners stay allowed, and the residual — arbitrary code that avoids even these
+#: (``perl``, a written-then-run script, a renamed interpreter) — is out of a string matcher's
+#: reach and is documented as such rather than papered over. Found in review (GPT 5.6).
+_INLINE_DYNAMIC_EXEC_RE = re.compile(
+    r"\b__import__\s*\(|\bimportlib\b|\bimport_module\b|\bexec\s*\(|\beval\s*\(|"
+    r"\bcompile\s*\(|\bb64decode\b|\bmarshal\b|\bgetattr\s*\("
+)
+
+
+def _inline_payload_reaches_cli(payload: str) -> bool:
+    """True if an inline-program payload could import this package, LITERALLY or opaquely.
+
+    Two ways: it names ``kiro_crew`` outright, or it uses a dynamic-execution primitive that
+    could construct that import from pieces a static matcher cannot follow. The second is a
+    deliberate over-match — a payload doing ``exec(...)`` or ``__import__(...)`` might import
+    something else entirely — but on the credential-mint path "I cannot tell what this runs" is
+    the fail-closed answer, and the cost is refusing an inline one-liner that happens to use
+    ``exec``/``eval``, which is not a shape ordinary tooling relies on.
+    """
+    return bool(_SELF_IMPORT_RE.search(payload) or _INLINE_DYNAMIC_EXEC_RE.search(payload))
+
+
+def _is_self_module_invocation(tokens: list[str], i: int) -> bool:
+    """True if ``tokens[i]`` is a ``python`` that runs the product IN-PROCESS.
+
+    ``python -m kiro_crew token`` mints exactly the same signed dashboard token as
+    ``kirocrew token``, but its argv PROGRAM is the interpreter, so neither the
+    command-position regex (which matches ``kiro[-.]?crew``, not the underscored import
+    name) nor ``_is_self_program`` sees it. The escalation is the point: that token
+    authenticates every gateway route, including the ops autonomy-ceiling PUT, so the
+    bypass let a prompt-injected agent raise its own security ceiling.
+
+    Matched structurally, like the rest of the floor: an interpreter, then ``-m``
+    (possibly after other interpreter flags), then the module. ``-m`` must be a separate
+    token — ``python -mkiro_crew`` is also valid, so that spelling is checked too.
+
+    ``-c`` is the SAME escape one flag over, and is matched here for that reason:
+    ``python -c "from kiro_crew.cli import main; main()" token`` reaches the identical mint
+    with the import name buried in an inline-program payload. The two forms differ only in
+    how the interpreter is told to import the package, so they cannot be gated separately —
+    the earlier "anything that is not a flag means this is not the module shape" bail read the
+    payload as a script name and returned False. Found in review.
+
+    Interpreter flags that take a SEPARATE OPERAND (``-X dev``, ``-W ignore``, ``-Q new``)
+    have their operand skipped. An earlier version stopped at the first token that did
+    not begin with ``-``, so ``python -X dev -m kiro_crew token`` bailed on ``dev`` and the
+    mint went through — the bypass this whole function exists to close, reintroduced one flag
+    deeper. Modelling which flags consume an operand is the fix; "stop at the
+    first non-flag" is not expressible as a heuristic here, because an operand and a script
+    path look identical.
+    """
+    if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
+        return False
+    skip_next = False
+    inline_program_next = False
+    for later in tokens[i + 1 :]:
+        stripped = _normalize_operand(later).strip("\"'")
+        if inline_program_next:
+            # The payload of a `-c`: an inline program naming the package IS an import of it.
+            # Checked before the flag logic because the payload is arbitrary text that may
+            # begin with anything, including a `-`.
+            #
+            # Matched on the RAW token, not `stripped`: `_normalize_operand` truncates at the
+            # first control operator, which is right for an operand the shell will split but
+            # wrong for a quoted Python program whose `;` is a statement separator. Normalising
+            # `"import sys; ...; from kiro_crew.cli import main"` down to `import sys` hid the
+            # import and made this return False for a payload that plainly runs our code.
+            if _SELF_IMPORT_RE.search(later.strip(_SHELL_WRAPPER_CHARS)):
+                return True
+            inline_program_next = False
+            continue
+        if skip_next:
+            skip_next = False
+            # `-m` is never a flag's operand: `python -x -m mod` passes `-m mod` to the
+            # interpreter, so a token that IS the marker must be honoured rather than eaten.
+            # This is what keeps the deliberate `-x` over-match above from opening a hole.
+            if stripped != "-m" and not stripped.startswith("-m"):
+                continue
+        if stripped == "-m":
+            continue
+        if stripped.startswith("-m") and stripped[2:] in _SELF_MODULE_SPELLINGS:
+            return True
+        if stripped in _SELF_MODULE_SPELLINGS:
+            return True
+        if stripped in _PYTHON_INLINE_PROGRAM_FLAGS:
+            inline_program_next = True
+            continue
+        # `-c<payload>` attached, the one-token spelling of the same thing. Raw for the same
+        # truncation reason as the separate operand above.
+        _raw = later.strip(_SHELL_WRAPPER_CHARS)
+        if len(_raw) > 2 and _raw[:2] in _PYTHON_INLINE_PROGRAM_FLAGS:
+            if _SELF_IMPORT_RE.search(_raw):
+                return True
+            continue
+        if stripped in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        # An attached operand (`-Xdev`, `-Wignore`) needs no skip: it is one token.
+        if len(stripped) > 2 and stripped[:2] in _PYTHON_OPERAND_FLAGS:
+            continue
+        # Only interpreter FLAGS may sit between; anything else means this is neither the
+        # `-m <product>` nor the `-c <payload>` shape (`python script.py`).
+        if not stripped.startswith("-"):
+            return False
+    return False
+
+
 def _is_self_program(token: str) -> bool:
     """True if *token* names the KiroCrew CLI itself, bare or via a path.
 
@@ -3223,6 +3380,123 @@ def _substitution_bodies(text: str) -> "list[str]":
     return bodies
 
 
+def _has_self_importing_inline_program(tokens: list[str], i: int) -> bool:
+    """True if ``tokens[i]`` is an interpreter given a ``-c`` payload that imports this package.
+
+    Separate from ``_is_self_module_invocation`` because the two answer different questions.
+    That one asks "does this argv run our code?", which admits ``-m`` and ``-c`` alike and is
+    the right input to a verb-gated decision. This one asks "is the code inline?", which is the
+    case where the verb gate cannot hold: an inline payload can append to ``sys.argv``, call
+    ``main(['token'])``, or reach the token-minting function directly, so no argv word has to
+    say ``token``.
+
+    Only the interpreter's own inline-program operand counts — the separate (``-c PAYLOAD``)
+    and attached (``-cPAYLOAD``) spellings. A later positional that happens to mention the
+    import name is data for whatever the payload does with it, not code we are about to run.
+
+    The STDIN forms are the same escape without an operand: ``python -`` (and a bare ``python``
+    with no script) read the program from stdin, so a ``python - <<'PY' … PY`` heredoc or an
+    ``echo '…' | python -`` pipe reaches the CLI with the payload nowhere in argv. When that
+    program text is visible on the command line — a heredoc body or the left side of a pipe,
+    both of which land as later tokens in this frame — matching the import is the same
+    fail-closed decision as for ``-c``. When it is NOT visible (a file redirect, a bare
+    ``python -`` fed by an unseen producer) there is nothing to match and the gate cannot see
+    it; that residual is noted, not silently claimed as covered.
+    """
+    if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
+        return False
+    later_tokens = tokens[i + 1 :]
+    # STDIN program: the whole FRAME is the search space, because the program text is not an
+    # operand of this interpreter — it arrives on stdin, which the shell fills from a heredoc
+    # body (later tokens) or a pipe producer (EARLIER tokens, e.g. `echo '…' | python -`). So a
+    # per-position scan is wrong here; match the import anywhere in the frame. `_python_reads_stdin`
+    # is precise so this does not fire for `python script.py`, `python -c …`, or `python -m …`.
+    if _python_reads_stdin(later_tokens) and any(
+        _inline_payload_reaches_cli(t.strip(_SHELL_WRAPPER_CHARS)) for t in tokens
+    ):
+        return True
+    expect_payload = False
+    skip_next = False
+    for later in later_tokens:
+        # The PAYLOAD is matched RAW, not through `_normalize_operand`. That helper truncates at
+        # the first control operator, which is correct for an operand the shell will split — but
+        # a `-c` payload is a quoted program, so its `;` is Python, not a command separator.
+        # Normalising `"import sys; ...; from kiro_crew.cli import main; main()"` down to
+        # `import sys` hid the import entirely and let the bypass through.
+        raw = later.strip(_SHELL_WRAPPER_CHARS)
+        if expect_payload:
+            if _inline_payload_reaches_cli(raw):
+                return True
+            expect_payload = False
+            continue
+        # The FLAG itself is a plain token, so it is safe (and more accurate) to normalise.
+        stripped = _normalize_operand(later).strip("\"'")
+        if skip_next:
+            skip_next = False
+            continue  # value consumed by an operand-taking flag (`-X dev`)
+        if stripped in _PYTHON_INLINE_PROGRAM_FLAGS:
+            expect_payload = True
+            continue
+        if len(raw) > 2 and raw[:2] in _PYTHON_INLINE_PROGRAM_FLAGS:
+            if _inline_payload_reaches_cli(raw):
+                return True
+        if stripped in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        if len(stripped) > 2 and stripped[:2] in _PYTHON_OPERAND_FLAGS:
+            continue  # attached operand, e.g. `-Xdev`
+        # Only interpreter flags precede a `-c` operand. The first token that is neither a flag
+        # nor a flag's operand is the interpreter's own positional (a script path or `-`), and
+        # nothing after it is a `-c` payload — so stop, rather than scan the rest of the frame.
+        # Without this bail the loop was O(tokens) for EACH python token, i.e. O(n²) on a
+        # `python open python open …` spam input, which the ReDoS-resistance test caught.
+        if not stripped.startswith("-"):
+            break
+    return False
+
+
+def _python_reads_stdin(later_tokens: list[str]) -> bool:
+    """True if this ``python`` invocation runs its PROGRAM from stdin (a script/module does not).
+
+    CPython reads its program from stdin for a bare interpreter (no positional) or an explicit
+    ``-`` argument; ``-c CODE``, ``-m MOD``, and ``FILE`` all supply the program elsewhere.
+    Walks the argument stream the way ``_is_self_module_invocation`` does so the corner cases
+    line up: an operand-taking flag consumes its value (``-X dev`` — ``dev`` is not a script),
+    a heredoc redirect (``<<`` and the delimiter tag that follows it) is not an argument, and a
+    pipe/redirect token ends this command's own arguments.
+    """
+    skip_next = False
+    heredoc_tag_next = False
+    for tok in later_tokens:
+        norm = _normalize_operand(tok).strip("\"'")
+        if heredoc_tag_next:
+            heredoc_tag_next = False
+            continue  # the heredoc delimiter word (`<< 'PY'` → the `PY`)
+        if skip_next:
+            skip_next = False
+            continue  # value consumed by an operand-taking flag (`-X dev`)
+        if not norm:
+            continue
+        if norm.startswith("<<"):
+            heredoc_tag_next = norm == "<<"  # a bare `<<` splits its tag into the next token
+            continue
+        if norm.startswith("<") or norm.startswith("|"):
+            break  # a redirect/pipe boundary ends this command's argument list
+        if norm == "-":
+            return True
+        if norm in _PYTHON_INLINE_PROGRAM_FLAGS or norm.startswith("-m") or norm.startswith("-c"):
+            return False  # `-c`/`-m` supply the program, not stdin
+        if norm in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        if len(norm) > 2 and norm[:2] in _PYTHON_OPERAND_FLAGS:
+            continue  # attached operand, e.g. `-Xdev`
+        if norm.startswith("-"):
+            continue  # an ordinary interpreter flag
+        return False  # a positional that is not `-` is a script path
+    return True  # nothing but flags → bare interpreter reads stdin
+
+
 def _is_credential_mint(text_lower: str) -> bool:
     """True if *text_lower* invokes the ``kirocrew token`` credential mint.
 
@@ -3242,7 +3516,25 @@ def _is_credential_mint(text_lower: str) -> bool:
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
         for i, token in enumerate(tokens):
-            if not _is_self_program(token):
+            # AN INLINE PROGRAM THAT IMPORTS OUR CLI IS DENIED WITHOUT NEEDING THE VERB, and
+            # this is checked FIRST because it does not depend on the self-program/module gate
+            # below. Everywhere else the verb is the trigger, because ``kirocrew doctor`` is
+            # legitimate and only ``kirocrew token`` mints. That reasoning does not survive an
+            # inline program: ``-c`` and stdin (``python -``) both run arbitrary Python with
+            # the interpreter's full authority, so it can BUILD the verb rather than pass it —
+            # ``python -c "import sys; sys.argv.append('token'); from kiro_crew.cli import main;
+            # main()"`` names no ``token`` argv word, and ``python - <<'PY' … PY`` puts the
+            # program on stdin, off argv entirely. The honest gate is the import. Scoped to
+            # ``_SELF_IMPORT_RE``, so ``python -c "print(1)"`` and a bare ``python -`` running
+            # unrelated code are untouched. Found in review (GPT 5.6).
+            if _has_self_importing_inline_program(tokens, i):
+                return True
+            # Either the console script IS the program, or an interpreter runs the product as
+            # a MODULE (`python -m kiro_crew ... token`). The module form mints the identical
+            # token, and its argv program is the interpreter, so `_is_self_program` alone
+            # missed it — the underscored import name is not a console-script spelling either,
+            # so the regex tier could not see it. Found in review.
+            if not _is_self_program(token) and not _is_self_module_invocation(tokens, i):
                 continue
             # The name is an ARGUMENT of a command that treats arguments as data
             # (``echo <name> <verb>`` prints two words) -- a mention, not a mint.
@@ -3254,9 +3546,31 @@ def _is_credential_mint(text_lower: str) -> bool:
             # ``<verb>;`` -- one token that both IS the verb and carries the boundary,
             # so testing the boundary first discards the very argument that names it.
             depth = 0
+            inline_payload_next = False
             for later in tokens[i + 1 :]:
                 if _is_mint_verb(later):
                     return True
+                # The operand of `-c` is a quoted PROGRAM, so its `;` is data, not a command
+                # separator. Letting `_ends_argv` see it ended the scan on the payload of
+                # `python -c "from kiro_crew.cli import main; main()" token` — one token before
+                # the verb — so the mint was permitted even though the interpreter check had
+                # already matched. Found in review.
+                #
+                # This skip is no longer what protects the `-c` form: a payload that imports
+                # the CLI is denied above, before this loop runs, because it can construct the
+                # verb internally. The skip remains correct for the case it was written for —
+                # a payload that does NOT import us, followed by a real `token` argument.
+                if inline_payload_next:
+                    inline_payload_next = False
+                    continue
+                _operand = _normalize_operand(later).strip("\"'")
+                if _operand in _PYTHON_INLINE_PROGRAM_FLAGS:
+                    inline_payload_next = True
+                    continue
+                # `-c<payload>` attached: the payload is already inside this token, so it is
+                # data in the same way — skip it without expecting a following one.
+                if len(_operand) > 2 and _operand[:2] in _PYTHON_INLINE_PROGRAM_FLAGS:
+                    continue
                 # A separator NESTED in a command substitution is part of that
                 # substitution, not the end of this argv: ``<name> $(true; echo <verb>)``
                 # is still one command.  Only a top-level separator ends the scan.
@@ -3846,6 +4160,31 @@ _CREW_SECRET_LEAVES: list[str] = [
     # handler is the only writer and it opens the path directly, not through this
     # gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
+    # API + application keys). These are live credentials against a user's
+    # production incident tooling: a leaked one can acknowledge or resolve real
+    # pages. They are here rather than in ``config.json`` for two concrete
+    # reasons — an app's ``data/config.json`` is served over
+    # ``/api/apps/<name>/config`` WITHOUT session auth, and ``config.json``
+    # itself is writable by any auto-approved agent shell. The read+write
+    # keystone floor is the only placement where the agent can neither read the
+    # tokens nor overwrite them. The authenticated dashboard PUT handler is the
+    # sole writer and opens the path directly, so Settings still works.
+    "ops_mission_control_secrets.json",
+    # Ops Mission Control's AUTONOMY CEILING: the app mode (observe/propose/act) and
+    # the per-signal act-rules. This is the exact same class of control as
+    # ``computer_use.json`` above — flipping ``mode`` to ``act`` plus adding a matching
+    # rule is what authorizes a write against the user's production incident tooling —
+    # and it was living in the agent-writable ``data/config.json``. A prompt-injected
+    # agent could therefore mint the dashboard token, PUT ``mode=act`` with a rule
+    # matching a signal, and unlock provider actions the operator never granted, which
+    # defeats the app's central safety property (``effective = min(app_mode, rule_mode)``
+    # is only a ceiling if the agent cannot raise it). Found in review. Here for the same
+    # reasons as the secrets leaf directly above — served unauthenticated over
+    # ``/config`` and writable by any auto-approved shell in ``config.json`` — so it moves
+    # to the read+write keystone floor. Dashboard PUT is the sole writer and opens the
+    # path directly.
+    "ops_mission_control_policy.json",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
@@ -3920,6 +4259,48 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # governance policy + secrets. The migration code writes it directly and
     # does NOT route through this gate, so legitimate stamping still works.
     for leaf in ("config.json", "config.local.json", ".data-home-ready")
+] + [
+    # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
+    # sensitive: it holds no secret and every teammate's instance must READ it to
+    # answer "am I on call?", so classifying it as sensitive would break the
+    # feature. But it is an INPUT TO AN AUTHORIZATION DECISION — an agent that
+    # could rewrite it to name its own login would make
+    # ``rotation.authorize_action`` -> ``_definitely_off_shift`` accept its own
+    # forged shift and execute an off-shift production write against a teammate's
+    # tooling. Found in review.
+    #
+    # This is the last of five instances of one class on this app's off-shift
+    # refusal (the others: the GitHub login, the strict-gating flag, the
+    # provider-config field list, and ``providers.<id>.enabled``). The fix is
+    # placement, not logic: the app READS the schedule exactly as before, and only
+    # the agent's own file/bash tools are refused. `ledger_sync` writes it through
+    # a direct `git checkout` on the merge path, not through this gate, so team
+    # sync still converges.
+    f"{prefix}/apps/ops-mission-control/data/rotation.yaml"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The Ops Mission Control incident INDEX, for the same reason as the schedule above and
+    # with the same read/write asymmetry: every teammate's instance reads it constantly (it is
+    # the claim ledger and the board), so classifying it sensitive would break the app, but it
+    # is an INPUT TO AN AUTHORIZATION DECISION.
+    #
+    # ``/incident/action`` looks the incident up by id and hands ``incident.signal`` to
+    # ``rotation.authorize_action``, whose ``AutonomyRule.matches`` keys on
+    # ``signal.source``/``resource``/``labels``. An agent that can rewrite this file can pair a
+    # resource an operator's rule authorizes (``resource="prod-db-1"`` matching
+    # ``resource_glob="prod-*"``) with a DIFFERENT provider target in ``labels`` — so the gate
+    # approves one signal while the sink mutates another, and the authorization describes a
+    # signal that does not exist. That is the same defect already fixed on ``/incident/claim``
+    # by resolving the signal server-side; this is the same forgery reached through the store
+    # instead of the request body, which server-side resolution cannot help with because the
+    # store IS the server's copy. Found in review (GPT 5.6).
+    #
+    # The gateway's own writers (``store.claim``/``update_fields``, the reconcile SOP) open
+    # this path directly and do not route through this gate, so the app keeps working; only
+    # the agent's file-edit and shell tools are refused.
+    f"{prefix}/apps/ops-mission-control/data/incidents/index.json"
+    for prefix in _CREW_HOME_PREFIXES
 ]
 
 # ── Bash-layer protection for write-protected leaves ──
@@ -3962,7 +4343,33 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
 # realistic residual threat (skipping a one-time session-data copy) is low and
 # already covered on the tool path. Widen this only via the SHARED matcher (so
 # credentials benefit too), not with marker-only special cases.
-_WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (".data-home-ready",)
+#
+# ``rotation.yaml`` is the second entry, and it meets the bar the scope note sets rather than
+# being a special case: it is an INPUT TO AN AUTHORIZATION DECISION, not merely a
+# security-relevant setting. An agent that rewrites it to name its own login makes
+# ``rotation.authorize_action`` -> ``_definitely_off_shift`` accept a forged shift and execute a
+# production write against a teammate's incident tooling — and unlike ``config.json``, whose
+# inflated values the loader clamps, nothing downstream neutralizes a forged schedule entry.
+# The tool-path gate (``is_sensitive_write_path``) is still the primary control; this closes the
+# shell path for the same reason it is closed for the marker. Reads stay allowed on BOTH paths:
+# every teammate's instance must read the file to answer "am I on call?", and it holds no
+# secret. ``ledger_sync`` converges the file with a direct ``git checkout``, not through this
+# gate, so team sync is unaffected.
+# Entries are HOME-RELATIVE PATHS under the crew home, not bare filenames: the matcher
+# builds ``<home>/<crew-prefix>/<entry>``. `rotation.yaml` therefore carries its
+# ``apps/.../data/`` subpath — spelling it as a bare leaf silently matched nothing, which is
+# the failure mode where a security addition reads as done and enforces nothing.
+#
+# The incident INDEX is the third, on the same reasoning one step over: it is what
+# ``/incident/action`` reads to decide WHICH signal the autonomy gate is authorizing, so an
+# agent that rewrites it can have the gate approve one signal while the sink mutates another.
+# Reads stay allowed for the same reason as the schedule — it is the board every instance
+# renders, and it holds no secret.
+_WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
+    ".data-home-ready",
+    "apps/ops-mission-control/data/rotation.yaml",
+    "apps/ops-mission-control/data/incidents/index.json",
+)
 
 # Regex for bash commands that read sensitive paths.
 # Matches: cat, head, tail, less, more, strings, xxd, base64, cp, scp, open,

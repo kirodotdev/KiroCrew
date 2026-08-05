@@ -15,11 +15,13 @@ import { fmtTimeNumeric } from '../i18n/format'
  * working on).
  *
  * Opened from the side panel's + menu ("Browser"), it loads the URL in a
- * sandboxed iframe. It ALSO hosts the read-only agent-browse mirror: when live
- * Playwright screenshot frames are arriving, they take precedence over the
- * iframe (see `isLive`), so the one Browser tab shows either the local preview
- * or the live browse session. Unlike the agent-browse mirror, the iframe is a
- * real embedded browser view: the dev server's own HMR
+ * sandboxed iframe. It ALSO hosts the agent-browse surface, with two transports
+ * chosen by where the browser runs: when a native Chromium view is available
+ * (Electron shell) it OWNS the panel (`nativeOpen`) — a chat-opened page lands
+ * in the real, human- and agent-operable browser; otherwise (remote gateway /
+ * plain browser) the read-only Playwright screenshot mirror is the FALLBACK
+ * (`showMirror`, gated on `isLive` AND no native view). Unlike either agent
+ * surface, the iframe is a real embedded browser view: the dev server's own HMR
  * live-reloads it as the user edits, and Reload covers static servers.
  *
  * Session-scoped: the chosen URL is remembered PER chat slot (`sessionKey`), so
@@ -197,30 +199,50 @@ function isLoopbackHost(h: string): boolean {
 }
 
 /**
- * Isolate a loopback preview URL onto a hostname DISTINCT from the dashboard's.
+ * Normalize a loopback preview URL's host so it is both reachable under the
+ * dashboard CSP and cookie-isolated from the dashboard. Two rewrites, in order:
  *
- * Cookies are scoped by host but NOT by port, so an iframe pointed at
- * `http://localhost:5173` while the dashboard is served from the same host
- * (`localhost`, `127.0.0.1`, or a `*.localhost` alias like `kirocrew.localhost`)
- * would send the dashboard's host-scoped auth cookie to the previewed dev server
- * (which could read/replay it). When the preview host matches the dashboard host
- * and both are loopback, swap it to a guaranteed-distinct loopback host
- * (`127.0.0.1`, or `localhost` when the dashboard already IS `127.0.0.1`) — a
- * different host string, so no dashboard cookie is ever sent to the framed
- * server. Non-loopback hosts and already-distinct hosts are returned unchanged.
+ * 1. **IPv6 loopback → IPv4.** The dashboard CSP admits loopback preview origins
+ *    (see `server.py` `_LOOPBACK_FRAME_SRC`), but a bracketed IPv6 literal with a
+ *    wildcard port — `http://[::1]:*` — is INVALID CSP grammar, so Chromium drops
+ *    the whole source and can never admit it. The panel's no-cors liveness probe
+ *    to `[::1]` is therefore refused and a perfectly healthy dev server shows as
+ *    "Preview server not reachable" (while it opens fine in the OS browser, whose
+ *    top-level navigation is not bound by the dashboard CSP). `127.0.0.1` is the
+ *    same loopback and IS admitted, so canonicalize `[::1]`/`::1` to it. This runs
+ *    independent of the dashboard host — even when it is unknown — because the CSP
+ *    gap has nothing to do with cookie isolation.
+ *
+ * 2. **Cookie isolation.** Cookies are scoped by host but NOT by port, so an
+ *    iframe pointed at `http://localhost:5173` while the dashboard is served from
+ *    the same host (`localhost`, `127.0.0.1`, or a `*.localhost` alias like
+ *    `kirocrew.localhost`) would send the dashboard's host-scoped auth cookie to
+ *    the previewed dev server (which could read/replay it). When the preview host
+ *    matches the dashboard host and both are loopback, swap it to a
+ *    guaranteed-distinct loopback host (`127.0.0.1`, or `localhost` when the
+ *    dashboard already IS `127.0.0.1`) — a different host string, so no dashboard
+ *    cookie is ever sent to the framed server.
+ *
+ * Non-loopback hosts and already-distinct hosts skip the isolation swap.
  * `dashboardHost` defaults to the current document host (overridable for tests).
  */
 export function isolatePreviewHost(url: string, dashboardHost?: string): string {
+  let u: URL
+  try { u = new URL(url) } catch { return url }
+  // (1) IPv6 loopback canonicalization — unconditional (the CSP gap is
+  // orthogonal to the dashboard host, so it must fire even when host is unknown).
+  // A parsed URL exposes an IPv6 host in bracketed form (`[::1]`); guard the bare
+  // form too, defensively.
+  if (u.hostname === '[::1]' || u.hostname === '::1') u.hostname = '127.0.0.1'
+  // (2) Cookie isolation — needs to know the dashboard host to compare against.
   let host = dashboardHost
   if (host == null) {
     try { host = typeof window !== 'undefined' ? window.location.hostname : '' } catch { host = '' }
   }
-  if (!host) return url
-  let u: URL
-  try { u = new URL(url) } catch { return url }
+  if (!host) return u.toString()
   const h = u.hostname
-  if (!isLoopbackHost(h)) return url        // real host / tunnel — leave it
-  if (h !== host) return url                // already a distinct host → isolated
+  if (!isLoopbackHost(h)) return u.toString()  // real host / tunnel — leave it
+  if (h !== host) return u.toString()          // already a distinct host → isolated
   u.hostname = h === '127.0.0.1' ? 'localhost' : '127.0.0.1'
   return u.toString()
 }
@@ -372,25 +394,37 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     && nowTick - lastTs < LIVE_FRAME_TTL_MS
 
   // ── Transport selection ──
-  // The browsing surface has two backends and they are chosen by WHERE the
-  // browser actually runs, not by preference:
+  // The browsing surface has two backends, chosen by WHERE the browser actually
+  // runs — and the NATIVE view wins whenever it exists:
   //
-  //   • Streamed frames are arriving  -> the browser lives in another process
-  //     (remote gateway / Playwright proxy), so the mirror is the only thing
-  //     that can show it. It wins.
-  //   • Otherwise, in the Electron shell -> embed a real Chromium view natively.
+  //   • A real Chromium view is available in THIS process (Electron shell) ->
+  //     embed it natively. A chat-opened page lands in the real, human- and
+  //     agent-operable browser, not a read-only screenshot. Native OWNS the
+  //     panel; the mirror is suppressed even if a stray Playwright frame arrives.
+  //   • Otherwise (remote gateway / plain browser, where `useNativeBrowser`
+  //     reports `available: false`) -> the browser lives in another process and
+  //     only streamed frames can show it, so the mirror is the FALLBACK.
   //
-  // `useNativeBrowser` reports `available: false` in a plain browser (no preload
-  // bridge), which collapses this to the mirror path automatically.
-  // `externalActive: isLive` drives the control handoff — streaming frames mean a
-  // Playwright-driven browser elsewhere is the agent's target, so PLAYWRIGHT
-  // claims ownership and LIGHT releases the embedded view. Scoped by
-  // sessionKey: each Browser panel owns its own view and authorization.
-  const native = useNativeBrowser(sessionKey || '', active && !isLive, {
-    externalActive: isLive,
+  // `agentActEnabled: browseOn` wires the Globe toggle ("Let the agent use the
+  // browser") to the native view's agent-control gate: on -> acquire (LIGHT),
+  // off -> release. Scoped by sessionKey: each Browser panel owns its own view
+  // and authorization. `enabled` is just `active` now (native no longer yields
+  // to streaming frames), so switching side-panel tabs hides — never destroys —
+  // the view.
+  const native = useNativeBrowser(sessionKey || '', active, {
     agentActEnabled: browseOn,
   })
-  const nativeOpen = native.available && !isLive && !!native.state?.open
+  // Native wins when available. Its view is "open" once a page has been loaded
+  // into it; until then the panel shows the ordinary iframe preview.
+  const nativeOpen = native.available && !!native.state?.open
+  // The live screenshot mirror is the fallback whenever no native view is
+  // actually OWNING the surface. Gating it on `!native.available` was wrong:
+  // availability only means Electron's preload bridge exists, so on the desktop
+  // app before any page is opened natively (and for a remote gateway's frames
+  // arriving into a desktop shell) the mirror was suppressed while the native
+  // view had nothing to show -- a blank panel. `!nativeOpen` is the real
+  // condition: a native view that is open owns the surface, otherwise mirror.
+  const showMirror = isLive && !nativeOpen
   const requestInteraction = useCallback(() => {
     // Target the session whose page is on screen — which is THIS panel's
     // session, since isLive required a session_key match — never a global or
@@ -600,10 +634,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     + 'hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 '
     + 'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted'
 
-  // Live agent-browse mirror takes precedence over the iframe preview while
-  // Live agent-browse mirror — rendered as an OVERLAY (not an early return) so
-  // the preview subtree below stays mounted; its iframe document + any unsaved
-  // form/SPA state survive a browse frame arriving mid-preview.
+  // Live agent-browse mirror — the FALLBACK transport, shown only when no native
+  // view is available (see `showMirror`). Rendered as an OVERLAY (not an early
+  // return) so the preview subtree below stays mounted; its iframe document +
+  // any unsaved form/SPA state survive a browse frame arriving mid-preview.
   const liveMirror = (
     <div className="absolute inset-0 z-10 flex flex-col h-full min-h-0 bg-bg">
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
@@ -658,6 +692,26 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         <Monitor size={14} className="shrink-0 text-muted" />
         <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_live')}</span>
         <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
+        <div className="flex-1" />
+        {/* Globe toggle ("Let the agent use the browser") wiring: turning it on
+            acquires in-process (LIGHT) agent control of THIS native view; off
+            releases it. `requestInteraction` asks ChatPage to flip the toggle on
+            for this session — the hook (agentActEnabled: browseOn) then drives
+            setControlOwner. Reuses the live-mirror's keys, no new strings. */}
+        {browseOn ? (
+          <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.the_agent_can_click_type_and_navigate_this_page')}>
+            <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.agent_can_act')}
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={requestInteraction}
+            className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
+            title={i18nT('components.webPreviewPanel.lets_the_agent_click_type_and_navigate_this_page')}
+          >
+            <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.let_the_agent_act')}
+          </button>
+        )}
       </div>
       {/* Address bar. The preview subtree below (which owns the other URL form)
           is hidden while the native surface is up, so without this the user
@@ -701,7 +755,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       {/* Preview subtree stays MOUNTED even while the live mirror overlays it,
           so the iframe document + unsaved form/SPA state survive an isLive
           toggle — visually hidden, never unmounted. */}
-      <div className={`flex flex-col h-full min-h-0 ${isLive || nativeOpen ? 'invisible pointer-events-none' : ''}`} aria-hidden={isLive || nativeOpen || undefined}>
+      <div className={`flex flex-col h-full min-h-0 ${showMirror || nativeOpen ? 'invisible pointer-events-none' : ''}`} aria-hidden={showMirror || nativeOpen || undefined}>
       {/* URL bar: [back][forward]  ( [reload] input )  [open][expand] | [device] */}
       <form
         className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0"
@@ -924,7 +978,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         )}
       </div>
       </div>
-      {isLive ? liveMirror : nativeOpen ? nativeSurface : null}
+      {nativeOpen ? nativeSurface : showMirror ? liveMirror : null}
     </div>
   )
 }

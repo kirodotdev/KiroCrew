@@ -1,8 +1,9 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, RefreshCw } from 'lucide-react'
+import { Download, RefreshCw, Sparkles } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, Btn, SearchInput } from '../../components/ui'
+import { Card, Btn, SearchInput, EmptyState } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, type SkillFormData } from '../../components/SkillForm'
@@ -198,7 +199,7 @@ export default function SkillsTab() {
         </div>
       </div>
 
-      {skills.length === 0 ? <div className="text-muted italic py-3.5 text-sm">{i18nT('pages.overview.skillsTab.no_skills_installed')}</div> : (
+      {skills.length === 0 ? <EmptyState icon={<Sparkles className="lucide-inline" />} title={i18nT('pages.overview.skillsTab.no_skills_yet')} subtitle={i18nT('pages.overview.skillsTab.empty_subtitle')} action={<Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn>} /> : (
         /* Master-detail: skill list (pane 1) on the left, then the directory
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
@@ -298,12 +299,29 @@ interface PendingDetail {
   stale_base?: boolean
 }
 
-function PendingCandidateRow({ p, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
   p: PendingSkill
+  /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
+  autoOpen?: boolean
   onApprove: (slug: string) => void
   onDismiss: (slug: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  // Deliberately an effect and not a `useState(autoOpen)` initializer: the panel
+  // latches the deep-linked slug in an effect of its own, so `autoOpen` can flip
+  // to true on a re-render AFTER this row already mounted (the queue renders
+  // from cache before that latch lands). An initializer would have run once,
+  // with the wrong value, and the deep link would open nothing. Depending only
+  // on `autoOpen` -- which only ever goes true then false (the panel clears the
+  // latch when the user approves or dismisses this row), and whose false pass is
+  // a no-op thanks to the early return -- also means a user who collapses the
+  // row is not fought by a re-opening effect.
+  useEffect(() => {
+    if (!autoOpen) return
+    setOpen(true)
+    rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [autoOpen])
   const isUpdate = p.kind === 'update'
   const { data: detail } = useQuery<PendingDetail>({
     queryKey: ['skills-pending-detail', p.slug],
@@ -311,7 +329,7 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
     enabled: open,
   })
   return (
-    <div className="p-2 rounded-md border border-border">
+    <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
@@ -377,7 +395,32 @@ function PendingCandidateRow({ p, onApprove, onDismiss }: {
 
 function PendingSkillsPanel() {
   const qc = useQueryClient()
-  const { data } = useQuery<{ pending: PendingSkill[] }>({
+  const [params, setParams] = useSearchParams()
+  const reviewParam = params.get('review')
+  // Latch the deep-linked slug, then strip it from the URL. Reading the param
+  // directly on every render would keep the highlight alive forever, and once
+  // the candidate is approved the same param would render the "no longer
+  // awaiting review" notice for work the user had just finished.
+  const [reviewSlug, setReviewSlug] = useState<string | null>(null)
+  useEffect(() => {
+    if (!reviewParam) return
+    // Evict this slug's cached detail BEFORE latching. The latch auto-expands
+    // the row, and the detail query would otherwise serve a cache entry from an
+    // EARLIER candidate that reused the same slug (30s global staleTime, 5min
+    // gcTime) -- while `Approve` is enabled on `!!detail`, so the user could
+    // approve content they never saw. Both mutations already evict this key for
+    // the same reason; the deep link is a third entry point that displays detail
+    // without a user click, and it arrives from a notification that fires when a
+    // candidate is STAGED, which is exactly the slug-reuse case.
+    qc.removeQueries({ queryKey: ['skills-pending-detail', reviewParam] })
+    setReviewSlug(reviewParam)
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('review')
+      return next
+    }, { replace: true })
+  }, [reviewParam, setParams, qc])
+  const { data, isSuccess } = useQuery<{ pending: PendingSkill[] }>({
     queryKey: ['skills-pending'],
     queryFn: () => api.skillsPending(),
     // Skills tab is conditionally mounted (CapabilitiesPage), so it remounts on
@@ -392,6 +435,14 @@ function PendingSkillsPanel() {
   const approve = useMutation({
     mutationFn: (slug: string) => api.approvePendingSkill(slug),
     onSuccess: (_data, slug) => {
+      // Drop the deep-link latch when the user acts on the linked candidate
+      // THEMSELVES. Without this, approving the row you arrived at makes the
+      // refetch omit it, which flips reviewMissing and reports "no longer
+      // awaiting review -- it was approved or dismissed" one click after the
+      // user approved it; when it was the only row that sentence becomes the
+      // whole panel. The notice is for a candidate resolved BEFORE you got
+      // here, not for your own action.
+      if (slug === reviewSlug) setReviewSlug(null)
       // Evict the per-slug detail cache so a slug re-staged after this one went
       // live can't surface the promoted candidate's stale detail.
       qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
@@ -406,6 +457,9 @@ function PendingSkillsPanel() {
   const dismiss = useMutation({
     mutationFn: (slug: string) => api.dismissPendingSkill(slug),
     onSuccess: (_data, slug) => {
+      // Same reason as approve: a dismissal the user just performed must not
+      // come back as "someone resolved this already".
+      if (slug === reviewSlug) setReviewSlug(null)
       // Evict the per-slug detail cache too, so a slug re-staged shortly after
       // dismissal can't show the dismissed candidate's stale detail (which a
       // user might then approve without seeing the replacement).
@@ -413,25 +467,45 @@ function PendingSkillsPanel() {
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
     },
   })
-  if (pending.length === 0) return null
+  // Only claim a deep-linked candidate is gone once the queue has actually been
+  // read -- `pending` is [] while the first fetch is in flight, which would
+  // otherwise flash the notice on every deep link.
+  const reviewMissing = !!reviewSlug && isSuccess && !pending.some(p => p.slug === reviewSlug)
+  // Without the notice a deep link from a notification whose candidate was
+  // already resolved lands on a Skills tab that looks completely normal, and
+  // the user is left hunting for a row that no longer exists.
+  if (pending.length === 0 && !reviewMissing) return null
   return (
     <div className="mt-4 mb-2">
-      <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
-        {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
-        <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
-      </h4>
-      <Card>
-        <div className="space-y-2">
-          {pending.map(p => (
-            <PendingCandidateRow
-              key={p.slug}
-              p={p}
-              onApprove={s => approve.mutate(s)}
-              onDismiss={s => dismiss.mutate(s)}
-            />
-          ))}
+      {/* Suppressed when the ONLY thing to show is the resolved-candidate
+          notice: a "Pending review (0)" heading over a sentence explaining
+          there is nothing to review reads like a broken count. */}
+      {pending.length > 0 && (
+        <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
+          {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
+          <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
+        </h4>
+      )}
+      {reviewMissing && (
+        <div className="mb-2 text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">
+          {i18nT('pages.overview.skillsTab.linked_candidate_no_longer_pending')}
         </div>
-      </Card>
+      )}
+      {pending.length > 0 && (
+        <Card>
+          <div className="space-y-2">
+            {pending.map(p => (
+              <PendingCandidateRow
+                key={p.slug}
+                p={p}
+                autoOpen={p.slug === reviewSlug}
+                onApprove={s => approve.mutate(s)}
+                onDismiss={s => dismiss.mutate(s)}
+              />
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   )
 }

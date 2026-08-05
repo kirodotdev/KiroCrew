@@ -336,7 +336,7 @@ describe('SkillsTab Integration Tests', () => {
     renderWithProviders(<SkillsTab />)
 
     await waitFor(() => {
-      expect(screen.getByText(/no skills installed/i)).toBeInTheDocument()
+      expect(screen.getByText(/no skills yet/i)).toBeInTheDocument()
     })
   })
 

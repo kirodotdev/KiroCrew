@@ -1,0 +1,124 @@
+{
+  "name": "ops-mission-control",
+  "version": "0.1.0",
+  "displayName": "Ops Mission Control",
+  "description": "An autonomous ops first responder. Watches your alarms, pages, and monitors; claims what fires; investigates it with real context; and proposes a fix \u2014 keeping everything it learns in a local ledger so the second occurrence is faster than the first.",
+  "author": "kirocrew",
+  "tags": [
+    "ops",
+    "oncall",
+    "incidents",
+    "aws",
+    "monitoring",
+    "sre"
+  ],
+  "highlights": [
+    "Claims a firing alarm within one heartbeat and investigates before anyone has to look",
+    "Knowledge ledger with confidence and trust levels \u2014 a repeat failure resolves from what you already know",
+    "Live board in the dashboard and as replyable Slack threads, so the channel is the dashboard",
+    "Connects AWS CloudWatch, PagerDuty, Datadog, GitHub Issues, or any system that can POST signed JSON — including Alertmanager-shaped bodies, fanned out one incident per alert",
+    "Read-only by default \u2014 write actions are opt-in per signal pattern, and every one is audited",
+    "Rotation-aware: the on-shift automation tier arms and disarms itself"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/ops-mission-control",
+      "/api/apps/ops-mission-control/*",
+      "/api/chat",
+      "/api/chat/*",
+      "/api/approvals",
+      "/api/approvals/*"
+    ],
+    "events": [
+      "slots",
+      "notification"
+    ],
+    "network": true,
+    "storage": true,
+    "cron": true,
+    "mcpTools": [
+      "cron_add",
+      "cron_list",
+      "send_message",
+      "spawn_run",
+      "learn_add"
+    ]
+  },
+  "notifications": {
+    "channels": [
+      {
+        "id": "waiting-on-you",
+        "name": "Waiting on you",
+        "icon": "UserCheck",
+        "defaultPriority": "critical"
+      },
+      {
+        "id": "source-health",
+        "name": "Source health",
+        "icon": "Radio"
+      },
+      {
+        "id": "incident-released",
+        "name": "Released incidents",
+        "icon": "Clock",
+        "defaultPriority": "passive"
+      }
+    ]
+  },
+  "dependencies": {
+    "optionalCommands": [
+      "aws",
+      "gh"
+    ]
+  },
+  "crons": [
+    {
+      "name": "dispatch",
+      "every": 120,
+      "silent": true,
+      "persistent_session": false,
+      "enabled": false,
+      "message": "Follow the dispatch SOP at ~/.kiro/crew/skills/ops-mission-control/sops/dispatch.md. Call POST /api/apps/ops-mission-control/dispatch to claim any unclaimed signals; it returns each claimed incident with its ledger matches, operating mode, and a ready-to-use investigation brief. For each claimed incident, create a chat slot whose key is EXACTLY ops-mission-control-<incident_id> (the dashboard incident panel polls that key, so any other key leaves the user watching an empty conversation) titled '<incident_id> - <signal title>', link it to your ops channel so the thread is replyable, and start the investigation from that brief following ~/.kiro/crew/skills/ops-mission-control/sops/investigate.md. Tell the investigator explicitly that Phase 4 is mandatory: it MUST record its diagnosis with POST /api/apps/ops-mission-control/incident/transition (an incident with no recorded diagnosis shows on the board as 'Stopped, no diagnosis', which misreports a finished analysis as a dead end). If the response reports changed=false, produce NO output at all - this job is silent by design."
+    },
+    {
+      "name": "reconcile",
+      "every": 900,
+      "silent": true,
+      "persistent_session": false,
+      "enabled": false,
+      "message": "Follow the reconcile SOP at ~/.kiro/crew/skills/ops-mission-control/sops/reconcile.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to reconcile and this must cost nothing. Otherwise GET /api/apps/ops-mission-control/signals, then resolve any open incident whose signal is no longer firing (POST /incident/transition), update its Slack thread reaction, and unpin finished work. Cap at 10 incidents per run. If nothing changed, produce NO output."
+    },
+    {
+      "name": "rotation-check",
+      "every": 300,
+      "silent": true,
+      "persistent_session": false,
+      "enabled": true,
+      "message": "Follow the rotation-check SOP at ~/.kiro/crew/skills/ops-mission-control/sops/rotation-check.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to arm and this must cost nothing. Otherwise POST /api/apps/ops-mission-control/rotation/arm, which resolves the shift and arms or disarms the app's crons itself. You do NOT choose which crons to pause: the route computes the tier map and refuses to pause an always-tier job, so a mistake here cannot strand the instance unable to re-arm. If the response reports an empty changed list, produce NO output."
+    },
+    {
+      "name": "ledger-hygiene",
+      "cron_expr": "17 3 * * *",
+      "silent": true,
+      "persistent_session": false,
+      "enabled": true,
+      "message": "Follow the ledger-hygiene SOP at ~/.kiro/crew/skills/ops-mission-control/sops/ledger-hygiene.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to maintain and this must cost nothing. Otherwise POST /api/apps/ops-mission-control/ledger/hygiene to run the deterministic pass (git pull, dedupe/decay/prune, vector index, retire old closed incidents, git push), then review the remaining entries for contradictions and promote observed->verified where a fix has now worked more than once. Report only if something changed."
+    }
+  ],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/ops-mission-control",
+        "label": "Mission Control",
+        "icon": "Radio"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/ops-mission-control/icon.svg",
+  "heroImage": "/app-assets/ops-mission-control/hero-light.svg",
+  "heroImageDark": "/app-assets/ops-mission-control/hero-dark.svg"
+}

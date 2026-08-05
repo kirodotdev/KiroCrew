@@ -1,0 +1,38 @@
+{
+  "name": "spec-builder",
+  "version": "0.1.0",
+  "displayName": "Spec Builder",
+  "description": "Spec-driven development inside Kiro Crew: turn a feature idea into Requirements \u2192 Design \u2192 Tasks with an embedded agent, review the markdown in-app, then hand the approved plan off to an autonomous execution session.",
+  "author": "kirocrew",
+  "tags": [
+    "specs",
+    "kiro",
+    "planning",
+    "workflow",
+    "developer-tools"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/spec-builder",
+      "/api/apps/spec-builder/*",
+      "/api/chat",
+      "/api/chat/*"
+    ],
+    "storage": true
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "skills": ["skills/spec-workflow"],
+  "ui": {
+    "pages": [
+      {
+        "route": "/spec-builder",
+        "label": "Spec Builder",
+        "icon": "ClipboardList"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/spec-builder/icon.svg"
+}

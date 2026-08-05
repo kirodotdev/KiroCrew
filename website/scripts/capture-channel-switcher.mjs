@@ -2,11 +2,11 @@
  * Screenshot harness for Settings > About's update-channel switcher.
  *
  * Runs the REAL built SPA (website/dist) behind a tiny in-process static server
- * with SPA fallback and answers every /api/** call from fixtures via Playwright
- * route interception. The desktop-only surface is reached by injecting a
- * window.updateAPI bridge before app scripts run — AboutPanel derives isDesktop
- * from that object, so the Electron-only rows (update channel, platform) render
- * in a plain browser without packaging the app.
+ * with SPA fallback and answers every /api/** call from the shared fixture
+ * router via Playwright route interception. The desktop-only surface is reached
+ * by injecting a window.updateAPI bridge before app scripts run — AboutPanel
+ * derives isDesktop from that object, so the Electron-only rows (update channel,
+ * platform) render in a plain browser without packaging the app.
  *
  * Two shots per run: the About card, and the card with the switcher's other lane
  * hovered, so the fix (both lanes side by side, nothing overlapping the Platform
@@ -17,15 +17,12 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
+import { installApiFixtures, logPageFailures } from './lib/api-fixtures.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/channel-switcher'
 const PREFIX = process.argv[3] || 'after'
 
 mkdirSync(OUT, { recursive: true })
-
-const json = (route, body, status = 200) => route.fulfill({
-  status, contentType: 'application/json', body: JSON.stringify(body),
-})
 
 async function main() {
   const { srv, base } = await serveDist()
@@ -37,35 +34,8 @@ async function main() {
   })
   const page = await context.newPage()
 
-  await page.routeWebSocket(/\/api\/ws/, () => {})
-
-  await page.route('**/api/**', async route => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/kiro-prerequisite') {
-      return json(route, {
-        platform: 'darwin', installed: true, authenticated: true, ready: true,
-        initial_setup_complete: true, can_auto_install: false, can_login: false,
-        repair_required: false, docs_url: '', setup_allowed: false,
-        operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-      })
-    }
-    if (path === '/api/chat/slots') return json(route, [])
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-    if (path === '/api/status') return json(route, { sessions: 0, crons: 0, lessons: 0, uptime: 120, version: '0.5.0' })
-    if (path === '/api/notifications') return json(route, { notifications: [], unread: 0 })
-    if (path === '/api/auth/me') return json(route, { user: 'owner', app: '' })
-    if (path === '/api/themes') return json(route, { themes: [], installed: [] })
-    if (path === '/api/theme/boot') return json(route, { mode: 'dark', theme: '' })
-    if (path === '/api/dashboard/branding') return json(route, { bot_name: 'Kiro', avatar: '' })
-    if (path === '/api/recent-projects') return json(route, { dirs: [] })
-    if (path === '/api/dashboard/config') return json(route, { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' })
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    if (objectish) return json(route, {})
-    return json(route, [])
-  })
-
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
-  page.on('console', msg => { if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300)) })
+  await installApiFixtures(page)
+  logPageFailures(page)
 
   // The Electron preload bridge AboutPanel reads. Presence => isDesktop, and
   // channelSwitchable + setChannel => the switcher instead of a read-only row.

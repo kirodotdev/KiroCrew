@@ -36,7 +36,7 @@ def test_kirocrew_home_wins_when_set(
 ) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     assert _crew_home() == tmp_path
-    assert _default_socket_path() == str(tmp_path / "mc-mcp-gateway.sock")
+    assert _default_socket_path() == str(tmp_path / "kirocrew-mcp-gateway.sock")
     assert _fallback_log_path() == tmp_path / "logs" / "stub_fallback.jsonl"
 
 
@@ -85,5 +85,5 @@ def test_unresolvable_home_degrades_instead_of_raising(
 
     # Must not raise, and must still yield a usable path.
     assert _crew_home().parts, "a degraded home must still be a usable path"
-    assert _default_socket_path().endswith("mc-mcp-gateway.sock")
+    assert _default_socket_path().endswith("kirocrew-mcp-gateway.sock")
     assert _fallback_log_path().name == "stub_fallback.jsonl"

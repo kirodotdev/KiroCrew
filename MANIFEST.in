@@ -40,6 +40,9 @@ recursive-include src/kiro_crew/tests_fixtures *
 # --- Pruning: never ship test trees, vendored node deps, or build cruft ------
 prune test
 prune tests
+# In-package `tests/` is deliberately NOT pruned: `code_review_sage` (16 files) and
+# `issue_radar` (11) ship theirs, so that is the established convention for a builtin app and
+# changing it belongs in its own change.
 prune website/node_modules
 prune build
 prune dist

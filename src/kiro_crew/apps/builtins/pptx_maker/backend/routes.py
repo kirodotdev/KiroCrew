@@ -911,6 +911,16 @@ def _write_deck_root(deck_root: str) -> tuple[int, dict]:
 
     BLOCKING — call through ``off_loop``.
     """
+    # An embedded NUL makes a path unusable, but Path.resolve() only RAISES on
+    # it on POSIX — on Windows it silently returns a bogus path, so resolve()'s
+    # own except never fires and the wedge slips through. Reject NUL explicitly
+    # up front so the check holds on every OS.
+    if not deck_root or "\x00" in deck_root:
+        logger.warning("pptx-maker: refused an empty or NUL-containing deck root")
+        return 400, {
+            "error": "that deck folder is not a usable path",
+            "code": "invalid_deck_root",
+        }
     try:
         # Same expansion order as `paths.deck_root`, so what is validated is what
         # will later be resolved — checking a differently-derived path would leave

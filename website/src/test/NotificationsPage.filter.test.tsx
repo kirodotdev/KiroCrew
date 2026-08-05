@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationsPage from '../pages/NotificationsPage'
+import { KINDS_STORAGE_KEY, KIND_KEYS } from '../components/notifications/notifMeta'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
 
@@ -43,7 +44,10 @@ function stateWith(notifs: Notification[]): Partial<RootState> {
   }
 }
 
-const STORAGE_KEY = 'mc:notif:activeKinds'
+// Imported rather than a literal: the key is versioned (a new notification kind
+// bumps it so a stored full set is not silently reinterpreted as a partial one),
+// and a hardcoded copy here would go stale on every bump.
+const STORAGE_KEY = KINDS_STORAGE_KEY
 
 describe('NotificationsPage multi-select filter', () => {
   beforeEach(() => {
@@ -150,8 +154,9 @@ describe('NotificationsPage multi-select filter', () => {
     const group = container.querySelector('[role="group"][aria-label="Filter notifications by kind"]')
     expect(group).not.toBeNull()
     const chips = within(group as HTMLElement).getAllByRole('button')
-    // 8 chips: All + 7 kinds
-    expect(chips.length).toBe(8)
+    // All + one chip per kind. Derived, not hardcoded: a new notification kind
+    // adds a chip, and the count is not what this test is about.
+    expect(chips.length).toBe(KIND_KEYS.length + 1)
   })
 
   it('shows unknown-kind notifications when all kinds are active (back-compat)', () => {

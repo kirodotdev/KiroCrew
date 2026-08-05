@@ -10,7 +10,8 @@ import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRu
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 
 import { i18nT } from '../../i18n/t'
-import { fmtTimeNumeric } from '../../i18n/format'
+import { fmtList, fmtTimeNumeric } from '../../i18n/format'
+import ErrorNotice from '../../components/ErrorNotice'
 /* ── Security feature registry ──
  *
  * Qualitative layer descriptions ONLY. Every control whose posture is a COUNT
@@ -346,7 +347,9 @@ function AddDenyInput({ onAdd, busy }: { onAdd: (pattern: string) => void; busy:
           {i18nT('pages.settings.securityPanel.add')}
         </Btn>
       </div>
-      {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}
+      {/* Invalid-regex feedback on the input the user is still typing — a form
+          hint, not a failure to diagnose, so no agent hand-off. */}
+      <ErrorNotice message={error} className="mt-1.5" />
     </div>
   )
 }
@@ -431,7 +434,16 @@ function effectiveLabel(row: GovernanceScope): string {
     case 'ordinal':
       return `Floor: ${d.floor ?? '?'}`
     case 'capability': {
-      if (!d.enabled) return i18nT('pages.settings.securityPanel.disabled_by_policy')
+      // A host-profile pin is ONE surface's posture, so it must not read as
+      // install-wide. The shipped host profile disables cron / messaging / spawn
+      // because the host process performs none of them, while the cron and
+      // messaging surfaces enable them under their own profiles — "Disabled by
+      // policy" on those rows told operators a working feature was off.
+      if (!d.enabled) {
+        return row.scope_note === 'host_profile'
+          ? i18nT('pages.settings.securityPanel.disabled_for_this_surface')
+          : i18nT('pages.settings.securityPanel.disabled_by_policy')
+      }
       const inner = Object.entries(d.inner ?? {})
       if (inner.length === 0) return i18nT('pages.settings.securityPanel.enabled')
       // Use rulesetLabel (not the allow-count alone) so a deny-mode inner ruleset
@@ -524,6 +536,12 @@ function sourceBadgeLabel(source: GovernanceScope['source']): string {
 /** A single read-only governance scope row. */
 function GovernanceRow({ row }: { row: GovernanceScope }) {
   const label = effectiveLabel(row)
+  // A host-profile row is one surface's ceiling, so its tooltip must say so
+  // rather than the generic install-wide "pinned by policy".
+  const tipKey =
+    row.scope_note === 'host_profile'
+      ? 'pages.settings.securityPanel.pinned_for_the_host_surface'
+      : PINNED_TOOLTIP_KEY
   return (
     <div className="flex items-center justify-between py-2 gap-3">
       <div className="flex items-center gap-2 min-w-0 shrink">
@@ -540,7 +558,7 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
                 narrow (mobile) widths rather than overflowing; the full value
                 stays available via the title tooltip. */}
             <span className="text-[12px] text-text-strong text-right truncate" title={label}>{label}</span>
-            <InfoTip text={i18nT(PINNED_TOOLTIP_KEY)} />
+            <InfoTip text={i18nT(tipKey)} />
           </>
         ) : (
           <span className="text-[12px] text-muted italic shrink-0">{i18nT('pages.settings.securityPanel.not_restricted')}</span>
@@ -842,6 +860,19 @@ function GovernancePolicyViewer() {
                 </div>
               </div>
             ))}
+            {/* Names the surfaces that carry their OWN ceiling, so a host row
+                reading "Disabled for this surface" is legible: the capability is
+                not off everywhere, it is off for the host process. */}
+            {(data?.other_bound_surfaces?.length ?? 0) > 0 && (
+              <div className="text-[11px] text-muted leading-relaxed border-t border-border pt-2 mt-2">
+                {i18nT('pages.settings.securityPanel.other_surfaces_have_their_own_profiles', {
+                  // fmtList, not join(', '): this string ships in 10 locales and
+                  // zh joins with 、 and no spaces, so a literal separator would
+                  // render wrong there.
+                  surfaces: fmtList(data?.other_bound_surfaces ?? []),
+                })}
+              </div>
+            )}
           </>
         )}
       </SettingsCard>

@@ -213,6 +213,22 @@ Long-running operations (sync, provision) are tracked via `_RUNS` dict with:
 - Watchdog deadline (30 min default, configurable via `_RUN_DEADLINE_S`)
 - Status: `running` → `done` | `timeout`
 
+On deadline expiry the run's whole process tree is reaped, in two steps. The
+spawned CLI gets its own process group, so a single `killpg` covers it and its
+ordinary children (pip, git, npm). That is not sufficient on its own: build
+tooling spawns grandchildren into *new sessions*, which sit in a different
+process group and survive a group kill. So descendants are enumerated **before**
+any signal is sent — killing reparents survivors to init and erases the PPID
+links that identify them — and each survivor is then killed via its own tree
+kill, so a nested group (npm → vite) goes down with it.
+
+This matters beyond tidiness: an escaped `npm run build` keeps rewriting
+`website/dist` after the run is reported dead, and its staging lock died with
+the process that held it. A later sync would then stage a bundle a live writer
+is still mutating, and the completeness check cannot detect it — that check only
+resolves `/assets/` references reachable from `index.html`, while the
+lazy-loaded chunks such a writer is mid-write on are unreachable from it.
+
 Clients poll `/apps/dev-fleet/api/run?id=<run_id>` for progress. The endpoint
 returns only the **last 60 lines** of `run.output` (a sliding tail window), not
 the full server-side 500-line buffer — see the accumulation note below.
@@ -342,13 +358,56 @@ per-worktree; the hazard is process-wide).
 `POST /apps/dev-fleet/api/sync` is single-flight: a second concurrent request is
 refused with **HTTP 409** (`{"ok": false, "error": "sync already running",
 "run_id": …}`) rather than launching a second ~90s fetch → merge → pip install →
-npm ci → npm build. The run script emits a `::step::<idx>::<label>` marker per
+npm ci → npm build + stage. The run script emits a
+`::step::<idx>::<label>` marker per
 step; the run worker records BOTH the authoritative step index and its **label**
 onto the run entry (`step` / `step_label`), so `/run` can name the CURRENT step
 even after the marker scrolls out of the 60-line output tail window. The
 frontend shows that label beside the "Syncing" progress bar. This reuses the
 existing `_RUNS` / `::step::` / `/run` run-tracking mechanism — the same channel
 the provision log panel uses (#320) — rather than adding a second one.
+
+The whole FRONTEND half of the sync — `npm ci` and `npm build + stage` — is
+**skipped on an edition checkout** (`frontend.edition_configured()`). The build
+runs under `_build_env()`, whose allowlist drops `KIROCREW_EDITION_DIR` and
+`KIROCREW_ALLOW_EDITION`, so on an edition composition root it can only compile
+the STOCK SPA; staging that would silently replace the edition dashboard with
+upstream's. Skipping is what makes it safe, and it costs an edition nothing —
+the only artifact this path could produce for it is a bundle it must never
+serve.
+
+The final **npm build + stage** step builds the frontend and copies `website/dist` into
+`src/kiro_crew/static/dist` under the Dev Fleet backend's OWN interpreter, with
+the target repo passed as an argument. Resolving the helper from the target
+instead would make the step's very existence contingent on the pulled revision
+already carrying it, so an older target would turn the whole Pull+Build into an
+ImportError. It is not cosmetic. On a source install `static/dist` is a *symlink*
+to `website/dist` (`ensure_dev_dist_symlink`), and aiohttp resolves a static
+route's directory once at registration — so a gateway started in that state is
+pinned to the Vite output directory for its whole life, and every `npm build`
+rewrites the tree it is serving. Staging leaves a real snapshot there, so from
+the gateway's **next start** onward a build cannot touch what it serves. It
+publishes the same bundle the build just wrote into `website/dist`, which keeps
+the pinned `/assets` route and the staged `index.html` on the same hashed
+chunks. The run script stops at the first non-zero step, so a build or staging
+failure fails the sync rather than silently leaving the symlink in place.
+
+The build and the copy are ONE step because they share ONE holder of the staging
+lock (`.dist.staging.lock`, next to `static/dist`). `npm run build` empties
+`website/dist` before repopulating it, so a peer flow — another sync, or the
+dashboard's own update — that held the lock only for the copy could still read a
+partially written tree. Inspecting the copy afterwards cannot substitute: a
+bundle's lazy route chunks are referenced from inside the entry chunk, not from
+`index.html`, so most of the tree is invisible to any index-based check. `npm ci`
+stays a separate step since it does not touch `website/dist`.
+
+Not covered: a gateway process that started while `static/dist` was still a
+symlink to `website/dist` — the first staging sync, and equally any process
+booted after something re-created the symlink (a `git clean` re-running
+`ensure_dev_dist_symlink`). Such a process is pinned to `website/dist`, so its
+dashboard still 404s while Vite rewrites it; pairing Pull+Build with Restart
+Gateway is what closes it. A process that booted against a staged real
+directory is unaffected.
 
 ## Make Live
 

@@ -1311,96 +1311,32 @@ def register_external_app(
 # path's test still forbids it.
 _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset({"projects"})  # Task Runner
 
-_BUILTIN_APPS: list[dict[str, Any]] = [
-    {
-        "name": "agent-worlds",
-        "version": "1.0.0",
-        "displayName": "Agent Worlds",
-        "description": (
-            "Turns your running agents into characters in an animated pixel-art scene, so a "
-            "glance tells you how busy Kiro Crew is. Each active agent appears as a sprite that "
-            "reacts as work starts and finishes, across themed scenes from a classic office to "
-            "a wizard tower or an underwater lab. Pop it out into its own window to keep it on "
-            "a second screen while you work."
-        ),
-        "author": "kirocrew",
-        "tags": ["visualization", "agents"],
-        "highlights": [
-            "Live view of which agents are running, as characters rather than a list",
-            "Themed scenes including Office, Panda Den, Neural Net, Wizard Tower, and Deep Lab",
-            "Pop out into a separate window for a second monitor; scene choice stays in sync",
-            "Remembers your chosen scene between visits",
-            "Purely a visualization — it never changes what your agents do",
-        ],
-        "defaultEnabled": False,
-        "iconUrl": "/app-assets/worlds/icon.svg",
-        "heroImage": "/app-assets/worlds/hero-light.svg",
-        "heroImageDark": "/app-assets/worlds/hero-dark.svg",
-        "heroImageDetail": "/app-assets/worlds/hero-detail-light.svg",
-        "heroImageDetailDark": "/app-assets/worlds/hero-detail-dark.svg",
-        "ui": {
-            "pages": [{"route": "/worlds", "label": "Worlds", "icon": "Gamepad2"}],
-        },
-    },
-    {
-        "name": "channels",
-        "version": "1.0.0",
-        "displayName": "Channels",
-        "description": (
-            "A shared room where several agents work a problem together instead of one agent "
-            "working alone. You assign each agent a role, and they post progress into the "
-            "channel and answer each other's @mentions in the open — there is no private "
-            "agent-to-agent messaging, so the whole exchange stays readable, and you remain "
-            "the approver for anything that changes state. Agents stay alive in the channel "
-            "until dismissed or timed out."
-        ),
-        "author": "kirocrew",
-        "tags": ["collaboration", "agents"],
-        "highlights": [
-            "Several role-assigned agents collaborate in one shared, readable transcript",
-            "No private agent-to-agent messaging — every exchange happens in the channel",
-            "You stay the final approver for any operation that mutates state",
-            "Agents persist in the channel until dismissed or timed out",
-            "Hidden from the App Store grid; enable with `kirocrew app enable channels`",
-        ],
-        "defaultEnabled": False,
-        # Hidden from the App Store Browse grid (opt-in via `kirocrew app enable channels`).
-        # Code and routes remain fully intact; this only gates store visibility.
-        "hidden": True,
-        "permissions": {
-            "api": ["/api/channels"],
-            "events": ["channel", "channel_message"],
-        },
-        "ui": {
-            "pages": [{"route": "/channels", "label": "Channels", "icon": "Users"}],
-        },
-    },
-    # Task Runner ("projects") used to live here as a hardcoded entry. It now
-    # ships as a file-based manifest at builtins/projects/app.json, like every
-    # other builtin, and is picked up by discover_builtin_apps(). Its
-    # ``defaultEnabled: true`` carries over unchanged — see
-    # _DEFAULT_ON_BUILTINS below for why it is exempt from the opt-in policy.
-    # -------------------------------------------------------------------------
-    # Example: opt-in builtin app (defaultEnabled: false)
-    #
-    # Uncomment to test the defaultEnabled feature. This app will appear in the
-    # Browse tab for discovery and can be enabled by the user.
-    #
-    # {
-    #     "name": "example-opt-in",
-    #     "version": "1.0.0",
-    #     "displayName": "Example Opt-In Feature",
-    #     "description": "A demonstration of a builtin app that defaults to disabled",
-    #     "author": "kirocrew",
-    #     "tags": ["example"],
-    #     "defaultEnabled": False,
-    #     "ui": {
-    #         "pages": [
-    #             {"route": "/example-opt-in", "label": "Example", "icon": "FlaskConical"}
-    #         ],
-    #     },
-    # },
-]
+# EMPTY, and that is a finished migration rather than an oversight. Every builtin now
+# ships as a file-based manifest under ``builtins/<dir>/app.json`` and is picked up by
+# ``discover_builtin_apps()``. ``agent-worlds`` and ``channels`` were the last two
+# hardcoded entries; they moved to ``builtins/agent_worlds/app.json`` and
+# ``builtins/channels/app.json`` with every field byte-identical, including the
+# ``defaultEnabled: false`` / ``hidden: true`` flags, which survive because
+# ``_manifest_to_builtin_dict`` copies ``AppManifest.extra`` verbatim.
+#
+# One thing JSON cannot carry came with them, so it is recorded here: ``channels`` sets
+# ``hidden: true`` to keep itself out of the App Store Browse grid only. Its code and
+# routes stay fully intact and it is enabled with ``kirocrew app enable channels``.
+# ``hidden`` gates store visibility, nothing else.
+#
+# Why it had to happen for i18n: the display copy of a builtin is localised by the
+# ``APP_MANIFEST_KEY`` table in ``website/src/components/appstore/appManifest.ts``, and
+# ``scripts/check-app-manifest-sync.mjs`` proves the English catalog value still equals
+# the manifest's own prose. A manifest that lives in a Python literal has no file for
+# that check to read, so these two apps would have been the only builtins whose copy
+# could drift silently.
+#
+# It stays a list rather than being deleted because it is still the ADD-only precedence
+# seam: ``register_builtin_apps`` and ``detect_orphaned_builtins`` union it with the
+# discovered and edition-contributed sets, so an edition (or a test) can inject a
+# builtin that outranks a discovered one without reintroducing the hardcoding. Prefer a
+# file manifest; reach for this only when there is no directory to put one in.
+_BUILTIN_APPS: list[dict[str, Any]] = []
 
 
 _REQUIRED_BUILTIN_FIELDS = {"name", "version", "displayName", "description", "author"}
@@ -1658,7 +1594,8 @@ def register_builtin_apps() -> int:
     enabled state regardless of the definition's ``defaultEnabled`` value.
 
     Sources (merged, hardcoded list takes precedence on name collision):
-    1. ``_BUILTIN_APPS`` hardcoded list (legacy, being phased out)
+    1. ``_BUILTIN_APPS`` hardcoded list — EMPTY since every builtin moved to a file
+       manifest; kept as the ADD-only precedence seam for editions and tests
     2. Auto-discovered from ``builtins/`` directory via ``discovery.py``
     3. Edition-contributed builtins from the active PlatformContext's
        ``AppsLoader.manifest_sources()`` (empty in standalone; the internal

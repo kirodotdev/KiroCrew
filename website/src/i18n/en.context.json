@@ -39,6 +39,8 @@
     "apps.papyrus.page.pdf": "The file format \"PDF\", labelling the compiled output of a LaTeX paper. An acronym practitioners keep untranslated in nearly every locale.",
     "apps.papyrus.workspace.log": "Noun: the LaTeX compiler's output log, naming a tab beside the PDF preview. A record of what the compiler printed — NOT the verb \"to log\" and not a logarithm.",
     "apps.pptxMaker.libraryPanel.font_specimen": "Type specimen shown large in the template preview, filled with that template's own theme font and text colour. Not a label: the two characters exist so the user can judge the TYPEFACE's letterforms at a glance, the role an \"Aa\" ramp plays in a font picker. Keep the Latin pair unless your readers would judge a typeface better from one upper- and one lower-case glyph of their own script; never render it as a word.",
+    "apps.specBuilder.components.projectPicker.up": "Spec Builder's project-folder picker: the button that navigates one directory level up. 'Up' means the parent folder, not upward motion or an increase.",
+    "apps.specBuilder.components.specRail.v": "Spec Builder's sidebar footer: the single-letter prefix before the app version number, as in v1.2.3. Short for version, not the letter itself.",
     "apps.workflows.workflowsPage.run": "Verb on a button: execute this job/workflow now. NOT the noun (\"a run\"), which several locales translate differently.",
     "components.appstore.featureCard.get": "Verb on an App Store button: install this app. Not the sense of obtain or receive.",
     "components.appstore.featuredSpotlight.get": "Verb on an App Store button: install this app. Not the sense of obtain or receive.",
@@ -65,7 +67,8 @@
     "components.shortcutsModal.k": "The literal letter on the keyboard's K key, shown inside a key cap next to a modifier (`Cmd + K`). Do not translate or transliterate: it names a physical key.",
     "components.themeEditor.var_aim": "Row label in the theme editor for the `--aim` colour token. AIM is this project's name for the agent-activity accent — an opaque token name, not the English word \"aim\". Keep it verbatim in every language.",
     "components.themeEditor.var_ok": "Row label in the theme editor for the `--ok` colour token: the success/healthy colour, shown beside Warning, Danger and Info. Names the colour role, not an acknowledgement — many languages keep \"OK\".",
-    "components.voiceDictationPanel.esc_to_stop_enter_to_send": "Keyboard hint in the corner of the voice dictation panel. 'Esc' and 'Enter' are physical key names -- use the conventional key names printed on keyboards for this locale. Width-constrained: keep it short.",
+    "components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish": "Keyboard hint in the corner of the voice dictation panel for BATCH speech-to-text: the user must click the mic to stop and transcribe. 'Esc' is a physical key name. Width-constrained: keep it short.",
+    "components.voiceDictationPanel.esc_to_cancel_enter_to_send": "Keyboard hint in the corner of the voice dictation panel. 'Esc' and 'Enter' are physical key names -- use the conventional key names printed on keyboards for this locale. Width-constrained: keep it short.",
     "components.voiceDictationPanel.listening": "Status label on the voice dictation panel while the microphone is capturing. Present participle describing the app's current state, not a command to the user.",
     "lib.effort.low": "Reasoning-effort level in the chat model picker: the least thinking time, fastest answers. An adjective naming an amount of effort, not a volume or a priority.",
     "lib.effort.max": "Reasoning-effort level in the chat model picker: the highest setting the model offers. Short for \"maximum\" — the top of a scale, not a verb.",
@@ -133,6 +136,17 @@
     "pages.systemPage.cwd": "Abbreviation for \"current working directory\", labelling a filesystem path in the System diagnostics card. Practitioners in most languages keep the Latin acronym.",
     "pages.systemPage.os": "Abbreviation for \"operating system\", labelling the host OS name in the System diagnostics card. Keep whichever acronym practitioners in the target language use.",
     "pages.systemPage.pid": "Abbreviation for \"process ID\", labelling a numeric process identifier in the System diagnostics card. Keep the Latin acronym unless the target language has an established equivalent.",
-    "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button."
+    "pages.telemetryPanel.ok": "Status value in a telemetry row, meaning healthy. A state, not the confirmation button.",
+    "apps.crewCompanion.reminders.add_button": "Button that saves the reminder typed in the box beside it. The verb \"add\", not the arithmetic sense.",
+    "apps.crewCompanion.settings.custom_placeholder": "Placeholder in a small number field for a custom break interval. Short for \"minutes\" (the unit), not \"minimum\".",
+    "apps.crewCompanion.time.now": "Relative time label on a reminder that is due at this moment, shown where others read \"20 min from now\".",
+    "lib.effort.low": "Reasoning-effort level in the chat model picker: the least thinking time, fastest answers. An adjective naming an amount of effort, not a volume or a priority.",
+    "lib.effort.max": "Reasoning-effort level in the chat model picker: the highest setting the model offers. Short for \"maximum\" — the top of a scale, not a verb.",
+    "apps.opsMissionControl.opsMissionControlPage.act": "Autonomy-mode badge for the highest level, where the agent executes actions its rules grant. The imperative verb \"act\", one of three modes with \"observe\" and \"propose\"; not the noun (\"an act\").",
+    "apps.opsMissionControl.settingsPanel.min": "The unit \"min\" = minutes, rendered after a number in a staleness-timeout field. An abbreviation, not the word \"minimum\".",
+    "apps.opsMissionControl.settingsPanel.gh": "The literal name of the GitHub CLI executable, `gh`, shown in monospace. Do not translate: the user types it.",
+    "apps.opsMissionControl.settingsPanel.who": "The literal `who:` key of an on-call shift entry in the committed rotation.yaml file, shown in monospace. Do not translate: it names a YAML field the user edits.",
+    "apps.opsMissionControl.settingsPanel.off": "State value meaning disabled, on a notification-channel or sync badge. Not the preposition or the adverb.",
+    "apps.opsMissionControl.settingsPanel.mode_act_label": "Label on the third segment of the autonomy-mode control in Ops Mission Control Settings, where the agent executes actions its rules grant. The imperative verb \"act\", alongside \"Observe\" and \"Propose\"; not the noun (\"an act\")."
   }
 }

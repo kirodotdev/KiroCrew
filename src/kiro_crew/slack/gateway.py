@@ -71,6 +71,7 @@ from kiro_crew.config.loader import (
     _session_work_dir,
     build_provider_factory,
     config_dir,
+    data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
@@ -159,7 +160,7 @@ from kiro_crew.platform.governance_profiles import (
 )
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import safety_override
-from kiro_crew.sandbox import prewarm_backend
+from kiro_crew.sandbox import warm_backend
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.service.common import restart_command_hint
@@ -2567,7 +2568,7 @@ class GatewayOrchestrator:
                             self.cron_svc.clear_active_session_key(job.id)
                 # Restore per-job env vars (single-agent path) — now handled via extra_env passthrough
 
-        self.cron_svc = await CronService.create(base_dir=config_dir(), on_job=_cron_callback)
+        self.cron_svc = await CronService.create(base_dir=data_home(), on_job=_cron_callback)
         if self.dashboard_state:
             self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
         if self._no_crons:
@@ -3164,7 +3165,7 @@ class GatewayOrchestrator:
                     },
                 )
 
-        self.autonudge_svc = AutoNudgeService(base_dir=config_dir(), on_fire=_fire)
+        self.autonudge_svc = AutoNudgeService(base_dir=data_home(), on_fire=_fire)
         self.autonudge_svc.subscribe(_observer)
         await self.autonudge_svc.start()
 
@@ -4030,6 +4031,32 @@ class GatewayOrchestrator:
                         if _still_running == []:
                             _injection_slot._pending_synthesis = True
 
+                    # ── Skip injection for blocking-tool-collected results ──
+                    # spawn_sub_agents (blocking MCP tool) already delivered
+                    # this result inline as a tool-call return value. Injecting
+                    # it again would trigger a redundant _run_chat turn whose
+                    # assistant response shadows any [OPTIONS:] buttons from the
+                    # synthesis message. Mark delivered and return.
+                    # NOTE: This check is placed BEFORE the inflight counter and
+                    # busy-wait because at this point the blocking tool's
+                    # mark-collected POST has already landed (the tool returns
+                    # before its turn ends, and _subagent_done fires only after
+                    # the agent's terminal report, which is after the tool has
+                    # finished). However, if the slot is busy (turn still
+                    # running) we must wait first, then re-check — see the
+                    # second check after the busy-wait below.
+                    if info.id in _injection_slot._subagents_inline_collected:
+                        _injection_slot._subagents_inline_collected.discard(info.id)
+                        # Disarm synthesis — the blocking tool already delivered
+                        # all results and the model synthesized inline.
+                        if not _injection_slot._subagents_inline_collected:
+                            _injection_slot._pending_synthesis = False
+                        logger.info(
+                            "Subagent %s: skipping injection (already collected inline by spawn_sub_agents)",
+                            info.id,
+                        )
+                        return
+
                     # Fix 2 (B1) race guard: count this completion as an
                     # in-flight delivery from entry until it is handed off (turn
                     # launched or queued). The synthesis fire-gate in chat_runner
@@ -4059,6 +4086,19 @@ class GatewayOrchestrator:
                             # Re-check: another injection may have claimed the slot
                             # during the await above.
                             if _injection_slot.running:
+                                # Check inline-collected before queuing — if the
+                                # blocking tool already handled this result, don't
+                                # queue it for a later redundant turn.
+                                if info.id in _injection_slot._subagents_inline_collected:
+                                    _injection_slot._subagents_inline_collected.discard(info.id)
+                                    if not _injection_slot._subagents_inline_collected:
+                                        _injection_slot._pending_synthesis = False
+                                    logger.info(
+                                        "Subagent %s: skipping queue "
+                                        "(already collected inline)",
+                                        info.id,
+                                    )
+                                    return
                                 logger.info(
                                     "Subagent %s: slot %s claimed by another injection, queuing",
                                     info.id,
@@ -4070,6 +4110,20 @@ class GatewayOrchestrator:
                                 self.dashboard_state.push_slots_update()
                                 logger.info("Subagent %s → queued in %s", info.id, _slot_name)
                                 return
+
+                        # Slot is idle — re-check inline-collected (the
+                        # blocking tool's mark-collected POST has now landed,
+                        # since the tool returns before its owning turn ends).
+                        if info.id in _injection_slot._subagents_inline_collected:
+                            _injection_slot._subagents_inline_collected.discard(info.id)
+                            if not _injection_slot._subagents_inline_collected:
+                                _injection_slot._pending_synthesis = False
+                            logger.info(
+                                "Subagent %s: skipping injection after wait "
+                                "(already collected inline by spawn_sub_agents)",
+                                info.id,
+                            )
+                            return
 
                         # Slot is idle — start _run_chat.
                         _task = asyncio.create_task(
@@ -5011,6 +5065,14 @@ class GatewayOrchestrator:
         mgr = self._mcp_gateway_manager
         if self.dashboard_state is not None:
             self.dashboard_state._mcp_gateway_manager = mgr
+        # Rebuild the provider factory so new sessions resolve the overlay
+        # path from the CURRENT config, not the value captured at boot.
+        # refresh_defaults() rebuilds the factory and drains the warm pool
+        # without killing live sessions — the correct semantics since a
+        # running session has already sent session/new and cannot be
+        # retrofitted.
+        if self.sessions is not None:
+            await self.sessions.refresh_defaults()
         if mgr is None:
             return {"enabled": enabled, "running": False, "ping_ok": False}
         running = bool(mgr.is_running)
@@ -5542,8 +5604,15 @@ class GatewayOrchestrator:
 
         cleanup_orphaned_sessions()
 
-        # Prewarm sandbox probe cache so on-loop spawns never hit cold-cache path
-        prewarm_backend()
+        # Fill the sandbox probe cache BEFORE any on-loop spawn path can reach
+        # detect_backend(). Waiting (off-loop) rather than firing-and-forgetting
+        # is what makes that guarantee hold: a fire-and-forget prewarm leaves the
+        # very next caller racing the warm thread and reading a cold-cache
+        # transient as "no sandbox backend on this host".
+        try:
+            await asyncio.to_thread(warm_backend)
+        except RuntimeError:
+            logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
 
         # ── Initialise all services ──
         from kiro_crew.slack.events import SeenCache, init_socket_mode
@@ -5606,7 +5675,7 @@ class GatewayOrchestrator:
                 "port": self._dashboard_port,
                 "token": ready_token,
                 "pid": os.getpid(),
-                "home": str(config_dir()),
+                "home": str(data_home()),
             }
             print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
 
@@ -5907,12 +5976,22 @@ async def run_gateway(
     # reasoning in embeddings.py). Errors are swallowed inside ``send``; a failed
     # heartbeat is invisible by design. ``test_mode`` skips it entirely so the
     # offline E2E gate can never make an outbound request.
+    #
+    # ``acked`` withholds the FIRST heartbeat until the user has actually been
+    # shown the disclosure and its opt-out. Boot runs before the dashboard has
+    # ever rendered, so on a fresh install this thread would otherwise ping
+    # before the user could possibly decline, making the opt-out an offer
+    # arriving after the fact. Established installs are unaffected: the gate
+    # applies only while `is_first_send()` holds.
     if not test_mode:
         with contextlib.suppress(Exception):
             threading.Thread(
                 target=beacon.send,
                 args=(cfg.telemetry.beacon_endpoint, kiro_crew.__version__),
-                kwargs={"enabled": cfg.telemetry.beacon_enabled},
+                kwargs={
+                    "enabled": cfg.telemetry.beacon_enabled,
+                    "acked": cfg.dashboard.privacy_acked,
+                },
                 name="kirocrew-beacon",
                 daemon=True,
             ).start()

@@ -22,7 +22,7 @@ def hash_command(command: str, args: list[str]) -> str:
     :class:`kiro_crew.mcp_gateway.pool.PoolKey`. The stub hashes its
     ``--target-command`` + split ``--target-args`` through this to register a
     pool key; the rewriter hashes the same inputs to build the
-    ``MC_MCP_TARGET_<SERVER>__<hash>`` env entry that
+    ``KIROCREW_MCP_TARGET_<SERVER>__<hash>`` env entry that
     ``gatewayd.env_target_resolver`` looks up by that same key. Both call THIS
     function so the wire-format can never drift between writer and reader.
     """

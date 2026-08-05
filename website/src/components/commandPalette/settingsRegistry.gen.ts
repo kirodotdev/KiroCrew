@@ -484,7 +484,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.auto-submit-when-i-finish-speaking",
     "label": "Auto-submit when I finish speaking",
-    "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming (Transcribe) only.",
+    "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1
@@ -594,7 +594,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.provider",
     "label": "Provider",
-    "description": "Whisper and MLX run locally; Transcribe calls AWS",
+    "description": "Whisper, MLX and Apple Speech run locally; Transcribe calls AWS",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -626,7 +626,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.streaming",
     "label": "Streaming",
-    "description": "Stream live partial transcripts into the input box as you speak (Transcribe only)",
+    "description": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1

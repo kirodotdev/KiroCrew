@@ -103,7 +103,7 @@ destructive-command deny rules, `~/.aws` / `~/.ssh` path blocking, the SEL audit
   agent config granted it. The evaluator is scope-name-agnostic, so adding a scope
   is a `SCOPE_CATALOG` data change, never an evaluator edit.
 - **`CONTRACT_VERSION` stays pinned at 1 pre-launch.**
-- **Denied commands** are `DeniedCommandRule` records (`BUILTIN_DENIED_RULES`)
+- **Denied commands** are `DeniedCommandRule` records (`BUILTIN_DENIED_RULES`, 139 rules)
   enforced only at the `hooks.py` PreToolUse gate. Never restate the rule count in
   prose: `test/test_denied_commands_security.py` pins it, and a restated count goes
   stale silently.
@@ -173,7 +173,10 @@ Gates you will trip:
 
 Never fix a flake with a rerun, a longer `sleep`, or a weakened assertion. Read
 [testing-conventions](docs/system-specs/common/testing-conventions.md) § Determinism
-for the four flake classes and the one correct fix for each.
+for the five flake classes and the one correct fix for each. In particular, a timing
+test that asserts algorithmic **complexity** must bound the doubling RATIO, not an
+absolute duration: CI enables coverage on 3.12 only, and that multiplier made one shard
+fail on 3.12 and pass on 3.10 at the same commit.
 
 ## Code style
 
@@ -208,6 +211,8 @@ Kiro Crew runs on macOS, Linux (x86_64 and ARM), and Windows (native). `fcntl`,
 | Spawn isolation | `start_new_session=IS_POSIX` + `creationflags=CREATE_NEW_PROCESS_GROUP` | bare `start_new_session=True` |
 | File mode | `chmod_safe(path, mode)` / `fchmod_safe(fd, mode)` | `os.chmod` / `os.fchmod` (no `os.fchmod` on Windows) |
 | Owner-only secret (fail-loud) | `restrict_to_owner(path)` | `os.chmod(path, 0o600)` under `if IS_POSIX` (silent no-op leaves secrets world-readable) |
+| Directory link | `symlink_or_junction(target, link)` | `os.symlink` (`WinError 1314` without elevation) |
+| Detect/remove a dir link | `is_link_or_junction(path)` / `unlink_link_or_junction(path)` | `path.is_symlink()` (misses a Windows junction) |
 | Process RSS / CPU | `proc_rss_bytes()` / `proc_cpu_seconds()` | `resource.getrusage` |
 | FD soft limit | `raise_nofile_soft_limit(n)` | `resource.setrlimit` |
 | Port to PID | `find_listening_pids(port)` / `listening_pid_tool_available()` | `lsof` directly |

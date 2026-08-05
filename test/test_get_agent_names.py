@@ -15,6 +15,10 @@ def _write_agent(agents_dir, filename: str, data: dict) -> None:
 
 @pytest.fixture()
 def agents_dir(tmp_path, monkeypatch):
+    # KIRO_HOME is honored by kiro_home() on every OS; HOME alone does not
+    # isolate the agents dir on Windows (Path.home() reads USERPROFILE there),
+    # so the test would read the real ~/.kiro/agents and see installed agents.
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
     monkeypatch.setenv("HOME", str(tmp_path))
     d = tmp_path / ".kiro" / "agents"
     d.mkdir(parents=True)
@@ -45,6 +49,8 @@ def test_falls_back_to_stem_on_invalid_json(agents_dir):
 
 
 def test_empty_when_no_agents_dir(tmp_path, monkeypatch):
+    # KIRO_HOME isolates the agents dir cross-platform (see agents_dir fixture).
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
     monkeypatch.setenv("HOME", str(tmp_path))
     # No .kiro/agents directory exists
     assert _get_agent_names() == []

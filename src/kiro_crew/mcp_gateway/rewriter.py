@@ -42,7 +42,11 @@ logger = logging.getLogger(__name__)
 UNPOOLABLE_SERVERS: frozenset[str] = frozenset()
 
 # Marker field set on rewritten MCP entries so repeat runs are idempotent.
-_WRAPPER_MARKER = "_mc_mcp_gateway_wrapped"
+_WRAPPER_MARKER = "_kirocrew_mcp_gateway_wrapped"
+
+# Legacy marker from pre-fork naming; accepted on read for overlays written by
+# older rewriter versions that haven't been regenerated yet.
+_WRAPPER_MARKER_LEGACY = "_mc_mcp_gateway_wrapped"
 
 
 # Argument separator for the stub's ``--target-args`` flag. `|` is
@@ -259,7 +263,8 @@ def _build_stub_entry(
     wrapped: dict[str, Any] = {
         k: v
         for k, v in original.items()
-        if k not in ("command", "args", "env", "poolable", "autoApprove", _WRAPPER_MARKER)
+        if k not in ("command", "args", "env", "poolable", "autoApprove",
+                     _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY)
     }
     wrapped.update({
         _WRAPPER_MARKER: True,
@@ -346,9 +351,12 @@ def _rewrite_single_spec(
             # Leave unchanged — these bind to KIROCREW_SESSION_KEY.
             new_servers[name] = entry
             continue
-        if entry.get(_WRAPPER_MARKER) is True:
-            # Already wrapped (idempotency).
-            new_servers[name] = entry
+        if entry.get(_WRAPPER_MARKER) is True or entry.get(_WRAPPER_MARKER_LEGACY) is True:
+            # Already wrapped (idempotency). Upgrade to new marker on re-emit.
+            upgraded = dict(entry)
+            upgraded.pop(_WRAPPER_MARKER_LEGACY, None)
+            upgraded[_WRAPPER_MARKER] = True
+            new_servers[name] = upgraded
             wrapped += 1
             continue
         if "command" not in entry:
@@ -417,7 +425,7 @@ def _rewrite_single_spec(
             # again would launch a duplicate backend. Skip.
             continue
         # Guard against target-command divergence. gatewayd resolves a backend
-        # command from MC_MCP_TARGET_<SERVER>, keyed only by server name with
+        # command from KIROCREW_MCP_TARGET_<SERVER>, keyed only by server name with
         # first-wins (alphabetical filename) resolution. If an earlier agent
         # already populated the target env for this server with a DIFFERENT
         # absolute command, injecting here would create a stub whose PoolKey
@@ -426,7 +434,7 @@ def _rewrite_single_spec(
         # (Only compared for absolute-path commands to avoid false positives
         # from bare-name vs resolved-path mismatches.)
         if target_env is not None:
-            env_key = "MC_MCP_TARGET_" + alias.replace("-", "_").upper()
+            env_key = "KIROCREW_MCP_TARGET_" + alias.replace("-", "_").upper()
             existing = target_env.get(env_key)
             if existing:
                 existing_cmd = shlex.split(existing)[0] if existing else ""
@@ -541,7 +549,7 @@ def rewrite_agents(
 
         * ``results``: mapping ``{agent_filename: wrapped_server_count}``.
           Agents with no MCP servers are omitted.
-        * ``target_env``: mapping ``{MC_MCP_TARGET_<SERVER>: "cmd arg arg"}``
+        * ``target_env``: mapping ``{KIROCREW_MCP_TARGET_<SERVER>: "cmd arg arg"}``
           suitable for ``GatewaySpec.mcp_target_env``. Gatewayd consults
           these when a stub registers, to find the real backend command
           to spawn for a new pool key.
@@ -751,15 +759,15 @@ def _collect_target_env(
     mcp_servers: dict[str, Any],
     target_env: dict[str, str],
 ) -> None:
-    """Populate ``target_env`` with ``MC_MCP_TARGET_<SERVER>`` entries
+    """Populate ``target_env`` with ``KIROCREW_MCP_TARGET_<SERVER>`` entries
     for every wrapped server in ``mcp_servers``.
 
     Two kinds of entry are written per wrapped server:
 
-    * ``MC_MCP_TARGET_<SERVER>`` — first-wins across calls, kept as a
+    * ``KIROCREW_MCP_TARGET_<SERVER>`` — first-wins across calls, kept as a
       backward-compatible fallback for any pool key whose
       ``command_args_hash`` has no disambiguated entry.
-    * ``MC_MCP_TARGET_<SERVER>__<command_args_hash>`` — one per distinct
+    * ``KIROCREW_MCP_TARGET_<SERVER>__<command_args_hash>`` — one per distinct
       (server, command+args) combination. Two agents that declare the same
       server name with DIFFERENT ``--target-args`` (e.g. ``example-mcp`` with
       ``--include-tool-tags code-review,default`` vs a restricted
@@ -769,9 +777,11 @@ def _collect_target_env(
       alphabetically. The hash matches ``PoolKey.command_args_hash``.
     """
     for server_name, entry in mcp_servers.items():
-        if not isinstance(entry, dict) or not entry.get(_WRAPPER_MARKER):
+        if not isinstance(entry, dict) or not (
+            entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
+        ):
             continue
-        env_key = "MC_MCP_TARGET_" + server_name.replace("-", "_").upper()
+        env_key = "KIROCREW_MCP_TARGET_" + server_name.replace("-", "_").upper()
         args = entry.get("args", []) or []
         target_cmd: str | None = None
         target_args_str = ""
@@ -807,7 +817,7 @@ def _collect_target_env(
             existing = target_env.get(env_key)
             if existing is not None and existing != spec:
                 logger.warning(
-                    "mcp-gateway rewriter: MC_MCP_TARGET env-key collision on "
+                    "mcp-gateway rewriter: KIROCREW_MCP_TARGET env-key collision on "
                     "%s (distinct server names normalize identically); the "
                     "args-hashed key is used at resolve time, base stays "
                     "first-wins", env_key,

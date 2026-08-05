@@ -1905,7 +1905,7 @@ async def spawn_backend(
     sandbox applied in ``AcpClient._spawn()`` protects kiro-cli sessions,
     not gateway-spawned backends. Compensating controls:
 
-    1. ``command`` is taken verbatim from ``MC_MCP_TARGET_<SERVER>`` env
+    1. ``command`` is taken verbatim from ``KIROCREW_MCP_TARGET_<SERVER>`` env
        vars populated at KiroCrew startup by the rewriter from the user's
        own ``~/.kiro/agents/*.json``. Stubs cannot cause gatewayd to spawn
        an arbitrary binary — only pre-approved MCP servers.

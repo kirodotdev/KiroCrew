@@ -203,11 +203,11 @@ class TestStartApiServerWiring:
         import kiro_crew.dashboard.state as _st
         import kiro_crew.kiro_prerequisite as _prerequisite
 
-        # start_api_server now persists .local_secret via server.config_dir and
+        # start_api_server now persists .local_secret via server.data_home and
         # warms the token_auth revoked-nonce store via loader.config_dir; patch
         # all three sites so the test never writes the real ~/.kirocrew secret.
         monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(_srv, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_srv, "data_home", lambda: tmp_path)
         monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
         service = MagicMock()
         service.close = AsyncMock()
@@ -275,9 +275,9 @@ class TestApiServerAuth:
         import kiro_crew.dashboard.server as _srv
         import kiro_crew.dashboard.state as _st
 
-        # Route config_dir() into the test's tmp dir at the sites that resolve it
-        # here:
-        #  - server.py binds ``from kiro_crew.config import config_dir`` at module
+        # Route config_dir()/data_home() into the test's tmp dir at the sites
+        # that resolve it here:
+        #  - server.py binds ``from kiro_crew.config import data_home`` at module
         #    scope (its own name) — used for the .local_secret write.
         #  - state.py binds ``from kiro_crew.config.loader import config_dir``.
         #  - token_auth.py imports ``config_dir`` LAZILY inside functions from
@@ -287,7 +287,7 @@ class TestApiServerAuth:
         # ``kiro_crew.config.config_dir`` — that name is served by a PEP-562 lazy
         # ``__getattr__`` (not a real __dict__ entry), so setattr there pollutes
         # the package dict and leaks across tests.
-        monkeypatch.setattr(_srv, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_srv, "data_home", lambda: tmp_path)
         monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
         monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
 

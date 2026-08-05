@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
 import random
@@ -418,6 +419,60 @@ class TestWeightedRandomSelection:
             pick = _select_tip(candidates, catalog, recency_decay=0.0, rng=rng)
             assert pick is not None
             assert pick["id"] == "new-tip"
+
+    def test_tips_sharing_an_mtime_share_a_weight(self) -> None:
+        """Equally-recent tips must not be ranked by filename.
+
+        One commit that sweeps many docs at once gives every doc it touches the
+        same git commit time. Weighting by list position would then hand the
+        alphabetically-first doc rank 0 forever and bury the rest of the tie
+        group under recency_decay ** position, so a doc could become almost
+        unreachable purely because of its name.
+        """
+        tied = [CatalogEntry(f"F{i}", "S", f"doc{i}.md", mtime=500.0) for i in range(8)]
+        candidates = [{"id": f"doc{i}-tip", "doc": f"doc{i}.md"} for i in range(8)]
+
+        counts: collections.Counter[str] = collections.Counter()
+        for seed in range(4000):
+            pick = _select_tip(
+                candidates, tied, recency_decay=0.6, rng=random.Random(seed)
+            )
+            assert pick is not None
+            counts[pick["id"]] += 1
+
+        # Every tied tip must be reachable, and none may dominate. Under the old
+        # position-based ranking the last doc's share was 0.6**7 / sum ≈ 1.1%,
+        # and the first's ≈ 40%.
+        assert len(counts) == 8, f"unreachable tips: {counts}"
+        expected = 4000 / 8
+        for tip_id, seen in counts.items():
+            assert 0.7 * expected < seen < 1.3 * expected, f"{tip_id} skewed: {counts}"
+
+    def test_a_newer_tier_still_outranks_an_older_tie_group(self) -> None:
+        """Tier equality must not flatten a genuine recency difference."""
+        catalog = [
+            CatalogEntry("A", "S", "a.md", mtime=100.0),
+            CatalogEntry("B", "S", "b.md", mtime=100.0),
+            CatalogEntry("New", "S", "new.md", mtime=9999.0),
+        ]
+        candidates = [
+            {"id": "a-tip", "doc": "a.md"},
+            {"id": "b-tip", "doc": "b.md"},
+            {"id": "new-tip", "doc": "new.md"},
+        ]
+        counts: collections.Counter[str] = collections.Counter()
+        for seed in range(3000):
+            pick = _select_tip(
+                candidates, catalog, recency_decay=0.6, rng=random.Random(seed)
+            )
+            assert pick is not None
+            counts[pick["id"]] += 1
+
+        # new is tier 0 (weight 1); a and b are both tier 1 (weight 0.6 each).
+        assert counts["new-tip"] > counts["a-tip"]
+        assert counts["new-tip"] > counts["b-tip"]
+        # The tie group members stay comparable to each other.
+        assert 0.7 < counts["a-tip"] / counts["b-tip"] < 1.4, counts
 
 
 class TestCadenceGateAndGlow:

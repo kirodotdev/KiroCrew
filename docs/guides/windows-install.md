@@ -111,6 +111,15 @@ compile and git paths, need an explicit opt-in in `%USERPROFILE%\.kiro\crew\conf
 { "agent": { "sandbox_allow_unsandboxed_exec": true } }
 ```
 
+**`kirocrew setup` now offers this for you.** Because Windows has no OS-level
+sandbox backend, the wizard detects that and asks once — stating that agent
+subprocesses will be able to read your home directory, including `.aws` and
+`.ssh`, with no OS confinement. It defaults to **no** and writes the key only if
+you answer yes, so the choice stays yours; the JSON above remains the manual
+equivalent if you skipped the prompt or run setup non-interactively. Answering no
+(or pressing Enter) leaves the fail-closed posture in place, and the wizard tells
+you how to opt in later.
+
 Setting it means agent subprocesses run with your own user privileges, which is the
 same posture as running the tool yourself in a shell. Config is read live, so no
 gateway restart is needed. Without it, the affected paths answer a clear 422 naming
@@ -144,6 +153,45 @@ routes to `os.chmod(..., 0o600)` on POSIX and `icacls /inheritance:r /grant:r
 security-warning handlers in each caller fire — a naive `if IS_POSIX: os.chmod`
 guard would silently no-op on Windows, leaving secrets group/world-readable
 under NTFS.
+
+## File locking on Windows
+
+`platform_compat.file_lock` / `acquire_lock` provide a genuine *blocking*
+acquire on Windows, not a best-effort one. The catch is that `msvcrt.locking`'s
+own "blocking" codes (`LK_LOCK` / `LK_RLCK`) are **not** the equivalent of
+POSIX `fcntl.flock(LOCK_EX)`: they retry ~10 times at 1-second intervals and
+then raise `EDEADLOCK`, so a naive wrapper would silently give up after ~10s
+and run its read-modify-write with no exclusion — losing writes (this was the
+root cause of the concurrent-memory-append data loss). The shim instead spins
+on the non-blocking code (`LK_NBLCK`), with two behaviors by context. On the
+asyncio **event-loop thread** the acquire is single-shot — a spin-sleep there
+would freeze chat/heartbeat, so it takes the lock if free and otherwise fails
+immediately. **Off the loop** (cron, home migration, app backends) it polls up
+to a generous `_WIN_LOCK_TIMEOUT_SECS` ceiling — long enough to wait out a
+legitimately long holder such as a data-home migration, rather than racing it,
+yet bounded so a truly stuck/permission-denied fd still fails. Either way, if
+the lock cannot be taken the acquire **fails closed**: it raises rather than
+entering the critical section unserialized, since proceeding lock-less is the
+exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
+`LK_NBLCK` and is unchanged.
+
+## Directory links on Windows
+
+`os.symlink` needs `SeCreateSymbolicLinkPrivilege`, which an ordinary
+(non-elevated, non-Developer-Mode) Windows account does NOT hold, so it raises
+`OSError [WinError 1314]`. Every feature that links a *directory* into place
+therefore routes through `platform_compat.symlink_or_junction`, which falls
+back to a directory **junction** — a reparse point that needs no privilege and
+is followed transparently by reads and by `resolve()`/`realpath` (so
+containment/escape checks still hold). Affected paths: app skill registration
+(`apps/bridges.py`), boot-time skill reconcile, and the dev-mode frontend dist
+link (`frontend.ensure_dev_dist_symlink`). Because a junction is not reported by
+`os.path.islink`/`Path.is_symlink`, code that must *detect or remove* such a
+link uses `platform_compat.is_link_or_junction` / `unlink_link_or_junction` —
+notably the md-notebook `.trash` guard, whose refusal would otherwise be
+POSIX-only and let a Windows junction redirect a trashed note out of the vault.
+A *file* symlink has no junction equivalent, so the few tests that plant one
+stay Windows-skipped in `test/windows-expected-failures.txt`.
 
 ## Troubleshooting
 

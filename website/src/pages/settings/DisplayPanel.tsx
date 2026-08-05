@@ -20,6 +20,7 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { AUTO_LANGUAGE, PICKABLE_LANGUAGES, languageLabel } from '../../i18n/languages'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -253,7 +254,7 @@ export function DisplayPanel() {
                 {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
               </button>
             </div>
-            {installError && <span className="text-[12px] text-danger">{installError}</span>}
+            <ErrorNotice message={installError} variant="inline" />
           </div>
         </SettingsCard>
       </SettingsSection>

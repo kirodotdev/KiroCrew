@@ -10,13 +10,22 @@ Stdlib-only; imported by ``session_map`` (no import cycle).
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 #: Slack ts format: ``"{epoch_seconds}.{microseconds}"`` -- pure digits + one dot.
-_SLACK_TS_RE = re.compile(r"\d+\.\d+")
+#: Both runs are BOUNDED. Unbounded ``\d+`` on either side of the dot makes
+#: ``fullmatch`` backtrack quadratically on a long all-digits string, and this
+#: predicate is reached with keys that originate outside Slack (any caller
+#: resolving a session key, including app backends restoring a saved
+#: conversation), so the input is not guaranteed to be a real timestamp. A real
+#: ts is 10 digits + 6; 20 each leaves an order of magnitude of headroom.
+_SLACK_TS_RE = re.compile(r"\d{1,20}\.\d{1,20}")
 
 SLACK_NAMESPACE = "slack"
 
@@ -75,6 +84,74 @@ def channel_namespace_of(key: str) -> str:
         if key.startswith((f"{ns}:", f"{ns}_")):
             return ns
     return ""
+
+
+#: Non-channel session-key prefixes that still deserve their own telemetry label.
+#: Kept in sync with the prefixes ``SessionManager`` mints; anything absent here
+#: folds into ``"other"`` so an unrecognised key can never mint a metric series.
+_TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("dashboard", "dashboard"),
+    ("cron", "cron"),
+    ("subagent", "subagent"),
+    ("taskrunner", "taskrunner"),
+    ("secretary", "secretary"),
+    ("side", "side"),
+    ("wf-pool", "workflow_pool"),
+    # ``channel:`` is a namespace of its own (reply-token-bound sends), distinct
+    # from the per-transport namespaces above.
+    ("channel", "channel"),
+)
+
+#: Exact keys for the two singleton sessions.
+_TELEMETRY_EXACT_KEYS: dict[str, str] = {
+    "_bg": "background",
+    "_hb": "heartbeat",
+}
+
+#: A bare dashboard chat-slot key (``chat-12-1785445181``). The token row store
+#: persists ``_ChatSlot.key``, which carries no namespace prefix, so the prefix
+#: table above cannot see it — without this rule every dashboard turn read back
+#: from that store classifies as ``other``. Anchored and digit-bound so an
+#: arbitrary key that merely starts with "chat" is not absorbed.
+_TELEMETRY_CHAT_SLOT_RE = re.compile(r"^chat-\d+-\d+$")
+
+#: Every value :func:`telemetry_channel_of` can return. Metric attributes must
+#: draw from a closed set — an unbounded label (a raw session key) would mint one
+#: time series per conversation and blow up the metric store.
+TELEMETRY_CHANNELS: frozenset[str] = frozenset(
+    list(CHANNEL_SESSION_NAMESPACES)
+    + [label for _, label in _TELEMETRY_LOCAL_PREFIXES]
+    + list(_TELEMETRY_EXACT_KEYS.values())
+    + ["unknown", "other"]
+)
+
+
+def telemetry_channel_of(key: str | None) -> str:
+    """Classify *key* into a bounded metric label for the conversation source.
+
+    Answers "who paid this cost" for latency instruments, which otherwise record
+    a duration with no way to group it by where the conversation came from.
+
+    Returns a member of :data:`TELEMETRY_CHANNELS`: a transport namespace
+    (``telegram``, ``slack``, …) for channel keys, a local label
+    (``dashboard``, ``cron``, ``subagent``, …) for the rest, ``"unknown"`` when
+    no key is available, and ``"other"`` for a key shape this function does not
+    recognise. Never returns the key itself, so cardinality stays bounded no
+    matter what a caller passes.
+    """
+    if not key:
+        return "unknown"
+    if key in _TELEMETRY_EXACT_KEYS:
+        return _TELEMETRY_EXACT_KEYS[key]
+    ns = channel_namespace_of(key)
+    if ns:
+        return ns
+    for prefix, label in _TELEMETRY_LOCAL_PREFIXES:
+        if key.startswith((f"{prefix}:", f"{prefix}_")):
+            return label
+    if _TELEMETRY_CHAT_SLOT_RE.match(key):
+        return "dashboard"
+    return "other"
 
 
 @dataclass
@@ -213,6 +290,51 @@ def legacy_dashboard_mirror_key(channel_session_key: str) -> str:
     from kiro_crew.history import _safe_key
 
     return "dashboard:" + _safe_key(channel_session_key)
+
+
+def release_conversation_location(
+    sessions: Any,
+    *,
+    key: str,
+    location: ChannelLink,
+    channel: str,
+) -> tuple[str, list[str]]:
+    """Free a conversation's mirror LOCATION and shape the unlink reply.
+
+    The in-channel unlink shared by the DM dispatchers. Key-addressed clears
+    only reach rows spelled with the CURRENT session key, but the bindings
+    that block a session resume at this conversation are matched by location
+    value — a mirror row stranded under a rotated DM generation, or a
+    dashboard session mirroring into the conversation, occupies the location
+    while being unreachable by any spelling of *key*. Unlink means "nothing
+    mirrors into this conversation": clear the conversation's own binding
+    (current + legacy spelling), then sweep every binding targeting the exact
+    *location*, so ✅ is only reported when the conversation is actually free.
+
+    A swept key can belong to ANOTHER (dashboard) session — a cross-session
+    write triggered by a one-word channel command — so the sweep is INFO-logged
+    and the reply reports the count when more than one binding fell, rather
+    than a bare ✅ that reads as "just yours".
+
+    Returns ``(reply_text, swept_keys)``. A non-empty sweep is the caller's
+    cue to refresh any dashboard projection of the cleared bindings.
+    """
+    cleared = int(sessions.clear_mirror_link(key))
+    cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
+    swept = sessions.clear_mirror_links_at(location)
+    if swept:
+        logger.info(
+            "%s: unlink swept %d mirror binding(s) at this conversation: %s",
+            channel,
+            len(swept),
+            ", ".join(swept),
+        )
+    cleared += len(swept)
+    if cleared > 1:
+        return f"✅ Unlinked ({cleared} bindings).", swept
+    if cleared == 1:
+        return "✅ Unlinked.", swept
+    return "This conversation wasn't linked.", swept
 
 
 def seed_generation(

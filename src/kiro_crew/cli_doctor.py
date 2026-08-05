@@ -56,6 +56,7 @@ from kiro_crew.platform import (
     safe_context_call,
 )
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
+from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import sel
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
@@ -215,6 +216,32 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
 
     if not probe_targets:
         return
+
+    # Every probe below spawns its server through the sandbox chokepoint, and
+    # asyncio.gather releases them together. On a cold cache the first arrivals
+    # therefore land on the on-loop deferral path simultaneously and each logs a
+    # transient probe failure — noise that reads as a real sandbox fault during a
+    # health check whose subject is MCP, not the sandbox. Warm the cache here,
+    # off any loop, so the probes see a settled verdict.
+    #
+    # The chokepoint helper is deliberately NOT named here: test_spawn_audit
+    # classifies a spawn as sandbox-routed by substring-scanning the enclosing
+    # function's source, so spelling that identifier even in a comment flips this
+    # function's classification and then demands a resource-limit preexec_fn it
+    # does not own. The routing genuinely happens inside
+    # mcp_discovery.probe_server, not here.
+    #
+    # Failing to warm is non-fatal BY DESIGN (the cache stays cold and the
+    # self-healing transient path applies), so it must not be able to abort the
+    # command. `warm_backend` starts a thread, and `Thread.start()` raises when
+    # the process is out of threads — precisely the degraded state someone runs
+    # `doctor` to diagnose, which is the worst moment for the diagnostic itself
+    # to die. Swallow it here rather than inside the probe `try` below, so a warm
+    # failure is never misreported as an MCP probe failure.
+    try:
+        warm_backend()
+    except Exception:
+        logger.debug("sandbox probe warm failed; probes will re-probe", exc_info=True)
 
     try:
 
@@ -582,8 +609,10 @@ def _doctor(platform_boot_error: "Exception | None" = None) -> None:
                 stale_project = True
     if proj and Path(proj).is_dir():
         print(f"  project dir: ✅ {proj}")
-        git_dir = Path(proj) / ".git"
-        if git_dir.is_dir():
+        # A git worktree or submodule stores ``.git`` as a FILE holding a
+        # ``gitdir:`` pointer, not a directory, so accept both forms.
+        git_marker = Path(proj) / ".git"
+        if git_marker.exists():
             print("  git repo:    ✅")
         else:
             print("  git repo:    ⚠️  not a git repo")

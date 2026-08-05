@@ -67,6 +67,20 @@ class TestFindWhisper:
         monkeypatch.setenv("HOME", str(tmp_path))
         assert _find_whisper("~/whisper") == str(binary)
 
+    def test_scripts_dir_fallback_finds_dot_exe_on_windows(self, tmp_path, monkeypatch):
+        """Regression: a pip console script is ``whisper.exe`` in Scripts\\ on
+        Windows; the extensionless probe never found it. The suffix sweep must.
+        """
+        scripts = tmp_path / "Scripts"
+        scripts.mkdir()
+        exe = scripts / "whisper.exe"
+        exe.write_text("")  # no execute bit on Windows
+        monkeypatch.setattr("kiro_crew.transcribe.platform_compat.IS_WINDOWS", True)
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: str(scripts))
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
+            assert _find_whisper("") == str(exe)
+
 
 # ---------------------------------------------------------------------------
 # _find_mlx_whisper

@@ -351,6 +351,120 @@ def test_prewarm_backend_populates_cache(monkeypatch):
     assert sb._backend == "namespace"
 
 
+# ── Blocking boot warm (warm_backend) ──
+
+
+def test_warm_backend_returns_with_cache_already_populated(monkeypatch):
+    """warm_backend() must not return until the probe has landed.
+
+    This is the whole difference from ``prewarm_backend``: the caller is entitled
+    to assume a settled verdict on return. The probe is made observably slow so a
+    non-joining implementation loses the race and leaves the cache cold — the
+    assertions below then fail rather than passing by luck.
+    """
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+
+    def slow_probe():
+        # Independent of sb.time.sleep (patched by the autouse fixture) so the
+        # delay is real for this thread.
+        threading.Event().wait(0.05)
+        return (True, False, "ok")
+
+    monkeypatch.setattr(sb, "_probe_unshare_once", slow_probe)
+
+    sb.warm_backend()
+
+    assert sb._backend == "namespace"
+    # The join is what produced the guarantee — prove it happened rather than
+    # inferring it from the cache alone.
+    assert sb._warm_thread is not None
+    assert not sb._warm_thread.is_alive()
+
+
+def test_warm_backend_makes_on_loop_transient_path_unreachable(monkeypatch):
+    """After a warmed boot, an on-loop caller sees the verdict, not a deferral.
+
+    The user-visible symptom being fixed: an on-loop ``detect_backend`` racing a
+    fire-and-forget prewarm logs a transient probe failure that reads as "this
+    host has no sandbox backend".
+    """
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    probe_calls: list[str] = []
+
+    def counting_probe():
+        # Slow, for the same reason as the test above: with an instant probe this
+        # assertion would hold even without the join, by winning the race rather
+        # than by the guarantee under test.
+        threading.Event().wait(0.05)
+        probe_calls.append(threading.current_thread().name)
+        return (True, False, "ok")
+
+    monkeypatch.setattr(sb, "_probe_unshare_once", counting_probe)
+
+    sb.warm_backend()
+    assert len(probe_calls) == 1
+
+    async def _on_loop() -> str:
+        return sb.detect_backend()
+
+    assert asyncio.run(_on_loop()) == "namespace"
+    # No re-probe and no synthetic transient: the warm cache answered.
+    assert len(probe_calls) == 1
+    assert sb._last_unshare_failure is None
+
+
+def test_warm_backend_permanent_failure_caches_none(monkeypatch):
+    """A permanent denial is a real verdict and must be cached, not retried."""
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(sb, "_probe_unshare_once", lambda: (False, False, _EPERM_REASON))
+
+    sb.warm_backend()
+
+    assert sb._backend == "none"
+
+
+def test_warm_backend_wait_is_bounded_and_leaves_cache_cold(monkeypatch):
+    """A wedged probe must not stall boot; the cold cache then self-heals.
+
+    Exceeding the join timeout is explicitly not an error — it degrades to the
+    pre-existing ``prewarm_backend`` behaviour (cache uncached, next caller
+    re-probes) rather than failing startup.
+    """
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    release = threading.Event()
+
+    def wedged_probe():
+        release.wait(10.0)
+        return (True, False, "ok")
+
+    monkeypatch.setattr(sb, "_probe_unshare_once", wedged_probe)
+
+    try:
+        sb.warm_backend(timeout=0.05)
+        # Returned while the probe is still in flight, so no verdict is cached.
+        assert sb._backend is None
+        assert sb._warm_thread is not None and sb._warm_thread.is_alive()
+    finally:
+        release.set()
+        if sb._warm_thread is not None:
+            sb._warm_thread.join(timeout=5.0)
+
+
+def test_warm_backend_is_a_noop_off_linux(monkeypatch):
+    """Probes are Linux-only — no thread, no cache write, no wait."""
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="darwin"))
+
+    def unexpected_probe():  # pragma: no cover - must never run
+        raise AssertionError("probe must not run off Linux")
+
+    monkeypatch.setattr(sb, "_probe_unshare_once", unexpected_probe)
+
+    sb.warm_backend()
+
+    assert sb._warm_thread is None
+    assert sb._backend is None
+
+
 # ── Off-loop behaviour preserved ──
 
 

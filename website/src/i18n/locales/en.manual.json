@@ -984,6 +984,7 @@
         "kind_heartbeat": "Heartbeat",
         "kind_hooks": "Hooks",
         "kind_notification": "Notification",
+        "kind_skills": "Skills",
         "kind_subagent": "Subagent",
         "kind_task_runner": "Task Runner",
         "kind_tasks": "Tasks",
@@ -997,7 +998,8 @@
         "no_categories_selected_click_a_category_above": "No categories selected — click a category above",
         "select_all_categories": "Select all categories",
         "show_less": "Show less",
-        "try_a_different_search": "Try a different search"
+        "try_a_different_search": "Try a different search",
+        "toggle_kind": "Toggle {{kind}}"
       }
     },
     "onboardingFlow": {
@@ -1341,6 +1343,14 @@
       "switching_drops_audio": "Switching while recording drops about 0.2s of audio.",
       "system_default": "System default",
       "unnamed_input": "Unnamed input"
+    },
+    "askAgent": {
+      "ask_the_agent": "Ask the agent",
+      "open_a_chat_with_this_error_s_context_attached": "Open a chat with this error's full context attached",
+      "prompt_lead": "This error just came up in the Kiro Crew dashboard. Diagnose the root cause and fix it."
+    },
+    "errorNotice": {
+      "dismiss": "Dismiss"
     }
   },
   "hooks": {
@@ -1799,6 +1809,8 @@
         "switch_to_unified_view": "Switch to unified view"
       },
       "subagentProgressBar": {
+        "collapse_agent_list": "Collapse subagent list",
+        "expand_agent_list": "Expand subagent list",
         "retry_failed_count": "Retry failed ({{count}})",
         "stop_all_running_subagents": "Stop all running subagents",
         "stop_running_subagent": "Stop running subagent"
@@ -1833,6 +1845,7 @@
         "aria_awaiting_approval": "Awaiting approval for tool: {{label}}",
         "aria_hide_details": "Hide details for tool: {{label}}",
         "aria_show_details": "Show details for tool: {{label}}",
+        "blocked_by_security_policy": "Blocked by security policy",
         "opened_in_the_side_panel": "Opened in the side panel"
       }
     },
@@ -2214,6 +2227,7 @@
         "skills_tip": "On-demand skills loaded when the agent determines they're relevant. Skills with the 'auto' badge are always injected into every session. Skills are discovered from Kiro Crew, kiro-cli (~/.kiro/skills), and AIM packages.",
         "auto_generated_skill_candidates_awaiting_your_ap": "Auto-generated skill candidates awaiting your approval. Click Review to inspect the SKILL.md and any bundled script before approving. Approve makes the skill live (and marks scripts executable); dismiss discards it. Nothing goes live until you approve it.",
         "hide": "Hide",
+        "linked_candidate_no_longer_pending": "That skill candidate is no longer awaiting review. It was approved or dismissed.",
         "on_demand_skills_loaded_when_the_agent_determine": "On-demand skills loaded when the agent determines they're relevant.",
         "proposed_change": "Proposed change",
         "review": "Review",
@@ -2443,7 +2457,13 @@
         "update_failed": "Update failed",
         "update_noun": "update",
         "update_now": "Update now",
-        "view_full_changelog": "▸ View Full Changelog"
+        "view_full_changelog": "▸ View Full Changelog",
+        "channel_help_show": "▸ What's the difference between Stable and Insider?",
+        "channel_help_hide": "▾ Hide",
+        "channel_explainer_stable": "Tested releases only. Fewer updates, and fewer surprises.",
+        "channel_explainer_insider": "Early builds, released days to weeks before Stable. New features arrive here first, and so do new bugs.",
+        "channel_explainer_switch_note": "You can switch back at any time. Either way, the other channel's current version arrives as a normal update — you choose when to install it.",
+        "prerelease_report_prompt": "Thanks for running early builds. They're less tested than Stable, so things do break — when something looks wrong, please <report>report it on GitHub</report> so it gets fixed before it reaches everyone."
       },
       "computerUsePanel": {
         "could_not_save_computer_use_settings": "Could not save computer-use settings.",
@@ -2616,6 +2636,8 @@
         "disable_all_built_in_denies_2": "Disable all built-in denies?",
         "disable_this_denied_command": "Disable this denied command?",
         "disabled_by_policy": "Disabled by policy",
+        "other_surfaces_have_their_own_profiles": "A surface with its own profile can allow what the host cannot: {{surfaces}}.",
+        "disabled_for_this_surface": "Disabled for the host surface",
         "disabling_all_built_in_denies_removes_kirocrew_s": "Disabling all built-in denies removes Kiro Crew’s protection against destructive and credential-exfiltration commands. Some commands may stay blocked by independent defense-in-depth controls (sensitive paths, IMDS, git-publish).",
         "enabled": "Enabled",
         "expand_category_rules": "Expand {{category}} rules",
@@ -2683,6 +2705,7 @@
         "layer_auth": "Auth",
         "layer_n": "Layer {{n}}",
         "pinned_by_policy": "Enforced by your organization's security policy",
+        "pinned_for_the_host_surface": "Set by the host-surface profile. This is the ceiling for in-process host actions only — other surfaces have their own profiles and may allow this.",
         "yolo_duration_title": "How long auto-approve stays on",
         "yolo_duration_desc": "Applies whenever you turn auto-approve on from the dashboard, Slack, or the API — all of them use this one duration.",
         "yolo_duration_30m": "30 minutes",
@@ -2736,8 +2759,9 @@
         "pulls_python_3_11_slim_for_docker_based_transcri": "Pulls python:3.11-slim for Docker-based transcription (AL2).",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper installed but ffmpeg is missing — voice transcription needs ffmpeg.",
         "endpointing": "Auto-submit when I finish speaking",
-        "endpointing_desc": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming (Transcribe) only.",
+        "endpointing_desc": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
         "provider_mlx": "Whisper MLX (local — Apple Silicon only)",
+        "provider_apple": "Apple Speech (on-device — macOS 26+)",
         "provider_transcribe": "Transcribe (AWS)",
         "provider_whisper": "Whisper (local)",
         "step_checking": "Finding Python…",
@@ -2889,12 +2913,7 @@
       "status_disabled": "Disabled",
       "status_unknown": "Unknown"
     },
-    "telemetryPanel": {
-      "first_use_spawn_of_an_mcp_server_backend": "First-use spawn of an MCP server backend",
-      "on_demand_read_of_a_skill_body_from_disk": "On-demand read of a skill body from disk",
-      "sessions_reusing_a_warm_mcp_backend_vs_a_cold_sp": "Sessions reusing a warm MCP backend vs a cold spawn",
-      "time_to_hand_a_pooled_mcp_backend_to_a_session": "Time to hand a pooled MCP backend to a session"
-    },
+    "telemetryPanel": {},
     "worldsPage": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
@@ -2951,7 +2970,7 @@
           "label": "System"
         },
         "telemetry": {
-          "description": "Session startup latency (p50/p90) and MCP/skill acceleration metrics",
+          "description": "Credit spend, context cost, and session startup latency",
           "label": "Telemetry"
         }
       }
@@ -2964,19 +2983,22 @@
     "controlsTitle": "Telemetry controls",
     "dataNeverSentBody": "Prompts, responses, files, credentials, hostnames, usernames, or your operating system. Your IP is not stored.",
     "dataNeverSentTitle": "Never sent",
-    "details": "Privacy details",
     "envOverrideNote": "The heartbeat is off because {{envVar}} is set in this environment. Unset it to manage telemetry here.",
     "localDataBody": "Usage and context records. Performance metrics are off by default.",
     "localDataTitle": "Stays on your device",
-    "notSendingNote": "No heartbeat is being sent right now: {{reason}}.",
+    "notSendingAlreadySentToday": "Today's heartbeat has already been sent.",
+    "notSendingAwaitingAck": "Nothing has been sent yet. The first heartbeat waits until you've seen this page.",
+    "notSendingCi": "Paused: this looks like a continuous-integration machine.",
+    "notSendingGeneric": "No heartbeat is being sent right now.",
+    "notSendingNoEndpoint": "No heartbeat is being sent: no endpoint is configured.",
+    "notSendingNonDefaultHome": "Paused: this instance uses a non-default data directory.",
+    "notSendingUnreadableHome": "No heartbeat is being sent: the data directory could not be read.",
     "overlayOverrideNote": "A telemetry.beacon_enabled entry in config.local.json overrides this setting. Remove it there to manage telemetry here.",
     "governanceOverrideNote": "Your administrator's security policy turns this off. It can't be changed here.",
     "installReceiptBody": "After a successful install or update from Kiro Crew's official catalog, one anonymous receipt is sent. External registries, local apps, and self-registered apps are never reported.",
     "installReceiptFields": "Official app slug · per-app anonymous token (not linkable across apps) · fresh/update flag · Kiro Crew version",
     "installReceiptTitle": "Official app install receipts",
     "payloadFields": "Random installation ID · app version · Python minor version · install channel · first-run flag",
-    "noticeBody": "Kiro Crew sends one anonymous ping a day and a per-app receipt after official app installs or updates. Never your prompts, files, or credentials.",
-    "noticeTitle": "Privacy at a glance",
     "settingsDescription": "Telemetry, local data, and privacy controls",
     "settingsLabel": "Privacy",
     "shellMacOSLinuxLabel": "macOS / Linux",

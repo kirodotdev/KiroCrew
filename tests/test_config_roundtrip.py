@@ -30,7 +30,7 @@ def test_to_dict_includes_all_dataclass_fields():
     cfg = KiroCrewConfig()
     d = cfg.to_dict()
     # Fields that are serialized under a different key or merged into slack
-    SPECIAL = {"slack_channels", "slack_dm_activation", "observe_max_messages", "observe_ttl_hours"}
+    SPECIAL = {"slack_channels", "slack_dm_activation", "observe_max_messages", "observe_ttl_hours", "_extra_sections"}
     for f in fields(KiroCrewConfig):
         if f.name in SPECIAL:
             continue

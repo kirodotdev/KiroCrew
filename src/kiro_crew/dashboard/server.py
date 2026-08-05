@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -28,7 +29,7 @@ from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.browser.setup import migrate_owned_playwright_registration
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts
-from kiro_crew.config import config_dir
+from kiro_crew.config import data_home
 from kiro_crew.config.loader import KiroCrewConfig, refresh_materialized_agents
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import (
@@ -854,6 +855,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
+    app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
     # MCP Apps (SEP-1865): embedded app iframe -> gateway tool callback.
     app.router.add_post("/api/mcp-apps/call", handlers.api_mcp_apps_call)
     app.router.add_get("/api/spawn", handlers.api_spawn_list)
@@ -1638,25 +1640,61 @@ async def start_dashboard(
         def _on_pending_skill_staged(info: dict) -> None:
             try:
                 name = str(info.get("name") or info.get("slug") or "skill")
+                slug = str(info.get("slug") or "")
                 is_update = info.get("kind") == "update"
                 target = str(info.get("target") or "")
-                if is_update:
-                    title = "Skill update awaiting review"
-                    body = (
-                        f"An update to {target or name} was generated and needs "
-                        "your approval before it takes effect."
+                description = str(info.get("description") or "").strip()
+                triggers = str(info.get("triggers") or "").strip()
+                subject = target or name if is_update else name
+                title = (
+                    "Skill update awaiting review"
+                    if is_update
+                    else "New skill awaiting review"
+                )
+                # The body LEADS with name + description because the feed row
+                # renders only its first ~80 characters, stripped to one line.
+                # The title already says a skill is awaiting review, so opening
+                # with "was generated from a session and needs your approval"
+                # spends exactly the characters that decide whether the reader
+                # opens the queue on words they have already read. Identity plus
+                # purpose first; the approval sentence still follows for the
+                # detail panel, which renders the whole body as markdown.
+                head = f"**{subject}**"
+                if description:
+                    head += f" — {description}"
+                lines = [head]
+                lines.append(
+                    "\nGenerated from a session. Needs your approval before "
+                    + ("it takes effect." if is_update else "it can be used.")
+                )
+                if triggers:
+                    lines.append(f"\n**Triggers:** {triggers}")
+                if info.get("has_scripts"):
+                    lines.append(
+                        "\n_Bundles executable scripts — review them before approving._"
                     )
-                else:
-                    title = "New skill awaiting review"
-                    body = (
-                        f"{name} was generated from a session and needs your "
-                        "approval before it can be used."
-                    )
+                body = "\n".join(lines)
                 payload = {
-                    "slug": str(info.get("slug") or ""),
-                    "kind": "update" if is_update else "new",
+                    "slug": slug,
+                    "candidate_kind": "update" if is_update else "new",
                     "target": target,
                 }
+                # Deep-link straight at the candidate, not just the tab: the
+                # queue can hold several rows, and "go find it" is the failure
+                # mode this notification exists to prevent. quote() keeps a slug
+                # from opening a second query parameter -- slugs are validated
+                # against a restrictive pattern upstream, but the URL is built
+                # here and must not depend on that invariant holding.
+                review_url = "/capabilities?tab=skills"
+                if slug:
+                    review_url += f"&review={quote(slug, safe='')}"
+                actions = [
+                    {
+                        "id": "review-skill",
+                        "label": "Review" if is_update else "Review skill",
+                        "url": review_url,
+                    }
+                ]
 
                 def _emit() -> None:
                     try:
@@ -1664,7 +1702,9 @@ async def start_dashboard(
                             "skills",
                             title,
                             body,
-                            meta={"url": "/capabilities?tab=skills", **payload},
+                            meta=payload,
+                            url=review_url,
+                            actions=actions,
                         )
                         state.broadcast_ws("skills.pending_changed", payload)
                     except Exception:
@@ -2778,7 +2818,7 @@ async def start_dashboard(
     # succeeds — both live in _write_secret_file, offloaded below — to avoid
     # poisoning the secret file when a second instance fails to start and to
     # keep blocking fs I/O off the event loop.
-    _secret_path = config_dir() / ".local_secret"
+    _secret_path = data_home() / ".local_secret"
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
 
@@ -3265,7 +3305,7 @@ async def start_api_server(
     # start_dashboard): both live in _write_secret_file, offloaded below, so a
     # failed second instance never poisons the live gateway's secret file and no
     # blocking fs I/O runs on the event loop.
-    _secret_path = config_dir() / ".local_secret"
+    _secret_path = data_home() / ".local_secret"
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
 

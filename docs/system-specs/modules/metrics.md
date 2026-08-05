@@ -138,7 +138,9 @@ when extra missing), `test/metrics/test_schema.py` (redaction / namespace).
 
 | Metric | Type | Attrs | Site |
 |--------|------|-------|------|
-| `kirocrew.session.startup.duration` | histogram (ms) | `outcome` (`ready` / `auth_required` / `error`), `spawned` (bool), `backend` (`kiro`) + `phase` (`total` / `spawn_init` / `session_new` / `set_model`) on the kiro path | Two sites. **claude**: `acp/client.py::AcpClient.ensure_ready()` — times cold-start (spawn + session init) and emits in a `finally` so every exit path is measured, with no `phase` attr. **kiro** (default): `providers/acp.py::_emit_kiro_startup_metric` — one `phase=total` point PLUS one point per internal phase; `spawned` is unconditionally `True` because `_start_kiro_runtime_impl` always spawns a fresh runtime (the warm fast-path returns before reaching either site and is NOT measured). `outcome` defaults to `"error"` so an unexpected exception is never mislabeled `"ready"`. Consumers MUST treat only the end-to-end point (`phase` absent or `total`) as a startup — the phase points are components of one startup. |
+| `kirocrew.session.startup.duration` | histogram (ms) | `outcome` (`ready` / `auth_required` / `error`), `spawned` (bool), `backend` (`kiro`) + `phase` (`total` / `spawn_init` / `session_new` / `session_load` / `set_model`), `channel` (conversation source), `resumed` (bool) on the kiro path | Two sites. **claude**: `acp/client.py::AcpClient.ensure_ready()` — times cold-start (spawn + session init) and emits in a `finally` so every exit path is measured, with no `phase` attr. **kiro** (default): `providers/acp.py::_emit_kiro_startup_metric` — one `phase=total` point PLUS one point per internal phase; `spawned` is unconditionally `True` because `_start_kiro_runtime_impl` always spawns a fresh runtime (the warm fast-path returns before reaching either site and is NOT measured). `outcome` defaults to `"error"` so an unexpected exception is never mislabeled `"ready"`. Consumers MUST treat only the end-to-end point (`phase` absent or `total`) as a startup — the phase points are components of one startup. `channel` comes from `messaging.link::telemetry_channel_of`, a closed label set (an unrecognised key classifies as `other`, never the key itself) answering WHICH surface paid the cost; `resumed` separates the `session/load` path from `session/new`. `session_load` is recorded only when a resume was attempted, and `session_new` only when `create_session` actually ran, so a resumed startup never reports a near-zero `session_new`. |
+| `kirocrew.session.pool.decision` | counter | `outcome` (`hit` / `miss_empty` / `bypass_resume` / `bypass_stateless` / `bypass_cwd` / `bypass_env` / `disabled` / `other`), `channel` | `session.py::SessionManager._record_pool_decision`, one point per `get_or_create` warm-pool decision. Exactly one reason is reported per decision — the disqualifiers form a disjunction, so branch order picks the reported reason, not the outcome. Deliberately a counter rather than an attribute on the startup histogram: "was the pool used" and "how long did startup take" are separate questions, and crossing them would multiply every phase series. `bypass_resume` quantifies how often a `resume_sid` disqualifies a session from the pool. Values are pinned by `session.POOL_DECISIONS`. |
+| `kirocrew.session.resume.outcome` | counter | `outcome` (`loaded` / `fallback_replay` / `no_session_file`), `channel` | `providers/acp.py::_emit_kiro_startup_metric`, emitted only when a resume was attempted. Distinguishes a lossless native resume from the degraded fallback (fresh `session/new` plus history replay on the Kiro Crew side, taken when `session/load` exhausts `_RESUME_MAX_ATTEMPTS` against a stale lock) and from a resume skipped because the session file was gone. |
 | `kirocrew.turn.duration` | histogram (ms) | `outcome` (`ok` / `timeout` / `error`), `session_source` (via `validation.infer_use_case`) | `dashboard/chat_runner.py::_emit_turn_metric`, called at EVENT_COMPLETE after `persist_token_record_async`. `_turn_outcome` maps stop_reason (`""`/`end_turn`/`stop`/`completed` → ok). One histogram powers turn latency p50/p90 AND fault rate. The value is `duration_ms or elapsed_ms`: the acp provider always reports `TurnUsage.duration_ms == 0` (only claude_code fills it), so the caller must pass the locally measured wall clock as `elapsed_ms` or nothing is ever emitted. A still-zero value skips the emit deliberately — absence renders as "no data", whereas a recorded 0 would render as a plausible 0ms p50. **What it measures:** the wall clock starts at turn start, so a turn parked on an interactive tool-approval prompt counts operator thinking time. No finer-grained source exists on the acp path, so this is "turn wall-clock", not pure model latency — a high p90 can mean slow approvals rather than a slow model. |
 | `kirocrew.mcp.backend.acquire.duration` | histogram (ms) | `warm` (bool — `not was_spawned`) | `mcp_gateway/gatewayd.py::_emit_backend_acquire_metric` — ensure_backend pre-flight + lazy-spawn paths; acquire-only duration captured before attach_stub/create_task overhead. |
 | `kirocrew.mcp.lazy_load.count` / `.duration` | counter + histogram (ms) | `transport` (`stdio`) | `mcp_gateway/gatewayd.py::_emit_lazy_load_metrics` — legacy lazy-spawn path (also emits backend.acquire). |
@@ -301,6 +303,27 @@ startups multiplies the startup count by the number of phases and sums several
 unrelated latency distributions into one set of buckets, which renders as a
 spurious multi-modal "distribution".
 
+**Failures are reported as counts, not as success rates.** Both outcome
+instruments are fail-closed — `AcpClient.ensure_ready` and
+`AcpSessionProvider._start_kiro_runtime` each default their outcome to `error`
+and overwrite it with `ready` only on the success path, and `_turn_outcome` maps
+a real `stop_reason` — so a zero here is a measurement rather than an instrument
+that cannot report bad news. What a *rate* over these populations cannot do is
+survive rounding: a window of ~1400 startups makes one failed startup 99.93%,
+which renders as a flawless `100%`. A rate had no reachable value between
+"perfect" and a problem big enough to clear half a percent, and it saturated in
+the direction that hides failure. A count has no such ceiling, so the page shows
+the absolute number of non-`ready` startups and of non-`ok` turns. Where a rate
+is still shown (turn fault rate, which answers a different question — faults per
+unit of work), a non-zero value below the rounding threshold renders as `<1%`
+and never in the success colour.
+
+Both figures count *everything* outside the success value rather than naming the
+failure values. Enumerating them (`error` + `timeout`) silently excluded any
+third outcome — `auth_required`, and the `unknown` that shards predating the
+attribute aggregate under — which put the displayed count and the rate beside it
+on two different populations.
+
 **`context` block.** The response also carries per-turn context-window
 occupancy — `{turns, p50_pct, p90_pct, max_pct, sessions[]}` — sourced from the
 per-turn token row store below, NOT from the OTEL shards: occupancy is a
@@ -408,6 +431,18 @@ comparing one turn against another (the whole point of the breakdown) wants an
 exact unit rather than an approximate one. `phase` separates the one-off
 session-start injection from the much smaller per-turn one so a reader never
 pools the two populations.
+**Non-finite floats are rejected at the single write chokepoint.**
+`_write_token_record` dumps with `allow_nan=False` and, only on the resulting
+`ValueError`, rewrites non-finite floats to `0.0` — so the common path pays no
+per-turn scan. The guard lives there rather than per field because provider
+floats (`cost_usd`, `credits`) reach the record unvalidated and a float is
+exactly what a bad one looks like, so a type check cannot catch it. Without it,
+`json.dumps` writes the bare tokens `NaN` / `Infinity`, which are **not** valid
+JSON while `json.loads` still accepts them: one such row travels silently into a
+`web.json_response` body no browser can parse, taking down every panel that
+reads the store instead of losing one turn's numbers. `cost_breakdown`
+additionally skips non-finite rows on read, because shards written before this
+guard can already contain them.
 
 **Read side.** `usage.context_occupancy(days)` aggregates these rows into
 per-turn occupancy percentiles plus a per-session peak ranking (own
@@ -454,13 +489,50 @@ label → size, aggregated — is what could belong on a metric; this per-sessio
 half is the drill-down. Without these readers the fields were write-only:
 recorded on every turn, read by nothing.
 
+`usage.cost_breakdown(days)` is the second reader, same cache contract, serving
+the `cost` block of the same endpoint. It answers "where did the credits go"
+from fields the row store already carries — no new instrumentation:
+
+| sub-block | derivation |
+|-----------|-----------|
+| totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
+| `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
+| `conversations` | top spenders with peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction |
+
+**Channel comes from the slot key, not from `surface`.** `surface` cannot
+separate transports: `chat_runner` stamps `surface="dashboard"` for every turn
+that flows through it regardless of where the message arrived from, so a
+Telegram turn is booked as dashboard spend (observable in the row store as a
+`telegram_*` slot carrying `surface="dashboard"`). The slot key is assigned by
+the transport that created the session and is therefore the only field that
+distinguishes them.
+
+**The growth slope is fitted per segment, never across the window.** Occupancy
+is a sawtooth: a compaction drops it back toward empty, and 7 of the 8
+top-spending conversations measured carry one to four such drops. A secant from
+the first turn to the last therefore crosses discontinuities and is dragged down
+by every reset, understating the live rate by ~47x on real data — one 104-turn
+conversation projected 795 turns of headroom while its current segment climbed
+at 4%/turn, i.e. ~17 turns from compaction. Erring toward "plenty of room" is
+the damaging direction for a figure whose only purpose is a warning, so the
+slope is fitted on the stretch since the last fall larger than
+`_COMPACTION_DROP_PCT` (sub-threshold drift is ordinary jitter in what counts
+toward `context_used`, not a compaction). Growth and the projection are
+**withheld** unless that CURRENT segment holds `_COST_MIN_GROWTH_TURNS` points —
+a long conversation freshly past a compaction knows nothing about its new
+trajectory, and withholding is the honest answer rather than extrapolating from
+two or three points.
+
 Tests: `test/test_usage.py` (`TestReadContextTokens`,
 `TestBuildTokenRecordContextFields`, `TestBuildTokenRecordCtxBlocks`,
-`TestPersistTokenRecord*`), `test/metrics/test_context_occupancy.py` (occupancy
-aggregation, skips, latest-turn wins), `test/metrics/test_context_blocks.py`
-(`split_blocks` closure + per-marker correctness + reply-format collapse), and
-`test/metrics/test_context_trace.py` (the per-turn trace reader and the
-`context-trace` endpoint).
+`TestPersistTokenRecord*`), `test/metrics/test_context_occupancy.py`
+(aggregation, skips, latest-turn wins), `test/metrics/test_cost_breakdown.py`
+(channel attribution incl. the bare dashboard slot form, no-truncation,
+prior-window deltas, band bucketing, post-compaction slope, growth
+withholding, non-finite rejection) and `test/metrics/test_telemetry_titles.py`
+(title redaction + cache purity), plus the `context-trace` endpoint.
 
 ## Circular-import rule
 
@@ -728,9 +800,15 @@ retries later rather than silently losing the day.
 egress family: the heartbeat and official-app install receipts.
 `telemetry_permitted()` suppresses both when `KIROCREW_TELEMETRY_DISABLED` is
 truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
-the config toggle is false, the process looks like **CI**, or `KIROCREW_HOME` is
-**non-default** (dev home / pod / worktree preview). `beacon.should_send()` adds
-the heartbeat-only daily throttle; receipts are event-based and do not use it.
+the config toggle is false, the process looks like **CI**, `KIROCREW_HOME` is
+**non-default** (dev home / pod / worktree preview), or this install has never sent
+and `dashboard.privacy_acked` is still false (the first-egress gate below).
+`beacon.should_send()` adds the heartbeat-only daily throttle; receipts are
+event-based and do not use it.
+
+Each suppression carries a stable `Verdict.code` from `beacon.REASONS` alongside the
+English `reason`, so the dashboard can translate the outcome instead of printing an
+operator diagnostic.
 
 ### Enterprise opt-out: the `capabilities.telemetry` governance scope
 
@@ -861,15 +939,11 @@ cannot disagree and the choice survives restarts and upgrades.
 The dashboard discloses the default-on beacon without turning disclosure into a
 consent flow:
 
-- On first use, it renders a labelled, passive region in normal document flow
-  above the routed main content. It is never a modal or dialog, never traps or
-  moves focus, and never pauses, gates, or blocks the application. Its dismiss
-  button and the link to the durable privacy details are keyboard-operable.
-- Dismissal is remembered with the local-storage marker
-  `mc-privacy-notice-v1`. Storage access is fail-open: a failed read shows the
-  notice, and dismissal hides it for the current session even when persisting
-  the marker fails.
-- **Settings → Privacy** remains available after dismissal. It explains the
+- The **first-run Privacy chapter** is the disclosure surface. There is no
+  passive banner above the routed content: a dismissible strip competed with the
+  chapter that already discloses the same thing, and its "Privacy details" link
+  was the only thing it added.
+- **Settings → Privacy** is the durable surface. It explains the
   default-on, at-most-daily beacon and its exact five fields: random
   installation id, app version, Python minor version, installation channel, and
   first-run flag. `PrivacyPanel.test.tsx` asserts both that all five are named and
@@ -879,10 +953,25 @@ consent flow:
   keeps the status/disable commands beneath it — the CLI remains documented
   because it is the only way to override a `config.local.json` overlay and the
   only control on a headless host.
-- **Onboarding step 6 (final)** shows the same disclosure and the same toggle in
-  the `OnboardingChapterShell` layout, so a new user sees what is sent and can
-  opt out before finishing setup. It is **passive**: no consent gate and no
-  required choice — Done always completes onboarding, and Skip/Escape still work.
+- The **mandatory first-run Privacy chapter** (`components/PrivacyChapter.tsx`,
+  chapter 2 of 3) shows the same disclosure and the same toggle in the
+  `OnboardingChapterShell` layout, so a new user sees what is sent and can opt out
+  before reaching the product. Every path out of chapter 1 routes through it,
+  including "Skip all", and it offers no skip and no Escape. It is still **not a
+  consent gate**: Continue is always enabled and never requires a choice, because
+  the default is a decision the user can change here, in Settings → Privacy, or
+  from the CLI.
+- **The first heartbeat is withheld until that chapter is acknowledged.** The
+  gateway starts the beacon thread at boot, before the dashboard has rendered, so
+  an ungated fresh install would ping before the user could decline: an opt-out
+  offered only after the fact. Continue persists `dashboard.privacy_acked` (and
+  `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
+  `beacon.telemetry_permitted` reads. The gate is **first-egress only**
+  (`beacon.is_first_send()`): an install that has already sent is past the
+  disclosure, and keying every heartbeat on the flag would silence it permanently
+  rather than once. `dashboard.privacy_acked` falls back to `dashboard.onboarded`,
+  so a user who finished first run before the chapter existed is never re-gated.
+  It gates the install receipt too, via the shared consent ladder.
 - The disclosure copy and the control are single-sourced in
   `components/PrivacyDisclosure.tsx` (`PrivacyDisclosureSections`,
   `TelemetryToggle`, `PrivacyCommandList`) and consumed by both surfaces, so the
@@ -891,8 +980,14 @@ consent flow:
   performance metrics. Performance metrics are off by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
   configures an OTLP endpoint.
-- These surfaces add no tracking and do not alter, enable, or delay any telemetry
-  path. They only explain behavior and controls that already exist.
+- The panel renders a **stable `reason_code`** (`beacon.REASONS`), never the
+  sibling `reason` string. `reason` is untranslated operator prose
+  (`already sent today (2026-08-04)`) kept for logs and bug reports; interpolating
+  it put a developer diagnostic on screen in all 10 languages. An unrecognized
+  code falls back to a generic translated note rather than rendering a raw key.
+- These surfaces add no tracking. They delay exactly one thing, the first
+  heartbeat, until the disclosure has been shown, and otherwise only explain
+  behavior and controls that already exist.
 
 ### Official-app install receipt (`apps/install_receipt.py`)
 

@@ -177,6 +177,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Telemetry spend ranking",
+        "dashboard/handlers/telemetry.py",
+        "Session titles attached to the conversations-by-spend rows of "
+        "/api/telemetry/startup. `display_title` is model-authored, and this is a "
+        "SECOND egress path for it alongside the slot snapshot — a title set "
+        "through `api_chat_slot_resume` reaches the slot unredacted, so nothing "
+        "upstream of this handler has scanned it.",
+    ),
+    (
         "OpenAI-compatible API",
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
@@ -185,6 +194,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Slack messages",
         "slack/handler.py",
         "StreamRedactor on the live edit stream plus a full pass on the final posted " "message.",
+    ),
+    (
+        "Ops Mission Control Slack board",
+        "apps/builtins/ops_mission_control/backend/slack_out.py",
+        "Incident titles, resources, and diagnoses mirrored to an ops channel. A "
+        "separate egress boundary from slack/handler.py: this text originates in a "
+        "third-party provider's alarm payload (not a model turn) and lands in a "
+        "channel whose audience is usually wider than the dashboard's.",
     ),
     (
         "Slack cron / notification posts",
@@ -329,6 +346,82 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         ".meta.json values/keys) is redacted at the pending detail-read choke "
         "before it is returned by the dashboard skills API, and again in-place "
         "before an approved candidate is promoted to the live skills dir.",
+    ),
+    (
+        "Ops provider evidence",
+        "apps/builtins/ops_mission_control/backend/registry.py",
+        "Third-party ops payloads (CloudWatch log lines, Datadog monitor context, "
+        "and any companion-contributed EvidenceSource) are redacted at the single "
+        "gather_evidence choke before they reach a model prompt, a transcript, or "
+        "Slack — centrally, so an adapter author cannot leak a credential by "
+        "forgetting to redact. Routed through redact_via_context, so a loaded "
+        "companion's own credential patterns apply and a host that fails to compose "
+        "one fails closed rather than silently falling back to public patterns.",
+    ),
+    (
+        "Ops shared-ledger push",
+        "apps/builtins/ops_mission_control/backend/ledger_sync.py",
+        "The LAST gate before this app's one published artifact leaves the machine. "
+        "`ledger.jsonl` is committed and pushed to the team's git remote, so a "
+        "credential sitting in a legacy row — written by an older build, or by any "
+        "path other than the redacting POST /ledger route — would be fetched by every "
+        "teammate and require a history rewrite to recall. The pre-push scan takes the "
+        "UNION of `security.get_credential_patterns()` and this app's own "
+        "`secrets.redact_tokens`, because neither is a superset: the core patterns "
+        "carry AKIA/ASIA and miss a prefixed Datadog application key, while "
+        "redact_tokens knows the provider shapes and misses an AWS access key id. A "
+        "flagged line REFUSES the push rather than redacting it in place — the ledger "
+        "is the operator's own knowledge and silently rewriting it would destroy the "
+        "lesson — and the refusal reports line NUMBERS only, never the matched text, "
+        "since it is logged to SEL and the console.",
+    ),
+    (
+        "Ops investigation brief",
+        "apps/builtins/ops_mission_control/backend/dispatch.py",
+        "The signal's own provider-controlled metadata — title, resource and provider "
+        "URL — is redacted before it is rendered into the investigation brief, which "
+        "goes into the agent's context and from there into the transcript and any "
+        "session artifact. A signed webhook is accepted from anything able to POST "
+        "JSON and a console link can carry a token in its query string, so this "
+        "metadata is exactly as untrusted as the evidence bodies gather_evidence "
+        "already covers — that sink was registered while the metadata printed beside "
+        "it was not. Routed through redact_via_context for the same companion-seam "
+        "reason. Fields this app assigns (source, severity, fired_at, fingerprint, "
+        "operating_mode) are deliberately not redacted: masking one could only "
+        "corrupt a value the agent needs to reason about.",
+    ),
+    (
+        "Ops knowledge ledger",
+        "apps/builtins/ops_mission_control/backend/routes.py",
+        "The learned pattern/fix pair is redacted on the WRITE path (POST /ledger), "
+        "before the content-addressed id is computed. This is the app's only artifact "
+        "that leaves the machine: ledger_sync commits ledger.jsonl to a shared git "
+        "remote, and a 'fix' field is the likeliest place for a pasted credential "
+        "because a command line is what a fix looks like. Write-path rather than "
+        "sync-path because the entry is on local disk and in the vector index long "
+        "before any sync runs, and an operator who enables sync later would otherwise "
+        "retroactively publish everything written before it. ledger_sync.push() adds a "
+        "second, independent refusal for entries that predate this redactor.",
+    ),
+    (
+        "Ops Mission Control desktop notifications",
+        "apps/builtins/ops_mission_control/backend/notify_out.py",
+        "Incident titles and provider failure reasons pushed onto the local "
+        "notification bus. A separate egress from the Slack board even though the "
+        "source text is the same third-party provider payload: this one lands in the "
+        "OS notification centre and in the persisted notification JSONL. Runs the "
+        "credential and exfiltration-URL scanners plus the app's own provider-token "
+        "pass, matching the postmortem writer — core redaction alone leaves a "
+        "provider api_key inside a URL intact.",
+    ),
+    (
+        "Ops Mission Control incident postmortem",
+        "apps/builtins/ops_mission_control/backend/store.py",
+        "The per-incident Markdown artifact written when an incident closes "
+        "(incidents/<id>.md). A distinct boundary from the two above because the "
+        "file is a SHAREABLE local artifact — it exists so an operator can hand a "
+        "colleague, or a ticket, the investigation record — so its provider titles "
+        "and model-authored diagnosis are redacted at the write, not at a read.",
     ),
 )
 
@@ -525,10 +618,21 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/papyrus/backend/tectonic.py",
         "apps/builtins/pptx_maker/backend/decks.py",
         "apps/builtins/pptx_maker/backend/routes.py",
+        "apps/builtins/spec_builder/backend/routes.py",
         "apps/builtins/workflows/server.py",
         # Bundled dev-skill script: prints CI/review findings to a
         # developer terminal, not an agent-output egress path.
         "builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_findings.py",
+        # Ops Mission Control provider-token redactor. ``secrets.py`` DEFINES
+        # ``redact_tokens`` (the PagerDuty/Datadog token shapes) rather than
+        # crossing a boundary with it — the same self-referential case as
+        # ``security.py`` itself. ``providers/http.py`` applies it to an
+        # ``HttpError`` message so a 401 body echoing a token cannot reach a log;
+        # that is a log/diagnostic scrub, not agent output on its way to a user.
+        # The real egress choke for this app is ``gather_evidence`` in
+        # ``.../backend/registry.py``, a registered sink above.
+        "apps/builtins/ops_mission_control/backend/secrets.py",
+        "apps/builtins/ops_mission_control/backend/providers/http.py",
     }
 )
 

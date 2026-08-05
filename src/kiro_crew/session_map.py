@@ -134,12 +134,38 @@ class SessionMap:
             self._data = {}
 
     def _rebuild_thread_index(self) -> None:
-        """Rebuild _thread_to_session from current _data."""
+        """Rebuild _thread_to_session from current _data.
+
+        Two entries can claim the same ``slack_thread_ts``: a dashboard session
+        that created the thread via send-to-Slack, and a ``slack:<ts>`` session
+        forked by an inbound reply that ignored the existing binding. A plain
+        last-write-wins pass resolves the thread by dict order, which is file
+        order -- so the fork usually wins and the thread keeps routing to the
+        wrong session even after the fork bug is fixed.
+
+        Break that tie in favour of the session that does NOT derive its key from
+        this thread. A ``slack:<ts>`` key whose ts IS the thread is the fork (or
+        a self-link, which is a no-op rewrite); any other key holds the real
+        conversation. This heals maps corrupted before the fix, on load, with no
+        migration pass.
+        """
         self._thread_to_session.clear()
+        derived: dict[str, str] = {}
         for key, entry in self._data.items():
             ts = entry.get("slack_thread_ts")
-            if ts:
-                self._thread_to_session[ts] = key
+            if not ts or not isinstance(ts, str):
+                # A hand-edited or legacy file can hold a non-string ts. The old
+                # index only ever used it as a dict key, so it survived; the
+                # tie-break below calls str.endswith, which would raise
+                # TypeError here and take gateway startup down with it.
+                continue
+            if is_channel_session_key(key) and key.endswith(ts):
+                # Self-derived: only usable if nothing else claims the thread.
+                derived.setdefault(ts, key)
+                continue
+            self._thread_to_session[ts] = key
+        for ts, key in derived.items():
+            self._thread_to_session.setdefault(ts, key)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -462,6 +488,35 @@ class SessionMap:
             if candidate == link:
                 matches.append(key)
         return matches
+
+    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+        """Clear EVERY session whose mirror targets an exact non-Slack location.
+
+        The write counterpart of :meth:`find_mirror_sessions`. An in-channel
+        unlink means "nothing mirrors into this conversation anymore", and the
+        bindings that occupy a location are matched by VALUE there — so a row
+        stranded under a key spelling the conversation no longer uses (a rotated
+        DM generation, a pre-unification ``dashboard:`` row) or a dashboard
+        session mirroring into the conversation still blocks it while being
+        unreachable by any key-addressed :meth:`clear_mirror_link`. Clearing by
+        location closes that gap and doubles as the repair path for duplicate
+        bindings, which the inbound resolver deliberately refuses to pick from.
+
+        Returns the cleared session keys (empty when the location was free).
+        Slack mirrors live in their own reverse index and are out of scope,
+        exactly as in :meth:`find_mirror_sessions`.
+        """
+        cleared: list[str] = []
+        for key in self.find_mirror_sessions(link):
+            entry = self._data.get(key)
+            if entry is None:  # pragma: no cover - keys come from _data itself
+                continue
+            entry.pop("mirror", None)
+            entry.pop("mirror_accepts_inbound", None)
+            cleared.append(key)
+        if cleared:
+            self._save()
+        return cleared
 
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding; return True iff one existed.

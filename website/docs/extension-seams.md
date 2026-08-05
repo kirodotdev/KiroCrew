@@ -79,6 +79,29 @@ variable a release job must remember to set. Never set
 An edition-mode build also prints a loud self-identifying warning naming the
 resolved composition root, so the mode is unmissable in local and CI logs.
 
+## The RUNTIME rebuild threads the seam too
+
+`POST /api/update`, `kirocrew update`, and the gateway's auto-apply all shell
+`npm run build` and stage the result over the served `static/dist`. Vite reads the
+composition root from the environment, so what those rebuilds pass decides **which
+edition gets built** — and both ways of getting it wrong are silent:
+
+dropping the vars compiles the **stock** SPA over an edition dashboard — the build
+succeeds, so nothing raises; the dashboard just becomes upstream's.
+
+`frontend._edition_build_env()` forwards the pair, and **reads the opt-in rather
+than synthesizing it**: forcing `KIROCREW_ALLOW_EDITION=1` would defeat the
+fail-closed gate above precisely when it should fire, quietly turning an
+edition dir left in a gateway's environment into edition-composed *packaged* data.
+So an edition dir without the operator's own opt-in returns `None` and the
+plugin's explicit error stands. With no edition dir it also returns `None`, so the
+stock path inherits the environment unchanged.
+
+A packaged install (wheel or bundle) ships the built `dist` but **not** the
+edition's TypeScript sources, where a rebuild could only produce a stock bundle.
+`frontend.edition_sources_missing()` detects that and the rebuild is **skipped**,
+keeping the shipped dashboard. Covered by `test/test_frontend_edition_build.py`.
+
 ## Edition peer-dependency rule
 
 An edition dir resolves bare imports from its OWN `node_modules`, so any

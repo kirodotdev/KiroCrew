@@ -31,6 +31,7 @@ import { removeWarm } from '../../store/instancesSlice'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDuration, fmtUnit } from '../../i18n/format'
+import ErrorNotice from '../../components/ErrorNotice'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-success',
   connecting: 'bg-warning',
@@ -143,7 +144,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
           </span>
         </label>
       </div>
-      {err ? <div className="mt-3 text-[13px] text-danger">{err}</div> : null}
+      <ErrorNotice message={err} className="mt-3" />
       <div className="mt-3">
         <Btn
           primary
@@ -350,7 +351,7 @@ export function InstancesPanel() {
         <Btn primary onClick={() => setEnabledMutation.mutate(true)} disabled={setEnabledMutation.isPending}>
           <Power className="lucide-inline" /> {setEnabledMutation.isPending ? i18nT('pages.settings.instancesPanel.enabling') : i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}
         </Btn>
-        {actionErr && <div className="mt-2 text-[13px] text-danger">{actionErr}</div>}
+        <ErrorNotice message={actionErr} className="mt-2" />
         <p className="mt-2 text-[12px] text-muted">
           {i18nT('pages.settings.instancesPanel.equivalent_cli')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_config_set_instances_enabled_true')}</code> {i18nT('pages.settings.instancesPanel.then')}{' '}
           <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>.

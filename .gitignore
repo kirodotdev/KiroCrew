@@ -53,6 +53,11 @@ frontend/tsconfig.app.tsbuildinfo
 frontend/tsconfig.node.tsbuildinfo
 src/kiro_crew/static/dist/
 src/kiro_crew/static/dist
+# Staging scratch + lock used to swap a built dist into static/dist atomically.
+# An untracked leftover here makes the checkout read as dirty, which
+# fail-closes Dev Fleet's "Prune merged".
+src/kiro_crew/static/.dist.staging.*
+src/kiro_crew/static/.dist.previous.*
 
 # Build-time provenance stamp (scripts/stamp-distribution.sh). Generated per
 # packaging path; a committed copy would mislabel every other build's beacon.

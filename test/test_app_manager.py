@@ -10,6 +10,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -1081,7 +1082,6 @@ class TestCopyAppTree:
         """An in-tree symlink is preserved — and an ABSOLUTE in-tree link is
         rewritten to a relative link targeting the installed copy, so the
         installed app never depends on the original source directory."""
-        import os
         import shutil as _shutil
 
         src = _make_app_source(tmp_path)
@@ -1207,8 +1207,6 @@ class TestCopyAppTree:
         """Windows directory junctions (reparse points not reported by
         islink) are omitted from the copy. Simulated by monkeypatching
         os.path.isjunction since junctions don't exist on POSIX."""
-        import os
-
         src = _make_app_source(tmp_path)
         (src / "junction-dir").mkdir()
         (src / "junction-dir" / "secret.txt").write_text("sensitive")
@@ -1324,8 +1322,9 @@ class TestBootSkillReconcile:
 
         assert len(registered) == 1
         assert "test-app/my-skill" in registered
-        assert (skills_root / "test-app" / "my-skill").is_symlink()
-        assert (skills_root / "my-skill").is_symlink()
+        # symlink on POSIX, directory junction on non-admin Windows.
+        assert platform_compat.is_link_or_junction(skills_root / "test-app" / "my-skill")
+        assert platform_compat.is_link_or_junction(skills_root / "my-skill")
         # Registration must target the immutable shipped skill, not its install.
         assert (skills_root / "test-app" / "my-skill").resolve() == skill_dir.resolve()
 
@@ -1344,8 +1343,10 @@ class TestBootSkillReconcile:
         app_skills_dir.mkdir(parents=True)
         stale_target = tmp_path / "old-skill"
         stale_target.mkdir()
-        os.symlink(str(stale_target), str(app_skills_dir / "old-skill"))
-        os.symlink(str(stale_target), str(skills_root / "old-skill"))
+        # symlink on POSIX, junction on non-admin Windows (a bare os.symlink
+        # would raise WinError 1314 in the fixture setup).
+        platform_compat.symlink_or_junction(str(stale_target), str(app_skills_dir / "old-skill"))
+        platform_compat.symlink_or_junction(str(stale_target), str(skills_root / "old-skill"))
 
         # Write installed state and ship the authoritative builtin resources.
         installed = {
@@ -1382,7 +1383,8 @@ class TestBootSkillReconcile:
 
         # Kept skill is registered from immutable provenance.
         assert "test-app/kept-skill" in registered
-        assert (skills_root / "test-app" / "kept-skill").is_symlink()
+        # symlink on POSIX, directory junction on non-admin Windows.
+        assert platform_compat.is_link_or_junction(skills_root / "test-app" / "kept-skill")
         assert (
             skills_root / "test-app" / "kept-skill"
         ).resolve() == kept_skill.resolve()

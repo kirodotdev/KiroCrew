@@ -661,10 +661,27 @@ def report(violations: Iterable[Violation], *, enforcing: bool, base: str | None
         print(f"::notice::brand gate report: {len(violations)} pre-existing line(s) "
               f"spell the product name something other than {CORRECT!r}. Not enforced "
               f"here; only lines a change adds are gated.")
-    for v in violations[: 200 if enforcing else 40]:
+    # The listing is path-sorted, so a silently-truncated report shows only the
+    # alphabetically-first paths — '.github/' and '.kiro/' alone exceed the report
+    # budget, which is how a backlog of UI-visible strings under 'src/' and
+    # 'website/' stayed invisible for a whole rename. Always disclose the cut, and
+    # on the report path precede the listing with a per-directory tally so the
+    # shape of the backlog survives truncation.
+    shown = 200 if enforcing else 40
+    if not enforcing and len(violations) > shown:
+        tally: dict[str, int] = {}
+        for v in violations:
+            head, _, tail = v.path.partition("/")
+            tally[f"{head}/" if tail else head] = tally.get(f"{head}/" if tail else head, 0) + 1
+        print(f"\nby top-level path ({len(tally)} entries, all {len(violations)} lines):")
+        for name, count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"  {count:>5}  {name}")
+        print()
+
+    for v in violations[:shown]:
         print(v.render())
-    if len(violations) > 200 and enforcing:
-        print(f"... and {len(violations) - 200} more")
+    if len(violations) > shown:
+        print(f"... and {len(violations) - shown} more")
     if enforcing:
         print(
             "\nIdentifiers keep their own spelling and are already exempt: the "
@@ -730,6 +747,18 @@ def main(argv: list[str]) -> int:
 
     explicit = [a for a in argv if not a.startswith("-")]
     if explicit:
+        # Same fail-closed rule as enforce_diff: a path that yields no lines has
+        # not been checked, so reporting it clean is a false green. Without this,
+        # a typo'd or moved path prints the success line and exits 0.
+        unreadable = [p for p in explicit if read_lines(p) is None]
+        if unreadable:
+            print(
+                "::error::brand gate: cannot read these paths as UTF-8 text, so the "
+                "product name in them was never checked:"
+            )
+            for path in unreadable:
+                print(f"  {path}")
+            return 1
         found = [v for p in explicit for v in scan_file(p)]
         return report(found, enforcing=True, base=None)
 

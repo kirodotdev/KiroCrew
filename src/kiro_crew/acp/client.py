@@ -31,7 +31,7 @@ import time
 from collections import deque
 from contextlib import aclosing
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator, Sequence
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
@@ -744,7 +744,44 @@ _RE_5XX_HINT = re.compile(r"(please try again|response stream)", re.IGNORECASE)
 _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
 
 
-def _is_transient_raw_error(error: object) -> bool:
+def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> str | None:
+    """Return the rejected model name iff the account is not entitled to it.
+
+    Upstream reports entitlement failures and transient capacity failures with
+    the SAME string ("The model 'X' is not available"), so the string alone
+    cannot tell them apart. The advertised model list can: it is captured at
+    session init from what this account is actually served, so a rejected model
+    that is absent from it was never on offer -- an entitlement problem no retry
+    can fix. A rejected model that IS advertised really is a transient
+    capacity/rollout blip.
+
+    Returns None when the model is advertised, when nothing was rejected, or
+    when *available_models* is None/empty (entitlement unknowable -- treat as
+    transient rather than telling a user their plan lacks a model on no
+    evidence).
+
+    Both :func:`_format_acp_error` and :func:`_is_transient_raw_error` route
+    through this single helper so the user-facing wording and the retry verdict
+    cannot drift apart -- see the drift warning above.
+    """
+    match = _RE_MODEL_UNAVAILABLE.search(data)
+    if not match:
+        return None
+    if not available_models:
+        return None
+    rejected = match.group(1)
+    # Compare case-insensitively on the bare id: the rejection echoes back the
+    # id that was sent, but casing has no meaning in these ids and an
+    # entitled-but-differently-cased match must not be reported as unentitled.
+    advertised = {m.strip().lower() for m in available_models if m and m.strip()}
+    if rejected.strip().lower() in advertised:
+        return None
+    return rejected
+
+
+def _is_transient_raw_error(
+    error: object, available_models: Sequence[str] | None = None
+) -> bool:
     """True iff a raw ACP JSON-RPC ``error`` is a retryable transient backend
     failure (Bedrock 5xx / throttle / model-unavailable rollout) rather than an
     auth/validation/unknown error that a retry cannot fix.
@@ -753,13 +790,24 @@ def _is_transient_raw_error(error: object) -> bool:
     user-facing string — so the retry decision is independent of message
     wording. :class:`AcpError` carries this verdict (``.transient``) to the
     retry layer (``llm_helpers``, ``chat_runner``). Precedence mirrors
-    :func:`_format_acp_error`: model-unavailable → throttle → auth(terminal) →
-    generic 5xx / pre-stream generation failure → unknown(terminal)."""
+    :func:`_format_acp_error`: unentitled-model(terminal) → model-unavailable →
+    throttle → auth(terminal) → generic 5xx / pre-stream generation failure →
+    unknown(terminal).
+
+    *available_models* is this account's advertised set when the caller knows
+    it. It only ever makes the verdict MORE conservative: a model the account
+    was never offered is terminal instead of being retried to no purpose. Omit
+    it and behaviour is unchanged from before this parameter existed.
+    """
     if not isinstance(error, dict):
         return False
     data = str(error.get("data", "") or "")
     message = str(error.get("message", "") or "")
     haystack = f"{data} {message}"
+    if _model_is_unentitled(data, available_models):
+        # Terminal: the account is not entitled to this model, so every retry
+        # spends latency to reproduce the same rejection.
+        return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
     if _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
@@ -775,7 +823,7 @@ def _is_transient_raw_error(error: object) -> bool:
     )
 
 
-def _format_acp_error(error: object) -> str:
+def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
     The ACP backend (kiro-cli or claude-agent-acp) surfaces upstream Bedrock
@@ -805,18 +853,35 @@ def _format_acp_error(error: object) -> str:
         req_id_match = re.search(r"request_id:\s*([0-9a-fA-F-]+)", data)
         req_id_suffix = f" (request_id: {req_id_match.group(1)})" if req_id_match else ""
 
+        # Entitlement failure: this account was never offered the model, so the
+        # capacity/rollout advice below would be actively misleading (there is
+        # nothing to wait for). Checked FIRST because upstream uses the same
+        # string for both cases.
+        unentitled = _model_is_unentitled(data, available_models)
+        if unentitled:
+            usable = [m.strip() for m in (available_models or []) if m and m.strip()]
+            # Cap the list: an account with many models would otherwise bury the
+            # message, and the picker shows the full set anyway.
+            shown = ", ".join(usable[:8])
+            more = f" (+{len(usable) - 8} more)" if len(usable) > 8 else ""
+            formatted = (
+                f"Your account does not have access to model '{unentitled}'. "
+                f"Available to you: {shown}{more}. Pick one in the model picker, "
+                f"or set agent.model to 'auto' to let the backend choose a model "
+                f"your plan includes. Retrying will not help."
+                f"{req_id_suffix}"
+            )
         # Bedrock model alias resolved to a version that is currently
         # unavailable (capacity throttle, region rollout in progress,
         # deprecated, etc.).
-        model_match = _RE_MODEL_UNAVAILABLE.search(data)
-        if model_match:
-            model = model_match.group(1)
+        elif _RE_MODEL_UNAVAILABLE.search(data):
+            model = str(_RE_MODEL_UNAVAILABLE.search(data).group(1))  # type: ignore[union-attr]
             formatted = (
-                f"Model '{model}' is unavailable on Bedrock right now (capacity "
-                f"throttle or region rollout). Try: (1) pick a different alias in "
-                f"the model picker, (2) edit ~/.claude/settings.json 'model' field "
-                f"to a different version (e.g. claude-opus-4-6-v1), or (3) wait a "
-                f"minute and retry."
+                f"Model '{model}' is unavailable on the backend right now "
+                f"(capacity throttle or region rollout). Try: (1) pick a "
+                f"different model in the model picker, (2) set agent.model to "
+                f"'auto' in ~/.kiro/crew/config.json, or (3) wait a minute and "
+                f"retry."
                 f"{req_id_suffix}"
             )
         elif _RE_THROTTLE_NAMED.search(haystack) or _RE_THROTTLE_GENERIC.search(haystack):
@@ -920,21 +985,25 @@ def _format_acp_error(error: object) -> str:
 _PROMPT_BUSY_RE = re.compile(r"already in progress", re.IGNORECASE)
 
 
-def _raise_acp_error(error: object) -> None:
+def _raise_acp_error(error: object, available_models: Sequence[str] | None = None) -> None:
     """Format and raise the appropriate AcpError subclass for *error*.
 
     Delegates formatting to ``_format_acp_error`` and raises either
     ``AcpPromptBusy`` (when the backend reports a concurrent in-flight prompt)
     or the generic ``AcpError`` for all other cases.
+
+    *available_models* is passed to BOTH the formatter and the transient
+    classifier so a model-rejection's wording and its retry verdict are decided
+    from the same evidence.
     """
-    formatted = _format_acp_error(error)
+    formatted = _format_acp_error(error, available_models)
     # Detect prompt-busy from the raw error (before formatting rewrites it)
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
-    raise AcpError(formatted, transient=_is_transient_raw_error(error))
+    raise AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
 
 
 # Matches claude-agent-acp policy-substitution advisories:
@@ -1586,6 +1655,20 @@ class AcpClient:
     def available_models(self) -> list[dict[str, str]]:
         """Models advertised by the backend at session init (may be empty)."""
         return list(self._available_models)
+
+    def _advertised_model_ids(self) -> list[str]:
+        """Advertised model ids, for the model-rejection error path.
+
+        Empty when the backend advertised nothing (no session yet, or a backend
+        that omits ``models``), which the error path reads as "entitlement
+        unknown" and leaves the existing transient/capacity handling alone.
+        """
+        ids = []
+        for entry in self._available_models:
+            model_id = entry.get("modelId") if isinstance(entry, dict) else None
+            if isinstance(model_id, str) and model_id.strip():
+                ids.append(model_id)
+        return ids
 
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level) via session/set_config_option."""
@@ -3056,7 +3139,7 @@ class AcpClient:
                     self._turn_done.set()
                     return
                 if action == "error":
-                    _raise_acp_error(msg.error)
+                    _raise_acp_error(msg.error, self._advertised_model_ids())
                 if action == "permission":
                     await self._handle_permission(msg)
                 elif action == "server_request_unknown":
@@ -3183,7 +3266,7 @@ class AcpClient:
                 )
                 return
             if action == "error":
-                _raise_acp_error(msg.error)
+                _raise_acp_error(msg.error, self._advertised_model_ids())
             if action == "permission":
                 yield self._build_permission_event(msg)
             elif action == "server_request_unknown":
@@ -3687,7 +3770,7 @@ class AcpClient:
                 self._turn_done.set()
                 return "".join(output)
             if action == "error":
-                _raise_acp_error(msg.error)
+                _raise_acp_error(msg.error, self._advertised_model_ids())
             if action == "permission":
                 await self._handle_permission(msg)
             elif action == "server_request_unknown":

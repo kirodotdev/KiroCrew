@@ -257,7 +257,11 @@ def test_real_kiro_cli_prefers_session_injected_server():
     every poolable server would run twice, which is worse than not pooling. This
     test fails loudly at that point instead of shipping a silent regression.
     """
-    with tempfile.TemporaryDirectory() as w:
+    # ignore_cleanup_errors: the spawned kiro-cli subprocess can still hold a
+    # handle on the temp tree at teardown; Windows refuses to delete a dir with
+    # open handles (POSIX does not), which would raise WinError 32 out of the
+    # context manager even though the test's assertions already passed.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
         root = Path(w)
         (root / "khome" / "agents").mkdir(parents=True)
         (root / "proj").mkdir()

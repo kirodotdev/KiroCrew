@@ -1,6 +1,6 @@
 # MCP Apps
 
-KiroCrew renders **MCP Apps** natively: when an MCP tool returns a `ui://` resource
+Kiro Crew renders **MCP Apps** natively: when an MCP tool returns a `ui://` resource
 alongside its text, the dashboard mounts that resource as a live, interactive
 component in the chat instead of showing you a wall of JSON. Ask for a diagram and
 the excalidraw server gives you an editable Excalidraw canvas in the conversation;
@@ -172,19 +172,19 @@ properly means hosting app frames above the router, which is not done yet.
 
 ## What a server must do to get content rendered
 
-Nothing KiroCrew-specific. Conform to SEP-1865:
+Nothing specific to Kiro Crew. Conform to SEP-1865:
 
 1. **Serve a `ui://` resource** — the app's HTML, returned from `resources/read`.
 2. **Associate it with the tool.** Either form works:
    - on the **tool definition**: `_meta.ui.resourceUri` (SEP-1865's primary form —
-     preferred, and what KiroCrew harvests at backend spawn), or
+     preferred, and what Kiro Crew harvests at backend spawn), or
    - on the **tool result**: `result._meta.ui.resourceUri` per call.
 
    The deprecated flat key `_meta["ui/resourceUri"]` is also read, for
    compatibility. Only a string beginning `ui://` is eligible.
 
 The per-result `_meta` is optional and some servers omit it, which is why
-KiroCrew harvests declared URIs from `tools/list` when the backend starts — a
+Kiro Crew harvests declared URIs from `tools/list` when the backend starts — a
 tool that declared a `ui://` resource renders even when its individual results
 carry no `_meta`.
 
@@ -208,7 +208,7 @@ Useful when something renders as text and you need to find where the chain broke
 
 ## Security posture
 
-Worth understanding before you point KiroCrew at an unfamiliar server, because
+Worth understanding before you point Kiro Crew at an unfamiliar server, because
 app HTML is **server-controlled code running in your dashboard**.
 
 - **The iframe is `sandbox="allow-scripts allow-forms"`** — deliberately *without*

@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react'
 import Clickable from '../../components/Clickable'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Pencil, Hourglass, Play, MessageSquare, VolumeX } from 'lucide-react'
+import { AlertTriangle, Clock, Pencil, Hourglass, Play, MessageSquare, VolumeX } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { api } from '../../api/client'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, SearchInput } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, SearchInput, EmptyState, FilteredEmpty } from '../../components/ui'
 import AgentSelector from '../../components/AgentSelector'
 import { TIMEZONES } from '../../components/JobForm'
 import InfoTip from '../../components/InfoTip'
@@ -19,6 +19,7 @@ import SortableHeader from '../../components/SortableHeader'
 import { useCronActions } from '../../hooks/useCronActions'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) {
   const provider = useProvider()
   const noCrons = useAppSelector(s => s.dashboard.status?.no_crons)
@@ -149,12 +150,14 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
           </>)}
           <SendBtn onClick={add}>{i18nT('pages.overview.cronTab.add')}</SendBtn>
         </div>
-        {error && <div className="text-danger text-[13px]">{error}</div>}
+        {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+        <ErrorNotice message={error} />
       </div></Card>
     <Card><CardTitle>{i18nT('pages.overview.cronTab.jobs')}</CardTitle>
       <div className="mb-3"><SearchInput placeholder={i18nT('pages.overview.cronTab.filter_jobs')} value={cronFilter} onChange={e => setCronFilter(e.target.value)} /></div>
       <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[72px]">{i18nT('pages.overview.cronTab.id')}</th><SortableHeader label={i18nT('pages.overview.cronTab.name')} sortKey="name" sort={cronSort} onToggle={toggleCronSort} className="w-[100px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('pages.overview.cronTab.agent')}</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('pages.overview.cronTab.model')}</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[90px]">{i18nT('pages.overview.cronTab.channel')}</th><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[80px]">{i18nT('pages.overview.cronTab.approval')}</th><SortableHeader label={i18nT('pages.overview.cronTab.schedule')} sortKey="schedule" sort={cronSort} onToggle={toggleCronSort} className="w-[110px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium min-w-[400px]">{i18nT('pages.overview.cronTab.message')}</th><SortableHeader label={i18nT('pages.overview.cronTab.status')} sortKey="status" sort={cronSort} onToggle={toggleCronSort} className="w-[70px]" /><SortableHeader label={i18nT('pages.overview.cronTab.last_run')} sortKey="lastRun" sort={cronSort} onToggle={toggleCronSort} className="w-[80px]" /><th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[180px]">{i18nT('pages.overview.cronTab.actions')}</th></tr></thead>
-        <tbody>{jobs.length === 0 ? <tr><td colSpan={11} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.cronTab.no_cron_jobs')}</td></tr> : sortedJobs.length === 0 ? <tr><td colSpan={11} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.cronTab.no_matching_jobs')}</td></tr> : sortedJobs.map(j => (
+        <tbody>{jobs.length === 0 ? <tr><td colSpan={11}><EmptyState icon={<Clock className="lucide-inline" />} title={i18nT('pages.overview.cronTab.no_cron_jobs_yet')} subtitle={i18nT('pages.overview.cronTab.empty_subtitle')} action={<a href="/schedule" className="text-accent text-[13px] hover:underline">{i18nT('pages.overview.cronTab.go_to_schedule')}</a>} /></td></tr> : sortedJobs.length === 0 ? <tr><td colSpan={11}><FilteredEmpty query={cronFilter} onClear={() => setCronFilter('')} noun={i18nT('pages.overview.cronTab.jobs_noun')} /></td></tr> : sortedJobs.map(j => (
           <tr key={j.id} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{j.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{esc(j.name)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.agent ? <span className="px-1.5 py-[2px] rounded-full text-[12px] font-bold bg-aim-subtle text-aim border border-aim/30">{j.agent}</span> : <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.default')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.model ? <span className="text-[13px] truncate block max-w-[120px]" title={j.model}>{j.model}</span> : <span className="text-muted text-[13px] italic">{i18nT('pages.overview.cronTab.inherited')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.channel ? <code>{j.channel}</code> : <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.dm')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm">{j.approval_mode ? <Badge variant="ok">{j.approval_mode}</Badge> : <span className="text-muted text-[13px]">{i18nT('pages.overview.cronTab.default')}</span>}{j.silent ? <> <VolumeX className="lucide-inline" /></> : ''}</td><td className="px-2.5 py-2 border-b border-border text-sm"><code>{esc(j.schedule)}</code>{j.timezone && <span className="block text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</td><td className="px-2.5 py-2 border-b border-border text-sm break-words" title={j.message}>{esc(j.message)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm">{j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.overview.cronTab.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.overview.cronTab.error')}</Badge> : <Badge variant="ok">{i18nT('pages.overview.cronTab.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.overview.cronTab.paused')}</Badge>}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{fmtAgo(j.last_run_ts)}</td>

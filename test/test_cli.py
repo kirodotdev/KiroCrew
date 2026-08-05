@@ -346,7 +346,9 @@ _UPDATE_PATCHES = {
 
 def _patch_path():
     """Mock Path so .git check passes, .install-method is absent, and .brazil dir exists."""
-    mock_git_dir = MagicMock(is_dir=MagicMock(return_value=True))
+    mock_git_dir = MagicMock(
+        is_dir=MagicMock(return_value=True), exists=MagicMock(return_value=True)
+    )
     mock_install_method = MagicMock(is_file=MagicMock(return_value=False))
     mock_brazil_dir = MagicMock(is_dir=MagicMock(return_value=True))
 
