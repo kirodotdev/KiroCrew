@@ -9,6 +9,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [windows-install.md](windows-install.md) | Native Windows setup, and the per-feature status on Windows. |
 | [docker.md](docker.md) | Running Kiro Crew as a container. |
 | [remote-and-mobile.md](remote-and-mobile.md) | Running 24/7 on a remote host, keeping it alive as a service, and reaching it from a phone over a tunnel. |
+| [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md) | How a cloud-launched instance is reached through the Instances hub: the native AWS SSM transport vs the legacy SSH-over-`ProxyCommand` path. |
 | [slack-setup.md](slack-setup.md) | Creating and configuring the Slack app. |
 
 `assets/` holds the copy-pasteable service unit, launchd plist, and setup script

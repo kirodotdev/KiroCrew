@@ -458,12 +458,16 @@ Simpler cases work without an alias: `ec2-user@10.0.1.5` and
 values, provided the matching key is the default identity or in the agent.
 
 **The cloud launcher registers instances here.** `kirocrew cloud launch`
-best-effort registers the box it created in this registry using the EC2 instance
-id as `ssh_host` (`cloud/connect.py:ssm_proxy_ssh_host` returns the id verbatim,
-which is charset-safe for the registry validator); the operator's `~/.ssh/config`
-carries the SSM `ProxyCommand` that makes that id resolvable. `kirocrew cloud
-destroy` unregisters it after deletion confirms. This is why `cloud/connect.py`
-cites this section, and why its numbering must not move.
+best-effort registers the box it created in this registry using the **native SSM
+transport** — `connection_method="ssm"` with the EC2 instance id as `ssm_target`,
+plus the launcher's `aws_profile`/`aws_region` (`cloud/connect.py:register_instance`).
+The dashboard then tunnels, refreshes tokens, and self-heals the box over SSM with
+no SSH key, no inbound port, and no hand-edited `~/.ssh/config`. `kirocrew cloud
+destroy` unregisters it (matched by `ssm_target`) after deletion confirms. This is
+why `cloud/connect.py` cites this section, and why its numbering must not move.
+The legacy `ssm_proxy_ssh_host` helper (registering the id as `ssh_host` behind an
+`~/.ssh/config` `ProxyCommand`) is retained for reference only and is no longer
+used by the managed path.
 
 ### What is reachable through which mechanism
 
@@ -744,8 +748,9 @@ which is not an egress boundary.
 ### Interaction with §9
 
 §9 documents reaching an SSM-only instance through an `~/.ssh/config`
-`ProxyCommand` — still valid, and still the path `cloud/connect.py`'s registry
-integration uses (`ssm_proxy_ssh_host` registers `ssh_host=<instance-id>`). That
-remains `connection_method="ssh"`: the reachability lives in ssh config and
-Kiro Crew is unaware of it. `connection_method="ssm"` is the direct alternative,
-requiring neither sshd nor a key on the remote.
+`ProxyCommand` — still valid as a manual option, and still `connection_method="ssh"`:
+the reachability lives in ssh config and Kiro Crew is unaware of it.
+`connection_method="ssm"` is the direct alternative, requiring neither sshd nor a
+key on the remote — and it is now what `cloud/connect.py`'s registry integration
+uses (`register_instance` sets `connection_method="ssm"`, `ssm_target=<instance-id>`).
+The legacy `ssm_proxy_ssh_host` helper is kept for reference only.
