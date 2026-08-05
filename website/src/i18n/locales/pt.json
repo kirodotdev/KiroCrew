@@ -6152,7 +6152,9 @@
         "startup": "Inicialização",
         "us_east_1": "us-east-1",
         "voice": "Voz",
-        "when_enabled_tool_pills_show_purpose_instead_of": "Quando ativado, os chips de ferramenta mostram o propósito em vez do comando exato"
+        "when_enabled_tool_pills_show_purpose_instead_of": "Quando ativado, os chips de ferramenta mostram o propósito em vez do comando exato",
+        "show_token_usage": "Mostrar o uso de tokens",
+        "display_used_and_total_tokens_next_to_the_contex": "Exibir os tokens usados e totais ao lado da barra de contexto"
       },
       "collapsibleToolGroup": {
         "approval_needed": "Aprovação necessária",
@@ -8345,7 +8347,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "Espelha na biblioteca os documentos que você salva como artefatos, mantém tudo sincronizado conforme você edita e remove quando você exclui o artefato.",
         "failed_to_save_knowledge_setting": "Falha ao salvar a configuração de conhecimento",
         "auto_ingest_limit_per_scan": "Limite de ingestão automática por varredura",
-        "how_much_an_automatically_registered_source_may_i": "Quanto uma fonte registrada automaticamente pode absorver em uma passagem. Cada parte de um documento custa uma chamada de extração, então é isso que limita o custo; os documentos mais recentes entram primeiro e o resto vem nas passagens seguintes. 0 remove o limite. Padrão: {{count}}."
+        "how_much_an_automatically_registered_source_may_i": "Quanto uma fonte registrada automaticamente pode absorver em uma passagem. Cada parte de um documento custa uma chamada de extração, então é isso que limita o custo; os documentos mais recentes entram primeiro e o resto vem nas passagens seguintes. 0 remove o limite. Padrão: {{count}}.",
+        "show_token_usage": "Mostrar o uso de tokens",
+        "display_used_and_total_tokens_next_to_the_contex": "Exibir os tokens usados e totais ao lado da barra de progresso do contexto"
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

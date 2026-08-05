@@ -5257,6 +5257,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
               showContextPct={chatConfig.showContextPct}
+              showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
               continuable={continuable}
               onContinue={handleContinue}

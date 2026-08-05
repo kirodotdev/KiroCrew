@@ -6080,7 +6080,9 @@
         "startup": "স্টার্টআপ",
         "us_east_1": "us-east-1",
         "voice": "ভয়েস",
-        "when_enabled_tool_pills_show_purpose_instead_of": "চালু থাকলে টুল পিলগুলো হুবহু কমান্ডের বদলে উদ্দেশ্য দেখায়"
+        "when_enabled_tool_pills_show_purpose_instead_of": "চালু থাকলে টুল পিলগুলো হুবহু কমান্ডের বদলে উদ্দেশ্য দেখায়",
+        "show_token_usage": "টোকেন ব্যবহার দেখান",
+        "display_used_and_total_tokens_next_to_the_contex": "কনটেক্সট বারের পাশে ব্যবহৃত ও মোট টোকেন দেখান"
       },
       "collapsibleToolGroup": {
         "approval_needed": "অনুমোদন প্রয়োজন",
@@ -8258,7 +8260,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "আর্টিফ্যাক্ট হিসেবে সংরক্ষিত নথিগুলো ভাণ্ডারে প্রতিবিম্বিত করুন, সম্পাদনার সঙ্গে সমন্বিত রাখুন এবং আর্টিফ্যাক্ট মুছলে সেগুলোও সরিয়ে দিন।",
         "failed_to_save_knowledge_setting": "জ্ঞান সেটিং সংরক্ষণ ব্যর্থ হয়েছে",
         "auto_ingest_limit_per_scan": "প্রতি স্ক্যানে স্বয়ংক্রিয় গ্রহণের সীমা",
-        "how_much_an_automatically_registered_source_may_i": "স্বয়ংক্রিয়ভাবে নিবন্ধিত একটি উৎস একবারে কতটা নিতে পারে। নথির প্রতিটি অংশের জন্য একটি নিষ্কাশন কল খরচ হয়, তাই এটিই খরচ বেঁধে রাখে; নতুন নথি আগে আসে, বাকিগুলো পরের ধাপে। 0 দিলে কোনো সীমা থাকে না। ডিফল্ট {{count}}।"
+        "how_much_an_automatically_registered_source_may_i": "স্বয়ংক্রিয়ভাবে নিবন্ধিত একটি উৎস একবারে কতটা নিতে পারে। নথির প্রতিটি অংশের জন্য একটি নিষ্কাশন কল খরচ হয়, তাই এটিই খরচ বেঁধে রাখে; নতুন নথি আগে আসে, বাকিগুলো পরের ধাপে। 0 দিলে কোনো সীমা থাকে না। ডিফল্ট {{count}}।",
+        "show_token_usage": "টোকেন ব্যবহার দেখান",
+        "display_used_and_total_tokens_next_to_the_contex": "কনটেক্সট প্রোগ্রেস বারের পাশে ব্যবহৃত ও মোট টোকেন দেখান"
       },
       "computerUsePanel": {
         "accessibility": "অ্যাক্সেসিবিলিটি",

@@ -6008,7 +6008,9 @@
         "startup": "启动",
         "us_east_1": "us-east-1",
         "voice": "语音",
-        "when_enabled_tool_pills_show_purpose_instead_of": "启用后，工具标签显示用途而不是确切命令"
+        "when_enabled_tool_pills_show_purpose_instead_of": "启用后，工具标签显示用途而不是确切命令",
+        "show_token_usage": "显示令牌用量",
+        "display_used_and_total_tokens_next_to_the_contex": "在上下文条旁显示已用和总令牌数"
       },
       "collapsibleToolGroup": {
         "approval_needed": "需要审批",
@@ -8171,7 +8173,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "把你保存为工件的文档同步到知识库，随编辑保持同步，并在你删除工件时一并移除。",
         "failed_to_save_knowledge_setting": "保存知识库设置失败",
         "auto_ingest_limit_per_scan": "每次扫描的自动摄取上限",
-        "how_much_an_automatically_registered_source_may_i": "自动注册的来源在一次扫描中最多可摄取多少内容。文档的每个片段都要消耗一次抽取调用，因此这是控制成本的关键；最新的文档优先入库，其余的在后续扫描中陆续处理。设为 0 表示不限制。默认 {{count}}。"
+        "how_much_an_automatically_registered_source_may_i": "自动注册的来源在一次扫描中最多可摄取多少内容。文档的每个片段都要消耗一次抽取调用，因此这是控制成本的关键；最新的文档优先入库，其余的在后续扫描中陆续处理。设为 0 表示不限制。默认 {{count}}。",
+        "show_token_usage": "显示令牌用量",
+        "display_used_and_total_tokens_next_to_the_contex": "在上下文进度条旁显示已用和总令牌数"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",
