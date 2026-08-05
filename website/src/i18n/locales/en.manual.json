@@ -1837,6 +1837,7 @@
         "aria_awaiting_approval": "Awaiting approval for tool: {{label}}",
         "aria_hide_details": "Hide details for tool: {{label}}",
         "aria_show_details": "Show details for tool: {{label}}",
+        "blocked_by_security_policy": "Blocked by security policy",
         "opened_in_the_side_panel": "Opened in the side panel"
       }
     },

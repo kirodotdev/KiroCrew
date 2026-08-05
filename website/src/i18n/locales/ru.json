@@ -6217,7 +6217,8 @@
         "aria_awaiting_approval": "Ожидание одобрения инструмента: {{label}}",
         "aria_hide_details": "Скрыть подробности инструмента: {{label}}",
         "aria_show_details": "Показать подробности инструмента: {{label}}",
-        "opened_in_the_side_panel": "Открыто в боковой панели"
+        "opened_in_the_side_panel": "Открыто в боковой панели",
+        "blocked_by_security_policy": "Заблокировано политикой безопасности"
       }
     },
     "chatPage": {

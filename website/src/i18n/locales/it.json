@@ -6143,7 +6143,8 @@
         "aria_awaiting_approval": "In attesa di approvazione per lo strumento: {{label}}",
         "aria_hide_details": "Nascondi i dettagli per lo strumento: {{label}}",
         "aria_show_details": "Mostra i dettagli per lo strumento: {{label}}",
-        "opened_in_the_side_panel": "Aperto nel pannello laterale"
+        "opened_in_the_side_panel": "Aperto nel pannello laterale",
+        "blocked_by_security_policy": "Bloccato dalla policy di sicurezza"
       }
     },
     "chatPage": {

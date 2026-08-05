@@ -6,7 +6,7 @@ import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { pickToolLabel } from '../../utils/toolLabel'
-import { LoaderCircle, CircleSlash, CircleDot, Lock, PanelRight } from 'lucide-react'
+import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ChatMessage } from '../../types'
@@ -53,7 +53,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon.
-  const { effectiveId, isDone, isRejected, purpose, input, output, auto, ts, hasEntry } = useAppSelector(s => {
+  const { effectiveId, isDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, hasEntry } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -75,15 +75,41 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       return false
     }
 
+    // Auto-denied detection. When a security-policy deny rule or hook blocks a
+    // tool, the gateway appends a SECOND tool message — "🚫 <title> …" —
+    // sharing this pill's tool_call_id. That message never renders (TurnBlock
+    // hides every tool message not starting with 🔧), so the visible 🔧 pill
+    // must find its hidden sibling to know the call was blocked. Only the
+    // sibling's PRESENCE is used: its content is a redacted event title (often
+    // just "shell"), not a reliable human-readable reason, so the Output panel
+    // shows a standard "blocked by security policy" message instead. The
+    // interactive user-reject path also appends a 🚫 message, but that flow
+    // ALSO resolves a permission message as rejected — wasRejectedByPerm()
+    // takes precedence below, so a user rejection still shows red, not amber.
+    const hasAutoDenySibling = (): boolean => {
+      if (!toolCallId) return false
+      for (let j = msgs.length - 1; j >= 0; j--) {
+        const m = msgs[j]
+        if (m.role !== 'tool' || m.meta?.tool_call_id !== toolCallId) continue
+        if (m.content.startsWith('🚫')) return true
+        // The pill's own 🔧 message reached without a 🚫 sibling above it —
+        // any earlier match would predate this call; stop scanning.
+        if (m === message) break
+      }
+      return false
+    }
+    const autoDenied = hasAutoDenySibling()
+
     for (let i = log.length - 1; i >= 0; i--) {
       const e = log[i]
       if (e.type !== 'tool') continue
       if ((toolCallId && e.tool_call_id === toolCallId) || (!toolCallId && e.tool_call_id && label.includes(e.text))) {
         const rejected = !!e.rejected || wasRejectedByPerm()
-        const isDone = e.output != null || rejected || !slotRunning
+        const isDone = e.output != null || rejected || autoDenied || !slotRunning
         return {
           effectiveId: e.tool_call_id || null,
           isDone, isRejected: rejected,
+          isAutoDenied: !rejected && autoDenied,
           purpose: e.purpose || '',
           input: e.input || '',
           output: e.output || '',
@@ -105,6 +131,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     return {
       effectiveId: toolCallId || null,
       isDone: true, isRejected: rejected,
+      isAutoDenied: !rejected && autoDenied,
       purpose: (message.meta?.purpose as string) || '',
       input: metaInput, output: metaOutput, auto: false,
       // ChatMessage.ts is a string (ISO timestamp) when restored from history;
@@ -228,20 +255,22 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const showFileOpen = probeEnabled && fileExists
 
   const Icon = isDone
-    ? (isRejected ? CircleSlash : CircleDot)
+    ? (isRejected ? CircleSlash : isAutoDenied ? CircleAlert : CircleDot)
     : hasPendingPerm ? Lock
     : LoaderCircle
   const iconClass = isDone
-    ? (isRejected ? 'text-danger' : 'text-ok')
+    // Auto-denied: amber (warn). User-rejected: red (danger). Completed: green (ok).
+    ? (isRejected ? 'text-danger' : isAutoDenied ? 'text-warn' : 'text-ok')
     : hasPendingPerm ? 'text-warn'
     : 'text-accent animate-spin'
   // Match the panel's left rail to the pill's status — keeps the visual chain
-  // (icon → bar → content) coherent across rejected (red), done (green),
-  // pending-approval (yellow), and running (accent) states. Inline style with
-  // color-mix() rather than Tailwind opacity classes — the project's Tailwind
-  // config doesn't compile `border-{color}/N` opacity variants for theme colors.
+  // (icon → bar → content) coherent across auto-denied (amber), user-rejected
+  // (red), done (green), pending-approval (yellow), and running (accent) states.
+  // Inline style with color-mix() rather than Tailwind opacity classes — the
+  // project's Tailwind config doesn't compile `border-{color}/N` opacity
+  // variants for theme colors.
   const barColor = isDone
-    ? (isRejected ? 'var(--danger)' : 'var(--ok)')
+    ? (isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : 'var(--ok)')
     : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
   const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
   // Purpose is the agent's prose label (simplified mode). Guard it against the
@@ -367,10 +396,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             : i18nT('pages.chat.toolCallLine.aria_show_details', { label })}
         onClick={onToggle}
       >
-        <Icon size={12} className={`shrink-0 ${iconClass}`} style={{ marginTop: '3px' }} />
+        {/* Deterministic vertical centering: the label spans pin leading-5
+            (20px), so the 12px icon centers on the first line at exactly
+            (20 − 12) / 2 = 4px. items-start keeps the icon on the first line
+            when the label wraps. */}
+        <Icon size={12} className={`shrink-0 ${iconClass}`} style={{ marginTop: '4px' }} />
         {isShimmering ? (
           <motion.span
-            className="break-words min-w-0 bg-clip-text"
+            className="break-words min-w-0 leading-5 bg-clip-text"
             style={{
               backgroundImage: `linear-gradient(90deg, ${shimmerBase} 0%, ${shimmerBase} 40%, ${shimmerHighlight} 50%, ${shimmerBase} 60%, ${shimmerBase} 100%)`,
               backgroundSize: '300% 100%',
@@ -381,7 +414,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 2.4, repeat: Infinity, ease: 'linear' }}
           >{displayLabel}</motion.span>
         ) : (
-          <span className="break-words min-w-0 text-muted hover:text-text transition-colors">{displayLabel}</span>
+          <span className="break-words min-w-0 leading-5 text-muted hover:text-text transition-colors">{displayLabel}</span>
         )}
       </button>
 
@@ -417,7 +450,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? i18nT('pages.chat.toolCallLine.blocked_by_security_policy') : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} />
           </motion.div>
         )}
       </AnimatePresence>

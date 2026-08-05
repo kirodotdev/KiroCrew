@@ -6069,7 +6069,8 @@
         "aria_awaiting_approval": "टूल के लिए स्वीकृति की प्रतीक्षा: {{label}}",
         "aria_hide_details": "टूल के लिए विवरण छिपाएँ: {{label}}",
         "aria_show_details": "टूल के लिए विवरण दिखाएँ: {{label}}",
-        "opened_in_the_side_panel": "साइड पैनल में खोला गया"
+        "opened_in_the_side_panel": "साइड पैनल में खोला गया",
+        "blocked_by_security_policy": "सुरक्षा नीति द्वारा अवरुद्ध"
       }
     },
     "chatPage": {

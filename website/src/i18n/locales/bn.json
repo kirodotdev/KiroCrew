@@ -6069,7 +6069,8 @@
         "aria_awaiting_approval": "টুলের অনুমোদনের অপেক্ষায়: {{label}}",
         "aria_hide_details": "টুলের বিস্তারিত লুকাও: {{label}}",
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
-        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে"
+        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে",
+        "blocked_by_security_policy": "নিরাপত্তা নীতি দ্বারা অবরুদ্ধ"
       }
     },
     "chatPage": {

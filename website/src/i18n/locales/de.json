@@ -6069,7 +6069,8 @@
         "aria_awaiting_approval": "Warten auf Genehmigung für Werkzeug {{label}}",
         "aria_hide_details": "Details für Werkzeug {{label}} ausblenden",
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
-        "opened_in_the_side_panel": "Im Seitenbereich geöffnet"
+        "opened_in_the_side_panel": "Im Seitenbereich geöffnet",
+        "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert"
       }
     },
     "chatPage": {

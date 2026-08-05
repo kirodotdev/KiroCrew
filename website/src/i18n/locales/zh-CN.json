@@ -5995,7 +5995,8 @@
         "aria_awaiting_approval": "等待批准工具：{{label}}",
         "aria_hide_details": "隐藏工具详情：{{label}}",
         "aria_show_details": "展开工具详情：{{label}}",
-        "opened_in_the_side_panel": "已在侧边栏中打开"
+        "opened_in_the_side_panel": "已在侧边栏中打开",
+        "blocked_by_security_policy": "已被安全策略阻止"
       }
     },
     "chatPage": {

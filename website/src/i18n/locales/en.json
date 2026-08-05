@@ -4509,7 +4509,8 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Could not load snapshot:",
         "events": "events"
-      }
+      },
+      "toolCallLine": {}
     },
     "chatPage": {
       "agent_list": "Agent list",
