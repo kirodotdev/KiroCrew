@@ -2119,6 +2119,19 @@ async def _worktree_remove(
 
     pr = (await _pr_status_cached(branch)) if branch else None
     own = await _own_commits_count(path)
+
+    if force and not _is_pr_merged(pr):
+        dirty = await _real_dirty(path)
+        if dirty:
+            return {
+                "ok": False,
+                "error": (
+                    "refusing forced removal: worktree is dirty AND PR is not merged — "
+                    "commit or stash changes first, or merge the PR"
+                ),
+                "pr": _redact_pr(pr),
+            }
+
     if not force and not _is_pr_merged(pr):
         if own is None or own > 0:
             return {
@@ -2232,9 +2245,8 @@ async def _worktree_remove(
         if rc != 0:
             return {"ok": False, "error": _redact((stderr or stdout).strip()[:300])}
 
-        # delete branch if shipped/empty — atomically against the pinned OID
         if branch and branch != BASE_BRANCH and verdict_oid:
-            if _is_pr_merged(pr) or own == 0:
+            if _is_pr_merged(pr):
                 await _git(
                     MAIN_REPO, "update-ref", "-d",
                     f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
