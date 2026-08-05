@@ -52,6 +52,7 @@ from aiohttp import web
 
 from kiro_crew import frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service
+from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
@@ -599,6 +600,58 @@ else:
     )
 _TRUSTED_PATH = os.pathsep.join(_TRUSTED_BIN_DIRS)
 _TRUSTED_BIN_CACHE: dict[str, str | None] = {}
+_BUILD_PATH_CACHE: str | None = None
+
+
+def _build_path() -> str:
+    """``_TRUSTED_PATH`` with the node toolchain dirs prepended.
+
+    BLOCKING: ``node_bin_dirs()`` walks the filesystem (globs + stats + one
+    small read). On an NFS-backed ``$HOME`` those are not microseconds, so this
+    must never be first-called on the event loop — it would stall every backend
+    request and health check behind one directory scan.
+
+    Callers on an async path therefore await :func:`_warm_build_path` first,
+    which resolves it on ``subprocess_executor()``. After that the underlying
+    resolver is ``lru_cache``d and this is a pure in-memory read, which is why
+    :func:`_build_env` can stay synchronous.
+    """
+    global _BUILD_PATH_CACHE
+    if _BUILD_PATH_CACHE is None:
+        _BUILD_PATH_CACHE = os.pathsep.join([*node_bin_dirs(), _TRUSTED_PATH])
+    return _BUILD_PATH_CACHE
+
+
+async def _warm_build_path() -> None:
+    """Resolve the node toolchain off the event loop, once per process.
+
+    Idempotent and cheap after the first call (a ``None`` check). Called from
+    ``dev_fleet_startup`` so the common case is warm before any request, and
+    again at the top of every async handler that constructs a build env — a
+    handler must not depend on startup having run (tests, and any future entry
+    point that skips it).
+    """
+    if _BUILD_PATH_CACHE is not None:
+        return
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(subprocess_executor(), _build_path)
+
+
+def _invalidate_toolchain_cache() -> None:
+    """Forget the memoized node-toolchain resolution.
+
+    Both layers are memoized for the process lifetime: ``node_bin_dirs()`` is
+    ``lru_cache``d and ``_BUILD_PATH_CACHE`` is filled once. That is right for a
+    hot path but wrong for a REMEDY: the "npm not found" banner tells the user to
+    run ``ensure-node.sh``, which writes the marker file this resolver reads — so
+    without dropping both caches a long-lived gateway would keep serving the same
+    error after the user had already fixed the host. Called only from the
+    not-found path, so a working resolution is never discarded.
+    """
+    global _BUILD_PATH_CACHE
+    _BUILD_PATH_CACHE = None
+    node_bin_dirs.cache_clear()
+
 
 # Upper bound on a propagated "sandbox unavailable" message. Wide enough to
 # carry the sandbox layer's remedy sentence (the actionable half, appended after
@@ -664,6 +717,32 @@ def _trusted_bin(name: str) -> str | None:
             break
     _TRUSTED_BIN_CACHE[name] = resolved
     return resolved
+
+
+def _toolchain_bin(name: str) -> str | None:
+    """Resolve a NODE-TOOLCHAIN executable (``npm``/``node``/``npx``).
+
+    Deliberately NOT ``_trusted_bin``. That function fails closed on anything
+    under ``$HOME`` or writable by us, because it resolves ``git``/``gh`` -- the
+    binaries that run in the CREDENTIAL-BEARING standard tier, where a planted
+    shim would exfiltrate the operator's token. npm is a different case in both
+    directions:
+
+    * It is only ever spawned in the ``strict`` tier under
+      :func:`_build_env` (no credential helpers), and it already executes
+      worktree-controlled ``package.json`` scripts -- arbitrary code, by design.
+      Requiring a system-owned npm buys nothing there.
+    * Kiro Crew's own supported installer (``install.sh --mise`` /
+      ``ensure-node.sh``) puts node under ``$HOME``, so ``_trusted_bin`` returned
+      ``None`` for npm on exactly the hosts Kiro Crew set up itself, and Pull+Build
+      failed with "no trusted executable for 'npm'".
+
+    Managed toolchain first, system npm second: a distribution's node can be
+    older than ``website/package.json``'s ``engines`` (Amazon Linux 2023 ships
+    node 18 against ``20 || >=22``), while ``ensure-node.sh`` installs a version
+    chosen to satisfy the build.
+    """
+    return find_node_tool(name, _TRUSTED_PATH) or _trusted_bin(name)
 
 
 async def _run_cmd(
@@ -1798,14 +1877,38 @@ def _build_env(*, with_credentials: bool = False) -> dict:
     helper/sshCommand) for the sync ``git pull`` and any git a build step
     runs. Harmless for pip/npm.
 
-    Operator credential helpers are injected ONLY when ``with_credentials``
-    is set — reserved for the network fetch step. Build steps (pip/npm) run
+    Operator credential helpers are injected ONLY when ``with_credentials`` is
+    set — reserved for the network fetch step. Build steps (pip/npm) run
     worktree-controlled code and must never see a configured helper: a
     malicious install script could otherwise mint the operator's token via
     ``git credential fill``.
+
+    ``with_credentials`` ALSO selects the PATH, and that is a security boundary,
+    not a convenience:
+
+    * credential-free (default) — the node toolchain dirs are PREPENDED to the
+      trusted path. npm's own run-scripts (``tsc``, ``vite``) are
+      ``#!/usr/bin/env node``, so ``node`` has to resolve by NAME inside the
+      child; resolving only the ``npm`` argv would still fail at the first
+      script. Those dirs live under ``$HOME`` because that is where
+      ``ensure-node.sh`` installs node.
+    * with credentials — the pinned ``_TRUSTED_PATH`` only. The fetch step's
+      argv is an already-vetted absolute ``git``, but git looks its OWN helpers
+      up (``git-remote-https``, credential helpers) on PATH, so a
+      same-user-writable directory there would be a path to intercepting a
+      credential-bearing fetch. Never widen this side.
+
+    Scope of that guarantee, precisely: this ternary is what enforces it for the
+    callers that spawn DIRECTLY (the ``raw_steps`` list, ``_pod_provision``,
+    ``_start_run``). Callers that route through :func:`_run_cmd` are covered by
+    a second, independent mechanism — ``_run_cmd`` overwrites PATH with
+    ``_TRUSTED_PATH`` unconditionally, BEFORE it injects any credential helper —
+    so on that path a node-augmented PATH from :func:`_pod_env` is discarded and
+    never coexists with credentials. Both mechanisms must keep holding; do not
+    remove one on the assumption that the other covers it.
     """
     out = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
-    out["PATH"] = _TRUSTED_PATH
+    out["PATH"] = _TRUSTED_PATH if with_credentials else _build_path()
     out.update(_GIT_ENV_NEUTRALIZERS)
     if with_credentials and _GIT_TRUSTED_HELPERS:
         out.update(_GIT_TRUSTED_HELPERS)
@@ -1921,6 +2024,9 @@ async def _pod_up(name: str) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
         return {"ok": False, "error": guard}
+    # Resolve the node toolchain off the loop before building the pod env:
+    # `pod up` runs the provision chain (npm ci + vite) when asked to.
+    await _warm_build_path()
     cmd = _find_cli() + ["pod", "up", name, "--json"]
     rc, stdout, stderr = await _run_cmd(cmd, cwd=MAIN_REPO, env=_pod_env(), timeout=180)
     if rc != 0:
@@ -1953,6 +2059,7 @@ async def _pod_down(name: str) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
         return {"ok": False, "error": guard}
+    await _warm_build_path()
     cmd = _find_cli() + ["pod", "down", name]
     rc, stdout, stderr = await _run_cmd(cmd, cwd=MAIN_REPO, env=_pod_env(), timeout=30)
     if rc != 0:
@@ -2040,6 +2147,7 @@ async def _pod_provision(name: str) -> dict:
                 running = _RUNS.get(prev, {}).get("status") == "running"
             if running:
                 return {"ok": False, "error": "provision already running", "run_id": prev}
+        await _warm_build_path()
         loop = asyncio.get_running_loop()
         p_argv, p_env, p_cleanup = await loop.run_in_executor(
             subprocess_executor(),
@@ -2303,6 +2411,7 @@ async def _sync_start_locked() -> dict:
     """Start the sync run. Caller holds _SYNC_LOCK."""
     global _SYNC_RID  # noqa: F824 (assigned below after await)
 
+    await _warm_build_path()
     head = await _git(MAIN_REPO, "symbolic-ref", "--short", "HEAD")
     if head is None:
         return {"ok": False, "error": "cannot determine checked-out branch (git failed)"}
@@ -2324,12 +2433,38 @@ async def _sync_start_locked() -> dict:
             "main checkout has no .venv — provision it first "
             f"(expected under {Path(MAIN_REPO) / '.venv'})"
         )}
-    git_bin = _trusted_bin("git")
-    npm_bin = _trusted_bin("npm")
-    if git_bin is None or npm_bin is None:
-        missing = "git" if git_bin is None else "npm"
+    # Both binary lookups stat the filesystem (`_trusted_bin` walks the trusted
+    # dirs; `_toolchain_bin` adds a `shutil.which` over the node bin dirs, which
+    # may be NFS-backed). Resolve them together on the executor so /api/sync
+    # cannot stall the gateway's requests and liveness behind a directory scan.
+    loop = asyncio.get_running_loop()
+    git_bin, npm_bin = await loop.run_in_executor(
+        subprocess_executor(),
+        lambda: (_trusted_bin("git"), _toolchain_bin("npm")),
+    )
+    if git_bin is None:
         return {"ok": False, "error": (
-            f"no trusted executable for {missing!r} in {_TRUSTED_PATH}"
+            f"no trusted executable for 'git' in {_TRUSTED_PATH}"
+        )}
+    if npm_bin is None:
+        # Drop the memoized resolution so the remedy this message advertises
+        # actually works. `node_bin_dirs()` is lru_cached and `_BUILD_PATH_CACHE`
+        # is set once per process, so in a long-lived gateway a user who ran
+        # ensure-node.sh and hit Pull+build again would get this SAME error --
+        # the marker file is never re-read. Invalidating on the failure path
+        # makes the retry fresh. Only on failure: a successful resolution is
+        # worth keeping cached, and this path is user-initiated, not a loop.
+        _invalidate_toolchain_cache()
+        return {"ok": False, "error": (
+            "npm not found. Kiro Crew looks for a Node toolchain in "
+            "<data-home>/node-bin-dir (written by ensure-node.sh), then in "
+            "mise / asdf / nvm / fnm / volta install dirs, then in "
+            f"{_TRUSTED_PATH}. Fix: run `bash ensure-node.sh` in the main "
+            "checkout and press Pull + build again — no restart needed. To point "
+            "at a toolchain by hand instead, set "
+            "KIROCREW_NODE_BIN_DIR=/abs/path/to/node/bin in the gateway's "
+            "service environment; that one does need a restart, because a "
+            "running process cannot see a new environment variable."
         )}
     raw_steps: list[tuple[list[str], str, dict, str]] = [
         ([git_bin, "fetch", remote, BASE_BRANCH], "standard",
@@ -3021,6 +3156,9 @@ async def dev_fleet_startup(app: web.Application) -> None:
     await _load_trusted_credential_helpers()
     await _load_fallback_repos()
     await _upstream_remote()
+    # Resolve the node build toolchain here, on the executor, so no request
+    # handler ever pays for the filesystem scan (NFS homes make it slow).
+    await _warm_build_path()
     if _refresher_task is None or _refresher_task.done():
         _refresher_task = asyncio.create_task(_status_refresher())
     if _reaper_task is None or _reaper_task.done():

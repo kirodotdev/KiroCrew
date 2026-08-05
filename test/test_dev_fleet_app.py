@@ -897,7 +897,13 @@ def test_build_env_excludes_credentials(monkeypatch):
     monkeypatch.setenv("HOME", "/home/u")
 
     env = mod._pod_env()
-    assert env["PATH"] == mod._TRUSTED_PATH  # pinned, never inherited
+    # Pinned, never inherited. The pin is _TRUSTED_PATH plus (in the
+    # credential-FREE tier only) the node toolchain dirs prepended, so that
+    # npm's `#!/usr/bin/env node` run-scripts resolve — see
+    # test_dev_fleet_node_toolchain.py for that boundary.
+    assert env["PATH"] != "/usr/bin"
+    assert mod._TRUSTED_PATH in env["PATH"]
+    assert env["PATH"].endswith(mod._TRUSTED_PATH)
     assert "SLACK_BOT_TOKEN" not in env
     assert "AWS_SECRET_ACCESS_KEY" not in env
 
@@ -907,6 +913,10 @@ def test_build_env_excludes_credentials(monkeypatch):
     benv = mod._build_env()
     assert "SLACK_BOT_TOKEN" not in benv
     assert "KIROCREW_POD_REPO" not in benv
+
+    # The credential-bearing tier keeps the bare pinned path — git resolves its
+    # own helpers (git-remote-https, credential helpers) through PATH.
+    assert mod._build_env(with_credentials=True)["PATH"] == mod._TRUSTED_PATH
 
 
 def test_read_pin_strict_rejects_symlinked_env(tmp_path):
