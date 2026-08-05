@@ -7858,7 +7858,6 @@
         "download_the_latest_version": "descargar la última versión",
         "downloaded_and_verified_the_app_restarts_to_fini": "Descargada y verificada. La app se reinicia para terminar la instalación; también puedes salir más tarde y se instalará al cerrar.",
         "downloading": "Descargando...",
-        "insider_gets_prerelease_builds_early_switching_o": "Insider recibe antes las compilaciones preliminares. Al cambiar de canal, la compilación actual del otro canal se ofrece como una actualización normal.",
         "install_failed": "No se pudo instalar la actualización",
         "installing_quiet_note": "Instalando — Kiro Crew dejará de responder durante uno o dos minutos y luego se reiniciará solo.",
         "is_available": "está disponible.",
@@ -7897,7 +7896,13 @@
         "update_failed": "Actualización fallida",
         "update_noun": "actualización",
         "update_now": "Actualizar ahora",
-        "view_full_changelog": "▸ Ver el registro de cambios completo"
+        "view_full_changelog": "▸ Ver el registro de cambios completo",
+        "channel_help_show": "▸ ¿Cuál es la diferencia entre Stable e Insider?",
+        "channel_help_hide": "▾ Ocultar",
+        "channel_explainer_stable": "Solo versiones probadas. Menos actualizaciones y menos sorpresas.",
+        "channel_explainer_insider": "Compilaciones tempranas, publicadas de días a semanas antes que Stable. Las funciones nuevas llegan aquí primero, y también los errores nuevos.",
+        "channel_explainer_switch_note": "Puedes volver a cambiar cuando quieras. En cualquier dirección, la versión actual del otro canal llega como una actualización normal: tú decides cuándo instalarla.",
+        "prerelease_report_prompt": "Gracias por usar compilaciones tempranas. Están menos probadas que Stable, así que algo se romperá: cuando algo falle, <report>infórmalo en GitHub</report> para que se corrija antes de que llegue a todos."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",

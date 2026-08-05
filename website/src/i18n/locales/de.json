@@ -7771,7 +7771,6 @@
         "download_the_latest_version": "die neueste Version herunterladen",
         "downloaded_and_verified_the_app_restarts_to_fini": "Heruntergeladen und verifiziert. Die App startet neu, um die Installation abzuschließen; Sie können sie auch später beenden, dann wird beim Verlassen installiert.",
         "downloading": "Wird heruntergeladen…",
-        "insider_gets_prerelease_builds_early_switching_o": "„Insider“ erhält Vorabversionen frühzeitig. Beim Wechsel wird der aktuelle Build des anderen Kanals als normale Aktualisierung angeboten.",
         "install_failed": "Die Aktualisierung konnte nicht installiert werden",
         "installing_quiet_note": "Wird installiert — Kiro Crew wird für ein oder zwei Minuten still und startet sich dann selbst neu.",
         "is_available": "ist verfügbar.",
@@ -7810,7 +7809,13 @@
         "update_failed": "Aktualisierung fehlgeschlagen",
         "update_noun": "Aktualisierung",
         "update_now": "Jetzt aktualisieren",
-        "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen"
+        "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen",
+        "channel_help_show": "▸ Was ist der Unterschied zwischen Stable und Insider?",
+        "channel_help_hide": "▾ Ausblenden",
+        "channel_explainer_stable": "Nur getestete Releases. Seltenere Updates und weniger Überraschungen.",
+        "channel_explainer_insider": "Frühe Builds, Tage bis Wochen vor Stable veröffentlicht. Neue Funktionen kommen hier zuerst an – neue Fehler ebenfalls.",
+        "channel_explainer_switch_note": "Du kannst jederzeit zurückwechseln. In beiden Richtungen kommt die aktuelle Version des anderen Kanals als normales Update – du entscheidest, wann sie installiert wird.",
+        "prerelease_report_prompt": "Danke, dass du frühe Builds nutzt. Diese Builds sind weniger getestet als Stable, also geht auch mal etwas schief – wenn etwas nicht stimmt, <report>melde es bitte auf GitHub</report>, damit es behoben wird, bevor es alle erreicht."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

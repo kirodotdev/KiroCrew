@@ -7684,7 +7684,6 @@
         "download_the_latest_version": "下载最新版本",
         "downloaded_and_verified_the_app_restarts_to_fini": "已下载并校验。应用将重启以完成安装；你也可以稍后退出，退出时会自动安装。",
         "downloading": "正在下载…",
-        "insider_gets_prerelease_builds_early_switching_o": "Insider 可提前获得预发布版本。切换后，另一通道的当前版本会作为普通更新提供。",
         "install_failed": "无法安装更新",
         "installing_quiet_note": "正在安装——Kiro Crew 会安静一两分钟，然后自动重启。",
         "is_available": "可用。",
@@ -7723,7 +7722,13 @@
         "update_failed": "更新失败",
         "update_noun": "更新",
         "update_now": "立即更新",
-        "view_full_changelog": "▸ 查看完整更新日志"
+        "view_full_changelog": "▸ 查看完整更新日志",
+        "channel_help_show": "▸ Stable 和 Insider 有什么区别？",
+        "channel_help_hide": "▾ 收起",
+        "channel_explainer_stable": "只提供经过测试的正式版本，更新更少，意外也更少。",
+        "channel_explainer_insider": "早期版本，比 Stable 提前几天到几周发布。新功能先到这里，新问题也一样。",
+        "channel_explainer_switch_note": "你随时可以切换回来。无论切到哪一边，另一通道的当前版本都会作为普通更新送达，由你决定何时安装。",
+        "prerelease_report_prompt": "感谢你试用早期版本。它们的测试不如 Stable 充分，出问题是常事——发现异常时，请<report>到 GitHub 提交问题</report>，让它在影响所有人之前得到修复。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",

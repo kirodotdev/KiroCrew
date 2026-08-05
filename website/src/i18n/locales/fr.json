@@ -7858,7 +7858,6 @@
         "download_the_latest_version": "télécharger la dernière version",
         "downloaded_and_verified_the_app_restarts_to_fini": "Téléchargée et vérifiée. L'application redémarre pour terminer l'installation ; vous pouvez aussi quitter plus tard et elle s'installera à la fermeture.",
         "downloading": "Téléchargement...",
-        "insider_gets_prerelease_builds_early_switching_o": "Insider donne accès en avance aux versions préliminaires. Changer de canal propose la version actuelle de l'autre canal comme mise à jour normale.",
         "install_failed": "Impossible d'installer la mise à jour",
         "installing_quiet_note": "Installation — Kiro Crew va rester silencieux une minute ou deux, puis redémarrer de lui-même.",
         "is_available": "est disponible.",
@@ -7897,7 +7896,13 @@
         "update_failed": "Échec de la mise à jour",
         "update_noun": "mise à jour",
         "update_now": "Mettre à jour maintenant",
-        "view_full_changelog": "▸ Voir le journal complet des modifications"
+        "view_full_changelog": "▸ Voir le journal complet des modifications",
+        "channel_help_show": "▸ Quelle est la différence entre Stable et Insider ?",
+        "channel_help_hide": "▾ Masquer",
+        "channel_explainer_stable": "Uniquement des versions testées. Moins de mises à jour et moins de surprises.",
+        "channel_explainer_insider": "Versions précoces, publiées quelques jours à quelques semaines avant Stable. Les nouvelles fonctionnalités arrivent ici en premier, tout comme les nouveaux bugs.",
+        "channel_explainer_switch_note": "Tu peux revenir en arrière à tout moment. Dans les deux sens, la version actuelle de l'autre canal arrive comme une mise à jour normale : c'est toi qui choisis quand l'installer.",
+        "prerelease_report_prompt": "Merci d'utiliser les versions précoces. Elles sont moins testées que Stable, donc des choses cassent — quand quelque chose ne va pas, <report>signale-le sur GitHub</report> pour que ce soit corrigé avant que tout le monde soit touché."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",

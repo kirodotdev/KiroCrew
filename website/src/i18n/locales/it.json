@@ -7858,7 +7858,6 @@
         "download_the_latest_version": "scarica la versione più recente",
         "downloaded_and_verified_the_app_restarts_to_fini": "Scaricato e verificato. L'app si riavvia per completare l'installazione; puoi anche chiuderla più tardi e l'installazione avverrà all'uscita.",
         "downloading": "Download in corso...",
-        "insider_gets_prerelease_builds_early_switching_o": "Il canale Insider riceve in anticipo le build di prerelease. Il passaggio propone la build attuale dell'altro canale come normale aggiornamento.",
         "install_failed": "Non è stato possibile installare l'aggiornamento",
         "installing_quiet_note": "Installazione in corso — Kiro Crew resterà inattivo per un minuto o due, poi si riavvierà da solo.",
         "is_available": "è disponibile.",
@@ -7897,7 +7896,13 @@
         "update_failed": "Aggiornamento non riuscito",
         "update_noun": "aggiornamento",
         "update_now": "Aggiorna ora",
-        "view_full_changelog": "▸ Mostra il changelog completo"
+        "view_full_changelog": "▸ Mostra il changelog completo",
+        "channel_help_show": "▸ Qual è la differenza tra Stable e Insider?",
+        "channel_help_hide": "▾ Nascondi",
+        "channel_explainer_stable": "Solo versioni testate. Meno aggiornamenti e meno sorprese.",
+        "channel_explainer_insider": "Build anticipate, pubblicate da giorni a settimane prima di Stable. Le nuove funzionalità arrivano qui per prime, e con loro i nuovi bug.",
+        "channel_explainer_switch_note": "Puoi tornare indietro quando vuoi. In entrambe le direzioni, la versione attuale dell'altro canale arriva come un normale aggiornamento: decidi tu quando installarla.",
+        "prerelease_report_prompt": "Grazie per usare le build anticipate. Sono testate meno di Stable, quindi qualcosa si rompe — quando qualcosa non va, <report>segnalalo su GitHub</report> così viene corretto prima che arrivi a tutti."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

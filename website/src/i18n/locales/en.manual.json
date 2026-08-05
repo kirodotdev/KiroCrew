@@ -2448,7 +2448,13 @@
         "update_failed": "Update failed",
         "update_noun": "update",
         "update_now": "Update now",
-        "view_full_changelog": "▸ View Full Changelog"
+        "view_full_changelog": "▸ View Full Changelog",
+        "channel_help_show": "▸ What's the difference between Stable and Insider?",
+        "channel_help_hide": "▾ Hide",
+        "channel_explainer_stable": "Tested releases only. Fewer updates, and fewer surprises.",
+        "channel_explainer_insider": "Early builds, released days to weeks before Stable. New features arrive here first, and so do new bugs.",
+        "channel_explainer_switch_note": "You can switch back at any time. Either way, the other channel's current version arrives as a normal update — you choose when to install it.",
+        "prerelease_report_prompt": "Thanks for running early builds. They're less tested than Stable, so things do break — when something looks wrong, please <report>report it on GitHub</report> so it gets fixed before it reaches everyone."
       },
       "computerUsePanel": {
         "could_not_save_computer_use_settings": "Could not save computer-use settings.",

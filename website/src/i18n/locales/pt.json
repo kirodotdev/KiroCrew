@@ -7858,7 +7858,6 @@
         "download_the_latest_version": "baixar a versão mais recente",
         "downloaded_and_verified_the_app_restarts_to_fini": "Baixado e verificado. O app reinicia para concluir a instalação; você também pode sair mais tarde e a instalação ocorre na saída.",
         "downloading": "Baixando...",
-        "insider_gets_prerelease_builds_early_switching_o": "O canal Insider recebe compilações de pré-lançamento antecipadamente. Ao trocar, a compilação atual do outro canal é oferecida como uma atualização normal.",
         "install_failed": "Não foi possível instalar a atualização",
         "installing_quiet_note": "Instalando — o Kiro Crew ficará em silêncio por um ou dois minutos e depois reiniciará sozinho.",
         "is_available": "está disponível.",
@@ -7897,7 +7896,13 @@
         "update_failed": "Falha na atualização",
         "update_noun": "atualização",
         "update_now": "Atualizar agora",
-        "view_full_changelog": "▸ Ver changelog completo"
+        "view_full_changelog": "▸ Ver changelog completo",
+        "channel_help_show": "▸ Qual é a diferença entre Stable e Insider?",
+        "channel_help_hide": "▾ Ocultar",
+        "channel_explainer_stable": "Apenas versões testadas. Menos atualizações e menos surpresas.",
+        "channel_explainer_insider": "Versões antecipadas, lançadas de dias a semanas antes do Stable. Os novos recursos chegam aqui primeiro, e os novos bugs também.",
+        "channel_explainer_switch_note": "Você pode voltar a qualquer momento. Nos dois sentidos, a versão atual do outro canal chega como uma atualização normal — você decide quando instalar.",
+        "prerelease_report_prompt": "Obrigado por usar as versões antecipadas. Elas são menos testadas que a Stable, então algo vai quebrar — quando algo parecer errado, <report>relate no GitHub</report> para que seja corrigido antes de chegar a todos."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",
