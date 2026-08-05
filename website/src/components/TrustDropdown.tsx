@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Handshake, Shield, ShieldPlus, ShieldCheck, ChevronDown } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
 } from './ui/dropdown-menu'
@@ -24,6 +25,9 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
 
+  // The command label is interpolated INTO a whole sentence rather than glued
+  // between two fragments: word order around a quoted operand differs per
+  // language, and a fragment pair can only express the English one.
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
@@ -37,7 +41,13 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
           onSelect={() => onAction('trust_command', fullCommand)}
         >
           <Shield size={12} className="shrink-0 text-accent" />
-          <span className="truncate">{i18nT('components.trustDropdown.trust_2')}<span className="font-mono">{truncated}</span>{"\u201d"}</span>
+          <span className="truncate">
+            <Trans
+              i18nKey="components.trustDropdown.trust_this_command"
+              values={{ cmd: truncated }}
+              components={{ mono: <span className="font-mono" /> }}
+            />
+          </span>
         </DropdownMenuItem>
         {isShell && (
           <DropdownMenuItem
@@ -45,7 +55,13 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
             onSelect={() => onAction('trust_base', basePattern)}
           >
             <ShieldPlus size={12} className="shrink-0 text-ok" />
-            <span className="truncate">{i18nT('components.trustDropdown.trust_all')}<span className="font-mono">{baseLabel}</span>{i18nT('components.trustDropdown.commands')}</span>
+            <span className="truncate">
+              <Trans
+                i18nKey="components.trustDropdown.trust_all_base"
+                values={{ base: baseLabel }}
+                components={{ mono: <span className="font-mono" /> }}
+              />
+            </span>
           </DropdownMenuItem>
         )}
         <DropdownMenuItem

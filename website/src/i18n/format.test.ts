@@ -32,6 +32,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 
 import { i18next } from './index'
+import { SUPPORTED_LANGUAGES } from './languages'
 import {
   activeLocale,
   collator,
@@ -205,7 +206,7 @@ describe('fmtDate / fmtTime / fmtDateTime / the numeric widths', () => {
     //
     // Asserted against the platform call itself rather than a golden literal, so
     // a CLDR data change moves both sides together instead of turning this red.
-    for (const code of ['en', 'zh-CN', 'de', 'es', 'fr', 'it', 'pt', 'ru', 'hi', 'bn']) {
+    for (const code of SUPPORTED_LANGUAGES.filter(l => !l.devOnly).map(l => l.code)) {
       await withLanguage(code, () => {
         const tag = activeLocale()
         expect(fmtDateNumeric(INSTANT), `${code} date`)

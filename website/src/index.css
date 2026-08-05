@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ── Script fallback faces ──
-   zh-CN, hi and bn have no font coverage otherwise: every family in --font-body
+   zh-CN, ja, hi and bn have no font coverage otherwise: every family in --font-body
    and --mono below covers Latin only, so those scripts fall through to the
    browser's per-script fallback, which picks a face per character and silently
    mismatches. CJK punctuation makes it visible — Unicode uses one code point for
@@ -56,6 +56,37 @@
                  U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
                  U+FE30-FE4F, U+FF00-FFEF;
 }
+/* Japanese and Simplified Chinese share Han code points but not always glyph
+   forms. A separate alias lets html:lang(ja) select Japanese faces without
+   changing the SC default used by zh-CN. Kana joins the Han ranges so Japanese
+   punctuation and syllabaries come from the same face. */
+@font-face {
+  font-family: 'KC Japanese Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Hiragino Sans W3'), local('HiraginoSans-W3'),
+       local('Yu Gothic Regular'), local('YuGothic-Regular'),
+       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'), local('Meiryo'),
+       local('Noto Sans CJK JP'), local('NotoSansCJKjp-Regular'),
+       local('Noto Sans JP'), local('NotoSansJP-Regular'),
+       local('Source Han Sans JP'), local('SourceHanSansJP-Regular');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3040-309F, U+30A0-30FF,
+                 U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Japanese Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Hiragino Sans W6'), local('HiraginoSans-W6'),
+       local('Yu Gothic Bold'), local('YuGothic-Bold'),
+       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Meiryo Bold'),
+       local('Meiryo-Bold'), local('Noto Sans CJK JP Bold'),
+       local('NotoSansCJKjp-Bold'), local('Noto Sans JP Bold'),
+       local('NotoSansJP-Bold'), local('Source Han Sans JP Bold'),
+       local('SourceHanSansJP-Bold');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3040-309F, U+30A0-30FF,
+                 U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
 /* Monospace Han, for code and CLI surfaces. Rarely installed on a stock machine;
    when absent 'KC Han Fallback' follows it in --script-fallbacks-mono, so Han in a
    code block draws from a proportional face — the same pairing the browser's own
@@ -77,6 +108,24 @@
   unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31C0-31EF,
                  U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
                  U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Japanese Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Sarasa Mono J'), local('SarasaMonoJ-Regular'),
+       local('Noto Sans Mono CJK JP'), local('NotoSansMonoCJKjp-Regular');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3040-309F, U+30A0-30FF,
+                 U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Japanese Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Sarasa Mono J Bold'), local('SarasaMonoJ-Bold'),
+       local('Noto Sans Mono CJK JP Bold'), local('NotoSansMonoCJKjp-Bold');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3040-309F, U+30A0-30FF,
+                 U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
 @font-face {
   font-family: 'KC Devanagari Fallback';
@@ -113,13 +162,20 @@
   /* Single source of truth for the script fallbacks. Every declaration of
      --font-body / --mono — here, in the theme blocks below, and the ones built in
      hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of
-     repeating the list, so adding a script is one edit. They lead each stack;
-     unicode-range is what makes leading safe. */
+     repeating the list. Locale-specific overrides below swap regional Han faces
+     without changing any consumer stack. They lead each stack; unicode-range is
+     what makes leading safe. */
   --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --font-body:var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
   --mono:var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
+}
+html:lang(ja) {
+  /* Never retain the SC aliases here. If no named Japanese face is installed,
+     falling through lets the browser use its lang-aware Japanese fallback. */
+  --script-fallbacks:'KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 /* Dark theme shadows */
 :root,[data-theme="dark"],[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="amber-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{

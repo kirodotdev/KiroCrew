@@ -78,7 +78,7 @@ ones (e.g. `typeof Notification !== 'undefined'`).
 - **Never format a date, number, or sort order without naming a locale.** Route
   through the `src/i18n/format.ts` seam; naming a locale explicitly IS the opt-out.
   CI-gated, and the failure (a Chinese UI rendering `7/30/2026`) ships silently.
-- **Never hardcode a user-facing English string.** The dashboard ships in 10
+- **Never hardcode a user-facing English string.** The dashboard ships in 11
   languages; add a catalog key. CI-gated.
 - **Data fetching is React Query**, never `useState` + `useEffect`. Follow the
   existing query-key convention.

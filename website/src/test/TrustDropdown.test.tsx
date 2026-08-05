@@ -1,11 +1,16 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 
 import { render, screen, fireEvent } from '@testing-library/react'
 import TrustDropdown from '../components/TrustDropdown'
+import { i18next } from '../i18n/index'
 
 const btnClass = 'px-2 py-1 rounded text-sm'
+
+afterEach(async () => {
+  await i18next.changeLanguage('en')
+})
 
 describe('TrustDropdown', () => {
   it('renders closed by default', () => {
@@ -28,6 +33,27 @@ describe('TrustDropdown', () => {
     expect(texts.some(t => t?.includes('ls /tmp'))).toBe(true)
     expect(texts.some(t => t?.includes('ls') && t?.includes('commands'))).toBe(true)
     expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+  })
+
+  // Each locale orders the sentence around the operand differently — Japanese
+  // puts it first, German suffixes the base with a hyphen. A fragment pair can
+  // only express the English order, so what these pin is that the operand is
+  // interpolated INTO the sentence and still renders monospaced.
+  it.each([
+    ['ja', '「ls /tmp」を信頼', 'ls コマンドをすべて信頼'],
+    ['de', '„ls /tmp“ vertrauen', 'Allen ls-Befehlen vertrauen'],
+    ['zh-CN', '信任“ls /tmp”', '信任所有 ls 命令'],
+  ])('places the command inside a whole translated message in %s', async (lng, cmdText, baseText) => {
+    await i18next.changeLanguage(lng)
+    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
+
+    fireEvent.click(screen.getByRole('button'))
+    const [commandItem, baseItem] = screen.getAllByRole('menuitem')
+
+    expect(commandItem).toHaveTextContent(cmdText)
+    expect(baseItem).toHaveTextContent(baseText)
+    expect(commandItem.querySelector('.font-mono')).toHaveTextContent('ls /tmp')
+    expect(baseItem.querySelector('.font-mono')).toHaveTextContent('ls')
   })
 
   it('shows 2 options for non-shell tool', () => {

@@ -1545,6 +1545,10 @@
       "download_zip": "Download zip",
       "open_github_issue": "Open GitHub issue",
       "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
+    },
+    "trustDropdown": {
+      "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
+      "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
     }
   },
   "hooks": {

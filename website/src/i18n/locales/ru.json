@@ -5131,11 +5131,10 @@
       "show_full_command": "Показать полную команду"
     },
     "trustDropdown": {
-      "commands": "»",
       "trust": "Доверять",
-      "trust_2": "Доверять командам «",
-      "trust_all": "Доверять всем командам «",
-      "trust_all_tools": "Доверять всем инструментам"
+      "trust_all_base": "Доверять всем командам <mono>{{base}}</mono>",
+      "trust_all_tools": "Доверять всем инструментам",
+      "trust_this_command": "Доверять «<mono>{{cmd}}</mono>»"
     },
     "tunnelStatus": {
       "connected": "Подключено",

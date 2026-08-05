@@ -6,8 +6,8 @@
  * `i18n-shard.mjs` is deliberately single-locale — `join <dir> <tag>` writes one
  * catalog per invocation. That is the right shape for the primitive and the wrong
  * shape for the job: Phase 1 adds ~1767 keys, and `catalogParity.test.ts` demands
- * every one of them in all 9 non-English catalogs in the SAME commit, so a
- * translation run is inherently a 9-way fan-out. Doing that by hand is nine
+ * every one of them in all 10 non-English catalogs in the SAME commit, so a
+ * translation run is inherently a 10-way fan-out. Doing that by hand is ten
  * chances to skip a locale and discover it as a red `Frontend Tests`.
  *
  * This script does NOT call a model. It renders the prompt and checks the answer;
@@ -63,10 +63,10 @@ export const PHASE6_CATEGORIES = ['template', 'object-prop', 'array']
 
 /**
  * Parse the shipped locales out of `languages.ts` rather than duplicating them.
- * A second hardcoded list is a second thing to forget when language #11 ships;
+ * A second hardcoded list is a second thing to forget when language #12 ships;
  * `translateDriver.test.ts` asserts this parse against the real
  * `SUPPORTED_LANGUAGES` so a format change here fails loudly instead of silently
- * translating eight languages out of nine.
+ * translating nine languages out of ten.
  */
 export function parseLanguages(source) {
   const block = source.match(/SUPPORTED_LANGUAGES[^=]*=\s*\[([\s\S]*?)\n\]/)

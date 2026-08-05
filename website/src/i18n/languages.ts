@@ -57,6 +57,7 @@ export const SUPPORTED_LANGUAGES: readonly LanguageEntry[] = [
   { code: 'pt', label: 'Português' },
   { code: 'ru', label: 'Русский' },
   { code: 'de', label: 'Deutsch' },
+  { code: 'ja', label: '日本語' },
   { code: 'it', label: 'Italiano' },
   /**
    * Pseudolocale, not a language. Every string is accented, padded to the IBM/W3C

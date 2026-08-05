@@ -222,7 +222,7 @@ fail on 3.12 and pass on 3.10 at the same commit.
 | Comments | Explain **behavior and rationale (the why)**: invariants, edge cases, units, non-obvious constraints. NOT a task log: no PR/CR numbers, review-round markers, incident dates, milestone tags, or commit SHAs. No "previously/used to/we now" narration, state current behavior in present tense. Don't restate what the code plainly does. `_vendor/` and pragmas are exempt. |
 | Icons | **Never use emojis in the UI.** Use `lucide-react` with `className="lucide-inline"`. |
 | Product name | The product is **Kiro Crew**: two words, a space, capital `K`. Identifiers keep the spelling their own system gave them (the `kirodotdev/KiroCrew` repo slug, `KiroCrew.dmg` artifacts, the `KiroCrew Nightly` OS identifier, the `kirocrew` CLI, `KIROCREW_*` env vars, `kiro_crew` imports). CI-gates the lines a change adds; run `BRAND_BASE_REF=origin/main python3 scripts/check_brand_name.py` before pushing. |
-| User-facing strings | The dashboard is translated into 10 languages. **Never hardcode a user-facing English string, and never format a date, number, or sort order without naming a locale.** Both are CI-gated. Backend-owned strings have no catalog path yet, so a new non-2xx JSON body MUST carry a machine-readable `code` field. |
+| User-facing strings | The dashboard is translated into 11 languages. **Never hardcode a user-facing English string, and never format a date, number, or sort order without naming a locale.** Both are CI-gated. Backend-owned strings have no catalog path yet, so a new non-2xx JSON body MUST carry a machine-readable `code` field. |
 
 ## Cross-platform: route POSIX calls through `platform_compat`
 

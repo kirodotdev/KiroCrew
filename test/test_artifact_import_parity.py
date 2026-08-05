@@ -124,8 +124,14 @@ def test_locale_catalogs_all_carry_the_new_keys() -> None:
     }
     english = json.loads((locales / "en.manual.json").read_text(encoding="utf-8"))
     assert expected <= set(english["pages"]["artifactsPage"]), "en.manual.json"
-    for tag in ("zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "it"):
-        catalog = json.loads((locales / f"{tag}.json").read_text(encoding="utf-8"))
+    translated_catalogs = sorted(
+        path
+        for path in locales.glob("*.json")
+        if path.name not in {"en.json", "en.manual.json", "en-XA.json"}
+    )
+    for path in translated_catalogs:
+        tag = path.stem
+        catalog = json.loads(path.read_text(encoding="utf-8"))
         bucket = set(catalog["pages"]["artifactsPage"])
         missing = sorted(expected - bucket)
         assert not missing, f"{tag}.json missing {missing}"

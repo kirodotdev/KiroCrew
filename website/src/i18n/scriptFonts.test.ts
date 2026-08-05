@@ -8,10 +8,10 @@
  * Chinese and Japanese comma and full stop, so only the font decides where in the
  * em box the glyph sits.
  *
- * The mechanism is four `unicode-range`-restricted `@font-face` aliases over
- * locally installed faces, placed at the FRONT of each stack. Two properties make
- * that correct, and both are asserted here because neither is visible from reading
- * a family list:
+ * The mechanism is six `unicode-range`-restricted `@font-face` aliases over
+ * locally installed faces, placed at the FRONT of each stack. Three properties
+ * make that correct, and all are asserted here because none is visible from
+ * reading a family list:
  *
  *  1. **No alias range may include Latin.** `unicode-range` is what makes a leading
  *     position safe: a face whose range excludes Latin is never consulted for
@@ -47,13 +47,24 @@ import { describe, it, expect } from 'vitest'
 const SRC = join(__dirname, '..')
 const INDEX_CSS = readFileSync(join(SRC, 'index.css'), 'utf8')
 
-/** The alias faces, and the script each one covers. */
-const ALIASES = [
+/** Region-specific Han aliases must never share an active token. */
+const SC_ALIASES = [
   'KC Han Fallback',
   'KC Han Mono Fallback',
+] as const
+
+const JAPANESE_ALIASES = [
+  'KC Japanese Fallback',
+  'KC Japanese Mono Fallback',
+] as const
+
+/** Script aliases shared by every locale. */
+const COMMON_ALIASES = [
   'KC Devanagari Fallback',
   'KC Bengali Fallback',
 ] as const
+
+const ALIASES = [...SC_ALIASES, ...JAPANESE_ALIASES, ...COMMON_ALIASES] as const
 
 /**
  * Ranges that must stay OUT of every alias. Latin proper plus general punctuation:
@@ -111,6 +122,21 @@ function parseUnicodeRange(block: string): Array<{ lo: number; hi: number }> {
       const lo = parseInt(m[1], 16)
       return { lo, hi: m[2] ? parseInt(m[2], 16) : lo }
     })
+}
+
+function covers(family: string, codePoint: number): boolean {
+  return parseUnicodeRange(faceBlock(family)).some(r => r.lo <= codePoint && codePoint <= r.hi)
+}
+
+function ruleBody(pattern: RegExp): string {
+  return INDEX_CSS.match(pattern)?.[1] ?? ''
+}
+
+function scriptToken(block: string, mono = false): string {
+  const pattern = mono
+    ? /--script-fallbacks-mono:\s*([^;]+);/
+    : /--script-fallbacks:\s*([^;]+);/
+  return block.match(pattern)?.[1] ?? ''
 }
 
 /** Every file that DECLARES --font-body or --mono, found by walking the tree. */
@@ -185,6 +211,11 @@ describe('script fallback faces', () => {
     expect(a, `'${family}' weights disagree on unicode-range`).toBe(b)
   })
 
+  it.each(JAPANESE_ALIASES)('covers hiragana and katakana in %s', (family) => {
+    expect(covers(family, 0x3042), `'${family}' does not cover hiragana`).toBe(true)
+    expect(covers(family, 0x30a2), `'${family}' does not cover katakana`).toBe(true)
+  })
+
   it('declares both tokens in :root so every consumer inherits them', () => {
     // If either moved into a [data-theme=…] block or was renamed, every --font-body
     // would become guaranteed-invalid at computed-value time and `font-family:
@@ -196,20 +227,50 @@ describe('script fallback faces', () => {
     expect(root).toMatch(/--script-fallbacks-mono:/)
   })
 
-  it('lists every alias in the shared tokens', () => {
-    const root = INDEX_CSS.match(/--script-fallbacks:\s*([^;]+);/)?.[1] ?? ''
-    const rootMono = INDEX_CSS.match(/--script-fallbacks-mono:\s*([^;]+);/)?.[1] ?? ''
-    expect(root, 'no --script-fallbacks token').not.toBe('')
-    expect(rootMono, 'no --script-fallbacks-mono token').not.toBe('')
-    for (const family of ALIASES) {
-      if (family === 'KC Han Mono Fallback') {
-        // Mono-only: a proportional stack must not lead with a monospace face.
-        expect(rootMono).toContain(family)
-        expect(root).not.toContain(family)
-      } else {
-        expect(root, `${family} missing from --script-fallbacks`).toContain(family)
-        expect(rootMono, `${family} missing from --script-fallbacks-mono`).toContain(family)
+  it('keeps SC as the default and swaps to isolated Japanese aliases for lang=ja', () => {
+    const rootBlock = ruleBody(/:root\s*\{([^}]*)\}/)
+    const japaneseBlock = ruleBody(/html:lang\(ja\)\s*\{([^}]*)\}/)
+    expect(rootBlock, 'no :root block found in index.css').not.toBe('')
+    expect(japaneseBlock, 'no html:lang(ja) block found in index.css').not.toBe('')
+
+    const root = scriptToken(rootBlock)
+    const rootMono = scriptToken(rootBlock, true)
+    const japanese = scriptToken(japaneseBlock)
+    const japaneseMono = scriptToken(japaneseBlock, true)
+    for (const [name, value] of [
+      ['root body', root],
+      ['root mono', rootMono],
+      ['Japanese body', japanese],
+      ['Japanese mono', japaneseMono],
+    ] as const) {
+      expect(value, `no script fallback token for ${name}`).not.toBe('')
+      for (const family of COMMON_ALIASES) {
+        expect(value, `${family} missing from ${name}`).toContain(family)
       }
+    }
+
+    expect(root).toContain('KC Han Fallback')
+    expect(root).not.toContain('KC Han Mono Fallback')
+    expect(rootMono).toContain('KC Han Mono Fallback')
+    expect(rootMono).toContain('KC Han Fallback')
+    expect(rootMono.indexOf('KC Han Mono Fallback')).toBeLessThan(
+      rootMono.indexOf('KC Han Fallback'),
+    )
+    for (const family of JAPANESE_ALIASES) {
+      expect(root, `${family} leaked into the default body token`).not.toContain(family)
+      expect(rootMono, `${family} leaked into the default mono token`).not.toContain(family)
+    }
+
+    expect(japanese).toContain('KC Japanese Fallback')
+    expect(japanese).not.toContain('KC Japanese Mono Fallback')
+    expect(japaneseMono).toContain('KC Japanese Mono Fallback')
+    expect(japaneseMono).toContain('KC Japanese Fallback')
+    expect(japaneseMono.indexOf('KC Japanese Mono Fallback')).toBeLessThan(
+      japaneseMono.indexOf('KC Japanese Fallback'),
+    )
+    for (const family of SC_ALIASES) {
+      expect(japanese, `${family} leaked into the Japanese body token`).not.toContain(family)
+      expect(japaneseMono, `${family} leaked into the Japanese mono token`).not.toContain(family)
     }
   })
 })

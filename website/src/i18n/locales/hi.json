@@ -5011,11 +5011,10 @@
       "show_full_command": "पूरा कमांड दिखाएँ"
     },
     "trustDropdown": {
-      "commands": "” कमांड पर भरोसा करें",
       "trust": "भरोसा करें",
-      "trust_2": "भरोसा करें “",
-      "trust_all": "सभी “",
-      "trust_all_tools": "सभी टूल पर भरोसा करें"
+      "trust_all_base": "सभी <mono>{{base}}</mono> कमांड पर भरोसा करें",
+      "trust_all_tools": "सभी टूल पर भरोसा करें",
+      "trust_this_command": "«<mono>{{cmd}}</mono>» पर भरोसा करें"
     },
     "tunnelStatus": {
       "connected": "कनेक्टेड",

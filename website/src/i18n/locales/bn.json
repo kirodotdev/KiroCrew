@@ -5011,11 +5011,10 @@
       "show_full_command": "সম্পূর্ণ কমান্ড দেখান"
     },
     "trustDropdown": {
-      "commands": "” কমান্ড বিশ্বাস করুন",
       "trust": "বিশ্বাস করুন",
-      "trust_2": "বিশ্বাস করুন “",
-      "trust_all": "সব “",
-      "trust_all_tools": "সব টুল বিশ্বাস করুন"
+      "trust_all_base": "সব <mono>{{base}}</mono> কমান্ড বিশ্বাস করুন",
+      "trust_all_tools": "সব টুল বিশ্বাস করুন",
+      "trust_this_command": "«<mono>{{cmd}}</mono>» বিশ্বাস করুন"
     },
     "tunnelStatus": {
       "connected": "সংযুক্ত",

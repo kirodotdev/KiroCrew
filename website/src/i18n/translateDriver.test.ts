@@ -2,7 +2,7 @@
  * Guards for the translation driver.
  *
  * The driver is the only thing standing between "1767 new English keys" and
- * "1767 keys x 9 locales landing in one commit", and `catalogParity.test.ts`
+ * "1767 keys x 10 locales landing in one commit", and `catalogParity.test.ts`
  * gives no partial credit — so the driver's checks have to be right before the
  * translation run, not after.
  *
@@ -47,9 +47,9 @@ describe('locale list derivation', () => {
   /**
    * The driver regex-parses `languages.ts` instead of keeping its own list. That
    * is the right call — a duplicated list is a second thing to forget when
-   * language #11 ships — but it only stays right while the parse agrees with the
+   * language #12 ships — but it only stays right while the parse agrees with the
    * real export. If someone reformats `SUPPORTED_LANGUAGES`, this fails here
-   * rather than by quietly translating eight locales out of nine.
+   * rather than by quietly translating nine locales out of ten.
    */
   it('parses exactly the shipped, non-devOnly languages', () => {
     const parsed = parseLanguages(LANGUAGES_SRC)
@@ -62,9 +62,12 @@ describe('locale list derivation', () => {
     expect(parseLanguages(LANGUAGES_SRC).map((l: { code: string }) => l.code)).not.toContain('en-XA')
   })
 
-  it('leaves 9 translation targets once English is removed', () => {
+  it('leaves 10 translation targets once English is removed', () => {
+    // A literal, NOT SUPPORTED_LANGUAGES.length - 1: the test above already
+    // asserts the parse equals that export, so deriving the count from it here
+    // would compare the parse against itself and pass for any fan-out size.
     const parsed = parseLanguages(LANGUAGES_SRC)
-    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(9)
+    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(10)
   })
 
   it('throws rather than guessing when the export cannot be found', () => {

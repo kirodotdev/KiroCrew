@@ -44,9 +44,9 @@ describe('detectBrowserLanguage', () => {
   })
 
   it('returns null when nothing matches', () => {
-    // `ko`/`ja` are deliberately languages we do NOT ship — picking a tag we
-    // later add would silently turn this into a no-op assertion.
-    withLanguages(['ko-KR', 'ja'], () => expect(detectBrowserLanguage()).toBeNull())
+    // `tlh` and the private-use `qaa` range are deliberately not product locales,
+    // so adding a real-world language cannot silently invert this assertion.
+    withLanguages(['tlh-US', 'qaa'], () => expect(detectBrowserLanguage()).toBeNull())
   })
 
   it('ignores blank tags', () => {
@@ -74,11 +74,11 @@ describe('resolveLanguage', () => {
 
   it('ignores an unsupported stored value and falls back to detection', () => {
     // e.g. config carried over from an install that shipped more languages.
-    withLanguages(['zh-CN'], () => expect(resolveLanguage('ja')).toBe('zh-CN'))
+    withLanguages(['zh-CN'], () => expect(resolveLanguage('tlh')).toBe('zh-CN'))
   })
 
   it('falls back to en when neither stored nor browser matches', () => {
-    withLanguages(['ja-JP'], () => expect(resolveLanguage('')).toBe('en'))
+    withLanguages(['tlh-US'], () => expect(resolveLanguage('')).toBe('en'))
   })
 })
 
@@ -93,7 +93,7 @@ describe('readStoredLanguage', () => {
   })
 
   it('rejects an unsupported stored value', () => {
-    localStorage.setItem(LANG_STORAGE_KEY, 'ja')
+    localStorage.setItem(LANG_STORAGE_KEY, 'tlh')
     expect(readStoredLanguage()).toBe('')
   })
 
@@ -136,7 +136,7 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
 
   it('uses the loose match when nothing matches exactly', () => {
     withLanguages(['zh-TW'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
-    withLanguages(['ja-JP', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['tlh-US', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
   })
 
   it('treats a regional variant of a region-less catalog as CONFIDENT', () => {
@@ -146,11 +146,12 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
     withLanguages(['fr-FR', 'zh-Hant'], () => expect(detectBrowserLanguage()).toBe('fr'))
     withLanguages(['pt-BR'], () => expect(detectBrowserLanguage()).toBe('pt'))
     withLanguages(['es-MX', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('es'))
+    withLanguages(['ja-JP', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('ja'))
   })
 
   it('takes the highest-ranked loose match when several match loosely', () => {
     // The leading tag must be a language we do NOT ship, or it wins outright and
     // this stops testing loose-match ranking at all.
-    withLanguages(['ko-KR', 'zh-TW', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
+    withLanguages(['tlh-US', 'zh-TW', 'zh-MO'], () => expect(detectBrowserLanguage()).toBe('zh-CN'))
   })
 })

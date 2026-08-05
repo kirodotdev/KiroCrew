@@ -5011,11 +5011,10 @@
       "show_full_command": "Vollständigen Befehl anzeigen"
     },
     "trustDropdown": {
-      "commands": "“-Befehle",
       "trust": "Vertrauen",
-      "trust_2": "Vertrauen „",
-      "trust_all": "Allen vertrauen „",
-      "trust_all_tools": "Allen Werkzeugen vertrauen"
+      "trust_all_base": "Allen <mono>{{base}}</mono>-Befehlen vertrauen",
+      "trust_all_tools": "Allen Werkzeugen vertrauen",
+      "trust_this_command": "„<mono>{{cmd}}</mono>“ vertrauen"
     },
     "tunnelStatus": {
       "connected": "Verbunden",

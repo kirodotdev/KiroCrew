@@ -3808,10 +3808,7 @@
       "show_full_command": "Show full command"
     },
     "trustDropdown": {
-      "commands": "” commands",
       "trust": "Trust",
-      "trust_2": "Trust “",
-      "trust_all": "Trust all “",
       "trust_all_tools": "Trust all tools"
     },
     "tunnelStatus": {

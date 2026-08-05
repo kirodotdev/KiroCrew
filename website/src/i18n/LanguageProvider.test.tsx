@@ -78,9 +78,9 @@ describe('LanguageProvider', () => {
   })
 
   it('falls back to the default language when the browser matches nothing', async () => {
-    // `ja-JP` is deliberately a language we do NOT ship. Using a shippable tag
-    // here silently inverts the test the moment that language lands.
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
+    // Klingon is deliberately not a product locale. A plausible future language
+    // would silently invert this test when its catalog lands.
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['tlh-US'])
     wrap(<Probe />)
     await waitFor(() => expect(screen.getByTestId('detected')).toHaveTextContent('en'))
   })
@@ -131,6 +131,12 @@ describe('LanguageProvider', () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
     wrap(<Probe />)
     await waitFor(() => expect(document.documentElement.lang).toBe('zh-CN'))
+  })
+
+  it('normalizes a Japanese browser tag for the locale-specific font override', async () => {
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
+    wrap(<Probe />)
+    await waitFor(() => expect(document.documentElement.lang).toBe('ja'))
   })
 
   it('is inert but does not crash outside a provider', () => {
