@@ -384,6 +384,17 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **Nothing keys off `workflow_run.pull_requests`.** That array is empty whenever the
+  head repository is a fork, the same GitHub behaviour the `fork-*` workflows already
+  work around. The job gate admits every `pull_request` and `dynamic` run and lets the
+  head SHA resolve to a PR via `repos/:repo/commits/:sha/pulls`, and a monitored run is
+  bound back to the PR by `(head_repository.full_name, head_branch)` on top of the
+  `head_sha=` query — a pair that is populated on a fork run, and unique because only
+  one open PR can exist per source repository + branch. Keying either place on the PR
+  number froze a fork PR at pending forever: the gate skipped every re-evaluation, so
+  the verdict was whatever the `pull_request_target` run saw *before* the monitored
+  workflows existed, and the lookup independently reported already-green workflows as
+  `(not started)`.
 
 ## Fork PRs
 

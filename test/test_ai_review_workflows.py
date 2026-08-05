@@ -221,11 +221,31 @@ class TestPrReadiness:
     def test_readiness_leaves_untriggered_merge_and_review_state_to_live_gates(self) -> None:
         workflow = _workflow("pr-readiness.yml")
 
-        assert "--json number,state,isDraft,isCrossRepository,headRefOid,url)" in workflow
+        assert (
+            "--json number,state,isDraft,isCrossRepository,headRefName,"
+            "headRefOid,headRepository,headRepositoryOwner,url)"
+        ) in workflow
         assert "mergeStateStatus" not in workflow
         assert "reviewDecision" not in workflow
         assert "MERGEABLE:" not in workflow
         assert "MERGE_STATE:" not in workflow
+
+    def test_readiness_never_keys_a_fork_pr_off_the_empty_pull_requests_array(self) -> None:
+        # `workflow_run.pull_requests` is empty whenever the head repository is
+        # a fork. Keying the job gate or the run lookup on it froze every fork
+        # PR's commit status at pending: the gate skipped each re-evaluation,
+        # and the lookup reported already-green workflows as "(not started)".
+        # Both must key on the head SHA / (head repository, head branch).
+        workflow = _workflow("pr-readiness.yml")
+
+        assert "pull_requests[0].number != null" not in workflow
+        assert "select([.pull_requests[]?.number] | index($pr))" not in workflow
+        assert "github.event.workflow_run.event == 'pull_request'" in workflow
+        assert ".head_repository.full_name == $head_repo" in workflow
+        assert "and .head_branch == $head_ref" in workflow
+        # The SHA -> PR fallback must not be gated on the `dynamic` CodeQL
+        # event; a fork `pull_request` run needs it too.
+        assert '[ -z "$PR" ] && [ "$RUN_EVENT" = "dynamic" ]' not in workflow
 
     def test_readiness_aggregates_all_review_and_build_lanes(self) -> None:
         workflow = _workflow("pr-readiness.yml")
