@@ -26,6 +26,7 @@ from kiro_crew.dashboard.handlers.worktree import (
     _claim_branch,
     _cleanup_partial,
     _dir_slug,
+    _list_worktrees_detailed,
     _match_allowed_root,
     _resolve_base_ref,
     _resolve_commit,
@@ -33,6 +34,8 @@ from kiro_crew.dashboard.handlers.worktree import (
     _worktree_branches,
     _worktree_config_active,
     api_worktree_create,
+    api_worktree_list,
+    api_worktree_remove,
 )
 from kiro_crew.validation import FOLLOWUP_BRANCH_RE, is_valid_followup_branch
 
@@ -70,6 +73,8 @@ def _make_app(
     }
     app["state"] = state
     app.router.add_post("/api/worktree/create", api_worktree_create)
+    app.router.add_get("/api/worktree/list", api_worktree_list)
+    app.router.add_post("/api/worktree/remove", api_worktree_remove)
     return app
 
 
@@ -1064,3 +1069,168 @@ class TestRepoAllowList:
             assert resp.status == 403
             assert "outside" in (await resp.json())["error"]
         assert not (repo.parent / "proj-wt-x").exists()
+
+
+def _add_worktree(repo, name, branch):
+    """Create a linked worktree of `repo` at a sibling path on a new branch.
+
+    Uses plain git (not the sandboxed endpoint) so list/remove tests have a
+    hermetic fixture independent of the code under test.
+    """
+    wt = repo.parent / name
+    _git("worktree", "add", str(wt), "-b", branch, cwd=repo)
+    return wt
+
+
+class TestWorktreeList:
+    @pytest.mark.asyncio
+    async def test_lists_main_worktree(self, repo):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get("/api/worktree/list", params={"repo": str(repo)})
+            assert resp.status == 200, await resp.text()
+            trees = (await resp.json())["worktrees"]
+        assert len(trees) == 1
+        main = trees[0]
+        assert main["is_main"] is True
+        assert main["branch"] == "main"
+        assert main["dirty"] is False
+        # The repo IS chat-0's project, so it reads back as that slot's live tree.
+        assert main["active_session"] == "chat-0"
+
+    @pytest.mark.asyncio
+    async def test_lists_linked_worktree_with_branch(self, repo):
+        _add_worktree(repo, "proj-wt-feature", "feat/listed")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get("/api/worktree/list", params={"repo": str(repo)})
+            assert resp.status == 200, await resp.text()
+            trees = (await resp.json())["worktrees"]
+        linked = [t for t in trees if not t["is_main"]]
+        assert len(linked) == 1
+        assert linked[0]["branch"] == "feat/listed"
+        assert linked[0]["dirty"] is False
+        assert linked[0]["active_session"] is None
+
+    @pytest.mark.asyncio
+    async def test_dirty_worktree_flagged(self, repo):
+        wt = _add_worktree(repo, "proj-wt-dirty", "feat/dirty")
+        (wt / "scratch.txt").write_text("uncommitted\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get("/api/worktree/list", params={"repo": str(repo)})
+            trees = (await resp.json())["worktrees"]
+        dirty = next(t for t in trees if t["branch"] == "feat/dirty")
+        assert dirty["dirty"] is True
+
+    @pytest.mark.asyncio
+    async def test_active_session_flagged(self, repo):
+        wt = _add_worktree(repo, "proj-wt-active", "feat/active")
+        # chat-0 -> repo, chat-1 -> the linked worktree.
+        async with TestClient(TestServer(_make_app(str(repo), str(wt)))) as client:
+            resp = await client.get("/api/worktree/list", params={"repo": str(repo)})
+            trees = (await resp.json())["worktrees"]
+        active = next(t for t in trees if t["branch"] == "feat/active")
+        assert active["active_session"] == "chat-1"
+
+    @pytest.mark.asyncio
+    async def test_requires_repo_param(self, repo):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get("/api/worktree/list")
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_repo_outside_slots(self, repo, tmp_path):
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get("/api/worktree/list", params={"repo": str(outside)})
+            assert resp.status == 403
+
+
+class TestWorktreeRemove:
+    @pytest.mark.asyncio
+    async def test_removes_clean_worktree(self, repo):
+        wt = _add_worktree(repo, "proj-wt-gone", "feat/gone")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/remove", json={"repo": str(repo), "path": str(wt)}
+            )
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["ok"] is True
+        # Gone from git's registry.
+        registered = _worktree_branches(str(repo))
+        assert registered is not None
+        assert os.path.normcase(os.path.normpath(str(wt))) not in registered
+
+    @pytest.mark.asyncio
+    async def test_refuses_main_worktree(self, repo):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/remove", json={"repo": str(repo), "path": str(repo)}
+            )
+            assert resp.status == 409
+            assert "main worktree" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_refuses_dirty_without_force(self, repo):
+        wt = _add_worktree(repo, "proj-wt-dirtyrm", "feat/dirtyrm")
+        (wt / "scratch.txt").write_text("uncommitted\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/remove", json={"repo": str(repo), "path": str(wt)}
+            )
+            assert resp.status == 409
+            body = await resp.json()
+            assert body["dirty"] is True
+        assert wt.is_dir()  # not removed
+
+    @pytest.mark.asyncio
+    async def test_force_removes_dirty(self, repo):
+        wt = _add_worktree(repo, "proj-wt-force", "feat/forcerm")
+        (wt / "scratch.txt").write_text("uncommitted\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/remove",
+                json={"repo": str(repo), "path": str(wt), "force": True},
+            )
+            assert resp.status == 200, await resp.text()
+        assert not wt.exists()
+
+    @pytest.mark.asyncio
+    async def test_refuses_worktree_active_in_other_session(self, repo):
+        wt = _add_worktree(repo, "proj-wt-busy", "feat/busy")
+        # chat-1 is scoped to the worktree, so removing it must be refused.
+        async with TestClient(TestServer(_make_app(str(repo), str(wt)))) as client:
+            resp = await client.post(
+                "/api/worktree/remove", json={"repo": str(repo), "path": str(wt)}
+            )
+            assert resp.status == 409
+            assert (await resp.json())["active_session"] == "chat-1"
+        assert wt.is_dir()
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_path(self, repo, tmp_path):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/remove",
+                json={"repo": str(repo), "path": str(tmp_path / "not-a-worktree")},
+            )
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_path(self, repo):
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post("/api/worktree/remove", json={"repo": str(repo)})
+            assert resp.status == 400
+
+
+class TestListWorktreesDetailed:
+    def test_parses_branch_and_flags(self, repo):
+        _add_worktree(repo, "proj-wt-parse", "feat/parsed")
+        records = _list_worktrees_detailed(str(repo))
+        assert records is not None
+        assert len(records) == 2  # main + linked, main listed first by git
+        branches = {r["branch"] for r in records}
+        assert "main" in branches
+        assert "feat/parsed" in branches
+        for r in records:
+            assert r["head"]  # every checked-out tree reports a HEAD sha
+            assert r["detached"] is False

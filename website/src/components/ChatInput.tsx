@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check, GitBranch } from 'lucide-react'
 import { Toggle } from './ui'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -293,6 +293,9 @@ interface ChatInputProps {
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
+  /** Open the worktree picker for the current project (issue #1607). When
+   *  omitted the worktree button is not rendered — backward compatible. */
+  onWorktreesClick?: (rect: DOMRect) => void
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -487,6 +490,7 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  onWorktreesClick,
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
@@ -2678,6 +2682,23 @@ function ChatInput({
                 label={projectDetached ? 'commit' : 'branch name'}
                 className="max-w-[220px] font-mono opacity-70 hover:opacity-100 hover:text-text"
               />
+            </>
+          )}
+          {onWorktreesClick && project && (
+            <>
+              <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
+              {/* Worktree picker trigger (issue #1607): list/switch/create/remove
+                  worktrees for this repo. Icon-only so it stays compact; enabled
+                  while running is harmless (it only reads + switches project). */}
+              <button
+                className="inline-flex items-center h-7 px-1.5 rounded-md bg-transparent text-muted hover:text-text hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
+                onClick={e => onWorktreesClick(e.currentTarget.getBoundingClientRect())}
+                disabled={isRunning}
+                title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : i18nT('components.worktreePicker.worktrees')}
+                aria-label={i18nT('components.worktreePicker.worktrees')}
+              >
+                <GitBranch size={13} className="shrink-0 opacity-70" />
+              </button>
             </>
           )}
           </div>
