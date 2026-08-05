@@ -142,7 +142,7 @@ def infer_use_case(session_key: str) -> str:
     """
     if not session_key:
         return "unknown"
-    if session_key.startswith("cron:") or session_key.startswith("cron_"):
+    if session_key.startswith("cron:") or session_key.startswith("cron_") or session_key.startswith("cron-"):
         return "cron"
     if session_key.startswith("subagent:") or session_key.startswith("subagent_"):
         return "subagent"

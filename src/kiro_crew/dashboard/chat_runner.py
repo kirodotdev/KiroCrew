@@ -4720,7 +4720,7 @@ async def _run_chat(
                         _record_model,
                         event,
                         provider=_provider_name,
-                        surface="dashboard",
+                        surface=infer_use_case(slot.key),
                         # Resolved agent, not the slot alias: resolve_agent_bindings
                         # maps e.g. "default" to "kirocrew" before dispatch, so the
                         # alias would credit an agent that never ran.
