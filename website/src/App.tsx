@@ -74,7 +74,7 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel from './components/BottomTerminalPanel'
-import { toggleBottomTerminal } from './hooks/useBottomTerminal'
+import { toggleBottomTerminal, useBottomTerminalOpen } from './hooks/useBottomTerminal'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
 import AppPage from './pages/AppPage'
@@ -424,8 +424,12 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
   return { tip, tipOn, rowRef, showTip, hideTip, dismissTip }
 }
 
-function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId }: {
+function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
+  /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
+   *  terminal). `active` only paints the row; without aria-pressed a screen
+   *  reader announces an identical button whether the panel is open or shut. */
+  pressed?: boolean
 }) {
   const navigate = useNavigate()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
@@ -454,6 +458,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       onFocus={showTip}
       onBlur={hideTip}
       aria-label={collapsed ? label : undefined}
+      aria-pressed={pressed}
     >
       {badge}
       {iconEl}
@@ -850,6 +855,10 @@ export default function App() {
   // so there is no hidden-until-fetch-resolves flash.
   const terminalEnabled = terminalConfig?.enabled !== false
   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
+  // Only the `open` flag, not the whole store — the panel's height changes on
+  // every mousemove during a grip-drag, and a primitive snapshot lets
+  // useSyncExternalStore's Object.is check skip those re-renders of App.
+  const bottomTerminalOpen = useBottomTerminalOpen()
   const navigate = useNavigate()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
@@ -2227,7 +2236,12 @@ export default function App() {
                   path="#"
                   label={i18nT('app.terminal')}
                   icon={<SquareTerminal size={16} />}
-                  active={false}
+                  /* This row TOGGLES the docked panel instead of navigating, so
+                     "active" tracks the panel's open flag rather than the route.
+                     Without it the row only lit on hover, leaving no indication
+                     the panel below was open once the pointer moved away. */
+                  active={bottomTerminalOpen}
+                  pressed={bottomTerminalOpen}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
                   onClickOverride={() => toggleBottomTerminal()}
