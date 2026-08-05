@@ -28,47 +28,25 @@ test.describe('Notifications Page', () => {
 
   test('shows empty state message when no notifications', async ({ page }) => {
     await expect(page.getByTestId('notification-feed-empty-title')).toHaveText('No notifications')
-    // The subtitle distinguishes WHICH empty state rendered (no categories vs search
-    // miss vs genuinely empty), so the text is load-bearing -- but matched loosely and
+    // The subtitle distinguishes WHICH empty state rendered (search miss vs
+    // genuinely empty), so the text is load-bearing -- but matched loosely and
     // scoped to the element rather than searched for across the page.
     await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/activity will appear here/i)
   })
 
-  test('renders category filter chips with correct labels', async ({ page }) => {
-    const filterGroup = page.getByRole('group', { name: 'Filter notifications by kind' })
-    await expect(filterGroup).toBeVisible()
-
-    const chipLabels = ['All', 'Cron', 'Hooks', 'Heartbeat', 'Agent', 'Approval', 'Subagent', 'Tasks']
-    for (const label of chipLabels) {
-      await expect(filterGroup.getByRole('button', { name: label, exact: true })).toBeVisible()
+  test('renders no per-kind filter controls', async ({ page }) => {
+    // The feed deliberately has no kind filter: free-text search is the only
+    // narrowing mechanism. Pinned here because the chips previously hid
+    // unknown-kind notifications whenever any one of them was deselected.
+    await expect(page.getByRole('group', { name: 'Filter notifications by kind' })).toHaveCount(0)
+    // 'All' is deliberately NOT in this list: it is still the label of the
+    // mark-all-as-read button in the search row (rendered when unread > 0), so
+    // asserting its absence would pin this test to the fixture's unread count.
+    // The stat cards labelled Cron/Hooks/Heartbeat are plain divs (StatCard only
+    // takes role="button" when given an onClick), so they cannot match either.
+    for (const label of ['Cron', 'Hooks', 'Heartbeat', 'Agent', 'Approval', 'Subagent', 'Tasks']) {
+      await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(0)
     }
-  })
-
-  test('toggling a category chip changes its pressed state', async ({ page }) => {
-    const filterGroup = page.getByRole('group', { name: 'Filter notifications by kind' })
-    const cronChip = filterGroup.getByRole('button', { name: 'Cron' })
-
-    // Initially all chips are active (aria-pressed=true)
-    await expect(cronChip).toHaveAttribute('aria-pressed', 'true')
-
-    // Click to deactivate
-    await cronChip.click()
-    await expect(cronChip).toHaveAttribute('aria-pressed', 'false')
-
-    // Click again to re-activate
-    await cronChip.click()
-    await expect(cronChip).toHaveAttribute('aria-pressed', 'true')
-  })
-
-  test('clicking All chip deselects all categories and shows appropriate empty state', async ({ page }) => {
-    const filterGroup = page.getByRole('group', { name: 'Filter notifications by kind' })
-    const allChip = filterGroup.getByRole('button', { name: 'All' })
-
-    // "All" acts as a toggle: when all are on, clicking clears all
-    await allChip.click()
-
-    // Now the empty state should mention categories
-    await expect(page.getByTestId('notification-feed-empty-subtitle')).toHaveText(/no categories selected/i)
   })
 
   test('GET /api/notifications returns correct structure for empty state', async ({ request }) => {

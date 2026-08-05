@@ -62,7 +62,6 @@
     "components.mcpBrowserModal.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "components.mcpCustomServerModal.env": "\"env\" = environment variables, labelling a key/value editor. An abbreviation of a technical term, not the English word \"environment\" in its ordinary sense.",
     "components.mcpCustomServerModal.url": "\"URL\", labelling an input field. Lowercase because it matches the config key it edits; do not capitalise or translate.",
-    "components.notifications.notifMeta.kind_all": "Filter option in the notification feed meaning \"all notification kinds\" — the no-filter choice, shown beside specific kinds. Not \"all notifications are read\".",
     "components.notifications.notificationFeed.all": "Filter option meaning no filter — show every item. A quantifier over the list beside it, not the adjective \"whole\".",
     "components.publishHub.kb": "The unit \"KB\" = kilobytes, rendered after a published bundle's size. NOT \"knowledge base\", which is a separate feature in this product that shares the abbreviation in English.",
     "components.readingWidthToggle.label_full": "One-letter button cap for the FULL reading width (chat spans the whole pane). Sits beside the M cap. Use the initial of the target language's word for \"full/wide\"; keep it to one character so the two caps stay the same size.",
