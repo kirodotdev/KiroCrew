@@ -32,10 +32,12 @@ _pyver() {
     "$1" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null
 }
 
-# First usable system python >= 3.9, preferring newer explicit minors.
+# First usable system python, preferring the newest SUPPORTED minor (3.12 is
+# the CI/build target, matching TARGET_PY above); untested 3.13 and bare
+# python3/python are last resorts so a bleeding-edge install still succeeds.
 _find_system_python() {
     local c resolved
-    for c in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    for c in python3.12 python3.11 python3.10 python3.13 python3 python; do
         resolved="$(command -v "$c" 2>/dev/null)" || continue
         if _py_ok "$resolved"; then
             echo "$resolved"
