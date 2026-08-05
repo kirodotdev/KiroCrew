@@ -26,7 +26,11 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_submit_review,
     api_pull_request_unresolve,
 )
-from kiro_crew.dashboard.handlers.worktree import api_worktree_create
+from kiro_crew.dashboard.handlers.worktree import (
+    api_worktree_create,
+    api_worktree_list,
+    api_worktree_remove,
+)
 
 
 def register(app: web.Application) -> None:
@@ -85,6 +89,8 @@ def register(app: web.Application) -> None:
     # Follow-up suggestion card (suggest_followup MCP tool -> card below composer)
     app.router.add_post("/api/chat/slots/{slot}/followup", chat.api_chat_slot_followup)
     app.router.add_post("/api/worktree/create", api_worktree_create)
+    app.router.add_get("/api/worktree/list", api_worktree_list)
+    app.router.add_post("/api/worktree/remove", api_worktree_remove)
     app.router.add_get("/api/recent-projects", chat.api_recent_projects)
     app.router.add_patch("/api/chat/slots/{slot}/color", chat.api_chat_slot_color)
     # Context injection (App Kit — silent background context)

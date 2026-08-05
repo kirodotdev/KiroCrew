@@ -6151,6 +6151,27 @@
       "select": "Seleccionar",
       "subdirectories": "Subdirectorios"
     },
+    "worktreePicker": {
+      "worktrees": "Worktrees",
+      "no_worktrees": "No se encontraron worktrees",
+      "main": "principal",
+      "this_session": "esta sesión",
+      "in_use": "En uso",
+      "uncommitted": "sin confirmar",
+      "detached": "(desacoplado)",
+      "in_use_by_another_session": "En uso por otra sesión: cambia primero el proyecto de esa sesión",
+      "in_use_by_this_session": "Cambia primero esta sesión a otro worktree",
+      "remove_worktree": "Eliminar worktree",
+      "remove_anyway": "Los cambios sin confirmar se perderán.",
+      "remove_unverified": "No se pudieron verificar los cambios; podrían perderse.",
+      "force": "Eliminar de todos modos",
+      "create": "Crear",
+      "new_branch_name": "Nombre de la nueva rama",
+      "new_branch_placeholder": "nueva rama, p. ej. feat/mi-ticket",
+      "failed_to_list_worktrees": "No se pudieron listar los worktrees",
+      "worktree_creation_failed": "No se pudo crear el worktree",
+      "worktree_removal_failed": "No se pudo eliminar el worktree"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "Lo entiendo, publicar públicamente",
       "anyone_with_the_link": "Cualquier persona del mundo con el enlace puede ver {{target}}: sin autenticación ni control de acceso.",

@@ -6066,6 +6066,27 @@
       "select": "নির্বাচন করুন",
       "subdirectories": "সাবডিরেক্টরি"
     },
+    "worktreePicker": {
+      "worktrees": "ওয়ার্কট্রি",
+      "no_worktrees": "কোনো ওয়ার্কট্রি পাওয়া যায়নি",
+      "main": "প্রধান",
+      "this_session": "এই সেশন",
+      "in_use": "ব্যবহৃত হচ্ছে",
+      "uncommitted": "কমিট করা হয়নি",
+      "detached": "(বিচ্ছিন্ন)",
+      "in_use_by_another_session": "অন্য একটি সেশন ব্যবহার করছে — আগে সেই সেশনের প্রকল্প পরিবর্তন করুন",
+      "in_use_by_this_session": "প্রথমে এই সেশনটি অন্য ওয়ার্কট্রিতে সরান",
+      "remove_worktree": "ওয়ার্কট্রি সরান",
+      "remove_anyway": "কমিট না করা পরিবর্তনগুলি হারিয়ে যাবে।",
+      "remove_unverified": "পরিবর্তন যাচাই করা যায়নি; সেগুলি হারিয়ে যেতে পারে।",
+      "force": "তবুও সরান",
+      "create": "তৈরি করুন",
+      "new_branch_name": "নতুন ব্রাঞ্চের নাম",
+      "new_branch_placeholder": "নতুন ব্রাঞ্চ, যেমন feat/my-ticket",
+      "failed_to_list_worktrees": "ওয়ার্কট্রি তালিকা করা যায়নি",
+      "worktree_creation_failed": "ওয়ার্কট্রি তৈরি করা যায়নি",
+      "worktree_removal_failed": "ওয়ার্কট্রি সরানো যায়নি"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "আমি বুঝেছি, প্রকাশ্যে প্রকাশ করুন",
       "anyone_with_the_link": "লিঙ্কটি আছে এমন যে কেউ বিশ্বের যেকোনো স্থান থেকে {{target}} দেখতে পারবে — কোনো প্রমাণীকরণ নেই, কোনো অ্যাক্সেস নিয়ন্ত্রণ নেই।",

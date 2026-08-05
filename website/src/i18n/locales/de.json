@@ -6066,6 +6066,27 @@
       "select": "Auswählen",
       "subdirectories": "Unterverzeichnisse"
     },
+    "worktreePicker": {
+      "worktrees": "Worktrees",
+      "no_worktrees": "Keine Worktrees gefunden",
+      "main": "Haupt",
+      "this_session": "diese Sitzung",
+      "in_use": "In Benutzung",
+      "uncommitted": "nicht committet",
+      "detached": "(losgelöst)",
+      "in_use_by_another_session": "Wird von einer anderen Sitzung benutzt — wechseln Sie zuerst das Projekt jener Sitzung",
+      "in_use_by_this_session": "Wechseln Sie diese Sitzung zuerst zu einem anderen Worktree",
+      "remove_worktree": "Worktree entfernen",
+      "remove_anyway": "Nicht committete Änderungen gehen verloren.",
+      "remove_unverified": "Änderungen nicht überprüfbar; sie gehen möglicherweise verloren.",
+      "force": "Trotzdem entfernen",
+      "create": "Erstellen",
+      "new_branch_name": "Name des neuen Branches",
+      "new_branch_placeholder": "neuer Branch, z. B. feat/mein-ticket",
+      "failed_to_list_worktrees": "Worktrees konnten nicht aufgelistet werden",
+      "worktree_creation_failed": "Erstellen des Worktrees fehlgeschlagen",
+      "worktree_removal_failed": "Entfernen des Worktrees fehlgeschlagen"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ich habe verstanden, öffentlich veröffentlichen",
       "anyone_with_the_link": "Jede Person auf der Welt mit dem Link kann {{target}} ansehen — keine Authentifizierung, keine Zugriffskontrolle.",

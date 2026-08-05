@@ -4253,6 +4253,27 @@
       "select": "Select",
       "subdirectories": "Subdirectories"
     },
+    "worktreePicker": {
+      "worktrees": "Worktrees",
+      "no_worktrees": "No worktrees found",
+      "main": "main",
+      "this_session": "this session",
+      "in_use": "In use",
+      "uncommitted": "uncommitted",
+      "detached": "(detached)",
+      "in_use_by_another_session": "In use by another session — switch that session's project first",
+      "in_use_by_this_session": "Switch this session to another worktree first",
+      "remove_worktree": "Remove worktree",
+      "remove_anyway": "Uncommitted changes will be lost.",
+      "remove_unverified": "Couldn't verify changes; they may be lost.",
+      "force": "Remove anyway",
+      "create": "Create",
+      "new_branch_name": "New branch name",
+      "new_branch_placeholder": "new branch, e.g. feat/my-ticket",
+      "failed_to_list_worktrees": "Failed to list worktrees",
+      "worktree_creation_failed": "Worktree creation failed",
+      "worktree_removal_failed": "Worktree removal failed"
+    },
     "publishHub": {
       "back": "Back",
       "cancel": "Cancel",

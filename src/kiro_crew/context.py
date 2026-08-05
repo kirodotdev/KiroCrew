@@ -28,6 +28,7 @@ from kiro_crew.hooks import (
     HookManager,
     HookResult,
     safe_read_file,
+    safe_read_prefix,
 )
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
@@ -271,6 +272,118 @@ def _neutralize_structural_markers(text: str) -> str:
     exotic-character forgeries are caught without mutating legitimate text.
     """
     return _apply_marker_spans(text, _structural_marker_spans(text))
+
+
+# Cap on the upward walk looking for a repo root, and on echoed label lengths.
+_GIT_WALK_LIMIT = 64
+_GIT_LABEL_CAP = 120
+
+
+def _project_git_context_line(
+    project: str, *, session_key: str = "", agent: str = "kirocrew"
+) -> str:
+    """One-line git awareness for the ``[PROJECT]`` block: branch + worktree kind.
+
+    Makes the agent aware of which branch and worktree its session is on, so it
+    keeps a ticket's work on that branch instead of mixing sessions that share a
+    repo (issue #1607). PURE FILESYSTEM — no subprocess, so it is safe to run
+    inline during prompt assembly (a couple of small local reads, like the
+    resource probe alongside it). A linked worktree's ``.git`` is a FILE (a
+    ``gitdir:`` pointer) rather than a directory, which is exactly how a linked
+    worktree is told apart from the main one and how its HEAD is located.
+
+    Returns ``""`` when the project is not inside a git repo, or on any read
+    error — best-effort, never raises.
+    """
+    try:
+        base = os.path.realpath(os.path.expanduser(project))
+        root: str | None = None
+        cur = base
+        for _ in range(_GIT_WALK_LIMIT):
+            if os.path.exists(os.path.join(cur, ".git")):
+                root = cur
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        if root is None:
+            return ""
+        dotgit = os.path.join(root, ".git")
+        linked = os.path.isfile(dotgit)
+        if linked:
+            # BOTH reads go through `safe_read_prefix`, never a raw `open`. The
+            # `gitdir:` pointer is repo-supplied content, so following it names a
+            # path the agent chose; `safe_read_prefix` realpaths it, refuses a
+            # sensitive resolved target, and opens O_NOFOLLOW. Prompt assembly is
+            # not a place to read an arbitrary file just because git would.
+            head = safe_read_prefix(dotgit, 4096)
+            if head is None:
+                return ""
+            first = head.decode("utf-8", "replace").splitlines()[0].strip() if head else ""
+            pointer = first[len("gitdir:") :].strip() if first.startswith("gitdir:") else ""
+            if not pointer:
+                return ""
+            git_dir = (
+                pointer if os.path.isabs(pointer) else os.path.normpath(os.path.join(root, pointer))
+            )
+            head_path = os.path.join(git_dir, "HEAD")
+        else:
+            head_path = os.path.join(dotgit, "HEAD")
+        blob = safe_read_prefix(head_path, 4096)
+        if blob is None:
+            return ""
+        raw = blob.decode("utf-8", "replace").splitlines()[0].strip() if blob else ""
+        kind = "a linked worktree" if linked else "the main worktree"
+        if raw.startswith("ref:"):
+            ref = raw[len("ref:") :].strip()
+            prefix = "refs/heads/"
+            branch = ref[len(prefix) :] if ref.startswith(prefix) else ref
+            branch = branch[:_GIT_LABEL_CAP]
+            # A branch name is repo-supplied: `git checkout -b` accepts almost
+            # any byte sequence, and cloning a hostile repo lands its refs on
+            # disk without the user ever typing them. This line is assembled
+            # into the trusted `[PROJECT]` block, so the label is screened and
+            # the whole line DROPPED when it reads as an instruction — the same
+            # treatment this module already gives Slack thread text and the
+            # `[FOLDER]` breadcrumb. Dropping is cheap: the line is an
+            # awareness hint, so losing it costs branch context and nothing
+            # more. The detached-HEAD arm below needs no screen — it is
+            # regex-validated hex.
+            if contains_injection(branch):
+                audit_injection_dropped(
+                    surface="project_git_branch",
+                    session_key=session_key,
+                    agent=agent,
+                    sample=branch,
+                )
+                return ""
+            # TWO screens, not one — the same pair the `[FOLDER]` breadcrumb
+            # gets. `contains_injection` matches directive PROSE ("ignore
+            # previous instructions"); it does not match the forgeable boundary
+            # markers in `_STRUCTURAL_MARKER_RES`, so a branch literally named
+            # `[END OF SESSION CONTEXT]` cleared the drop above and then forged a
+            # section boundary inside the trusted block. Neutralizing is
+            # span-local: only a matched marker is rewritten, so an ordinary
+            # branch name survives byte-for-byte.
+            branch = _neutralize_structural_markers(branch)
+            note = (
+                " Keep this session's work on this branch — sibling worktrees of "
+                "the same repo hold other branches."
+                if linked
+                else ""
+            )
+            return f"Git: on branch `{branch}` in {kind} (repo root: {root})." + note
+        if re.fullmatch(r"[0-9a-fA-F]{7,64}", raw):
+            return f"Git: detached HEAD at `{raw[:12]}` in {kind} (repo root: {root})."
+        return ""
+    # ValueError joins OSError because a `.git` pointer is repo-supplied: an
+    # embedded NUL makes `os.path.realpath` inside `safe_read_prefix` raise
+    # ValueError, which is not an OSError. Unhandled it would abort prompt
+    # assembly for the whole turn, so a malformed pointer must degrade to "no
+    # git line" like every other read failure here.
+    except (OSError, ValueError):
+        return ""
 
 
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
@@ -2825,13 +2938,22 @@ class ContextBuilder:
         # Project context — inject on every message so the LLM always knows
         # the active project, even when set/changed after session start.
         if project and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
-            parts.append(
+            project_block = (
                 f"[PROJECT] Active project directory: {project}\n"
                 "This is the codebase you are working in for this session. "
                 "File search, @-mentions, and code references are scoped to "
                 "this directory. Prefer files and patterns from this project "
-                "when answering questions.\n\n"
+                "when answering questions.\n"
             )
+            # Git worktree awareness (issue #1607): tell the agent which branch
+            # and worktree it is on so a ticket's work stays on its own branch
+            # when several sessions share a repo. Best-effort, pure filesystem.
+            git_line = _project_git_context_line(
+                project, session_key=session_key or "", agent=agent or "kirocrew"
+            )
+            if git_line:
+                project_block += git_line + "\n"
+            parts.append(project_block + "\n")
 
         # Resource pressure — inject a compact advisory ONLY when host memory is
         # tight/critical, so the model can choose the lighter path for heavy work

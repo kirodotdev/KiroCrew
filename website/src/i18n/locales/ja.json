@@ -5981,6 +5981,27 @@
       "select": "選択",
       "subdirectories": "サブディレクトリ"
     },
+    "worktreePicker": {
+      "worktrees": "ワークツリー",
+      "no_worktrees": "ワークツリーが見つかりません",
+      "main": "メイン",
+      "this_session": "このセッション",
+      "in_use": "使用中",
+      "uncommitted": "未コミット",
+      "detached": "（切り離し）",
+      "in_use_by_another_session": "別のセッションが使用中です。先にそのセッションのプロジェクトを切り替えてください",
+      "in_use_by_this_session": "先にこのセッションを別のワークツリーに切り替えてください",
+      "remove_worktree": "ワークツリーを削除",
+      "remove_anyway": "コミットされていない変更は失われます。",
+      "remove_unverified": "変更を確認できませんでした。失われる可能性があります。",
+      "force": "それでも削除",
+      "create": "作成",
+      "new_branch_name": "新しいブランチ名",
+      "new_branch_placeholder": "新しいブランチ（例: feat/my-ticket）",
+      "failed_to_list_worktrees": "ワークツリーの一覧取得に失敗しました",
+      "worktree_creation_failed": "ワークツリーの作成に失敗しました",
+      "worktree_removal_failed": "ワークツリーの削除に失敗しました"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "理解しました。公開します",
       "anyone_with_the_link": "リンクを知っていれば世界中の誰でも {{target}} を閲覧できます。認証もアクセス制御もありません。",

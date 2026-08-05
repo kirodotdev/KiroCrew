@@ -6236,6 +6236,27 @@
       "select": "Выбрать",
       "subdirectories": "Подкаталоги"
     },
+    "worktreePicker": {
+      "worktrees": "Рабочие деревья",
+      "no_worktrees": "Рабочие деревья не найдены",
+      "main": "основное",
+      "this_session": "этот сеанс",
+      "in_use": "Используется",
+      "uncommitted": "не зафиксировано",
+      "detached": "(отсоединено)",
+      "in_use_by_another_session": "Используется другим сеансом — сначала смените проект того сеанса",
+      "in_use_by_this_session": "Сначала переключите этот сеанс на другое рабочее дерево",
+      "remove_worktree": "Удалить рабочее дерево",
+      "remove_anyway": "Незафиксированные изменения будут потеряны.",
+      "remove_unverified": "Не удалось проверить изменения; они могут быть потеряны.",
+      "force": "Всё равно удалить",
+      "create": "Создать",
+      "new_branch_name": "Имя новой ветки",
+      "new_branch_placeholder": "новая ветка, например feat/my-ticket",
+      "failed_to_list_worktrees": "Не удалось получить список рабочих деревьев",
+      "worktree_creation_failed": "Не удалось создать рабочее дерево",
+      "worktree_removal_failed": "Не удалось удалить рабочее дерево"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "Я понимаю, опубликовать публично",
       "anyone_with_the_link": "Любой человек в мире, у кого есть ссылка, может просмотреть {{target}} — без аутентификации и контроля доступа.",

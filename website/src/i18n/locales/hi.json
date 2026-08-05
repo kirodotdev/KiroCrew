@@ -6066,6 +6066,27 @@
       "select": "चुनें",
       "subdirectories": "सब-डायरेक्टरी"
     },
+    "worktreePicker": {
+      "worktrees": "वर्कट्री",
+      "no_worktrees": "कोई वर्कट्री नहीं मिली",
+      "main": "मुख्य",
+      "this_session": "यह सत्र",
+      "in_use": "उपयोग में",
+      "uncommitted": "बिना कमिट",
+      "detached": "(अलग)",
+      "in_use_by_another_session": "किसी अन्य सत्र द्वारा उपयोग में है — पहले उस सत्र की परियोजना बदलें",
+      "in_use_by_this_session": "पहले इस सत्र को दूसरे वर्कट्री पर स्विच करें",
+      "remove_worktree": "वर्कट्री हटाएँ",
+      "remove_anyway": "बिना कमिट किए बदलाव खो जाएंगे।",
+      "remove_unverified": "बदलावों की पुष्टि नहीं हो सकी; वे खो सकते हैं।",
+      "force": "फिर भी हटाएँ",
+      "create": "बनाएँ",
+      "new_branch_name": "नई शाखा का नाम",
+      "new_branch_placeholder": "नई शाखा, जैसे feat/my-ticket",
+      "failed_to_list_worktrees": "वर्कट्री सूचीबद्ध करने में विफल",
+      "worktree_creation_failed": "वर्कट्री बनाने में विफल",
+      "worktree_removal_failed": "वर्कट्री हटाने में विफल"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "मैं समझता हूँ, सार्वजनिक रूप से प्रकाशित करें",
       "anyone_with_the_link": "लिंक रखने वाला दुनिया में कोई भी व्यक्ति {{target}} देख सकता है — कोई प्रमाणीकरण नहीं, कोई एक्सेस नियंत्रण नहीं।",

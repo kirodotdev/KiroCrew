@@ -6151,6 +6151,27 @@
       "select": "Seleziona",
       "subdirectories": "Sottodirectory"
     },
+    "worktreePicker": {
+      "worktrees": "Worktree",
+      "no_worktrees": "Nessun worktree trovato",
+      "main": "principale",
+      "this_session": "questa sessione",
+      "in_use": "In uso",
+      "uncommitted": "non salvato",
+      "detached": "(scollegato)",
+      "in_use_by_another_session": "In uso da un'altra sessione: cambia prima il progetto di quella sessione",
+      "in_use_by_this_session": "Passa prima questa sessione a un altro worktree",
+      "remove_worktree": "Rimuovi worktree",
+      "remove_anyway": "Le modifiche non salvate andranno perse.",
+      "remove_unverified": "Impossibile verificare le modifiche; potrebbero andare perse.",
+      "force": "Rimuovi comunque",
+      "create": "Crea",
+      "new_branch_name": "Nome del nuovo branch",
+      "new_branch_placeholder": "nuovo branch, es. feat/mio-ticket",
+      "failed_to_list_worktrees": "Impossibile elencare i worktree",
+      "worktree_creation_failed": "Creazione del worktree non riuscita",
+      "worktree_removal_failed": "Rimozione del worktree non riuscita"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ho capito, pubblica pubblicamente",
       "anyone_with_the_link": "Chiunque nel mondo abbia il link può vedere {{target}}: nessuna autenticazione, nessun controllo di accesso.",

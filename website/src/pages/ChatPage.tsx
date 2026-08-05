@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -97,6 +97,12 @@ import { useAgents } from '../hooks/useAgents'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from '../components/AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import ProjectPicker from '../components/ProjectPicker'
+// Lazy: the worktree picker is a portal popover that only exists after the
+// composer's branch trigger is clicked, so its code has no business in the
+// eager `App` chunk -- which the bundle-size gate caps, and which main had
+// already drawn down to ~3 KB of headroom. An `import()` boundary is the
+// remedy that gate asks for first, ahead of raising the budget.
+const WorktreePicker = lazy(() => import('../components/WorktreePicker'))
 import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import {
@@ -1691,6 +1697,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [projectBtnRect, setProjectBtnRect] = useState<DOMRect | null>(null)
+  const [worktreePickerOpen, setWorktreePickerOpen] = useState(false)
+  const [worktreeBtnRect, setWorktreeBtnRect] = useState<DOMRect | null>(null)
 
   // Prevent Chrome from navigating to dropped files.
   // Must be on document to catch drops anywhere on the page.
@@ -7341,6 +7349,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 setProjectBtnRect(rect)
                 setProjectPickerOpen(o => !o)
               }}
+              onWorktreesClick={(rect) => {
+                setWorktreeBtnRect(rect)
+                setWorktreePickerOpen(o => !o)
+              }}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
@@ -7527,6 +7539,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
+            {/* Worktree picker — list/switch/create/remove worktrees (#1607).
+                Mounted only while open: that is what keeps the lazy chunk off the
+                first paint, since a mounted-but-closed picker would fetch it on
+                load. `fallback={null}` because the chunk is same-origin and the
+                trigger is a popover — a spinner would flash for one frame and
+                read as breakage, whereas nothing appearing for one frame reads
+                as the click not having landed yet. */}
+            {worktreePickerOpen && (
+              <Suspense fallback={null}>
+                <WorktreePicker
+                  open={worktreePickerOpen}
+                  onOpenChange={setWorktreePickerOpen}
+                  anchorRect={worktreeBtnRect}
+                  repo={currentSlot?.project}
+                  activeSlot={activeSlot}
+                  onSelect={path => { setProject(path); setWorktreePickerOpen(false) }}
+                />
+              </Suspense>
+            )}
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>

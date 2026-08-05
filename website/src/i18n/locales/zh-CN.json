@@ -5981,6 +5981,27 @@
       "select": "选择",
       "subdirectories": "子目录"
     },
+    "worktreePicker": {
+      "worktrees": "工作树",
+      "no_worktrees": "未找到工作树",
+      "main": "主",
+      "this_session": "当前会话",
+      "in_use": "使用中",
+      "uncommitted": "未提交",
+      "detached": "（游离）",
+      "in_use_by_another_session": "另一个会话正在使用 — 请先切换该会话的项目",
+      "in_use_by_this_session": "请先将当前会话切换到其他工作树",
+      "remove_worktree": "移除工作树",
+      "remove_anyway": "未提交的更改将会丢失。",
+      "remove_unverified": "无法确认更改，可能会丢失。",
+      "force": "仍然移除",
+      "create": "创建",
+      "new_branch_name": "新分支名称",
+      "new_branch_placeholder": "新分支，例如 feat/my-ticket",
+      "failed_to_list_worktrees": "列出工作树失败",
+      "worktree_creation_failed": "创建工作树失败",
+      "worktree_removal_failed": "移除工作树失败"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "我已了解，公开发布",
       "anyone_with_the_link": "世界上任何拿到链接的人都能查看 {{target}}——没有身份验证，也没有访问控制。",

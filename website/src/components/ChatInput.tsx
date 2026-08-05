@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, GitBranch } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -329,6 +329,9 @@ interface ChatInputProps {
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
+  /** Open the worktree picker for the current project (issue #1607). When
+   *  omitted the worktree button is not rendered — backward compatible. */
+  onWorktreesClick?: (rect: DOMRect) => void
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -675,6 +678,7 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  onWorktreesClick,
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
@@ -3052,6 +3056,27 @@ function ChatInput({
           </div>
           )}
           </div>
+          {/* Worktree picker trigger (issue #1607): list/switch/create/remove
+              worktrees for this repo. It owns its OWN group, between the project
+              pill and the context/model group, because it belongs to neither: the
+              pill already carries the project button plus the copy-branch control,
+              and the group below already carries the context and model actions —
+              adding it to either would put a third action in that row. Icon-only
+              so it stays compact; leaving it enabled while a response runs is
+              harmless (it only reads, and switching project is itself gated). */}
+          {onWorktreesClick && project && (
+            <div className="flex items-center shrink-0">
+              <button
+                className="inline-flex items-center h-7 px-1.5 rounded-md bg-transparent text-muted hover:text-text hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
+                onClick={e => onWorktreesClick(e.currentTarget.getBoundingClientRect())}
+                disabled={isRunning}
+                title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : i18nT('components.worktreePicker.worktrees')}
+                aria-label={i18nT('components.worktreePicker.worktrees')}
+              >
+                <GitBranch size={13} className="shrink-0 opacity-70" />
+              </button>
+            </div>
+          )}
           <div className="flex items-center shrink-0">
           {contextPct != null && (() => {
             const pct = Math.round(contextPct)
