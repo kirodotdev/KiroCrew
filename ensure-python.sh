@@ -11,9 +11,10 @@
 # to resolve modern deps (AL2/3.7) or the install "succeeds" and then crashes at
 # import (AL2023/3.9). Prefer any already-usable system Python >= 3.10;
 # otherwise install one via mise, whose python-build-standalone binaries run on
-# AL2's glibc 2.26. On success the chosen interpreter path is recorded in
-# "<data-home>/python-bin" so non-interactive callers (make) can use it without
-# re-running a version manager. The data home is "$KIROCREW_HOME" when set, else
+# AL2's glibc 2.26. On success the chosen interpreter's real path — symlinks
+# resolved, see _resolve — is recorded in "<data-home>/python-bin" so
+# non-interactive callers (make) can use it without re-running a version
+# manager. The data home is "$KIROCREW_HOME" when set, else
 # "$HOME/.kiro/crew" (the current default) — NOT the pre-move "$HOME/.kirocrew",
 # which the one-time data-home migration deletes, so writing there would
 # resurrect the legacy dir on every build.
@@ -53,6 +54,30 @@ _mise_bin() {
     fi
 }
 
+# Resolve a python path through any symlinks. Every candidate is passed through
+# this before being reported or recorded, because the recorded path is what
+# `make backend` runs `-m venv` with, and python-build-standalone interpreters —
+# what uv, mise and pyenv install — locate their stdlib relative to the
+# *invoked* path's dirname instead of following the symlink first. Creating a
+# venv from a symlink such as "$HOME/.local/bin/python3.13" (how uv and mise
+# expose an interpreter on PATH) therefore writes `home = $HOME/.local/bin` into
+# pyvenv.cfg, so the venv looks for the stdlib under
+# "$HOME/.local/lib/python3.13" and aborts with "ModuleNotFoundError: No module
+# named 'encodings'", failing ensurepip and the build. That is fatal wherever
+# venv copies the interpreter instead of symlinking it, which is the default for
+# framework builds on macOS. Resolve with Python rather than realpath(1) or
+# `readlink -f`, whose presence and flags differ across the macOS and Amazon
+# Linux targets above; the interpreter is already known to run by this point.
+_resolve() {
+    local real
+    real="$("$1" -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null)"
+    if [ -n "$real" ] && [ -x "$real" ]; then
+        printf '%s\n' "$real"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 _record() {
     home="${KIROCREW_HOME:-$HOME/.kiro/crew}"
     mkdir -p "$home"
@@ -62,6 +87,7 @@ _record() {
 # 1. Existing usable system python.
 PY="$(_find_system_python)"
 if [ -n "$PY" ]; then
+    PY="$(_resolve "$PY")"
     echo "  ✅ python $(_pyver "$PY") ($PY)"
     _record "$PY"
     exit 0
@@ -74,6 +100,7 @@ MISE="$(_mise_bin)"
 if [ -n "$MISE" ]; then
     CAND="$("$MISE" which python 2>/dev/null)"
     if _py_ok "$CAND"; then
+        CAND="$(_resolve "$CAND")"
         echo "  ✅ python $(_pyver "$CAND") (mise: $CAND)"
         _record "$CAND"
         exit 0
@@ -95,6 +122,7 @@ fi
 "$MISE" use -g "python@$TARGET_PY" 2>/dev/null
 CAND="$("$MISE" which python 2>/dev/null)"
 if _py_ok "$CAND"; then
+    CAND="$(_resolve "$CAND")"
     echo "  ✅ python $(_pyver "$CAND") installed ($CAND)"
     _record "$CAND"
 else
