@@ -63,6 +63,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.service import live_target
 
 logger = logging.getLogger(__name__)
 
@@ -389,8 +390,42 @@ def _launchd_live_worktree() -> str | None:
         return None
 
 
+def _running_checkout() -> Path | None:
+    """The checkout this gateway process is EXECUTING from, or None.
+
+    Authoritative where a service definition is not: it is derived from the
+    location of the code that is actually loaded, so it needs no service query
+    and cannot be fooled by a definition that was never updated. Returns None
+    for a packaged/site-packages install, which is not a checkout at all — the
+    caller must treat that as "cannot verify" rather than as a mismatch.
+    """
+    # .../<checkout>/src/kiro_crew/apps/builtins/dev_fleet/server.py
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if parent.name == "src" and (parent / "kiro_crew").is_dir():
+            return parent.parent
+    return None
+
+
+def _staged_target() -> str | None:
+    """The pointer target when a cutover is staged but NOT yet in effect.
+
+    Non-None means the operator has committed a cutover that the gateway has not
+    picked up: the next start lands on this checkout, and until then the running
+    image is a different one. The UI renders this as its own persistent state so
+    the pending restart survives a dismissed toast or a page reload.
+    """
+    pointed = live_target.read_target()
+    if pointed is None:
+        return None
+    running = _running_checkout()
+    if running is None or _same_path(str(pointed), str(running)):
+        return None
+    return str(pointed)
+
+
 async def _live_worktree_path(*, fresh: bool = False) -> str | None:
-    """Resolve the checkout the live gateway unit runs from (or None).
+    """Resolve the checkout the live gateway is RUNNING from (or None).
 
     ``fresh=True`` bypasses the 30s display cache -- destructive callers
     (worktree removal) must never authorize against a stale answer: the
@@ -401,6 +436,28 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     if not fresh and _LIVE_CHECK_AT and (now - _LIVE_CHECK_AT) < _LIVE_TTL:
         return _LIVE_WORKTREE
     _LIVE_CHECK_AT = now
+    # The live-target pointer outranks every service-definition probe below —
+    # but ONLY once the gateway is actually running it. A cutover always writes
+    # the pointer, and on a host whose service cannot be driven it writes ONLY
+    # the pointer, so the unit's WorkingDirectory still names the checkout the
+    # gateway was installed from: reading the definition first would report that
+    # stale checkout as live and leave `already_live` and `is_live` wrong.
+    #
+    # Honouring the pointer unconditionally is the opposite error, and the worse
+    # one: between staging and the manual restart the pointer names a checkout
+    # the gateway is NOT executing, so the fleet would mark it live while the old
+    # image serves real data — the exact wrong conclusion this feature exists to
+    # prevent. ``_running_checkout()`` is authoritative for what is executing, so
+    # the pointer is only "live" when the two agree; otherwise it is staged
+    # (see ``_staged_target``) and resolution falls through to the definition.
+    pointed = live_target.read_target()
+    if pointed is not None:
+        running = _running_checkout()
+        if running is None or _same_path(str(pointed), str(running)):
+            _LIVE_WORKTREE = str(pointed)
+            return _LIVE_WORKTREE
+        _LIVE_WORKTREE = str(running)
+        return _LIVE_WORKTREE
     if sys.platform == "darwin" and shutil.which("launchctl"):
         # launchd has no WorkingDirectory to query: the live target IS whatever
         # the agent's ProgramArguments symlink currently points at. Reading the
@@ -1617,6 +1674,7 @@ async def _fleet_cached() -> dict:
 
 async def _build_fleet() -> dict:
     live_path = await _live_worktree_path()
+    staged_path = _staged_target()
     worktrees = await _discover_worktrees()
     cfg = _load_cfg()
     legacy_prefixes = tuple(
@@ -1695,6 +1753,7 @@ async def _build_fleet() -> dict:
             "name": name, "path": _redact(path), "is_main": is_main,
             "running": running, "port": port, "health": health,
             "is_live": live_path is not None and _same_path(path, live_path),
+            "is_staged": staged_path is not None and _same_path(path, staged_path),
             "has_venv": has_venv, "has_dist": has_dist,
             "branch": _redact(g["branch"] or branch or ""), "head": g["head"] or wt.get("head", "")[:7],
             "dirty": g["dirty"], "behind": g["behind"],
@@ -1713,6 +1772,11 @@ async def _build_fleet() -> dict:
         "sync_run_id": _SYNC_RID,
         "build_pending": _build_pending(),
         "gateway_service_active": await _gateway_service_active(),
+        # Non-null while a cutover is staged but not yet running: the UI renders a
+        # persistent pending-restart state from this, so the instruction outlives
+        # the toast that announced it.
+        "staged_target": _redact(staged_path) if staged_path else None,
+        "manual_restart": _manual_restart_command(),
         # WHY the gateway cannot be restarted/repointed from here, when it
         # cannot. Same lesson as pods_unavailable_reason below: the previous
         # behaviour was to hide Restart and Make live with no explanation, so a
@@ -3638,14 +3702,43 @@ async def _live_user_unit_status() -> str:
       ``"no_systemd"``   — not Linux / systemctl absent (make-live needs --user systemd);
       ``"no_user_unit"`` — systemctl present but the live unit is not a loaded
                            --user unit (a system-unit install, or not installed);
+      ``"user_unit_inactive"`` — the unit is loaded but NOT running, so it is not
+                           the process serving this request: restarting it would
+                           bounce an idle unit while the real gateway (foreground,
+                           or a system unit) keeps serving the old code;
       ``"no_launchd"`` / ``"no_agent"`` / ``"agent_not_indirected"`` — the launchd
                            counterparts (see ``gateway_service``);
-      ``"ok"``           — the live service is known to the manager.
+      ``"ok"``           — the live service is known to the manager AND running,
+                           so a restart actually replaces the gateway we are in.
     """
     svc = _gateway_backend()
     # No manager at all on this host: report the systemd code, which the
     # dashboard already maps, rather than inventing a third "no platform" state.
-    return "no_systemd" if svc is None else await svc.status()
+    if svc is None:
+        return "no_systemd"
+    status = await svc.status()
+    # Loadedness alone is not drivability: a cutover that bounces a unit which is
+    # not the running gateway "succeeds" while the old code keeps serving, and the
+    # UI would run its restart handshake to a false completion.
+    if status == "ok" and not await svc.active():
+        return "user_unit_inactive"
+    return status
+
+
+def _staged_notice(name: str, unit_status: str) -> str:
+    """Operator-facing message for a cutover that staged but could not restart.
+
+    Leads with the remedy: the actionable command is what the operator needs
+    first, and the reason is diagnostic context after it. The reason string
+    already carries the "Dev Fleet cannot restart it" clause, so this must not
+    restate it.
+    """
+    return (
+        f"{name} is staged as the live target. Run "
+        f"`{_manual_restart_command()}` to finish the cutover — the gateway "
+        f"will come up on it. It was not automatic because "
+        f"{_make_live_status_error(unit_status)}."
+    )
 
 
 def _make_live_status_error(code: str) -> str:
@@ -3658,27 +3751,34 @@ def _make_live_status_error(code: str) -> str:
     """
     return {
         "no_systemd": (
-            "make-live requires the gateway to run as a systemd --user service"
+            "the gateway does not run as a systemd --user service, so Dev Fleet "
+            "cannot restart it for you"
         ),
         "no_user_unit": (
             f"the live gateway is not running as the user service "
-            f"{_LIVE_GATEWAY_UNIT} — make-live only supports systemd --user "
-            "installs (a `kirocrew service install` system unit cannot be "
-            "repointed this way)"
+            f"{_LIVE_GATEWAY_UNIT} — Dev Fleet cannot restart it for you (a "
+            "`kirocrew service install` system unit needs root to bounce)"
+        ),
+        "user_unit_inactive": (
+            f"the user service {_LIVE_GATEWAY_UNIT} exists but is not running, so "
+            "this gateway is not it — restarting that unit would leave the "
+            "gateway you are talking to untouched"
         ),
         "no_launchd": (
-            "make-live requires the gateway to run as a launchd user agent"
+            "the gateway does not run as a launchd user agent, so Dev Fleet "
+            "cannot restart it for you"
         ),
         "no_agent": (
             f"the live gateway is not running as the launchd agent "
             f"{_LIVE_GATEWAY_LABEL} — it was most likely started by the "
-            "packaged app or from a terminal. Install it as a service "
-            "(`kirocrew service install`) so it can be repointed"
+            "packaged app or from a terminal, so Dev Fleet cannot restart it "
+            "for you"
         ),
         "agent_not_indirected": (
             f"the launchd agent {_LIVE_GATEWAY_LABEL} does not run through the "
-            "live-gateway launcher, so repointing it would silently do nothing. "
-            "Re-run `kirocrew service install` to refresh the agent definition"
+            "live-gateway launcher, so Dev Fleet does not treat it as one it "
+            "can safely bounce. Re-run `kirocrew service install` to refresh "
+            "the agent definition"
         ),
         "live_program_missing": (
             f"the launchd agent {_LIVE_GATEWAY_LABEL} is loaded but its "
@@ -3689,23 +3789,63 @@ def _make_live_status_error(code: str) -> str:
     }.get(code, f"the live gateway cannot be repointed ({code})")
 
 
+def _manual_restart_command() -> str:
+    """The command an operator runs to finish a staged cutover themselves.
+
+    Always the service-aware ``kirocrew restart``: it resolves whatever manager
+    owns the gateway (or a foreground process) at run time. Naming a specific
+    ``systemctl`` invocation here would guess, and guessing wrong hands the
+    operator a command that fails while the staged pointer stays unapplied — a
+    Linux host with ``systemctl`` present may still be running the gateway from a
+    terminal with no unit to bounce.
+    """
+    return "kirocrew restart"
+
+
+def _make_live_plan(worktree: Path, kcbin: Path, *,
+                    svc: "gateway_service.GatewayServiceBackend | None") -> dict:
+    """Describe — without mutating anything — what making *worktree* live does.
+
+    Validates the target the same way the real cutover does, so a dry run
+    reports an unusable worktree instead of promising a cutover that would then
+    be refused. When the service is drivable the backend's own plan is folded in,
+    because the cutover restages that definition too.
+    """
+    live_target.validate(str(worktree))
+    plan: dict = {
+        "mechanism": "live-target pointer",
+        "pointer_path": str(live_target.pointer_path()),
+        "exec": str(kcbin),
+        "restart": "automatic" if svc is not None else "manual",
+    }
+    if svc is None:
+        plan["manual_restart"] = _manual_restart_command()
+    else:
+        plan.update(svc.plan(worktree, kcbin))
+    return plan
+
+
 async def _make_live(path: str, dry_run: bool = False) -> dict:
-    """Repoint the live gateway unit at *path* via a systemd drop-in.
+    """Repoint the live gateway at *path* by staging the live-target pointer.
 
     Validation order (all enforced for ``dry_run`` too): the path is a known,
     existing worktree (``unknown_path`` / ``missing_path``); NOT inside a pod,
     fail-CLOSED on indeterminate pod status (``pod`` / ``pod_indeterminate``);
-    the live gateway is a loaded systemd ``--user`` unit (``no_systemd`` /
-    ``no_user_unit`` — a ``kirocrew service install`` SYSTEM unit cannot be
-    repointed this way); not already live (``already_live``); the worktree has
-    its own executable ``.venv/bin/kirocrew`` (else Provision -> ``missing_venv``
-    when absent, ``venv_not_executable`` when present but not +x) and a
-    built SPA ``dist/index.html`` (else Pull+Build -> ``missing_dist``). A real
-    cutover writes the drop-in, ``daemon-reload``s, then issues a DETACHED
-    restart (survives our death, mirroring ``_restart_gateway``) and
-    invalidates the live-worktree cache.
+    not already live (``already_live``); the worktree has its own executable
+    ``.venv/bin/kirocrew`` (else Provision -> ``missing_venv`` when absent,
+    ``venv_not_executable`` when present but not +x) and a built SPA
+    ``dist/index.html`` (else Pull+Build -> ``missing_dist``).
+
+    A real cutover writes the pointer, then bounces the gateway through the
+    service manager when there is one we can drive (DETACHED, so it survives our
+    own death — mirroring ``_restart_gateway``). When there is not, the pointer
+    still stands and the response carries ``staged_only`` plus the one command
+    that finishes it: the gateway reads the pointer on ITS next start, whoever
+    performs it. Staging deliberately does NOT require a drivable service, which
+    is what keeps a ``kirocrew service install`` host (a SYSTEM unit, needing
+    root to bounce) able to cut over at all.
     """
-    global _MAKE_LIVE_COMMITTED
+    global _MAKE_LIVE_COMMITTED, _LIVE_WORKTREE, _LIVE_CHECK_AT
     # A cutover already scheduled in THIS process. systemd-run has returned but
     # the restart is still pending, so refuse up-front (before any validation or
     # dry_run plan) — any further mutation would race the pending restart.
@@ -3736,16 +3876,16 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
             "(run this from the live dashboard)"
         )}
 
-    # The live gateway must be a service THIS backend can actually drive, else
-    # staging + restart is a silent no-op false success: a `kirocrew service
-    # install` SYSTEM unit is not controllable via `systemctl --user`, and a
-    # launchd agent whose ProgramArguments bypasses the live-gateway symlink
-    # cannot be repointed by swapping that symlink.
+    # The live target is a POINTER the gateway resolves at startup, not an edit
+    # to this host's service definition — so staging never needs the service
+    # manager. Restarting still does, and that is the one thing a `kirocrew
+    # service install` SYSTEM unit cannot give us without root: the cutover is
+    # staged either way, and when we cannot bounce the gateway ourselves we hand
+    # the operator the one command that finishes it. Refusing here instead would
+    # make the whole feature unreachable on the most common Linux install.
     svc = _gateway_backend()
     unit_status = await _live_user_unit_status()
-    if unit_status != "ok" or svc is None:
-        code = unit_status if unit_status != "ok" else "no_systemd"
-        return {"ok": False, "code": code, "error": _make_live_status_error(code)}
+    can_restart = svc is not None and unit_status == "ok"
 
     live = await _live_worktree_path()
     if live is not None and _same_path(str(real), live):
@@ -3778,7 +3918,12 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         )}
 
     try:
-        plan = svc.plan(real, kcbin)
+        plan = _make_live_plan(real, kcbin, svc=svc if can_restart else None)
+    except live_target.InvalidTarget as exc:
+        return {"ok": False, "code": "unsafe_path", "error": (
+            "refusing make-live: the worktree path cannot be used as a live "
+            f"target: {_redact(str(exc))}"
+        )}
     except gateway_service._UnsafeTargetValue as exc:
         return {"ok": False, "code": "unsafe_path", "error": (
             "refusing make-live: the worktree path is not safely representable "
@@ -3813,28 +3958,86 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
                 "retry after it comes back"
             )}
         # Snapshot the prior live target BEFORE staging so a failed cutover can
-        # be rolled back — a persisted-but-uninstalled override would otherwise
-        # silently activate on the NEXT unrelated restart. Staging itself is
-        # atomic on both backends (temp file + os.replace), so a partial write
-        # can never leave a truncated definition either.
+        # be rolled back — a persisted pointer would otherwise silently activate
+        # on the NEXT unrelated restart. Staging itself is atomic (temp file +
+        # os.replace), so a partial write can never leave a truncated pointer
+        # either.
         #
-        # An UNREADABLE (as opposed to absent) prior definition aborts here,
-        # before anything is staged: rollback interprets None as "there was
-        # nothing here" and deletes the target, so continuing would let a failed
-        # kickstart destroy a live definition we merely could not read.
+        # An UNREADABLE (as opposed to absent) prior pointer aborts here, before
+        # anything is staged: restore interprets None as "there was nothing
+        # here" and DELETES the pointer, so continuing would let a failed
+        # restart destroy a live target we merely could not read.
         try:
-            prior_content = svc.snapshot()
-        except OSError as exc:
+            prior_content = live_target.snapshot()
+        except (OSError, ValueError) as exc:
+            # ValueError covers an undecodable pointer: it exists, so rollback
+            # cannot treat it as absent (that DELETES it), and the cutover is
+            # refused rather than made unreversible.
             return {"ok": False, "code": "write_failed", "error": (
-                "refusing make-live: the current live definition exists but "
+                "refusing make-live: the current live target exists but "
                 f"could not be read, so a failed cutover could not be rolled "
                 f"back: {_redact(str(exc))}"
             )}
+        # A drivable service may ALSO carry staging from an earlier cutover whose
+        # definition names a worktree directly. Leaving that definition pinned to
+        # a stale checkout is a live landmine: once that worktree is pruned the
+        # unit's ExecStart binary is gone, the service fails EXEC on its next
+        # start, and the pointer is never even read — no gateway comes up. So the
+        # definition is restaged alongside the pointer whenever we can drive it,
+        # keeping the two in agreement and the ExecStart binary always present.
+        prior_definition: str | None = None
+        if can_restart:
+            assert svc is not None
+            try:
+                prior_definition = svc.snapshot()
+            except OSError as exc:
+                return {"ok": False, "code": "write_failed", "error": (
+                    "refusing make-live: the current service definition exists "
+                    "but could not be read, so a failed cutover could not be "
+                    f"rolled back: {_redact(str(exc))}"
+                )}
+
+        def _unwind() -> bool:
+            """Restore both staged surfaces. False when either did not land."""
+            ok = live_target.restore(prior_content)
+            if can_restart and svc is not None:
+                ok = svc.rollback(prior_definition) and ok
+            return ok
+
+        try:
+            # write_target ends in restrict_to_owner, which shells out to icacls
+            # on Windows. Run it off the loop so a cutover cannot stall every
+            # other gateway request for the duration of that subprocess.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                subprocess_executor(), live_target.write_target, real
+            )
+        except live_target.InvalidTarget as exc:
+            return {"ok": False, "code": "unsafe_path", "error": _redact(str(exc))}
+        except OSError as exc:
+            return {"ok": False, "code": "write_failed", "rolled_back": _unwind(),
+                    "error": _redact(str(exc))}
+
+        # Nothing bounces the gateway on this host, so the cutover is STAGED and
+        # the operator finishes it. Reported as a success with the exact command,
+        # not a failure: the pointer is written and correct, and the next start
+        # of the gateway — however it happens — comes up on the new target.
+        # Deliberately NOT latched as committed: no restart is pending, so a
+        # subsequent cutover to a different worktree must stay allowed.
+        if not can_restart:
+            _LIVE_WORKTREE = None
+            _LIVE_CHECK_AT = 0.0
+            return {"ok": True, "cutover": True, "staged_only": True,
+                    "target": str(real), "plan": plan,
+                    "manual_restart": _manual_restart_command(),
+                    "notice": _staged_notice(real.name, unit_status)}
+        assert svc is not None  # can_restart implies a backend
+
         staged, code, err = await svc.stage(real, kcbin)
         if not staged:
-            rolled_back = svc.rollback(prior_content)
-            # Re-read definitions (best-effort) so the loaded config matches the
-            # restored disk state rather than the rejected override.
+            rolled_back = _unwind()
+            # Re-read definitions so the loaded config matches the restored disk
+            # state rather than the rejected override.
             await svc.reload()
             return {"ok": False, "code": code, "rolled_back": rolled_back,
                     "error": _redact(err)}
@@ -3849,9 +4052,7 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         start_id = await _gateway_start_id()
         restarted, err = await svc.restart_detached()
         if not restarted:
-            rolled_back = svc.rollback(prior_content)
-            # Nothing has restarted yet (the detached launch failed), so re-read
-            # the reverted definition to keep the loaded config == disk.
+            rolled_back = _unwind()
             await svc.reload()
             return {"ok": False, "code": "restart_failed", "rolled_back": rolled_back,
                     "error": _redact(err)}
@@ -3863,9 +4064,7 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
         _MAKE_LIVE_COMMITTED = True
 
         # Invalidate the live-worktree cache so the next fleet poll re-resolves
-        # the live checkout (the unit's ExecStart only reflects the new path
-        # once the restart lands).
-        global _LIVE_WORKTREE, _LIVE_CHECK_AT
+        # the live checkout.
         _LIVE_WORKTREE = None
         _LIVE_CHECK_AT = 0.0
 

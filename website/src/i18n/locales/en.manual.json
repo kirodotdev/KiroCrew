@@ -2008,7 +2008,7 @@
       "nothing_selected": "Nothing selected",
       "nothing_to_prune": "Nothing to prune",
       "open": "Open",
-      "pod_and_make_live_actions_are_hidden_everything": "Pod and Make live actions are hidden; everything else on this page works normally.",
+      "pod_and_make_live_actions_are_hidden_everything": "Pod actions are hidden; everything else on this page works normally.",
       "pod_sick": "pod sick",
       "pod_start_failed": "Pod start failed",
       "pod_up": "pod up",
@@ -2074,7 +2074,10 @@
       "pending": "Pending",
       "removed": "Removed",
       "stopping_pod": "Stopping pod",
-      "verifying": "Verifying"
+      "verifying": "Verifying",
+      "restart_pending": "Restart pending",
+      "cutover_staged_run_the_restart_command_to_finish": "Cutover staged: this worktree becomes live when the gateway next starts. Run `{{cmd}}` to finish it — the gateway is still running the previous checkout until then.",
+      "stages_the_code_behind_the_live_dashboard_manual": "Stages this worktree as the live target (same port, same data). Dev Fleet cannot restart this gateway, so the swap takes effect when you run `{{cmd}}` yourself — this page will NOT reconnect on its own. Refused unless the worktree is provisioned and built."
     },
     "hooksPage": {
       "disable_hook": "Disable hook",

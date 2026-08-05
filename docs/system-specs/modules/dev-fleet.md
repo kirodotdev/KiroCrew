@@ -21,8 +21,8 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
 5. **Rebase** — rebase feature branches onto main with conflict detection + abort
 6. **GitHub PR status** — TTL-cached `gh pr list` queries for merge state
-7. **Make Live** — repoint the live gateway at another worktree via a systemd
-   `--user` drop-in (never edits the shipped unit file)
+7. **Make Live** — repoint the live gateway at another worktree via a
+   live-target pointer file (no service definition is ever mutated)
 
 ## Routes
 
@@ -347,11 +347,11 @@ so the slow window cannot be re-fired. The poll is bounded (`RESTART_TIMEOUT_MS`
 
 **The lockout starts before the overlay does.** The restarting flag only goes
 true once `POST …/make-live` has *returned*, but that request is itself what
-writes the systemd drop-in and issues the daemon-reload — a Restart fired inside
-that window can tear the gateway down between the write and the reload, leaving
-persisted and loaded unit state inconsistent. Every global action predicate
-therefore also honours an in-flight cutover on ANY worktree row (the busy flag is
-per-worktree; the hazard is process-wide).
+writes the live-target pointer and issues the restart — a Restart fired inside
+that window can tear the gateway down between the pointer write and the restart,
+leaving a stale process running against the new pointer. Every global action
+predicate therefore also honours an in-flight cutover on ANY worktree row (the
+busy flag is per-worktree; the hazard is process-wide).
 
 ### Sync single-flight + step narration
 
@@ -412,25 +412,65 @@ directory is unaffected.
 ## Make Live
 
 `POST /apps/dev-fleet/api/make-live` repoints the live gateway at a different
-worktree. `_restart_gateway` only bounces the live unit *in place* — the
-shipped unit file hardcodes `WorkingDirectory`/`ExecStart`/`PATH`, so it cannot
-point the gateway at another checkout. Make Live closes that gap with a systemd
-`--user` **drop-in** that overrides those three fields; the shipped unit file is
-never edited.
+worktree by writing a **live-target pointer file** (`live_target.json`). The
+gateway resolves this pointer at startup and `execve`s into the named checkout's
+own `kirocrew` binary — moving the working directory and `PATH` with it. No
+service definition is ever mutated.
+
+The mechanism is the version-selector shape used by `rustup` (reads
+`rust-toolchain.toml`), the Go toolchain (`go` execs from the `toolchain` line
+in `go.mod`), and `pyenv`/`rbenv` shims.
+
+### Pointer file
+
+Location: `config_dir() / "live_target.json"` (inside the active data home,
+typically `~/.kiro/crew/live_target.json`). Contents:
+
+```json
+{"checkout": "/absolute/path/to/worktree"}
+```
+
+Written atomically (temp file + `os.replace`) with mode `0o600`. The file is
+**keystone-fenced** (in `_CREW_SECRET_LEAVES`) so agent tools can neither read
+nor write it — only the human-driven dashboard cutover action writes it, and
+the gateway's startup reader (`live_target.maybe_reexec`) opens it directly
+rather than through the gate.
+
+### Live-worktree resolution
+
+`_live_worktree_path()` checks `live_target.read_target()` FIRST (after the
+TTL cache), before any launchd/systemd service-definition probe. A cutover
+writes the pointer and never touches the service definition, so the unit's
+`WorkingDirectory` still names the checkout the gateway was installed from.
+Reading the definition first would report that stale checkout as live.
 
 ### Request / Response
 
 Request body: `{path, dry_run?}` — `path` is a worktree path (validated against
 the discovered set, never an arbitrary path); `dry_run` (bool, default false)
-returns the plan without touching systemd.
+returns the plan without writing the pointer.
 
-- **dry_run success:** `{ok: true, dry_run: true, plan: {unit, dropin_path,
-  dropin_content, target}}`
-- **cutover success:** `{ok: true, cutover: true, target, plan}`
+- **dry_run success:** `{ok: true, dry_run: true, plan: {mechanism, pointer_path,
+  exec, restart, target, [manual_restart]}}`
+- **cutover success (automatic restart):** `{ok: true, cutover: true, target,
+  plan, start_id}`
+- **cutover success (staged only):** `{ok: true, cutover: true, staged_only: true,
+  target, plan, manual_restart, notice}` — the pointer is written and correct;
+  the operator finishes the cutover by restarting the gateway themselves.
 - **refusal:** `{ok: false, code, error}` — `code` is one of the values below.
 
 The handler additionally returns HTTP 400 for a missing/non-string `path` or a
 non-boolean `dry_run`.
+
+The `plan` object describes the cutover mechanism:
+
+| Key | Value |
+|-----|-------|
+| `mechanism` | `"live-target pointer"` |
+| `pointer_path` | absolute path to the pointer file |
+| `exec` | the target worktree's `kirocrew` binary that the gateway execs into |
+| `restart` | `"automatic"` when a drivable service manager is present; `"manual"` otherwise |
+| `manual_restart` | (only when `restart` is `"manual"`) the shell command the operator runs |
 
 ### Error codes
 
@@ -440,120 +480,101 @@ non-boolean `dry_run`.
 | `missing_path` | the worktree path no longer exists on disk |
 | `pod` | called from inside a pod — a throwaway test instance must never repoint the live gateway |
 | `pod_indeterminate` | pod status could not be resolved (config home unresolvable) — **fail-closed**, never treated as "not a pod" |
-| `no_systemd` | not Linux / `systemctl` absent — Make Live requires systemd `--user` |
-| `no_user_unit` | `systemctl` present but the live gateway is **not** a loaded `--user` unit (e.g. a `kirocrew service install` SYSTEM unit) — the `--user` drop-in + restart would be a silent no-op |
 | `already_live` | the target is already the live gateway |
 | `missing_venv` | the worktree has no `.venv/bin/kirocrew` (Provision it first) |
 | `venv_not_executable` | the worktree's `.venv/bin/kirocrew` exists but is **not executable** (`chmod +x` it or re-Provision) — a non-executable binary would stop the live gateway but could not start the replacement, leaving no gateway running |
 | `missing_dist` | the worktree has no built `src/kiro_crew/static/dist/index.html` (Pull+Build first) — a cutover without a built dist serves a broken dashboard |
-| `unsafe_path` | the worktree path contains a newline, NUL, or other control character and cannot be safely written into a systemd directive (paths with spaces / `%` / quotes are *escaped*, not rejected) |
-| `write_failed` | writing the drop-in file failed |
-| `reload_failed` | `systemctl --user daemon-reload` failed — the drop-in is rolled back to its prior state before returning (response carries `rolled_back`) |
-| `restart_failed` | the detached `systemd-run` restart failed to launch — the drop-in is rolled back before returning (response carries `rolled_back`) |
-| `busy` | another make-live cutover is already in progress — the mutation sequence is single-flighted, so a concurrent request is refused immediately (no queueing) rather than racing the in-flight cutover's drop-in write/rollback |
-| `restart_pending` | a cutover has already been **successfully scheduled** in this gateway process — `systemd-run` only *schedules* the restart and returns immediately, so a process-local latch refuses every further request (cutover **and** `dry_run`) until the pending restart replaces the process. The fresh gateway starts with the latch clear |
+| `unsafe_path` | the worktree path cannot be used as a live target (control characters, unresolvable, missing binary, no `src/kiro_crew` dir) |
+| `write_failed` | writing the pointer file failed — rolled back to prior state |
+| `restart_failed` | the detached restart failed to launch — the pointer is rolled back before returning (response carries `rolled_back`) |
+| `busy` | another make-live cutover is already in progress — the mutation sequence is single-flighted, so a concurrent request is refused immediately (no queueing) rather than racing the in-flight pointer write/rollback |
+| `restart_pending` | a cutover has already been **successfully scheduled** in this gateway process — the restart is still pending, so a process-local latch refuses every further request (cutover **and** `dry_run`) until the pending restart replaces the process. The fresh gateway starts with the latch clear |
 
-On a `reload_failed` / `restart_failed` refusal the response includes
-`rolled_back: true|false` — whether the pre-cutover drop-in state (prior
+On a `write_failed` / `restart_failed` refusal the response includes
+`rolled_back: true|false` — whether the pre-cutover pointer state (prior
 content, or absence) was successfully restored on disk.
+
+### Two outcomes: automatic vs staged-only
+
+The cutover writes the pointer on every platform. What differs is whether Dev
+Fleet can also bounce the gateway:
+
+- **Automatic restart** (`can_restart = True`): the gateway runs as a systemd
+  `--user` unit that Dev Fleet can drive. After writing the pointer, Dev Fleet
+  issues a detached `systemd-run` restart (survives its own death), sets the
+  `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart
+  handshake. The next gateway process reads the pointer and execs into the
+  target checkout.
+- **Staged only** (`can_restart = False`): no drivable service manager is
+  available (system unit via `kirocrew service install`, macOS without a launchd
+  agent, terminal-launched gateway, or non-Linux host). The pointer is still
+  written and the cutover is reported as a success carrying `staged_only: true`,
+  plus `manual_restart` (the shell command that finishes it) and a human-readable
+  `notice`. The latch is deliberately NOT set — no restart is pending, so a
+  subsequent cutover to yet another worktree stays allowed.
 
 ### Concurrency
 
-The cutover mutation (prior-state snapshot → atomic drop-in write →
-`daemon-reload` → detached `systemd-run` restart → any rollback) runs under a
-single module-level `asyncio.Lock`. Two concurrent cutovers would otherwise
-race on the shared drop-in file — one request's failure rollback could
-restore or delete the other's successful override, restarting the gateway into
-the wrong worktree. A second request that arrives while the lock is held is
-refused immediately with `busy` (fail-fast, **not** queued): serializing the
-queue could apply a stale target after the winner already restarted the
-gateway. The `dry_run` validation path mutates nothing and runs outside the
-lock.
+The cutover mutation (prior-state snapshot → atomic pointer write → optional
+restart → any rollback) runs under a single module-level `asyncio.Lock`. Two
+concurrent cutovers would otherwise race on the shared pointer — one request's
+failure rollback could restore or delete the other's successful write. A second
+request that arrives while the lock is held is refused immediately with `busy`
+(fail-fast, **not** queued). The `dry_run` validation path mutates nothing and
+runs outside the lock.
 
-**Committed latch.** `systemd-run` only *schedules* the detached restart and
-returns immediately, so the lock is released while the restart is still
-pending. A process-local `_MAKE_LIVE_COMMITTED` flag is set to `True` — before
-returning success, inside the lock — the moment a cutover is scheduled. It is
-checked both at function entry and again after the lock is acquired (closing
-the entry-check-vs-acquire race), so any further request — a second cutover for
-a different target, or even a `dry_run` — is refused with `restart_pending`
-instead of mutating the drop-in while the pending restart tears the backend
-down. The latch is never persisted: the fresh gateway the restart spawns starts
-clear. Failure paths **before** successful scheduling (write / `daemon-reload`
-/ `systemd-run` launch) never set it, so a rolled-back cutover leaves the
-process free to retry.
+**Committed latch.** The detached restart returns immediately while the restart
+is still pending. A process-local `_MAKE_LIVE_COMMITTED` flag is set to `True`
+— before returning success, inside the lock — the moment a restart is scheduled.
+It is checked both at function entry and again after the lock is acquired
+(closing the entry-check-vs-acquire race), so any further request is refused
+with `restart_pending`. The latch is never persisted: the fresh gateway starts
+clear. Failure paths before successful scheduling never set it, so a rolled-back
+cutover leaves the process free to retry. In the `staged_only` path the latch is
+never set because there is no pending restart to race against.
 
 ### Validation order
 
 Every check runs for `dry_run` too, in this order (first failure wins):
 
 `path` (exists as a known worktree) → **pod guard** (fail-closed on
-indeterminate) → **user-unit check** (loaded systemd `--user` unit) →
-`already_live` → `missing_venv` → `venv_not_executable` → `missing_dist`.
+indeterminate) → `already_live` → `missing_venv` → `venv_not_executable` →
+`missing_dist` → `_make_live_plan` (runs `live_target.validate`, catching
+`InvalidTarget` as `unsafe_path`).
 
-The pod guard and user-unit check precede the venv/dist checks so an operator on
-an ineligible install gets an actionable refusal before any per-worktree state
-matters.
+The pod guard precedes the venv/dist checks so an operator inside a pod gets an
+actionable refusal before any per-worktree state matters. The plan step validates
+the target path the same way the real write does, so a dry run reports an
+unusable worktree instead of promising a cutover that would then be refused.
 
-### Drop-in mechanism
+### Pointer validation (`live_target.validate`)
 
-The drop-in is written to
-`$XDG_CONFIG_HOME/systemd/user/kirocrew-gateway.service.d/make-live.conf`
-(falls back to `~/.config`). Its body overrides exactly three fields:
+Rejects with a distinct message for each: empty/blank value; control characters
+(ord < 0x20 or 0x7F); unresolvable path; path is not a directory; missing
+`target_bin` (`.venv/bin/kirocrew`, or `.venv/Scripts/kirocrew.exe` on Windows);
+`target_bin` not executable; no `src/kiro_crew` directory in the checkout.
+Returns the resolved checkout path on success.
 
-```ini
-[Service]
-WorkingDirectory=<worktree>
-ExecStart=
-ExecStart=<worktree>/.venv/bin/kirocrew gateway --no-open
-Environment=PATH=<worktree>/.venv/bin:~/.local/bin:/usr/local/bin:/usr/bin:/bin
-```
+### Rollback semantics
 
-The lone empty `ExecStart=` line **resets** the unit's `ExecStart` before the
-replacement — systemd otherwise *appends*, and a `Type=simple` service with two
-`ExecStart` values is a fatal unit error. `~` is not expanded inside
-`Environment=`, so the operator bin dir is materialised to an absolute path.
+Before writing the pointer, the prior state is snapshotted via
+`live_target.snapshot()` — the raw file content, or `None` when the file is
+absent. An UNREADABLE (as opposed to absent) pointer aborts here: `restore(None)`
+interprets `None` as "there was nothing" and deletes the file, so continuing
+would let a failed restart destroy a live target the code merely could not read.
 
-**Value escaping.** All three directives undergo systemd specifier expansion,
-so every interpolated value is serialised through `_sd_value`, which:
+If the pointer write raises `InvalidTarget` the cutover is refused without
+rollback (no state was changed). If it raises `OSError`, or if the detached
+restart fails to launch, the pointer is restored to its prior state via
+`live_target.restore(prior)` — rewriting the old content, or deleting the file
+when there was none. The refusal response carries `rolled_back: true|false`.
 
-- **rejects** (→ `unsafe_path`) any value containing a newline, NUL, or other
-  control character — such a value would split/truncate the drop-in, and the
-  persisted-but-invalid override would then block every subsequent restart;
-- doubles a literal `%` to `%%` (defeating specifier expansion);
-- double-quotes the value — escaping `\` → `\\` and `"` → `\"` per systemd's
-  command-line C-style quoting — **only** when it contains whitespace or a
-  systemd metacharacter. A clean path is emitted verbatim (unquoted), so an
-  ordinary worktree renders byte-for-byte as before. This makes a worktree path
-  with spaces, `%`, or quotes cut over correctly instead of corrupting the
-  unit.
+### Platform scope
 
-### Detached restart
-
-A real cutover writes the drop-in **atomically** (a temp file in the same
-directory + `os.replace`, so a partial write never leaves a truncated unit),
-runs `systemctl --user daemon-reload`, then issues the restart via `systemd-run
---user --collect systemctl --user restart kirocrew-gateway.service`. Because
-the restart tears down this backend along with the gateway, the restart is
-detached (same pattern as `restart-gateway`) so it survives our own death. The
-`_LIVE_WORKTREE` cache is then invalidated so the next fleet poll re-resolves
-the live checkout.
-
-**Failure rollback.** Before writing, the prior drop-in state is snapshotted
-(existing `make-live.conf` content, or absence). If `daemon-reload` or the
-`systemd-run` launch fails, the drop-in is restored to that prior state
-(rewrite the old content, or delete the file when there was none) and
-`daemon-reload` is re-run best-effort so the loaded config matches disk. Without
-this, a persisted override from a failed cutover would silently activate on the
-NEXT unrelated restart. The refusal response carries `rolled_back: true|false`.
-
-### Platform limitation
-
-Make Live is **Linux + systemd `--user` only**. A `kirocrew service install`
-SYSTEM unit (`/etc/systemd/system/kirocrew.service`) is not controllable via
-`systemctl --user` and is refused up-front with `no_user_unit`; non-systemd
-hosts are refused with `no_systemd`. Cutover from inside a pod is always
-refused (`pod` / `pod_indeterminate`).
+Staging (writing the pointer) works on every platform — Linux, macOS, and
+Windows. Only the automatic restart still requires a drivable service manager
+(a loaded systemd `--user` unit). Cutover from inside a pod is always refused
+(`pod` / `pod_indeterminate`).
 
 ## Output Redaction
 
@@ -565,9 +586,11 @@ All user-visible output passes through `redact_credentials()` and
 The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
 because that is where it genuinely runs: the fleet view, PR status, commit and
 disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
-no systemd in them. Only the pod plane and Make Live need Linux, and the app now
-says so in the UI rather than in the manifest — a `highlights` line states the
-requirement, and `GET /api/fleet` carries the reason that renders as a banner.
+no systemd in them. Only the pod plane needs Linux; Make Live stages its pointer
+on every platform (only the automatic restart needs a drivable service manager).
+The app says so in the UI rather than in the manifest — a `highlights` line
+states the pod requirement, and `GET /api/fleet` carries the reason that renders
+as a banner.
 
 Declaring one platform per capability is not expressible here: `os` is a single
 list describing the whole app, so any value is a summary. `["linux"]` was the
@@ -613,11 +636,13 @@ Per-platform behavior:
   status, commit counts, disk usage, Provision, Sync (pull main + rebuild),
   Rebase and Prune all work. The UI shows a notice carrying
   `pods_unavailable_reason` and hides the actions that cannot work: Spin up /
-  Restart / Stop pod, Open, QA + video, and Make Live. Provision is **not**
+  Restart / Stop pod, Open, QA + video. Make Live and Provision are **not**
   hidden — `kirocrew pod provision` does not touch systemd, so building a
-  worktree's venv + dist works anywhere.
-- **Make Live** — Linux + systemd `--user` only; refuses on non-systemd hosts
-  (`no_systemd`) and on SYSTEM-unit installs (`no_user_unit`).
+  worktree's venv + dist works anywhere; Make Live stages the pointer on any
+  platform and reports `staged_only` when it cannot bounce the gateway itself.
+- **Make Live** — staging (pointer write) works on every platform. Automatic
+  restart requires a loaded systemd `--user` unit; without one the cutover
+  succeeds with `staged_only: true` and the operator restarts manually.
 - **git** and **gh** CLI required for full functionality; missing binaries produce
   graceful degradation via OSError catch in `_run_cmd`.
 

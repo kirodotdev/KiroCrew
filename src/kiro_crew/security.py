@@ -4147,6 +4147,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
+    # resolved during startup and exec'd into, so a writable one is arbitrary
+    # code execution in the gateway's own identity — the agent must not be able
+    # to author it, and must not be able to read it back to discover a target to
+    # aim at either. Only the human-driven dashboard cutover writes it, and the
+    # gateway's own startup reader opens it directly rather than through this
+    # gate, so both keep working.
+    "live_target.json",
     # The computer-use primary enable ({enabled, allowed_apps, extra_denied_apps}).
     # Same class of control as ``denied_commands.json`` directly above, and here
     # for the same reason: flipping ``enabled`` grants full desktop observation

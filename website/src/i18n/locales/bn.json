@@ -6745,7 +6745,10 @@
       "pending": "অপেক্ষমাণ",
       "removed": "সরানো হয়েছে",
       "stopping_pod": "পড থামানো হচ্ছে",
-      "verifying": "যাচাই করা হচ্ছে"
+      "verifying": "যাচাই করা হচ্ছে",
+      "restart_pending": "Restart pending",
+      "cutover_staged_run_the_restart_command_to_finish": "Cutover staged: this worktree becomes live when the gateway next starts. Run `{{cmd}}` to finish it — the gateway is still running the previous checkout until then.",
+      "stages_the_code_behind_the_live_dashboard_manual": "Stages this worktree as the live target (same port, same data). Dev Fleet cannot restart this gateway, so the swap takes effect when you run `{{cmd}}` yourself — this page will NOT reconnect on its own. Refused unless the worktree is provisioned and built."
     },
     "developerPage": {
       "developer": "ডেভেলপার",

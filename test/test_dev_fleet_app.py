@@ -1854,10 +1854,15 @@ def _mk_make_live_wt(tmp_path, *, venv: bool = False, dist: bool = False,
 
 
 def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok",
-                    platform="linux"):
+                    platform="linux", pointer_dir=None):
     """Wire the make-live seams: the path resolves to *wt*, pod/live/unit state
     fixed. ``unit_status`` stubs _live_user_unit_status so tests never depend on
     the host's real systemd --user state.
+
+    ``pointer_dir`` isolates the live-target pointer: when set (a tmp_path
+    sub-directory), ``live_target.pointer_path`` returns a file inside it so no
+    test ever reads or writes the real data home. Every test that reaches the
+    cutover path MUST pass this.
 
     ``platform`` pins the service backend (default systemd). Without it these
     assertions silently follow the HOST's platform: the same test would check a
@@ -1875,14 +1880,18 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
     monkeypatch.setattr(mod, "_live_worktree_path", AsyncMock(return_value=live))
     monkeypatch.setattr(mod, "_in_pod", lambda: in_pod)
     monkeypatch.setattr(mod, "_live_user_unit_status", AsyncMock(return_value=unit_status))
+    if pointer_dir is not None:
+        pointer_dir.mkdir(parents=True, exist_ok=True)
+        ptr_file = pointer_dir / "live_target.json"
+        monkeypatch.setattr(mod.live_target, "pointer_path", lambda: ptr_file)
 
 
 @pytest.mark.asyncio
 async def test_make_live_dry_run_plan(monkeypatch, tmp_path):
-    """dry_run returns the full plan (incl. the empty ExecStart reset line) and
-    never touches systemd."""
+    """dry_run returns the pointer-based plan without writing anything."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    _stub_make_live(monkeypatch, wt)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
     calls: list = []
 
     async def fake_run_cmd(cmd, **kw):
@@ -1893,18 +1902,13 @@ async def test_make_live_dry_run_plan(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=True)
     assert res["ok"] is True and res["dry_run"] is True
     plan = res["plan"]
-    assert plan["unit"] == "kirocrew-gateway.service"
-    assert plan["dropin_path"].endswith(
-        "kirocrew-gateway.service.d/make-live.conf"
-    )
+    assert plan["mechanism"] == "live-target pointer"
+    assert plan["pointer_path"] == str(ptr_dir / "live_target.json")
+    assert plan["exec"] == str(wt / ".venv" / "bin" / "kirocrew")
+    assert plan["restart"] == "automatic"
     assert plan["target"] == str(wt)
-    c = plan["dropin_content"]
-    # The empty ExecStart reset MUST precede the replacement command.
-    assert "\nExecStart=\n" in c
-    assert f"ExecStart={wt}/.venv/bin/kirocrew gateway --no-open" in c
-    assert f"WorkingDirectory={wt}" in c
-    assert f"Environment=PATH={wt}/.venv/bin:" in c
-    # dry-run writes/reloads/restarts nothing.
+    # dry-run writes nothing: pointer file absent, no commands issued.
+    assert not (ptr_dir / "live_target.json").exists()
     assert calls == []
 
 
@@ -1976,17 +1980,21 @@ async def test_make_live_missing_dist(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_make_live_real_cutover_writes_dropin(monkeypatch, tmp_path):
-    """A real cutover writes the drop-in, daemon-reloads, issues a detached
-    restart, and invalidates the live-worktree cache."""
+async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
+    """A real cutover on a drivable service writes the pointer AND restages the
+    service definition, issues a detached restart, and invalidates the
+    live-worktree cache.
+
+    Restaging the definition is what keeps its ExecStart binary present: a
+    definition left pinned to a previously-made-live worktree fails EXEC once
+    that worktree is pruned, and the gateway then never starts far enough to read
+    the pointer at all.
+    """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
     dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt)
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
     monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
-    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
-    monkeypatch.setattr(
-        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
-    )
     monkeypatch.setattr(mod, "_LIVE_WORKTREE", "sentinel", raising=False)
     monkeypatch.setattr(mod, "_LIVE_CHECK_AT", 123.0, raising=False)
     calls: list = []
@@ -1998,13 +2006,18 @@ async def test_make_live_real_cutover_writes_dropin(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is True and res.get("cutover") is True
-    # Drop-in written with the reset + replacement ExecStart.
+    assert res.get("staged_only") is not True
+    # Pointer file written with the resolved checkout path.
+    ptr_file = ptr_dir / "live_target.json"
+    assert ptr_file.is_file()
+    import json as _json
+    data = _json.loads(ptr_file.read_text())
+    assert Path(data["checkout"]).resolve() == wt.resolve()
+    # Service definition restaged at the SAME target, then re-read.
     assert dropin.is_file()
-    written = dropin.read_text(encoding="utf-8")
-    assert "\nExecStart=\n" in written
-    assert f"ExecStart={wt}/.venv/bin/kirocrew gateway --no-open" in written
-    # daemon-reload then a DETACHED systemd-run restart.
+    assert str(wt) in dropin.read_text(encoding="utf-8")
     assert ["systemctl", "--user", "daemon-reload"] in calls
+    # A DETACHED restart was issued (platform-specific; linux = systemd-run).
     assert any(
         c[:2] == ["systemd-run", "--user"] and "restart" in c for c in calls
     )
@@ -2014,20 +2027,44 @@ async def test_make_live_real_cutover_writes_dropin(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
-    """A successful cutover latches _MAKE_LIVE_COMMITTED (systemd-run only
-    SCHEDULES the restart and returns immediately). A second request — cutover
-    for a DIFFERENT valid target, or even a dry_run — is then refused with
-    restart_pending, so no concurrent cutover can mutate the drop-in while the
-    scheduled restart is tearing this process down."""
+async def test_make_live_staged_only_leaves_service_definition_untouched(
+    monkeypatch, tmp_path,
+):
+    """On a host whose service Dev Fleet cannot drive, only the pointer is
+    staged.
+
+    The definition there is the baseline install, whose ExecStart binary is by
+    construction the one currently running — so touching it could only break a
+    working definition, and the pointer alone carries the cutover.
+    """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
     dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt)
+    _stub_make_live(monkeypatch, wt, unit_status="no_user_unit", pointer_dir=ptr_dir)
     monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
-    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
-    monkeypatch.setattr(
-        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
-    )
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True and res["staged_only"] is True
+    assert (ptr_dir / "live_target.json").is_file()
+    assert not dropin.exists()
+    assert ["systemctl", "--user", "daemon-reload"] not in calls
+
+
+@pytest.mark.asyncio
+async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
+    """A successful cutover latches _MAKE_LIVE_COMMITTED. A second request —
+    cutover for a DIFFERENT valid target, or even a dry_run — is then refused
+    with restart_pending, so no concurrent cutover can mutate the pointer while
+    the scheduled restart is tearing this process down."""
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
 
     async def fake_run_cmd(cmd, **kw):
         return (0, "", "")
@@ -2040,7 +2077,7 @@ async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
 
     # Second cutover for a different, otherwise-valid target -> restart_pending.
     wt2 = _mk_make_live_wt(tmp_path / "b", venv=True, dist=True)
-    _stub_make_live(monkeypatch, wt2)
+    _stub_make_live(monkeypatch, wt2, pointer_dir=ptr_dir)
     res2 = await mod._make_live(str(wt2), dry_run=False)
     assert res2["ok"] is False and res2["code"] == "restart_pending"
     # A dry_run is refused too (the latch is checked at entry, before dry_run).
@@ -2049,41 +2086,36 @@ async def test_make_live_latches_after_cutover(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_make_live_prescheduling_failure_does_not_latch(monkeypatch, tmp_path):
-    """A cutover that fails BEFORE systemd-run schedules the restart (here a
-    daemon-reload failure) must NOT latch — the restart never happened, so a
-    subsequent cutover proceeds normally."""
+async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
+    """A cutover that fails during pointer write (before restart scheduling)
+    must NOT latch — the restart never happened, so a subsequent cutover
+    proceeds normally."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt)
-    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
-    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
-    monkeypatch.setattr(
-        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
-    )
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
 
-    reload_calls = {"n": 0}
+    # Make write_target raise an OSError to simulate a disk failure.
+    original_write = mod.live_target.write_target
+    call_count = {"n": 0}
 
-    async def fail_first_reload(cmd, **kw):
-        # Fail only the FIRST daemon-reload (the pre-restart one). The
-        # best-effort re-reload after rollback still succeeds, and systemd-run
-        # is never reached — so nothing gets scheduled and nothing latches.
-        if cmd[:3] == ["systemctl", "--user", "daemon-reload"]:
-            reload_calls["n"] += 1
-            if reload_calls["n"] == 1:
-                return (1, "", "reload boom")
+    def fail_first_write(checkout):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise OSError("disk full")
+        return original_write(checkout)
+
+    monkeypatch.setattr(mod.live_target, "write_target", fail_first_write)
+
+    async def fake_run_cmd(cmd, **kw):
         return (0, "", "")
 
-    monkeypatch.setattr(mod, "_run_cmd", fail_first_reload)
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
     res = await mod._make_live(str(wt), dry_run=False)
-    assert res["ok"] is False and res["code"] == "reload_failed"
+    assert res["ok"] is False and res["code"] == "write_failed"
     assert mod._MAKE_LIVE_COMMITTED is False
 
-    # With all seams green, a subsequent cutover proceeds (not latched).
-    async def ok_run(cmd, **kw):
-        return (0, "", "")
-
-    monkeypatch.setattr(mod, "_run_cmd", ok_run)
+    # With the seam repaired, a subsequent cutover proceeds (not latched).
+    monkeypatch.setattr(mod.live_target, "write_target", original_write)
     res2 = await mod._make_live(str(wt), dry_run=False)
     assert res2["ok"] is True and res2.get("cutover") is True
     assert mod._MAKE_LIVE_COMMITTED is True
@@ -2167,7 +2199,7 @@ def test_make_live_route_registered_and_audited():
     assert callable(fn) and inspect.iscoroutinefunction(fn)
 
 
-# --- make-live: fail-closed pod guard (Codex finding 1) ---
+# --- make-live: fail-closed pod guard ---
 def test_in_pod_tristate(monkeypatch, tmp_path):
     """_in_pod is tri-state: True inside a pod home, False outside, and None
     when the config home cannot be resolved (fail-closed at the source — the
@@ -2201,36 +2233,47 @@ async def test_make_live_pod_indeterminate_fails_closed(monkeypatch, tmp_path):
     assert res["ok"] is False and res["code"] == "pod_indeterminate"
 
 
-# --- make-live: user-unit precheck (Codex finding 2) ---
+# --- make-live: staged-only when service not drivable ---
 @pytest.mark.asyncio
-async def test_make_live_refuses_system_unit(monkeypatch, tmp_path):
-    """A live gateway installed as a SYSTEM unit (not systemd --user) is
-    refused up-front — even for dry_run and even with venv+dist present — so
-    the cutover never 'succeeds' by writing a --user drop-in the restart can't
-    apply. No drop-in write / reload / restart occurs."""
+async def test_make_live_stages_only_when_service_not_drivable(monkeypatch, tmp_path):
+    """A live gateway installed as a SYSTEM unit (or no service at all) succeeds
+    as staged_only: the pointer is written, no restart attempted, and a manual
+    restart command is provided. The committed latch is NOT set (re-pointing to
+    a different worktree must stay allowed)."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    _stub_make_live(monkeypatch, wt, unit_status="no_user_unit")
-    calls: list = []
+    ptr_dir = tmp_path / "ptr"
 
-    async def fake_run_cmd(cmd, **kw):
-        calls.append(cmd)
-        return (0, "", "")
+    for status in ("no_user_unit", "no_systemd"):
+        ptr_dir_sub = ptr_dir / status
+        _stub_make_live(monkeypatch, wt, unit_status=status, pointer_dir=ptr_dir_sub)
+        monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+        calls: list = []
 
-    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
-    res = await mod._make_live(str(wt), dry_run=False)
-    assert res["ok"] is False and res["code"] == "no_user_unit"
-    assert "kirocrew-gateway.service" in res["error"]
-    assert calls == []  # nothing written / reloaded / restarted
+        async def fake_run_cmd(cmd, **kw):
+            calls.append(cmd)
+            return (0, "", "")
 
-
-@pytest.mark.asyncio
-async def test_make_live_no_systemd(monkeypatch, tmp_path):
-    """No systemd (non-Linux / systemctl absent) refuses with no_systemd,
-    enforced during validation (dry_run included)."""
-    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    _stub_make_live(monkeypatch, wt, unit_status="no_systemd")
-    res = await mod._make_live(str(wt), dry_run=True)
-    assert res["ok"] is False and res["code"] == "no_systemd"
+        monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+        res = await mod._make_live(str(wt), dry_run=False)
+        assert res["ok"] is True, f"status={status}: {res}"
+        assert res["staged_only"] is True
+        assert res["manual_restart"]  # non-empty command string
+        # The dashboard surfaces `notice` verbatim instead of entering the restart
+        # handshake, so a staged_only response without it would silently drop the
+        # only instruction the operator gets.
+        assert res["manual_restart"] in res["notice"]
+        # Pointer written with the target.
+        ptr_file = ptr_dir_sub / "live_target.json"
+        assert ptr_file.is_file()
+        import json as _json
+        data = _json.loads(ptr_file.read_text())
+        assert Path(data["checkout"]).resolve() == wt.resolve()
+        # NOT latched: a subsequent cutover to another worktree stays allowed.
+        assert mod._MAKE_LIVE_COMMITTED is False
+        # No restart command issued.
+        assert not any(
+            c[:2] == ["systemd-run", "--user"] for c in calls
+        )
 
 
 @pytest.mark.asyncio
@@ -2299,18 +2342,25 @@ async def test_live_user_unit_status_darwin_ok(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_live_user_unit_status_ok_and_missing(monkeypatch):
-    """`systemctl --user cat` rc==0 -> ok; rc!=0 (system unit / not installed)
-    -> no_user_unit."""
+    """`systemctl --user cat` rc==0 AND the unit running -> ok; rc!=0 (system unit
+    / not installed) -> no_user_unit.
+
+    Loadedness alone is not enough: `ok` means a restart replaces the gateway we
+    are in, so the classifier also requires `is-active`.
+    """
     monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
     monkeypatch.setattr(
         mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
     )
 
-    async def cat_ok(cmd, **kw):
-        assert cmd[:2] == ["systemctl", "--user"] and "cat" in cmd
+    async def loaded_and_running(cmd, **kw):
+        assert cmd[:2] == ["systemctl", "--user"]
+        if "is-active" in cmd:
+            return (0, "active", "")
+        assert "cat" in cmd
         return (0, "# unit contents", "")
 
-    monkeypatch.setattr(mod, "_run_cmd", cat_ok)
+    monkeypatch.setattr(mod, "_run_cmd", loaded_and_running)
     assert await mod._live_user_unit_status() == "ok"
 
     async def cat_missing(cmd, **kw):
@@ -2341,56 +2391,51 @@ def test_sd_value_rejects_control_char_paths():
 
 @pytest.mark.asyncio
 async def test_make_live_escapes_special_char_worktree(monkeypatch, tmp_path):
-    """A worktree path with a space, `%`, quote and backslash yields a plan
-    whose dropin_content escapes every directive value correctly."""
-    name = 'kirocrew-wt feat %v "q"\\z'
+    """A worktree path with a space yields a valid plan and a real cutover
+    writes the resolved path into the pointer file correctly."""
+    name = 'kirocrew-wt feat'
     wt = tmp_path / name
     (wt / ".venv" / "bin").mkdir(parents=True)
     _kc = wt / ".venv" / "bin" / "kirocrew"
     _kc.write_text("#!/bin/sh\n")
-    _kc.chmod(0o755)  # provisioned binary is executable (passes the exec-bit gate)
+    _kc.chmod(0o755)
     dd = wt / "src" / "kiro_crew" / "static" / "dist"
     dd.mkdir(parents=True)
     (dd / "index.html").write_text("<html></html>")
-    _stub_make_live(monkeypatch, wt)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
 
     async def fake_run_cmd(cmd, **kw):
         return (0, "", "")
 
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    # dry-run plan names the pointer path and correct exec.
     res = await mod._make_live(str(wt), dry_run=True)
     assert res["ok"] is True
-    c = res["plan"]["dropin_content"]
-
-    def enc(raw):  # spec mirror of _sd_value: %% first, then \\ and " escaped, wrap
-        pct = raw.replace("%", "%%")
-        return '"' + pct.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-    kc = str(wt / ".venv" / "bin" / "kirocrew")
-    local_bin = Path.home() / ".local" / "bin"
-    path_env = ":".join(
-        [str(wt / ".venv" / "bin"), str(local_bin),
-         "/usr/local/bin", "/usr/bin", "/bin"]
-    )
-    assert f"WorkingDirectory={enc(str(wt))}\n" in c
-    assert f"ExecStart={enc(kc)} gateway --no-open\n" in c
-    assert f"Environment={enc('PATH=' + path_env)}\n" in c
-    # The raw (unescaped, unquoted) path must NOT leak into any directive.
-    assert f"WorkingDirectory={wt}\n" not in c
-    assert "%%" in c and '\\"' in c
+    plan = res["plan"]
+    assert plan["mechanism"] == "live-target pointer"
+    assert plan["exec"] == str(wt / ".venv" / "bin" / "kirocrew")
+    # Real cutover writes the pointer with the resolved (space-containing) path.
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+    res2 = await mod._make_live(str(wt), dry_run=False)
+    assert res2["ok"] is True and res2.get("cutover") is True
+    import json as _json
+    data = _json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == wt.resolve()
 
 
 @pytest.mark.asyncio
 async def test_make_live_unsafe_path_returns_code(monkeypatch, tmp_path):
-    """When rendering the drop-in raises _UnsafeUnitValue, _make_live refuses
-    with code `unsafe_path` (enforced for dry_run too) and touches nothing."""
+    """When live_target.validate raises InvalidTarget (from _make_live_plan),
+    _make_live refuses with code `unsafe_path` and touches nothing."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    _stub_make_live(monkeypatch, wt)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
 
-    def boom(*a, **k):
-        raise mod._UnsafeUnitValue("'/x\\ny'")
+    def boom(raw):
+        raise mod.live_target.InvalidTarget("control chars in path")
 
-    monkeypatch.setattr(mod, "_dropin_content", boom)
+    monkeypatch.setattr(mod.live_target, "validate", boom)
     calls: list = []
 
     async def fake_run_cmd(cmd, **kw):
@@ -2401,6 +2446,7 @@ async def test_make_live_unsafe_path_returns_code(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=True)
     assert res["ok"] is False and res["code"] == "unsafe_path"
     assert calls == []
+    assert not (ptr_dir / "live_target.json").exists()
 
 
 @pytest.mark.asyncio
@@ -2471,22 +2517,15 @@ _posix_symlink_only = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 @_posix_symlink_only
-async def test_make_live_darwin_rewrites_launcher_and_kickstarts(monkeypatch, tmp_path):
-    """A macOS cutover rewrites the live-gateway launcher, then kickstarts.
+async def test_make_live_darwin_writes_pointer_and_kickstarts(monkeypatch, tmp_path):
+    """A macOS cutover writes the pointer file, then kickstarts the agent.
 
-    The plist is deliberately NOT rewritten: launchd only re-reads it on
-    bootout+bootstrap, and bootout would kill this process before the bootstrap
-    could run. Verified against real launchd — swapping the link and
-    kickstarting runs the new target.
+    The mechanism is identical to linux (pointer file) — the only difference is
+    HOW the restart is issued (kickstart vs systemd-run).
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    link = tmp_path / "live-gateway"
-    link.parent.mkdir(parents=True, exist_ok=True)
-    link.write_text("#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n")
-    _stub_make_live(monkeypatch, wt, platform="darwin")
-    monkeypatch.setattr(
-        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
-    )
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, platform="darwin", pointer_dir=ptr_dir)
     monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
     calls: list = []
 
@@ -2499,37 +2538,31 @@ async def test_make_live_darwin_rewrites_launcher_and_kickstarts(monkeypatch, tm
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is True and res.get("cutover") is True
-    written = link.read_text()
-    real = wt.resolve()  # _find_worktree_by_path resolves; /var -> /private/var
-    assert f"exec '{real}/.venv/bin/kirocrew' \"$@\"" in written
-    # The cutover must move CWD and PATH too, not just the binary: a binary-only
-    # swap leaves PATH-resolved subprocesses on the OLD install.
-    assert f"cd '{real}'" in written
-    assert f"PATH='{real}/.venv/bin:" in written
-    assert os.access(link, os.X_OK), "the launcher must stay executable"
+    # Pointer file written with the resolved checkout.
+    ptr_file = ptr_dir / "live_target.json"
+    assert ptr_file.is_file()
+    import json as _json
+    data = _json.loads(ptr_file.read_text())
+    assert Path(data["checkout"]).resolve() == wt.resolve()
+    # Kickstart issued (the launchd restart mechanism).
     assert any(c[:3] == ["launchctl", "kickstart", "-k"] for c in calls)
-    # The plist is never touched by a cutover.
+    # No bootout/bootstrap: kickstart is the single-call restart.
     assert not any("bootout" in c or "bootstrap" in c for c in calls)
 
 
 @pytest.mark.asyncio
 @_posix_symlink_only
-async def test_make_live_darwin_rolls_back_symlink_on_restart_failure(
+async def test_make_live_darwin_rolls_back_pointer_on_restart_failure(
     monkeypatch, tmp_path
 ):
-    """A failed kickstart restores the previous link target.
+    """A failed kickstart restores the prior pointer state.
 
-    Leaving the swapped link in place would silently activate the new checkout
-    on the NEXT unrelated restart — the same hazard the systemd path rolls the
-    drop-in back for.
+    Leaving the new pointer in place would silently activate the new checkout
+    on the NEXT unrelated restart.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    link = tmp_path / "live-gateway"
-    link.write_text("#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n")
-    _stub_make_live(monkeypatch, wt, platform="darwin")
-    monkeypatch.setattr(
-        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
-    )
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, platform="darwin", pointer_dir=ptr_dir)
     monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
 
     async def fake_run_cmd(cmd, **kw):
@@ -2543,22 +2576,19 @@ async def test_make_live_darwin_rolls_back_symlink_on_restart_failure(
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is False and res["code"] == "restart_failed"
     assert res["rolled_back"] is True
-    assert "'/previous/kirocrew'" in link.read_text()
-    # A failed cutover must NOT latch: the user has to be able to retry.
+    # Pointer rolled back: file should not exist (prior was absent).
+    ptr_file = ptr_dir / "live_target.json"
+    assert not ptr_file.exists()
     assert mod._MAKE_LIVE_COMMITTED is False
 
 
 @pytest.mark.asyncio
 @_posix_symlink_only
 async def test_make_live_darwin_dry_run_plan(monkeypatch, tmp_path):
-    """The macOS plan names the link and its target, and mutates nothing."""
+    """The macOS dry-run plan uses the same pointer mechanism and mutates nothing."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    link = tmp_path / "live-gateway"
-    link.write_text("#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n")
-    _stub_make_live(monkeypatch, wt, platform="darwin")
-    monkeypatch.setattr(
-        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
-    )
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, platform="darwin", pointer_dir=ptr_dir)
     calls: list = []
 
     async def fake_run_cmd(cmd, **kw):
@@ -2569,113 +2599,60 @@ async def test_make_live_darwin_dry_run_plan(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=True)
     assert res["ok"] is True and res["dry_run"] is True
     plan = res["plan"]
-    assert plan["live_program"] == str(link)
-    # The plan shows the script that will really run - no promise the cutover
-    # does not keep (an earlier revision advertised a working_directory that
-    # stage() never applied).
-    content = plan["live_program_content"]
-    real = wt.resolve()
-    assert f"exec '{real}/.venv/bin/kirocrew' \"$@\"" in content
-    assert f"cd '{real}'" in content
+    assert plan["mechanism"] == "live-target pointer"
+    assert plan["pointer_path"] == str(ptr_dir / "live_target.json")
     assert plan["target"] == str(wt)
     assert calls == []
-    assert "'/previous/kirocrew'" in link.read_text()
+    assert not (ptr_dir / "live_target.json").exists()
 
 
 @pytest.mark.asyncio
 @_posix_symlink_only
-async def test_make_live_refuses_when_prior_definition_is_unreadable(
+async def test_make_live_refuses_when_prior_pointer_is_unreadable(
     monkeypatch, tmp_path
 ):
-    """An unreadable prior live definition aborts BEFORE anything is staged.
+    """An unreadable prior pointer aborts BEFORE anything is staged.
 
-    ``rollback(None)`` means "there was nothing here" and DELETES the target, so
+    ``restore(None)`` means "there was nothing here" and DELETES the pointer, so
     treating a read failure as absent would let a failed cutover destroy a live
-    definition it merely could not read. The abort must therefore happen before
-    staging, leaving the existing definition byte-identical and issuing no
-    restart at all.
+    pointer it merely could not read. The abort must happen before staging.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    link = tmp_path / "live-gateway"
-    original = "#!/bin/sh\nexec '/previous/kirocrew' \"$@\"\n"
-    link.write_text(original)
-    _stub_make_live(monkeypatch, wt, platform="darwin")
-    monkeypatch.setattr(
-        mod.gateway_service.LaunchdBackend, "live_program", staticmethod(lambda: link)
-    )
-    monkeypatch.setattr(
-        mod.gateway_service.LaunchdBackend, "snapshot",
-        lambda self: (_ for _ in ()).throw(PermissionError("unreadable")),
-    )
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
     monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
-    calls: list = []
-
-    async def fake_run_cmd(cmd, **kw):
-        calls.append(cmd)
-        return (0, "  pid = 99\n", "")
-
-    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
-    res = await mod._make_live(str(wt), dry_run=False)
-    assert res["ok"] is False and res["code"] == "write_failed"
-    assert link.read_text() == original, "the live definition must be untouched"
-    assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
-    assert mod._MAKE_LIVE_COMMITTED is False
-
-
-# --- make-live: atomic write + failure rollback (Codex round 2, Finding B) ---
-def _stub_cutover_systemd(monkeypatch):
-    """Put _make_live on the real-cutover branch (linux + systemctl present)."""
-    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
+    # Make snapshot() raise PermissionError (simulating an unreadable pointer).
     monkeypatch.setattr(
-        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
+        mod.live_target, "snapshot",
+        lambda: (_ for _ in ()).throw(PermissionError("unreadable")),
     )
-
-
-@pytest.mark.asyncio
-async def test_make_live_rolls_back_on_reload_failure(monkeypatch, tmp_path):
-    """daemon-reload failure restores the PRIOR drop-in content, re-runs
-    daemon-reload, attempts no restart, and reports rolled_back."""
-    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    dropin = tmp_path / "dropins" / "make-live.conf"
-    dropin.parent.mkdir(parents=True)
-    dropin.write_text("PRIOR-OVERRIDE\n")
-    _stub_make_live(monkeypatch, wt)
-    _stub_cutover_systemd(monkeypatch)
-    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
     calls: list = []
-    reloads = {"n": 0}
 
     async def fake_run_cmd(cmd, **kw):
         calls.append(cmd)
-        if cmd == ["systemctl", "--user", "daemon-reload"]:
-            reloads["n"] += 1
-            return (1, "", "reload boom") if reloads["n"] == 1 else (0, "", "")
         return (0, "", "")
 
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
     res = await mod._make_live(str(wt), dry_run=False)
-    assert res["ok"] is False and res["code"] == "reload_failed"
-    assert res["rolled_back"] is True
-    assert dropin.read_text(encoding="utf-8") == "PRIOR-OVERRIDE\n"   # restored to prior content
-    assert reloads["n"] == 2                            # rollback re-reload ran
-    assert not any(c[:2] == ["systemd-run", "--user"] for c in calls)  # no restart
+    assert res["ok"] is False and res["code"] == "write_failed"
+    # No restart issued.
+    assert not any(
+        c[:2] == ["systemd-run", "--user"] for c in calls
+    )
+    assert mod._MAKE_LIVE_COMMITTED is False
 
 
+# --- make-live: pointer write + failure rollback ---
 @pytest.mark.asyncio
-async def test_make_live_rolls_back_on_restart_failure(monkeypatch, tmp_path):
-    """systemd-run failure with NO prior drop-in deletes the freshly-written
-    override (restoring absence) and re-runs daemon-reload."""
+async def test_make_live_rolls_back_pointer_on_restart_failure(monkeypatch, tmp_path):
+    """A restart failure with a prior pointer restores the PRIOR content and
+    reports rolled_back. When there was no prior pointer, the file is deleted."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    dropin = tmp_path / "dropins" / "make-live.conf"   # absent initially
-    _stub_make_live(monkeypatch, wt)
-    _stub_cutover_systemd(monkeypatch)
-    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
-    reloads = {"n": 0}
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
 
     async def fake_run_cmd(cmd, **kw):
-        if cmd == ["systemctl", "--user", "daemon-reload"]:
-            reloads["n"] += 1
-            return (0, "", "")
         if cmd[:2] == ["systemd-run", "--user"]:
             return (1, "", "run boom")
         return (0, "", "")
@@ -2684,42 +2661,76 @@ async def test_make_live_rolls_back_on_restart_failure(monkeypatch, tmp_path):
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is False and res["code"] == "restart_failed"
     assert res["rolled_back"] is True
-    assert not dropin.exists()          # prior was absent -> deleted on rollback
-    assert reloads["n"] == 2            # initial reload + rollback re-reload
+    # Prior was absent -> pointer file deleted on rollback.
+    assert not (ptr_dir / "live_target.json").exists()
+    assert mod._MAKE_LIVE_COMMITTED is False
 
 
-# --- make-live: concurrency single-flight lock (Codex round 4) ---
+@pytest.mark.asyncio
+async def test_make_live_rolls_back_pointer_preserves_prior(monkeypatch, tmp_path):
+    """When a prior pointer existed, restart failure restores its content."""
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    ptr_dir.mkdir(parents=True)
+    ptr_file = ptr_dir / "live_target.json"
+    prior_content = '{"checkout": "/old/checkout"}\n'
+    ptr_file.write_text(prior_content)
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    async def fake_run_cmd(cmd, **kw):
+        if cmd[:2] == ["systemd-run", "--user"]:
+            return (1, "", "run boom")
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is False and res["code"] == "restart_failed"
+    assert res["rolled_back"] is True
+    assert ptr_file.read_text() == prior_content
+
+
+# --- make-live: concurrency single-flight lock ---
 @pytest.mark.asyncio
 async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     """While one cutover holds the make-live lock, a concurrent second call is
     refused immediately with ``busy`` (fail-fast, not queued) and the winner
     still completes and releases the lock."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt)
-    _stub_cutover_systemd(monkeypatch)
-    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
     # Fresh lock so a leaked hold from another test can't poison this one.
     monkeypatch.setattr(mod, "_MAKE_LIVE_LOCK", asyncio.Lock())
 
     entered = asyncio.Event()   # set once the first call is inside the lock
     release = asyncio.Event()   # test-controlled gate to hold it there
 
+    # write_target runs inside the critical section, so signalling from it is an
+    # exact barrier: no sleep can substitute, because a loaded runner may not
+    # have reached the lock yet and the assertion below would then read an
+    # unlocked lock and let the second call through.
+    original_write_target = mod.live_target.write_target
+
+    def signalling_write(checkout):
+        result = original_write_target(checkout)
+        entered.set()
+        return result
+
+    monkeypatch.setattr(mod.live_target, "write_target", signalling_write)
+
     async def fake_run_cmd(cmd, **kw):
-        # The first _run_cmd (daemon-reload) runs INSIDE the critical section:
-        # signal we hold the lock, then block until the test releases us.
-        if cmd == ["systemctl", "--user", "daemon-reload"]:
-            entered.set()
+        # Block here (inside the lock) until released.
+        if cmd[:2] == ["systemd-run", "--user"]:
             await release.wait()
         return (0, "", "")
 
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
 
     first = asyncio.ensure_future(mod._make_live(str(wt), dry_run=False))
-    await asyncio.wait_for(entered.wait(), timeout=5)   # first now holds the lock
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert mod._MAKE_LIVE_LOCK.locked() is True
 
-    # Second call returns busy without waiting (would hang on wait_for if queued).
+    # Second call returns busy without waiting.
     busy = await asyncio.wait_for(mod._make_live(str(wt), dry_run=False), timeout=5)
     assert busy["ok"] is False and busy["code"] == "busy"
     assert "in progress" in busy["error"]
@@ -2727,31 +2738,28 @@ async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     release.set()
     res = await asyncio.wait_for(first, timeout=5)
     assert res["ok"] is True and res.get("cutover") is True
-    assert mod._MAKE_LIVE_LOCK.locked() is False        # released after success
+    assert mod._MAKE_LIVE_LOCK.locked() is False
 
 
 @pytest.mark.asyncio
 async def test_make_live_lock_released_after_failure_and_reusable(monkeypatch, tmp_path):
     """The lock is released on the failure-rollback path too, so a subsequent
-    cutover proceeds (never wedged on ``busy``) — and then also releases on
-    success."""
+    cutover proceeds (never wedged on ``busy``)."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt)
-    _stub_cutover_systemd(monkeypatch)
-    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
     monkeypatch.setattr(mod, "_MAKE_LIVE_LOCK", asyncio.Lock())
 
-    # 1) daemon-reload fails -> rollback path; the lock MUST be released.
-    async def reload_fails(cmd, **kw):
-        if cmd == ["systemctl", "--user", "daemon-reload"]:
-            return (1, "", "reload boom")
+    # 1) restart fails -> rollback path; the lock MUST be released.
+    async def restart_fails(cmd, **kw):
+        if cmd[:2] == ["systemd-run", "--user"]:
+            return (1, "", "run boom")
         return (0, "", "")
 
-    monkeypatch.setattr(mod, "_run_cmd", reload_fails)
+    monkeypatch.setattr(mod, "_run_cmd", restart_fails)
     fail = await mod._make_live(str(wt), dry_run=False)
-    assert fail["ok"] is False and fail["code"] == "reload_failed"
-    assert mod._MAKE_LIVE_LOCK.locked() is False        # released on rollback
+    assert fail["ok"] is False and fail["code"] == "restart_failed"
+    assert mod._MAKE_LIVE_LOCK.locked() is False
 
     # 2) A subsequent all-green cutover proceeds (not refused as busy) and also
     #    releases the lock on the success path.
@@ -2761,7 +2769,178 @@ async def test_make_live_lock_released_after_failure_and_reusable(monkeypatch, t
     monkeypatch.setattr(mod, "_run_cmd", all_ok)
     ok = await mod._make_live(str(wt), dry_run=False)
     assert ok["ok"] is True and ok.get("cutover") is True
-    assert mod._MAKE_LIVE_LOCK.locked() is False        # released on success
+    assert mod._MAKE_LIVE_LOCK.locked() is False
+
+
+# --- make-live: pointer-based live worktree resolution ---
+@pytest.mark.asyncio
+async def test_live_worktree_path_prefers_pointer_over_service(monkeypatch, tmp_path):
+    """_live_worktree_path returns the pointer target in preference to the
+    service definition ONCE THE GATEWAY IS RUNNING IT. A cutover writes the
+    pointer without touching the definition, so the definition would report the
+    stale install checkout."""
+    target_wt = tmp_path / "kirocrew-wt-new"
+    target_wt.mkdir(parents=True)
+    (target_wt / ".venv" / "bin").mkdir(parents=True)
+    (target_wt / ".venv" / "bin" / "kirocrew").write_text("#!/bin/sh\n")
+    (target_wt / ".venv" / "bin" / "kirocrew").chmod(0o755)
+    (target_wt / "src" / "kiro_crew").mkdir(parents=True)
+
+    # Write a real pointer file that points at target_wt.
+    ptr_dir = tmp_path / "ptr"
+    ptr_dir.mkdir(parents=True)
+    ptr_file = ptr_dir / "live_target.json"
+    import json as _json
+    ptr_file.write_text(_json.dumps({"checkout": str(target_wt)}) + "\n")
+
+    monkeypatch.setattr(mod.live_target, "pointer_path", lambda: ptr_file)
+    monkeypatch.setattr(mod, "_LIVE_CHECK_AT", 0.0, raising=False)
+    monkeypatch.setattr(mod, "_LIVE_WORKTREE", None, raising=False)
+    # Even with a systemd probe that would return a different path, the pointer
+    # takes priority.
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
+    )
+
+    async def should_not_be_called(cmd, **kw):
+        raise AssertionError(f"systemctl should not be called: {cmd}")
+
+    monkeypatch.setattr(mod, "_run_cmd", should_not_be_called)
+    # The gateway is executing the pointer target: the cutover has taken effect.
+    monkeypatch.setattr(mod, "_running_checkout", lambda: target_wt.resolve())
+    got = await mod._live_worktree_path()
+    assert got == str(target_wt.resolve())
+    assert mod._staged_target() is None
+
+
+@pytest.mark.asyncio
+async def test_live_worktree_path_reports_running_image_while_staged(monkeypatch, tmp_path):
+    """A staged pointer is NOT live: until the gateway restarts it is still
+    executing the previous checkout, and reporting the pointer as live would
+    tell the operator a cutover landed while old code serves real data."""
+    target_wt = tmp_path / "kirocrew-wt-new"
+    (target_wt / ".venv" / "bin").mkdir(parents=True)
+    (target_wt / ".venv" / "bin" / "kirocrew").write_text("#!/bin/sh\n")
+    (target_wt / ".venv" / "bin" / "kirocrew").chmod(0o755)
+    (target_wt / "src" / "kiro_crew").mkdir(parents=True)
+    running_wt = tmp_path / "kirocrew-running"
+    running_wt.mkdir(parents=True)
+
+    ptr_file = tmp_path / "ptr" / "live_target.json"
+    ptr_file.parent.mkdir(parents=True)
+    import json as _json
+    ptr_file.write_text(_json.dumps({"checkout": str(target_wt)}) + "\n")
+
+    monkeypatch.setattr(mod.live_target, "pointer_path", lambda: ptr_file)
+    monkeypatch.setattr(mod, "_LIVE_CHECK_AT", 0.0, raising=False)
+    monkeypatch.setattr(mod, "_LIVE_WORKTREE", None, raising=False)
+    monkeypatch.setattr(mod, "_running_checkout", lambda: running_wt)
+
+    got = await mod._live_worktree_path()
+    assert got == str(running_wt), "live must name the image actually executing"
+    assert got != str(target_wt.resolve())
+    assert mod._staged_target() == str(target_wt.resolve())
+
+
+@pytest.mark.asyncio
+async def test_live_worktree_path_honours_pointer_when_checkout_unknown(monkeypatch, tmp_path):
+    """A packaged install is not a checkout, so the running image cannot be
+    compared. That is "cannot verify", not a mismatch: the pointer stays
+    authoritative rather than the resolution collapsing to None."""
+    target_wt = tmp_path / "kirocrew-wt-new"
+    (target_wt / ".venv" / "bin").mkdir(parents=True)
+    (target_wt / ".venv" / "bin" / "kirocrew").write_text("#!/bin/sh\n")
+    (target_wt / ".venv" / "bin" / "kirocrew").chmod(0o755)
+    (target_wt / "src" / "kiro_crew").mkdir(parents=True)
+
+    ptr_file = tmp_path / "ptr" / "live_target.json"
+    ptr_file.parent.mkdir(parents=True)
+    import json as _json
+    ptr_file.write_text(_json.dumps({"checkout": str(target_wt)}) + "\n")
+
+    monkeypatch.setattr(mod.live_target, "pointer_path", lambda: ptr_file)
+    monkeypatch.setattr(mod, "_LIVE_CHECK_AT", 0.0, raising=False)
+    monkeypatch.setattr(mod, "_LIVE_WORKTREE", None, raising=False)
+    monkeypatch.setattr(mod, "_running_checkout", lambda: None)
+
+    assert await mod._live_worktree_path() == str(target_wt.resolve())
+    assert mod._staged_target() is None
+
+
+@pytest.mark.asyncio
+async def test_loaded_but_inactive_user_unit_is_not_drivable(monkeypatch):
+    """A loaded unit is not necessarily the RUNNING gateway.
+
+    `systemctl --user cat` succeeding only proves the unit is known. On a host
+    whose gateway runs in the foreground or as a system unit, an idle --user unit
+    would otherwise pass the make-live gate: the cutover would bounce that unit,
+    the real gateway would keep serving the old code, and the UI would run its
+    restart handshake to a false success.
+    """
+    backend = MagicMock()
+    backend.status = AsyncMock(return_value="ok")
+    backend.active = AsyncMock(return_value=False)
+    monkeypatch.setattr(mod, "_gateway_backend", lambda: backend)
+
+    assert await mod._live_user_unit_status() == "user_unit_inactive"
+    # The operator-facing reason must say why, not leak the code.
+    reason = mod._make_live_status_error("user_unit_inactive")
+    assert "not running" in reason
+    assert "(user_unit_inactive)" not in reason
+    # And it composes into the staged notice, which leads with the remedy.
+    notice = mod._staged_notice("main", "user_unit_inactive")
+    assert notice.index("kirocrew restart") < notice.index("not running")
+
+
+@pytest.mark.asyncio
+async def test_loaded_and_active_user_unit_is_drivable(monkeypatch):
+    """The positive control: loaded AND running still reports ok, so this gate
+    did not simply become unreachable."""
+    backend = MagicMock()
+    backend.status = AsyncMock(return_value="ok")
+    backend.active = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "_gateway_backend", lambda: backend)
+
+    assert await mod._live_user_unit_status() == "ok"
+
+
+def test_running_checkout_resolves_this_checkout():
+    """_running_checkout derives the executing checkout from the loaded module,
+    which is what makes it authoritative where a service definition is not."""
+    got = mod._running_checkout()
+    assert got is not None
+    assert (got / "src" / "kiro_crew").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_make_live_staged_only_allows_subsequent_cutover(monkeypatch, tmp_path):
+    """A staged_only cutover does NOT latch, so re-pointing to a DIFFERENT
+    worktree proceeds without a restart_pending refusal."""
+    wt1 = _mk_make_live_wt(tmp_path / "a", venv=True, dist=True)
+    wt2 = _mk_make_live_wt(tmp_path / "b", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt1, unit_status="no_user_unit",
+                    pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    async def fake_run_cmd(cmd, **kw):
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    res1 = await mod._make_live(str(wt1), dry_run=False)
+    assert res1["ok"] is True and res1["staged_only"] is True
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+    # Second cutover to wt2 also succeeds (not refused as restart_pending).
+    _stub_make_live(monkeypatch, wt2, unit_status="no_user_unit",
+                    pointer_dir=ptr_dir)
+    res2 = await mod._make_live(str(wt2), dry_run=False)
+    assert res2["ok"] is True and res2["staged_only"] is True
+    # Pointer now points to wt2.
+    import json as _json
+    data = _json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == wt2.resolve()
 
 
 # =============================================================================
@@ -4605,13 +4784,8 @@ async def test_make_live_returns_start_id(monkeypatch, tmp_path):
     """A real cutover captures + returns the pre-restart start identity so the
     dashboard reuses the same restart handshake (issue #639)."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
-    dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt)
-    monkeypatch.setattr(mod, "_dropin_path", lambda: dropin)
-    monkeypatch.setattr(mod, "sys", MagicMock(platform="linux"))
-    monkeypatch.setattr(
-        mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
-    )
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
     calls: list = []
 
     async def fake_run_cmd(cmd, **kw):

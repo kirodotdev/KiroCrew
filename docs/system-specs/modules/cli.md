@@ -419,6 +419,30 @@ runtime that still ships the API keeps the mitigation. Without that guard the
 Linux pidfd branch raised `AttributeError` and `kirocrew gateway` died before
 binding its port, while every other subcommand kept working.
 
+### Live-target bootstrap
+
+On the `gateway` command path only, immediately after `_JAILED_COMMANDS`
+attestation and before the `--seed` handler:
+
+```python
+if args.command == "gateway":
+    from kiro_crew.service.live_target import maybe_reexec
+    maybe_reexec(sys.argv[1:])
+```
+
+`maybe_reexec` reads the live-target pointer (`config_dir() / "live_target.json"`)
+and, when it names a different checkout, `os.execve`s into that checkout's own
+`kirocrew` binary. This runs before anything is written to `$KIROCREW_HOME`,
+before the gateway lock is acquired, and before any socket is bound — so exec'ing
+away leaves nothing half-done. It is **fail-safe**: an absent, unreadable,
+malformed, or stale pointer (missing binary, same image already running, or
+`KIROCREW_LIVE_EXECED` marker already in env) causes the function to return, and
+the currently-installed build boots normally. A bad pointer can never leave the
+host with no gateway.
+
+Gateway only — a plain CLI invocation (`kirocrew doctor`, `kirocrew chat`, etc.)
+keeps running the install the user typed, not a worktree someone made live.
+
 ## Environment Variables
 
 | Variable | Purpose |
