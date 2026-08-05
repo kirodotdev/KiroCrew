@@ -229,6 +229,57 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
         return False, f"Invalid manifest: {e}", {}
 
 
+def _sanitize_imported_crons(crons_path: Path) -> list[str]:
+    """Drop imported cron jobs whose ``command`` fails the storage-time guard.
+
+    Returns the names of the dropped jobs and rewrites *crons_path* in place with
+    only the jobs that passed. A missing, empty, or malformed file is left
+    untouched — there is nothing executable to gate. Vetting reuses
+    ``mcp_cron._vet_shell_command`` so an imported command is judged exactly as
+    the same command would be at ``cron_add`` (deny-list, sensitive-path,
+    credential-path, and exfiltration checks); if vetting itself raises, the job
+    is dropped (fail closed — an unverifiable command must not be scheduled).
+
+    Only the ``command`` field is gated: the export never carries the ``crons/``
+    script directory and this importer never installs it, so a ``script`` job
+    points at a file that is not present and cannot run.
+    """
+    if not crons_path.is_file():
+        return []
+    try:
+        data = json.loads(crons_path.read_text())
+    except (ValueError, OSError):
+        return []
+    jobs = data.get("jobs")
+    if not isinstance(jobs, list):
+        return []
+
+    # Function-local import: mcp_cron pulls in the platform/security stack, so
+    # keep it lazy rather than pay that at module load (and dodge any cycle).
+    from kiro_crew.mcp_cron import _vet_shell_command
+
+    kept: list = []
+    dropped: list[str] = []
+    for job in jobs:
+        command = job.get("command", "") if isinstance(job, dict) else ""
+        if not command:
+            kept.append(job)
+            continue
+        try:
+            reason = _vet_shell_command(command)
+        except Exception:  # noqa: BLE001 — unverifiable command must fail closed
+            reason = "command could not be verified"
+        if reason is None:
+            kept.append(job)
+        else:
+            name = job.get("name") if isinstance(job, dict) else None
+            dropped.append(str(name) if name else "<unnamed>")
+    if dropped:
+        data["jobs"] = kept
+        crons_path.write_text(json.dumps(data, indent=2))
+    return dropped
+
+
 def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
     """Extract and apply an import zip.
 
@@ -269,6 +320,22 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                 f"Expected 1 top-level directory in zip, found {len(snap_dirs)}"
             )
         snap = snap_dirs[0]
+
+        # Re-vet imported cron commands before ANY path below consumes
+        # crons.json (merge, copy, or replace). An import archive is
+        # attacker-influenced — the threat is a "settings backup" a user is
+        # talked into importing — and a cron ``command`` is a free-form shell
+        # string the scheduler later runs via ``sh -c``, entirely outside the
+        # ACP permission/hook flow. ``cron_add`` guards exactly that out-of-band
+        # execution with ``_vet_shell_command`` at storage time; the import path
+        # wrote crons.json directly and so skipped it, turning a crafted archive
+        # into arbitrary command execution with no CSRF, prompt injection, or
+        # auth bypass required (CWE-502, CWE-862). Apply the identical guard here
+        # and drop any job that fails, so a mostly-benign backup still restores
+        # its safe jobs instead of the whole import aborting.
+        dropped_crons = _sanitize_imported_crons(snap / "crons.json")
+        if dropped_crons:
+            summary["rejected_crons"] = dropped_crons
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
