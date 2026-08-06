@@ -45,6 +45,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("lessons", r"\[Learned corrections"),
     ("episodic_memory", r"\[Episodic Memory"),
     ("loaded_skill", r"\[Skill: "),
+    ("skill_hint", r"\[Relevant skills for this message\]"),
     ("channel_context", r"\[SLACK THREAD CONTEXT"),
     ("conversation_replay", r"\[CONVERSATION HISTORY"),
     ("history_prefix", r"\[Previous chat history for this tab"),

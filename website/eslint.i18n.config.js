@@ -54,6 +54,12 @@ export default [
       // reports at the whole node — but these quasis are ordinary English sentences, so
       // no regex covers them without also exempting genuine UI copy.
       'src/**/*.prompt.ts',
+      // Color paint plumbing for the sidebar folder glyph: every string is a
+      // CSS value template (color-mix over theme variables), never
+      // user-visible copy. Same named-boundary idiom as `*.prompt.ts` above —
+      // the module may contain ONLY paint data, so the filename IS the
+      // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
+      'src/components/folderColorPaint.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
       // Generated sources: the copy's real home is the panel that declares the
@@ -93,6 +99,30 @@ export default [
       // false positive it fixes. A path this narrow cannot exempt a future file
       // that does hold copy.
       'src/apps/meetings/lib/sketchSrcdoc.ts',
+      // The widget and MCP-app srcdoc builders — the same category as
+      // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
+      // rather than a shared `*Srcdoc.ts` glob. Every literal in both is handed to
+      // a PARSER: CSP directives, a DOCTYPE, `<meta>`/`<style>`/`<script>` markup,
+      // the frame's own reset CSS, and two fixed JS bootstraps (the height reporter
+      // and the nav beacon). Translating any of them would not change a word anyone
+      // reads — it would break the policy or blank the frame.
+      //
+      // Verified copy-free rather than assumed: neither module imports `i18nT` /
+      // `useTranslation`, neither renders a text node, and their exports are pure
+      // builders. The consumers that DO show copy (`WidgetFrame.tsx`, the MCP app
+      // host) stay fully gated.
+      //
+      // Two exact paths, not a content regex. The `^(default|script|img|…)-src\b`
+      // exclusion that the `sketchSrcdoc.ts` note above records as tried-and-rejected
+      // is exactly what would cover these, and it leaked into unrelated files; a
+      // measured `^rgba?\(` variant leaked into `apps/issue-radar/lib/format.ts`.
+      // A path this narrow cannot leak.
+      //
+      // Stated as a false-negative class, per this file's convention: any
+      // user-visible copy ever added to these two paths will not be reported —
+      // keep both modules parser-facing only.
+      'src/lib/widgetSrcdoc.ts',
+      'src/lib/mcpAppSrcdoc.ts',
       // The PPTX Maker board-preview builder — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared glob. Every literal in it is handed to a PARSER: the
@@ -133,6 +163,35 @@ export default [
       'src/apps/mochi/src/shared/shortcut.ts',
       // CSS text injected through <style>; a stylesheet is not translatable copy.
       'src/apps/spec-builder/inlineStyles.ts',
+      // The theme stylesheet builders, extracted out of `hooks/useTheme.tsx` so
+      // they COULD be exempted by path. Every literal in the module is handed to
+      // the CSS parser: the `--*` custom-property allowlist, the
+      // `[data-theme="custom-<slug>-<mode>"]` selectors, the static font/radius/
+      // color-scheme defaults, `@font-face` blocks, and the `url()` values the
+      // overrides-pipeline rewrites to pack asset routes. Translating any of them
+      // would not change a word anyone reads — it would unstyle the theme or
+      // silently weaken the §4.2/§5.1 selector scoper.
+      //
+      // Verified copy-free rather than assumed, and by a MECHANICAL boundary
+      // rather than a reading: the module imports no `i18nT` / `useTranslation`,
+      // and it does not touch the DOM at all — every export is data in, CSS
+      // `string` out. The `<style>` tags, `document.head` writes and
+      // `style.setProperty` calls all stayed in `useTheme.tsx`, so nothing here
+      // has a path to the screen.
+      //
+      // This split is the whole reason a path exemption is admissible here.
+      // `useTheme.tsx` also declares `THEMES` — 19 theme-picker display names —
+      // so exempting THAT file would hand back real copy, which is what the
+      // `object-properties: next` note above refuses. Extracting the CSS leaves
+      // the 19 names in a still-gated file. Measured: `useTheme.tsx` 34 -> 17
+      // (exactly the 17 CSS findings), the new module contributes 0, and no other
+      // file's count moves.
+      //
+      // Stated as a false-negative class, per this file's convention: any
+      // user-visible copy ever added to THIS path will not be reported — keep the
+      // module parser-facing only, and keep it DOM-free, which is the property
+      // that makes that easy to check.
+      'src/hooks/themeCss.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -298,6 +357,21 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // A GATEWAY WIRE MARKER, e.g. `[Tool refusal — automatic recovery]` or
+              // `[Continue — requested by the user]`. These are matched with
+              // `startsWith` against gateway-authored transcript rows and must stay
+              // BYTE-IDENTICAL to the Python constants in
+              // `src/kiro_crew/dashboard/state.py`; the matched prefix is then SLICED
+              // OFF, so no character of it ever reaches the screen — the card's visible
+              // copy comes from `i18nT()`. Translating one would silently stop every
+              // recovery card from rendering in that locale, which is the failure this
+              // exemption exists to prevent: without it the gate pushes a contributor
+              // toward "fixing" a wire value by translating it.
+              //
+              // Narrow by SHAPE, not by file: bracket-delimited end to end, and it must
+              // carry a spaced em dash. UI copy is neither bracketed nor em-dash-joined,
+              // and the bracketed CSS attribute selector covered above has no em dash.
+              '^\\[[A-Za-z][A-Za-z0-9 ]* — [A-Za-z0-9 ]+\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
               // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
               // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can
@@ -390,6 +464,21 @@ export default [
             exclude: [
               // Diagnostics and dev-only output.
               '^console\\.\\w+$', '^(Type)?Error$', '^URL(SearchParams)?$',
+              // `popoutController.ts`'s two console shims: `logDebug` is
+              // `console.debug` and `logWarn` is `console.warn`, both behind a debug
+              // flag. Identical class to `^console\.\w+$` one line up — the argument
+              // is operator diagnostics ("direct focus of … vetoed"), never a string
+              // the UI renders.
+              //
+              // A CALLEE exemption and deliberately NOT a whole-file one: the module
+              // also raises a `window.alert(i18nT(…))`, so releasing the file would
+              // release a module that does render copy — it would fail the
+              // "verified copy-free" standard the exact-path precedents above meet.
+              //
+              // Known false negative, stated: a future `logDebug`/`logWarn` defined
+              // in another module inherits this. Both names exist in exactly one
+              // module today (`src/utils/popoutController.ts`).
+              '^log(Debug|Warn)$',
               // Validator diagnostics, for parity with `Error` above. A rejected input's
               // reason names the FIELD that failed (`Missing or invalid "meta" field`,
               // `Invalid meta.format: "…" (expected "svg", "lottie", or "sprite")`) and
@@ -623,6 +712,31 @@ export default [
   // `object-properties: next` exclusion above refuses. See the module's own header.
   {
     files: ['src/apps/issue-radar/lib/wireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // A GLSL-ONLY module: two shader programs (`VERT`, `FRAG`) as template literals,
+  // plus CSS custom-property token names and Tailwind classes. The component
+  // renders exactly one `<canvas aria-hidden="true">` and no text node, so it has
+  // no path to user-visible copy at all.
+  //
+  // A `words.exclude` shape rule was tried first and cannot do this job: WebGL2
+  // makes `#version 300 es` the mandatory first line, so `'#version [\\s\\S]*$'`
+  // looks like a precise, self-anchoring shape — but upstream validates a template
+  // literal QUASI BY QUASI (`no-literal-string.js` -> `TemplateLiteral`), and this
+  // shader interpolates its loop bounds (`uColors[${MAX_COLORS}]`,
+  // `i < ${MAX_STRANDS}`). Only the first chunk carries the version pragma; every
+  // chunk after an interpolation starts mid-program, so the pattern exempts the
+  // first and reports the second. Widening it to "C-like punctuation" would exempt
+  // any prose carrying braces and semicolons.
+  //
+  // Scoped to this one file for the same reason as `styles.ts` above: a shape rule
+  // cannot express "GLSL, but only in this module". Keep this module shader-only —
+  // any copy later added here belongs in the catalog, not behind this exemption.
+  {
+    files: ['src/components/Strands.tsx'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

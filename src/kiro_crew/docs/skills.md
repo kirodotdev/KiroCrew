@@ -52,7 +52,8 @@ when this skill is activated.
 | `name` | Yes | Display name |
 | `description` | Yes | One-line summary (shown in skill listings) |
 | `always` | No | `true` to inject full content every session |
-| `triggers` | No | Comma-separated trigger phrases for auto-loading. Prefix with `!` for negative triggers (e.g. `!test` excludes when "test" appears) |
+| `triggers` | No | Comma-separated trigger phrases. A match injects this skill's full content into the turn. Prefix with `!` for negative triggers (e.g. `!test` excludes when "test" appears) |
+| `inject_on_trigger` | No | Defaults to `true`. Set to `false` when this skill is an *offer* rather than a mandate: a match then contributes only a one-line pointer naming the skill and its path, and the agent reads the file if it applies. Saves the skill's full size on every match, at the cost of the read being the agent's choice — so leave it at the default for a procedure that must be followed whenever its topic comes up |
 
 ## Creating Skills
 

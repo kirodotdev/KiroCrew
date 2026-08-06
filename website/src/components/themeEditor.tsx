@@ -21,7 +21,7 @@ import ErrorNotice from './ErrorNotice'
  *
  * The CSS custom-property names themselves (`--bg`, `--accent-hover`) are NOT in
  * here: they are the identifiers the theme JSON, the stylesheet and
- * `ALLOWED_CSS_VARS` in `hooks/useTheme.tsx` agree on, so they are data. Only
+ * `ALLOWED_CSS_VARS` in `hooks/themeCss.ts` agree on, so they are data. Only
  * the human labels beside them are copy.
  */
 const VAR_GROUP_LABEL_KEY: Record<string, string> = {

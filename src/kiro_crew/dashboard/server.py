@@ -1929,13 +1929,12 @@ async def start_dashboard(
         "/api/kiro-prerequisite",
         handlers.api_kiro_prerequisite_status,
     )
+    # POST, not a flag on the status GET: csrf_middleware skips check_origin for
+    # safe methods and sel_audit_middleware logs only mutating ones, so a spec
+    # rewrite reached from the GET would be cross-site triggerable and unaudited.
     app.router.add_post(
-        "/api/kiro-prerequisite/install",
-        handlers.api_kiro_prerequisite_install,
-    )
-    app.router.add_post(
-        "/api/kiro-prerequisite/login",
-        handlers.api_kiro_prerequisite_login,
+        "/api/kiro-prerequisite/repair-specs",
+        handlers.api_kiro_prerequisite_repair_specs,
     )
     app.router.add_get("/api/governance/channels", handlers.api_governance_channels)
 
@@ -2153,6 +2152,9 @@ async def start_dashboard(
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
+    # Deliberately NOT /resume — that path is already taken by "open a history
+    # session into a tab" (api_chat_slot_resume) and means something else.
+    app.router.add_post("/api/chat/slots/{slot}/continue", chat.api_chat_slot_continue)
     app.router.add_delete(
         "/api/chat/slots/{slot}/queue/{queue_id}", chat.api_chat_slot_queue_cancel
     )
@@ -2309,6 +2311,12 @@ async def start_dashboard(
     app.router.add_get("/api/outbox/{filename}", handlers.api_outbox_download)
     app.router.add_post("/api/screenshot", handlers.api_screenshot)
 
+    # Diagnostics / "Report a Problem" (redacted support bundle)
+    app.router.add_post("/api/diagnostics/collect", handlers.api_diagnostics_collect)
+    app.router.add_get(
+        "/api/diagnostics/download/{filename}", handlers.api_diagnostics_download
+    )
+
     # Portability (export/import config+memory as zip)
     app.router.add_get("/api/portability/export", handlers.api_portability_export)
     app.router.add_post("/api/portability/import", handlers.api_portability_import)
@@ -2418,6 +2426,7 @@ async def start_dashboard(
     app.router.add_get("/api/sessions", handlers.api_sessions)
     app.router.add_delete("/api/sessions", handlers.api_sessions_clear)
     app.router.add_get("/api/sessions/context", handlers.api_sessions_context)
+    app.router.add_get("/api/sessions/memory", handlers.api_sessions_memory)
     app.router.add_get("/api/sessions/health", handlers.api_sessions_health)
     app.router.add_get("/api/sessions/usage", handlers.api_sessions_usage)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)

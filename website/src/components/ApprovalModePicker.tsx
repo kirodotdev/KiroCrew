@@ -109,7 +109,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
         {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
             `font-mono` — that pinned `var(--mono)`, which the Font Family
             setting never writes. */}
-        <button className="h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
+        <button className="h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-none focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2" title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && displayText.label}
         </button>
@@ -181,7 +181,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact }: { mode: s
               </div>
               <button
                 className="mt-1.5 text-[11px] text-muted hover:text-text underline bg-transparent border-none cursor-pointer p-0"
-                onClick={() => { onOpenChange(false); navigate('/settings?tab=security') }}
+                onClick={() => { onOpenChange(false); navigate('/settings?tab=security&section=approval') }}
               >
                 {i18nT('components.approvalModePicker.configure_duration')}
               </button>

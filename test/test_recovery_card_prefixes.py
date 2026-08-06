@@ -96,6 +96,11 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
         "backend_error_continuing",
         "no_response_returned",
         "empty_output_continuing",
+        # The user-pressed Continue card. Its copy must NOT read as an automatic
+        # recovery, which is why it has its own pair rather than reusing the
+        # posttoken labels above.
+        "continued_by_you",
+        "resuming_the_interrupted_turn",
     ],
 )
 def test_new_card_labels_are_in_the_english_catalog(key: str) -> None:

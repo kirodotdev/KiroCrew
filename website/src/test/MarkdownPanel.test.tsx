@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { OverflowMenu } from '../components/MarkdownPanel'
+import { OverflowMenu, breadcrumbSegments } from '../components/MarkdownPanel'
 import { api } from '../api/client'
 
 vi.mock('../api/client', () => ({
@@ -67,5 +67,38 @@ describe('MarkdownPanel OverflowMenu', () => {
     fireEvent.click(screen.getAllByRole('button')[0])
     fireEvent.click(screen.getByText('Copy content'))
     expect(writeText).toHaveBeenCalledExactlyOnceWith('')
+  })
+})
+
+describe('breadcrumbSegments', () => {
+  it('shows the last three segments with the file last and non-navigable', () => {
+    const crumbs = breadcrumbSegments('/home/user/project/src/app.ts')
+    expect(crumbs.map(c => c.seg)).toEqual(['project', 'src', 'app.ts'])
+    expect(crumbs.map(c => c.isFile)).toEqual([false, false, true])
+  })
+
+  it('gives each directory segment its full absolute ancestor path', () => {
+    const crumbs = breadcrumbSegments('/home/user/project/src/app.ts')
+    // Even though only the tail is shown, a clicked directory opens its true
+    // absolute path — not a relative fragment of the visible segments.
+    expect(crumbs[0].path).toBe('/home/user/project')
+    expect(crumbs[1].path).toBe('/home/user/project/src')
+    expect(crumbs[2].path).toBe('/home/user/project/src/app.ts')
+  })
+
+  it('preserves a leading slash for a shallow absolute path', () => {
+    const crumbs = breadcrumbSegments('/tmp/notes.md')
+    expect(crumbs.map(c => c.path)).toEqual(['/tmp', '/tmp/notes.md'])
+    expect(crumbs.map(c => c.isFile)).toEqual([false, true])
+  })
+
+  it('handles a relative path without inventing a leading slash', () => {
+    const crumbs = breadcrumbSegments('docs/guide/intro.md')
+    expect(crumbs.map(c => c.path)).toEqual(['docs', 'docs/guide', 'docs/guide/intro.md'])
+  })
+
+  it('handles a bare filename as a single file segment', () => {
+    const crumbs = breadcrumbSegments('/README.md')
+    expect(crumbs).toEqual([{ seg: 'README.md', path: '/README.md', isFile: true }])
   })
 })

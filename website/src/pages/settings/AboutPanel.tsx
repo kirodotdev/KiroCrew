@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download } from 'lucide-react'
+import { Trans } from 'react-i18next'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download, Copy } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
@@ -8,8 +9,10 @@ import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
+import ReportProblemCard from './ReportProblemCard'
 import { api, ApiError } from '../../api/client'
 import { sanitize } from '../../api/helpers'
+import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric } from '../../i18n/format'
@@ -36,6 +39,46 @@ function formatRate(bps: number): string {
   const mb = bps / (1024 * 1024)
   return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`
 }
+
+/**
+ * Why the GATEWAY update check produced no verdict.
+ *
+ * Distinct from `updateErrorText` below, which speaks for the Electron updater's
+ * download/install lifecycle. These codes come from `/api/update/check` and mean
+ * "the comparison did not happen" — never "you are up to date".
+ *
+ * An unrecognised code deliberately falls back to the generic reason instead of
+ * being dropped: a newer gateway paired with an older bundle must still say the
+ * check failed rather than silently render the success line.
+ */
+const GATEWAY_CHECK_ERROR_KEYS: Record<string, string> = {
+  feed_unreachable: 'pages.settings.aboutPanel.update_check_error_feed_unreachable',
+  feed_malformed: 'pages.settings.aboutPanel.update_check_error_feed_malformed',
+  git_fetch_failed: 'pages.settings.aboutPanel.update_check_error_git_fetch_failed',
+  git_read_failed: 'pages.settings.aboutPanel.update_check_error_git_read_failed',
+  version_unparseable: 'pages.settings.aboutPanel.update_check_error_version_unparseable',
+  // Not failures: this gateway is not the update surface for the install it is
+  // running inside. A desktop bundle embeds this same backend, so it reaches this
+  // code and must defer to the Electron updater; a container is replaced by
+  // pulling a new image.
+  managed_by_app: 'pages.settings.aboutPanel.update_check_managed_by_app',
+  managed_by_image: 'pages.settings.aboutPanel.update_check_managed_by_image',
+}
+
+function gwCheckErrorText(code: string): string {
+  const key = GATEWAY_CHECK_ERROR_KEYS[code]
+  return i18nT(key || 'pages.settings.aboutPanel.update_check_error_unknown')
+}
+
+/**
+ * Codes that mean "not my job", not "it broke".
+ *
+ * They still travel in the `error` field — it is the one channel that says why
+ * there is no verdict — but rendering them under "Couldn't check for updates"
+ * would be a lie: nothing failed, the update simply arrives through a different
+ * surface. So they get a neutral line instead of the danger one.
+ */
+const GATEWAY_CHECK_INFO_CODES = new Set(['managed_by_app', 'managed_by_image'])
 
 /**
  * User-facing copy for a failure class. `message` from the updater is raw
@@ -130,6 +173,34 @@ const HERO_BG: React.CSSProperties = {
     'linear-gradient(135deg, color-mix(in oklab, var(--accent) 14%, transparent), color-mix(in oklab, var(--accent) 3%, transparent) 55%, var(--card))',
 }
 
+/**
+ * Where the prerelease note sends a bug report.
+ *
+ * Same endpoint as `prompts/featureRequest.ts` FEATURE_REQUEST_URL, deliberately
+ * NOT imported from it: that constant is named for (and used by) the guided
+ * feature-request flow, and a rename or a redirect to an in-app form there must
+ * not silently retarget this link.
+ */
+const REPORT_ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
+
+/**
+ * Last-resort prerelease test for an info payload with NO channel fields.
+ *
+ * `electron/main.js` has an init-failure fallback whose getInfo() returns only
+ * `{version, packaged}` (updater handle `disabled: "init-failed"`), so both
+ * `stampedChannel` and `channel` are absent there. Without this the note would
+ * hide from a packaged insider/nightly build precisely when its updater is
+ * broken — the user most likely to have something worth reporting.
+ *
+ * Mirrors auto-update.js channelForVersion's rule as far as it needs to: a bare
+ * semver is stable, ANY prerelease suffix (-insider.N, -nightly.<stamp>, -rc.N)
+ * is not. It deliberately does not try to name WHICH lane, because the copy no
+ * longer interpolates the channel.
+ */
+function versionLooksPrerelease(version: string | undefined): boolean {
+  return !!version && version.includes('-')
+}
+
 /** Row: label on the left, value on the right. */
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -146,6 +217,14 @@ export function AboutPanel() {
   const buildBranch = useAppSelector(s => s.dashboard.status?.branch) || ''
   const buildCommit = useAppSelector(s => s.dashboard.status?.commit) || ''
   const updateAvailable = useAppSelector(s => s.dashboard.status?.update_available) || false
+  // Undefined on a gateway that predates the field; `!== false` below is what
+  // keeps that case behaving as before.
+  const statusSelfUpdatable = useAppSelector(s => s.dashboard.status?.update_self_updatable)
+  // The background check's own verdict + command, so the 12-hourly check that
+  // lights the nav badge lands the user on something actionable instead of an
+  // Update button that 409s.
+  const statusChecked = useAppSelector(s => s.dashboard.status?.update_checked) || false
+  const statusCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   const queryClient = useQueryClient()
   const desktopApi = getUpdateApi()
   const isDesktop = !!desktopApi
@@ -197,6 +276,34 @@ export function AboutPanel() {
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   const checking = checkMutation.isPending || updateState?.state === 'checking'
+
+  // "What's the difference?" disclosure next to the channel switcher. Collapsed
+  // by default: the identity card is the densest surface in Settings, and the
+  // explanation is reference material — needed once, when choosing.
+  const [showChannelHelp, setShowChannelHelp] = useState(false)
+  // The report ask is about the BYTES CURRENTLY RUNNING, so it keys on
+  // stampedChannel (the build's own lane) and NOT on `channel`, which is the
+  // feed being FOLLOWED: auto-update.js resolveChannel() returns the user's
+  // switcher preference for any production build, so the two diverge for the
+  // whole window between flipping the switcher and the other channel's build
+  // actually landing. Keying on `channel` inverts the feature in both
+  // directions — it hides the ask from someone still running insider bytes who
+  // just opted back to stable, and shows "less tested than Stable" to someone
+  // on a stable build who just opted into insider.
+  //
+  // Any non-stable lane ships less-tested bytes, so nightly is included as well
+  // as insider. Nightly reports channelSwitchable=false (it is a pinned
+  // side-by-side install), so the note is rendered OUTSIDE the
+  // switchable/pinned branch below to cover both. An unstamped dev build has
+  // stampedChannel=null and correctly gets no ask — there is no published
+  // release for its bytes to be "less tested" than.
+  //
+  // ABSENT (undefined) is a third case, distinct from null: main.js's
+  // init-failure fallback reports neither channel field, so fall back to the
+  // version string for a packaged build. `null` keeps meaning "dev, no lane".
+  const isPrerelease = info?.stampedChannel === undefined
+    ? !!info?.packaged && versionLooksPrerelease(info?.version)
+    : !!info.stampedChannel && info.stampedChannel !== 'stable'
 
   // Desktop status line under the Check button (simple states only — the
   // found/downloading/downloaded lifecycle renders as the update card below).
@@ -336,6 +443,21 @@ export function AboutPanel() {
   const [gwChanges, setGwChanges] = useState('')
   const [gwTarget, setGwTarget] = useState('')
   const [gwFound, setGwFound] = useState(false)
+  // The honesty trio, straight from /api/update/check.
+  //
+  // `gwChecked` is what licenses the "you're on the latest version" line. It used
+  // to be enough that the request returned 200 — but for a wheel install the
+  // backend's check never actually ran, so a check that did nothing reported an
+  // out-of-date install as up to date. A 200 is now only a transport success;
+  // `checked` is the verdict, and `gwError` names why there is none.
+  const [gwChecked, setGwChecked] = useState(false)
+  const [gwError, setGwError] = useState('')
+  // Null = not yet known from a check; the redux status flag below carries the
+  // same fact for the pre-check case.
+  const [gwSelfUpdatable, setGwSelfUpdatable] = useState<boolean | null>(null)
+  const [gwChannel, setGwChannel] = useState('')
+  const [gwCommand, setGwCommand] = useState('')
+  const [gwCommandCopied, setGwCommandCopied] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [applyError, setApplyError] = useState('')
   const [restarting, setRestarting] = useState(false)
@@ -368,12 +490,21 @@ export function AboutPanel() {
     mutationFn: () => api.checkUpdate(),
     onSuccess: (d: any) => {
       setGwChanges(d?.changes || '')
-      if (d?.version) setGwTarget(String(d.version))
+      // `remote_version` is the field the gateway actually emits; `version` is
+      // read as a fallback only because it is what some older payloads carried.
+      const target = d?.remote_version || d?.version
+      if (target) setGwTarget(String(target))
       // Derive availability from the check response itself, not only the redux
       // status flag (which refreshes on a slower WS status push). Otherwise a
       // check that finds an update could still show "You're on the latest
       // version" until the flag catches up.
       setGwFound(!!d?.available)
+      setGwChecked(!!d?.checked)
+      setGwError(typeof d?.error === 'string' ? d.error : '')
+      setGwChannel(typeof d?.channel === 'string' ? d.channel : '')
+      setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
+      setGwCommandCopied(false)
+      if (typeof d?.self_updatable === 'boolean') setGwSelfUpdatable(d.self_updatable)
       if (typeof d?.auto_update === 'boolean') setAutoUpdate(d.auto_update)
     },
   })
@@ -392,6 +523,23 @@ export function AboutPanel() {
   // Update is available if either the redux status flag or the latest check
   // response says so.
   const showUpdate = updateAvailable || gwFound
+  // Can this install apply the update itself? A fresh check wins; before one has
+  // run, the redux status flag carries the same fact from the gateway's own boot
+  // check. Defaulting to TRUE when neither is known preserves the historical
+  // behaviour for git checkouts (the only layout that could ever report an
+  // update before this change).
+  const gwSelfUpdate =
+    gwSelfUpdatable !== null ? gwSelfUpdatable : statusSelfUpdatable !== false
+  // A manual check's command wins; otherwise fall back to the one the background
+  // check shipped in status. Without the fallback, a badge-driven visit had no
+  // command and fell through to the Update button — the doomed 409 path.
+  const effectiveCommand = gwCommand || statusCommand
+  // An update exists and this install cannot pull it in. Note this does NOT
+  // require a command: when `gwSelfUpdate` is false the Update button must be
+  // suppressed unconditionally, because it POSTs to an endpoint that answers 409
+  // for this layout. A missing command degrades to an explanation, never to a
+  // button that cannot work.
+  const showManualUpdate = showUpdate && !gwSelfUpdate
 
   // Escape closes the confirm dialog (unless an apply/restart is in flight).
   useEffect(() => {
@@ -423,9 +571,18 @@ export function AboutPanel() {
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}>
                     <ArrowUp size={11} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update_available')}</span>
-                : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
-                    style={{ color: 'var(--ok)', background: 'color-mix(in oklab, var(--ok) 14%, transparent)' }}>
+                : (gwChecked || statusChecked)
+                  ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
+                      style={{ color: 'var(--ok)', background: 'color-mix(in oklab, var(--ok) 14%, transparent)' }}
+                      data-testid="hero-up-to-date">
                     <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--ok)' }} /> {i18nT('pages.settings.aboutPanel.up_to_date')}</span>
+                  // No verdict yet (never checked, or the check failed). A green
+                  // "Up to date" here is the same half-truth the check contract
+                  // kills: it would sit beside a red "Couldn't check for updates"
+                  // on this very screen. Stay neutral until something is known.
+                  : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5 text-muted bg-bg-accent"
+                      data-testid="hero-not-checked">
+                    <span className="w-1.5 h-1.5 rounded-full inline-block bg-muted" /> {i18nT('pages.settings.aboutPanel.not_checked_yet')}</span>
               )}
             </div>
             <div className="text-[12.5px] text-muted mt-1">{i18nT('pages.settings.aboutPanel.autonomous_agent_management_runs_locally_open_so')}</div>
@@ -456,31 +613,96 @@ export function AboutPanel() {
 
         {isDesktop && channel && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
-            <div className="flex items-center justify-between py-1.5 text-sm gap-3" data-testid="channel-switcher">
-              <div className="flex flex-col min-w-0">
-                <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
-                <span className="text-[11.5px] text-muted opacity-80">
-                  {i18nT('pages.settings.aboutPanel.insider_gets_prerelease_builds_early_switching_o')}
-                </span>
+            <div className="flex flex-col" data-testid="channel-switcher">
+              <div className="flex items-center justify-between py-1.5 text-sm gap-3">
+                <div className="flex flex-col items-start min-w-0">
+                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
+                  <button
+                    type="button"
+                    aria-expanded={showChannelHelp}
+                    data-testid="channel-help-toggle"
+                    // Underlined AT REST, unlike the changelog disclosure lower
+                    // in this file: that one is the only interactive thing in
+                    // its row, while this one sits beside a full-size segmented
+                    // control that wins every eye. A first-time reader read the
+                    // un-underlined version as a category tint and never
+                    // clicked, then flipped the channel without reading.
+                    className="text-[11.5px] text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid cursor-pointer bg-transparent border-none p-0 text-left"
+                    onClick={() => setShowChannelHelp(v => !v)}
+                  >
+                    {showChannelHelp
+                      ? i18nT('pages.settings.aboutPanel.channel_help_hide')
+                      : i18nT('pages.settings.aboutPanel.channel_help_show')}
+                  </button>
+                </div>
+                <div className="shrink-0 flex items-center gap-2">
+                  {channelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
+                  <SegmentedControl
+                    segments={[{ key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') }, { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') }]}
+                    value={channel === 'insider' ? 'insider' : 'stable'}
+                    onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
+                    layoutId="update-channel"
+                    // Both lanes stay visible: the wrapper is shrink-0 (so the
+                    // responsive measurement would be circular) and Card's
+                    // .card-glow rule would trap a dropdown overlay under the
+                    // Platform row below.
+                    collapse={false}
+                  />
+                </div>
               </div>
-              <div className="shrink-0 flex items-center gap-2">
-                {channelMutation.isPending && <RefreshCw size={13} className="lucide-inline animate-spin text-muted" />}
-                <SegmentedControl
-                  segments={[{ key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') }, { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') }]}
-                  value={channel === 'insider' ? 'insider' : 'stable'}
-                  onChange={next => { if (next !== channel && !channelMutation.isPending) channelMutation.mutate(next) }}
-                  layoutId="update-channel"
-                  // Both lanes stay visible: the wrapper is shrink-0 (so the
-                  // responsive measurement would be circular) and Card's
-                  // .card-glow rule would trap a dropdown overlay under the
-                  // Platform row below.
-                  collapse={false}
-                />
-              </div>
+              {showChannelHelp && (
+                // Term + definition rows rather than one prose sentence per
+                // channel: the channel names are the same tokens the segmented
+                // control shows, so reusing the `stable` / `insider` keys keeps
+                // label and explanation from drifting apart per locale.
+                <div className="mb-1 p-2.5 bg-bg rounded-lg border border-border flex flex-col gap-1.5 text-[12px]" data-testid="channel-help">
+                  <div className="flex gap-2">
+                    <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.stable')}</span>
+                    <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_stable')}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.insider')}</span>
+                    <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_insider')}</span>
+                  </div>
+                  <span className="text-muted opacity-80 pt-1.5 border-t border-border">
+                    {i18nT('pages.settings.aboutPanel.channel_explainer_switch_note')}
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
           )
+        )}
+        {isDesktop && isPrerelease && (
+          // NOT behind the disclosure: a user already running prerelease bytes
+          // is exactly who must see the ask, and hiding it behind a click means
+          // the people whose bug reports matter most never read it.
+          //
+          // Deliberately NOT warn-tinted with an alert triangle: a first-time
+          // reader took that as "something is wrong with my installation" and
+          // was reluctant to click a link inside it. This is a request for help,
+          // so it speaks in the app's own accent voice, and the anchor names
+          // GitHub because the destination is a new-issue form — a surprise
+          // worth spending four words to avoid.
+          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
+               data-testid="prerelease-report-note">
+            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
+            <span className="text-text leading-relaxed">
+              {/* ONE catalog string carrying the anchor: splitting it into
+                  fragments around the link would lock every language into
+                  English clause order. `Trans` (not a hand-rolled split on a
+                  mustache literal) is what lets the translator move the anchor
+                  to wherever the target grammar needs it. */}
+              <Trans
+                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
+                components={{
+                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                  report: <a href={REPORT_ISSUE_URL} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                }}
+              />
+            </span>
+          </div>
         )}
         {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
       </Card>
@@ -519,11 +741,53 @@ export function AboutPanel() {
                 <p className="text-sm text-muted flex items-center gap-1.5">
                   <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{gwTarget ? ` (v${gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
                 </p>
-                <div>
-                  <Btn primary onClick={() => { if (!gwChanges) gwCheck.mutate(); setApplyError(''); setRestarting(false); setShowConfirm(true) }}>
-                    <ArrowUp size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update')}{gwTarget ? ` to v${gwTarget}` : ' now'}
-                  </Btn>
-                </div>
+                {showManualUpdate ? (
+                  // This install cannot replace its own code (a `cli.sh` wheel
+                  // install, not a git checkout), so there is no Update button to
+                  // offer — pressing one would 409. Show the command that does
+                  // work instead. The channel is spelled out in it deliberately:
+                  // the installer defaults to stable and never reads the channel
+                  // file, so a bare re-run would silently move this install to a
+                  // different lane.
+                  <div className="flex flex-col gap-2" data-testid="manual-update-instructions">
+                    <p className="text-[13px] text-muted">
+                      {gwChannel
+                        ? i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer_channel', { channel: gwChannel })
+                        : i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer')}
+                    </p>
+                    {effectiveCommand && (
+                      <>
+                        <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
+                          data-testid="manual-update-command">
+                          {effectiveCommand}
+                        </div>
+                        <div>
+                          {/* copyToClipboard, not navigator.clipboard directly: the
+                              Clipboard API is unavailable on a plain-HTTP remote
+                              gateway — exactly the deployment this command targets —
+                              and flipping the label regardless would tell the user
+                              their shell paste is ready when the clipboard still
+                              holds something else. Await it, then confirm. */}
+                          <Btn onClick={async () => { await copyToClipboard(effectiveCommand); setGwCommandCopied(true) }}>
+                            <Copy size={13} className="lucide-inline" /> {gwCommandCopied
+                              ? i18nT('pages.settings.aboutPanel.copied')
+                              : i18nT('pages.settings.aboutPanel.copy_command')}
+                          </Btn>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <Btn primary onClick={() => { if (!gwChanges) gwCheck.mutate(); setApplyError(''); setRestarting(false); setShowConfirm(true) }}>
+                      {/* Whole-sentence keys, not "Update" + " to vX": the version
+                          does not follow the verb in every language. */}
+                      <ArrowUp size={13} className="lucide-inline" /> {gwTarget
+                        ? i18nT('pages.settings.aboutPanel.update_to_version', { version: gwTarget })
+                        : i18nT('pages.settings.aboutPanel.update_now')}
+                    </Btn>
+                  </div>
+                )}
               </>
             ) : (
               <>
@@ -535,18 +799,39 @@ export function AboutPanel() {
                     <RefreshCw size={13} className={`lucide-inline ${gwCheck.isPending ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
                   </Btn>
                 </div>
-                {gwCheck.isSuccess && !showUpdate && (
-                  <span className="text-ok text-[13px] flex items-center gap-1.5"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
+                {/* A 200 is transport success, NOT a verdict: `checked` is the
+                    verdict. Gating the success line on it is the fix for the
+                    original bug, where a wheel install's no-op check rendered
+                    "you're on the latest version" while being two releases
+                    behind. An unrecognised error code still lands here (in the
+                    error branch), never in the success branch. */}
+                {gwCheck.isSuccess && gwChecked && !gwError && !showUpdate && (
+                  <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
                 )}
-                {gwCheck.isError && (
-                  <span className="text-danger text-[13px] flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}</span>
+                {gwCheck.isSuccess && !!gwError && GATEWAY_CHECK_INFO_CODES.has(gwError) && (
+                  <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwError)}</span>
+                )}
+                {(gwCheck.isError || (gwCheck.isSuccess && !!gwError && !GATEWAY_CHECK_INFO_CODES.has(gwError))) && (
+                  <span className="text-danger text-[13px] flex items-center gap-1.5" data-testid="check-failed"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}{gwError ? `: ${gwCheckErrorText(gwError)}` : ''}</span>
                 )}
               </>
             )}
+            {/* The auto-apply promise only holds where the gateway can replace its
+                own code. On any other layout the backend deliberately downgrades
+                auto-update to a notification (the `self_updatable` guard in
+                `gateway.py`), so leaving an enabled toggle and an "automatically
+                pull and apply" tooltip here would accept input for something that
+                cannot happen. Say what it will actually do instead. */}
             <div className="flex items-center justify-between pt-2.5 border-t border-border"
-              title={i18nT('pages.settings.aboutPanel.automatically_pull_and_apply_updates_when_the_ga')}>
-              <span className="text-sm text-text">{i18nT('pages.settings.aboutPanel.auto_update_on_restart')}</span>
-              <Toggle checked={autoUpdate} label={i18nT('pages.settings.aboutPanel.auto_update_on_restart')}
+              title={gwSelfUpdate
+                ? i18nT('pages.settings.aboutPanel.automatically_pull_and_apply_updates_when_the_ga')
+                : i18nT('pages.settings.aboutPanel.auto_update_notify_only_on_this_install')}>
+              <span className={`text-sm ${gwSelfUpdate ? 'text-text' : 'text-muted'}`}>{gwSelfUpdate
+                ? i18nT('pages.settings.aboutPanel.auto_update_on_restart')
+                : i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}</span>
+              <Toggle checked={autoUpdate} label={gwSelfUpdate
+                ? i18nT('pages.settings.aboutPanel.auto_update_on_restart')
+                : i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}
                 onChange={async next => { setAutoUpdate(next); try { await api.setAutoUpdate(next) } catch { setAutoUpdate(!next) } }} />
             </div>
           </div>
@@ -615,6 +900,8 @@ export function AboutPanel() {
           </div>
         </div>
       )}
+
+      <ReportProblemCard />
     </>
   )
 }

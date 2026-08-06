@@ -196,7 +196,7 @@ export default function WelcomeCarousel({ onConnected }: { onConnected: (repo: A
             >
               <RefreshCw size={12} className={flow.pending ? 'animate-spin' : ''} />
               {flow.progress
-                ? `Connecting ${flow.progress.done + 1} of ${flow.progress.total}…`
+                ? i18nT('apps.issueRadar.welcomeCarousel.connecting_n_of_total', { n: flow.progress.done + 1, total: flow.progress.total })
                 : targetCount > 1 ? `Connect ${targetCount}` : 'Connect'}
             </button>
           )}

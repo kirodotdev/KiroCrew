@@ -46,6 +46,51 @@ const ensureMsgId = (msg: ChatMessage): ChatMessage => {
   return msg
 }
 
+/** True when a WS chat frame is a REDELIVERY of a row the transcript already
+ *  holds, so applying it again would render the same message twice — or, in the
+ *  `assistant` branch, overwrite a live stream with stale text.
+ *
+ *  Identity is the server-minted row id `meta.mid` (`_ChatSlot.append`), and
+ *  nothing else. The backend stamps it once per row and every door the row can
+ *  arrive through carries it: the slot-detail HTTP rebuild, the live
+ *  `chat_message` broadcast, and the JSONL round trip (persisted with `meta`,
+ *  restored with it), so the two copies of one row are recognisably one row.
+ *
+ *  What this replaces, and why: a (`ts`, role, content) tuple cannot express
+ *  this. A coarse OS clock stamps two rows appended in the same tick identically
+ *  (the collision `mergePreservedClientTs` pass 1 already guards against) and two
+ *  byte-identical messages are legitimate — a Slack channel window can replay
+ *  exactly that pair. So a tuple either misses a redelivery (a duplicate bubble)
+ *  or matches two distinct rows (a message silently disappears), and no tuning
+ *  removes the ambiguity. An explicit id does.
+ *
+ *  A frame with NO `mid` is never treated as a duplicate: rows a client mints
+ *  locally (streaming, thinking, optimistic bubbles) have no server identity yet,
+ *  and channel-replayed rows genuinely carry no `meta` at all (`ConversationLog`
+ *  writes only role/content/ts/source_* for those). Declining to dedup renders a
+ *  duplicate at worst; guessing would drop a real message.
+ *
+ *  Called from ONE chokepoint per path, placed so it dominates every branch that
+ *  creates OR mutates a row — the `tool` insert, the `assistant` reconcile (which
+ *  overwrites the trailing `streaming` row, so a late redelivery of an old frame
+ *  would clobber a NEW segment's live content), the `user` echo reconcile, and
+ *  the generic push. A guard sitting after any of those is a guard some frame
+ *  slips past.
+ *
+ *  Scans from the tail — a redelivery is almost always the newest row — but
+ *  scans the whole list, since a replayed frame can be older. */
+function isRedeliveredMessage(
+  msgs: Array<{ meta?: Record<string, unknown> }>,
+  meta?: Record<string, unknown>,
+): boolean {
+  const mid = meta?.mid
+  if (typeof mid !== 'string' || !mid) return false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].meta?.mid === mid) return true
+  }
+  return false
+}
+
 /** Finalize the most recent live `streaming` message in place (streaming →
  *  assistant), or drop it entirely when its content is a trivial placeholder
  *  the model emits before tool calls ("...", "…", "---", ". . .", etc.).
@@ -266,6 +311,16 @@ interface ChatState {
   loadingOlder: boolean
   lastChunkSeq: number | undefined
   _wsChunkedDuringFetch: boolean
+  /** How many `chat_message` frames were dropped as redeliveries (see
+   *  `isRedeliveredMessage`), across every slot, for the life of this tab.
+   *
+   *  Diagnostic, not product state: nothing renders it. It exists because the
+   *  dedup makes at-least-once delivery INVISIBLE — the duplicate bubbles were
+   *  the only user-facing signal that something upstream re-emits frames after a
+   *  restart, and that source is still unidentified. A non-zero count here is
+   *  that signal, and it survives in a Redux state dump rather than in console
+   *  scrollback. Steady state on a healthy gateway is 0. */
+  _redeliveredFramesDropped: number
   history: SessionInfo[]
   historyHasMore: boolean
   historyOffset: number
@@ -352,6 +407,18 @@ interface ChatState {
   // gated on the active slot's own key, so a retained card can never surface
   // under the wrong session.
   followups: Record<string, { items: FollowupItem[]; ts: number }>
+  // Post-titling "file this in <folder>?" offer, keyed by slot for the same
+  // reason `followups` is: a card must never be evicted by, or surface under,
+  // another session.
+  //
+  // Every string here is the user's own stored folder data — the backend model
+  // call returns an INDEX into a folder list, never text — so nothing rendered
+  // from this is model-generated (see chat_folder_suggest.py).
+  //
+  // Ephemeral like `followups`: frontend-only, dropped by a reload. The backend
+  // offers at most one card per slot for the lifetime of that slot, so a
+  // dismissed or lost card is never re-offered.
+  folderSuggestions: Record<string, { folderId: string; folderName: string; breadcrumb: string; ts: number }>
   // Slot with a locally-started turn awaiting server confirmation. While set,
   // the slots-sync ignores a server running=false for it (the snapshot may
   // predate the send). Cleared on server confirmation or turn end.
@@ -370,6 +437,7 @@ const initialState: ChatState = {
   loadingOlder: false,
   lastChunkSeq: undefined,
   _wsChunkedDuringFetch: false,
+  _redeliveredFramesDropped: 0,
   history: [],
   historyHasMore: false,
   historyOffset: 0,
@@ -399,6 +467,7 @@ const initialState: ChatState = {
   slotHistory: [],
   pendingQuestions: {},
   followups: {},
+  folderSuggestions: {},
   stopPressedAt: {},
   pendingTurnSlot: null,
 }
@@ -491,6 +560,22 @@ function applyNonActiveFrame(
     return
   }
   if (role === 'compacting') { run.state = 'compacting'; return }
+  // Permission rows carry request_id/tool_input inside `cls` (JSON); lift it
+  // here — BEFORE the guard — so the identity comparison sees the same
+  // `tool_call_id` the stored row has.
+  let effectiveMeta = meta
+  if (role === 'permission' && !meta?.approval_id && cls) {
+    try {
+      const parsed = JSON.parse(cls)
+      if (parsed.request_id) {
+        effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
+      }
+    } catch { /* not JSON cls, ignore */ }
+  }
+  // Idempotent append — ONE chokepoint that dominates every branch below, which
+  // is the point: each of those branches creates or mutates a row and returns,
+  // so a guard placed after any of them is a guard some frame slips past.
+  if (isRedeliveredMessage(msgs, effectiveMeta)) { state._redeliveredFramesDropped += 1; return }
   if (role === 'tool') {
     run.state = 'tool_running'
     let insertIdx = msgs.length
@@ -504,7 +589,15 @@ function applyNonActiveFrame(
   }
   if (role === 'assistant') {
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'streaming') { msgs[i].role = 'assistant'; msgs[i].content = content; if (ts) msgs[i].ts = ts; return }
+      if (msgs[i].role === 'streaming') {
+        msgs[i].role = 'assistant'; msgs[i].content = content; if (ts) msgs[i].ts = ts
+        // Carry the frame's meta — crucially `mid`, this row's server identity.
+        // The row was minted client-side by the first `chunk` and has none until
+        // now; without it a later redelivery of THIS frame is unrecognisable and
+        // would overwrite whatever is streaming at that moment.
+        if (meta) msgs[i].meta = { ...(msgs[i].meta || {}), ...meta }
+        return
+      }
     }
   }
   if (role === 'user') {
@@ -521,15 +614,6 @@ function applyNonActiveFrame(
       if (meta) lastUser.meta = { ...(lastUser.meta || {}), ...meta }
       return
     }
-  }
-  let effectiveMeta = meta
-  if (role === 'permission' && !meta?.approval_id && cls) {
-    try {
-      const parsed = JSON.parse(cls)
-      if (parsed.request_id) {
-        effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
-      }
-    } catch { /* not JSON cls, ignore */ }
   }
   msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
 }
@@ -1125,6 +1209,96 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
   return !!(dashSlot?.subagents_running || dashSlot?.orchestrating)
 }
 
+/** Roles the continue scans walk past: they are not the conversation's floor.
+ *  Mirrors `_is_interrupted` / `_has_conversation` in
+ *  `src/kiro_crew/dashboard/chat_handlers.py`, which likewise only read
+ *  `user` / `assistant` / `error` rows. Keep them in sync — these predicates
+ *  decide whether to OFFER Continue and what to call it, those decide whether to
+ *  authorize it and what to tell the model. */
+const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'inject', 'subagent', 'permission', 'nudge'])
+
+/**
+ * True when the active slot can be handed back to the agent — i.e. Continue is
+ * worth offering on an empty composer.
+ *
+ * The rule is simply "the slot is idle and has a conversation under it". It is
+ * NOT limited to turns that visibly died, because a transcript cannot reliably
+ * show that they did: a force-quit or force-exit runs no cleanup, so no error
+ * row is ever written and a killed turn reads exactly like a finished one (see
+ * ``_has_conversation`` in `src/kiro_crew/dashboard/chat_handlers.py`, which
+ * authorizes the press under the slot lock). Offering it on every idle slot
+ * covers those invisible interruptions, and doubles as a plain "keep going"
+ * nudge — the one thing an empty composer's dead send button could never do.
+ *
+ * Everything that makes a continuation UNSAFE still returns false: a live turn,
+ * a stop in flight, an optimistic local turn, a mid-plan autopilot slot, a
+ * running subagent, or a queued message the runner is about to pick up itself.
+ *
+ * Computed locally on purpose: `messages`, `slotRunning`, `slotStopping` and the
+ * queue are all already in this store, so no server field is needed to decide
+ * what to SHOW. The server re-checks under the slot lock when the button is
+ * actually pressed — this view is a lagging WS snapshot, so it cannot be the
+ * authority for dispatching a turn.
+ *
+ * An empty transcript returns false, which keeps a brand-new chat's send button
+ * disabled exactly as it is today.
+ */
+export const selectContinuable = (state: RootState): boolean => {
+  const c = state.chat
+  if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
+  // An autopilot plan reads `running` False BETWEEN stages while still mid-plan,
+  // so `running` alone would offer Continue on a slot the server refuses with
+  // `slot_orchestrating`. Mirrors the same guard in `api_chat_slot_continue`.
+  const dashSlot = state.dashboard.slots.find((sl) => sl.key === c.activeSlot)
+  if (dashSlot?.orchestrating || dashSlot?.subagents_running) return false
+  const msgs = c.messages
+  if (!msgs.length) return false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    // A pending queued message means the backend is about to run the thread on
+    // its own — offering Continue would double-fire the turn.
+    if (m.role === 'queued') return false
+    if (CONTINUE_SCAN_SKIP.has(m.role)) continue
+    if ((m.role === 'user' || m.role === 'assistant') && m.content) {
+      // Compaction notices are assistant-role system messages, not the floor.
+      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * True when the transcript SHOWS the last turn ending without the assistant
+ * handing the floor back — the user's row is last, or an `error` row trails the
+ * assistant's.
+ *
+ * Copy only. `selectContinuable` decides whether the button appears; this
+ * decides what it says, so a slot that was visibly cut short can name that
+ * ("the last turn was interrupted") while a slot that finished gets the neutral
+ * "keep going" wording. Mirrors `_is_interrupted` in
+ * `src/kiro_crew/dashboard/chat_handlers.py`, which makes the same split to pick
+ * the continuation body handed to the model — the two must agree, or the button
+ * promises one thing and the agent is told another.
+ *
+ * A false result means "nothing in the transcript proves an interruption", never
+ * "the turn definitely finished": the force-quit case leaves no evidence.
+ */
+export const selectTurnInterrupted = (state: RootState): boolean => {
+  const msgs = state.chat.messages
+  let sawTrailingError = false
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role === 'error') { sawTrailingError = true; continue }
+    if (CONTINUE_SCAN_SKIP.has(m.role)) continue
+    if ((m.role === 'user' || m.role === 'assistant') && m.content) {
+      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      return m.role === 'user' ? true : sawTrailingError
+    }
+  }
+  return false
+}
+
 const chatSlice = createSlice({
   name: 'chat',
   initialState,
@@ -1194,6 +1368,28 @@ const chatSlice = createSlice({
       if (items.length) state.followups[slot] = { ...card, items }
       else delete state.followups[slot]
     },
+    setFolderSuggestion(state, action: PayloadAction<{ slot: string; folderId: string; folderName: string; breadcrumb: string; ts?: number }>) {
+      const { slot, folderId, folderName, breadcrumb, ts } = action.payload
+      if (!slot || !folderId || !folderName) return
+      if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
+      // Defensive: a partial preloaded slice (tests, older persisted state) can
+      // arrive without this key.
+      if (!state.folderSuggestions) state.folderSuggestions = {}
+      state.folderSuggestions[slot] = { folderId, folderName, breadcrumb, ts: ts ?? Date.now() / 1000 }
+    },
+    // Both answers land here — accepting the move and declining it clear the same
+    // way, because the backend keeps no state to resolve and offers at most one
+    // card per slot either way. `ts` guards the async case the way
+    // `clearFollowupCard` does: the accept path clears after its move request is
+    // dispatched, so a card that arrived meanwhile must survive.
+    clearFolderSuggestion(state, action: PayloadAction<{ slot: string; ts?: number }>) {
+      const { slot, ts } = action.payload
+      if (isUnsafeKey(slot)) return
+      const card = state.folderSuggestions?.[slot]
+      if (!card) return
+      if (ts != null && card.ts !== ts) return
+      delete state.folderSuggestions[slot]
+    },
     sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }>) {
       const { slot, pct, used_tokens, window_tokens, reset } = action.payload
       if (isUnsafeKey(slot)) return
@@ -1204,8 +1400,9 @@ const chatSlice = createSlice({
         // Model switch / compaction / session reset: the stored counts belong
         // to a window that no longer describes the session. Deleting re-enables
         // the model-derived fallback (provider.getContextWindow(slot.model)).
-        // Per-turn events without `reset` deliberately never delete, so a
-        // pct-only event cannot wipe good token counts.
+        // A frame WITHOUT `reset` never deletes — it only fills or replaces — so
+        // the backend sets `reset` whenever it has no real counts to send,
+        // clearing stale counts instead of leaving them beside a fresh pct.
         delete state.slotContextTokens[safeKey(slot)]
       }
     },
@@ -2017,6 +2214,33 @@ const chatSlice = createSlice({
         state.slotRunning = true
         return
       }
+      // Permission messages carry request_id/tool_input in cls (JSON) — lift into
+      // meta here, BEFORE the guard, so the identity comparison sees the same
+      // `tool_call_id` the stored row has.
+      let effectiveMeta = meta
+      if (role === 'permission' && !meta?.approval_id && cls) {
+        try {
+          const parsed = JSON.parse(cls)
+          if (parsed.request_id) {
+            effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
+          }
+        } catch { /* not JSON cls, ignore */ }
+      }
+      // If this permission's tool was already rejected/stopped, mark it resolved immediately
+      if (role === 'permission') {
+        const tcid = (effectiveMeta?.tool_call_id as string) || ''
+        if (tcid) {
+          const entry = state.toolLog.findLast(e => e.type === 'tool' && e.tool_call_id === tcid)
+          if (entry?.rejected) effectiveMeta = { ...effectiveMeta, resolved: 'rejected' }
+        }
+      }
+      // Idempotent append — ONE chokepoint that dominates every branch below,
+      // which is the point: each of those branches creates or MUTATES a row and
+      // returns, so a guard placed after any of them is a guard some frame slips
+      // past. The `assistant` branch is the sharpest case: it overwrites the
+      // trailing `streaming` row, so a late redelivery of an OLD assistant frame
+      // would clobber the live content of a NEW segment already streaming.
+      if (isRedeliveredMessage(state.messages, effectiveMeta)) { state._redeliveredFramesDropped += 1; return }
       // Tool call — update state, insert before streaming message
       if (role === 'tool') {
         state.slotState = 'tool_running'
@@ -2040,6 +2264,11 @@ const chatSlice = createSlice({
         for (let i = state.messages.length - 1; i >= 0; i--) {
           if (state.messages[i].role === 'streaming') {
             state.messages[i].role = 'assistant'; state.messages[i].content = content; if (ts) state.messages[i].ts = ts
+            // Carry the frame's meta — crucially `mid`, this row's server
+            // identity. The row was minted client-side by the first `chunk` and
+            // has none until now; without it a later redelivery of THIS frame is
+            // unrecognisable and would overwrite whatever is streaming then.
+            if (meta) state.messages[i].meta = { ...(state.messages[i].meta || {}), ...meta }
             return
           }
         }
@@ -2053,24 +2282,6 @@ const chatSlice = createSlice({
             if (m.meta) m.meta.resolved = 'rejected'
             else m.meta = { resolved: 'rejected' }
           }
-        }
-      }
-      // Permission messages carry request_id/tool_input in cls (JSON) — lift into meta
-      let effectiveMeta = meta
-      if (role === 'permission' && !meta?.approval_id && cls) {
-        try {
-          const parsed = JSON.parse(cls)
-          if (parsed.request_id) {
-            effectiveMeta = { ...meta, approval_id: parsed.request_id, tool_input: parsed.tool_input ?? '', is_read_only: parsed.is_read_only ?? '', ...(parsed.tool_call_id ? { tool_call_id: parsed.tool_call_id } : {}), ...(parsed.resolved ? { resolved: parsed.resolved } : {}) }
-          }
-        } catch { /* not JSON cls, ignore */ }
-      }
-      // If this permission's tool was already rejected/stopped, mark it resolved immediately
-      if (role === 'permission') {
-        const tcid = (effectiveMeta?.tool_call_id as string) || ''
-        if (tcid) {
-          const entry = state.toolLog.findLast(e => e.type === 'tool' && e.tool_call_id === tcid)
-          if (entry?.rejected) effectiveMeta = { ...effectiveMeta, resolved: 'rejected' }
         }
       }
       state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
@@ -2161,6 +2372,7 @@ const chatSlice = createSlice({
           // Follow-up cards are per slot and can hold multi-KB prompts, so a
           // deleted session's card must not outlive it.
           state.followups,
+          state.folderSuggestions,
         ].filter(Boolean)
         const cached = new Set(maps.flatMap(m => Object.keys(m)))
         for (const key of cached) {
@@ -2225,6 +2437,23 @@ const chatSlice = createSlice({
         // If WS already delivered newer streaming content, append it to fetched messages
         const lastLocal = state.messages[state.messages.length - 1]
         const preserved = mergePreservedPastes(state.messages, messages)
+        // Does the fetched history already contain the local trailing reply?
+        // The server row id answers it exactly, so when the local reply HAS one
+        // that is the only test — falling back to content as well would let a
+        // stale snapshot row with identical text (a different row, different id)
+        // match and drop the newest reply. Content equality is only for a reply
+        // that has no id yet: streamed in this session and never reloaded, so the
+        // server history cannot hold it under a different id anyway.
+        //
+        // Preferring the id also survives the redaction asymmetry: this endpoint
+        // redacts on emit (chat_utils._prepare_messages) while the streamed copy
+        // is raw, so one row legitimately arrives with different bytes.
+        const localMid = lastLocal?.meta?.mid
+        const serverHasLastLocal = !!lastLocal && (
+          typeof localMid === 'string' && !!localMid
+            ? preserved.some(m => m.role === 'assistant' && m.meta?.mid === localMid)
+            : preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
+        )
         if (
           state._wsChunkedDuringFetch
           && lastLocal?.role === 'streaming'
@@ -2236,15 +2465,17 @@ const chatSlice = createSlice({
           lastLocal
           && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
           && !!lastLocal.content && lastLocal.content.length > 0
-          && !preserved.some(m => m.role === 'assistant' && m.content === lastLocal.content)
+          && !serverHasLastLocal
         ) {
           // The HTTP fetch resolved with a history that predates the reply we
           // already finalized locally (via applyNonActiveFrame while this slot
           // was backgrounded). Blindly replacing with the server response here
           // is the "switch away and back drops the latest response" regression.
           // Keep the server history but re-attach the local trailing reply.
-          // Guarded by the content check above so we never duplicate a reply
-          // the server already returned.
+          // Guarded by serverHasLastLocal above (row id, else exact content) so
+          // we never duplicate a reply the server already returned, and never
+          // drop a genuinely newer one: a different row has a different id, and
+          // the content fallback stays EXACT rather than fuzzy.
           //
           // Only finalize a still-'streaming' partial to 'assistant' when the
           // turn is NOT still running. If the slot is still streaming
@@ -2422,6 +2653,7 @@ const chatSlice = createSlice({
         delete state.slotSide[action.payload]
         delete state.slotSideClosed[action.payload]
         if (state.followups) delete state.followups[action.payload]
+        if (state.folderSuggestions) delete state.folderSuggestions[action.payload]
         evictMcpApps(state, action.payload)
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload)
         if (state.activeSlot === action.payload) {
@@ -2479,7 +2711,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

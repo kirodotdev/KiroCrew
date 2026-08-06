@@ -14,6 +14,7 @@ import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
 import { useHeroArt } from './useHeroArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
+import { appDisplayName, appDescription } from './appManifest'
 
 import { i18nT } from '../../i18n/t'
 export default function FeaturedSpotlight({ app, onOpen, onGet, onEnable, busy }: {
@@ -28,14 +29,14 @@ export default function FeaturedSpotlight({ app, onOpen, onGet, onEnable, busy }
 
   return (
     <Clickable
-      aria-label={`View details for ${app.displayName}`}
+      aria-label={i18nT('components.appstore.featuredSpotlight.view_details_for', { name: appDisplayName(app) })}
       className="grid grid-cols-1 md:grid-cols-[1.05fr_.95fr] border border-border rounded-[20px] overflow-hidden bg-card mb-3.5 cursor-pointer group hover:border-border-strong transition-colors focus-ring"
       onClick={onOpen}
     >
       <div className="px-9 py-8 flex flex-col justify-center gap-2.5 min-w-0">
         <span className="text-[11px] font-bold tracking-[.14em] text-accent">{i18nT('components.appstore.featuredSpotlight.featured')}</span>
-        <h2 className="text-[32px] leading-[1.15] font-bold text-text-strong tracking-tight">{app.displayName}</h2>
-        <p className="text-[15px] text-muted line-clamp-2">{app.description}</p>
+        <h2 className="text-[32px] leading-[1.15] font-bold text-text-strong tracking-tight">{appDisplayName(app)}</h2>
+        <p className="text-[15px] text-muted line-clamp-2" title={appDescription(app)}>{appDescription(app)}</p>
         <div className="flex items-center gap-2 text-[12.5px] text-muted">
           {isVerified(app) && (
             <BadgeCheck size={14} className="text-accent shrink-0" aria-label={i18nT('components.appstore.featuredSpotlight.verified_publisher')}>

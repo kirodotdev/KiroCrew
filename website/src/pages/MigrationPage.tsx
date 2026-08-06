@@ -14,6 +14,7 @@ import { api } from '../api/client'
 import { PageHeader, Card, CardTitle, Btn, Badge, ContentSkeleton } from '../components/ui'
 
 import { i18nT } from '../i18n/t'
+import { appDisplayName } from '../components/appstore/appManifest'
 type AppInfo = {
   name: string
   displayName: string
@@ -79,11 +80,11 @@ export default function MigrationPage() {
 
   if (!name) return null
 
-  const displayName = appInfo?.displayName || name
+  const displayName = appDisplayName({ name, displayName: appInfo?.displayName })
 
   return (
     <>
-      <PageHeader title={i18nT('pages.migrationPage.app_migration')} subtitle={`Migration guide for ${displayName}`} />
+      <PageHeader title={i18nT('pages.migrationPage.app_migration')} subtitle={i18nT('pages.migrationPage.migration_guide_for', { name: displayName })} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
 
         {displayError && (

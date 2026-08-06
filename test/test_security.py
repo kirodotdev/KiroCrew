@@ -2304,6 +2304,186 @@ class TestIsSensitivePath:
         assert is_sensitive_path("") is False
 
 
+class TestHomeDirTargetsCache:
+    """Tests for the TTL cache in front of ``_home_dir_targets_uncached``.
+
+    The cache exists because rebuilding the target set was 91% of every
+    ``is_sensitive_path`` call (it realpath()s ``$HOME`` and each crew-home
+    leaf), and callers hit it per FILE. These tests pin the two properties that
+    make caching a security gate's inputs acceptable: the cached set is
+    equivalent to an uncached build, and an env change is reflected AT ONCE
+    rather than after the TTL.
+    """
+
+    @staticmethod
+    def _clear() -> None:
+        from kiro_crew import security
+
+        security._home_targets_cache.clear()
+
+    def test_cached_result_matches_uncached(self, monkeypatch, tmp_path) -> None:
+        """Caching must not change WHAT is considered sensitive."""
+        from kiro_crew.security import (
+            _SENSITIVE_HOME_DIRS,
+            _home_dir_targets,
+            _home_dir_targets_uncached,
+        )
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        assert _home_dir_targets(_SENSITIVE_HOME_DIRS) == _home_dir_targets_uncached(
+            _SENSITIVE_HOME_DIRS
+        )
+
+    def test_second_call_does_not_rebuild(self, monkeypatch, tmp_path) -> None:
+        """Within the TTL the expensive builder runs once, not per call."""
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        calls: list[int] = []
+        real = security._home_dir_targets_uncached
+
+        def counting(home_dirs, roots=None):
+            calls.append(1)
+            return real(home_dirs, roots)
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", counting)
+        for _ in range(50):
+            security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 1
+
+    def test_kirocrew_home_change_is_not_deferred_by_ttl(self, monkeypatch, tmp_path) -> None:
+        """A changed KIROCREW_HOME must re-key immediately, not after the TTL.
+
+        This is the security-relevant property: the keystone secrets live under
+        KIROCREW_HOME, so a stale target set built for the OLD home would stop
+        gating them. The resolved roots are part of the cache key precisely so
+        this cannot wait out ``_HOME_TARGETS_TTL_SECS``.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        home_a = tmp_path / "crew-a"
+        home_b = tmp_path / "crew-b"
+        home_a.mkdir()
+        home_b.mkdir()
+        self._clear()
+
+        monkeypatch.setenv("KIROCREW_HOME", str(home_a))
+        targets_a = set(security._home_dir_targets(security._SENSITIVE_HOME_DIRS))
+        monkeypatch.setenv("KIROCREW_HOME", str(home_b))
+        targets_b = set(security._home_dir_targets(security._SENSITIVE_HOME_DIRS))
+
+        # No sleep: the switch is visible on the very next call.
+        assert targets_a != targets_b
+        assert any(str(home_b).casefold() in t for t in targets_b)
+        # And the new home's secrets are actually gated through the public API.
+        assert is_sensitive_path(str(home_b / "token_signing.key")) is True
+
+    def test_repointed_home_symlink_is_not_served_from_cache(self, monkeypatch, tmp_path) -> None:
+        """Repointing a symlink AT $HOME must invalidate the cached target set.
+
+        Regression test for a real, reproduced fail-open: the builder anchors on
+        ``Path.home().resolve()``, so when ``$HOME`` is itself a symlink every
+        target moves while the ``$HOME`` string stays identical. Keying the cache
+        on the raw env var therefore served a stale set and is_sensitive_path()
+        returned False for a credential path the uncached code blocked. The key
+        uses the RESOLVED root so the repoint re-keys.
+        """
+        real_a = tmp_path / "vol1" / "u"
+        real_b = tmp_path / "vol2" / "u"
+        real_a.mkdir(parents=True)
+        real_b.mkdir(parents=True)
+        link = tmp_path / "home"
+        try:
+            link.symlink_to(real_a)
+        except (OSError, NotImplementedError):  # pragma: no cover — Windows w/o privilege
+            pytest.skip("symlink creation not permitted on this platform")
+        # Path.home() reads HOME on POSIX and USERPROFILE on Windows; set both so
+        # the test pins the behavior on every supported platform.
+        monkeypatch.setenv("HOME", str(link))
+        monkeypatch.setenv("USERPROFILE", str(link))
+        self._clear()
+
+        probe = str(link / ".aws" / "credentials")
+        assert is_sensitive_path(probe) is True  # warms the cache
+
+        link.unlink()
+        link.symlink_to(real_b)  # repoint INSIDE the TTL window
+        assert is_sensitive_path(probe) is True, "cached target set served a fail-open verdict"
+
+    def test_roots_are_resolved_once_for_key_and_build(self, monkeypatch, tmp_path) -> None:
+        """The key and the target set must come from ONE root resolution.
+
+        Regression test for a fail-open TOCTOU: when the key resolved the roots
+        and the builder resolved them again, a root symlink repointed between
+        the two reads filed root B's targets under root A's key, so later
+        requests under A got a false-negative verdict for up to the TTL.
+
+        Rather than racing a real symlink, this asserts the structural property
+        that makes the race impossible: exactly one resolution per cache fill,
+        and the builder receives those captured roots.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        calls: list[tuple[str, str | None]] = []
+        real_key = security._resolved_root_key
+
+        def counting_key():
+            r = real_key()
+            calls.append(r)
+            return r
+
+        seen_roots: list[object] = []
+        real_build = security._home_dir_targets_uncached
+
+        def spy_build(home_dirs, roots=None):
+            seen_roots.append(roots)
+            return real_build(home_dirs, roots)
+
+        monkeypatch.setattr(security, "_resolved_root_key", counting_key)
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", spy_build)
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+
+        assert len(calls) == 1, f"roots resolved {len(calls)}x for one fill; must be 1"
+        assert seen_roots == [calls[0]], "builder did not receive the captured roots"
+
+    def test_expired_entry_is_rebuilt(self, monkeypatch, tmp_path) -> None:
+        """Past the TTL the set is rebuilt, so filesystem changes are picked up."""
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        calls: list[int] = []
+        real = security._home_dir_targets_uncached
+
+        def counting(home_dirs, roots=None):
+            calls.append(1)
+            return real(home_dirs, roots)
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", counting)
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        # Expire the entry rather than sleeping the real TTL.
+        for key, (_expiry, targets) in list(security._home_targets_cache.items()):
+            security._home_targets_cache[key] = (0.0, targets)
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2
+
+    def test_cache_dict_is_bounded(self, monkeypatch, tmp_path) -> None:
+        """Churning the env key must not grow the cache without limit."""
+        from kiro_crew import security
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._clear()
+        for i in range(200):
+            monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / f"h{i}"))
+            security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(security._home_targets_cache) <= 33
+
+
 class TestIsSensitiveBashCommand:
     """Tests for is_sensitive_bash_command()."""
 

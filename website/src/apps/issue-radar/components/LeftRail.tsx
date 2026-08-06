@@ -134,7 +134,7 @@ function CollapsedRail({
         <button
           type="button"
           onClick={onExpand}
-          title={`${full} — click to expand the sidebar`}
+          title={i18nT('apps.issueRadar.components.leftRail.click_to_expand_the_sidebar', { name: full })}
           aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
           className="flex-1 min-h-0 w-full flex flex-col items-center gap-3 pt-3.5 pb-2 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
         >
@@ -161,7 +161,7 @@ function CollapsedRail({
             the version live in the title. */}
         <div
           className="flex-shrink-0 flex justify-center pb-3.5"
-          title={`Issue Radar v${APP_VERSION}`}
+          title={i18nT('apps.issueRadar.components.leftRail.issue_radar_version', { version: APP_VERSION })}
         >
           <Radar size={16} className="text-accent" />
         </div>

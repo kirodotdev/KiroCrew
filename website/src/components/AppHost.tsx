@@ -18,6 +18,7 @@ import { AppApiProvider } from '../app-sdk'
 import { ContentSkeleton, Btn, PageHeader } from './ui'
 
 import { i18nT } from '../i18n/t'
+import { appDisplayName, appDescription } from './appstore/appManifest'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -137,7 +138,7 @@ function AppNotFound({ name }: { name: string }) {
   const navigate = useNavigate()
   return (
     <>
-      <PageHeader title={i18nT('components.appHost.app_not_found')} subtitle={`"${name}" is not installed`} />
+      <PageHeader title={i18nT('components.appHost.app_not_found')} subtitle={i18nT('components.appHost.not_installed', { name })} />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center">
           <div className="text-[48px] mb-4 opacity-20"><Package size={48} /></div>
@@ -154,7 +155,7 @@ function AppDisabled({ app }: { app: AppHostProps['app'] }) {
   return (
     <>
       <PageHeader
-        title={app.displayName || app.name}
+        title={appDisplayName(app)}
         subtitle={i18nT('components.appHost.this_app_is_disabled')}
       />
       <div className="flex-1 flex items-center justify-center p-8">
@@ -173,8 +174,8 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
   return (
     <>
       <PageHeader
-        title={app.displayName || app.name}
-        subtitle={app.manifest?.description || ''}
+        title={appDisplayName(app)}
+        subtitle={appDescription({ name: app.name, description: app.manifest?.description })}
       />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
@@ -233,7 +234,7 @@ function AppHostInner({ app }: AppHostProps) {
             <div className="flex-1 flex items-center justify-center p-8">
               <div className="text-center max-w-md">
                 <AlertTriangle size={48} className="text-danger mx-auto mb-4" />
-                <h3 className="text-text font-medium mb-2">{i18nT('components.appHost.failed_to_load')} {app.displayName || app.name}</h3>
+                <h3 className="text-text font-medium mb-2">{i18nT('components.appHost.failed_to_load')} {appDisplayName(app)}</h3>
                 <p className="text-sm text-muted mb-4">{err.message}</p>
                 <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
               </div>
@@ -273,7 +274,7 @@ function AppHostInner({ app }: AppHostProps) {
         navigateFn={navigateFn}
         notifyFn={notifyFn}
       >
-        <Suspense fallback={<AppLoadingSkeleton appName={app.displayName || app.name} />}>
+        <Suspense fallback={<AppLoadingSkeleton appName={appDisplayName(app)} />}>
           <LazyApp />
         </Suspense>
       </AppApiProvider>

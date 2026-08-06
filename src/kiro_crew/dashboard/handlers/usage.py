@@ -118,7 +118,12 @@ def _shards_in_window(days: int) -> list[Path]:
     return paths
 
 
-_CONTEXT_TOP_SESSIONS = 8
+# A payload backstop, not a top-N: the panel lists sessions for the user to
+# browse, sort and group, so cutting it to the "hottest" few hid most of them
+# behind a number they could not reach. Measured over a 7d window this is 260
+# sessions across all categories, which ships comfortably; the cap only exists
+# so an account with thousands does not send all of them on every poll.
+_CONTEXT_TOP_SESSIONS = 500
 # Fingerprint + TTL cache, same contract as _TOKEN_CACHE: the Telemetry panel
 # polls every 5s, and the shards are append-only, so (name, mtime, size) over
 # the window invalidates exactly when a turn lands.
@@ -138,10 +143,84 @@ _COST_CACHE: dict[str, Any] | None = None
 _COST_CACHE_KEY: tuple[Any, ...] | None = None
 _COST_CACHE_TS: float = 0.0
 _COST_CACHE_TTL = 30.0
-# Enough conversations to see where the money went without turning the panel
-# into a scroll; the total count ships alongside so the list never implies it
-# is the whole population.
-_COST_TOP_CONVOS = 8
+# A payload backstop, not a display choice: the panel polls every few seconds,
+# so an account with thousands of sessions should not ship all of them on every
+# refetch. The shown/total pair travels with the list either way, so truncation
+# is stated rather than implied.
+_COST_TOP_CONVOS = 500
+#: Keys that are not a session at all, and so are not rows.
+#:
+#: A subagent is a FRAGMENT of another session's turn, not a session with its own
+#: lifecycle — nobody starts one, resumes one, or goes to look at one. It also
+#: cannot be attributed: a `subagent:*` usage row carries no field pointing back
+#: at the session that spawned it, so it cannot even be nested under its parent.
+#: Ranking 218 of them beside 34 real sessions buried the list in work the user
+#: never held.
+#:
+#: These rows are dropped at the point the row is READ, so their credits leave
+#: the window total, the deltas and every breakdown together. That is deliberate:
+#: filtering at the grouping step instead would leave the money in the total with
+#: no row that could explain it, and no two views would agree. The consequence is
+#: that these totals are the totals of the sessions the panel LISTS, not of the
+#: account — stated in `docs/system-specs/modules/metrics.md` and pinned by
+#: `test_a_subagent_is_not_a_session_and_reaches_no_figure`.
+_NON_SESSION_CHANNELS = frozenset({"subagent"})
+
+# Channels that ARE sessions but run without a person on the other end.
+#
+# A cron tick, the heartbeat and the task runner each have their own lifecycle —
+# something scheduled them and they live and die on their own — so they are
+# sessions, and they belong in a list keyed by session. They collapse to one `bg`
+# category so they read as background work rather than as conversations.
+#
+# `other` and `unknown` are deliberately NOT here. `telemetry_channel_of` returns
+# `other` for a key shape it does not recognise and `unknown` for an absent slot,
+# so folding them in would bury every new surface under background — which is the
+# precise failure this set is a DENYLIST to avoid. Membership is "background by
+# nature", not "not recognised": an unclassified session stays visible under its
+# own category, where it can be reported and fixed.
+_BACKGROUND_CHANNELS = frozenset(
+    {
+        "cron",
+        "heartbeat",
+        "taskrunner",
+        "workflow_pool",
+        "background",
+        "secretary",
+    }
+)
+
+#: The one category that can be opened from the dashboard. Kept separate from
+#: the category list because "is a session" and "has a route" are different
+#: questions — a Telegram thread is a first-class session with nowhere for a
+#: dashboard link to go, which is exactly the bug the old "titled -> link it"
+#: rule shipped.
+NAVIGABLE_CATEGORY = "dashboard"
+
+
+def is_session_slot(slot: str) -> bool:
+    """Whether *slot* is a session in its own right, and so earns a row."""
+    return bool(slot) and telemetry_channel_of(slot) not in _NON_SESSION_CHANNELS
+
+
+def session_category(slot: str) -> str:
+    """Classify *slot* into the session taxonomy the panel groups by.
+
+    Returns ``bg`` for a session that runs unattended, otherwise the transport it
+    came from (``dashboard``, ``telegram``, ``slack``, …). Built on
+    :func:`telemetry_channel_of` rather than matching key shapes here: that is
+    the one place that knows every session-key form, so a surface it learns
+    about is classified consistently for metrics and for this panel.
+
+    A DENYLIST decides what is background, deliberately. If a new transport is
+    added and ``_BACKGROUND_CHANNELS`` is not updated, the session shows up under
+    its own new category — visible, reportable, fixable — whereas an allowlist of
+    "real" transports would silently file it as background and bury it.
+    """
+    channel = telemetry_channel_of(slot) if slot else "unknown"
+    return "bg" if channel in _BACKGROUND_CHANNELS else channel
+
+
 # Below this, a per-turn growth slope is noise rather than a trend.
 _COST_MIN_GROWTH_TURNS = 6
 # Occupancy at which the runtime compacts, so the projection has a real target.
@@ -214,13 +293,19 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                         continue
                     if ts_epoch < cutoff:
                         continue
+                    slot = str(obj.get("slot") or "unknown")
+                    # Before the percentile sample, not after: the spread and the
+                    # session list have to describe the same population, or the
+                    # p90 on the card disagrees with every row beneath it.
+                    if not is_session_slot(slot):
+                        continue
                     p = (used / window) * 100.0
                     pcts.append(p)
-                    slot = str(obj.get("slot") or "unknown")
                     cur = per_session.get(slot)
                     if cur is None:
                         cur = {
                             "slot": slot,
+                            "category": session_category(slot),
                             "turns": 0,
                             "peak_pct": 0.0,
                             "used": 0,
@@ -428,6 +513,8 @@ def cost_breakdown(days: int = 7) -> dict[str, Any]:
     prev_channel: dict[str, float] = {}
     bands: dict[int, list[float]] = {}
     convos: dict[str, dict[str, Any]] = {}
+    by_category: dict[str, dict[str, Any]] = {}
+    prev_category: dict[str, float] = {}
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
 
     for shard_path in shard_paths:
@@ -461,12 +548,25 @@ def cost_breakdown(days: int = 7) -> dict[str, Any]:
                     model = str(obj.get("model") or "unknown")
                     slot = str(obj.get("slot") or "")
 
+                    # Dropped here, before ANY accumulator sees it, so every
+                    # figure on the page is computed over one population. A
+                    # subagent is a fragment of another session's turn rather
+                    # than a session, and it carries no field pointing back at
+                    # the session that spawned it, so it can be neither listed
+                    # nor attributed. Filtering at the grouping step instead
+                    # would leave it in the totals and force a reconciling
+                    # footnote for money with no row.
+                    if slot and not is_session_slot(slot):
+                        continue
+
                     if ts_epoch < cutoff:
                         prev_tot["credits"] += credits
                         prev_tot["turns"] = int(prev_tot["turns"]) + 1
                         prev_model[model] = prev_model.get(model, 0.0) + credits
                         ch = telemetry_channel_of(slot or None)
                         prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
+                        cat = session_category(slot)
+                        prev_category[cat] = prev_category.get(cat, 0.0) + credits
                         continue
 
                     cur_tot["credits"] += credits
@@ -475,7 +575,8 @@ def cost_breakdown(days: int = 7) -> dict[str, Any]:
                         priciest = {"credits": credits, "slot": slot, "ts": ts_raw}
 
                     for bucket, name in ((by_model, model),
-                                         (by_channel, telemetry_channel_of(slot or None))):
+                                         (by_channel, telemetry_channel_of(slot or None)),
+                                         (by_category, session_category(slot))):
                         e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
                         e["credits"] = float(e["credits"]) + credits
                         e["turns"] = int(e["turns"]) + 1
@@ -579,6 +680,17 @@ def cost_breakdown(days: int = 7) -> dict[str, Any]:
         convo_rows.append(
             {
                 "slot": c["slot"],
+                # The session taxonomy the panel groups by: `bg` for machine
+                # work, otherwise the transport it came from. The frontend needs
+                # it for two things — the category chip, and linkability, since
+                # only a dashboard session has a route to open. Deriving either
+                # from the key shape in the frontend would put a second,
+                # drifting copy of session-key knowledge there.
+                "category": session_category(c["slot"]),
+                # The unollapsed label underneath the category, so a `bg` row
+                # still says whether it was a subagent, a cron or the heartbeat
+                # instead of becoming an anonymous lump.
+                "channel": telemetry_channel_of(c["slot"]),
                 "credits": round(float(c["credits"]), 1),
                 "turns": int(c["turns"]),
                 "peak_pct": round(float(c["peak_pct"]), 1),
@@ -614,9 +726,13 @@ def cost_breakdown(days: int = 7) -> dict[str, Any]:
             },
             "by_model": _rank(by_model, prev_model),
             "by_channel": _rank(by_channel, prev_channel),
+            "by_category": _rank(by_category, prev_category),
             "context_bands": band_rows,
             "conversations": convo_rows,
             "conversation_count": len(convos),
+            # The one category with a route. Sent rather than duplicated in
+            # the frontend so a change here cannot leave a dead link there.
+            "navigable_category": NAVIGABLE_CATEGORY,
         }
     )
 
@@ -870,6 +986,26 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
     try:
         line = json.dumps(record, allow_nan=False)
     except ValueError:
+        # Name the fields before sanitizing. Without this the fallback rewrites
+        # a provider's measurement to 0.0 and the turn is persisted as free,
+        # with nothing on record that it happened. Field NAMES only: the values
+        # are the corrupt measurement and the rest of the record is per-turn
+        # telemetry, neither of which belongs in a log line.
+        #
+        # Re-raise when nothing non-finite is present: allow_nan=False is not
+        # the only way json.dumps raises ValueError, and sanitizing cannot fix
+        # the others. Swallowing them here would emit a warning naming no field
+        # and blame corruption that did not occur.
+        non_finite = sorted(
+            k for k, v in record.items() if isinstance(v, float) and not math.isfinite(v)
+        )
+        if not non_finite:
+            raise
+        logger.warning(
+            "token usage: replaced non-finite value(s) with 0.0 before persisting; "
+            "fields=%s",
+            ",".join(non_finite),
+        )
         line = json.dumps(_finite_only(record), allow_nan=False)
     with open(shard_path, "a", encoding="utf-8") as f:
         f.write(line + "\n")

@@ -119,6 +119,7 @@ from kiro_crew.executors import (
     subprocess_executor,
 )
 from kiro_crew.frontend import build_frontend_async
+from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
     HeartbeatService,
@@ -1457,7 +1458,46 @@ class GatewayOrchestrator:
                 log_message="agent_runtime.run_first_run_setup failed",
             )
         except Exception:
-            logger.warning("Agent config install failed", exc_info=True)
+            # Boot deliberately continues: a gateway with no agent spec still
+            # serves the dashboard, and one command repairs it. But this is NOT a
+            # warning-level event — without a spec on disk kiro-cli answers every
+            # session/set_mode with "Mode '<name>' not found", so EVERY chat turn
+            # and every background turn fails for the life of the install. Log at
+            # ERROR and print the remedy, mirroring _check_missing_deps: the
+            # desktop app launches the gateway with no terminal in sight, so the
+            # log is the only durable record and the print is what a
+            # console-launched operator actually sees.
+            logger.error("Agent config install failed", exc_info=True)
+            print(
+                "ERROR: agent config install failed — chat sessions cannot start. "
+                "Repair with: kirocrew setup --agent-only --clean"
+            )
+
+        # Verify what actually landed on disk, whether or not the block above
+        # raised. An exception is only one of the ways to end up with no spec (see
+        # missing_required_agent_specs for the two silent ones), and the failure
+        # mode is identical in all of them: every turn dies at session/set_mode.
+        # Deliberately outside the try above so a raising install still gets
+        # verified, and best-effort itself so a stat error cannot break boot.
+        try:
+            from kiro_crew.agent import missing_required_agent_specs  # circular import
+
+            missing = missing_required_agent_specs()
+            if missing:
+                logger.error(
+                    "Agent specs missing after install: %s (in %s) — every chat turn "
+                    "will fail at session/set_mode with \"Mode '<name>' not found\". "
+                    "Repair with: kirocrew setup --agent-only --clean",
+                    ", ".join(missing),
+                    kiro_agents_dir(),
+                )
+                print(
+                    f"ERROR: agent specs missing after install: {', '.join(missing)} — "
+                    "chat sessions cannot start. "
+                    "Repair with: kirocrew setup --agent-only --clean"
+                )
+        except Exception:
+            logger.debug("Agent spec verification failed", exc_info=True)
 
         self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
         factory = build_provider_factory(self._cfg)
@@ -5233,12 +5273,16 @@ class GatewayOrchestrator:
             # under the enterprise ceiling and an operator opting out must not
             # hold a fleet on a build the policy forbids.
             #
-            # Checked BEFORE the `available` branch: that flag comes from
-            # `_do_update_check`'s `_version_tuple`, which returns (0,) for any
-            # pre-release — so a `1.4.0-nightly.<stamp>` remote reads as "nothing
-            # available" and a 1.3.0 host would never satisfy a 1.4.0 floor.
-            # `_auto_apply_update` still applies the source pin and its own
-            # no-new-commits early return, so this cannot bypass the ceiling or loop.
+            # Checked BEFORE the `available` branch, and deliberately independent
+            # of it: the mandate is about whether THIS host satisfies the floor,
+            # not about whether a newer build was advertised. `_auto_apply_update`
+            # still applies the source pin and its own no-new-commits early
+            # return, so this cannot bypass the ceiling or loop.
+            #
+            # Not gated on `self_updatable`: a policy floor is an enterprise
+            # ceiling, and this branch has always attempted the git apply on every
+            # layout. Teaching it the wheel path (which needs the installer, not a
+            # git reset) is a separate change from making the CHECK honest.
             if update_required(_running_version):
                 logger.warning(
                     "Version compliance: running %s is below the policy minimum %s — "
@@ -5254,11 +5298,29 @@ class GatewayOrchestrator:
                 from kiro_crew.config import KiroCrewConfig
 
                 cfg = KiroCrewConfig.load()
-                if cfg.auto_update:
+                # `_auto_apply_update` replaces code with git fetch + reset, so it
+                # can only serve a GIT CHECKOUT. A wheel install replaces itself by
+                # re-running the installer, which this process must not do
+                # unattended — so notify instead. Without this guard, the wheel
+                # path in `_do_update_check` (which can now report `available`)
+                # would drive a git reset in a tree that has no `.git`.
+                if cfg.auto_update and _update_info.get("self_updatable"):
                     logger.info("Auto-update enabled — applying update")
                     await self._auto_apply_update()
-                elif self.dashboard_state:
-                    self.dashboard_state.push_refresh("update_available")
+                else:
+                    if cfg.auto_update:
+                        logger.warning(
+                            "Auto-update is on, but this install (%s) updates by "
+                            "re-running the installer, not by git — notifying instead",
+                            _update_info.get("install_kind") or "unknown",
+                        )
+                    if self.dashboard_state:
+                        self.dashboard_state.push_refresh("update_available")
+            elif _update_info.get("error"):
+                # A check that could not run is NOT "already on latest" — saying so
+                # is the exact false reassurance the honest-`checked` contract in
+                # `handlers/updates.py` exists to prevent.
+                logger.info("Update check did not complete (%s)", _update_info.get("error"))
             else:
                 print("👻 Already on latest version")
         except Exception:
@@ -5867,7 +5929,9 @@ class GatewayOrchestrator:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)
 
         try:
-            await asyncio.wait_for(self._shutdown(), timeout=10.0)
+            await asyncio.wait_for(
+                self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS
+            )
         except (asyncio.TimeoutError, Exception):
             logger.warning("Graceful shutdown timed out — force exiting")
 

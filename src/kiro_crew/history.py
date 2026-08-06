@@ -19,7 +19,7 @@ import threading
 import time as _time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -619,13 +619,68 @@ def transcript_sort_key(ts: str) -> tuple[int, float]:
     real instant instead of letting a fallback epoch interleave them into the
     middle of the conversation.
     """
-    try:
-        parsed = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+    parsed = _parse_transcript_ts(ts)
+    if parsed is None:
         return (1, 0.0)
     if parsed.tzinfo is None:
         parsed = parsed.astimezone()
     return (0, parsed.timestamp())
+
+
+def _parse_transcript_ts(ts: str) -> datetime | None:
+    """Parse a transcript ``ts`` in either stored format, or ``None``.
+
+    Shared by :func:`transcript_sort_key` and :func:`monotonic_transcript_ts` so
+    the two agree on what counts as a readable timestamp: whatever one of them
+    can order, the other can stamp against.
+    """
+    try:
+        return datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def monotonic_transcript_ts(previous: str | None, now: datetime) -> str:
+    """Stamp a transcript row so it sorts strictly AFTER *previous*.
+
+    The two rows of one turn -- the message a person sent and the reply to it --
+    are written microseconds apart. A host whose clock ticks coarsely returns
+    the SAME value for both reads (Windows advances the system clock in ~15.6 ms
+    steps), so the pair lands on disk carrying an identical ``ts``. Every
+    consumer that orders a transcript by ``ts`` -- the dashboard, and the merge
+    built on :func:`transcript_sort_key` -- is then free to render the answer
+    above the question that prompted it.
+
+    Returning ``previous`` plus one microsecond when the clock has not advanced
+    makes the order a property of the write sequence rather than of the clock's
+    resolution. The correction only ever moves a row FORWARD, and only as far as
+    the previous row already claims to be, so it cannot push a row past one that
+    genuinely happened later. For a coarse clock that is one tick; it is larger
+    only when *previous* is a legacy naive value whose lost fold (below) makes it
+    read up to one local offset ahead.
+
+    Everything here is compared and emitted as an ABSOLUTE INSTANT, never as a
+    wall clock. A local wall clock repeats itself for an hour when daylight
+    saving ends, and ``isoformat`` does not record which of the two passes a
+    naive value belongs to -- so a naive stamp is not orderable against the
+    offset-aware rows the dashboard writes into the same file, and one written
+    during the repeat can read back an hour early. A naive *now* is therefore
+    resolved to its offset before use, and the returned value always carries
+    that offset. A naive *previous* is an older row from before this rule: it is
+    read as local time, the same reading :func:`transcript_sort_key` gives it,
+    which is the most its lost fold allows. An absent or unparseable *previous*
+    yields *now*.
+    """
+    if now.tzinfo is None:
+        now = now.astimezone()
+    if previous:
+        prior = _parse_transcript_ts(previous)
+        if prior is not None:
+            if prior.tzinfo is None:
+                prior = prior.astimezone()
+            if now <= prior:
+                now = prior + timedelta(microseconds=1)
+    return now.isoformat()
 
 
 def _safe_key(key: str) -> str:
@@ -661,6 +716,14 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
 #: for the lifetime of the process.  A bounded LRU keeps hot sessions resident
 #: while giving the working set a deterministic ceiling.
 _TRANSCRIPT_CACHE_MAX = 256
+
+# Metadata reads retry briefly before reporting "no metadata": on Windows a
+# just-written session file can be transiently unopenable while an indexer or AV
+# scanner holds it (ERROR_SHARING_VIOLATION -> PermissionError). Those holds are
+# measured in milliseconds, and the caller that matters here (the open-tab
+# restore) treats an empty result as "session never existed" and drops the tab.
+_METADATA_READ_ATTEMPTS = 3
+_METADATA_READ_RETRY_SECS = 0.02
 
 
 _V = TypeVar("_V")
@@ -1145,7 +1208,9 @@ class ConversationLog:
         # file in another process can't interleave and lose this append.
         with self._locked(key):
             created_with_tab_id = False
+            created_now = False
             if not path.exists():
+                created_now = True
                 self._dir.mkdir(parents=True, exist_ok=True)
                 meta: dict = {
                     "_type": "metadata",
@@ -1162,7 +1227,23 @@ class ConversationLog:
             msg: dict = {
                 "role": role,
                 "content": _redact_at_write_boundary(role, content),
-                "ts": datetime.now().isoformat(),
+                # Strictly after the row already on disk, so the pair written by
+                # one turn stays ordered on a host whose clock cannot separate
+                # them (see monotonic_transcript_ts). Consulting the file here is
+                # authoritative because ``_locked`` also holds the cross-process
+                # flock: no writer, in this process or another, can append
+                # between this look and the write below. A file this call just
+                # created provably holds no rows yet, so it is not consulted.
+                #
+                # ``astimezone()`` resolves the clock to an absolute instant
+                # before it is stored. This used to record a bare local wall
+                # clock, which repeats for an hour when daylight saving ends and
+                # cannot be ordered against the offset-aware rows the dashboard
+                # writes into this same file.
+                "ts": monotonic_transcript_ts(
+                    None if created_now else self._last_row_ts(key),
+                    datetime.now().astimezone(),
+                ),
             }
             if tools:
                 msg["tools"] = tools
@@ -2193,6 +2274,35 @@ class ConversationLog:
             window *= 4
         return messages[-max_messages:]
 
+    def _last_row_ts(self, key: str) -> str | None:
+        """The ``ts`` of the last message row on disk for *key*, or ``None``.
+
+        Call this under :meth:`_locked`. The answer is only authoritative while
+        no other writer can append, and the cross-process flock that ``_locked``
+        takes is what makes that true for a subagent / cron / CLI writing the
+        same session file from another process. ``append`` skips this entirely
+        for a file it just created, which provably holds no rows yet.
+
+        Reuses :meth:`_read_tail_messages` rather than parsing the file, so this
+        stays a bounded read on a long transcript. That reader also grows its
+        window when the last line is larger than it, so a single long reply
+        cannot hide the row behind it.
+
+        Measured on a 1.6 MB / 400-row transcript this is ~48 us, against ~38 us
+        for the ``open`` + ``write`` the same critical section already performs
+        and ~2.4 ms for the whole-file read ``_maybe_rotate`` does when it
+        rotates -- 0.4% of an ``append`` call, which is ~11.8 ms end to end. A
+        remembered-tail cache was tried here and removed: it would have needed a
+        cheap stamp of the file's identity to know when to distrust itself, and
+        the only cheap ones (size, mtime) are exactly the coarse-resolution
+        signals this module now exists to stop trusting.
+        """
+        tail = self._read_tail_messages(self._path(key), 1, None)
+        if not tail:
+            return None
+        ts = tail[-1].get("ts")
+        return ts if isinstance(ts, str) and ts else None
+
     def _invalidate_cache(self, key: str) -> None:
         """Invalidate caches for a key after a write operation."""
         self._msg_cache.pop(key, None)
@@ -2289,38 +2399,82 @@ class ConversationLog:
         """Read the metadata line (first line) from a session JSONL file.
 
         Uses mtime-based caching to avoid re-reading unchanged files.
+
+        Returns ``{}`` for a session that genuinely has no metadata. A caller
+        cannot distinguish that from a transient read failure, and at least one
+        does something destructive with the answer: the open-tab restore treats
+        ``{}`` as "never persisted" and silently drops the tab. So absorb the
+        transient case HERE rather than reporting it as absence -- retry a few
+        times, and if it still fails, say so at warning level instead of
+        returning a confident empty dict. Windows makes this more than
+        theoretical: a freshly written file can be briefly unopenable while an
+        indexer or AV scanner holds it (``ERROR_SHARING_VIOLATION``), which
+        surfaces as ``PermissionError`` -- an ``OSError`` subclass.
         """
         path = self._path(key)
         if not path.exists():
             self._meta_cache.pop(key, None)
             return {}
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return {}
-        cached = self._meta_cache.get(key)
-        if cached and cached[0] == mtime:
-            return cached[1]
-        # Read ONLY the first line. The previous form slurped the entire file via
-        # read_text() and then threw all but the first line away — on a 26 MB
-        # transcript that is ~10ms and ~26 MB of transient allocation to obtain a
-        # few hundred bytes (measured ~32x slower than readline()). Startup
-        # restore calls this once per tab, so the waste scaled with both tab count
-        # and transcript size, pushing the event loop toward the stall watchdog.
-        try:
-            with open(path, encoding="utf-8") as fh:
-                first = fh.readline().strip()
-        except OSError:
-            return {}
-        if not first:
-            return {}
-        try:
-            data = json.loads(first)
-            meta = data if data.get("_type") == "metadata" else {}
-        except json.JSONDecodeError:
-            meta = {}
-        self._meta_cache[key] = (mtime, meta)
-        return meta
+        for attempt in range(_METADATA_READ_ATTEMPTS):
+            try:
+                mtime = path.stat().st_mtime
+                cached = self._meta_cache.get(key)
+                if cached and cached[0] == mtime:
+                    return cached[1]
+                # Read ONLY the first line. The previous form slurped the entire
+                # file via read_text() and then threw all but the first line away
+                # — on a 26 MB transcript that is ~10ms and ~26 MB of transient
+                # allocation to obtain a few hundred bytes (measured ~32x slower
+                # than readline()). Startup restore calls this once per tab, so
+                # the waste scaled with both tab count and transcript size,
+                # pushing the event loop toward the stall watchdog.
+                with open(path, encoding="utf-8") as fh:
+                    first = fh.readline().strip()
+            except OSError:
+                if attempt + 1 < _METADATA_READ_ATTEMPTS:
+                    # Pause before retrying ONLY off the event loop. This path is
+                    # reached ON it: ``restore_open_slots_async`` keeps the whole
+                    # restore on the loop deliberately (creating a slot broadcasts
+                    # through ``asyncio.Queue.put_nowait`` / ``Event.set``, neither
+                    # thread-safe), and a kernel sleep there stops
+                    # ``_loop_heartbeat`` from petting the LoopStallWatchdog --
+                    # whose ``exit_after`` timer then kills the gateway. That
+                    # crash-loop is the exact thing the async restore exists to
+                    # prevent, so it must not be reintroduced here. Same probe as
+                    # the cross-process lock acquire above.
+                    on_loop = True
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        on_loop = False
+                    if not on_loop:
+                        _time.sleep(_METADATA_READ_RETRY_SECS)
+                    # On the loop the retry is immediate instead. It costs a stat
+                    # plus an open, so it is cheap enough to be worth taking, and
+                    # losing it only yields the same ``{}`` this returned before
+                    # any retry existed -- never worse than the old behaviour.
+                    continue
+                # Out of retries. Distinguish this from "no metadata" in the log
+                # so a dropped tab is traceable to its cause instead of looking
+                # like a session that was never written.
+                logger.warning(
+                    "history: could not read metadata for %s after %d attempts; "
+                    "reporting no metadata",
+                    key,
+                    _METADATA_READ_ATTEMPTS,
+                    exc_info=True,
+                )
+                return {}
+            if not first:
+                return {}
+            try:
+                data = json.loads(first)
+                meta = data if data.get("_type") == "metadata" else {}
+            except json.JSONDecodeError:
+                meta = {}
+            self._meta_cache[key] = (mtime, meta)
+            return meta
+        return {}
 
     def sliding_window(self, key: str, keep_recent: int = 5) -> tuple[list[dict], list[dict]]:
         """Split messages into (older, recent) for compaction.

@@ -35,6 +35,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
@@ -459,14 +460,20 @@ def _is_apple_silicon() -> bool:
 def _stt_providers() -> list[str]:
     """STT provider values offered to the UI.
 
-    ``mlx`` (Whisper on Apple's MLX framework) only runs on Apple Silicon, so
-    it is omitted entirely on every other platform rather than being shown as
-    an unusable option. This is the single source of truth for which providers
-    are advertised (GET) and accepted (PUT).
+    ``mlx`` (Whisper on Apple's MLX framework) only runs on Apple Silicon, and
+    ``apple`` (the on-device SpeechAnalyzer framework) needs macOS 26 or later plus
+    a Swift toolchain — both are omitted entirely elsewhere rather than being shown
+    as unusable options. This is the single source of truth for which providers are
+    advertised (GET) and accepted (PUT).
     """
     providers = list(_VALID_STT_PROVIDERS)
     if not _is_apple_silicon() and "mlx" in providers:
         providers.remove("mlx")
+    if "apple" in providers:
+        from kiro_crew import apple_speech
+
+        if not apple_speech.availability().ok:
+            providers.remove("apple")
     return providers
 
 
@@ -574,6 +581,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "models": _STT_MODEL_SIZES,
             "mlx_models": _STT_MLX_MODELS,
             "providers": _stt_providers(),
+            # Which of those providers can stream partial results. Served from the
+            # backend's own `_STREAMING_PROVIDERS` so the Settings UI gates the
+            # streaming controls on a CAPABILITY rather than on a hardcoded provider
+            # name — the latter silently hid the toggle when `apple` was added.
+            "streaming_providers": list(_STREAMING_PROVIDERS),
             "language_codes": list(_STT_LANGUAGE_CODES),
             "install_step": _stt_install_status["step"],
             "install_detail": _stt_install_status["detail"],
@@ -1211,6 +1223,61 @@ def _agent_values() -> set[str]:
     return {"", *KiroCrewConfig.load().agents}
 
 
+def _active_advertised_ids(request: web.Request) -> list[str] | None:
+    """Advertised model ids from the first active provider, or None if unknown.
+
+    Uses the shared :func:`advertised_model_ids` shape parser (#1596) so this
+    validation sees exactly what the session-init withhold check sees. Returns
+    ``None`` when no session has initialized / nothing was advertised, so callers
+    treat entitlement as UNKNOWN rather than denying on no evidence.
+    """
+    from kiro_crew.acp.client import advertised_model_ids
+
+    try:
+        providers = request.app["state"].sessions.active_providers()
+    except (KeyError, AttributeError):
+        return None
+    for provider in providers:
+        getter = getattr(provider, "available_models", None)
+        if not callable(getter):
+            continue
+        try:
+            ids = advertised_model_ids(getter())
+        except Exception:
+            continue
+        if ids:
+            return ids
+    return None
+
+
+def _validate_role_model(value: str, request: web.Request) -> str | None:
+    """Reject a per-role model pin the account cannot use; ``None`` = allow.
+
+    ``""`` / ``"auto"`` always allow (they defer to the chat default). Otherwise
+    reuse the per-session provider guard (rejects display-only canonical keys for
+    the active provider), then — when a live advertised set is known — apply the
+    SAME entitlement predicate the session-init withhold uses
+    (:func:`model_is_unusable`, #1596) so the picker and the wire cannot disagree.
+    No advertised set => accept (entitlement unknowable; don't accuse on no
+    evidence), matching that predicate's own conservative default.
+    """
+    if not value or value == "auto":
+        return None
+    from kiro_crew.acp.client import model_is_unusable
+    from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+
+    reason = _model_rejected_reason(value)
+    if reason:
+        return reason
+    advertised = _active_advertised_ids(request)
+    if advertised is None:
+        return None
+    if model_is_unusable(value, advertised):
+        usable = ", ".join(advertised[:8]) or "auto"
+        return f"{value!r} is not available on your account; choose one of: {usable}, or 'auto'."
+    return None
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Default model for new sessions. Membership can NOT be validated against a
@@ -1222,7 +1289,27 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # by kiro itself rather than silently accepted here. "auto"/"" = defer to
     # the agent config / kiro's own default.
     "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
+    # Per-task-class model overrides. Same grammar as agent.model (the real
+    # vocabulary is whatever the backend advertises). "" / "auto" defers to the
+    # chat default. `validate_fn` additionally rejects a well-formed id the
+    # active provider or the account's entitlement cannot honor.
+    "agent.role_models.background": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "validate_fn": _validate_role_model,
+    },
+    "agent.role_models.subagent": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "validate_fn": _validate_role_model,
+    },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
+    # Per-role reasoning effort, paired with role_models. Same enum as the chat
+    # default; "" = inherit. Applies only on reasoning-capable models.
+    "agent.role_efforts.background": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
+    "agent.role_efforts.subagent": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "agent.approval_mode": {"type": "enum", "values": ["auto", "interactive"]},
     # How long an AD-HOC auto-approve grant lasts. Editable from Settings because
     # every value here still ends: the timed ones are capped at the SafetyOverride
@@ -1285,6 +1372,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # require approval regardless — enforced in the generation path).
     "skills.auto_create_from_sessions": {"type": "bool"},
     "skills.approval_required": {"type": "bool"},
+    # Knowledge Library auto-ingest. Chunk budget max mirrors the point past which
+    # a single sweep stops being a trickle; dedup cadence max is ~a day of sweeps.
+    "knowledge.auto_add_documents": {"type": "bool"},
+    "knowledge.auto_register_project_docs": {"type": "bool"},
+    "knowledge.auto_ingest_artifacts": {"type": "bool"},
+    "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
     # ``computer_use.json`` (see config.loader.computer_use_state_path) so the
@@ -1403,6 +1497,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         values_fn = spec.get("values_fn")
         if values_fn and value not in values_fn():
             return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
+        validate_fn = spec.get("validate_fn")
+        if validate_fn:
+            reason = validate_fn(value, request)
+            if reason:
+                return _deny(reason, f"{path_key}={value}")
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 
@@ -1439,16 +1538,21 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return web.json_response({"error": "failed to read config file"}, status=500)
 
         parts = path_key.split(".")
-        if len(parts) == 2:
-            section = data.setdefault(parts[0], {})
-            if not isinstance(section, dict):
+        # Walk (creating) intermediate objects, then set the leaf. Handles
+        # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
+        # ("agent.model"), and 3-level ("agent.role_models.background") — instead
+        # of the previous special-cases that would clobber a whole section for a
+        # 3-level key.
+        section = data
+        for part in parts[:-1]:
+            nxt = section.setdefault(part, {})
+            if not isinstance(nxt, dict):
                 _log_sel("error", f"{path_key}=section_not_dict")
                 return web.json_response(
-                    {"error": f"config section '{parts[0]}' is not an object"}, status=500
+                    {"error": f"config section '{part}' is not an object"}, status=500
                 )
-            section[parts[1]] = value
-        else:
-            data[parts[0]] = value
+            section = nxt
+        section[parts[-1]] = value
 
         try:
             cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1492,10 +1596,28 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # reload_provider_factory() must NOT be used here: it clears _sessions and
     # shuts every provider down, which is correct for a provider switch but
     # would kill in-flight turns just because a default changed.
-    if path_key in ("agent.model", "agent.reasoning_effort"):
+    if path_key in ("agent.model", "agent.reasoning_effort") or path_key.startswith(
+        "agent.role_efforts."
+    ):
         state = request.app["state"]
         await state.sessions.refresh_defaults()
         logger.info("%s set to %r — session defaults refreshed", path_key, value)
+
+    # The background role model is baked into the lite / heartbeat kiro specs at
+    # agent-build time, so a change must rewrite them to take effect without a
+    # restart. The subagent role is read live at spawn (_subagent_default_model),
+    # so it needs no rebuild. Chat-default inheritance for both roles is picked
+    # up by the refresh_defaults above when agent.model changes.
+    if path_key == "agent.role_models.background":
+        try:
+            from kiro_crew.agent import rebuild_agent_config
+
+            await asyncio.to_thread(rebuild_agent_config)
+            logger.info(
+                "agent.role_models.background set to %r — background agent specs rebuilt", value
+            )
+        except Exception:
+            logger.warning("background-model rebuild failed", exc_info=True)
 
     # If completion-keep mode or budget changed, propagate to the live
     # SubagentManager so the next subagent to complete uses the new value.

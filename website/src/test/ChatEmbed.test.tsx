@@ -59,6 +59,9 @@ function renderWithProviders(ui: React.ReactElement) {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // vitest 4's restoreAllMocks no longer clears standalone vi.fn() call history
+  // (mockGet/mockPost), so clear it explicitly or calls leak across tests.
+  vi.clearAllMocks()
   vi.useFakeTimers()
   // jsdom doesn't implement scrollIntoView
   Element.prototype.scrollIntoView = vi.fn()

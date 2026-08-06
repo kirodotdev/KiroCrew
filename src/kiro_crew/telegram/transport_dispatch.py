@@ -39,6 +39,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     build_dm_session_key,
     legacy_dashboard_mirror_key,
+    release_conversation_location,
     seed_generation,
 )
 from kiro_crew.messaging.transport import InboundMessage
@@ -938,15 +939,21 @@ class TelegramDispatcher:
     async def _handle_unlink(self, route: tuple[str, str], chat_id: int) -> None:
         assert self.client is not None
         key = self._session_key(route)
-        was_linked = self.sessions.clear_mirror_link(key)
-        was_linked = (
-            self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)) or was_linked
+        # Match the location exactly as _handle_link writes it (forum Topic
+        # included). No dashboard nudge here: a swept slot's link chip is
+        # refreshed by the periodic channel_slot_reconciler push.
+        topic = self._route_thread(route)
+        reply, _swept = release_conversation_location(
+            self.sessions,
+            key=key,
+            location=ChannelLink(
+                "telegram",
+                channel_id=str(chat_id),
+                thread_id=(str(topic) if topic is not None else None),
+            ),
+            channel="telegram",
         )
-        await self._reply(
-            chat_id,
-            "✅ Unlinked." if was_linked else "This conversation wasn't linked.",
-            thread=self._route_thread(route),
-        )
+        await self._reply(chat_id, reply, thread=self._route_thread(route))
 
     def _persist_turn(
         self, session_key: str, user_text: str, reply_text: str, is_new: bool

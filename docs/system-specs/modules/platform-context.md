@@ -812,8 +812,10 @@ new module/class names.
 - `security._SENSITIVE_HOME_DIRS` gains `.midway` (live SSO bearer cookie;
   inert on a host without `~/.midway`).
 - `config.dashboard.mwinit_flags` (str) + `_EDITABLE_CONFIG` PATCH entry.
-- `config.knowledge.auto_ingest_doc_links` (bool) + `doc_ingest_hosts` (list) —
-  SSRF-safe, empty allowlist = deny-by-default.
+- `config.knowledge.doc_ingest_hosts` (list) — SSRF-safe allowlist for the
+  server-side fetch path only; empty = deny-by-default. The agent-driven
+  `auto_add_documents` path (renamed from `auto_ingest_doc_links`) is NOT gated
+  on it: the agent hands over text it already fetched, Kiro Crew fetches nothing.
 - `KiroCrewConfig._extra_sections` (private) — unknown top-level config.json
   sections captured at `load()`, re-emitted by `to_dict()`, so an edition
   section is not dropped on `save()`/PATCH. Excluded from the JSON schema

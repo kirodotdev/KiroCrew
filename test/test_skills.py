@@ -395,6 +395,29 @@ class TestTriggeredSkills:
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: MagicMock())
         assert loader.get_triggered_skills("anything") == []
 
+    def test_trigger_match_does_not_record_usage(self, tmp_path, monkeypatch):
+        """A trigger match must not earn ranking weight in the ledger.
+
+        Only body delivery (the context builder calling _record_use after
+        load_skill succeeds) should update the hotness ranking. False-positive
+        trigger matches must not drift the top-K toward skills the agent never
+        reads.
+        """
+        loader = self._loader_with_skill(tmp_path, "tiny url", monkeypatch)
+
+        # Confirm the skill triggers on the message
+        triggered = loader.get_triggered_skills("make a tiny url for me")
+        assert "tiny-url" in triggered
+
+        # The ledger must still be at zero: a match alone is not a delivery
+        assert loader._usage is not None
+        assert loader._usage.score("tiny-url")[0] == 0.0
+
+        # Simulating body delivery (what context.py does after load_skill)
+        # must update the ledger
+        loader._record_use("tiny-url")
+        assert loader._usage.score("tiny-url")[0] == 1.0
+
 
 class TestSkillsCRUD:
     def test_create_skill(self, tmp_path):

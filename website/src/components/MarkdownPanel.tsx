@@ -54,6 +54,31 @@ const FIND_HL_CURRENT = 'mc-find-current'
  * equals source text. For markdown, used as a fallback when DOM-based
  * `resolveSourcePos` can't resolve coordinates (rare). Exported for tests.
  */
+/** One rendered breadcrumb segment: its display text, the ABSOLUTE path up to
+ *  and including it (so a clicked directory opens that exact folder even though
+ *  only the last three segments are shown), and whether it is the file itself. */
+export interface BreadcrumbSegment { seg: string; path: string; isFile: boolean }
+
+/**
+ * Split a file path into the last three breadcrumb segments, each carrying its
+ * own absolute path. The final segment is the open file (never a folder target);
+ * the earlier ones are its ancestor directories.
+ *
+ * A leading slash is preserved explicitly: joining segments with '/' drops it,
+ * which would turn an absolute path into a relative one the folder browser then
+ * resolves against the wrong root. Exported for unit tests.
+ */
+export function breadcrumbSegments(filePath: string): BreadcrumbSegment[] {
+  const isAbs = filePath.startsWith('/')
+  const allSegs = filePath.replace(/\/+$/, '').split('/').filter(Boolean)
+  const shown = Math.min(3, allSegs.length)
+  return allSegs.slice(-3).map((seg, j) => {
+    const absIndex = allSegs.length - shown + j
+    const joined = allSegs.slice(0, absIndex + 1).join('/')
+    return { seg, path: isAbs ? '/' + joined : joined, isFile: absIndex === allSegs.length - 1 }
+  })
+}
+
 export function findCoords(content: string, selected: string): { line: number; column: number } | undefined {
   if (!selected) return undefined
   const idx = content.indexOf(selected)
@@ -162,17 +187,34 @@ interface Props {
   onDiffModeChange?: (diffMode: boolean) => void
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
+  /** Open a directory (e.g. a clicked path-breadcrumb segment) as a folder tab.
+   *  Omitted where no filesystem-navigation surface exists (the standalone,
+   *  non-embedded panel), in which case breadcrumb segments stay inert text. */
+  onOpenFolder?: (dirPath: string) => void
   /** The on-disk (last-saved) content. When provided, "dirty" is computed as
    *  content !== savedBaseline instead of only being set by local edits — so an
    *  editor RESTORED with a pre-edited buffer (e.g. the Files-tab inline draft
    *  after a remount) is correctly dirty, and its close guard won't silently
    *  discard the restored edits. Omitted by document tabs (unchanged behavior). */
   savedBaseline?: string
+  /**
+   * A 1-based source line to scroll to and flash, from a `file.py:447` chip.
+   *
+   * Carries a `nonce` because the line alone is not a change: clicking the same
+   * chip again, after scrolling away, must re-fire the reveal, and a bare
+   * `line: 447` prop is `===` to the previous one so no effect would run. Same
+   * shape as `CommentsSidebar`'s `flashCommentId`.
+   */
+  revealLine?: RevealTarget
+  /** Called once a reveal has landed, so the owner can drop the target and keep
+   *  it a true one-shot (see `useLineReveal`). */
+  onRevealConsumed?: () => void
 }
 
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
 import { kirocrewDark, kirocrewLight } from './monacoTheme'
 import type { IDisposable } from 'monaco-editor'
+import { useLineReveal, type RevealTarget } from '../hooks/useLineReveal'
 import { i18nT } from '../i18n/t'
 const MonacoDiffEditor = lazy(async () => {
   const { ensureMonacoLocal } = await import('../utils/monacoLocal')
@@ -180,6 +222,19 @@ const MonacoDiffEditor = lazy(async () => {
   const { DiffEditor } = await import('@monaco-editor/react')
   return { default: DiffEditor }
 })
+
+/**
+ * File types that render through a dedicated viewer instead of a text editor.
+ *
+ * One owner because this list was spelled out twice — inline in the `editing`
+ * initializer and again in `isRichType` — and a citation-forced source mode has to
+ * agree with both, or a file lands in an editor the rest of the panel's chrome does
+ * not support. The two copies differed only in `svg`, which `isRichType` omitted;
+ * that was harmless rather than a live bug, because `detectFileType` maps a
+ * path-backed `.svg` to `image` and never returns `svg` here. `svg` is kept in the
+ * list for the content-string SVG that artifacts render.
+ */
+const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw']
 
 /** Comment hint banner — shown once per session for markdown files */
 function CommentHint({ onDismiss }: { onDismiss: () => void }) {
@@ -378,7 +433,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             <button
               role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none"
               onClick={() => { navigate(`/artifacts/${encodeURIComponent(artifact.existing!.slug)}`); setOpen(false) }}
-              title={`Open artifact ${artifact.existing.slug}`}
+              title={i18nT('components.markdownPanel.open_artifact', { name: artifact.existing.slug })}
             >
               <BookmarkPlus size={14} className="lucide-inline" style={{ color: 'var(--ok)' }} /> {i18nT('components.markdownPanel.in_artifacts')} <Check size={14} className="lucide-inline" />
             </button>
@@ -681,14 +736,34 @@ const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComm
  *  control can't bypass the "Discard unsaved changes?" confirmation. */
 export interface MarkdownPanelHandle { requestClose: () => void }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed, onOpenFolder }: Props, ref) {
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
   // "preview" was just a read-only render of the same text. They open
   // straight in source mode and the View Preview toggle is hidden for them.
+  //
+  // A requested line forces source mode: a line number only means something
+  // against the source, and the rendered markdown preview has no per-line element
+  // to scroll to (its `data-sourcepos` is per BLOCK, and soft wrapping breaks any
+  // line-count correspondence anyway). So `README.md:42` opens the raw markdown at
+  // line 42 rather than a paragraph that may contain it.
+  //
+  // Rich types are excluded, and that is a deliberate scope line rather than an
+  // oversight. They have exactly ONE renderer by design — `isRichType` gates the
+  // source/preview toggle, the Save/Cancel row, the line-number and diff controls,
+  // and the Cmd+S handler — so forcing one into an editor creates a file that is in
+  // source mode with none of the chrome that makes source mode usable, including no
+  // way back to its own viewer and no visible Save for a buffer the user has
+  // edited. Making that coherent means teaching every one of those gates about a
+  // rich-file-in-source-mode state, i.e. making rich files editable as text, which
+  // is a larger feature than a citation jump. So `data.json:42` opens the JSON
+  // viewer and drops the line: strictly better than the inert chip it used to be,
+  // and it strands nothing.
+  const revealTargetsSource = !RICH_FILE_TYPES.includes(detectFileType(filePath))
   const [editing, setEditing] = useState(() => {
+    if (revealLine && revealTargetsSource) return true
     if (MD_EXTS.has(extOf(filePath))) return false
-    return !['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw'].includes(detectFileType(filePath))
+    return !RICH_FILE_TYPES.includes(detectFileType(filePath))
   })
   const [diffMode, setDiffMode] = useState(initialDiffMode ?? false)
   const toggleDiffMode = useCallback(() => {
@@ -796,7 +871,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const ext = extOf(filePath)
   const fileType = detectFileType(filePath)
   const isMarkdown = MD_EXTS.has(ext)
-  const isRichType = fileType === 'image' || fileType === 'csv' || fileType === 'json' || fileType === 'jsonl' || fileType === 'html' || fileType === 'pdf' || fileType === 'excalidraw'
+  const isRichType = RICH_FILE_TYPES.includes(fileType)
   useEffect(() => { if (isRichType) setDiffMode(false) }, [isRichType])
   // ── Preview-mode find (Cmd+F) ─────────────────────────────────────────────
   // Three surfaces compete for Cmd+F: Monaco owns it while editing (it stops
@@ -970,6 +1045,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     liveWatch && !editing && !dirty ? filePath : null,
     useCallback((c: string) => { onContentChange(c) }, [onContentChange]),
   )
+
 
   // Detect if file has uncommitted changes and pre-fetch HEAD content
   const { data: diffData, isFetching: diffChecking } = useQuery({
@@ -1159,6 +1235,20 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     const t2 = window.setTimeout(() => { row.style.transition = ''; commentFlashRef.current = null }, 3100)
     commentFlashRef.current = { row, timers: [t1, t2] }
   }, [])
+
+  /* ── Reveal a cited line (`…/_dispatch.py:447` chip) ────────────────────
+   * The mechanics live in useLineReveal; this only decides which VIEW the reveal
+   * needs and reports the target as consumed. */
+  const { onEditorMount: handleEditorMount } = useLineReveal(revealLine, onRevealConsumed)
+
+  // A line only resolves against source, so leave preview/diff for it. Keyed on
+  // the whole target (nonce included), so a second chip click also pulls the
+  // panel back out of a view the user switched to in between.
+  useEffect(() => {
+    if (!revealLine || !revealTargetsSource) return
+    setEditing(true)
+    setDiffMode(false)
+  }, [revealLine, revealTargetsSource])
 
   useLayoutEffect(() => {
     const HL = 'mc-comment'
@@ -1358,7 +1448,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   </>)
 
   // Breadcrumb: last two directories + filename (full path in tooltip/copy).
-  const crumbs = filePath.replace(/\/+$/, '').split('/').filter(Boolean).slice(-3)
+  const crumbs = breadcrumbSegments(filePath)
   // Diff-mode +N/-N stats over the same original/modified pair Monaco shows.
   const diffStats = useMemo(() => countLines(originalContent, content), [originalContent, content])
   // Snapshot (⋯ menu): capture current content as a new artifact version;
@@ -1391,12 +1481,23 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           <div className="flex items-center gap-2 h-[38px] px-3">
             <FileText size={14} className="text-muted shrink-0" />
             <span className="flex items-center min-w-0" title={filePath}>
-              {crumbs.map((seg, i) => (
-                <span key={i} className="flex items-center min-w-0 text-[12px]">
-                  {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
-                  <span className={`truncate ${i === crumbs.length - 1 ? 'text-text-strong font-medium' : 'text-muted'}`}>{seg}</span>
-                </span>
-              ))}
+              {crumbs.map((c, i) => {
+                const clickable = !c.isFile && !!onOpenFolder
+                return (
+                  <span key={i} className="flex items-center min-w-0 text-[12px]">
+                    {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
+                    {clickable ? (
+                      <Clickable
+                        onClick={() => onOpenFolder?.(c.path)}
+                        className="truncate text-muted hover:text-text hover:underline cursor-pointer rounded px-0.5 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                        title={i18nT('components.markdownPanel.open_folder', { path: c.path })}
+                      >{c.seg}</Clickable>
+                    ) : (
+                      <span className={`truncate ${c.isFile ? 'text-text-strong font-medium' : 'text-muted'}`}>{c.seg}</span>
+                    )}
+                  </span>
+                )
+              })}
             </span>
             {dirty && <span className="text-warn text-[15px] leading-none shrink-0" title={i18nT('components.markdownPanel.unsaved_changes')}>●</span>}
             {diffMode && (diffStats.added > 0 || diffStats.removed > 0) && (
@@ -1473,7 +1574,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               <DiffEditorBlock flush sideBySide={diffSplit} diffMode={diffMode} lang={lang} originalContent={originalContent} content={content} dark={dark} diffActiveRef={diffActiveRef} handleChange={handleChange} editing={editing} lineNums={lineNums} wordWrap={wordWrap} autocomplete={autocomplete} onSelect={onSubmitComments ? (text, rect) => setMonacoSelection({ text, x: rect.x, y: rect.y }) : undefined} />
             )}
             {!diffMode && <ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} autocomplete={autocomplete} onChange={handleChange}
-              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} highlightedHtml={highlightedHtml} gutterReadRef={gutterReadRef} markdownClassName="msg-content text-sm leading-relaxed" />}
+              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} highlightedHtml={highlightedHtml} gutterReadRef={gutterReadRef} markdownClassName="msg-content text-sm leading-relaxed" onEditorMount={handleEditorMount} />}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={sidePanelScrollRef} />}
         </div>}
@@ -1514,7 +1615,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           <div ref={fullscreenBodyRef} className="h-full overflow-auto px-16 py-4">
             {!isRichType && <DiffEditorBlock sideBySide={diffSplit} diffMode={diffMode} lang={lang} originalContent={originalContent} content={content} dark={dark} diffActiveRef={diffActiveRef} handleChange={handleChange} editing={editing} lineNums={lineNums} wordWrap={wordWrap} autocomplete={autocomplete} onSelect={onSubmitComments ? (text, rect) => setMonacoSelection({ text, x: rect.x, y: rect.y }) : undefined} />}
             {!diffMode && <ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} autocomplete={autocomplete} onChange={handleChange}
-              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} highlightedHtml={highlightedHtml} gutterReadRef={gutterFullscreenRef} previewStyle={mdPreviewStyle} />}
+              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} highlightedHtml={highlightedHtml} gutterReadRef={gutterFullscreenRef} previewStyle={mdPreviewStyle} onEditorMount={handleEditorMount} />}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>

@@ -1,7 +1,7 @@
 {
   "_comment": "Phase 5 render-time gate. Findings from rendering the real DEV build under en-XA -- all three buckets, including layout/latent, so those are measured at PSEUDOLOCALE width rather than in any locale we ship. The one real locale in the set is a DNT probe whose other findings are discarded, so it contributes nothing here; see LOCALES in scripts/lib/i18n-surfaces.mjs for what that trade cost. This is a DEBT RECORD, not the gate: [vs-base] renders the base commit and fails on any per-surface increase without reading this file, because a total is written by whichever branch measured it last and so cannot be attributed to any one diff -- see scripts/lib/render-verdict.mjs. These numbers decide a run in exactly one case: a run that had NO base commit to diff, where the alternative is checking nothing. Regenerate with `node scripts/check-i18n-render.mjs --build --update` whenever it drifts; the goal for every entry is 0. DNT findings are not recorded here -- they are zero-tolerance.",
   "_total": {
-    "text": 2416,
+    "text": 2364,
     "layout": 3,
     "latent": 72
   },
@@ -62,7 +62,7 @@
       "latent": 0
     },
     "capabilities-mcp": {
-      "text": 44,
+      "text": 34,
       "layout": 0,
       "latent": 0
     },
@@ -87,7 +87,7 @@
       "latent": 0
     },
     "apps": {
-      "text": 168,
+      "text": 152,
       "layout": 1,
       "latent": 8
     },
@@ -97,7 +97,7 @@
       "latent": 0
     },
     "notifications": {
-      "text": 16,
+      "text": 2,
       "layout": 0,
       "latent": 0
     },
@@ -202,7 +202,7 @@
       "latent": 0
     },
     "settings-shortcuts": {
-      "text": 422,
+      "text": 410,
       "layout": 0,
       "latent": 0
     },

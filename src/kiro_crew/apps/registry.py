@@ -732,11 +732,12 @@ async def _fetch_app_manifest(
             local_manifest is not None
             and local_manifest.is_file()
             and await _clone_origin_matches(clone_dir, git_url)
+            and await _clone_branch_matches(clone_dir, branch)
         ):
             try:
                 content = await asyncio.to_thread(local_manifest.read_text, "utf-8")
                 return json.loads(content)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
 
     if not _looks_like_git_url(git_url):
@@ -810,7 +811,7 @@ async def _fetch_app_manifest(
             return None
         content = await asyncio.to_thread(manifest_path.read_text, "utf-8")
         return json.loads(content)
-    except (asyncio.TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except (asyncio.TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.debug("Failed to fetch app.json from %s: %s", git_url, exc)
         return None
     finally:
@@ -1236,7 +1237,7 @@ async def _fetch_external_registry_index(
                     # item (e.g. a bare string) must never reach normalization.
                     _sel_outcome("success")
                     return [item for item in data if isinstance(item, dict)]
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
 
         # Fallback: scan for apps/*/app.json
@@ -1785,7 +1786,7 @@ def _resolved_clone_commit(clone_root: Path) -> str:
     git_dir = clone_root / ".git"
     try:
         head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ""
     if not head.startswith("ref:"):
         # Detached HEAD holds the SHA directly.
@@ -1799,7 +1800,7 @@ def _resolved_clone_commit(clone_root: Path) -> str:
         loose = (git_dir / ref).read_text(encoding="utf-8").strip()
         if _COMMIT_SHA_RE.match(loose):
             return loose
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     # A repacked clone keeps no loose ref file.
     try:
@@ -1807,7 +1808,7 @@ def _resolved_clone_commit(clone_root: Path) -> str:
             parts = line.split()
             if len(parts) == 2 and parts[1] == ref and _COMMIT_SHA_RE.match(parts[0]):
                 return parts[0]
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return ""
 
@@ -2008,6 +2009,47 @@ async def _clone_origin_matches(dest: Path, git_url: str) -> bool:
     if not git_url:
         return False
     return await _clone_origin_url(dest) == git_url
+
+
+def _read_clone_branch(clone_dir: Path) -> str | None:
+    """Read the current branch of an existing git clone.
+
+    Returns the branch name (e.g. ``"main"``), or None if the clone does not
+    exist, is in detached HEAD state, or the branch cannot be determined.
+    Reads ``.git/HEAD`` directly (stdlib-only, no subprocess spawn) — mirrors
+    the fail-closed posture of :func:`_clone_origin_matches`.
+
+    A ``.git`` that is a *file* (worktree / submodule gitfile) rather than a
+    directory also fails closed (``is_file()`` on the nested path returns
+    False), so no fast path is attempted for those layouts.
+    """
+    head_file = clone_dir / ".git" / "HEAD"
+    if not head_file.is_file():
+        return None
+    try:
+        head_content = head_file.read_text("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    # A normal branch checkout has HEAD = "ref: refs/heads/<branch>"
+    _REF_PREFIX = "ref: refs/heads/"
+    if head_content.startswith(_REF_PREFIX):
+        return head_content[len(_REF_PREFIX) :]
+    # Detached HEAD (raw SHA) or unexpected format — fail closed.
+    return None
+
+
+async def _clone_branch_matches(dest: Path, branch: str) -> bool:
+    """Whether *dest* has *branch* checked out (exact string equality).
+
+    Fails closed: an unreadable or detached HEAD, a missing ``.git/HEAD``,
+    or an empty *branch* to compare against all return False — the caller
+    must fall through to the throwaway clone so admission sees the correct
+    branch's manifest.
+    """
+    if not branch:
+        return False
+    clone_branch = await asyncio.to_thread(_read_clone_branch, dest)
+    return clone_branch == branch
 
 
 # ---------------------------------------------------------------------------
@@ -2433,16 +2475,10 @@ async def _unpoison_rejected_checkout(
         # (HEAD never moved), and app.json is the poison vector the next
         # prefetch reads.
         if manifest_snapshot is not None:
-            await asyncio.to_thread(
-                (pkg_dir / manifest_relpath).write_bytes, manifest_snapshot
-            )
-            log_lines.append(
-                f"Restored {manifest_relpath} to its exact pre-update contents"
-            )
+            await asyncio.to_thread((pkg_dir / manifest_relpath).write_bytes, manifest_snapshot)
+            log_lines.append(f"Restored {manifest_relpath} to its exact pre-update contents")
         else:
-            rc = await _run_git(
-                ["git", "--literal-pathspecs", "checkout", "--", manifest_relpath]
-            )
+            rc = await _run_git(["git", "--literal-pathspecs", "checkout", "--", manifest_relpath])
             if rc != 0:
                 log_lines.append(
                     f"WARNING: could not restore {manifest_relpath}; "
@@ -2480,9 +2516,7 @@ async def _clone_build_app_locked(
     # checkout left sitting at a policy-rejected commit would make every retry
     # reject at prefetch before the pull could ever fetch a fixed remote.
     pre_pull_commit = (
-        await asyncio.to_thread(_resolved_clone_commit, pkg_dir)
-        if checkout_preexisted
-        else ""
+        await asyncio.to_thread(_resolved_clone_commit, pkg_dir) if checkout_preexisted else ""
     )
     # And the manifest's exact pre-update WORKING-TREE bytes (which may carry
     # the user's uncommitted local edits): a rejection restores THIS snapshot,
@@ -2492,9 +2526,7 @@ async def _clone_build_app_locked(
     pre_update_manifest: bytes | None = None
     if checkout_preexisted:
         try:
-            pre_update_manifest = await asyncio.to_thread(
-                (pkg_dir / manifest_rel).read_bytes
-            )
+            pre_update_manifest = await asyncio.to_thread((pkg_dir / manifest_rel).read_bytes)
         except OSError:
             pre_update_manifest = None
     clone_err = await _git_clone_or_pull(
@@ -2537,12 +2569,10 @@ async def _clone_build_app_locked(
         app_source = contained
     cloned_manifest: dict[str, Any] | None = None
     try:
-        parsed = json.loads(
-            await asyncio.to_thread((app_source / "app.json").read_text, "utf-8")
-        )
+        parsed = json.loads(await asyncio.to_thread((app_source / "app.json").read_text, "utf-8"))
         if isinstance(parsed, dict):
             cloned_manifest = parsed
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         logger.debug("cloned app.json for %s is unreadable pre-build: %s", app_name, exc)
     cloned_name = str((cloned_manifest or {}).get("name", "") or "")
     if cloned_manifest is None or cloned_name != app_name:
@@ -2672,7 +2702,7 @@ async def _run_app_build(
                 pkg = json.loads((build_dir / "package.json").read_text("utf-8"))
                 if (pkg.get("scripts") or {}).get("build"):
                     build_cmds.append([npm, "run", "build"])
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         else:
             log_lines.append("npm not found on PATH — skipping JavaScript build step")
@@ -3012,7 +3042,7 @@ async def install_from_registry(
             parsed = json.loads(manifest_raw)
             if isinstance(parsed, dict):
                 manifest_data = parsed
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             logger.debug("cloned app.json for %s is unreadable: %s", name, exc)
 
         # IDENTITY GATE, second pass: the primary gate already ran inside
@@ -3033,9 +3063,7 @@ async def install_from_registry(
                 pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
                 manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
                 manifest_snapshot=build_result.get("_pre_update_manifest"),
-                restore_from=next(
-                    iter(build_result.get("_pending_stale_cleanup") or []), None
-                ),
+                restore_from=next(iter(build_result.get("_pending_stale_cleanup") or []), None),
             )
 
         # ADMISSION GATE, third pass — the post-build manifest is what
@@ -3070,9 +3098,7 @@ async def install_from_registry(
                 pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
                 manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
                 manifest_snapshot=build_result.get("_pre_update_manifest"),
-                restore_from=next(
-                    iter(build_result.get("_pending_stale_cleanup") or []), None
-                ),
+                restore_from=next(iter(build_result.get("_pending_stale_cleanup") or []), None),
             )
             return {
                 "ok": False,
@@ -3173,13 +3199,9 @@ async def install_from_registry(
             try:
                 if platform_compat.IS_POSIX:
                     if type(proc.pid) is int and proc.pid > 1:
-                        await asyncio.to_thread(
-                            os.killpg, proc.pid, platform_compat.SIGKILL
-                        )
+                        await asyncio.to_thread(os.killpg, proc.pid, platform_compat.SIGKILL)
                 else:
-                    await platform_compat.kill_process_tree_async(
-                        proc.pid, platform_compat.SIGKILL
-                    )
+                    await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
             except OSError:
                 # Empty group (no stragglers) — the common case.
                 pass
@@ -3196,7 +3218,7 @@ async def install_from_registry(
                 )
                 if isinstance(parsed, dict):
                     manifest_data = parsed
-            except (json.JSONDecodeError, OSError) as exc:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
                 logger.debug("post-script app.json for %s is unreadable: %s", name, exc)
             if manifest_data is None or str(manifest_data.get("name", "") or "") != name:
                 return await _refuse_identity_mismatch(
@@ -3209,9 +3231,7 @@ async def install_from_registry(
                     pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
                     manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
                     manifest_snapshot=build_result.get("_pre_update_manifest"),
-                    restore_from=next(
-                        iter(build_result.get("_pending_stale_cleanup") or []), None
-                    ),
+                    restore_from=next(iter(build_result.get("_pending_stale_cleanup") or []), None),
                 )
             denied = app_admission_denied(
                 name,
@@ -3242,9 +3262,7 @@ async def install_from_registry(
                     pre_pull_commit=str(build_result.get("_pre_pull_commit", "") or ""),
                     manifest_relpath=(f"{subdirectory}/app.json" if subdirectory else "app.json"),
                     manifest_snapshot=build_result.get("_pre_update_manifest"),
-                    restore_from=next(
-                        iter(build_result.get("_pending_stale_cleanup") or []), None
-                    ),
+                    restore_from=next(iter(build_result.get("_pending_stale_cleanup") or []), None),
                 )
                 return {
                     "ok": False,
@@ -3322,9 +3340,7 @@ async def install_from_registry(
                     name,
                     official=True,
                     kind=(
-                        install_receipt.KIND_UPDATE
-                        if was_installed
-                        else install_receipt.KIND_FRESH
+                        install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
             return {
@@ -3374,9 +3390,7 @@ async def install_from_registry(
                     name,
                     official=True,
                     kind=(
-                        install_receipt.KIND_UPDATE
-                        if was_installed
-                        else install_receipt.KIND_FRESH
+                        install_receipt.KIND_UPDATE if was_installed else install_receipt.KIND_FRESH
                     ),
                 )
 

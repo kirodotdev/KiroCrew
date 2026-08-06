@@ -208,7 +208,7 @@ export default function BottomTerminalPanel() {
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
               onClick={() => addTab()}
               disabled={atCap}
-              title={atCap ? `Maximum ${MAX_TERMINALS} terminals` : i18nT('components.bottomTerminalPanel.new_terminal')}
+              title={atCap ? i18nT('components.bottomTerminalPanel.maximum_terminals', { n: MAX_TERMINALS }) : i18nT('components.bottomTerminalPanel.new_terminal')}
               aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}
             >
               <Plus size={15} />

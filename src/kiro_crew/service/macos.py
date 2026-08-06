@@ -1,18 +1,23 @@
 """launchd LaunchAgent generation and control for macOS.
 
 The plist lives at ``~/Library/LaunchAgents/dev.kirocrew.gateway.plist``
-and is loaded via ``launchctl load -w``. The service starts on user login
-and is restarted on crash by ``KeepAlive``.
+and is loaded via ``launchctl load -w``. It keeps the gateway continuously
+running. Dev Fleet's ``launchctl stop`` restart is launchd-owned: SIGTERM first,
+then SIGKILL only after the finite ``ExitTimeOut`` if cooperative shutdown does
+not finish.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import plistlib
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
+from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
     kirocrew_bin,
@@ -70,14 +75,19 @@ def render_plist() -> str:
         "    <array>\n"
         f"        <string>{bin_path}</string>\n"
         "        <string>gateway</string>\n"
+        # A background service must never open a browser. launchd starts this on
+        # login, on every KeepAlive respawn, and on every `kickstart` — which is
+        # what Dev Fleet's Restart button runs — so without this the user gets a
+        # new dashboard tab each time. The surface they are already using (a
+        # browser tab or the Electron window) reconnects on its own.
+        "        <string>--no-open</string>\n"
         "    </array>\n"
         "    <key>RunAtLoad</key>\n"
         "    <true/>\n"
         "    <key>KeepAlive</key>\n"
-        "    <dict>\n"
-        "        <key>SuccessfulExit</key>\n"
-        "        <false/>\n"
-        "    </dict>\n"
+        "    <true/>\n"
+        "    <key>ExitTimeOut</key>\n"
+        f"    <integer>{TOTAL_SHUTDOWN_BUDGET_SECS}</integer>\n"
         "    <key>EnvironmentVariables</key>\n"
         "    <dict>\n"
         f"{env_entries}"
@@ -88,6 +98,60 @@ def render_plist() -> str:
         f"    <string>{err_log}</string>\n"
         "</dict>\n"
         "</plist>\n"
+    )
+
+
+def _plist_payload(path: Path) -> dict[str, object] | None:
+    try:
+        payload = plistlib.loads(path.read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    except Exception as exc:
+        # plistlib's XML parser exposes ExpatError without re-exporting its type.
+        # Avoid importing the unsafe low-level XML module; malformed local plist
+        # input fails closed, while an unrelated parser failure still surfaces.
+        if (type(exc).__module__, type(exc).__name__) == (
+            "xml.parsers.expat",
+            "ExpatError",
+        ):
+            return None
+        raise
+    return payload if isinstance(payload, dict) else None
+
+
+def _launchctl_print_value(printed: str, key: str) -> str | None:
+    prefix = f"{key} = "
+    for line in printed.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped[len(prefix):].strip()
+    return None
+
+
+def loaded_restart_contract_current(printed: str) -> bool:
+    """Return whether the loaded launchd job has the expected restart contract."""
+    timeout = _launchctl_print_value(printed, "exit timeout")
+    properties = _launchctl_print_value(printed, "properties")
+    if timeout is None or properties is None:
+        return False
+    try:
+        parsed_timeout = int(timeout)
+    except ValueError:
+        return False
+    flags = {part.strip().lower() for part in properties.split("|")}
+    return "keepalive" in flags and parsed_timeout == TOTAL_SHUTDOWN_BUDGET_SECS
+
+
+def restart_contract_current(path: Path | None = None) -> bool:
+    """Return whether *path* has the expected ``launchctl stop`` contract."""
+    payload = _plist_payload(path or PLIST_PATH)
+    if payload is None:
+        return False
+    timeout = payload.get("ExitTimeOut")
+    return (
+        payload.get("KeepAlive") is True
+        and type(timeout) is int
+        and timeout == TOTAL_SHUTDOWN_BUDGET_SECS
     )
 
 
@@ -196,6 +260,106 @@ def write_live_program(contents: str, path: Path | None = None) -> None:
         raise
 
 
+def _repairer_bin() -> str:
+    """The executable of the install performing the repair.
+
+    Resolution is deliberately narrow: an explicit ``KIROCREW_SERVICE_BIN``, else
+    the ``kirocrew`` console script sitting beside the running interpreter. There
+    is no ``PATH`` fallback, because ``PATH`` cannot answer the question being
+    asked — "which install is running" — and an unrelated or older ``kirocrew``
+    earlier on the inherited PATH would be baked into the agent, so the gateway
+    would come back as a DIFFERENT install than the one that repaired it. That is
+    a quieter form of the very mismatch this repair exists to end.
+
+    Raises ``OSError`` when neither resolves, or when what resolves is not an
+    executable file. Refusing beats guessing: nothing is written, so the launcher
+    stays absent and a later run can still fix it, whereas a wrong or
+    unexecutable target would leave launchd unable to spawn the agent AND — since
+    the file would now exist — suppress every later repair, cementing the
+    failure. The caller logs the reason.
+    """
+    override = os.environ.get("KIROCREW_SERVICE_BIN", "").strip()
+    if override:
+        resolved = kirocrew_bin()
+        if not _is_executable_file(Path(resolved)):
+            raise OSError(
+                f"refusing to restore the launchd launcher: KIROCREW_SERVICE_BIN "
+                f"resolves to {resolved!r}, which is not an executable file."
+            )
+        return resolved
+    sibling = Path(sys.executable).parent / (
+        "kirocrew.exe" if os.name == "nt" else "kirocrew"
+    )
+    if _is_executable_file(sibling):
+        return str(sibling)
+    raise OSError(
+        "refusing to restore the launchd launcher: no kirocrew console script "
+        f"beside the running interpreter ({sys.executable}). PATH is not "
+        "consulted, because an unrelated kirocrew ahead of this install on PATH "
+        "would be persisted into the agent. Set KIROCREW_SERVICE_BIN to the "
+        "intended executable, or install so the console script sits beside the "
+        "interpreter."
+    )
+
+
+def _is_executable_file(path: Path) -> bool:
+    try:
+        return path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def ensure_live_program() -> bool:
+    """Restore a missing launcher without touching the plist. True if written.
+
+    The launcher is a derived artifact that lives OUTSIDE the install, under
+    Application Support, and the plist's ``ProgramArguments[0]`` executes it. If
+    it goes missing the agent stays loaded with nothing to run: launchd exits it
+    ``EX_CONFIG``, stops retrying, and nothing on screen explains why the
+    gateway never comes up. ``install`` repairs it only as a side effect of
+    rewriting the whole plist, which discards operator-added
+    ``EnvironmentVariables`` (a non-default ``KIROCREW_PORT``, for instance), so
+    reconciling this half alone is what keeps a customized agent intact.
+
+    Deliberately narrow: it acts only when an agent is installed AND indirected
+    through the launcher. Writing the file where no plist exists, or where the
+    plist executes a binary directly, would leave a script nothing ever runs.
+
+    The restored launcher targets the install running right now. A previous
+    Dev Fleet cutover recorded its worktree and venv-first PATH inside the very
+    file that was lost, so that pointer cannot be recovered here -- but the
+    caller performing the repair is itself a working install, and Make live can
+    re-target the agent afterwards. A dead agent has no such recovery.
+
+    Callers are responsible for the platform check, matching every other
+    function in this module.
+    """
+    if LIVE_PROGRAM.exists():
+        return False
+    # Reuses the module's own payload reader rather than parsing again: it already
+    # fails closed on the cases that matter here — unreadable, not a plist, a
+    # malformed-XML plist (an unescaped `&` in a hand-added value is the usual
+    # way), and a non-dict root. That matters because this runs on the gateway
+    # startup path, where anything escaping a check that only decides whether to
+    # rewrite a launcher becomes a crash loop under KeepAlive.
+    payload = _plist_payload(PLIST_PATH)
+    if payload is None:
+        return False
+    # ProgramArguments carries no type guarantee either, so validate before indexing.
+    argv = payload.get("ProgramArguments")
+    if not isinstance(argv, list) or not argv or str(argv[0]) != str(LIVE_PROGRAM):
+        # No agent, or one that execs something else — not a launcher of ours.
+        return False
+    write_live_program(render_live_program(_repairer_bin()))
+    log.warning(
+        "Restored the missing launchd launcher at %s -- the agent %s was loaded "
+        "with nothing to execute. It now targets this install; use Dev Fleet's "
+        "Make live to point it at a different checkout.",
+        LIVE_PROGRAM, LAUNCHD_LABEL,
+    )
+    return True
+
+
 def install() -> None:
     """Write the plist and load+start the agent.
 
@@ -257,14 +421,10 @@ def is_active() -> bool:
 
 
 def stop() -> None:
-    """Stop the running agent.
+    """Stop the agent without triggering its ``KeepAlive`` restart.
 
-    ``launchctl stop`` only sends SIGTERM, which the plist's
-    ``KeepAlive={SuccessfulExit: false}`` treats as an unsuccessful exit
-    and immediately restarts — so a plain ``stop`` is effectively a
-    no-op. Use ``unload`` (without ``-w``) so the agent stops and stays
-    stopped for the current session, but reloads automatically on next
-    login. This mirrors ``systemctl stop`` semantics on Linux.
+    Dev Fleet restarts with ``launchctl stop``; operator stop unloads the job
+    from the current domain while leaving it enabled for the next login.
     """
     if PLIST_PATH.exists():
         _launchctl("unload", str(PLIST_PATH))
@@ -281,9 +441,8 @@ def restart() -> bool:
     from the gateway, the ``unload`` half SIGTERMs the caller, so the ``load``
     half never executes and the agent stays down — the exact failure mode that
     made Dev Fleet's Restart unimplementable on macOS. ``launchctl restart`` is
-    deprecated and behaves like ``stop``, which ``KeepAlive`` treats as an
-    unsuccessful exit and respawns immediately, so it re-runs the OLD job
-    definition rather than re-reading anything.
+    deprecated and behaves like ``stop``; ``KeepAlive`` immediately respawns the
+    loaded job definition rather than re-reading anything.
 
     Returns False when the plist is absent or launchd rejects the kickstart, so
     callers never report a restart that never happened.

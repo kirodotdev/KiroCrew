@@ -1,5 +1,5 @@
 import { safeSetItem } from '../../utils/safeStorage'
-import { useState, useMemo, useCallback, useEffect, type ReactNode } from 'react'
+import { useState, useMemo, useCallback, type ReactNode } from 'react'
 import { Bell, BellOff, Check, CheckCheck, Layers, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -12,7 +12,6 @@ import { disintegrate } from '../../lib/disintegrate'
 import { fmtRelative as fmtRelativeLocalized } from '../../i18n/format'
 import type { Notification } from '../../types'
 import {
-  type Kind, type Category, KIND_KEYS, CATEGORIES, KINDS_STORAGE_KEY, loadActiveKinds,
   parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
 } from './notifMeta'
 
@@ -65,17 +64,15 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
 }) {
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
-  const [activeKinds, setActiveKinds] = useState<Set<Kind>>(loadActiveKinds)
   const [filter, setFilter] = useState('')
-  // Silenced (muted-channel) rows are ghosts behind an explicit filter --
-  // mute keeps history but should not clutter the default view.
+  // Silenced (muted-channel) rows are ghosts behind an explicit disclosure --
+  // mute keeps history but should not clutter the default view. This is NOT a
+  // kind filter: it reveals rows that are otherwise unreachable, so it survived
+  // the removal of the per-kind chips.
   const [showMuted, setShowMuted] = useState(false)
   // App channels the user has already kept/muted via the first-notification
   // prompt (persisted so the prompt shows exactly once per channel).
   const [seenChannels, setSeenChannels] = useState<Set<string>>(loadSeenChannels)
-
-  const allActive = activeKinds.size === KIND_KEYS.length
-  const noneActive = activeKinds.size === 0
 
   const markChannelSeen = useCallback((channel: string) => {
     setSeenChannels(prev => {
@@ -91,41 +88,19 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     api.updateNotificationChannelSettings(channel, { muted: true }).catch(() => {})
   }, [markChannelSeen])
 
-  // Persist filter selection across reloads
-  useEffect(() => {
-    try { safeSetItem(KINDS_STORAGE_KEY, JSON.stringify(Array.from(activeKinds))) } catch { /* ignore quota errors */ }
-  }, [activeKinds])
-
-  const toggleCategory = useCallback((key: Category) => {
-    if (key === 'all') {
-      // "All" is a meta-toggle: if everything is on, clear; otherwise select all.
-      setActiveKinds(prev => prev.size === KIND_KEYS.length ? new Set<Kind>() : new Set<Kind>(KIND_KEYS))
-      return
-    }
-    setActiveKinds(prev => {
-      const next = new Set<Kind>(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }, [])
-
   const silencedCount = useMemo(() => items.filter(n => n.silenced).length, [items])
 
   const filtered = useMemo(() => {
     let list = [...items].reverse()
     // Muted-channel rows stay in history but hide behind the "Show muted"
-    // filter (mute-doesn't-destroy semantics).
+    // disclosure (mute-doesn't-destroy semantics).
     if (!showMuted) list = list.filter(n => !n.silenced)
-    // When every known kind is selected, behave like the old "All" state and
-    // include notifications with unknown kinds too. Otherwise filter strictly.
-    if (!allActive) list = list.filter(n => activeKinds.has(n.kind as Kind))
     if (filter) {
       const q = filter.toLowerCase()
       list = list.filter(n => ((n.title || '') + (n.body || '')).toLowerCase().includes(q))
     }
     return list
-  }, [items, activeKinds, allActive, filter, showMuted])
+  }, [items, filter, showMuted])
 
   // First notification from a new app channel gets an inline keep/mute prompt
   // (attached to the newest such row). System channels never prompt; a channel
@@ -203,39 +178,24 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   const unread = items.filter(n => !n.acked).length
   const mac = variant === 'mac'
 
-  // Extracted so the two variants can order them differently: panel keeps the
-  // original chips-then-search order; mac renders search-then-chips inside one
-  // grouped card (with the host-provided header on top).
-  const chipsRow = (
-    <div className={`flex gap-1 ${mac ? 'mb-1.5' : 'mb-2'} flex-wrap shrink-0`} role="group" aria-label={i18nT('components.notifications.notificationFeed.filter_notifications_by_kind')}>
-      {CATEGORIES.map(c => {
-        const isActive = c.key === 'all' ? allActive : activeKinds.has(c.key as Kind)
-        return (
-          <button
-            key={c.key}
-            type="button"
-            aria-pressed={isActive}
-            title={c.key === 'all' ? (allActive ? i18nT('components.notifications.notificationFeed.clear_all_filters') : i18nT('components.notifications.notificationFeed.select_all_categories')) : i18nT('components.notifications.notificationFeed.toggle_kind', { kind: c.label })}
-            className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border transition-all font-body ${isActive ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
-            onClick={() => toggleCategory(c.key)}
-          >
-            {c.icon} {c.label}
-          </button>
-        )
-      })}
-      {silencedCount > 0 && (
-        <button
-          type="button"
-          aria-pressed={showMuted}
-          title={showMuted ? i18nT('components.notifications.notificationFeed.hide_muted_channel_notifications') : `Show ${silencedCount} muted-channel notification${silencedCount === 1 ? '' : 's'}`}
-          className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border border-dashed transition-all font-body ${showMuted ? 'bg-bg-hover text-text border-border-strong' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
-          onClick={() => setShowMuted(v => !v)}
-        >
-          <BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_count', { count: silencedCount })}
-        </button>
-      )}
+  // Extracted so the two variants can order them differently: panel puts the
+  // muted disclosure above the search box, mac puts it below, inside one grouped
+  // card (with the host-provided header on top).
+  //
+  // The muted row renders solely when something is actually silenced, so it
+  // disappears entirely on a normal feed.
+  const mutedRow = silencedCount > 0 ? (
+    <div className={`flex gap-1 ${mac ? 'mb-1.5' : 'mb-2'} flex-wrap shrink-0`}>
+      <button
+        type="button"
+        aria-pressed={showMuted}
+        className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border border-dashed transition-all font-body ${showMuted ? 'bg-bg-hover text-text border-border-strong' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
+        onClick={() => setShowMuted(v => !v)}
+      >
+        <BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_count', { count: silencedCount })}
+      </button>
     </div>
-  )
+  ) : null
   const searchRow = (
     <div className="flex gap-2 mb-2 items-center shrink-0">
       <div className="flex-1"><SearchInput className="[&>input]:!bg-bg-elevated/40 [&>input]:!border-border/60" placeholder={i18nT('components.notifications.notificationFeed.search')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
@@ -246,9 +206,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* Controls: mac mode groups header + search + filter chips in ONE
-          floating card (search above chips); panel mode keeps the original
-          chips-then-search order directly on the popover surface. */}
+      {/* Controls: mac mode groups header + search + muted disclosure in ONE
+          floating card (search above the disclosure); panel mode puts the
+          disclosure first, directly on the popover surface. */}
       {mac ? (
         <div className="rounded-2xl bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] border border-[color-mix(in_srgb,var(--border)_55%,transparent)] px-2.5 pt-2 pb-1 mb-2 shrink-0">
           <div className="flex items-center gap-1.5">
@@ -271,12 +231,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
             )}
           </div>
           {searchRow}
-          {chipsRow}
+          {mutedRow}
           {footer}
         </div>
       ) : (
         <>
-          {chipsRow}
+          {mutedRow}
           {searchRow}
         </>
       )}
@@ -284,7 +244,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       {/* List */}
       <div className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {filtered.length === 0 ? (
-          <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={noneActive ? i18nT('components.notifications.notificationFeed.no_categories_selected_click_a_category_above') : filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
+          <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (
           Array.from(stackedGroups.entries()).map(([group, rows]) => (
             <div key={group} className="mb-3">
@@ -333,7 +293,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       <div className={`flex ${mac ? 'items-start' : 'items-center'} gap-2.5`}>
                       <Clickable
                         onClick={() => { if (mac && collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
-                        aria-label={mac && collapsedStack ? `Expand ${stackCount} grouped notifications: ${n.title}` : `Open notification: ${n.title}`}
+                        aria-label={mac && collapsedStack
+                          ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title: n.title })
+                          : i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
                         className={`flex ${mac ? 'items-start' : 'items-center'} gap-2 flex-1 min-w-0 text-left cursor-pointer ${mac ? contentDim : ''}`}
                       >
                         {mac ? (

@@ -639,6 +639,38 @@ class TestModelMatchesPoolDefault:
         # (pool process already has whatever model kiro-cli defaults to)
         pooled.client.set_model.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_unusable_model_is_withheld_not_raised_on_claim(self):
+        """A stale slot model must behave the SAME warm as cold.
+
+        Design Review on #1596: the post-claim re-apply carries an INHERITED
+        value, so letting AcpModelUnavailable escape here would kill the claimed
+        provider — while an identical cold start quietly withholds. That makes
+        the outcome depend on whether a pooled process happened to exist.
+        """
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        # The account can only run sonnet; the slot still asks for opus.
+        pooled.available_models = MagicMock(return_value=[{"modelId": "claude-sonnet-4.6"}])
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-sonnet-4.6"):
+            provider, _is_new, _resumed = await mgr.get_or_create(
+                "test-key", agent="kirocrew", model="claude-opus-4.8"
+            )
+
+        # Withheld, not sent — and the claim survives.
+        pooled.client.set_model.assert_not_awaited()
+        assert provider is pooled
+
 
 # ---------------------------------------------------------------------------
 # Stateless sessions must not claim from pool

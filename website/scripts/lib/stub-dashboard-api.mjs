@@ -36,7 +36,12 @@ export async function stubDashboardApi(page, opts = {}) {
     folders = [],
     slots = [],
     theme = 'dark',
-    botName = 'Kiro',
+    // The backend's own default (`api_branding`: `cfg.dashboard.bot_name or
+    // "Kiro Crew"`). It must stay TWO WORDS: the nav brand row accents the last
+    // word only, and the composer placeholder interpolates the whole name — so
+    // a single-word "Kiro" here silently produced screenshots with no "CREW"
+    // and a "Message Kiro…" composer, in every harness in this folder.
+    botName = 'Kiro Crew',
     extra = null,
   } = opts
 
@@ -66,7 +71,10 @@ export async function stubDashboardApi(page, opts = {}) {
     if (path === '/api/auth/me') return json(route, { user: 'owner', app: '' })
     if (path === '/api/themes') return json(route, { themes: [], installed: [] })
     if (path === '/api/theme/boot') return json(route, { mode: theme, theme: '' })
-    if (path === '/api/dashboard/branding') return json(route, { bot_name: botName, avatar: '' })
+    // Mirrors `api_branding` exactly, avatar included. Returning '' let the
+    // frontend fall back to its own '/logo.png' default, which is the same URL —
+    // but being explicit keeps the fixture readable as "what the server sends".
+    if (path === '/api/dashboard/branding') return json(route, { bot_name: botName, avatar: '/logo.png' })
     if (path === '/api/recent-projects') return json(route, { dirs: [] })
     if (path === '/api/dashboard/config') {
       return json(route, {

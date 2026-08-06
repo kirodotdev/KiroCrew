@@ -23,10 +23,9 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.platform_compat import restrict_to_owner
-from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 from kiro_crew.tips_text import truncate_summary
 
@@ -726,50 +725,21 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         dismissed_ids=", ".join(st.dismissed) or "none",
     )
 
+    loop2 = asyncio.get_running_loop()
+    cfg = await loop2.run_in_executor(None, KiroCrewConfig.load)
+    tips_model = cfg.dashboard.tips_model
+    # Delegate acquire / pin-model / drive / reject-tools / destroy — and the
+    # reactive model-rejection fallback — to run_bg_oneliner.
+    # tips_model (default "auto") is resolved at the wire chokepoint; a rejected
+    # model is retried once against the advertised list. Any failure or timeout
+    # degrades to the catalog fallback.
     try:
-        session = await state.sessions.get_bg_session()
+        text = await run_bg_oneliner(
+            state.sessions, prompt, model=tips_model, sel_source="tips", timeout=90
+        )
     except Exception:
-        logger.debug("Background session unavailable for tips")
+        logger.warning("Tips generation failed; using catalog fallback", exc_info=True)
         return _fallback_tips(cache.catalog, st)
-
-    text = ""
-    try:
-        # Pin to Haiku-class model for cost efficiency (per-session override,
-        # same pattern as chat_title.py). Best-effort: if the backend cannot
-        # switch, falls through on the session's default model.
-        loop2 = asyncio.get_running_loop()
-        cfg = await loop2.run_in_executor(None, KiroCrewConfig.load)
-        tips_model = cfg.dashboard.tips_model
-        _set_model = getattr(session, "set_model", None)
-        if _set_model is not None:
-            try:
-                await _set_model(tips_model)
-            except Exception:
-                logger.debug("Tips model override to %s failed; using default", tips_model)
-
-        async def _stream() -> str:
-            nonlocal text
-            async for event in session.prompt(prompt):
-                if event.kind == EVENT_TEXT_CHUNK:
-                    text += event.text
-                elif event.kind == EVENT_PERMISSION_REQUEST:
-                    sel().log_tool_invocation(
-                        session_key="_bg",
-                        tool_name=getattr(event, "title", "unknown"),
-                        outcome="denied",
-                        source="tips",
-                    )
-                    await session.reject_tool(event.request_id)
-                elif event.kind == EVENT_COMPLETE:
-                    break
-            return text
-
-        await asyncio.wait_for(_stream(), timeout=90)
-    except asyncio.TimeoutError:
-        logger.warning("Tips generation timed out")
-        return _fallback_tips(cache.catalog, st)
-    finally:
-        await session.destroy()
 
     tips = _parse_tips(text)
     if tips:

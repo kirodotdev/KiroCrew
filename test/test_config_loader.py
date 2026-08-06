@@ -3004,6 +3004,79 @@ def test_heartbeat_default_deliver_invalid_falls_back_to_slack():
     assert cfg.heartbeat.default_deliver == "slack"
 
 
+class TestKnowledgeAutoIngest:
+    """The auto-add / project-docs / budget / dedup-cadence keys."""
+
+    def test_auto_add_documents_defaults_on(self) -> None:
+        assert _load_from_dict({}).knowledge.auto_add_documents is True
+
+    def test_auto_add_documents_reads_canonical_key(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_add_documents": False}})
+        assert cfg.knowledge.auto_add_documents is False
+
+    def test_legacy_spelling_is_honoured(self) -> None:
+        # Renaming without this would silently revert every existing config to
+        # the default on upgrade.
+        cfg = _load_from_dict({"knowledge": {"auto_ingest_doc_links": False}})
+        assert cfg.knowledge.auto_add_documents is False
+
+    def test_canonical_wins_over_legacy(self) -> None:
+        cfg = _load_from_dict({"knowledge": {
+            "auto_add_documents": False, "auto_ingest_doc_links": True}})
+        assert cfg.knowledge.auto_add_documents is False
+
+    def test_round_trip_settles_on_the_canonical_key(self) -> None:
+        data = _load_from_dict({"knowledge": {"auto_ingest_doc_links": True}}).to_dict()
+        assert data["knowledge"]["auto_add_documents"] is True
+        assert "auto_ingest_doc_links" not in data["knowledge"]
+
+    def test_project_docs_defaults_on(self) -> None:
+        assert _load_from_dict({}).knowledge.auto_register_project_docs is True
+
+    def test_project_docs_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_register_project_docs": False}})
+        assert cfg.knowledge.auto_register_project_docs is False
+
+    def test_chunk_budget_default(self) -> None:
+        assert _load_from_dict({}).knowledge.auto_ingest_chunk_budget == 150
+
+    def test_chunk_budget_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": 40}})
+        assert cfg.knowledge.auto_ingest_chunk_budget == 40
+
+    def test_chunk_budget_zero_is_allowed(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": 0}})
+        assert cfg.knowledge.auto_ingest_chunk_budget == 0
+
+    @pytest.mark.parametrize("bad", [-5, "many", True, None, 1.5])
+    def test_chunk_budget_rejects_junk(self, bad: object) -> None:
+        cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": bad}})
+        assert cfg.knowledge.auto_ingest_chunk_budget == 150
+
+    def test_dedup_cadence_default(self) -> None:
+        assert _load_from_dict({}).knowledge.dedup_every_n_sweeps == 12
+
+    def test_dedup_cadence_zero_disables(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"dedup_every_n_sweeps": 0}})
+        assert cfg.knowledge.dedup_every_n_sweeps == 0
+
+    @pytest.mark.parametrize("bad", [-1, "often", True])
+    def test_dedup_cadence_rejects_junk(self, bad: object) -> None:
+        cfg = _load_from_dict({"knowledge": {"dedup_every_n_sweeps": bad}})
+        assert cfg.knowledge.dedup_every_n_sweeps == 12
+
+    def test_new_keys_are_dashboard_editable(self) -> None:
+        # A key absent from the allowlist is rejected by PATCH /api/config/kirocrew,
+        # so its toggle would render and then fail to save.
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+        for key in ("knowledge.auto_add_documents",
+                    "knowledge.auto_register_project_docs",
+                    "knowledge.auto_ingest_artifacts",
+                    "knowledge.auto_ingest_chunk_budget",
+                    "knowledge.dedup_every_n_sweeps"):
+            assert key in _EDITABLE_CONFIG, key
+
+
 class TestKnowledgeAutoDiscover:
     """``knowledge.auto_discover_folder`` / ``auto_discover_dirname`` parsing."""
 

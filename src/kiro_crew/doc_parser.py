@@ -1,8 +1,14 @@
 """Document text extraction for .docx, .pdf, and .pptx files.
 
-Uses only Python stdlib (zipfile + xml.etree.ElementTree) for .docx and
+Uses stdlib zipfile plus a hardened XML parser (defusedxml) for .docx and
 .pptx since these are ZIP archives containing XML.  PDF extraction uses
 a best-effort binary text scan (no third-party deps required).
+
+The XML comes from user-supplied uploads, so parsing goes through
+defusedxml rather than the stdlib xml.etree parser: the stdlib one resolves
+external entities, exposing an XXE (local-file disclosure / entity-expansion
+DoS) on a crafted document. defusedxml.fromstring is a drop-in that rejects
+DTDs and external entities.
 
 All functions accept a file path and return extracted text as a string.
 They never raise — on failure they return an empty string and log a warning.
@@ -12,10 +18,11 @@ from __future__ import annotations
 
 import logging
 import re
-import xml.etree.ElementTree as ETree
 import zipfile
 import zlib
 from pathlib import Path
+
+from defusedxml.ElementTree import fromstring as _xml_fromstring
 
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -136,7 +143,7 @@ def _extract_docx(path: str) -> str:
         data = _read_zip_entry(zf, "word/document.xml")
         if data is None:
             return ""
-        root = ETree.fromstring(data)  # noqa: S314
+        root = _xml_fromstring(data)
         for para in root.iter(f"{_W_NS}p"):
             texts: list[str] = []
             for t_elem in para.iter(f"{_W_NS}t"):
@@ -171,7 +178,7 @@ def _extract_pptx(path: str) -> str:
             if data is None:
                 continue
             num = int(_SLIDE_RE.match(slide_name).group(1))  # type: ignore[union-attr]
-            root = ETree.fromstring(data)  # noqa: S314
+            root = _xml_fromstring(data)
             texts: list[str] = []
             for t_elem in root.iter(f"{_A_NS}t"):
                 if t_elem.text:

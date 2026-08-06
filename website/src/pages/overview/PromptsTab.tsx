@@ -137,7 +137,7 @@ export default function PromptsTab() {
 
   return (<>
     <Card>
-      <CardTitle><ScrollText className="lucide-inline" /> {i18nT('pages.overview.promptsTab.prompts')} <InfoTip text={`Saved prompts from ${provider.labels.pluginRegistryName.toLowerCase()} and ~/.kiro/prompts/. Invoke with @name in chat or /prompts get name.`} /></CardTitle>
+      <CardTitle><ScrollText className="lucide-inline" /> {i18nT('pages.overview.promptsTab.prompts')} <InfoTip text={i18nT('pages.overview.promptsTab.saved_prompts_from', { registry: provider.labels.pluginRegistryName.toLowerCase() })} /></CardTitle>
       <p className="text-muted text-[13px] mb-3 leading-relaxed">
         {i18nT('pages.overview.promptsTab.invoke_in_chat')} <code className="text-[12px]">{i18nT('pages.overview.promptsTab.agent_sop_name')}</code> {i18nT('pages.overview.promptsTab.or')} <code className="text-[12px]">{i18nT('pages.overview.promptsTab.prompts_get_name')}</code>{i18nT('pages.overview.promptsTab.prompts_are_loaded_on_demand_they_don_t_consume')}
       </p>

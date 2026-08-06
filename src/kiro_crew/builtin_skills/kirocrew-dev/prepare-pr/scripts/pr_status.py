@@ -16,8 +16,9 @@ Exit codes:
                   aggregate PR Readiness (or the legacy full rollup) passed
   10  RUNNING   - a required check is still queued/in-progress, or mergeability
                   has not been computed yet
-  20  BLOCKED   - failing readiness, merge conflict, draft,
-                  CHANGES_REQUESTED, or anything that cannot be confirmed
+  20  BLOCKED   - failing readiness, merge conflict, draft, CHANGES_REQUESTED,
+                  a terminal PR state (MERGED/CLOSED), or anything that cannot
+                  be confirmed
    2  ENV ERROR - gh missing or not authenticated, or PR not found
 """
 import json
@@ -114,6 +115,40 @@ def classify_check(entry):
     return "fail"  # unknown shape -> fail closed
 
 
+def collapse_superseded(rollup):
+    """Collapse re-run check attempts to the newest run per check identity.
+
+    GitHub keeps superseded attempts (typically CANCELLED) in the rollup next
+    to the run that replaced them; counting them inflates the failure count
+    with entries that are no longer live. Identity is the workflow-qualified
+    check name for CheckRuns and the context name for StatusContexts; newest
+    is decided by startedAt (ISO-8601, so string comparison orders correctly).
+    Entries that cannot be strictly ordered against the current winner are all
+    kept -- when in doubt, over-report rather than hide a live failure.
+    """
+    winners = {}
+    order = []
+    undecidable = []
+    for e in rollup:
+        context = e.get("context")
+        if context:
+            key = ("ctx", context, "")
+        else:
+            key = ("run", e.get("workflowName") or "", e.get("name") or "")
+        started = e.get("startedAt") or ""
+        if key not in winners:
+            winners[key] = (started, e)
+            order.append(key)
+            continue
+        prev_started, prev = winners[key]
+        if started and prev_started:
+            if started > prev_started:
+                winners[key] = (started, e)
+        else:
+            undecidable.append(e)  # no ordering evidence -> keep both
+    return [winners[k][1] for k in order] + undecidable
+
+
 def unresolved_thread_count(number):
     """Count unresolved review threads across all pages for advisory output."""
     rc, repo, _ = run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
@@ -187,7 +222,7 @@ def main(argv):
     mergeable = (d.get("mergeable") or "").upper()
     merge_state = (d.get("mergeStateStatus") or "").upper()
     decision = (d.get("reviewDecision") or "NONE").upper()
-    rollup = d.get("statusCheckRollup") or []
+    rollup = collapse_superseded(d.get("statusCheckRollup") or [])
 
     print("=" * 54)
     print("PR #{}  [{}{}]".format(d.get("number"), state, " draft" if draft else ""))
@@ -228,6 +263,12 @@ def main(argv):
     print("=" * 54)
 
     # ---- Decision (fail-closed) --------------------------------------------
+    # A non-open PR is terminal, and must be decided BEFORE the mergeability
+    # wait: GitHub reports mergeable=UNKNOWN for merged/closed PRs forever, so
+    # waiting on it would return 10 on every poll and a loop would never stop.
+    if state != "OPEN":
+        print("STATUS: BLOCKED - PR state is {} (not OPEN; terminal)".format(state or "?"))
+        return 20
     # Once published, the aggregate is authoritative over stale duplicate
     # checks in the rollup. Legacy PRs without it still use the full rollup.
     if readiness_kind == "running" or (readiness_kind is None and n_running > 0):
@@ -245,8 +286,6 @@ def main(argv):
         reasons.append("{} check(s) failed".format(n_fail))
     if len(rollup) == 0:
         reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
-    if state != "OPEN":
-        reasons.append("PR state is {} (not OPEN)".format(state or "?"))
     if draft:
         reasons.append("PR is a draft")
     if mergeable == "CONFLICTING" or merge_state in ("DIRTY", "CONFLICTING"):

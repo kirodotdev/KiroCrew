@@ -485,7 +485,7 @@ class TestIngestFileSecurity:
         with patch("kiro_crew.knowledge.folder_watcher.is_sensitive_path", return_value=True):
             result = await fw._ingest_file(str(f), source_id, "default", {}, [])
 
-        assert result is None
+        assert result == (None, "failed")
         # Should record as failed
         row = store.db.execute(
             "SELECT status, error_message FROM folder_file_state WHERE source_id = ? AND file_path = ?",
@@ -584,3 +584,36 @@ class TestDeleteSourceCascade:
         assert store.db.execute("SELECT COUNT(*) FROM sources WHERE id = ?", (sid,)).fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM items WHERE source_id = ?", (sid,)).fetchone()[0] == 0
         assert store.db.execute("SELECT COUNT(*) FROM folder_file_state WHERE source_id = ?", (sid,)).fetchone()[0] == 0
+
+
+class TestIngestTimeConfinement:
+    """A symlink retargeted after the walk must not pull in an outside file."""
+
+    @pytest.mark.asyncio
+    async def test_a_path_that_escapes_the_root_is_refused_at_ingest_time(self, tmp_path):
+        root = tmp_path / "project"
+        root.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("# secret-ish but not a sensitive path\n")
+        link = root / "doc.md"
+        link.symlink_to(outside)
+
+        store = KnowledgeStore(str(tmp_path / "k.db"))
+        try:
+            src = store.add_source(name="project", source_type="local_folder",
+                                   uri=str(root))
+            watcher = FolderWatcher(store, MagicMock())
+            # The pipeline must never be reached for an escaping path.
+            watcher.pipeline = MagicMock()
+            watcher.pipeline.ingest_file = AsyncMock(
+                side_effect=AssertionError("ingested a file outside the root"))
+
+            item_ids, outcome = await watcher._ingest_file(
+                str(link), src, "default", {"confine_to_root": True}, [],
+                root=str(root))
+
+            assert outcome == "failed"
+            assert item_ids is None
+            watcher.pipeline.ingest_file.assert_not_awaited()
+        finally:
+            store.db.close()

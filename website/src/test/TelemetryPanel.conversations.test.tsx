@@ -22,6 +22,8 @@ import TelemetryPanel from '../pages/TelemetryPanel'
 
 const convo = (over: Record<string, unknown> = {}) => ({
   slot: 'chat-1-1700000000',
+  channel: 'dashboard',
+  category: 'dashboard',
   credits: 100,
   turns: 10,
   peak_pct: 42,
@@ -50,11 +52,14 @@ const resp = (conversations: Record<string, unknown>[]) => ({
     prior_turns: 50,
     prior_per_turn: 10,
     delta_pct: 100,
-    priciest: { credits: 50, slot: 'chat-1-1700000000', ts: '2026-08-01' },
+    by_category: [],
+  priciest: { credits: 50, slot: 'chat-1-1700000000', ts: '2026-08-01' },
     by_model: [],
     by_channel: [],
     context_bands: [],
     conversations,
+
+    navigable_category: 'dashboard',
     conversation_count: conversations.length,
   },
 })
@@ -123,5 +128,26 @@ describe('TelemetryPanel — conversations by spend', () => {
     await screen.findByRole('link', { name: 'Open one' })
     // Exactly one link for two rows — the closed row stayed inert.
     expect(screen.getAllByRole('link')).toHaveLength(1)
+  })
+
+  it('does not link a conversation the dashboard cannot open', async () => {
+    // The bug this rule exists for. A Telegram thread IS a conversation and it
+    // usually HAS a title, so the old "titled -> link it" rule rendered it as a
+    // link to /chat?sid=<key> — which ChatPage resolves against dashboard slots
+    // only, so the click landed on `Session "…" not found` after a 5s timeout.
+    // Linkability is a property of the route, not of having a name.
+    await mount([
+      convo({
+        title: 'Asked over Telegram',
+        channel: 'telegram',
+        category: 'telegram',
+        slot: 'telegram:kirocrew:direct:874',
+      }),
+    ])
+    await waitFor(() => expect(screen.getByText('Asked over Telegram')).toBeInTheDocument())
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    // Still named, though — falling back to "Untitled" would lose the one piece
+    // of identity the row has.
+    expect(screen.getByTitle('telegram:kirocrew:direct:874')).toBeInTheDocument()
   })
 })

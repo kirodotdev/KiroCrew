@@ -143,8 +143,8 @@ function warnDev(key: string, err: unknown): void {
  * the caller.
  */
 export function safeGetItem(key: string): string | null {
-  if (typeof localStorage === 'undefined') return null
   try {
+    if (typeof localStorage === 'undefined') return null
     return localStorage.getItem(key)
   } catch {
     return null
@@ -152,8 +152,8 @@ export function safeGetItem(key: string): string | null {
 }
 
 export function safeSetItem(key: string, value: string): boolean {
-  if (typeof localStorage === 'undefined') return false
   try {
+    if (typeof localStorage === 'undefined') return false
     localStorage.setItem(key, value)
     return true
   } catch (err) {
@@ -186,13 +186,34 @@ export function safeSetItem(key: string, value: string): boolean {
 }
 
 /**
+ * Non-throwing sessionStorage read — the per-tab mirror of `safeGetItem`.
+ * Returns null when storage access is denied (SecurityError in locked-down
+ * embedding contexts / browser policies) or unavailable.
+ *
+ * The `typeof` availability probe is INSIDE the try on purpose: `typeof` only
+ * suppresses ReferenceError for an undeclared identifier, it does not suppress
+ * an exception thrown by a property getter. `sessionStorage` is an accessor on
+ * the global, and browsers that deny storage (Chrome with cookies blocked, a
+ * sandboxed iframe) throw SecurityError from that getter — so probing outside
+ * the try would throw on the very platform the probe exists to survive.
+ */
+export function safeGetSessionItem(key: string): string | null {
+  try {
+    if (typeof sessionStorage === 'undefined') return null
+    return sessionStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Write to sessionStorage without ever throwing. sessionStorage is per-tab and
  * far less prone to filling up, so there is nothing useful to reclaim — we just
  * swallow failures so a full/disabled store can't crash the app.
  */
 export function safeSetSessionItem(key: string, value: string): boolean {
-  if (typeof sessionStorage === 'undefined') return false
   try {
+    if (typeof sessionStorage === 'undefined') return false
     sessionStorage.setItem(key, value)
     return true
   } catch (err) {

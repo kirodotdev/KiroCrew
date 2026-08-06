@@ -15,8 +15,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from conftest import requires_git
 
+from conftest import requires_git
 from kiro_crew.taskrunner import (
     MAX_TOTAL_TASKS,
     Step,

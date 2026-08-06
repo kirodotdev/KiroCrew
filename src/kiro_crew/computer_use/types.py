@@ -615,6 +615,14 @@ MAX_CLICK_COUNT = 3
 # Alpha floor at the peak of a click pulse (1.0 - depth). A dip rather than a
 # scale change: scaling the window would re-place the tip anchor every frame.
 CLICK_PULSE_DEPTH = 0.55
+#: Largest share of a pulse one frame may advance. The dip IS the click, and it
+#: is drawn as ``sin(progress * pi)`` -- which is 0 at BOTH progress 0.0 and 1.0.
+#: So a frame gap wide enough to jump the whole pulse (a loaded machine, a GC
+#: pause, a descheduled thread -- routinely a full pulse on a busy CI runner)
+#: renders alpha 1.0 twice and no dip at all: the click silently does not appear.
+#: Capping the per-frame advance guarantees at least one sample near the peak,
+#: i.e. at least ``ceil(1 / step)`` frames per pulse.
+CLICK_PULSE_MAX_STEP = 0.25
 
 # ── Overlay process (``computer_use.overlay`` / ``overlay_proc``) ──
 # The overlay MUST be out of process: AppKit needs a main-thread run loop and the

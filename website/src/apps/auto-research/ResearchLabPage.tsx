@@ -114,7 +114,7 @@ function StateBadge({ status }: { status: string }) {
     ? STATE_META[status]
     : { color: 'text-muted', Icon: HelpCircle, spin: undefined }
   return (
-    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded bg-bg-elevated inline-flex items-center gap-1 shrink-0 ${color}`} title={`Status: ${status}`}>
+    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded bg-bg-elevated inline-flex items-center gap-1 shrink-0 ${color}`} title={i18nT('apps.autoResearch.researchLabPage.status', { status })}>
       <Icon size={10} className={spin ? 'animate-spin motion-reduce:animate-none' : undefined} /> {stateLabel(status)}
     </span>
   )
@@ -266,7 +266,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
           {tree.some(n => n.status !== 'pruned') && <div className="text-xs text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.answer_clarifiers_to_refine_or_just_pick_sub_que')}</div>}
           <div className="mt-2"><GrillTree tree={tree} dispatch={dispatchTree} onExpand={onExpand} /></div>
           {grillUnavailable && <div className="text-xs text-warn mt-2">{i18nT('apps.autoResearch.researchLabPage.grill_unavailable_add_sub_questions_manually_bel')}</div>}
-          {subQs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={`Sub-question ${i + 1}`} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...subQs]; n[i] = v; setSubQs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setSubQs(subQs.filter((_, j) => j !== i))} aria-label={i18nT('apps.autoResearch.researchLabPage.remove_sub_question')}><X size={12} /></button></div>)}
+          {subQs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.sub_question', { n: i + 1 })} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...subQs]; n[i] = v; setSubQs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setSubQs(subQs.filter((_, j) => j !== i))} aria-label={i18nT('apps.autoResearch.researchLabPage.remove_sub_question')}><X size={12} /></button></div>)}
           <GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.add_sub_question_manually')} className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-2" placeholder={i18nT('apps.autoResearch.researchLabPage.add_sub_question_manually_enter_shift_enter_for')} value={newSub} onChange={setNewSub} onSubmit={() => { if (newSub.trim()) { setSubQs([...subQs, newSub.trim()]); setNewSub('') } }} />
         </div>
       </div>}
@@ -422,7 +422,7 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
         <div className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.answer_challenges_to_refine_or_just_pick_sub_que')}</div>
         <GrillTree tree={tree} dispatch={dispatchTree} onExpand={onExpand} />
         <div className="mt-3">
-          {manualSubs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={`Sub-question ${i + 1}`} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...manualSubs]; n[i] = v; setManualSubs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setManualSubs(manualSubs.filter((_, j) => j !== i))} aria-label={i18nT('apps.autoResearch.researchLabPage.remove_sub_question')}><X size={12} /></button></div>)}
+          {manualSubs.map((sq, i) => <div key={i} className="flex items-start gap-2 mt-1"><GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.sub_question', { n: i + 1 })} className="flex-1 text-sm p-1.5 rounded bg-bg border border-border" value={sq} onChange={v => { const n = [...manualSubs]; n[i] = v; setManualSubs(n) }} /><button className="text-xs text-danger mt-1.5" onClick={() => setManualSubs(manualSubs.filter((_, j) => j !== i))} aria-label={i18nT('apps.autoResearch.researchLabPage.remove_sub_question')}><X size={12} /></button></div>)}
           <GrowTextarea ariaLabel={i18nT('apps.autoResearch.researchLabPage.add_your_own_sub_question_or_guidance')} className="w-full text-sm p-1.5 rounded bg-bg border border-border mt-1" placeholder={i18nT('apps.autoResearch.researchLabPage.add_your_own_sub_question_or_guidance_enter_shif')} value={newSub} onChange={setNewSub} onSubmit={() => { if (newSub.trim()) { setManualSubs([...manualSubs, newSub.trim()]); setNewSub('') } }} />
         </div>
         <div className="flex justify-between mt-4">

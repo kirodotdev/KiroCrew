@@ -100,6 +100,9 @@ export default function SettingsPage() {
     <SidePanelLayout
       title={i18nT('pages.settingsPage.settings')}
       tabs={tabs}
+      // Keyed apart from the main window: an embedded pane has a different tab
+      // roster (no Instances), so the two must not restore each other's tab.
+      rememberKey={embedded ? 'settings-embedded' : 'settings'}
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>

@@ -17,9 +17,14 @@ from aiohttp import web
 
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
-from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
+from kiro_crew.dashboard.handlers.files import (
+    _ZIP_CONTAINER_EXTS,
+    _content_matches_ext,
+    _slot_project_snapshot,
+)
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
+from kiro_crew.knowledge.agent_source import add_agent_document
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
 from kiro_crew.knowledge.autosource import AUTO_ADDED_PROP
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
@@ -100,7 +105,21 @@ async def _start_watcher_async(app: web.Application) -> None:
         await old_watcher.stop()
     pipeline = app["knowledge_pipeline"]
     store = app["state"].knowledge_store
-    watcher = KnowledgeWatcher(store=store, pipeline=pipeline)
+    state = app["state"]
+
+    def _project_dirs() -> list[str]:
+        """Directories the user is currently working in.
+
+        Live chat-slot project dirs only -- deliberately NOT the recent-projects
+        list, which includes directories the user merely picked once. Registering
+        those would spend LLM extraction on trees they are not working in.
+
+        Called by the watcher ON the event loop, because it copies a dict that
+        other coroutines on the loop mutate; it does no I/O.
+        """
+        return _slot_project_snapshot(state)
+
+    watcher = KnowledgeWatcher(store=store, pipeline=pipeline, project_dirs=_project_dirs)
     app["knowledge_watcher"] = watcher
     task = asyncio.create_task(watcher.start())
     app["_knowledge_watcher_task"] = task
@@ -410,16 +429,12 @@ async def delete_item(request: web.Request) -> web.Response:
     item = store.get_item(item_id)
     if not item:
         return web.json_response({"error": "not found"}, status=404)
-    source_id = item.get("source_id")
     store.delete_item(item_id)
-    # Auto-delete orphan source if no items remain
-    if source_id:
-        remaining = store.db.execute(
-            "SELECT COUNT(*) FROM items WHERE source_id = ?", (source_id,)
-        ).fetchone()[0]
-        if remaining == 0:
-            store.db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
-            store.db.commit()
+    # A now-empty source is reclaimed by the store's own orphan rule on the next
+    # open, which checks the document-state tables, in-flight jobs and the location
+    # table first. Deleting the row here instead raised on the foreign keys those
+    # tables hold -- after the item delete had already committed -- and dropped a
+    # source that still held documents by location.
     _sel_log("item.delete", item_id=item_id)
     return web.json_response({"ok": True})
 
@@ -557,17 +572,39 @@ async def source_counts(request: web.Request) -> web.Response:
     if namespace:
         where.append("namespace = ?")
         params.append(namespace)
+    # Counts what each source HOLDS, not only what it owns. After a duplicate
+    # collapse a source is a location of the surviving copy rather than the owner of
+    # a second one, and counting owners only would report 0 for a source that still
+    # holds documents -- which the list view filters out, hiding a source the user
+    # cannot then see or delete. The union is over item ids, so a document held both
+    # ways counts once per source and never twice.
+    where_sl = [w.replace("source_id", "i.source_id") if "source_id" in w else f"i.{w}"
+                if w != "1=1" else w for w in where]
     sql = (
-        f"SELECT COALESCE(NULLIF(source_id, ''), '{_NO_SOURCE}') AS sid, COUNT(*) AS cnt "  # noqa: S608
-        f"FROM items WHERE {' AND '.join(where)} GROUP BY sid"  # noqa: S608
+        f"SELECT COALESCE(NULLIF(sid, ''), '{_NO_SOURCE}') AS sid, "  # noqa: S608
+        "COUNT(DISTINCT item_id) AS cnt FROM ("
+        f"  SELECT i.source_id AS sid, i.id AS item_id FROM items i WHERE {' AND '.join(where_sl)}"  # noqa: S608
+        "  UNION"
+        f"  SELECT sl.source_id AS sid, i.id AS item_id FROM source_locations sl"  # noqa: S608
+        f"  JOIN items i ON i.id = sl.item_id WHERE {' AND '.join(where_sl)}"  # noqa: S608
+        ") GROUP BY sid"
     )
     # This is a full aggregate scan over `items`, which grows without bound, so
     # unlike the point lookups elsewhere in this module it is offloaded rather
     # than run inline: blocking the event loop here would stall chat and
     # heartbeat processing on a large knowledge base.
-    rows = await asyncio.to_thread(lambda: store.db.execute(sql, params).fetchall())
+    # The UNION repeats the filter clause, so the placeholders are bound twice.
+    rows = await asyncio.to_thread(
+        lambda: store.db.execute(sql, params + params).fetchall())
     counts = {r["sid"]: r["cnt"] for r in rows}
-    return web.json_response({"counts": counts, "total": sum(counts.values())})
+    # NOT sum(counts.values()): a document held by two sources appears in both
+    # per-source counts, so summing them would exceed the number of documents and
+    # contradict the Library's own item total.
+    total_row = await asyncio.to_thread(
+        lambda: store.db.execute(
+            f"SELECT COUNT(*) FROM items WHERE {' AND '.join(where)}", params  # noqa: S608
+        ).fetchone())
+    return web.json_response({"counts": counts, "total": total_row[0]})
 
 
 async def list_sources(request: web.Request) -> web.Response:
@@ -1595,6 +1632,44 @@ async def search_for_context(request: web.Request) -> web.Response:
     })
 
 
+async def add_agent_document_route(request: web.Request) -> web.Response:
+    """POST /api/knowledge/agent-document -- the agent adds one document.
+
+    Gated on ``knowledge.auto_add_documents``. Lives on the gateway rather than in
+    the MCP process because ingestion needs the pipeline (reader, chunker,
+    extraction pool, embedder), which only the gateway holds.
+    """
+    cfg = KiroCrewConfig.load()
+    if not cfg.knowledge.auto_add_documents:
+        return web.json_response(
+            {"error": "Adding documents to the knowledge library is turned off "
+                      "(knowledge.auto_add_documents).",
+             "code": "auto_add_documents_disabled"}, status=403)
+    pipeline = _pipeline(request)
+    if not pipeline:
+        return web.json_response(
+            {"error": "pipeline not configured",
+             "code": "pipeline_unavailable"}, status=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    result = await add_agent_document(
+        pipeline,
+        title=str(body.get("title") or ""),
+        content=str(body.get("content") or ""),
+        reason=str(body.get("reason") or ""),
+        source_uri=str(body.get("source_uri") or ""),
+    )
+    if result.get("status") == "error":
+        return web.json_response(
+            {"error": result["error"], "code": "document_rejected"}, status=400)
+    _sel_log("agent_document.add", title=_redact(result.get("title", "")) or "",
+             status=result.get("status", ""))
+    return web.json_response(result)
+
+
 def setup_knowledge_routes(app: web.Application) -> None:
     # Initialize pipeline and sync scheduler if not already set
     if "knowledge_pipeline" not in app:
@@ -1664,6 +1739,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/graph", get_full_graph)
     app.router.add_get("/api/knowledge/export", export_all)
     app.router.add_post("/api/knowledge/ingest", ingest_file)
+    app.router.add_post("/api/knowledge/agent-document", add_agent_document_route)
     app.router.add_post("/api/knowledge/import", import_bundle)
     app.router.add_get("/api/knowledge/items/{id}", get_item)
     app.router.add_patch("/api/knowledge/items/{id}", update_item)

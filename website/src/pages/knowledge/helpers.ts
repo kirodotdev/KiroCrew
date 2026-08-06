@@ -18,9 +18,9 @@ export function formatRelativeDate(iso: string): string {
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
   if (days === 0) return 'today'
   if (days === 1) return 'yesterday'
-  if (days < 7) return `${days}d ago`
-  if (days < 30) return `${Math.floor(days / 7)}w ago`
-  return `${Math.floor(days / 30)}mo ago`
+  if (days < 7) return i18nT('pages.knowledge.helpers.days_ago', { n: days })
+  if (days < 30) return i18nT('pages.knowledge.helpers.weeks_ago', { n: Math.floor(days / 7) })
+  return i18nT('pages.knowledge.helpers.months_ago', { n: Math.floor(days / 30) })
 }
 
 export function copyText(text: string) {

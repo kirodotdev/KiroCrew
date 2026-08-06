@@ -3,8 +3,14 @@
 Adapts the supervised-child + state-machine design of
 ``kiro_crew.tunnel.manager.TunnelManager`` (which points *outward* to expose the
 dashboard) to point *inward*: for each connected remote instance it supervises a
-local ``ssh -N -L 127.0.0.1:LP:127.0.0.1:RP <ssh_host>`` child that forwards a
-loopback port to the remote KiroCrew's dashboard port.
+local child process that forwards a loopback port to the remote Kiro Crew's
+dashboard port, over one of two transports (``Instance.connection_method``):
+
+* ``"ssh"`` (default): ``ssh -N -L 127.0.0.1:LP:127.0.0.1:RP <ssh_host>``.
+* ``"ssm"``: ``aws ssm start-session --document-name
+  AWS-StartPortForwardingSession --target <ssm_target> --parameters
+  portNumber=RP,localPortNumber=LP`` — no inbound SSH port or SSH key needed,
+  only IAM (``ssm:StartSession``) and the SSM agent on the remote box.
 
 Design note: a literal ``ssh -fN`` would make ssh fork into the background and
 the foreground process exit immediately, which would leave the gateway unable to
@@ -12,15 +18,22 @@ supervise or kill the real forwarder. A gateway-supervised child must stay in th
 foreground, so we use ``-N`` (no remote command) *without* ``-f``, mirroring how
 ``TunnelManager`` supervises its own child. ``ExitOnForwardFailure=yes`` ensures
 ssh exits if the local forward can't be bound, so a failed connect is detected
-rather than hanging.
+rather than hanging. The SSM transport gets the equivalent detection from the
+generic ready-poll (:meth:`_Tunnel._wait_until_ready`) plus a post-hoc ownership
+recheck, since the ``session-manager-plugin`` child does not expose an
+``ExitOnForwardFailure``-style flag.
 
 Scope (Phase 1 / Stage 4): connect, disconnect, status, and shutdown-all, with
 port allocation + token mint wired in. The health-probe loop and 2-tier
 self-heal are Phase 3 — this module exposes clean seams (an ``on_exit`` hook and
 a per-instance state machine) for that follow-up without implementing it here.
+SSM support reuses every one of those seams — it is a second *transport* plugged
+into the same tunnel/state-machine/self-heal/token-refresh code, not a parallel
+implementation.
 
 Security (standard practices): loopback-bound forwards only (never ``0.0.0.0``);
-ssh invoked via argv list (no local shell); ``ssh_host`` / ``remote_bin``
+child spawned via argv list (no local shell) for both transports; ``ssh_host`` /
+``remote_bin`` (SSH) and ``ssm_target`` / ``aws_profile`` / ``aws_region`` (SSM)
 injection-validated before use; minted tokens held in memory only and never
 logged.
 """
@@ -40,6 +53,9 @@ from dataclasses import dataclass
 
 import aiohttp
 
+from kiro_crew import platform_compat
+from kiro_crew.cloud import ssm as cloud_ssm
+
 # The local (embedding) gateway's configured port — carried into the minted
 # remote token as the CSP frame-ancestor parent origin so the embedded pane can
 # be framed by this desktop app on whatever KIROCREW_PORT it runs on (no
@@ -56,9 +72,13 @@ from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REF
 from kiro_crew.instances.constants import (
     DEFAULT_TUNNEL_BASE_PORT,
 )
-from kiro_crew.instances.diagnostics import diagnose_instance
+from kiro_crew.instances.diagnostics import diagnose_instance, diagnose_instance_ssm
 from kiro_crew.instances.port_allocator import PortAllocator, _is_port_free
 from kiro_crew.instances.registry import _UNALLOCATED_PORT, Instance, InstancesRegistry
+from kiro_crew.instances.ssm_token_mint import (
+    mint_remote_token_ssm,
+    run_remote_kirocrew_ssm,
+)
 from kiro_crew.instances.token_mint import (
     TokenMintError,
     mint_remote_token,
@@ -67,8 +87,13 @@ from kiro_crew.instances.token_mint import (
 )
 from kiro_crew.instances.validation import (
     SshValidationError,
+    SsmValidationError,
+    validate_aws_profile,
+    validate_aws_region,
     validate_remote_bin,
     validate_ssh_host,
+    validate_ssm_run_as,
+    validate_ssm_target,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -76,8 +101,11 @@ logger = logging.getLogger(__name__)
 
 _LOOPBACK = "127.0.0.1"
 # How long to wait for the local forward port to start accepting connections
-# before declaring the connect attempt failed.
+# before declaring the connect attempt failed. SSM's session-manager-plugin
+# needs longer to establish (WebSocket handshake to the SSM service) than a
+# direct ssh TCP connect, so the SSM transport uses a longer timeout below.
 _DEFAULT_CONNECT_TIMEOUT_SECS = 15.0
+_DEFAULT_SSM_CONNECT_TIMEOUT_SECS = 25.0
 # Poll cadence while waiting for the forward to come up.
 _READY_POLL_INTERVAL_SECS = 0.25
 # Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
@@ -209,8 +237,31 @@ def _build_ssh_tunnel_argv(
     return argv
 
 
+def _build_ssm_tunnel_argv(
+    ssm_target: str, local_port: int, remote_port: int, *, profile: str = "", region: str = ""
+) -> list[str]:
+    """Build the supervised ``aws ssm start-session`` port-forward argv.
+
+    ``ssm_target``/``profile``/``region`` must already be injection-validated
+    (:func:`validate_ssm_target` / :func:`validate_aws_profile` /
+    :func:`validate_aws_region`). Delegates to
+    :func:`kiro_crew.cloud.ssm.build_port_forward_argv` — the launcher's
+    existing, reviewed argv builder — rather than duplicating it, so the two
+    features can never drift on the SSM document/parameter shape.
+    """
+    return cloud_ssm.build_port_forward_argv(ssm_target, remote_port, local_port, profile, region)
+
+
 class _SshTunnel:
-    """Supervises one instance's ``ssh -N -L`` child process."""
+    """Supervises one instance's tunnel child process (SSH or SSM transport).
+
+    ``ssh_target``/``ssm_target`` and friends are transport-specific; exactly
+    one of ``transport="ssh"`` (using ``ssh_host``) or ``transport="ssm"``
+    (using ``ssm_target``/``aws_profile``/``aws_region``) is active, decided by
+    the caller. All state-machine, health-probe, and self-heal behavior below
+    is shared between both transports — only argv-building and exit-error
+    classification differ.
+    """
 
     def __init__(
         self,
@@ -223,6 +274,10 @@ class _SshTunnel:
         compression: bool = True,
         probe_failure_threshold: int = _PROBE_FAILS,
         on_exit: Callable[[str], None] | None = None,
+        transport: str = "ssh",
+        ssm_target: str = "",
+        aws_profile: str = "",
+        aws_region: str = "",
     ) -> None:
         self._id = instance_id
         self._ssh_host = ssh_host
@@ -234,6 +289,10 @@ class _SshTunnel:
         # down to trigger self-heal; the manager threads the config-tunable value.
         self._probe_fails = probe_failure_threshold
         self._on_exit = on_exit  # Phase 3 seam: called(instance_id) on unexpected exit
+        self._transport = transport  # "ssh" or "ssm"
+        self._ssm_target = ssm_target
+        self._aws_profile = aws_profile
+        self._aws_region = aws_region
 
         self._proc: asyncio.subprocess.Process | None = None
         self._monitor_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -249,8 +308,22 @@ class _SshTunnel:
             remote_port=remote_port,
         )
 
+    def _build_argv(self) -> list[str]:
+        """Build the transport-specific supervised child argv."""
+        if self._transport == "ssm":
+            return _build_ssm_tunnel_argv(
+                self._ssm_target,
+                self._local_port,
+                self._remote_port,
+                profile=self._aws_profile,
+                region=self._aws_region,
+            )
+        return _build_ssh_tunnel_argv(
+            self._ssh_host, self._local_port, self._remote_port, compression=self._compression
+        )
+
     async def start(self) -> bool:
-        """Spawn the ssh child and wait until the local forward is reachable.
+        """Spawn the tunnel child and wait until the local forward is reachable.
 
         Returns True on success (state CONNECTED), False on failure (state ERROR
         with ``status.error`` populated). Idempotent guard: a second call while
@@ -261,25 +334,36 @@ class _SshTunnel:
         self._stopping = False
         self.status.state = TunnelState.CONNECTING
         self.status.error = ""
-        argv = _build_ssh_tunnel_argv(
-            self._ssh_host, self._local_port, self._remote_port, compression=self._compression
-        )
+        argv = self._build_argv()
+        target = self._ssm_target if self._transport == "ssm" else self._ssh_host
         logger.info(
-            "Opening tunnel for %s: 127.0.0.1:%d -> %s:%d",
+            "Opening %s tunnel for %s: 127.0.0.1:%d -> %s:%d",
+            self._transport,
             self._id,
             self._local_port,
-            self._ssh_host,
+            target,
             self._remote_port,
         )
         try:
+            ssm = self._transport == "ssm"
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                # SSM tunnels get process-group isolation (mirroring
+                # cloud.ssm.open_port_forward) so a later teardown can reap the aws
+                # wrapper's session-manager-plugin child too — see _terminate().
+                # Both kwargs are passed EXPLICITLY per the platform_compat spawn
+                # recipe: on POSIX start_new_session=True calls setsid (killpg reaps
+                # the group) and creationflags is 0; on Windows there is no setsid
+                # (start_new_session is silently ignored) and
+                # CREATE_NEW_PROCESS_GROUP is what makes the tree taskkill /T-reapable.
+                start_new_session=(ssm and platform_compat.IS_POSIX),
+                creationflags=(platform_compat.CREATE_NEW_PROCESS_GROUP if ssm else 0),
             )
         except OSError as e:
             self.status.state = TunnelState.ERROR
-            self.status.error = f"failed to spawn ssh: {e}"
+            self.status.error = f"failed to spawn {self._transport} tunnel: {e}"
             logger.error("Tunnel spawn failed for %s: %s", self._id, e)
             return False
 
@@ -422,9 +506,17 @@ class _SshTunnel:
         transport drop — never as an auth verdict inferred from banner text. The
         raw banner is ANSI-stripped and credential-redacted before it is
         surfaced as a secondary detail.
+
+        The SSM transport has an entirely different error vocabulary (IAM
+        denials, a missing session-manager-plugin, an offline SSM agent), so it
+        is classified separately by :meth:`_ssm_exit_error` — running SSM stderr
+        through the ssh matchers above would mislabel e.g. an ``AccessDenied``
+        as an "ssh auth failure".
         """
         if self._probe_failed:
             return "health probe failed — tunnel alive but not forwarding"
+        if self._transport == "ssm":
+            return self._ssm_exit_error(returncode)
         # Drop ssh's benign post-quantum KEX advisory so it can't mask the real
         # failure (the loop symptom was this warning hiding "bind: ... in use").
         tail = _strip_benign_ssh_noise(self._stderr_buf)
@@ -458,6 +550,54 @@ class _SshTunnel:
             return f"ssh exited {returncode}: {detail}"
         return f"ssh exited with code {returncode}"
 
+    def _ssm_exit_error(self, returncode: int | None) -> str:
+        """Classify an ``aws ssm start-session`` port-forward child's exit.
+
+        Distinguishes the failure modes an operator can actually act on:
+        expired/absent AWS credentials, an IAM denial on ``ssm:StartSession``,
+        a missing local ``session-manager-plugin``, an instance that is not a
+        registered/online SSM managed node, and a local bind conflict. Like the
+        ssh classifier, the raw stderr is ANSI-stripped and credential-redacted
+        before being surfaced as a secondary detail.
+        """
+        tail = self._stderr_buf.strip()
+        low = tail.lower()
+        detail = _sanitize_banner(tail)
+        # Credentials first: an expired/absent credential is the most common
+        # cause and its message can also contain "not authorized"-adjacent text.
+        if (
+            "expired" in low
+            or "unable to locate credentials" in low
+            or "no credentials" in low
+            or "credentials not found" in low
+        ):
+            return (
+                "AWS credentials missing or expired (refresh them, e.g. "
+                f"`aws sso login --profile <name>`): {detail}"
+            )
+        if "accessdenied" in low or "not authorized" in low or "unauthorizedoperation" in low:
+            return f"IAM denied ssm:StartSession for this target: {detail}"
+        if "sessionmanagerplugin" in low or "session-manager-plugin" in low:
+            return (
+                "session-manager-plugin is not installed locally (install the AWS "
+                f"Session Manager plugin, then reconnect): {detail}"
+            )
+        if (
+            "targetnotconnected" in low
+            or "not connected" in low
+            or "invalidinstanceid" in low
+            or "invalidinstanceinformation" in low
+        ):
+            return (
+                "the SSM target is not a connected managed node (is the instance "
+                f"running with the SSM agent online and an instance profile?): {detail}"
+            )
+        if "address already in use" in low or "bind" in low:
+            return f"SSM forward bind failed (local port already in use): {detail}"
+        if tail:
+            return f"SSM session exited {returncode}: {detail}"
+        return f"SSM session exited with code {returncode}"
+
     async def _capture_stderr(self) -> None:
         """Drain whatever the ssh child wrote to stderr (bounded)."""
         proc = self._proc
@@ -487,16 +627,57 @@ class _SshTunnel:
         logger.info("Tunnel stopped for %s", self._id)
 
     async def _terminate(self) -> None:
-        """Terminate the ssh child if running (terminate, then kill on timeout)."""
+        """Terminate the tunnel child if running (terminate, then kill on timeout).
+
+        For the **SSM** transport the child is the ``aws`` wrapper, and the
+        ``session-manager-plugin`` grandchild is what actually holds the
+        forwarded local port — ``proc.terminate()`` alone would signal only the
+        wrapper and leave the plugin alive still bound to the port (the exact
+        leak :func:`kiro_crew.cloud.ssm.kill_port_forward` documents). Since
+        :meth:`start` spawns SSM children with process-group isolation, we reap
+        the whole tree via :func:`platform_compat.kill_process_tree` — ``killpg``
+        on POSIX, ``taskkill /T`` on Windows, so the plugin is reaped on **every**
+        supported platform. A tree-kill failure falls back to the single-process
+        kill.
+        """
         proc = self._proc
         if proc and proc.returncode is None:
+            group_signalled = False
+            if self._transport == "ssm":
+                group_signalled = self._signal_group(proc.pid, platform_compat.SIGTERM)
             try:
-                proc.terminate()
+                if not group_signalled:
+                    proc.terminate()
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except (asyncio.TimeoutError, ProcessLookupError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
+                if self._transport == "ssm" and self._signal_group(
+                    proc.pid, platform_compat.SIGKILL
+                ):
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                else:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
         self._proc = None
+
+    @staticmethod
+    def _signal_group(pid: int, sig: int) -> bool:
+        """Reap *pid*'s whole process tree. Returns whether it was delivered.
+
+        Routed through :func:`platform_compat.kill_process_tree` rather than a raw
+        ``os.killpg``/``os.getpgid`` pair, which exist only on POSIX and would
+        leave the ``session-manager-plugin`` grandchild orphaned (still holding
+        the forwarded port) on native Windows — a supported platform.
+
+        Best-effort and never raises: the shim propagates exceptions (an
+        already-reaped tree, a refused broadcast pgid, a protected Windows
+        descendant, a permission error), and all of them mean "not delivered", so
+        the caller falls back to the single-process kill.
+        """
+        try:
+            return platform_compat.kill_process_tree(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError, ValueError, AttributeError):
+            return False
 
     @property
     def pid(self) -> int | None:
@@ -505,13 +686,51 @@ class _SshTunnel:
         return proc.pid if proc is not None and proc.returncode is None else None
 
 
+@dataclass
+class _TransportParams:
+    """Validated, transport-specific connection parameters for one instance.
+
+    Resolved once by :meth:`SshTunnelManager._resolve_transport` so the
+    connect / rebuild / self-heal / token-refresh paths all build their tunnel
+    and mint their token from the same validated values instead of each
+    re-branching on ``connection_method``.
+    """
+
+    method: str  # "ssh" | "ssm"
+    ssh_host: str = ""
+    remote_bin: str = ""
+    ssm_target: str = ""
+    aws_profile: str = ""
+    aws_region: str = ""
+    ssm_run_as: str = ""
+
+    @property
+    def target(self) -> str:
+        """The human-facing target (ssh host or SSM instance id) for messages."""
+        return self.ssm_target if self.method == "ssm" else self.ssh_host
+
+    def tunnel_kwargs(self) -> dict:
+        """Transport kwargs for the ``_SshTunnel`` constructor."""
+        return {
+            "transport": self.method,
+            "ssm_target": self.ssm_target,
+            "aws_profile": self.aws_profile,
+            "aws_region": self.aws_region,
+        }
+
+
 class SshTunnelManager:
-    """Manages per-instance SSH tunnels keyed by instance id.
+    """Manages per-instance tunnels (SSH or SSM) keyed by instance id.
 
     Holds the live tunnels, allocates loopback ports, mints per-instance tokens,
     and keeps the registry's ``was_connected`` / ``last_active`` hints in sync.
     Tokens are kept in memory only (never persisted, never logged) and handed to
     the API layer via :meth:`get_token`.
+
+    The class name is retained (rather than renamed to a transport-neutral one)
+    because it is referenced by ``dashboard/server.py`` and the existing test
+    suite; it now supervises whichever transport each instance's
+    ``connection_method`` selects.
     """
 
     def __init__(
@@ -583,6 +802,21 @@ class SshTunnelManager:
                 reserved.add(inst.local_port)
         return reserved
 
+    def _connect_timeout_for(self, method: str) -> float:
+        """Readiness timeout for *method*, honoring an explicit caller override.
+
+        SSM's ``session-manager-plugin`` has to complete a WebSocket handshake
+        with the SSM service before it binds the local port, which routinely
+        takes longer than a direct ssh TCP connect — so the SSM default is
+        higher. A caller that passed an explicit ``connect_timeout_secs``
+        (tests, tuning) wins for both transports.
+        """
+        if self._connect_timeout != _DEFAULT_CONNECT_TIMEOUT_SECS:
+            return self._connect_timeout  # explicit override
+        if method == "ssm":
+            return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
+        return self._connect_timeout
+
     async def _ps_lines(self) -> list[str]:
         """Return ``<pid> <command>`` lines for all processes (portable ps).
 
@@ -645,12 +879,64 @@ class SshTunnelManager:
             )
         return reaped
 
+    def _resolve_transport(self, inst: Instance) -> _TransportParams:
+        """Validate + resolve *inst*'s transport params immediately before use.
+
+        Raises :class:`SshValidationError` / :class:`SsmValidationError` so each
+        caller can surface a clean per-instance error. Validation happens here —
+        right before a command line is built — rather than trusting the
+        registry's lighter early-reject charset checks.
+        """
+        method = (inst.connection_method or "ssh").strip().lower()
+        if method == "ssm":
+            return _TransportParams(
+                method="ssm",
+                ssm_target=validate_ssm_target(inst.ssm_target),
+                aws_profile=validate_aws_profile(inst.aws_profile),
+                aws_region=validate_aws_region(inst.aws_region),
+                ssm_run_as=validate_ssm_run_as(inst.ssm_run_as),
+                remote_bin=validate_remote_bin(inst.remote_bin),
+            )
+        return _TransportParams(
+            method="ssh",
+            ssh_host=validate_ssh_host(inst.ssh_host),
+            remote_bin=validate_remote_bin(inst.remote_bin),
+        )
+
+    async def _mint_for(self, inst: Instance, params: _TransportParams) -> str:
+        """Mint a dashboard token for *inst* over its configured transport.
+
+        The SSH path goes through the injectable ``self._mint_token`` seam (kept
+        so the existing tests can substitute a fake mint); the SSM path calls
+        :func:`mint_remote_token_ssm`. Never logs the token.
+        """
+        if params.method == "ssm":
+            return await mint_remote_token_ssm(
+                params.ssm_target,
+                aws_profile=params.aws_profile,
+                aws_region=params.aws_region,
+                ssm_run_as=params.ssm_run_as,
+                remote_bin=params.remote_bin,
+                ttl=inst.ttl,
+                remote_port=inst.remote_port,
+                embed_parent_port=self._parent_port,
+            )
+        return await self._mint_token(
+            params.ssh_host,
+            remote_bin=params.remote_bin,
+            ttl=inst.ttl,
+            remote_port=inst.remote_port,
+            embed_parent_port=self._parent_port,
+        )
+
     async def connect(self, instance_id: str) -> TunnelStatus:
         """Open a tunnel + mint a token for *instance_id*; return its status.
 
         Idempotent: connecting an already-connected instance returns its current
         status. Raises :class:`KeyError` for an unknown instance, or surfaces a
         validation / mint / spawn error via the returned status (state ERROR).
+        Works for either ``connection_method`` — the transport is resolved by
+        :meth:`_resolve_transport`.
         """
         async with self._lock:
             inst = self._registry.get(instance_id)
@@ -661,7 +947,7 @@ class SshTunnelManager:
             if existing is not None and existing.status.state == TunnelState.CONNECTED:
                 return existing.status
             if existing is not None:
-                # Tracked but not CONNECTED: stop it first so its ssh child is
+                # Tracked but not CONNECTED: stop it first so its child is
                 # terminated and the local forward freed before we spawn a
                 # replacement. Otherwise the old child orphans (dropped from
                 # _tunnels below, never killed) and keeps the port — every
@@ -672,10 +958,15 @@ class SshTunnelManager:
 
             # Injection-safe validation immediately before building command lines.
             try:
-                ssh_host = validate_ssh_host(inst.ssh_host)
-                remote_bin = validate_remote_bin(inst.remote_bin)
-            except SshValidationError as e:
-                return self._error_status(inst, f"invalid ssh settings: {e}")
+                params = self._resolve_transport(inst)
+            except (SshValidationError, SsmValidationError) as e:
+                return self._error_status(inst, f"invalid {inst.connection_method} settings: {e}")
+
+            # SSM needs the local session-manager-plugin; fail with an actionable
+            # message rather than letting the child exit with a cryptic error.
+            if params.method == "ssm":
+                if not cloud_ssm.session_manager_plugin_installed():
+                    return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
 
             # Mirror the local forward port to the remote (configured)
             # port. The embedded dashboard runs in an iframe at
@@ -709,13 +1000,14 @@ class SshTunnelManager:
             # Open the tunnel first so the forward is live.
             tunnel = self._tunnel_factory(
                 inst.id,
-                ssh_host,
+                params.ssh_host,
                 local_port,
                 inst.remote_port,
-                connect_timeout_secs=self._connect_timeout,
+                connect_timeout_secs=self._connect_timeout_for(params.method),
                 compression=self._ssh_compression,
                 probe_failure_threshold=self._probe_fails,
                 on_exit=self._on_tunnel_exit,
+                **params.tunnel_kwargs(),
             )
             self._tunnels[instance_id] = tunnel
             ok = await tunnel.start()
@@ -729,15 +1021,9 @@ class SshTunnelManager:
                 self._tunnels.pop(instance_id, None)
                 return tunnel.status
 
-            # Mint a per-instance token over SSH (never logged).
+            # Mint a per-instance token over the same transport (never logged).
             try:
-                token = await self._mint_token(
-                    ssh_host,
-                    remote_bin=remote_bin,
-                    ttl=inst.ttl,
-                    remote_port=inst.remote_port,
-                    embed_parent_port=self._parent_port,
-                )
+                token = await self._mint_for(inst, params)
             except TokenMintError as e:
                 await tunnel.stop()
                 self._tunnels.pop(instance_id, None)
@@ -842,10 +1128,10 @@ class SshTunnelManager:
             await asyncio.sleep(delay)
         await self._recover(instance_id)
 
-    async def _rebuild(self, inst: Instance, ssh_host: str, local_port: int) -> bool:
+    async def _rebuild(self, inst: Instance, params: _TransportParams, local_port: int) -> bool:
         """Build + start a fresh tunnel for *inst*, replacing the live one.
 
-        Stops the existing tunnel first so its ssh child is terminated and the
+        Stops the existing tunnel first so its child is terminated and the
         local forward port is released before we spawn the replacement. Without
         this the old child orphans (dropped from ``_tunnels`` but never killed)
         and keeps holding the port, so every replacement fails
@@ -858,13 +1144,14 @@ class SshTunnelManager:
                 await old.stop()
         tunnel = self._tunnel_factory(
             inst.id,
-            ssh_host,
+            params.ssh_host,
             local_port,
             inst.remote_port,
-            connect_timeout_secs=self._connect_timeout,
+            connect_timeout_secs=self._connect_timeout_for(params.method),
             compression=self._ssh_compression,
             probe_failure_threshold=self._probe_fails,
             on_exit=self._on_tunnel_exit,
+            **params.tunnel_kwargs(),
         )
         self._tunnels[inst.id] = tunnel
         return await tunnel.start()
@@ -878,18 +1165,19 @@ class SshTunnelManager:
             self._registry.set_was_connected(instance_id, True)
 
     async def _recover(self, instance_id: str) -> None:
-        """2-tier self-heal for an unhealthy tunnel.
+        """2-tier self-heal for an unhealthy tunnel (either transport).
 
-        Tier 1: rebuild the SSH tunnel (reusing the existing token).
-        Tier 2: if rebuild fails, re-mint the token over SSH, then rebuild.
+        Tier 1: rebuild the tunnel (reusing the existing token).
+        Tier 2: if rebuild fails, re-mint the token over the instance's
+        transport, then rebuild.
         Capped at ``_MAX_RECOVERY`` consecutive attempts (reset on success) so a
         persistently-broken host can't churn forever. No-ops if the instance was
         disconnected/removed or has already recovered while we waited for the lock.
 
-        The slow SSH I/O (mint, up to 30s; rebuild, up to 15s) runs **without**
-        the manager lock — mirroring ``_refresh_token_once`` — so self-heal can't
-        stall concurrent connect/disconnect/shutdown for ~45s. The lock is held
-        only for the validation/state checks and to store a freshly minted token.
+        The slow remote I/O (mint; rebuild) runs **without** the manager lock —
+        mirroring ``_refresh_token_once`` — so self-heal can't stall concurrent
+        connect/disconnect/shutdown. The lock is held only for the
+        validation/state checks and to store a freshly minted token.
         """
         # Phase 1 — validate + bump the attempt counter under the lock, then release.
         async with self._lock:
@@ -911,18 +1199,17 @@ class SshTunnelManager:
                 return
 
             try:
-                ssh_host = validate_ssh_host(inst.ssh_host)
-                remote_bin = validate_remote_bin(inst.remote_bin)
-            except SshValidationError as e:
+                params = self._resolve_transport(inst)
+            except (SshValidationError, SsmValidationError) as e:
                 logger.warning("Self-heal aborted for %s: %s", instance_id, e)
                 return
 
             local_port = current.status.local_port or inst.local_port
 
-        # Phase 2 — slow SSH I/O WITHOUT the lock.
+        # Phase 2 — slow remote I/O WITHOUT the lock.
         # Tier 1 — rebuild tunnel, reuse existing token.
         logger.info("Self-heal tier 1 (rebuild tunnel) for %s [attempt %d]", instance_id, attempts)
-        if await self._rebuild(inst, ssh_host, local_port):
+        if await self._rebuild(inst, params, local_port):
             await self._mark_recovered(instance_id)
             logger.info("Self-heal tier 1 succeeded for %s", instance_id)
             return
@@ -930,13 +1217,7 @@ class SshTunnelManager:
         # Tier 2 — re-mint the dashboard token, then rebuild.
         logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
         try:
-            token = await self._mint_token(
-                ssh_host,
-                remote_bin=remote_bin,
-                ttl=inst.ttl,
-                remote_port=inst.remote_port,
-                embed_parent_port=self._parent_port,
-            )
+            token = await self._mint_for(inst, params)
         except TokenMintError as e:
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
             return
@@ -945,7 +1226,7 @@ class SshTunnelManager:
                 return  # disconnected while minting — discard
             self._store_token(instance_id, token, inst.ttl)
             self._schedule_token_refresh(instance_id)
-        if await self._rebuild(inst, ssh_host, local_port):
+        if await self._rebuild(inst, params, local_port):
             await self._mark_recovered(instance_id)
             logger.info("Self-heal tier 2 succeeded for %s", instance_id)
         else:
@@ -974,18 +1255,28 @@ class SshTunnelManager:
     async def diagnose(self, instance_id: str) -> dict | None:
         """Run the failure-diagnosis ladder for *instance_id*.
 
-        Read-only ordered probes (ssh → remote dashboard → local forward); the
-        first broken link is the diagnosis. Result is stored on the live tunnel's
-        status so it surfaces in ``status()``/``to_dict()``. Runs WITHOUT the
-        manager lock (the probes do network I/O). Returns the result dict, or
-        None for an unknown instance.
+        Read-only ordered probes (transport reachability → remote dashboard →
+        local forward); the first broken link is the diagnosis. Result is stored
+        on the live tunnel's status so it surfaces in ``status()``/``to_dict()``.
+        Runs WITHOUT the manager lock (the probes do network I/O). Returns the
+        result dict, or None for an unknown instance.
         """
         inst = self._registry.get(instance_id)
         if inst is None:
             return None
         tunnel = self._tunnels.get(instance_id)
         local_port = (tunnel.status.local_port if tunnel else 0) or inst.local_port
-        result = await diagnose_instance(inst.ssh_host, inst.remote_port, local_port)
+        if (inst.connection_method or "ssh").strip().lower() == "ssm":
+            result = await diagnose_instance_ssm(
+                inst.ssm_target,
+                inst.remote_port,
+                local_port,
+                aws_profile=inst.aws_profile,
+                aws_region=inst.aws_region,
+                ssm_run_as=inst.ssm_run_as,
+            )
+        else:
+            result = await diagnose_instance(inst.ssh_host, inst.remote_port, local_port)
         diag = result.to_dict()
         # Re-fetch the tunnel (it may have changed during the probes) and attach.
         tunnel = self._tunnels.get(instance_id)
@@ -995,13 +1286,13 @@ class SshTunnelManager:
         return diag
 
     async def restart_remote(self, instance_id: str) -> dict:
-        """Restart the remote KiroCrew gateway over SSH.
+        """Restart the remote Kiro Crew gateway over the instance's transport.
 
         Uses the remote ``kirocrew restart`` (itself systemd/launchd-aware),
         resolved via the run-marker first (the running gateway's own launcher,
         keyed by ``remote_port``) and falling back to the bin-candidate ladder —
         so restart works even when ``~/.local/bin/kirocrew`` points at an
-        uninstalled worktree. Validates ``ssh_host``/``remote_bin`` first. After a
+        uninstalled worktree. Validates the transport params first. After a
         restart the remote dashboard port bounces, so the local tunnel's health
         probe detects the drop and self-heals (Stage 2) — no manual reconnect
         needed. Returns ``{ok, message}``.
@@ -1010,13 +1301,26 @@ class SshTunnelManager:
         if inst is None:
             return {"ok": False, "message": "unknown instance"}
         try:
-            ssh_host = validate_ssh_host(inst.ssh_host)
-            remote_bin = validate_remote_bin(inst.remote_bin)
-        except SshValidationError as e:
-            return {"ok": False, "message": f"invalid ssh settings: {e}"}
-        rc, err = await run_remote_kirocrew(
-            ssh_host, "restart", remote_bin=remote_bin, marker_port=inst.remote_port
-        )
+            params = self._resolve_transport(inst)
+        except (SshValidationError, SsmValidationError) as e:
+            return {"ok": False, "message": f"invalid {inst.connection_method} settings: {e}"}
+        if params.method == "ssm":
+            rc, err = await run_remote_kirocrew_ssm(
+                params.ssm_target,
+                "restart",
+                aws_profile=params.aws_profile,
+                aws_region=params.aws_region,
+                ssm_run_as=params.ssm_run_as,
+                remote_bin=params.remote_bin,
+                marker_port=inst.remote_port,
+            )
+        else:
+            rc, err = await run_remote_kirocrew(
+                params.ssh_host,
+                "restart",
+                remote_bin=params.remote_bin,
+                marker_port=inst.remote_port,
+            )
         if rc == 0:
             logger.info("Restarted remote gateway for %s", instance_id)
             return {"ok": True, "message": "remote gateway restart requested"}
@@ -1162,27 +1466,21 @@ class SshTunnelManager:
     async def _refresh_token_once(self, instance_id: str) -> bool:
         """Re-mint the token once. Returns True on success.
 
-        The SSH mint runs WITHOUT holding the manager lock (so a slow mint can't
-        block connect/disconnect); the result is stored under the lock only if
-        the instance is still connected (guards a disconnect mid-mint).
+        The remote mint runs WITHOUT holding the manager lock (so a slow mint
+        can't block connect/disconnect); the result is stored under the lock only
+        if the instance is still connected (guards a disconnect mid-mint). Uses
+        whichever transport the instance is configured for.
         """
         inst = self._registry.get(instance_id)
         if inst is None or instance_id not in self._tunnels:
             return False
         try:
-            ssh_host = validate_ssh_host(inst.ssh_host)
-            remote_bin = validate_remote_bin(inst.remote_bin)
-        except SshValidationError as e:
+            params = self._resolve_transport(inst)
+        except (SshValidationError, SsmValidationError) as e:
             logger.warning("Token refresh aborted for %s: %s", instance_id, e)
             return False
         try:
-            token = await self._mint_token(
-                ssh_host,
-                remote_bin=remote_bin,
-                ttl=inst.ttl,
-                remote_port=inst.remote_port,
-                embed_parent_port=self._parent_port,
-            )
+            token = await self._mint_for(inst, params)
         except TokenMintError as e:
             logger.warning("Proactive token refresh failed for %s: %s", instance_id, e)
             return False

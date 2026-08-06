@@ -57,7 +57,7 @@ from kiro_crew.discord.transport_dispatch import (
     _receipt_text,
 )
 from kiro_crew.messaging.attachments import cleanup
-from kiro_crew.messaging.link import legacy_dashboard_mirror_key
+from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -272,6 +272,13 @@ class FakeSessions:
     def clear_mirror_link(self, key: str) -> bool:
         self.inbound_mirror_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
+
+    def clear_mirror_links_at(self, link: Any) -> list[str]:
+        cleared = self.find_mirror_sessions(link)
+        for key in cleared:
+            self.inbound_mirror_keys.discard(key)
+            self.mirror_links.pop(key, None)
+        return cleared
 
     def enqueue(self, key: str, ts: str, text: str, *, force: bool = False, **kw: Any) -> bool:
         if force or self._busy:
@@ -774,7 +781,8 @@ class TestTransportAuth:
         assert DISCORD_CAPABILITIES.streaming is True
         assert DISCORD_CAPABILITIES.edit is True
         assert DISCORD_CAPABILITIES.reactions is True
-        assert DISCORD_CAPABILITIES.files is True
+        assert DISCORD_CAPABILITIES.files_inbound is True
+        assert DISCORD_CAPABILITIES.files_outbound is False  # no upload path exists
         assert DISCORD_CAPABILITIES.threads is True
 
 
@@ -1551,6 +1559,90 @@ class TestDispatcher:
         assert sess.mirror_links[key].channel_id == "c1"
         await d.handle_message(self._msg("!unlink"))
         assert key not in sess.mirror_links
+
+    @pytest.mark.asyncio
+    async def test_unlink_clears_binding_stranded_by_generation_rotation(self) -> None:
+        # THE stale-mirror regression: a binding written at one DM generation,
+        # then the conversation rotates (!new / idle / daily reset). The row's
+        # key spelling no longer derives from the current session key, so the
+        # key-addressed clears cannot reach it — yet it still occupies the
+        # location and blocks `!session` resume. Unlink must free it by value.
+        d, cli, sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("!link"))
+        stale_key = d._session_key("u1")
+        await d.handle_message(self._msg("!new"))  # rotate the generation
+        key = d._session_key("u1")
+        assert stale_key != key  # binding is now stranded under the old spelling
+        assert stale_key not in (key, legacy_dashboard_mirror_key(key))
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.mirror_links == {}
+        assert any("Unlinked" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_unlink_clears_dashboard_mirror_into_this_channel(self) -> None:
+        # A dashboard session mirroring outbound into this conversation is the
+        # exact occupant `!session`'s conflict check refuses on ("attached to
+        # another session") — `!unlink` in the conversation must clear it.
+        d, cli, sess = _dispatcher({"u1"})
+        sess.mirror_links["dashboard:chat-9"] = ChannelLink("discord", channel_id="c1")
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.mirror_links == {}
+        assert any("Unlinked" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_unlink_leaves_other_locations_alone(self) -> None:
+        # The value sweep is exact-match: a mirror into a DIFFERENT Discord
+        # channel must survive an unlink here, and with nothing pointing at
+        # this conversation the reply stays truthful ("wasn't linked").
+        d, cli, sess = _dispatcher({"u1"})
+        other = ChannelLink("discord", channel_id="c2")
+        sess.mirror_links["dashboard:chat-9"] = other
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.mirror_links == {"dashboard:chat-9": other}
+        assert any("wasn't linked" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_unlink_frees_location_in_one_shot_with_resumed_session(self) -> None:
+        # A resumed session AND an outbound dashboard mirror can co-occupy a
+        # location (the dashboard mirror-link endpoint performs no occupancy
+        # check). The resumed-session early path must still free the WHOLE
+        # location — one `!unlink`, not two.
+        d, cli, sess = _dispatcher({"u1"})
+        loc = ChannelLink("discord", channel_id="c1")
+        sess.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
+        sess.set_mirror_link("dashboard:chat-9", loc)
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.mirror_links == {}
+        assert any("Left the resumed session" in t for t, _ in cli.sent)
+        await d.handle_message(self._msg("!unlink"))
+        assert any("wasn't linked" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_unlink_repairs_duplicate_inbound_bindings(self) -> None:
+        # Duplicate inbound bindings make the resume resolver fail closed
+        # (routing denied), so the resumed-session path cannot release them —
+        # the dispatcher sweep is the repair, and the reply says how much it
+        # cleared instead of a bare ✅ that reads as "just yours".
+        d, cli, sess = _dispatcher({"u1"})
+        loc = ChannelLink("discord", channel_id="c1")
+        sess.set_mirror_link("dashboard:wedged-a", loc, accepts_inbound=True)
+        sess.set_mirror_link("dashboard:wedged-b", loc, accepts_inbound=True)
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.mirror_links == {}
+        assert any("Unlinked (2 bindings)" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
+    async def test_new_frees_whole_location_when_leaving_resumed_session(self) -> None:
+        # `!new` releases a resumed session through the same whole-location
+        # sweep as `!unlink`: a co-located outbound mirror must not leak into
+        # the fresh conversation the command starts.
+        d, cli, sess = _dispatcher({"u1"})
+        loc = ChannelLink("discord", channel_id="c1")
+        sess.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
+        sess.set_mirror_link("dashboard:bystander", loc)
+        await d.handle_message(self._msg("!new"))
+        assert sess.mirror_links == {}
+        assert any("left the resumed session" in t for t, _ in cli.sent)
 
     @pytest.mark.asyncio
     async def test_default_agent_fallback(self) -> None:

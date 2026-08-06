@@ -135,7 +135,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       {mainChip}
       <button
         type="button"
-        aria-label={`Send now: ${option}`}
+        aria-label={i18nT('components.followUpBar.send_now_2', { option })}
         title={i18nT('components.followUpBar.send_now')}
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => { e.stopPropagation(); if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }; onSend?.(isPicked ? undefined : option) }}

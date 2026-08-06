@@ -28,6 +28,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
+from kiro_crew.history import monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -428,6 +429,12 @@ _SESSION_RECYCLED_NOTICE = (
     "Conversation history is preserved — your next message starts a fresh process."
 )
 _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles performance
+
+#: Roles that exist only on the wire: appended so a reader/flush can see them,
+#: never broadcast as a `chat_message` and never persisted (the mirror of
+#: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
+#: They get no ``meta.mid`` — see ``_ChatSlot.append``.
+_WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
 _MAX_SOURCE_LINKS_PER_SLOT = 64
 # How many source links each slot payload actually serializes (the sidebar
 # renders at most this many chips). Shared with the periodic check-status
@@ -520,6 +527,15 @@ POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 # Prefix on the runner-injected nudge that breaks a repeated empty-generation
 # pattern (the model returned no output twice). Body: _EMPTY_AUTO_CONTINUE_MSG.
 EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
+# Prefix on the continuation injected when the USER pressed Continue on an
+# interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
+# *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
+# cross-language drift guard on that suffix — a marker outside the family is
+# invisible to it, and the card would silently render machine prose as a bubble.
+# The VALUE is what carries the user-facing meaning, and it deliberately does NOT
+# say "automatic recovery" like the five above: a person pressed the button, and
+# the card must not claim the system recovered by itself.
+MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 
 
 def should_queue_refusal_recovery(
@@ -810,6 +826,7 @@ class _ChatSlot:
         "_slack_thread_ts",
         "folder_id",
         "_folder_changed",
+        "_folder_suggested",
         "pinned",
         "tags",
         "_pending_subagent_failures",
@@ -964,6 +981,11 @@ class _ChatSlot:
         self._slack_thread_ts: str = ""
         self.folder_id: str = ""  # project folder assignment
         self._folder_changed: bool = False  # re-inject [FOLDER] breadcrumb next turn after move
+        # One-shot claim for the post-titling folder suggestion (see
+        # chat_folder_suggest.maybe_suggest_folder). In-memory only: a restored
+        # slot is already titled, so the suggestion hook never re-fires for it
+        # and a reset flag cannot produce a second card.
+        self._folder_suggested: bool = False
         self.pinned: bool = False  # pinned to top of sidebar
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         self._pending_subagent_failures: list[str] = []
@@ -1205,16 +1227,61 @@ class _ChatSlot:
         ts: str = "",
         *,
         broadcast: bool = True,
+        broadcast_user: bool = False,
         meta: dict | None = None,
     ) -> None:
         msg: dict[str, Any] = {
             "role": role,
             "content": content,
             "cls": cls,
-            "ts": ts or datetime.now(timezone.utc).isoformat(),
+            # This window is re-serialized into the SAME transcript file that
+            # ConversationLog.append writes, so it owes the reader the same
+            # ordering guarantee: strictly after the row before it, even when
+            # the clock does not tick between two appends. An explicit *ts*
+            # (a row replayed from a channel transcript) is preserved verbatim
+            # -- rewriting it would reorder the replay it came from.
+            "ts": ts
+            or monotonic_transcript_ts(
+                self.messages[-1].get("ts") if self.messages else None,
+                datetime.now(timezone.utc),
+            ),
         }
         if meta:
             msg["meta"] = meta
+        # Stamp a per-row delivery identity. A client sees the SAME row through
+        # two doors — the slot-detail HTTP rebuild and the live `chat_message`
+        # broadcast — and must be able to tell "this row again" from "another row
+        # that happens to look identical". `ts` cannot answer that: a coarse OS
+        # clock stamps two rows appended in the same tick identically (the same
+        # collision mergePreservedClientTs already guards), and content cannot
+        # either, since two identical messages are legitimate. So identity is an
+        # explicit id, minted once here, carried on the message dict, and thus
+        # present on every path that ships it: persisted by _build_message_entry,
+        # restored with the rest of `meta`, broadcast as `payload["meta"]`, and
+        # returned by _prepare_messages.
+        #
+        # Random rather than a per-slot counter deliberately: a counter rebased
+        # after a restore could reissue an id a restored row already holds, and a
+        # colliding id makes a client DROP a real message. There is no such
+        # failure mode for a random id.
+        #
+        # A caller-supplied `mid` (a row replayed from disk) is preserved — the
+        # id must survive the round trip or a post-restart redelivery of that row
+        # would not be recognisable.
+        #
+        # Skipped for the wire-only roles: `chunk` is appended once per streamed
+        # token and `done`/`streaming` are internal markers. None of them is ever
+        # broadcast as a `chat_message` (the broadcast below excludes them) or
+        # persisted (`_TRANSIENT_ROLES`), so an id would buy nothing and cost a
+        # uuid4 plus a dict on the hottest path in the runner.
+        if role not in _WIRE_ONLY_ROLES and not (
+            isinstance(msg.get("meta"), dict) and msg["meta"].get("mid")
+        ):
+            existing = msg.get("meta")
+            msg["meta"] = {
+                **(existing if isinstance(existing, dict) else {}),
+                "mid": f"m-{uuid.uuid4().hex[:16]}",
+            }
         self.messages.append(msg)
         self.invalidate_source_links()
         self.total_messages += 1
@@ -1222,11 +1289,18 @@ class _ChatSlot:
         self._pending.append(msg)
         self.event.set()
         # Broadcast via global SSE when no HTTP stream reader is active
-        # Skip: chunk (too noisy), done (internal), user (frontend adds optimistically)
+        # Skip: chunk (too noisy), done (internal). A "user" row is skipped by
+        # DEFAULT because the composer that submitted it already rendered it
+        # optimistically -- but that is only true of a message typed in this
+        # dashboard. A row replayed from a CHANNEL transcript was typed in
+        # Slack, so nothing rendered it here; those callers pass
+        # ``broadcast_user=True`` or the message stays invisible until a full
+        # transcript reload, arriving AFTER the reply it came before.
         if (
             broadcast
             and self._on_message
-            and role not in ("chunk", "done", "user")
+            and role not in ("chunk", "done")
+            and (role != "user" or broadcast_user)
             and not self._has_reader
         ):
             self._on_message(self.key, msg)  # type: ignore[operator]
@@ -2045,6 +2119,9 @@ class DashboardState:
         cron_jobs: int | None = None,
         lessons: int | None = None,
         update_available: bool = False,
+        update_self_updatable: bool = False,
+        update_checked: bool = False,
+        update_command: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -2058,6 +2135,22 @@ class DashboardState:
             "lessons": lessons if lessons is not None else self._count_lessons(),
             "subagents": self.subagents.count if self.subagents else 0,
             "update_available": update_available,
+            # Can THIS install replace its own code? Only a git checkout can
+            # (``POST /api/update`` is git fetch + reset). Shipped alongside the
+            # availability flag so the dashboard can offer an Update button that
+            # will actually work, instead of one that 409s on a wheel install —
+            # it must not have to run a fresh check just to learn the layout.
+            "update_self_updatable": update_self_updatable,
+            # Did a check ever reach a verdict? Without this the UI cannot tell
+            # "checked and current" from "never checked", and painting a green
+            # "Up to date" pill next to a red "couldn't check" line is the exact
+            # half-truth the update-check contract exists to prevent.
+            "update_checked": update_checked,
+            # The upgrade command for an install that cannot replace itself, so the
+            # 12-hourly BACKGROUND check can light the nav badge and still land the
+            # user on something actionable. Deriving it only from a manual check
+            # left the badge pointing at an Update button that 409s.
+            "update_command": update_command,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
@@ -2947,6 +3040,36 @@ class DashboardState:
                     namespaced = _split_namespaced_channel_id(_ch)
                     slot._slack_channel = namespaced[1] if namespaced else (_ch or "")
                     slot._slack_thread_ts = _ts or ""
+                    # Rebuild the thread -> slot index too, not just the fields:
+                    # inbound replies resolve through the index, so restoring
+                    # the fields alone leaves a mirrored session delivering to
+                    # Slack but not back to its tab after a restart.
+                    #
+                    # Index ONLY a genuine mirror-OUT. A channel-born session's
+                    # ``slack_thread_ts`` is a SELF-reference -- the thread the
+                    # session lives IN, not one it mirrors TO -- and indexing
+                    # that would make every inbound Slack message resolve to a
+                    # "linked" slot and run through the dashboard chat runner
+                    # instead of the Slack transport, silently changing the
+                    # execution engine and approval semantics of all Slack
+                    # traffic.
+                    #
+                    # Both tests are load-bearing and neither is a name
+                    # heuristic. A channel slot whose stem RESOLVED is caught by
+                    # ``linked_session_key``; one whose stem did NOT resolve
+                    # (leaving that field empty) is caught by comparing the link
+                    # against the slot's own filename stem, because a channel
+                    # slot is named for the very thread it lives in. A dashboard
+                    # slot that merely happens to be named ``slack_...`` matches
+                    # neither test and is still indexed.
+                    from kiro_crew.history import _safe_key
+                    from kiro_crew.messaging.link import canonical_key
+
+                    _self_ref = False
+                    if _ts:
+                        _self_ref = _safe_key(canonical_key(_ts)) == name
+                    if _ts and not slot.linked_session_key and not _self_ref:
+                        self._slack_to_slot[_ts] = name
         except Exception:
             pass
         self._slots[name] = slot
@@ -3021,11 +3144,19 @@ class DashboardState:
         #    other way would be a cycle.
         #
         # What makes that safe: live tool meta is redacted at source (_tool_meta),
-        # and no DISK-LOADED message is ever appended with broadcast=True — both
-        # restore loops pass broadcast=False. That invariant is what lets the load
-        # path skip meta redaction, and it is pinned by
+        # and a DISK-LOADED message reaches this path only when the caller opts
+        # in per-role. Both restore loops pass broadcast=False, and the ONE
+        # exception is refresh_channel_window, which replays a channel
+        # transcript's tail and passes broadcast_user=True so a message typed in
+        # Slack renders at all (nothing rendered it optimistically here). That
+        # exception cannot carry unredacted meta: ConversationLog.append writes
+        # only role/content/ts/source_thread/source_user for such a row -- no
+        # meta dict -- so the arm below never fires for it, and the row's
+        # content is human-typed, which is deliberately raw at every other
+        # boundary too. The invariant is pinned by
         # test_rehydrate_does_not_broadcast_replayed_messages and
-        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax it.
+        # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
+        # it further without re-checking that meta is still absent.
         direct_meta = msg.get("meta")
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}

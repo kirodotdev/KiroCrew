@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context import ui_language_tag
 from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
+from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
 )
@@ -41,12 +42,14 @@ _TITLE_SOURCE_SCAN_LIMIT = _TITLE_TEXT_LIMIT + _TITLE_MAX_ATTACHMENT_FILES * (
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH + 32
 )
 
-# Titling is a trivial 3-6 word task, so pin it to the cheapest/fastest model
-# (Haiku) rather than the kirocrew-lite default ("auto" on the kiro-cli path).
-# Applied per-session via set_model so heavier background work (compaction,
-# optimizer) keeps the lite agent's default model. Best-effort: a failed
-# override just falls back to the session's default model.
-_TITLE_MODEL = "claude-haiku-4.5"
+# Titling is a trivial 3-6 word task. It formerly pinned Haiku for cost, but a
+# hardcoded model id is not governance-aware: on an account/partition that does
+# not serve that model (e.g. where Haiku is unavailable) the wire
+# rejects it with ``Invalid model ID``. ``"auto"`` means "inherit
+# the session's governed default" — ``run_bg_oneliner`` skips the per-session
+# set_model override for auto, so titling runs on the backend-resolved entitled
+# model instead of a literal the account may not have.
+_TITLE_MODEL = "auto"
 
 # Per-word delay for the word-by-word title reveal animation. LLM chunk
 # streaming arrives in a sub-second burst (too fast to perceive), so the reveal
@@ -804,6 +807,23 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         slot._title_retry_pending = False
         if retry_pending and not slot._titled and not cancelled:
             await _maybe_auto_title(state, slot)
+        # Now that the slot has a settled title, offer a folder for it if it is
+        # unfiled. Deliberately here and not at the two title-push sites: this
+        # runs for the LLM title AND the definitive truncated fallback, and only
+        # once a title is locked in (a fallback that will still be retried leaves
+        # ``_titled`` False, so no card is offered on a name about to change).
+        #
+        # Awaited rather than spawned. This function is already a background task
+        # (chat_runner/chat_handlers create it), the title has been pushed by the
+        # time we get here, so the wait costs the user nothing — and it keeps the
+        # suggestion from becoming an unreferenced task the loop may drop.
+        if slot._titled and not cancelled:
+            try:
+                await maybe_suggest_folder(state, slot)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — never let a suggestion break titling
+                logger.debug("Folder suggestion failed for slot %s", slot.key, exc_info=True)
 
 
 async def api_chat_slot_generate_title(request: web.Request) -> web.Response:

@@ -202,7 +202,7 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
               layout
               type="button"
               disabled={disabled}
-              title={disabled ? `${s.label} not yet available` : s.label}
+              title={disabled ? i18nT('pages.chat.toolDetails.not_yet_available', { label: s.label }) : s.label}
               aria-disabled={disabled || undefined}
               onClick={() => { if (!disabled) onChange(s.key) }}
               transition={{ duration: 0.15 }}

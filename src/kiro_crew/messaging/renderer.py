@@ -5,9 +5,14 @@ The ``TurnDriver`` consumes provider events and emits the channel-neutral
 that maps those abstract events onto its native surface.
 
 ``prompt_choice`` is a FIRST-CLASS event (not generic "permission text"):
-each Renderer maps it to its native interactive widget, capped at
-``capabilities.max_buttons`` and degrading to a numbered text reply when
-interactive choices are unsupported or exceed the cap.
+each Renderer maps it to its native interactive widget. NOTE: despite the
+existence of ``capabilities.max_buttons``, no renderer reads it today — the
+caps are hardcoded per channel (Slack ``choices[:10]``, Discord
+``options[:25]``, Telegram uncapped) and the no-widget channels strip the
+trailer unconditionally. Capping on the declared value and degrading to a
+numbered text reply is the INTENDED contract, tracked in the capability
+ledger (``test/test_capability_ledger.py``); do not write code that assumes
+it is already enforced.
 """
 
 from __future__ import annotations

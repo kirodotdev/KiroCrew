@@ -70,7 +70,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                  *  (not menuitemcheckbox) because the row lives in a form popover, not a
                  *  menu: a native <button> is Tab-reachable and Space/Enter-operable, and
                  *  the owning popover owns focus/Escape (no orphan menuitem ARIA). */
-                <button type="button" role="checkbox" aria-checked={on} aria-label={`Include ${t.name} in filter`}
+                <button type="button" role="checkbox" aria-checked={on} aria-label={i18nT('components.tagManagerList.include_in_filter', { name: t.name })}
                   className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer relative outline-none focus-visible:ring-2 focus-visible:ring-accent"
                   style={{ background: t.color }}
                   onClick={() => onToggleTag?.(t.id, nextIds)}>
@@ -89,7 +89,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 key={t.name}
                 type="text"
                 data-testid={`tag-name-${t.id}`}
-                aria-label={`Rename tag ${t.name}`}
+                aria-label={i18nT('components.tagManagerList.rename_tag', { name: t.name })}
                 defaultValue={t.name}
                 className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 rounded focus:bg-bg-elevated focus:border focus:border-accent/50"
                 onBlur={e => { const v = e.target.value.trim(); if (!v) { e.target.value = t.name; return } if (v !== t.name) updateTagMutation.mutate({ id: t.id, body: { name: v } }) }}
@@ -112,15 +112,15 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 className={`shrink-0 cursor-pointer bg-transparent border-none p-[2px] transition-all outline-none focus-visible:ring-1 focus-visible:ring-accent ${t.status ? 'text-accent hover:text-accent-hover' : 'text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-text'}`}
                 title={t.status ? i18nT('components.tagManagerList.status_tag_mutually_exclusive_on_cards_click_to') : i18nT('components.tagManagerList.make_status_tag')}
                 aria-pressed={!!t.status}
-                aria-label={t.status ? `Remove status flag from ${t.name}` : `Make ${t.name} a status tag`}
+                aria-label={t.status ? i18nT('components.tagManagerList.remove_status_flag_from', { name: t.name }) : i18nT('components.tagManagerList.make_a_status_tag', { name: t.name })}
                 onClick={() => updateTagMutation.mutate({ id: t.id, body: { status: !t.status } })}>
                 <Zap size={11} fill={t.status ? 'currentColor' : 'none'} />
               </button>
               {/* Delete */}
               <button type="button" data-testid={`tag-delete-${t.id}`}
                 className="shrink-0 cursor-pointer bg-transparent border-none p-[2px] text-transparent group-hover/tag:text-muted focus-visible:!text-muted hover:!text-danger transition-all outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                title={`Delete tag "${t.name}"`}
-                aria-label={`Delete tag ${t.name}`}
+                title={i18nT('components.tagManagerList.delete_tag', { name: t.name })}
+                aria-label={i18nT('components.tagManagerList.delete_tag_2', { name: t.name })}
                 onClick={() => { if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id) }}>
                 <X size={11} />
               </button>

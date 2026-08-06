@@ -24,6 +24,30 @@ from kiro_crew.pod.config import (
     PodConfig,
 )
 
+# Stand-in for a version-manager node bin dir (mise/nvm/fnm/volta/asdf install
+# under $HOME). Provisioning resolves ``npm`` to an absolute path there.
+NODE_BIN = "/fake/node/bin"
+
+
+def _npm(*args: str) -> list[str]:
+    """The argv provisioning is expected to spawn for an npm step."""
+    return [f"{NODE_BIN}/npm", *args]
+
+
+@pytest.fixture(autouse=True)
+def _fake_node_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin node-toolchain resolution so provisioning tests are host-independent.
+
+    ``provision`` now resolves ``npm`` to an absolute path and hands the child a
+    PATH carrying the node bin dir (npm run-scripts are ``#!/usr/bin/env node``).
+    Without this fixture the tests below would pass or fail according to whether
+    the host running them happens to have a version manager installed.
+    """
+    monkeypatch.setattr(prov, "find_node_tool", lambda name: f"{NODE_BIN}/{name}")
+    monkeypatch.setattr(
+        prov, "node_augmented_path", lambda base="": f"{NODE_BIN}{os.pathsep}{base}"
+    )
+
 
 @pytest.fixture(autouse=True)
 def _systemd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -350,7 +374,7 @@ class TestProvisionBuildPaths:
         co.mkdir()
         monkeypatch.setattr(prov, "_find_python", lambda version="3.12": "/usr/bin/python3.12")
 
-        def fake_run(cmd: list[str], cwd: Path) -> int:
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             if cmd[1:3] == ["-m", "venv"]:
                 b = prov.venv_bin(co)
                 b.parent.mkdir(parents=True, exist_ok=True)
@@ -371,7 +395,7 @@ class TestProvisionBuildPaths:
         co = tmp_path / "wt"
         (co / "website").mkdir(parents=True)
 
-        def fake_run(cmd: list[str], cwd: Path) -> int:
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             (co / "website" / "dist").mkdir(parents=True, exist_ok=True)
             (co / "website" / "dist" / "index.html").write_text("<html>")
             return 0
@@ -390,7 +414,7 @@ class TestProvisionBuildPaths:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         co = _ready_worktree(tmp_path, "wt", venv=False, dist=True)
-        monkeypatch.setattr(prov, "_run", lambda cmd, cwd: 99)  # must not be called
+        monkeypatch.setattr(prov, "_run", lambda cmd, cwd, env=None: 99)  # must not be called
         assert prov.build_dist(co) is True
 
     def test_provision_full_chain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -414,7 +438,7 @@ class TestProvisionDependencyInstall:
         """Return a fake _run that records calls and materializes the venv bin on
         `python -m venv`, so has_venv() passes. Optionally fail `--group` cmds."""
 
-        def fake_run(cmd: list[str], cwd: Path) -> int:
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             calls.append(cmd)
             if cmd[1:3] == ["-m", "venv"]:
                 # Materialize the venv entry point at the layout THIS platform
@@ -437,11 +461,11 @@ class TestProvisionDependencyInstall:
         website = tmp_path / "wt" / "website"
         website.mkdir(parents=True)
         calls: list[list[str]] = []
-        monkeypatch.setattr(prov, "_run", lambda cmd, cwd: calls.append(cmd) or 0)
+        monkeypatch.setattr(prov, "_run", lambda cmd, cwd, env=None: calls.append(cmd) or 0)
         assert prov.ensure_node_modules(website) is True
-        assert ["npm", "ci"] in calls
+        assert _npm("ci") in calls
         # ci succeeded → no fallback (non-mutating install never runs)
-        assert ["npm", "install", "--no-package-lock"] not in calls
+        assert _npm("install", "--no-package-lock") not in calls
 
     def test_node_modules_skipped_when_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -450,7 +474,7 @@ class TestProvisionDependencyInstall:
         (website / "node_modules" / ".bin").mkdir(parents=True)
         (website / "node_modules" / ".bin" / "tsc").write_text("#!/bin/sh\n")
 
-        def boom(cmd: list[str], cwd: Path) -> int:
+        def boom(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             raise AssertionError(f"must not run npm when node_modules present: {cmd}")
 
         monkeypatch.setattr(prov, "_run", boom)
@@ -463,17 +487,17 @@ class TestProvisionDependencyInstall:
         website.mkdir(parents=True)
         calls: list[list[str]] = []
 
-        def fake_run(cmd: list[str], cwd: Path) -> int:
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             calls.append(cmd)
-            return 1 if cmd == ["npm", "ci"] else 0  # ci fails, install succeeds
+            return 1 if cmd == _npm("ci") else 0  # ci fails, install succeeds
 
         monkeypatch.setattr(prov, "_run", fake_run)
         assert prov.ensure_node_modules(website) is True
         # Fallback must be NON-MUTATING: --no-package-lock so the tracked
         # website/package-lock.json is never rewritten (would dirty the worktree).
-        assert ["npm", "ci"] in calls
-        assert ["npm", "install", "--no-package-lock"] in calls
-        assert ["npm", "install"] not in calls  # plain (mutating) install never runs
+        assert _npm("ci") in calls
+        assert _npm("install", "--no-package-lock") in calls
+        assert _npm("install") not in calls  # plain (mutating) install never runs
 
     def test_build_dist_installs_node_modules_before_build(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -483,16 +507,16 @@ class TestProvisionDependencyInstall:
         website.mkdir(parents=True)
         calls: list[list[str]] = []
 
-        def fake_run(cmd: list[str], cwd: Path) -> int:
+        def fake_run(cmd: list[str], cwd: Path, env: dict | None = None) -> int:
             calls.append(cmd)
-            if cmd == ["npm", "run", "build"]:
+            if cmd == _npm("run", "build"):
                 (website / "dist").mkdir(parents=True, exist_ok=True)
                 (website / "dist" / "index.html").write_text("<html>")
             return 0
 
         monkeypatch.setattr(prov, "_run", fake_run)
         assert prov.build_dist(co) is True
-        assert calls.index(["npm", "ci"]) < calls.index(["npm", "run", "build"])
+        assert calls.index(_npm("ci")) < calls.index(_npm("run", "build"))
 
     # ---- #230: venv dev extras ----
 

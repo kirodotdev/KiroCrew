@@ -1244,6 +1244,24 @@ def set_dashboard_state(state: object) -> None:
     _dashboard_state = state
 
 
+def get_dashboard_state() -> object | None:
+    """The live dashboard state, or None when running without a dashboard.
+
+    An accessor rather than a direct read of the global: the gateway installs
+    the state AFTER import, so a caller that imported the name would capture
+    None forever.
+    """
+    return _dashboard_state
+
+
+def get_orch_cfg() -> "KiroCrewConfig | None":
+    """The orchestrator's live config, or None before the gateway installs it.
+
+    Same reason as :func:`get_dashboard_state` -- the value is set post-import.
+    """
+    return _orch_cfg
+
+
 def _reload_orch_cfg() -> None:
     """Reload in-memory config after !channel writes so changes take effect immediately."""
     if _orch_cfg is not None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import shlex
 import threading
 import types
 
@@ -514,3 +515,187 @@ def test_probe_unshare_fast_path_on_loop_when_backend_set(monkeypatch):
 
     result = asyncio.run(_check())
     assert result is True
+
+
+# ── Mechanism-specific no-backend guidance (issue #1639) ──
+#
+# The generic "install a sandbox backend, or opt out" text is actively unhelpful
+# on the most common affected host, stock Ubuntu 23.10+, where a backend exists
+# and is one AppArmor profile away from working — and the only concrete thing it
+# suggested was the opt-out that removes the isolation. These pin the replacement
+# WITHOUT losing the escape hatch: the profile is named first, the opt-out last.
+
+
+class TestNoBackendGuidanceNamesTheRightRemedy:
+    """Which remedy is named depends on HOW Kiro Crew was launched."""
+
+    @staticmethod
+    def _apparmor_host(monkeypatch):
+        monkeypatch.setattr(sb.sys, "platform", "linux")
+        monkeypatch.setattr(sb, "_apparmor_userns_restricted", lambda: True)
+
+    def test_appimage_launch_names_the_attach_command_with_the_path(self, monkeypatch):
+        self._apparmor_host(monkeypatch)
+        monkeypatch.setenv("APPIMAGE", "/home/user/Apps/kirocrew.AppImage")
+
+        msg = sb._no_backend_guidance()
+
+        assert "kirocrew sandbox install-profile" in msg
+        assert "/home/user/Apps/kirocrew.AppImage" in msg
+        assert "needs sudo" in msg, "must say why the app cannot do it"
+
+    def test_non_appimage_launch_points_at_the_service(self, monkeypatch):
+        """A foreground gateway has no safe executable to attach to."""
+        self._apparmor_host(monkeypatch)
+        monkeypatch.delenv("APPIMAGE", raising=False)
+
+        msg = sb._no_backend_guidance()
+
+        assert "kirocrew service install" in msg
+        assert "sandbox install-profile" not in msg
+
+    def test_never_advises_disabling_the_kernel_wide_protection(self, monkeypatch):
+        """Setting the sysctl to 0 trades a host-wide protection for one app."""
+        self._apparmor_host(monkeypatch)
+        monkeypatch.setenv("APPIMAGE", "/home/user/Apps/kirocrew.AppImage")
+
+        msg = sb._no_backend_guidance()
+
+        assert "Do NOT set the sysctl to 0" in msg
+        assert "=0" not in msg.replace("apparmor_restrict_unprivileged_userns=1", "")
+
+    @pytest.mark.parametrize("appimage", ["/home/user/Apps/kirocrew.AppImage", None])
+    def test_still_names_the_opt_out_but_only_after_the_real_fix(
+        self, monkeypatch, appimage
+    ):
+        """Regression guard.
+
+        Withholding ``sandbox_allow_unsandboxed_exec`` to stop people reaching for
+        it leaves a genuinely stuck user with no way out, and it broke the
+        pre-existing contract in
+        ``test_fail_closed_permanent_message_includes_optout_and_detail``. The fix
+        is ordering, not omission.
+        """
+        self._apparmor_host(monkeypatch)
+        if appimage:
+            monkeypatch.setenv("APPIMAGE", appimage)
+        else:
+            monkeypatch.delenv("APPIMAGE", raising=False)
+
+        msg = sb._no_backend_guidance()
+
+        assert "sandbox_allow_unsandboxed_exec=true" in msg
+        assert "last resort" in msg
+        profile_at = min(
+            (msg.index(t) for t in ("install-profile", "service install") if t in msg),
+            default=-1,
+        )
+        assert profile_at >= 0
+        assert profile_at < msg.index("sandbox_allow_unsandboxed_exec")
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "/home/user/KiroCrew-$(touch PWNED).AppImage",
+            "/home/user/`id`.AppImage",
+            "/home/user/a;rm -rf ~/b.AppImage",
+            "/home/user/Bob's Apps/kirocrew.AppImage",
+            "/home/user/a b/kirocrew.AppImage",
+        ],
+    )
+    def test_the_path_is_shell_quoted_for_safe_pasting(self, monkeypatch, hostile):
+        """Raised as blocking in review of #1653.
+
+        This message is printed for the user to paste into a shell, and a filename
+        is attacker-influenced in exactly the cases that matter — a downloaded or
+        unpacked AppImage. Interpolating it bare turns a diagnostic into command
+        injection at paste time.
+        """
+        self._apparmor_host(monkeypatch)
+        monkeypatch.setenv("APPIMAGE", hostile)
+
+        msg = sb._no_backend_guidance()
+
+        quoted = shlex.quote(hostile)
+        assert quoted in msg
+        # The dangerous forms must never appear unquoted.
+        for meta in ("$(", "`", ";"):
+            if meta in hostile:
+                assert f"--path {hostile}" not in msg
+        # And the quoting must survive a round trip through a shell parser.
+        assert shlex.split(f"cmd --path {quoted}")[-1] == hostile
+
+    def test_the_remedy_names_a_cli_the_appimage_user_actually_has(
+        self, monkeypatch, tmp_path
+    ):
+        """Raised as a design concern in review of #1653.
+
+        The AppImage is documented as needing "no Python, pip, npm, or Node", so
+        this persona has no `kirocrew` on PATH — the CLI lives inside the bundle.
+        Naming the bare command would hand exactly the affected user a
+        `command not found` and leave them with only the opt-out.
+        """
+        self._apparmor_host(monkeypatch)
+        monkeypatch.setenv("APPIMAGE", "/home/user/Apps/kirocrew.AppImage")
+        bundled = tmp_path / "kirocrew"
+        bundled.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(sb.sys, "argv", [str(bundled)])
+
+        msg = sb._no_backend_guidance()
+
+        assert str(bundled) in msg
+        assert "while Kiro Crew is open" in msg, "must say the path is live-only"
+
+    def test_which_is_not_trusted_as_evidence_the_user_has_the_cli(
+        self, monkeypatch, tmp_path
+    ):
+        """The gateway's PATH is not the user's PATH.
+
+        This text is generated inside a process that inherited the AppImage's own
+        environment but is pasted into the user's shell. A `which` hit would prove
+        the bundle can find its own CLI, not that the user can, so the absolute
+        path wins regardless.
+        """
+        self._apparmor_host(monkeypatch)
+        monkeypatch.setenv("APPIMAGE", "/home/user/Apps/kirocrew.AppImage")
+        bundled = tmp_path / "kirocrew"
+        bundled.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(sb.sys, "argv", [str(bundled)])
+        monkeypatch.setattr(sb.shutil, "which", lambda _n: "/usr/local/bin/kirocrew")
+
+        msg = sb._no_backend_guidance()
+
+        assert str(bundled) in msg
+
+    @pytest.mark.parametrize("argv", [[], [""], ["-c"], ["/usr/bin/python3"]])
+    def test_falls_back_to_the_bare_name_rather_than_inventing_a_path(
+        self, monkeypatch, argv
+    ):
+        """Better a short command than a confidently wrong absolute path."""
+        self._apparmor_host(monkeypatch)
+        monkeypatch.setenv("APPIMAGE", "/home/user/Apps/kirocrew.AppImage")
+        monkeypatch.setattr(sb.sys, "argv", argv)
+
+        msg = sb._no_backend_guidance()
+
+        assert "kirocrew sandbox install-profile" in msg
+        assert "while Kiro Crew is open" not in msg
+
+    def test_an_unaffected_host_keeps_the_original_text(self, monkeypatch):
+        """macOS, Debian, and a relaxed sysctl must be untouched by this change."""
+        monkeypatch.setattr(sb.sys, "platform", "darwin")
+
+        msg = sb._no_backend_guidance()
+
+        assert "sandbox_allow_unsandboxed_exec=true" in msg
+        assert "AppArmor" not in msg
+
+    def test_a_relaxed_sysctl_is_not_treated_as_the_apparmor_case(self, monkeypatch):
+        monkeypatch.setattr(sb.sys, "platform", "linux")
+        monkeypatch.setattr(sb, "_apparmor_userns_restricted", lambda: False)
+
+        assert "AppArmor" not in sb._no_backend_guidance()
+
+    def test_the_sysctl_reader_never_raises(self, monkeypatch):
+        """A missing knob (Debian 13, older kernels) is a normal answer."""
+        assert sb._apparmor_userns_restricted() in (True, False)

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from .autosource import (
     auto_source_still_contained,
     discover_and_register,
 )
+from .dedup import dedup_sweep
 from .embedder import embedder_signature
 from .folder_watcher import FolderWatcher
 from .ingestion import (
@@ -26,6 +28,11 @@ from .ingestion import (
     count_stale_items,
     rebuild_embeddings,
     start_rebuild_job,
+)
+from .project_docs import discover_and_register as discover_project_docs
+from .project_docs import (
+    is_project_doc_source,
+    project_source_still_valid,
 )
 from .store import KnowledgeStore
 
@@ -43,7 +50,8 @@ _LARGE_REBUILD_WARN_THRESHOLD = 1000
 class KnowledgeWatcher:
     """Polls registered local_file sources for file changes and re-ingests."""
 
-    def __init__(self, store: KnowledgeStore, pipeline: IngestionPipeline, interval: int = 300):
+    def __init__(self, store: KnowledgeStore, pipeline: IngestionPipeline, interval: int = 300,
+                 project_dirs: Callable[[], list[str]] | None = None):
         self.store = store
         self.pipeline = pipeline
         self.interval = interval
@@ -52,6 +60,20 @@ class KnowledgeWatcher:
         self._reembed_task: asyncio.Task | None = None
         # Last discovery error signature, for log dedup across sweeps.
         self._discover_error_sig: str | None = None
+        # Project-docs discovery keeps its OWN error signature: sharing one with
+        # the drop folder would let a failure in either suppress the first log of
+        # a failure in the other.
+        self._project_docs_error_sig: str | None = None
+        # Resolver for the directories the user is working in. Injected by the
+        # dashboard (which owns chat-slot state) rather than importing dashboard
+        # state here. Called ON the event loop -- it reads an in-memory dict the
+        # loop mutates -- so it must not do I/O.
+        self._project_dirs = project_dirs
+        # Sweeps completed, for the dedup cadence.
+        self._sweep_count = 0
+        # False until a scheduled dedup pass has actually applied deletes; the
+        # first scheduled pass previews instead.
+        self._dedup_applied_once = False
 
     async def start(self):
         logger.info("Source watcher started: interval=%ds", self.interval)
@@ -112,11 +134,52 @@ class KnowledgeWatcher:
             else:
                 logger.debug("Knowledge drop-folder discovery still failing: %s", sig)
 
+    async def _discover_project_docs(self) -> None:
+        """Register the documents of each project the user is working in.
+
+        Runs every sweep so a project opened after startup is picked up without a
+        restart. Gated on ``knowledge.auto_register_project_docs``; re-reads
+        config each sweep so toggling the flag takes effect immediately, matching
+        Kiro Crew's live-config behaviour. Never raises into the sweep: a
+        discovery failure must not stop registered sources from being scanned.
+        """
+        try:
+            cfg = KiroCrewConfig.load()
+            if not cfg.knowledge.auto_register_project_docs:
+                return
+            if self._project_dirs is None:
+                return
+            # Resolved on the loop: it copies a dict that other coroutines on the
+            # loop mutate, so the copy has to happen where those mutations are
+            # serialised against it.
+            dirs = self._project_dirs()
+            if not dirs:
+                return
+            created = await asyncio.to_thread(discover_project_docs, self.store, dirs)
+            self._project_docs_error_sig = None
+            for source_id in created:
+                # Registering a source that will spend LLM extraction on the
+                # user's files is an auditable mutation -- the manual POST path
+                # SEL-logs it, so the automatic path must too.
+                sel().log_tool_invocation(
+                    session_key="gateway", agent="knowledge-watcher",
+                    tool_name="knowledge.source.auto_add", outcome="completed",
+                    resources=f"source_id={source_id} kind=project_docs",
+                )
+        except Exception as exc:
+            sig = f"{type(exc).__name__}:{exc}"
+            if sig != getattr(self, "_project_docs_error_sig", None):
+                self._project_docs_error_sig = sig
+                logger.warning("Knowledge project-docs discovery failed", exc_info=True)
+            else:
+                logger.debug("Knowledge project-docs discovery still failing: %s", sig)
+
     async def _scan(self):
         """Check all watched sources for changes."""
         # Pick up a newly-created workspace drop folder before scanning, so a
         # folder made since the last sweep is ingested in this same pass.
         await self._discover_drop_folder()
+        await self._discover_project_docs()
         # Folder sources (local_folder, obsidian_vault)
         folder_rows = self.store.db.execute(
             "SELECT id, uri, source_type, properties FROM sources WHERE source_type IN ({})".format(
@@ -125,25 +188,39 @@ class KnowledgeWatcher:
             tuple(FOLDER_SOURCE_TYPES),
         ).fetchall()
         ws_base: str | None = None
+        chunk_budget: int | None = None
         for row in folder_rows:
             try:
                 source = dict(row)
                 props = self._parse_props(source.get("properties"))
                 if props.get("sync_status") in ("paused", "pending_confirmation"):
                     continue
+                budget: int | None = None
                 if props.get(AUTO_ADDED_PROP):
                     # Re-validate containment on EVERY sweep, not just at
                     # registration: the stored URI is a path that can be swapped
                     # for a symlink to an external tree after the fact, and
                     # os.walk would then follow it out of the workspace.
-                    if ws_base is None:
-                        ws_base = await asyncio.to_thread(default_project_dir)
-                    if not await asyncio.to_thread(
-                        auto_source_still_contained, source["uri"], ws_base or ""
-                    ):
+                    if is_project_doc_source(props):
+                        # A project repo root lives outside the workspace by
+                        # design, so workspace containment is the wrong
+                        # invariant; what must still hold is that the recorded
+                        # path has not been swapped for a link elsewhere.
+                        contained = await asyncio.to_thread(
+                            project_source_still_valid, source["uri"])
+                        if chunk_budget is None:
+                            chunk_budget = self._chunk_budget()
+                        budget = chunk_budget or None
+                    else:
+                        if ws_base is None:
+                            ws_base = await asyncio.to_thread(default_project_dir)
+                        contained = await asyncio.to_thread(
+                            auto_source_still_contained, source["uri"], ws_base or ""
+                        )
+                    if not contained:
                         logger.warning(
-                            "Skipping auto-added source %s: %s no longer resolves inside "
-                            "the workspace", source["id"], source["uri"],
+                            "Skipping auto-added source %s: %s no longer resolves to a "
+                            "permitted directory", source["id"], source["uri"],
                         )
                         sel().log_tool_invocation(
                             session_key="gateway", agent="knowledge-watcher",
@@ -152,7 +229,7 @@ class KnowledgeWatcher:
                             resources=f"source_id={source['id']} reason=not_contained",
                         )
                         continue
-                stats = await self._folder_watcher.scan_source(source)
+                stats = await self._folder_watcher.scan_source(source, chunk_budget=budget)
                 if stats.get("error"):
                     logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])
                 elif any(stats.get(k, 0) for k in ("new", "changed", "deleted")):
@@ -229,6 +306,79 @@ class KnowledgeWatcher:
         # embedding-setup change (model/budget) -- the file gates above never fire
         # for unchanged files, so this is the only path that catches a sig change.
         await self._maybe_reembed_stale()
+        self._sweep_count += 1
+        await self._maybe_dedup_sweep()
+
+    @staticmethod
+    def _chunk_budget() -> int:
+        """Chunks an auto-registered source may ingest in one sweep.
+
+        Read per sweep so the value is live. 0 disables the bound.
+        """
+        try:
+            return max(0, int(KiroCrewConfig.load().knowledge.auto_ingest_chunk_budget))
+        except Exception:
+            logger.debug("Could not read auto_ingest_chunk_budget", exc_info=True)
+            return 0
+
+    async def _maybe_dedup_sweep(self) -> None:
+        """Collapse duplicate documents on a cadence.
+
+        The per-ingest ``dedup_document`` call is O(n) against the just-written
+        document, and the pre-ingest hash gate refuses byte-identical writes --
+        but neither catches a NEAR-duplicate (the same document edited slightly
+        between two sources) nor a duplicate that predates them. Only a full
+        sweep does, which is why one runs here rather than only from the CLI and
+        the MCP tool.
+
+        The FIRST sweep in a process is a dry run that only logs what it would
+        collapse. A scheduled sweep differs in kind from a human-invoked one, not
+        just in frequency: it deletes unattended, and on an existing Library the
+        first pass is the one with a backlog to work through. A logged preview
+        makes that pass observable before anything is deleted, and costs one
+        sweep's delay.
+
+        Gated on ``knowledge.dedup_every_n_sweeps`` (0 disables). Contained: a
+        dedup failure must not stop the next sweep from scanning.
+        """
+        try:
+            every = max(0, int(KiroCrewConfig.load().knowledge.dedup_every_n_sweeps))
+        except Exception:
+            logger.debug("Could not read dedup_every_n_sweeps", exc_info=True)
+            return
+        if not every or self._sweep_count % every:
+            return
+        preview = not self._dedup_applied_once
+        try:
+            # Full O(n^2) corpus pass that can merge entities and rebuild the
+            # graph -- never on the event loop.
+            # An UNATTENDED pass applies only exact-content matches. A collapse
+            # deletes the loser's copy, so a wrong fuzzy match (same filename,
+            # cosine over the threshold, different facts -- two weekly reports)
+            # would silently cost a document its unique text with nobody watching.
+            # Exact-hash duplicates are the case automatic registration actually
+            # creates (one file in a repo and its worktree), and those are facts,
+            # not judgements. Fuzzy candidates are still found and reported, for
+            # the user to apply deliberately via the CLI or the dedup tool.
+            results = await asyncio.to_thread(
+                dedup_sweep, self.store, apply=not preview, certain_only=True)
+        except Exception:
+            logger.warning("Scheduled knowledge dedup sweep failed", exc_info=True)
+            return
+        if preview:
+            self._dedup_applied_once = True
+            if results:
+                logger.warning(
+                    "Scheduled knowledge dedup (first pass, PREVIEW ONLY -- nothing "
+                    "deleted) found %d duplicate document(s); the next scheduled pass "
+                    "will collapse them: %s",
+                    len(results),
+                    ", ".join(f"{r['loser']} -> {r['winner']} [{r['reason']}]"
+                              for r in results[:20]))
+            return
+        if results:
+            logger.info("Scheduled knowledge dedup collapsed %d duplicate document(s)",
+                        len(results))
 
     async def _maybe_reembed_stale(self) -> None:
         """Trigger a background sig-gated rebuild when items have a stale embedding sig.

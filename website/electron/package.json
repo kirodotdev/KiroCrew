@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-electron-mac",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "main": "main.js",
   "scripts": {
@@ -70,6 +70,7 @@
       "gateway-auth-hint.js",
       "gateway-stop.js",
       "gateway-wait.js",
+      "sandbox-profile.js",
       "home-dir.js",
       "local-token.js",
       "window-state.js",

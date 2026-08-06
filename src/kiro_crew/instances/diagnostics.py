@@ -21,7 +21,16 @@ import contextlib
 import logging
 from dataclasses import dataclass, field
 
-from kiro_crew.instances.validation import SshValidationError, validate_ssh_host
+from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.instances.validation import (
+    SshValidationError,
+    SsmValidationError,
+    validate_aws_profile,
+    validate_aws_region,
+    validate_ssh_host,
+    validate_ssm_run_as,
+    validate_ssm_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +38,10 @@ _LOOPBACK = "127.0.0.1"
 _SSH_PROBE_TIMEOUT_SECS = 12.0
 _REMOTE_CURL_TIMEOUT_SECS = 15.0
 _LOCAL_CONNECT_TIMEOUT_SECS = 2.0
+# SSM probes call the AWS control plane (describe-instance-information) and then
+# run a remote command via send-command, both slower than a direct ssh spawn.
+_SSM_PING_TIMEOUT_SECS = 25.0
+_SSM_REMOTE_PROBE_TIMEOUT_SECS = 60.0
 
 # Diagnosis codes (stable strings the UI can map to copy/icons).
 OK = "ok"
@@ -37,6 +50,9 @@ REMOTE_DOWN = "remote_down"
 TUNNEL_DOWN = "tunnel_down"
 NOT_CONNECTED = "not_connected"
 UNKNOWN = "unknown"
+# SSM-specific first-rung failure: the target isn't a reachable managed node
+# (agent offline, missing instance profile, wrong region/profile, or IAM denial).
+SSM_UNREACHABLE = "ssm_unreachable"
 
 _REASONS = {
     OK: "All checks passed — SSH, remote dashboard, and local forward are healthy.",
@@ -48,6 +64,22 @@ _REASONS = {
     NOT_CONNECTED: "SSH and the remote dashboard are up. This instance isn't connected yet "
     "(no local tunnel) — click Connect.",
     UNKNOWN: "Could not determine the failure cause.",
+    SSM_UNREACHABLE: "The SSM target isn't a reachable managed node — check that the "
+    "instance is running with the SSM agent online, that its instance profile "
+    "grants AmazonSSMManagedInstanceCore, and that your AWS profile/region and "
+    "ssm:StartSession permissions are correct.",
+}
+
+# SSM variants of the shared rungs, worded for the SSM transport so the UI copy
+# never tells an SSM user to "check SSH access".
+_SSM_REASONS = {
+    OK: "All checks passed — SSM session, remote dashboard, and local forward are healthy.",
+    REMOTE_DOWN: "SSM reaches the instance but the remote Kiro Crew dashboard isn't "
+    "responding (is the remote gateway running?).",
+    TUNNEL_DOWN: "SSM and the remote dashboard are up, but the local forward isn't "
+    "reachable (tunnel down — reconnect).",
+    NOT_CONNECTED: "SSM and the remote dashboard are up. This instance isn't connected yet "
+    "(no local tunnel) — click Connect.",
 }
 
 
@@ -207,3 +239,112 @@ async def diagnose_instance(
         return DiagnosisResult(TUNNEL_DOWN, _REASONS[TUNNEL_DOWN], probes)
 
     return DiagnosisResult(OK, _REASONS[OK], probes)
+
+
+# ── SSM transport ─────────────────────────────────────────────────────────
+
+
+async def _probe_ssm_managed(ssm_target: str, profile: str = "", region: str = "") -> bool:
+    """Return True if SSM reports *ssm_target* as an Online managed node.
+
+    The SSM analogue of :func:`_probe_ssh`: it answers "can the control plane
+    reach this box at all?" before we blame the remote gateway. Delegates to
+    :func:`kiro_crew.cloud.ssm.instance_is_managed` (read-only
+    ``describe-instance-information`` through the launcher's ``run_aws``
+    chokepoint) rather than re-implementing the call. A ``False`` covers agent
+    offline, wrong region/profile, and an IAM denial alike — all of which are
+    "the SSM path can't reach the target", which is what this rung reports.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(cloud_ssm.instance_is_managed, ssm_target, profile, region),
+            timeout=_SSM_PING_TIMEOUT_SECS,
+        )
+    except Exception:  # timeout, AWSError, dispatch failure — all "unreachable"
+        return False
+
+
+async def _probe_remote_dashboard_ssm(
+    ssm_target: str, remote_port: int, profile: str = "", region: str = "", run_as: str = ""
+) -> bool:
+    """Return True if the remote dashboard answers on its loopback port, via SSM.
+
+    Runs the same ``curl`` check as the SSH rung but dispatches it with SSM
+    ``send-command`` instead of ``ssh``. Any HTTP status (incl. an auth gate like
+    401/403/404) means something is listening; ``000``/empty means nothing is
+    bound there.
+    """
+    remote_cmd = (
+        f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
+        f"http://{_LOOPBACK}:{int(remote_port)}/api/status"
+    )
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                cloud_ssm.run_command,
+                ssm_target,
+                remote_cmd,
+                profile,
+                region,
+                run_as=validate_ssm_run_as(run_as),
+                total_wait=int(_SSM_REMOTE_PROBE_TIMEOUT_SECS),
+            ),
+            timeout=_SSM_REMOTE_PROBE_TIMEOUT_SECS + 15,
+        )
+    except Exception:  # timeout, AWSError, dispatch failure — treat as no answer
+        return False
+    code = (result.stdout or "").strip().strip("'\"")
+    return bool(code) and code != "000"
+
+
+async def diagnose_instance_ssm(
+    ssm_target: str,
+    remote_port: int,
+    local_port: int,
+    *,
+    aws_profile: str = "",
+    aws_region: str = "",
+    ssm_run_as: str = "",
+) -> DiagnosisResult:
+    """SSM-transport diagnosis ladder — the SSM sibling of :func:`diagnose_instance`.
+
+        1. SSM node reachable?     ``describe-instance-information`` → no ⇒ ssm_unreachable
+        2. Remote dashboard up?    ``send-command`` + curl :RP        → no ⇒ remote_down
+        3. Local forward reachable? TCP connect 127.0.0.1:LP          → no ⇒ tunnel_down
+        else                                                              ⇒ ok
+
+    Validates the SSM params first; an invalid target short-circuits to UNKNOWN
+    with a clear reason rather than dispatching an AWS call. All probes are
+    read-only.
+    """
+    try:
+        target = validate_ssm_target(ssm_target)
+        profile = validate_aws_profile(aws_profile)
+        region = validate_aws_region(aws_region)
+        run_as = validate_ssm_run_as(ssm_run_as)
+    except SsmValidationError as e:
+        return DiagnosisResult(code=UNKNOWN, reason=f"invalid SSM settings: {e}", probes=[])
+
+    probes: list[dict] = []
+
+    managed_ok = await _probe_ssm_managed(target, profile, region)
+    probes.append({"name": "ssm_managed_node", "ok": managed_ok})
+    if not managed_ok:
+        return DiagnosisResult(SSM_UNREACHABLE, _REASONS[SSM_UNREACHABLE], probes)
+
+    remote_ok = await _probe_remote_dashboard_ssm(target, remote_port, profile, region, run_as)
+    probes.append({"name": "remote_dashboard", "ok": remote_ok})
+    if not remote_ok:
+        return DiagnosisResult(REMOTE_DOWN, _SSM_REASONS[REMOTE_DOWN], probes)
+
+    # No local forward to probe means the instance was never connected (or is
+    # disconnected) — that's NOT_CONNECTED, not a broken tunnel.
+    if not local_port:
+        return DiagnosisResult(NOT_CONNECTED, _SSM_REASONS[NOT_CONNECTED], probes)
+
+    forward_ok = await _probe_local_forward(local_port)
+    probes.append({"name": "local_forward", "ok": forward_ok})
+    if not forward_ok:
+        return DiagnosisResult(TUNNEL_DOWN, _SSM_REASONS[TUNNEL_DOWN], probes)
+
+    return DiagnosisResult(OK, _SSM_REASONS[OK], probes)

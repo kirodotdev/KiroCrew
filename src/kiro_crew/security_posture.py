@@ -105,6 +105,15 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Session & task memory panel",
+        "dashboard/session_memory.py",
+        "Chat titles served by `GET /api/sessions/memory`. Titles are generated from "
+        "user content, and the resume path in `chat_handlers` assigns a "
+        "client-supplied `body[\"title\"]` to the slot with no scan of its own, so this "
+        "serializer is the boundary that guarantees the scan — the same "
+        "output-boundary reason as the sibling subagent-task text.",
+    ),
+    (
         "Mochi notify + pin egress",
         "apps/builtins/mochi/hooks.py",
         "Agent-authored notify text (perform_pet_action summary/chatMessage) crosses to "
@@ -306,15 +315,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Slack session mirror",
         "dashboard/chat_slack.py",
-        "Thread titles and mirrored message bodies posted to Slack, via "
-        "redact_and_truncate (redaction BEFORE truncation, so a truncation "
-        "boundary cannot split and hide a credential).",
+        "Thread titles and the conversation history seeded into a newly linked "
+        "thread. Titles go through redact_and_truncate (redaction BEFORE "
+        "truncation, so a truncation boundary cannot split and hide a "
+        "credential); history goes through redact_via_context BEFORE mrkdwn "
+        "conversion, because to_slack_mrkdwn self-truncates at 39k and would "
+        "otherwise cut a credential into an unmatchable prefix.",
     ),
     (
         "Configured-channel session mirror",
         "dashboard/chat_mirror.py",
         "Recent dashboard context posted while linking a configured non-Slack "
-        "destination, via redact_and_truncate before transport dispatch.",
+        "destination, via redact_via_context before transport dispatch, then "
+        "chunked to the channel's own message limit rather than truncated.",
     ),
     (
         "Slack Block Kit views",
@@ -423,6 +436,17 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "colleague, or a ticket, the investigation record — so its provider titles "
         "and model-authored diagnosis are redacted at the write, not at a read.",
     ),
+    (
+        "Diagnostics support bundle",
+        "diagnostics.py",
+        "The redacted zip built by `kirocrew doctor --bundle` and Settings › About › "
+        "Report a Problem, plus the pre-filled GitHub issue URL it returns. The most "
+        "external boundary in this list: the artifact exists to be attached to a "
+        "PUBLIC issue, and its members are raw gateway/kiro-cli logs and crash "
+        "reports. Every text member and the user-typed note run the credential and "
+        "exfiltration-URL scanners plus a sensitive-header pass before anything is "
+        "written into the archive.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -494,6 +518,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/workflows.py",
         "dashboard/handlers_project.py",
         "knowledge/agent_fetch.py",
+        "knowledge/agent_source.py",
         "knowledge/artifact_ingest.py",
         "knowledge/ingestion.py",
         "mcp_core.py",
@@ -535,6 +560,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "kiro_prerequisite.py",
         "instances/ssh_tunnel_manager.py",
         "instances/token_mint.py",
+        "instances/ssm_token_mint.py",
         "publish_sync.py",
         "cli_commands.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
@@ -878,7 +904,33 @@ def _token_auth_items() -> list[PostureItem]:
     # read at call time — the documented circular-import exception, and it keeps
     # the advertised windows derived from the enforcing module rather than
     # restated as literals that could drift.
-    from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS
+    from kiro_crew.dashboard.token_auth import (
+        LINK_WINDOW_SECS,
+        MAX_SESSION_TTL_SECS,
+        proxied_pin_observed,
+    )
+
+    # Tri-state, deliberately, and derived from the LIVE bindings so it recovers
+    # on its own. A pin that has collapsed onto a same-host proxy's loopback
+    # address is NOT the control this row used to advertise, and "nothing is
+    # pinned right now" is not evidence that pins are effective — rendering
+    # either as the plain claim is the failure this row is being corrected for.
+    _pinned = proxied_pin_observed()
+    if _pinned is None:
+        _pin_detail = (
+            "A session is bound to the address that first used it. No session is "
+            "currently pinned, so the effective scope is not known yet"
+        )
+    elif _pinned:
+        _pin_detail = (
+            "SHARED, not per-client: sessions are binding to a proxy's address rather than a "
+            "client's — either a same-host tunnel (cloudflared / ngrok / tailscale serve) or a "
+            "reverse proxy in front of this gateway — so every client reaching the dashboard "
+            "through it satisfies the same pin. Reach the dashboard directly, or over a "
+            "transport that preserves the client address, for the pin to identify one client"
+        )
+    else:
+        _pin_detail = "A session is bound to the client address that first used it"
 
     return [
         PostureItem(
@@ -887,7 +939,7 @@ def _token_auth_items() -> list[PostureItem]:
         ),
         PostureItem(
             label="IP pinning",
-            detail="A token is bound to the IP that first used it",
+            detail=_pin_detail,
         ),
         PostureItem(
             label="Single-use link nonce",

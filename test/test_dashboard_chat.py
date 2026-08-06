@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6592,61 +6593,69 @@ class TestFolderCRUD:
             assert child["parent_id"] == parent["id"]
 
     @pytest.mark.asyncio
-    async def test_create_folder_accepts_icon_and_default_agent(self, tmp_path, monkeypatch):
-        """The create modal collects the full folder config, so POST must take it.
-
-        Both fields used to be PATCH-only, forcing create-then-update.
-        """
+    async def test_create_folder_accepts_default_agent(self, tmp_path, monkeypatch):
+        """The create modal collects the full folder config, so POST must take it."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/folders",
-                json={"name": "Payments", "icon": "🚀", "default_agent": "kirocrew-dev"},
+                json={"name": "Payments", "default_agent": "kirocrew-dev"},
             )
             assert resp.status == 201
             data = await resp.json()
-            assert data["icon"] == "🚀"
             assert data["default_agent"] == "kirocrew-dev"
 
     @pytest.mark.asyncio
-    async def test_create_folder_rejects_multi_emoji_icon(self, tmp_path, monkeypatch):
+    async def test_create_folder_accepts_palette_color(self, tmp_path, monkeypatch):
+        """Create persists an allowlisted palette color and rejects others."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/chat/folders", json={"name": "Bad", "icon": "🚀🔥"}
+                "/api/chat/folders", json={"name": "Redteam", "color": "#ef4444"}
             )
-            assert resp.status == 400
-            assert "single emoji" in (await resp.json())["error"]
+            assert resp.status == 201
+            assert (await resp.json())["color"] == "#ef4444"
+            bad = await client.post(
+                "/api/chat/folders", json={"name": "Bad", "color": "#123456"}
+            )
+            assert bad.status == 400
+            assert (await bad.json())["code"] == "color_invalid"
+
+    def test_folder_color_palette_matches_frontend_catalog(self):
+        """The backend allowlist and the frontend catalog must offer the same
+        hues: the modal renders FOLDER_COLOR_PALETTE (folderColorCatalog.tsx)
+        while create/PATCH validate against _FOLDER_COLOR_PALETTE, so drift
+        means the UI offers a swatch the backend rejects with a 400."""
+        from pathlib import Path
+
+        from kiro_crew.dashboard.chat_folders import _FOLDER_COLOR_PALETTE
+
+        catalog = (
+            Path(__file__).resolve().parent.parent
+            / "website" / "src" / "components" / "folderColorCatalog.tsx"
+        )
+        frontend = set(re.findall(r"#[0-9a-f]{6}", catalog.read_text(encoding="utf-8")))
+        assert frontend == set(_FOLDER_COLOR_PALETTE)
 
     @pytest.mark.asyncio
-    async def test_create_folder_with_icon_skips_auto_generation(self, tmp_path, monkeypatch):
-        """An explicit icon must not be clobbered by the background LLM generator.
-
-        _generate_folder_icon writes unconditionally on success, so the task has
-        to be skipped rather than merely raced.
-        """
+    async def test_patch_color_set_and_clear(self, tmp_path, monkeypatch):
+        """PATCH color: allowlisted value sets, empty string clears the key."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        calls: list[str] = []
-
-        async def _spy(_state, folder):
-            calls.append(folder["id"])
-
-        monkeypatch.setattr("kiro_crew.dashboard.chat_folders._generate_folder_icon", _spy)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/api/chat/folders", json={"name": "Chosen", "icon": "🎯"})
-            assert resp.status == 201
-            assert calls == []
-            # ...but a folder with no icon still gets one generated.
-            resp = await client.post("/api/chat/folders", json={"name": "Auto"})
-            assert resp.status == 201
-            await asyncio.sleep(0)
-            assert len(calls) == 1
+            resp = await client.post("/api/chat/folders", json={"name": "Blue"})
+            fid = (await resp.json())["id"]
+            resp = await client.patch(f"/api/chat/folders/{fid}", json={"color": "#3b82f6"})
+            assert resp.status == 200
+            assert state._folders[0]["color"] == "#3b82f6"
+            resp = await client.patch(f"/api/chat/folders/{fid}", json={"color": ""})
+            assert resp.status == 200
+            assert "color" not in state._folders[0]
 
     @pytest.mark.asyncio
     async def test_create_folder_invalid_parent_rejected(self, tmp_path, monkeypatch):
@@ -7197,106 +7206,13 @@ class TestFolderPersistence:
         assert state._folders == []
 
 
-class TestGenerateFolderIcon:
-    @pytest.mark.asyncio
-    async def test_valid_emoji_stored(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-
-        # Mock LLM session
-        mock_event = MagicMock()
-        mock_event.kind = "text_chunk"
-        mock_event.text = "🚀"
-        done_event = MagicMock()
-        done_event.kind = "complete"
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_TEXT_CHUNK", "text_chunk")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_COMPLETE", "complete")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_PERMISSION_REQUEST", "permission")
-
-        mock_client = AsyncMock()
-        mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
-        state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
-        state.push_slots_update = MagicMock()
-
-        folder = {"id": "f1", "name": "Deploy"}
-        state._folders = [folder]
-        await _generate_folder_icon(state, folder)
-
-        assert folder["icon"] == "🚀"
-        state.save_folders.assert_called_once()
-        state.push_slots_update.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_long_output_rejected(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-
-        mock_event = MagicMock()
-        mock_event.kind = "text_chunk"
-        mock_event.text = "This is not an emoji"
-        done_event = MagicMock()
-        done_event.kind = "complete"
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_TEXT_CHUNK", "text_chunk")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_COMPLETE", "complete")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_PERMISSION_REQUEST", "permission")
-
-        mock_client = AsyncMock()
-        mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
-        state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
-
-        folder = {"id": "f1", "name": "Deploy"}
-        state._folders = [folder]
-        await _generate_folder_icon(state, folder)
-
-        assert "icon" not in folder
-        state.save_folders.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_ascii_two_char_rejected(self, tmp_path, monkeypatch):
-        """Two ASCII chars like '<>' should be rejected by emoji validation."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-
-        mock_event = MagicMock()
-        mock_event.kind = "text_chunk"
-        mock_event.text = "<>"
-        done_event = MagicMock()
-        done_event.kind = "complete"
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_TEXT_CHUNK", "text_chunk")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_COMPLETE", "complete")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_PERMISSION_REQUEST", "permission")
-
-        mock_client = AsyncMock()
-        mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
-        state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
-
-        folder = {"id": "f1", "name": "Test"}
-        state._folders = [folder]
-        await _generate_folder_icon(state, folder)
-
-        assert "icon" not in folder
-        state.save_folders.assert_not_called()
-
+class TestGenerateEmojiForName:
     @pytest.mark.asyncio
     async def test_redaction_applied(self, tmp_path, monkeypatch):
+        """generate_emoji_for_name (artifact-folder path) still redacts replies."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
+        from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -7318,18 +7234,18 @@ class TestGenerateFolderIcon:
 
         with patch("kiro_crew.dashboard.chat_folders.redact_exfiltration_urls", return_value=("🔥", False)) as mock_url, \
              patch("kiro_crew.dashboard.chat_folders.redact_credentials", return_value=("🔥", False)) as mock_cred:
-            folder = {"id": "f1", "name": "Oncall"}
-            state._folders = [folder]
-            await _generate_folder_icon(state, folder)
+            icon = await generate_emoji_for_name(state, "Oncall")
+            assert icon == "🔥"
             mock_url.assert_called_once()
             mock_cred.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_variation_selector_emoji_accepted(self, tmp_path, monkeypatch):
-        """Emoji with U+FE0F variation selector (e.g. ❤️) should be accepted."""
+        """Emoji with U+FE0F variation selector (e.g. ❤️) accepted by the
+        emoji generator (still used for artifact-library folders)."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
+        from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -7346,48 +7262,9 @@ class TestGenerateFolderIcon:
         mock_client = AsyncMock()
         mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
         state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
-        state.push_slots_update = MagicMock()
 
-        folder = {"id": "f1", "name": "Love"}
-        state._folders = [folder]
-        await _generate_folder_icon(state, folder)
-
-        assert folder["icon"] == "\u2764\uFE0F"
-        state.save_folders.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_uses_background_session(self, tmp_path, monkeypatch):
-        """Folder icon generation should use an ephemeral background session."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.dashboard.chat_folders import _generate_folder_icon
-
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-
-        mock_event = MagicMock()
-        mock_event.kind = "text_chunk"
-        mock_event.text = "🔥"
-        done_event = MagicMock()
-        done_event.kind = "complete"
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_TEXT_CHUNK", "text_chunk")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_COMPLETE", "complete")
-        monkeypatch.setattr("kiro_crew.providers.base.EVENT_PERMISSION_REQUEST", "permission")
-
-        mock_client = AsyncMock()
-        mock_client.prompt = MagicMock(return_value=AsyncIterator([mock_event, done_event]))
-        state.sessions.get_bg_session = AsyncMock(return_value=mock_client)
-        state.save_folders = MagicMock()
-        state.push_slots_update = MagicMock()
-
-        folder = {"id": "abc123", "name": "Test"}
-        state._folders = [folder]
-        await _generate_folder_icon(state, folder)
-
-        # Each caller gets its own ephemeral session, used then destroyed.
-        state.sessions.get_bg_session.assert_called_once()
-        mock_client.destroy.assert_awaited_once()
+        icon = await generate_emoji_for_name(state, "Love")
+        assert icon == "\u2764\uFE0F"
 
 
 class TestFolderAssignmentPersistence:
@@ -8190,29 +8067,39 @@ class TestForkSlot:
         visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
         assert len(visible) == 2
 
-        # User message: meta.paste_refs survived
+        # User message: meta.paste_refs survived. Compared as a subset, not an
+        # exact dict: `_ChatSlot.append` also stamps `meta.mid` (the per-row
+        # delivery identity) on every persisted row, so an equality assertion
+        # here would be asserting the absence of that id rather than the survival
+        # of the caller's keys, which is what this regression is about.
         assert visible[0]["role"] == "user"
-        assert visible[0].get("meta") == {
-            "paste_refs": ["ref-abc123"]
-        }, f"Fork dropped user meta. Got: {visible[0].get('meta')!r}"
+        user_meta = visible[0].get("meta") or {}
+        assert user_meta.get("paste_refs") == [
+            "ref-abc123"
+        ], f"Fork dropped user meta. Got: {visible[0].get('meta')!r}"
 
         # Assistant message: meta.knowledge_chips survived
         assert visible[1]["role"] == "assistant"
-        assert visible[1].get("meta") == {
-            "knowledge_chips": [{"id": "kb-42", "title": "Cite-X"}]
-        }, f"Fork dropped assistant meta. Got: {visible[1].get('meta')!r}"
+        assistant_meta = visible[1].get("meta") or {}
+        assert assistant_meta.get("knowledge_chips") == [
+            {"id": "kb-42", "title": "Cite-X"}
+        ], f"Fork dropped assistant meta. Got: {visible[1].get('meta')!r}"
 
     @pytest.mark.asyncio
     async def test_fork_handles_messages_without_meta(self, tmp_path):
-        # The mirror of test_fork_preserves_meta: messages with no meta dict
-        # must NOT acquire a spurious meta=None or meta={} after fork. Guards
-        # against regressions where the fix accidentally added empty meta to
-        # every copied message.
+        # The mirror of test_fork_preserves_meta: fork must not INVENT meta keys
+        # the parent row did not have. Since `_ChatSlot.append` now stamps
+        # `meta.mid` on every row, "no meta at all" is no longer the observable
+        # invariant; the equivalent one is that the forked row's meta matches the
+        # parent's exactly -- nothing added, nothing dropped.
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")
         slot.append("user", "plain msg", "msg msg-u")
         slot.append("assistant", "plain reply", "msg msg-a")
         slot.drain()
+        parent_meta = [
+            m.get("meta") for m in slot.messages if m["role"] in ("user", "assistant")
+        ]
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
@@ -8222,11 +8109,11 @@ class TestForkSlot:
 
         new_slot = state._slots.get(data["key"])
         visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
-        # No spurious "meta" key should appear when the parent had none.
-        for m in visible:
+        assert len(visible) == len(parent_meta)
+        for m, expected in zip(visible, parent_meta):
             assert (
-                "meta" not in m
-            ), f"Fork added spurious meta to a message without meta. Got: {m!r}"
+                m.get("meta") == expected
+            ), f"Fork changed a message's meta. Got: {m.get('meta')!r}, want: {expected!r}"
 
     @pytest.mark.asyncio
     async def test_fork_not_found(self, tmp_path):
@@ -9997,26 +9884,14 @@ class TestEmptyResponseRetry:
         ) as mock_consolidate, patch(
             "kiro_crew.dashboard.chat_runner._flush_file_changes"
         ) as mock_flush, patch(
-            "kiro_crew.dashboard.chat_runner.asyncio.create_task"
-        ) as mock_create_task:
-            # Deterministically neutralize the detached queue-drain task the
-            # finally block spawns after the empty re-queue. Under build-fleet
-            # load the loop can schedule that task (and its own cascading
-            # re-drains) before the assertions run, each calling the patched
-            # _flush_file_changes again (observed flaking as `assert 6 == 1`).
-            # Closing the coroutine and returning a completed future keeps this
-            # turn's behavior (re-queue + single finally flush) while making the
-            # spawn a no-op — no await path, no cascade, no timing dependence.
-            def _no_schedule(coro, *a, **kw):
-                try:
-                    coro.close()
-                except (AttributeError, RuntimeError):
-                    pass
-                fut: asyncio.Future = asyncio.get_event_loop().create_future()
-                fut.set_result(None)
-                return fut
-
-            mock_create_task.side_effect = _no_schedule
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            # The behavior under test is the re-queue itself. Keep the queued
+            # item in the slot, but stop the finally block from immediately
+            # launching a second turn. Patching the queue-drain boundary avoids
+            # globally replacing asyncio.create_task, which can otherwise let
+            # unrelated lifecycle tasks race the assertions under xdist load.
             await _run_chat(state, slot, "test message")
             for _bg_task in list(state._background_tasks):
                 _bg_task.cancel()
@@ -11730,6 +11605,44 @@ class TestSlotModelLiveSwitch:
         provider.clear_effort.assert_awaited_once()
         provider.change_effort.assert_not_awaited()
         state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_model_is_4xx_and_keeps_the_session(self, tmp_path):
+        """An entitlement refusal must NOT take the reset fallback.
+
+        Design Review on #1596: the generic ``except Exception`` here treats
+        every set_model failure as "the call didn't land" and recovers with a
+        reset. For a model the account cannot use that recovery is wrong twice
+        over — it destroys the live conversation AND cold-starts on a different
+        model, while the handler still answers ok:True. The slot must also keep
+        its previous model, or the picker asserts a model that was refused.
+        """
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        provider.client.set_model = AsyncMock(
+            side_effect=AcpModelUnavailable("claude-opus-4.8", ["gpt-5.6-sol"])
+        )
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="gpt-5.6-sol")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+            )
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert "not available on your account" in body["error"]
+        # Names what the account CAN use.
+        assert "gpt-5.6-sol" in body["error"]
+        # The conversation survives — no reset fallback.
+        state.sessions.reset.assert_not_awaited()
+        # And the slot still reports the model that is actually running.
+        assert state._slots["a"].model == "gpt-5.6-sol"
 
 
 class TestSlotModelSwitchContextBroadcast:

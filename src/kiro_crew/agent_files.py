@@ -40,3 +40,19 @@ OWNED_KIRO_AGENT_FILES = (
     HEARTBEAT_AGENT_FILENAME,
 )
 OWNED_CC_AGENT_FILES = (CC_MCP_SIDECAR_FILENAME,)
+
+# The specs that MUST exist for the product to work at all. kiro-cli resolves an
+# agent by reading ``<agents dir>/<name>.json``; with the file absent it answers
+# every ``session/set_mode`` with "Mode '<name>' not found", so a missing entry
+# here fails EVERY turn rather than degrading one feature:
+#   * ``kirocrew.json``      — the agent behind user-facing chat.
+#   * ``kirocrew-lite.json`` — the cheap background agent (auto-titles,
+#     compaction, heartbeat), reached via ``SessionManager.get_bg_session``.
+# The remaining OWNED_KIRO_AGENT_FILES entries are deliberately excluded: their
+# installers in ``agent.py`` already degrade to ``logger.debug`` on failure
+# because each one only disables its own feature (Knowledge extraction, Research
+# Lab, unattended heartbeat polling).
+REQUIRED_KIRO_AGENT_FILES = (
+    AGENT_FILENAME,
+    LITE_AGENT_FILENAME,
+)

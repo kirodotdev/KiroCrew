@@ -712,8 +712,8 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={copyLink}
-                  title={copied ? i18nT('apps.issueRadar.components.prDetail.link_copied') : `Copy link to this ${terms.changeRequestTitle}`}
-                  aria-label={`Copy link to this ${terms.changeRequestTitle}`}
+                  title={copied ? i18nT('apps.issueRadar.components.prDetail.link_copied') : i18nT('apps.issueRadar.components.prDetail.copy_link_to_this', { subject: terms.changeRequestTitle })}
+                  aria-label={i18nT('apps.issueRadar.components.prDetail.copy_link_to_this', { subject: terms.changeRequestTitle })}
                   className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
                 >
                   {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
@@ -737,8 +737,8 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
             <button
               onClick={refreshDetail}
               disabled={detailQuery.isFetching}
-              aria-label={`Refresh ${terms.changeRequestTitle} details`}
-              title={`Re-fetch this ${terms.changeRequestShort} + its timeline from ${terms.providerName}`}
+              aria-label={i18nT('apps.issueRadar.components.prDetail.refresh_details', { subject: terms.changeRequestTitle })}
+              title={i18nT('apps.issueRadar.components.prDetail.re_fetch_this_and_its_timeline_from', { subject: terms.changeRequestShort, provider: terms.providerName })}
               className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
             >
               <RefreshCw size={14} className={detailQuery.isFetching ? 'animate-spin' : ''} />
@@ -857,8 +857,8 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
             {activityError && (
               <div className={`py-2 text-[12px] ${activityStale ? 'text-warn' : 'text-danger'}`}>
                 {activityStale
-                  ? `Showing the last successful read — refresh failed: ${activityError.message}`
-                  : `Couldn't load activity: ${activityError.message}`}
+                  ? i18nT('apps.issueRadar.components.prDetail.showing_the_last_successful_read', { error: activityError.message })
+                  : i18nT('apps.issueRadar.components.prDetail.couldnt_load_activity', { error: activityError.message })}
               </div>
             )}
             {!activityLoading && !activityError && activityDesc.length === 0 && (

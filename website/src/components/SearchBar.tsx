@@ -111,10 +111,10 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
           {matches.length > 0 ? `${currentIdx + 1} of ${matches.length} results` : i18nT('components.searchBar.no_results')}
         </span>
       )}
-      <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Previous (${platformShortcut('Shift+Enter')})`} aria-label={i18nT('components.searchBar.previous_match')}>
+      <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.previous', { mod: platformShortcut('Shift+Enter') })} aria-label={i18nT('components.searchBar.previous_match')}>
         <ChevronUp size={15} />
       </button>
-      <button onClick={next} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={`Next (${platformShortcut('Enter')})`} aria-label={i18nT('components.searchBar.next_match')}>
+      <button onClick={next} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.next', { mod: platformShortcut('Enter') })} aria-label={i18nT('components.searchBar.next_match')}>
         <ChevronDown size={15} />
       </button>
       {!docked && (

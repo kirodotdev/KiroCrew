@@ -211,7 +211,7 @@ export default function OverviewView() {
             <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
               <div className="flex flex-col gap-2.5">
                 {topLabels.map((l) => (
-                  <button key={l.name} onClick={() => toggleLabel(l.name)} aria-label={`Filter by ${l.name} label`} className="text-left cursor-pointer">
+                  <button key={l.name} onClick={() => toggleLabel(l.name)} aria-label={i18nT('apps.issueRadar.views.overviewView.filter_by_label', { name: l.name })} className="text-left cursor-pointer">
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span
                         className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium max-w-full truncate"
