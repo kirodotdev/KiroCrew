@@ -3177,6 +3177,10 @@ class ConversationLog:
             it before mutating. All current callers copy/slice; this contract
             keeps that invariant explicit.
         """
+        with self._file_lock(key):
+            return self._read_messages_locked(key)
+
+    def _read_messages_locked(self, key: str) -> list[dict]:
         path = self._path(key)
         if not path.exists():
             self._msg_cache.pop(key, None)
