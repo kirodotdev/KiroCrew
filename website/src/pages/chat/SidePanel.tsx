@@ -124,24 +124,32 @@ const NEW_MENU_GROUPS: { kind: ViewKind | 'terminal'; icon: ReactNode }[][] = [
 
 const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side'])
 
+/** Views behind the Developer Mode consent gate (Settings > Developer) — the
+ *  same gate the standalone Developer page uses. Both are raw instrumentation
+ *  of the agent's own execution (the session's tool-call log, and the context
+ *  window's composition) rather than anything the session produced, so neither
+ *  belongs in a non-developer's menu. Gating BOTH empties the diagnostics group
+ *  outright when Developer Mode is off — which is exactly the empty-group case
+ *  `newMenuSections` drops. */
+const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context'])
+
 /** Which `+`-menu entries are offered, given the two gates that hide entries:
- *  Terminal is hidden when the feature is disabled server-side, and Context
- *  breakdown is a developer surface hidden unless Developer Mode is on (Settings
- *  > Developer) — same consent gate the standalone Developer page uses. The
- *  auto-managed pinned views (Changes / Files / Artifacts) are never listed;
- *  they appear on their own when they have content.
+ *  Terminal is hidden when the feature is disabled server-side, and the
+ *  diagnostics views (Logs, Context breakdown) are hidden unless Developer Mode
+ *  is on. The auto-managed pinned views (Changes / Files / Artifacts) are never
+ *  listed; they appear on their own when they have content.
  *
- *  Grouped, and **emptied groups are dropped**: Diagnostics shrinks to one row
- *  with Developer Mode off and Workspaces to two with Terminal disabled, and a
- *  group that filtered down to nothing would otherwise render as a separator
- *  with no rows after it. */
+ *  Grouped, and **emptied groups are dropped**: with Developer Mode off the
+ *  whole diagnostics group disappears, and Terminal disabled shrinks Workspaces
+ *  to two rows — a group that filtered down to nothing would otherwise render
+ *  as a separator with no rows after it. */
 export function newMenuSections(
   opts: { devMode: boolean; terminalEnabled: boolean },
 ): { kind: ViewKind | 'terminal'; icon: ReactNode }[][] {
   return NEW_MENU_GROUPS
     .map(group => group.filter(item =>
       (opts.terminalEnabled || item.kind !== 'terminal')
-      && (opts.devMode || item.kind !== 'context')
+      && (opts.devMode || !DEV_ONLY_VIEWS.has(item.kind))
       && !(PINNED_VIEWS as string[]).includes(item.kind),
     ))
     .filter(group => group.length > 0)

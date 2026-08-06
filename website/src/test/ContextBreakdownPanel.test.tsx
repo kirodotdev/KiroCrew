@@ -224,9 +224,11 @@ describe('placement: a per-session tab, not a global page', () => {
     const on = kinds({ devMode: true, terminalEnabled: true })
     expect(on).toContain('context')
     expect(on.indexOf('context')).toBe(on.indexOf('logs') + 1)
-    // The gate is independent of the Terminal gate: Context still hidden even
-    // when Terminal is enabled, and Logs is always present either way.
-    expect(kinds({ devMode: false, terminalEnabled: false })).toContain('logs')
+    // The gate is independent of the Terminal gate, and it now covers Logs as
+    // well: both diagnostics views are Developer-Mode-only, so with dev mode off
+    // neither is offered no matter what Terminal is doing.
+    expect(kinds({ devMode: false, terminalEnabled: false })).not.toContain('logs')
+    expect(kinds({ devMode: true, terminalEnabled: false })).toContain('logs')
     expect(kinds({ devMode: false, terminalEnabled: false })).not.toContain('terminal')
   })
 

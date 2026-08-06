@@ -79,11 +79,14 @@ describe('side panel + menu (shadcn dropdown)', () => {
     expect(screen.queryByRole('menu')).toBeNull()
     openMenu()
     expect(screen.getByRole('menu')).toBeTruthy()
-    for (const label of ['Issues', 'Subagents', 'Workflows', 'Logs', 'Side', 'Browser']) {
+    for (const label of ['Issues', 'Subagents', 'Workflows', 'Side', 'Browser']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeTruthy()
     }
     // Pinned views are auto-managed and must never be offered here.
     expect(screen.queryByRole('menuitem', { name: 'Files' })).toBeNull()
+    // Diagnostics are behind Developer Mode, which this harness has off.
+    expect(screen.queryByRole('menuitem', { name: 'Logs' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Context breakdown' })).toBeNull()
   })
 
   it('opens the picked view as a tab', () => {
@@ -106,10 +109,10 @@ describe('side panel + menu (shadcn dropdown)', () => {
     const menu = screen.getByRole('menu')
     const kids = Array.from(menu.children)
     const seps = kids.filter(el => el.getAttribute('role') === 'separator')
-    // Terminal is disabled and Developer Mode off in this harness, so the
-    // Diagnostics group is Logs alone and Workspaces is Side + Browser: three
-    // surviving groups, two rules.
-    expect(seps).toHaveLength(2)
+    // Developer Mode is off in this harness, so the whole diagnostics group is
+    // gone and only two groups survive: session output, then Side + Browser
+    // (Terminal is disabled too). Two groups, one rule.
+    expect(seps).toHaveLength(1)
     expect(kids[0].getAttribute('role')).toBe('menuitem')
     expect(kids[kids.length - 1].getAttribute('role')).toBe('menuitem')
     // Rules separate groups, so no two are adjacent.
@@ -142,9 +145,9 @@ describe('newMenuSections', () => {
   })
 
   it('drops a group the gates emptied instead of leaving a stray separator', () => {
-    // Neither gate can currently empty a whole group (Workspaces keeps Side +
-    // Browser, Diagnostics keeps Logs), so the invariant is asserted directly:
-    // no returned group is ever empty, under any gate combination.
+    // Developer Mode off empties the diagnostics group entirely — the case the
+    // empty-group filter exists for. No returned group is ever empty, under any
+    // gate combination.
     for (const devMode of [false, true]) {
       for (const terminalEnabled of [false, true]) {
         for (const group of newMenuSections({ devMode, terminalEnabled })) {
@@ -152,11 +155,16 @@ describe('newMenuSections', () => {
         }
       }
     }
-    // And the gated rows really are the ones that go.
+    // Both gates closed: diagnostics gone outright, Terminal dropped from
+    // Workspaces — two groups, not three with a hole.
     expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
       ['issues', 'subagents', 'workflows'],
       ['side', 'browser'],
-      ['logs'],
+    ])
+    // Terminal back, diagnostics still gated.
+    expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
+      ['issues', 'subagents', 'workflows'],
+      ['side', 'browser', 'terminal'],
     ])
   })
 })
