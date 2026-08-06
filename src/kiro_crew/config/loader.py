@@ -1751,6 +1751,16 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    auto_project_dir: str = field(
+        default="",
+        metadata=_meta(
+            "Auto Project Dir",
+            "Base directory containing project folders. When set, incoming Slack "
+            "messages from a channel whose name matches a subfolder get that "
+            "folder as the session working directory (CWD). Empty disables.",
+            tags=["slack"],
+        ),
+    )
 
 
 @dataclass
@@ -2595,7 +2605,12 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
-    ("dashboard", "loop_stall_exit_after_secs", LOOP_STALL_EXIT_AFTER_MIN, LOOP_STALL_EXIT_AFTER_MAX),
+    (
+        "dashboard",
+        "loop_stall_exit_after_secs",
+        LOOP_STALL_EXIT_AFTER_MIN,
+        LOOP_STALL_EXIT_AFTER_MAX,
+    ),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
 )
 
@@ -4523,12 +4538,8 @@ class KiroCrewConfig:
                 subagent_spawn_stagger_secs=_safe_float(
                     agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
                 ),
-                resource_pressure_gb=_safe_float(
-                    agent_data.get("resource_pressure_gb", 4.0), 4.0
-                ),
-                resource_critical_gb=_safe_float(
-                    agent_data.get("resource_critical_gb", 2.0), 2.0
-                ),
+                resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
+                resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
                 subagent_stall_idle_secs=_safe_int(
@@ -4685,11 +4696,14 @@ class KiroCrewConfig:
                 ),
                 auto_add_documents=_read_auto_add_documents(knowledge_data),
                 auto_register_project_docs=bool(
-                    knowledge_data.get("auto_register_project_docs", True)),
+                    knowledge_data.get("auto_register_project_docs", True)
+                ),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
+                    knowledge_data.get("auto_ingest_chunk_budget", 150), 150
+                ),
                 dedup_every_n_sweeps=_safe_nonnegative_int(
-                    knowledge_data.get("dedup_every_n_sweeps", 12), 12),
+                    knowledge_data.get("dedup_every_n_sweeps", 12), 12
+                ),
                 doc_ingest_hosts=[
                     str(h)
                     for h in knowledge_data.get("doc_ingest_hosts", [])
@@ -4795,6 +4809,7 @@ class KiroCrewConfig:
                 reactions_enabled=bool(slack_data.get("reactions_enabled", True)),
                 use_tunnel_url=bool(slack_data.get("use_tunnel_url", False)),
                 show_thinking=bool(slack_data.get("show_thinking", True)),
+                auto_project_dir=str(slack_data.get("auto_project_dir", "") or "").strip(),
             ),
             publish=PublishConfig(
                 allowed_destinations=[
