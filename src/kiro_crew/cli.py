@@ -1201,6 +1201,29 @@ Examples:
     )
     pod_up.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
     pod_up.add_argument("--seed", default="", help="Seed config dir (tunnel is forced off)")
+    pod_up.add_argument(
+        "--approval",
+        # Literal mirrors kiro_crew.pod.runtime.APPROVAL_MODES, which is the
+        # enforcement point; this parser imports no pod module at startup.
+        choices=["reads", "yolo", "interactive"],
+        help=(
+            "Approval mode the pod's gateway boots with, forwarded to "
+            "`kirocrew gateway --approval`. Persisted per pod so it survives a "
+            "service-manager restart. Omit to leave the gateway's own default in "
+            "force, which resolves from config agent.approval_mode (default: "
+            "auto). Applies at boot, so re-up a stopped pod to change it."
+        ),
+    )
+    pod_up.add_argument(
+        "--crons",
+        action="store_true",
+        help=(
+            "Run the pod's cron scheduler. Pods boot with --no-crons by default. A "
+            "pod's HOME starts with no cron definitions (only a sanitized config is "
+            "seeded), so this enables an empty scheduler for testing cron behavior "
+            "inside the pod. Persisted per pod; applies at boot."
+        ),
+    )
     pod_down = pod_sub.add_parser("down", help="Evict a pod (zero residue)")
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")
