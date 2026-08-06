@@ -1157,6 +1157,7 @@ class TestMmrRerankNegativeScores:
         assert len(out) == 2
 
 
+@pytest.mark.xdist_group("vector_memory_concurrency")
 class TestVectorStoreConcurrency:
     """Writes are offloaded to worker threads (consolidation, dashboard) while
     reads (search_episodic via context assembly) run on the event loop thread.
@@ -1283,6 +1284,156 @@ class TestVectorStoreConcurrency:
         ), f"store broken after stress (transient errors seen: {transient!r})"
         lessons = store.get_lessons()
         assert any("zeta functionality" in str(ls.get("value_json", "")) for ls in lessons)
+
+    def test_concurrent_semantic_write_and_context_no_errors(self, tmp_path) -> None:
+        """get_semantic_context runs on executor threads (subagent context builds
+        via run_in_embed_pool) concurrent with set_semantic writers on worker
+        threads. Its SELECTs used to hit the shared connection WITHOUT _db_lock,
+        racing writers' implicit transactions and the per-connection statement
+        cache — observed in production as sqlite3.InterfaceError ("bad parameter
+        or other API misuse") from get_semantic_context, which propagates
+        unguarded through memory.get_context -> context.build_session_context
+        and kills the whole subagent run.
+
+        Unlike the lesson stress above, readers here must raise NOTHING: with
+        the fetches locked, every db access on this path is serialized, and the
+        production caller has no try/except to absorb a transient.
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        # Seed rows so the reader's scoring loop has real work between fetches.
+        for i in range(20):
+            store.set_semantic(f"project.seed.k{i:02d}", f"alpha beta value {i}", 1.0, "tool")
+
+        start_barrier = threading.Barrier(4)
+        errors: list[BaseException] = []
+
+        def _writer(n: int, tag: str) -> None:
+            start_barrier.wait()
+            try:
+                for i in range(n):
+                    store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
+            except BaseException as exc:  # noqa: BLE001 - capture any thread crash
+                errors.append(exc)
+
+        def _context_reader(n: int) -> None:
+            start_barrier.wait()
+            try:
+                for i in range(n):
+                    # Alternate branches: query-scored path and recency path.
+                    if i % 2:
+                        store.get_semantic_context(query_text="alpha beta gamma")
+                    else:
+                        store.get_semantic_context()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_writer, args=(60, "a")),
+            threading.Thread(target=_writer, args=(60, "b")),
+            threading.Thread(target=_context_reader, args=(80,)),
+            threading.Thread(target=_context_reader, args=(80,)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "stress threads deadlocked"
+        assert not errors, f"concurrent set_semantic/get_semantic_context raised: {errors!r}"
+
+        # Coherence: a post-stress read returns the seeded entries intact.
+        ctx = store.get_semantic_context(query_text="alpha beta")
+        assert "project.seed.k00" in ctx
+
+    def test_concurrent_lesson_write_and_get_lessons_context_no_reader_errors(
+        self, tmp_path
+    ) -> None:
+        """get_lessons_context feeds the same unguarded context-injection path
+        (context.py calls it with no try/except), so with get_lessons' fetch
+        now serialized the READERS must not raise. Writer-side transients are
+        tolerated as in the lesson stress above — write_lesson still has
+        unlocked segments outside the fetch (embed, dedup logic).
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        for i in range(10):
+            store.write_lesson(
+                rule=f"seed lesson number {i} about distinct topic {i}",
+                category="tool",
+                source="consolidation",
+            )
+
+        start_barrier = threading.Barrier(4)
+        reader_errors: list[BaseException] = []
+
+        def _lesson_writer(n: int, tag: str) -> None:
+            start_barrier.wait()
+            for i in range(n):
+                try:
+                    store.write_lesson(
+                        rule=f"stress lesson {tag}{i:03d} about unique subject {tag}{i}",
+                        category="tool",
+                        source="consolidation",
+                    )
+                except Exception:  # noqa: BLE001 - writer transients tolerated
+                    pass
+
+        def _lesson_reader(n: int) -> None:
+            start_barrier.wait()
+            try:
+                for _ in range(n):
+                    store.get_lessons_context()
+            except BaseException as exc:  # noqa: BLE001
+                reader_errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_lesson_writer, args=(30, "a")),
+            threading.Thread(target=_lesson_writer, args=(30, "b")),
+            threading.Thread(target=_lesson_reader, args=(80,)),
+            threading.Thread(target=_lesson_reader, args=(80,)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "stress threads deadlocked"
+        assert not reader_errors, f"get_lessons_context raised: {reader_errors!r}"
+
+    def test_stem_words_thread_safe(self) -> None:
+        """_stem_words used to share ONE module-level snowballstemmer instance.
+        The pure-Python stemmer keeps the word under stem as mutable instance
+        state (set_current -> _stem -> get_current), so concurrent
+        get_semantic_context calls (parallel subagent context builds)
+        interleaved that cursor and raised IndexError("string index out of
+        range") — or silently produced wrong stems. Now one instance per
+        thread: hammering _stem_words from many threads must neither raise nor
+        diverge from the single-threaded result.
+        """
+        vocab = [
+            f"word{i} running jumped happily nationalization {i}" for i in range(50)
+        ]
+        word_sets = [set(v.split()) for v in vocab]
+        expected = [_stem_words(ws) for ws in word_sets]
+
+        start_barrier = threading.Barrier(8)
+        errors: list[BaseException] = []
+
+        def _stemmer_worker() -> None:
+            start_barrier.wait()
+            try:
+                for _ in range(40):
+                    for ws, exp in zip(word_sets, expected):
+                        assert _stem_words(ws) == exp
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_stemmer_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "stemmer threads deadlocked"
+        assert not errors, f"concurrent _stem_words raised/diverged: {errors!r}"
 
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")
