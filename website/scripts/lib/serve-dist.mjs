@@ -15,6 +15,20 @@ import { fileURLToPath } from 'node:url'
 // join() then turns into an invalid "\C:\…" and every read fails with ENOENT.
 export const DEFAULT_DIST = fileURLToPath(new URL('../../dist/', import.meta.url))
 
+/**
+ * Assets the REAL dashboard serves from its own routes rather than from the
+ * SPA bundle, mapped to the file on disk.
+ *
+ * `/logo.png` is an aiohttp route (`server.py`: `add_get("/logo.png",
+ * handlers.logo)`) reading the packaged PNG — it is NOT in `website/dist`, so a
+ * plain static server 404s it and the brand mark renders as a broken-image
+ * placeholder in EVERY harness screenshot. That was silently wrong in every
+ * capture script in this folder until it was noticed in a review.
+ */
+const SERVER_ROUTED = {
+  '/logo.png': fileURLToPath(new URL('../../../src/kiro_crew/static/kirocrew-logo.png', import.meta.url)),
+}
+
 export const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
@@ -43,6 +57,15 @@ export function serveDist(dist = DEFAULT_DIST) {
         // Malformed percent-escapes throw; treat as a bad request rather than
         // crashing the harness mid-capture.
         res.writeHead(400); res.end('bad request'); return
+      }
+      // Server-routed assets first, keyed on the decoded path. Checked before
+      // the dist lookup so a same-named file in dist could not shadow the real
+      // route, and skipped silently when the file is absent (a source checkout
+      // without the Python package still captures, just without the mark).
+      const routed = SERVER_ROUTED['/' + rel]
+      if (routed && existsSync(routed)) {
+        res.writeHead(200, { 'Content-Type': MIME[extname(routed)] || 'application/octet-stream' })
+        res.end(readFileSync(routed)); return
       }
       let file = resolve(root, rel)
       if (file !== root && !file.startsWith(root + sep)) {
