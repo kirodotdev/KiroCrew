@@ -2531,12 +2531,12 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             cfg.dashboard.widget_density = val
         if "verbosity" in body:
             val = body["verbosity"]
-            if val not in ("default", "concise"):
+            if val not in ("default", "concise", "ultra"):
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
-                    {"error": "verbosity must be 'default' or 'concise'"}, status=400
+                    {"error": "verbosity must be 'default', 'concise' or 'ultra'"}, status=400
                 )
             cfg.dashboard.verbosity = val
         if "tail_fork_enabled" in body:

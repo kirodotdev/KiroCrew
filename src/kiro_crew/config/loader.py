@@ -1894,10 +1894,12 @@ class DashboardConfig:
             "Response Verbosity",
             "Controls how terse the agent's prose is. 'default' is normal; "
             "'concise' injects brevity guidelines (lead with the answer, cut "
-            "filler, keep code/errors verbatim) while preserving full detail for "
-            "security warnings, irreversible-action confirmations, and ordered "
-            "multi-step instructions.",
-            enum=["default", "concise"],
+            "filler, keep code/errors verbatim); 'ultra' writes for an ADHD "
+            "reader — the answer lands in a 3-sentence opening, and any detail "
+            "after it must be scannable bullets rather than prose. Both levels "
+            "preserve full detail for security warnings, irreversible-action "
+            "confirmations, and ordered multi-step instructions.",
+            enum=["default", "concise", "ultra"],
         ),
     )
     link_previews: bool = field(
