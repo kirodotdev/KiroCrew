@@ -24,7 +24,11 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.origin import is_https_request, is_loopback
+from kiro_crew.dashboard.origin import (
+    is_https_request,
+    is_loopback,
+    is_proxied_request,
+)
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
     REFRESH_COOKIE_PATH,
@@ -246,7 +250,9 @@ class TokenStateManager:
         self._max_nonces = max_concurrent_nonces
         # OrderedDict maintains insertion order for O(1) oldest eviction
         self._nonces: OrderedDict[str, float] = OrderedDict()
-        self._ip_bindings: dict[str, tuple[str, float]] = {}  # token → (ip, exp)
+        # Observation latches for the Security Posture surface only — never read
+        # by an auth decision. See bind_ip() / proxied_pin_observed().
+        self._ip_bindings: dict[str, tuple[str, float, bool]] = {}  # token → (ip, exp, proxied)
         self._consumed: dict[str, float] = {}  # token → exp
 
     def register_nonce(self, nonce: str, expiry: float) -> str | None:
@@ -274,10 +280,41 @@ class TokenStateManager:
             self._nonces.move_to_end(nonce)
             return True, ""
 
-    def bind_ip(self, token: str, ip: str, session_exp: float) -> None:
-        """Bind a token to a client IP address."""
+    def bind_ip(self, token: str, ip: str, session_exp: float, proxied: bool = False) -> None:
+        """Bind a token to a client IP address.
+
+        ``proxied`` records that *ip* came from a same-host proxy rather than
+        from the client itself, which means this binding pins the token to the
+        proxy and is therefore shared by every client behind it. It is an
+        observation for the Security Posture surface only — it does not change
+        the binding or how :meth:`check_ip` compares it.
+        """
         with self._lock:
-            self._ip_bindings[token] = (ip, session_exp)
+            self._ip_bindings[token] = (ip, session_exp, proxied)
+
+    def proxied_pin_observed(self, now: float) -> bool | None:
+        """Report the pin scope of the sessions that are LIVE at *now*.
+
+        ``None`` = no session is currently pinned, so there is no scope to
+        report — which is NOT the same as "pins are effective" and must not be
+        rendered as if it were. ``True`` = at least one live session is pinned to
+        a same-host proxy's address and is therefore shared by every client
+        behind it. ``False`` = live sessions are pinned to client addresses.
+
+        Derived from the bindings rather than from a latch, deliberately. A latch
+        would outlive the sessions it describes: one tunnelled login would report
+        SHARED until the gateway restarted, even after that session expired and
+        the user went back to direct access — the same class of stale claim this
+        reporting exists to remove.
+
+        Filters on ``exp`` rather than trusting :meth:`evict_expired` to have
+        run, so the answer never depends on when eviction last happened.
+        """
+        with self._lock:
+            live_proxied = [p for _, exp, p in self._ip_bindings.values() if exp > now]
+            if not live_proxied:
+                return None
+            return any(live_proxied)
 
     def check_ip(self, token: str, ip: str) -> bool:
         """Check if token is bound to the given IP (or unbound)."""
@@ -310,7 +347,7 @@ class TokenStateManager:
         """Remove all expired entries from all state stores."""
         with self._lock:
             # Evict expired IP bindings
-            expired_tokens = [t for t, (_, exp) in self._ip_bindings.items() if exp < now]
+            expired_tokens = [t for t, (_, exp, _p) in self._ip_bindings.items() if exp < now]
             for t in expired_tokens:
                 self._ip_bindings.pop(t, None)
             # Evict consumed tokens independently using their own expiry
@@ -920,9 +957,29 @@ def _evict_expired() -> None:
     _state.evict_expired(time.time())
 
 
-def bind_token_ip(token: str, ip: str, session_exp: float = 0.0) -> None:
-    """Bind a token to a client IP for session validation."""
-    _state.bind_ip(token, ip, session_exp or time.time() + MAX_SESSION_TTL_SECS)
+def bind_token_ip(
+    token: str, ip: str, session_exp: float = 0.0, proxied: bool = False
+) -> None:
+    """Bind a token to a client IP for session validation.
+
+    ``proxied`` is an observation only (see ``_TokenState.bind_ip``): it records
+    that *ip* is a same-host proxy's address rather than the client's, so the
+    Security Posture surface can report that the pin is shared. It never changes
+    the binding or the comparison.
+    """
+    _state.bind_ip(token, ip, session_exp or time.time() + MAX_SESSION_TTL_SECS, proxied)
+
+
+def proxied_pin_observed() -> bool | None:
+    """Report the pin scope of the sessions live right now.
+
+    ``None`` = nothing is currently pinned (no scope to report), ``True`` = at
+    least one live session is pinned to a same-host proxy address and is
+    therefore shared by every client behind it, ``False`` = live sessions are
+    pinned to client addresses. Recovers on its own once proxied sessions
+    expire — no gateway restart needed.
+    """
+    return _state.proxied_pin_observed(time.time())
 
 
 def check_token_ip(token: str, ip: str) -> bool:
@@ -1580,8 +1637,16 @@ def token_auth_middleware(
                 # an in-memory check and is cheap enough to run inline.
                 await asyncio.to_thread(_get_revoked_store().revoke, _link_nonce, session_exp)
             # Bind the SESSION token (what becomes the cookie) to the client IP,
-            # not the consumed URL token.
-            bind_token_ip(session_token, client_ip, session_exp)
+            # not the consumed URL token. ``proxied`` is recorded so Security
+            # Posture can tell the user whether that pin is per-client or shared
+            # with everyone behind a same-host tunnel — it does not affect the
+            # binding itself.
+            bind_token_ip(
+                session_token,
+                client_ip,
+                session_exp,
+                is_proxied_request(request),
+            )
 
             # Token-consumption anchor seam (Default: no-op, OSS-identical). A
             # Slack challenge-redirect link, once opened on a verified device,
