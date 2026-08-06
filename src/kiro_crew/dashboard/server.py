@@ -41,6 +41,7 @@ from kiro_crew.dashboard import (
     handlers_project,
     openai_compat,
     stt_stream,
+    tailnet,
     ws,
 )
 from kiro_crew.dashboard.crash_dump_store import (
@@ -2927,7 +2928,22 @@ async def start_dashboard(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    app["allowed_origins"] = build_allowed_origins(port, local_only, configured_host)
+    # Tailnet origin (RFC §4): this machine's own MagicDNS name, so
+    # `tailscale serve` works without the operator hand-writing dashboard.url.
+    # Off by default; resolved in a thread so the daemon call cannot stall the
+    # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
+    # validated.
+    _tailnet_host = await tailnet.resolve_tailnet_host(
+        KiroCrewConfig.load().dashboard.tailscale.enabled
+    )
+    if _tailnet_host:
+        logger.info(
+            "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
+            _tailnet_host,
+        )
+    app["allowed_origins"] = build_allowed_origins(
+        port, local_only, configured_host, tailnet_host=_tailnet_host
+    )
     # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
     # the browser and gateway are co-located on localhost.
     app["local_only"] = local_only
@@ -3011,7 +3027,7 @@ async def start_dashboard(
         _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
         if _has_token_auth:
             app["allowed_origins"] = build_allowed_origins(
-                port, local_only, configured_host, dashboard_url
+                port, local_only, configured_host, dashboard_url, tailnet_host=_tailnet_host
             )
             logger.info(
                 "dashboard_url=%s: added to CSRF allowed origins (token auth verified)",
@@ -3445,7 +3461,14 @@ async def start_api_server(
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
-    app["allowed_origins"] = build_allowed_origins(port, local_only, configured_host)
+    app["allowed_origins"] = build_allowed_origins(
+        port,
+        local_only,
+        configured_host,
+        tailnet_host=await tailnet.resolve_tailnet_host(
+            KiroCrewConfig.load().dashboard.tailscale.enabled
+        ),
+    )
     app["local_only"] = local_only
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.

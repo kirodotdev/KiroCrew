@@ -3951,6 +3951,9 @@
       "enumValues": null,
       "defaultValue": {
         "url": "",
+        "tailscale": {
+          "enabled": false
+        },
         "restore_sessions": false,
         "restore_window_minutes": 30,
         "surface_channel_sessions": true,
@@ -4006,6 +4009,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "dashboard.tailscale",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailscale",
+      "help": "Reach the dashboard over your tailnet via `tailscale serve`.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false
+      }
+    },
+    {
+      "path": "dashboard.tailscale.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailnet Access",
+      "help": "Accept this machine's own MagicDNS name as a dashboard origin, so `tailscale serve` works without hand-writing dashboard.url. Reads the local Tailscale daemon once at startup; contributes nothing if Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the network bind and does NOT change authentication — every request still needs a dashboard session.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.restore_sessions",
