@@ -61,11 +61,95 @@ class AgentInfo:
     source: str = "builtin"  # "kirocrew" | "package" | "builtin"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
 
+    def __post_init__(self) -> None:
+        """Make the annotations above TRUE, at every construction site.
+
+        ``~/.kiro/agents`` is a SHARED directory: ACP adapters and IDE plugins
+        drop their own specs there and do not all spell every field as a plain
+        string (observed: ``"model": {"id": "anthropic:claude-opus-4-8"}``, and
+        bare ``null``). ``to_dict()`` is what ``/api/agents/installed``
+        serialises, so any such value reached the dashboard verbatim; rendered as
+        a JSX child it threw React error #31 ("Objects are not valid as a React
+        child") and put the WHOLE Agent Templates tab into the error boundary —
+        every other agent's row with it.
+
+        The enforcement lives HERE rather than in per-field calls at each caller
+        because the fields are rendered bare in several places (`{a.name}`,
+        `{a.package}`, `<SourceBadge source={a.source}>`, `a.filename.startsWith`)
+        and there are two construction sites, one of them an out-of-tree edition
+        seam. A per-field fix at one caller only *looks* complete: the next
+        foreign spelling, or the next field someone renders, reopens the same
+        whole-tab crash. A constructor invariant cannot be forgotten.
+
+        Fallbacks are per field because they are not interchangeable: ``model``
+        defers to ``"auto"`` (see :func:`spec_model` — the same "non-string means
+        no pin" rule the execution path applies), ``source`` to its
+        ``"builtin"`` default, and the free-text fields to empty.
+        """
+        for name, fallback in (
+            ("name", ""),
+            ("filename", ""),
+            ("description", ""),
+            ("model", _DEFER_MODEL),
+            ("source", "builtin"),
+            ("package", ""),
+        ):
+            if not isinstance(getattr(self, name), str):
+                setattr(self, name, fallback)
+        # ``list[str]`` is equally load-bearing: these elements are rendered as
+        # skill/server chips. Drop the unusable ones rather than the whole list,
+        # so a spec with one bad entry keeps the rest.
+        self.skills = [s for s in self.skills if isinstance(s, str)]
+        self.mcp_servers = [s for s in self.mcp_servers if isinstance(s, str)]
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 SKILL_URI_PREFIX = "skill://"
+
+# The "no pin, defer to the tier below" spelling. Mirrors
+# ``config.loader.DEFAULT_MODEL``; duplicated as a literal rather than imported
+# so this module keeps its leaf-level import graph (``config.paths`` only).
+_DEFER_MODEL = "auto"
+
+
+def spec_str(data: dict[str, Any], key: str, default: str = "") -> str:
+    """Read a raw spec field as a ``str``, for callers that are NOT an AgentInfo.
+
+    ``AgentInfo.__post_init__`` is what enforces the type contract for the
+    dataclass; this is its counterpart for the two places that hand spec fields
+    to the dashboard WITHOUT going through it:
+
+    - ``api_agent_detail``, which returns ``{**data, ...}`` — the raw on-disk spec
+      — so the detail panel receives whatever the file happened to contain.
+    - ``list_agents``, for ``name``, where the useful fallback is the file's own
+      stem rather than the generic empty string.
+
+    ``~/.kiro/agents`` is a SHARED directory: other tools (ACP adapters, IDE
+    plugins) drop their own specs there and do not all spell every field as a
+    plain string. Observed in the wild: ``"model": {"id":
+    "anthropic:claude-opus-4-8"}``, and a bare ``null``. Rendered as a React
+    child, either throws error #31 and blanks the whole Agent Templates tab.
+    """
+    value = data.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def spec_model(data: dict[str, Any]) -> str:
+    """The ``model`` of an agent spec, coerced to the ``str`` AgentInfo declares.
+
+    A non-string is treated as "no pin" (``"auto"``), which is exactly the rule
+    :func:`config.loader.normalize_agent_model` already applies to the same file
+    on the EXECUTION path. Keeping both sides on that rule is deliberate: the
+    resolver would collapse a structured model to "defer" regardless, so
+    extracting ``id`` here would make the displayed chip disagree with the model
+    actually used — and ``anthropic:claude-opus-4-8`` is a provider-prefixed id
+    kiro-cli would reject anyway, turning a display bug into a spawn failure.
+
+    It also leaked into ``subagent.py``'s spawn kwargs as a ``--model`` argument.
+    """
+    return spec_str(data, "model", _DEFER_MODEL)
 
 
 def _builder_mcp_skills(data: dict[str, Any]) -> list[str]:
@@ -261,14 +345,25 @@ def _with_edition_agents(disk_agents: list[AgentInfo]) -> list[AgentInfo]:
         if not isinstance(row, dict):
             continue
         name = row.get("name")
-        if not name or name in by_name:
+        # A row keyed by a non-string name has no usable identity: the name IS
+        # the dedup key, the React list key, and the argument every mutation
+        # (agentDetail / agentPatch / setDefaultAgent) is addressed by. Blanking
+        # it via __post_init__ would yield an unselectable row that also collides
+        # with any other nameless row, so such a row is skipped outright — unlike
+        # the cosmetic fields, which degrade.
+        if not isinstance(name, str) or not name or name in by_name:
             continue
         try:
             by_name[name] = AgentInfo(
                 name=name,
                 filename=row.get("filename", ""),
+                # Every other field is passed through as-is: this seam is
+                # out-of-tree, so ``__post_init__`` — not this call site — is what
+                # guarantees the declared ``str`` / ``list[str]`` types hold.
+                # ``model`` still goes through spec_model() because its "defer"
+                # spelling is domain knowledge, not a generic type fallback.
                 description=row.get("description", ""),
-                model=row.get("model", "auto"),
+                model=spec_model(row),
                 skills=list(row.get("skills") or []),
                 mcp_servers=list(row.get("mcp_servers") or []),
                 source=row.get("source", "builtin"),
@@ -330,7 +425,13 @@ def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
                 if not isinstance(data, dict):
                     logger.debug("Skipping non-object agent config: %s", f)
                     continue
-                agent_name = data.get("name", "")
+                # Coerced BEFORE the package-detection below, which does
+                # ``stem.endswith(agent_name)``: a non-string name raised
+                # TypeError there, and the broad ``except`` around this loop
+                # turned that into a silently DROPPED agent rather than a
+                # degraded one. Falling back to the filename stem keeps the row
+                # selectable under the name its file already implies.
+                agent_name = spec_str(data, "name", f.stem)
                 stem = f.stem
 
                 package = ""
@@ -355,10 +456,10 @@ def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
 
                 agents.append(
                     AgentInfo(
-                        name=data.get("name", f.stem),
+                        name=agent_name,
                         filename=f.name,
-                        description=data.get("description", ""),
-                        model=data.get("model", "auto"),
+                        description=spec_str(data, "description"),
+                        model=spec_model(data),
                         skills=_extract_skills(data),
                         mcp_servers=list((data.get("mcpServers") or {}).keys())
                         if isinstance(data.get("mcpServers") or {}, dict)

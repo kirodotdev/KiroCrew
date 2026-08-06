@@ -1738,6 +1738,29 @@ class TestContextInfo:
             result = SessionManager._resolve_agent_model("test-agent")
         assert result == "opus-5"
 
+    def test_resolve_agent_model_coerces_non_string_spec(self, cfg, tmp_path):
+        """A foreign spec's structured ``model`` must not escape as a dict.
+
+        ``~/.kiro/agents`` is shared with other tools; an ACP-style
+        ``{"id": ...}`` here would be CACHED and then handed to
+        ``/api/sessions/context`` (the dashboard calls ``.replace()`` on it) and
+        to the pooled-model comparison in ``claim_pooled``. This method is
+        annotated ``-> str`` and must honour that.
+        """
+        import json
+
+        if hasattr(SessionManager, "_agent_model_cache"):
+            SessionManager._agent_model_cache.clear()
+        agent_file = tmp_path / "foreign.json"
+        agent_file.write_text(
+            json.dumps({"name": "foreign", "model": {"id": "anthropic:claude-opus-4-8"}})
+        )
+
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
+            result = SessionManager._resolve_agent_model("foreign")
+        assert result == "auto"
+        assert isinstance(result, str)
+
 
 class TestWarmPoolInternals:
     """Tests for _fill_warm_pool, _claim_from_pool, _drain_and_claim."""

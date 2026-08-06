@@ -93,6 +93,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     POOL_SIZE_MAX,
@@ -2015,7 +2016,12 @@ class SessionManager:
                 except (ValueError, OSError):
                     continue
                 if ad.get("name") == agent or af.stem == agent:
-                    model = ad.get("model", "auto")
+                    # Coerced, not raw: this method is annotated ``-> str`` and
+                    # its result is CACHED, fed to ``/api/sessions/context``
+                    # (where the dashboard calls ``.replace()`` on it) and
+                    # compared/translated as a model id in ``claim_pooled``. A
+                    # foreign spec's ``{"id": ...}`` would poison all three.
+                    model = spec_model(ad)
                     break
         except Exception:
             pass

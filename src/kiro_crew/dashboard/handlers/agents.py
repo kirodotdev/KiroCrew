@@ -16,7 +16,12 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
-from kiro_crew.agent_discovery import clear_list_agents_cache, list_agents
+from kiro_crew.agent_discovery import (
+    clear_list_agents_cache,
+    list_agents,
+    spec_model,
+    spec_str,
+)
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
@@ -1076,7 +1081,19 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     discovery_executor(), agent_skill_views, data, f, state
                 )
                 return web.json_response(
-                    {**data, "skills": keys, "unmanaged_skills": unmanaged_uris}
+                    {
+                        **data,
+                        # The rest of the spec is passed through verbatim, but
+                        # these two are CONSUMED as display text by the detail
+                        # panel. A foreign spec's structured value rendered as a
+                        # React child throws error #31 and blanks the whole tab,
+                        # so both are coerced on the same "non-string means
+                        # absent" rule list_agents() uses.
+                        "description": spec_str(data, "description"),
+                        "model": spec_model(data),
+                        "skills": keys,
+                        "unmanaged_skills": unmanaged_uris,
+                    }
                 )
         except (json.JSONDecodeError, OSError):
             continue
