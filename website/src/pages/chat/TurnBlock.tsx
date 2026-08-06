@@ -6,6 +6,7 @@ import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { isWorkflowRunTool } from './WorkflowRunCard'
 import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
+import { isSubagentCompletionMessage } from './subagentCompletion'
 import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
 
 // A workflow_run launch renders as its own always-visible inline card
@@ -22,6 +23,11 @@ const isSpawnRunItem = (it: TurnItem) =>
 // visible even when a turn's reasoning is collapsed (collapseAll mode).
 const isWorkflowCompletionItem = (it: TurnItem) =>
   it.kind === 'single' && isWorkflowCompletionMessage(it.msg)
+// Same for a sub-agent completion event. The delivery-timeout variant arrives
+// under the `assistant` role, which lands mid-turn — collapsing it would hide
+// the only notice that a result never made it into the session.
+const isSubagentCompletionItem = (it: TurnItem) =>
+  it.kind === 'single' && isSubagentCompletionMessage(it.msg)
 // An MCP App (SEP-1865) render is anchored to its tool-call row (ToolCallLine
 // mounts the sandboxed iframe below the row). Folding that row into a
 // collapsed pane hides the interactive app — and re-expanding REMOUNTS the
@@ -84,12 +90,13 @@ const isHandBack = (it: TurnItem) =>
 
 /** A renderable assistant message (widget/image), a mid-turn hand-back
  *  ([OPTIONS:] marker), a role that must surface inline (mcp_oauth, error), a
- *  workflow_run / spawn_run / workflow-completion card, or an MCP App-bearing
- *  tool call (interactive iframe anchored to the row). All bypass the collapse
- *  pane. */
+ *  workflow_run / spawn_run / workflow-completion / sub-agent-completion card,
+ *  or an MCP App-bearing tool call (interactive iframe anchored to the row). All
+ *  bypass the collapse pane. */
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   isRenderable(it) || isHandBack(it) || isAlwaysVisible(it) ||
   isWorkflowRunItem(it) || isSpawnRunItem(it) ||
+  isSubagentCompletionItem(it) ||
   isWorkflowCompletionItem(it) || isMcpAppItem(it, appToolCallIds)
 
 /** Stable empty set so the mcpApps selector returns a referentially-equal

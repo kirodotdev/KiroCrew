@@ -441,6 +441,14 @@ export default [
               // carry a spaced em dash. UI copy is neither bracketed nor em-dash-joined,
               // and the bracketed CSS attribute selector covered above has no em dash.
               '^\\[[A-Za-z][A-Za-z0-9 ]* — [A-Za-z0-9 ]+\\]$',
+              // The same class of wire marker without an em dash. ENUMERATED, not
+              // shaped: the thing this protects is a small closed set of named
+              // constants, and a shape like "bracketed capitalized words" would
+              // also exempt a future hardcoded placeholder (`[No results found]`),
+              // shipping it untranslated to every locale without tripping the
+              // gate. Adding a marker here is a deliberate one-line act, which is
+              // the right cost for adding one to the wire protocol.
+              '^\\[(Subagent|Subagent batch|Workflow) completion event\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
               // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
               // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can

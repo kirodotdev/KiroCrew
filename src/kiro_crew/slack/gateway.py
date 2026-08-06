@@ -100,7 +100,11 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import (
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+    DashboardState,
+)
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.discord.gateway import maybe_start_discord
@@ -3919,7 +3923,7 @@ class GatewayOrchestrator:
             title, _ = redact_credentials(title)
 
             announce = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}`"
                 f"{f' ({info.agent})' if info.agent else ''}"
                 f" {status} {emoji}\n"
@@ -4094,7 +4098,7 @@ class GatewayOrchestrator:
                     if _last:
                         # Final chunk: release the spawn-discipline gate.
                         announce = (
-                            f"[Subagent batch completion event]\n"
+                            f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — wave finished: "
                             f"{bp['ok']} ✅ · {bp['err']} ❌ · "
                             f"{bp['stopped']} ⏹ of {bp['total']} agents. "
@@ -4111,7 +4115,7 @@ class GatewayOrchestrator:
                         # arriving from this run.
                         _remaining = max(0, bp["total"] - bp["done"])
                         announce = (
-                            f"[Subagent batch completion event]\n"
+                            f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — "
                             f"{bp['done']} of {bp['total']} delivered, "
                             f"{_remaining} still running.\n"
@@ -4718,7 +4722,7 @@ class GatewayOrchestrator:
                     error_text, _ = redact_credentials(error_text)
                     slot.append(
                         "assistant",
-                        f"[Subagent completion event]\n"
+                        f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
                         f"Error: {error_text}\n"

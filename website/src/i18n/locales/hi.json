@@ -6805,6 +6805,20 @@
         "stopping": "रोका जा रहा है…",
         "stopping_in_progress": "रोकने की प्रक्रिया चल रही है"
       },
+      "subagentCompletionCard": {
+        "agent_id": "एजेंट {{id}}",
+        "completed": "पूर्ण",
+        "digest_chunk_n_of_n": "{{chunks}} में से भाग {{chunk}}",
+        "failed": "विफल",
+        "hide_details": "विवरण छिपाएँ",
+        "interrupted": "बाधित",
+        "n_of_n_results_delivered": "{{total}} में से {{done}} परिणाम पहुँचाए गए",
+        "n_of_n_subagents_finished": "{{total}} में से {{done}} सबएजेंट पूर्ण",
+        "open_in_the_subagents_panel": "सबएजेंट पैनल में खोलें",
+        "panel": "पैनल",
+        "show_details": "विवरण दिखाएँ",
+        "stopped": "रोका गया"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "सब-एजेंट सूची समेटें",
         "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",

@@ -6881,6 +6881,20 @@
         "stopping": "Parando…",
         "stopping_in_progress": "Parada em andamento"
       },
+      "subagentCompletionCard": {
+        "agent_id": "Agente {{id}}",
+        "completed": "Concluído",
+        "digest_chunk_n_of_n": "Parte {{chunk}} de {{chunks}}",
+        "failed": "Falhou",
+        "hide_details": "Ocultar detalhes",
+        "interrupted": "Interrompido",
+        "n_of_n_results_delivered": "{{done}} de {{total}} resultados entregues",
+        "n_of_n_subagents_finished": "{{done}} de {{total}} subagentes concluídos",
+        "open_in_the_subagents_panel": "Abrir no painel de subagentes",
+        "panel": "Painel",
+        "show_details": "Mostrar detalhes",
+        "stopped": "Interrompido"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "Recolher a lista de subagentes",
         "expand_agent_list": "Expandir a lista de subagentes",

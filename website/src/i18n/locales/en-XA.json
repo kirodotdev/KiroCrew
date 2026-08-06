@@ -6734,6 +6734,20 @@
         "reveal_in_finder": "[Ŕèṽèàĺ ìñ Ƒìñðèŕ ··············]",
         "unable_to_list_folder": "[Ùñàƀĺè ţø ĺìşţ ƒøĺðèŕ ···············]"
       },
+      "subagentCompletionCard": {
+        "agent_id": "[Àğèñţ {{id}} ·········]",
+        "completed": "[Çøɱþĺèţèð ··············]",
+        "digest_chunk_n_of_n": "[Þàŕţ {{chunk}} øƒ {{chunks}} ··············]",
+        "failed": "[Ƒàìĺèð ·········]",
+        "hide_details": "[Ĥìðè ðèţàìĺş ···········]",
+        "interrupted": "[Ìñţèŕŕùþţèð ··········]",
+        "n_of_n_results_delivered": "[{{done}} øƒ {{total}} ŕèşùĺţş ðèĺìṽèŕèð ···············]",
+        "n_of_n_subagents_finished": "[{{done}} øƒ {{total}} şùƀàğèñţş ƒìñìşĥèð ················]",
+        "open_in_the_subagents_panel": "[Øþèñ ìñ ţĥè Şùƀàğèñţş þàñèĺ ···················]",
+        "panel": "[Þàñèĺ ········]",
+        "show_details": "[Şĥøẁ ðèţàìĺş ···········]",
+        "stopped": "[Şţøþþèð ···········]"
+      },
       "toolCallLine": {
         "aria_awaiting_approval": "[Àẁàìţìñğ àþþŕøṽàĺ ƒøŕ ţøøĺ: {{label}} ····················]",
         "aria_hide_details": "[Ĥìðè ðèţàìĺş ƒøŕ ţøøĺ: {{label}} ················]",

@@ -6648,6 +6648,20 @@
         "stopping": "正在停止…",
         "stopping_in_progress": "正在停止"
       },
+      "subagentCompletionCard": {
+        "agent_id": "代理 {{id}}",
+        "completed": "已完成",
+        "digest_chunk_n_of_n": "第 {{chunk}}/{{chunks}} 部分",
+        "failed": "失败",
+        "hide_details": "隐藏详情",
+        "interrupted": "已中断",
+        "n_of_n_results_delivered": "已交付 {{done}}/{{total}} 个结果",
+        "n_of_n_subagents_finished": "{{total}} 个子代理中已完成 {{done}} 个",
+        "open_in_the_subagents_panel": "在“子代理”面板中打开",
+        "panel": "面板",
+        "show_details": "显示详情",
+        "stopped": "已停止"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",

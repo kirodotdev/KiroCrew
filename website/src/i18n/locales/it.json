@@ -6881,6 +6881,20 @@
         "stopping": "Arresto in corso…",
         "stopping_in_progress": "Arresto in corso"
       },
+      "subagentCompletionCard": {
+        "agent_id": "Agente {{id}}",
+        "completed": "Completato",
+        "digest_chunk_n_of_n": "Parte {{chunk}} di {{chunks}}",
+        "failed": "Non riuscito",
+        "hide_details": "Nascondi i dettagli",
+        "interrupted": "Interrotto",
+        "n_of_n_results_delivered": "{{done}} di {{total}} risultati consegnati",
+        "n_of_n_subagents_finished": "{{done}} di {{total}} subagenti completati",
+        "open_in_the_subagents_panel": "Apri nel pannello dei subagenti",
+        "panel": "Pannello",
+        "show_details": "Mostra i dettagli",
+        "stopped": "Interrotto"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "Comprimi l’elenco dei subagenti",
         "expand_agent_list": "Espandi l’elenco dei subagenti",

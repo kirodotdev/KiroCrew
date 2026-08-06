@@ -25,7 +25,11 @@ from aiohttp import web
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import (
+    OPTIONS_RE_LINE,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+)
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
@@ -486,7 +490,15 @@ _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 CRON_NOTIFY_PREFIX = "[Cron notification from "
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
-SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
+# Both sub-agent markers, for the checks that must treat either shape as a system
+# injection. Pass this straight to ``str.startswith`` (it accepts a tuple) instead
+# of listing the prefixes per call site: the batch marker is a SIBLING of the
+# per-agent one rather than an extension of it, so a per-prefix check written
+# against one silently misses the other, and a third shape would miss both.
+SUBAGENT_COMPLETION_PREFIXES = (
+    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+)
 # One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
 # each result has been processed in its own turn (see gateway._subagent_done arm
 # + chat_runner drain/idle branch). Its visible reply is the consolidated,

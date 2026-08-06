@@ -23,7 +23,7 @@ from kiro_crew.dashboard.state import (
     EMPTY_RESPONSE_RECOVERY_PREFIX,
     MANUAL_RESUME_RECOVERY_PREFIX,
     POSTTOKEN_RECOVERY_PREFIX,
-    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIXES,
     DashboardState,
     _ChatSlot,
     _normalize_slot_key,
@@ -753,8 +753,11 @@ def is_system_injection(content: str) -> bool:
     messages keep draining during a sub-agent run (`_dequeue_next_system_message`),
     which break a user-message merge (`_dequeue_next_message`), and which must
     not consume the session-reset notice (chat_runner drain loop).
+
+    Both sub-agent shapes count: the per-agent event and the wave digest, whose
+    prefix is a sibling of the per-agent one rather than an extension of it.
     """
-    return content.startswith(SUBAGENT_COMPLETION_PREFIX) or content.startswith(
+    return content.startswith(SUBAGENT_COMPLETION_PREFIXES) or content.startswith(
         CRON_NOTIFY_PREFIX
     )
 

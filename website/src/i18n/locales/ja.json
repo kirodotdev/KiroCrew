@@ -6692,6 +6692,20 @@
         "stopping": "停止中…",
         "stopping_in_progress": "停止処理中"
       },
+      "subagentCompletionCard": {
+        "agent_id": "エージェント {{id}}",
+        "completed": "完了",
+        "digest_chunk_n_of_n": "パート {{chunk}}/{{chunks}}",
+        "failed": "失敗",
+        "hide_details": "詳細を非表示",
+        "interrupted": "中断",
+        "n_of_n_results_delivered": "{{total}} 件中 {{done}} 件の結果を受信",
+        "n_of_n_subagents_finished": "{{total}} 個中 {{done}} 個のサブエージェントが完了",
+        "open_in_the_subagents_panel": "サブエージェントパネルで開く",
+        "panel": "パネル",
+        "show_details": "詳細を表示",
+        "stopped": "停止"
+      },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "バックエンドの一時的な問題 — 再試行中…",
         "collapse_agent_list": "サブエージェント一覧を折りたたむ",

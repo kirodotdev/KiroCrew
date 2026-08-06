@@ -6805,6 +6805,20 @@
         "stopping": "থামানো হচ্ছে…",
         "stopping_in_progress": "থামানোর কাজ চলছে"
       },
+      "subagentCompletionCard": {
+        "agent_id": "এজেন্ট {{id}}",
+        "completed": "সম্পন্ন",
+        "digest_chunk_n_of_n": "{{chunks}}টির মধ্যে {{chunk}} নং অংশ",
+        "failed": "ব্যর্থ",
+        "hide_details": "বিবরণ লুকাও",
+        "interrupted": "বিঘ্নিত",
+        "n_of_n_results_delivered": "{{total}}টির মধ্যে {{done}}টি ফলাফল সরবরাহ করা হয়েছে",
+        "n_of_n_subagents_finished": "{{total}}টির মধ্যে {{done}}টি সাবএজেন্ট সম্পন্ন",
+        "open_in_the_subagents_panel": "সাবএজেন্ট প্যানেলে খুলুন",
+        "panel": "প্যানেল",
+        "show_details": "বিবরণ দেখাও",
+        "stopped": "থামানো হয়েছে"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "সাবএজেন্ট তালিকা সংকুচিত করো",
         "expand_agent_list": "সাবএজেন্ট তালিকা প্রসারিত করো",

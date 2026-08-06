@@ -17,6 +17,8 @@ import UserMessage from '../pages/chat/UserMessage'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
+import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
+import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import PastedChip from '../components/PastedChip'
@@ -196,6 +198,9 @@ const ChatMessageList = memo(function ChatMessageList({
     let groupStart = 0
 
     for (let i = 0; i < messages.length; i++) {
+      // A sub-agent completion the card cannot parse stays internal — the model
+      // sees it, the reader does not.
+      if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
       if (GROUPABLE.has(messages[i].role)) {
         if (!group.length) groupStart = i
         group.push(messages[i])
@@ -227,7 +232,9 @@ const ChatMessageList = memo(function ChatMessageList({
     }
 
     for (const item of raw) {
-      if (item.kind === 'single' && item.msg.role === 'user') {
+      // A sub-agent completion is the next turn's input, so it opens a turn the
+      // same way a user message does — the agent's reply belongs below the card.
+      if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'subagent')) {
         flushTurn(true)
         turns.push(item)
       } else {
@@ -274,6 +281,17 @@ const ChatMessageList = memo(function ChatMessageList({
             {m.content}
           </div>
         </div>
+      )
+    }
+
+    if (isSubagentCompletionMessage(m)) {
+      return (
+        <SubagentCompletionCard
+          key={key}
+          message={m}
+          onFileOpen={onFileOpen}
+          disclosureKey={key}
+        />
       )
     }
 

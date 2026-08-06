@@ -6800,6 +6800,20 @@
         "stopping": "Arrêt…",
         "stopping_in_progress": "Arrêt en cours"
       },
+      "subagentCompletionCard": {
+        "agent_id": "Agent {{id}}",
+        "completed": "Terminé",
+        "digest_chunk_n_of_n": "Partie {{chunk}} sur {{chunks}}",
+        "failed": "Échec",
+        "hide_details": "Masquer les détails",
+        "interrupted": "Interrompu",
+        "n_of_n_results_delivered": "{{done}} résultats sur {{total}} transmis",
+        "n_of_n_subagents_finished": "{{done}} sous-agents sur {{total}} terminés",
+        "open_in_the_subagents_panel": "Ouvrir dans le panneau Sous-agents",
+        "panel": "Panneau",
+        "show_details": "Afficher les détails",
+        "stopped": "Arrêté"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "Réduire la liste des sous-agents",
         "expand_agent_list": "Développer la liste des sous-agents",

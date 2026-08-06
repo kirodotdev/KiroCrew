@@ -5,14 +5,14 @@ import type { ChatMessage } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
+import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
  *  queue card is noise at scale — they collapse into one progress line
  *  (SubagentDeliveryProgress) instead of the interactive QueueStack. */
 export function isSystemDelivery(m: ChatMessage): boolean {
-  const c = m.content || ''
-  return c.startsWith('[Subagent completion event]') || c.startsWith('[Subagent batch completion event]')
+  return hasSubagentCompletionPrefix(m.content || '')
 }
 
 /** A queued entry that must NOT render as an interactive (edit/cancel) user

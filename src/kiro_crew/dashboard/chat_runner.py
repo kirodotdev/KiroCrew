@@ -107,7 +107,7 @@ from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
-    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIXES,
     SUBAGENT_SYNTHESIS_PREFIX,
     SUBAGENT_SYNTHESIS_PROMPT,
     TOOL_STALL_RECOVERY_PREFIX,
@@ -2221,7 +2221,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     next_msg, _ = redact_exfiltration_urls(next_msg)
     next_msg, _ = redact_credentials(next_msg)
     is_cron = next_msg.startswith(CRON_NOTIFY_PREFIX)
-    is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIX)
+    is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIXES)
     is_recovery = (
         next_msg.startswith(REFUSAL_RECOVERY_PREFIX)
         or next_msg.startswith(STALE_RECOVERY_PREFIX)

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX
 from kiro_crew.context import ContextBuilder, window_for_provider_client
 from kiro_crew.context_management import (
     COMPLETION_KEEP_DEFAULT_CHARS,
@@ -1379,12 +1380,11 @@ class SubagentManager:
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-
         result_path = str(_agent_dir(agent_id) / "result.txt")
 
         if has_result:
             msg = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ⚠️ orphaned by gateway restart\n"
                 f"Task: {task_preview}\n"
                 f"Result saved at: `{result_path}`\n"
@@ -1392,7 +1392,7 @@ class SubagentManager:
             )
         else:
             msg = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ❌ lost to gateway restart\n"
                 f"Task: {task_preview}\n"
                 f"No result was captured before the restart."
@@ -2326,7 +2326,7 @@ class SubagentManager:
                     + "\nUse the read tool to retrieve it if needed."
                 )
             failure_msg = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
                 f"The agent finished but result delivery timed out.{result_hint}"

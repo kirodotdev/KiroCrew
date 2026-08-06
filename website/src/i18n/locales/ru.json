@@ -6957,6 +6957,20 @@
         "stopping": "Остановка…",
         "stopping_in_progress": "Выполняется остановка"
       },
+      "subagentCompletionCard": {
+        "agent_id": "Агент {{id}}",
+        "completed": "Завершён",
+        "digest_chunk_n_of_n": "Часть {{chunk}} из {{chunks}}",
+        "failed": "Сбой",
+        "hide_details": "Скрыть подробности",
+        "interrupted": "Прервано",
+        "n_of_n_results_delivered": "Доставлено результатов: {{done}} из {{total}}",
+        "n_of_n_subagents_finished": "Завершено субагентов: {{done}} из {{total}}",
+        "open_in_the_subagents_panel": "Открыть на панели «Субагенты»",
+        "panel": "Панель",
+        "show_details": "Показать подробности",
+        "stopped": "Остановлен"
+      },
       "subagentProgressBar": {
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
