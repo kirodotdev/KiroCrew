@@ -277,7 +277,7 @@ describe('WidgetFrame openInNewTab', () => {
     // Spy on Blob to grab the wrapper HTML the openInNewTab handler builds.
     let wrapper = ''
     const realBlob = window.Blob
-    vi.spyOn(window, 'Blob' as never).mockImplementation((...args: unknown[]) => {
+    vi.spyOn(window, 'Blob' as never).mockImplementation(function (...args: unknown[]) {
       const parts = args[0] as BlobPart[]
       const opts = args[1] as BlobPropertyBag | undefined
       if (typeof parts[0] === 'string') wrapper = parts[0] as string
@@ -297,7 +297,7 @@ describe('WidgetFrame openInNewTab', () => {
 
     let mimeType = ''
     const realBlob = window.Blob
-    vi.spyOn(window, 'Blob' as never).mockImplementation((...args: unknown[]) => {
+    vi.spyOn(window, 'Blob' as never).mockImplementation(function (...args: unknown[]) {
       const opts = args[1] as BlobPropertyBag | undefined
       mimeType = opts?.type ?? ''
       return new realBlob(args[0] as BlobPart[], opts)
