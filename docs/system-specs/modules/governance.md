@@ -935,6 +935,22 @@ denials leave the same forensic trail.
   relevant `commands` patterns. This is the same plane split the rest of the
   model uses (a shell command is a `commands` item, never re-parsed into its
   sub-effects).
+  [`docs/guides/assets/security-policy.example.json`](../../guides/assets/security-policy.example.json)
+  shows both scopes set together, but read it as **egress defense-in-depth,
+  not a bounded egress guarantee**: a `commands` deny list is a finite set of
+  known patterns, not an allow-shaped ceiling, so it cannot enumerate every
+  network-capable tool (`python`, `ssh`, `git`, `pip`, `openssl s_client`, a
+  `curl` invocation with no `://` in it, or a piped/absolute-path
+  invocation of any of the above), and it says nothing about the web terminal
+  PTY, which is an ungoverned plane by design (see below). A deployment that
+  needs an actual bound on where the host can reach should treat the example
+  as a starting point for defense-in-depth, not as sufficient on its own.
+  Separately: once a `commands` deny pattern is adopted into policy, it
+  becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
+  pins, union not override) — a user cannot locally opt out of a pinned rule
+  the way they can an unpinned one, so an operator copying the example should
+  expect its deny rows to be effectively permanent for anyone bound by that
+  policy, not something end users can narrow per-rule.
 - **Per-app profile binding via MCP chokepoints is best-effort.** The managed
   `kirocrew-core` MCP server is spawned by kiro-cli, not by an app backend, so
   `KIROCREW_APP_NAME` is absent there — `learn_add`/`send_message` resolve the

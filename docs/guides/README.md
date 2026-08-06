@@ -14,7 +14,9 @@ system is built, see [../architecture/](../architecture/README.md).
 | [slack-setup.md](slack-setup.md) | Creating and configuring the Slack app. |
 
 `assets/` holds the copy-pasteable service unit, launchd plist, and setup script
-that [remote-and-mobile.md](remote-and-mobile.md) refers to.
+that [remote-and-mobile.md](remote-and-mobile.md) refers to, plus an example
+`security_policy.json` that
+[governance.md](../system-specs/modules/governance.md) refers to.
 
 End-user feature documentation is not here: it ships in the package under
 [`../../src/kiro_crew/docs/`](../../src/kiro_crew/docs/README.md).
