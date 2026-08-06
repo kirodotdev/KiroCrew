@@ -4685,10 +4685,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "Este documento se registra como artefacto de la sesión, no como un cambio en un archivo fuente"
     },
     "filePickerMenu": {
+      "folder": "Carpeta",
+      "folder_kind": "carpeta",
       "no_matches": "Sin coincidencias",
       "open_in_viewer": "Abrir en el visor",
+      "remove_folder": "Quitar carpeta",
       "searching": "Buscando…",
-      "type_2_chars_to_search_files": "Escribe 2+ caracteres para buscar archivos…"
+      "type_2_chars_to_search_files": "Escribe 2+ caracteres para buscar archivos y carpetas…"
     },
     "fileRenderers": {
       "empty_file": "Archivo vacío",

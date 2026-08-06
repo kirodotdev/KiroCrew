@@ -4685,10 +4685,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "Questo documento è tracciato come artefatto di sessione, non come modifica a un file sorgente"
     },
     "filePickerMenu": {
+      "folder": "Cartella",
+      "folder_kind": "cartella",
       "no_matches": "Nessuna corrispondenza",
       "open_in_viewer": "Apri nel visualizzatore",
+      "remove_folder": "Rimuovi cartella",
       "searching": "Ricerca in corso…",
-      "type_2_chars_to_search_files": "Digita almeno 2 caratteri per cercare i file…"
+      "type_2_chars_to_search_files": "Digita almeno 2 caratteri per cercare file e cartelle…"
     },
     "fileRenderers": {
       "empty_file": "File vuoto",

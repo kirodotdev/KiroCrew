@@ -4533,10 +4533,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "此文档被记录为会话工件，而非源文件更改"
     },
     "filePickerMenu": {
+      "folder": "文件夹",
+      "folder_kind": "文件夹",
       "no_matches": "无匹配项",
       "open_in_viewer": "在查看器中打开",
+      "remove_folder": "移除文件夹",
       "searching": "搜索中…",
-      "type_2_chars_to_search_files": "输入 2 个以上字符搜索文件…"
+      "type_2_chars_to_search_files": "输入 2 个以上字符搜索文件和文件夹…"
     },
     "fileRenderers": {
       "empty_file": "空文件",

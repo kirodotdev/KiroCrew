@@ -4685,10 +4685,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "Este documento é rastreado como artefato da sessão, não como alteração de arquivo-fonte"
     },
     "filePickerMenu": {
+      "folder": "Pasta",
+      "folder_kind": "pasta",
       "no_matches": "Nenhuma correspondência",
       "open_in_viewer": "Abrir no visualizador",
+      "remove_folder": "Remover pasta",
       "searching": "Pesquisando…",
-      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos…"
+      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos e pastas…"
     },
     "fileRenderers": {
       "empty_file": "Arquivo vazio",
