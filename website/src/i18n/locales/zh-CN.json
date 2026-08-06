@@ -685,6 +685,7 @@
         },
         "issueList": {
           "clear_search": "清除搜索",
+          "loading_the_rest": "正在加载其余内容…",
           "closed_issues_are_capped_at_the_100_most_recentl": "已关闭的 issue 最多显示最近更新的 100 个",
           "issue_other": "{{count}} 个 issue",
           "issues": "Issues",
@@ -1213,6 +1214,9 @@
         "resize_sidebar": "调整侧边栏大小",
         "select_a": "选择一个",
         "select_an_issue_to_see_its_details": "选择一个 issue 查看其详情。",
+        "selected_issue_hidden_by_filters": "所选 issue 已被当前筛选条件隐藏。",
+        "selected_change_hidden_by_filters": "所选 {{subject}} 已被当前筛选条件隐藏。",
+        "clear_filters": "清除筛选",
         "to_see_its_details": "以查看其详情。"
       },
       "api": {

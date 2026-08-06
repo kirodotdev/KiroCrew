@@ -776,6 +776,7 @@
         },
         "issueList": {
           "clear_search": "Suche leeren",
+          "loading_the_rest": "Rest wird geladen…",
           "closed_issues_are_capped_at_the_100_most_recentl": "Geschlossene Issues sind auf die 100 zuletzt aktualisierten begrenzt",
           "issue_one": "{{count}} Issue",
           "issue_other": "{{count}} Issues",
@@ -1315,6 +1316,9 @@
         "resize_sidebar": "Größe der Seitenleiste ändern",
         "select_a": "Wählen Sie ein",
         "select_an_issue_to_see_its_details": "Wählen Sie ein Issue, um seine Details zu sehen.",
+        "selected_issue_hidden_by_filters": "Das ausgewählte Issue wird durch die aktiven Filter ausgeblendet.",
+        "selected_change_hidden_by_filters": "Das ausgewählte {{subject}} wird durch die aktiven Filter ausgeblendet.",
+        "clear_filters": "Filter zurücksetzen",
         "to_see_its_details": "um seine Details zu sehen."
       },
       "api": {

@@ -367,6 +367,22 @@ def list_open_issues(owner: str, repo: str, *, timeout: float = GH_PAGINATE_TIME
     return _list_issues(owner, repo, "open", timeout=timeout, paginate=True)
 
 
+def list_open_issues_first_page(
+    owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest ``per_page=100`` open issues in ONE request (no pagination).
+
+    Serves the progressive first paint on a COLD cache: ``list_open_issues``
+    paginates every page (tens of requests on a large repo, all before anything
+    can render), so the first open of such a repo blocks for seconds. This is the
+    same first page that fetch would return anyway — issues are sorted
+    most-recently-updated first and both use it — so the full set appends behind
+    it with no reordering. Uses the ordinary ``GH_TIMEOUT_SEC``, not the paginate
+    budget: it is a single page by construction.
+    """
+    return _list_issues(owner, repo, "open", timeout=timeout, paginate=False)
+
+
 def list_closed_issues(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> list[dict]:
     """The 100 most-recently-updated CLOSED issues (bounded — see ``_list_issues``)."""
     return _list_issues(owner, repo, "closed", timeout=timeout, paginate=False)
@@ -1204,7 +1220,10 @@ _PR_DETAIL_JQ = (
 )
 
 
-def get_pr_detail(owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
+def get_pr_detail(
+    owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC,
+    resolve_mergeable: bool = True,
+) -> dict:
     """Full detail for one pull request via ``gh api repos/{o}/{r}/pulls/{n}``.
 
     Returns the richer field set the detail pane needs but the list view omits
@@ -1220,8 +1239,17 @@ def get_pr_detail(owner: str, repo: str, number: int, *, timeout: float = GH_TIM
     ``unknown`` first, then ``true`` / ``blocked`` a moment later). So when the
     first answer is unknown we wait briefly and ask once more — otherwise the
     detail pane would permanently read "Unknown", and the cache would store it.
+
+    ``resolve_mergeable=False`` skips that retry+sleep. A caller that reads only a
+    field GitHub returns EAGERLY (``head_sha`` for the head-moved verdict check)
+    does not need the lazy merge state, and paying the 1.5s sleep + second call per
+    row of a bulk approve is pure waste — ``head_sha`` is stable in the first
+    response. It never WEAKENS anything: the first read is still a live read of the
+    current head, which is all the pin requires.
     """
     detail = _fetch_pr_detail_once(owner, repo, number, timeout=timeout)
+    if not resolve_mergeable:
+        return detail
     if detail.get("mergeable") is None or detail.get("mergeable_state") in (None, "unknown"):
         time.sleep(_MERGEABLE_RETRY_DELAY_SEC)
         try:

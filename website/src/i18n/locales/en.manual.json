@@ -138,6 +138,11 @@
       }
     },
     "issueRadar": {
+      "workspace": {
+        "selected_issue_hidden_by_filters": "The selected issue is hidden by the active filters.",
+        "selected_change_hidden_by_filters": "The selected {{subject}} is hidden by the active filters.",
+        "clear_filters": "Clear filters"
+      },
       "components": {
         "agentSessionButton": {
           "resume": "Resume"
@@ -173,7 +178,8 @@
           "read_only_connect_with_triage_push_access_to_app_2": "Read-only — connect with triage/push access to apply"
         },
         "issueList": {
-          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated"
+          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated",
+          "loading_the_rest": "Loading the rest…"
         },
         "labelPalette": {
           "no_labels_match_query": "No labels match “{{query}}”."

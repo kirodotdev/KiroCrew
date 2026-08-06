@@ -25,12 +25,12 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/connect` | Connect a repo (validates URL, verifies `gh` access) |
-| GET | `/issues` | List open/closed issues (cached, paginated). `poll=1` takes the probe-gated path — see Client-Side List Polling |
+| GET | `/issues` | List open/closed issues (cached, paginated). `poll=1` takes the probe-gated path — see Client-Side List Polling. `first_page=1` (open only) takes the progressive first-paint fast path — see First Paint |
 | GET | `/issue` | Full issue detail + timeline |
 | GET | `/ref` | Compact summary of one referenced issue/PR (hover preview + issue-vs-PR resolution). One `gh` call, no timeline, short-TTL cache |
 | GET | `/labels` | Repo label set (cached with a **10-min TTL**; see "The label cache expires") |
 | GET | `/members` | Repo collaborators (authoritative API or fallback) |
-| GET | `/repos` | Connected repos list (with permission self-heal) |
+| GET | `/repos` | Connected repos list. Rows missing a cached `permissions` object (connected before permissions were tracked) are self-healed with a live `verify_repo_access`, run CONCURRENTLY under a bounded semaphore (`_REPO_HEAL_CONCURRENCY`) rather than one-at-a-time, since this gates app open; a single unreadable repo is skipped, not fatal |
 | GET | `/recent-repos` | Repos the `gh` user contributed to recently (connect-dialog picker) |
 | DELETE | `/repos` | Disconnect a repo (drops config + cache) |
 | GET | `/me` | Current `gh` login |
@@ -235,7 +235,12 @@ deliberate narrowing:
    gate: `_refuse_if_head_moved` re-reads the PR's live head and answers **409
    `review_conflict`** before the provider call, for both verdict verbs and for every
    pinned row of `/pulls/bulk` (there, as that row's `failed` entry, so the batch still
-   applies and the row stays ticked for a retry). A plain `comment` review skips the
+   applies and the row stays ticked for a retry). That re-read passes
+   `resolve_mergeable=False`: it needs only `head_sha` (returned eagerly), so it must NOT
+   pay GitHub's lazy-mergeability retry (a 1.5s sleep + a second call, which fires on the
+   common cold-`unknown` read) — that runs per row of a bulk approve, so on a 50-PR
+   approve the default path was ~75s of serialized sleep. Skipping it cannot weaken the
+   pin: the read is still a live read of the current head. A plain `comment` review skips the
    check — it records no verdict, so it stays valid prose whatever the head does. An
    *unknown* live head is deliberately not a refusal: fail-closed on a read gap would
    cost the feature on a provider that reports no head without buying any safety, since
@@ -655,6 +660,46 @@ An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new
 issues (high-water mark in `watch-state.json`). Sends dashboard bell
 notifications via `state.notify`. Zero-LLM. Guarded by `is_app_enabled` — silent
 when disabled. Lifecycle hooks registered via `app.on_startup`/`on_cleanup`.
+
+## First Paint (progressive open-issue load)
+
+The open-issue list is **fully paginated**: `list_open_issues` follows every `Link`
+page in one `gh --paginate` process (a ~2.6k-issue repo is ~26 sequential requests
+under `GH_PAGINATE_TIMEOUT_SEC`), then writes a multi-MB cache. That cost is paid
+in-band before the list can render, so a COLD open (first-ever open of a repo, a
+freshly connected one, or after an `ISSUES_CACHE_SCHEMA` bump invalidates the cache)
+blocked on a skeleton for seconds. Every WARM re-open is already instant — the list
+cache has no TTL and is served immediately — so this is a cold-cache-only problem.
+
+`GET /issues?first_page=1` (open state only) is the fast path that ends the blank
+wait, handled by `_handle_issues_first_page`:
+
+- **Warm cache → served whole, `partial: false`, no fetch.** When the full snapshot
+  exists there is nothing to gain from a partial, and the fast path must not add a
+  `gh` call the warm path does not pay.
+- **Cold cache → the newest single page in ONE request, `partial: true`.**
+  `list_open_issues_first_page` is `_list_issues(..., paginate=False)`: the SAME issue
+  shape and `sort=updated` order as the full fetch, capped at one `per_page=100` page,
+  on the ordinary `GH_TIMEOUT_SEC` rather than the paginate budget. Because it is the
+  same first page the full fetch returns, the complete set appends BEHIND it with no
+  reordering when it lands.
+- **It never WRITES the cache.** The durable cache is owned by the full fetch, which
+  stores the complete rows plus the poll `probe` under one lock. Persisting a partial
+  here would let a later `poll=1` serve an INCOMPLETE list as verified-fresh (and with
+  no probe), so this path is strictly read-only — its result lives only in the client's
+  transient first-paint query.
+
+The client (`context.tsx`) runs `firstPageQuery` only in the exact cold window —
+open state, and the authoritative `issuesQuery` has produced nothing for the key yet
+(`data === undefined`, which also covers a cross-repo switch where `keepWithinRepo`
+yields undefined). Its rows feed `issues` (and clear the skeleton) ONLY until the full
+list resolves, after which it is disabled and its rows are ignored. It deliberately
+does **not** feed `issuesQuery.isSuccess`: the one-shot auto-select and the members
+gate both key off that, and a partial page must not satisfy "the repo's issues are
+loaded". The list footer shows an `issuesPartial` "loading the rest" hint so the count
+does not read as the whole repo. Net cost: exactly one extra single-page request per
+cold repo-open. `list_open_issues_first_page` is on the `ProviderClient` protocol, so
+GitLab implements the symmetric single-page variant and `test_provider_parity` holds.
 
 ## Client-Side List Polling
 

@@ -586,6 +586,7 @@
         },
         "issueList": {
           "clear_search": "खोज साफ़ करें",
+          "loading_the_rest": "बाकी लोड हो रहा है…",
           "closed_issues_are_capped_at_the_100_most_recentl": "बंद इश्यू सबसे हाल में अपडेट हुए 100 तक सीमित हैं",
           "issue_one": "{{count}} इश्यू",
           "issue_other": "{{count}} इश्यू",
@@ -1125,6 +1126,9 @@
         "resize_sidebar": "साइडबार का आकार बदलें",
         "select_a": "एक",
         "select_an_issue_to_see_its_details": "विवरण देखने के लिए एक इश्यू चुनें।",
+        "selected_issue_hidden_by_filters": "चयनित इश्यू सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
+        "selected_change_hidden_by_filters": "चयनित {{subject}} सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
+        "clear_filters": "फ़िल्टर साफ़ करें",
         "to_see_its_details": "चुनें ताकि उसका विवरण दिखे।"
       },
       "api": {

@@ -713,6 +713,7 @@
         },
         "issueList": {
           "clear_search": "Limpar pesquisa",
+          "loading_the_rest": "Carregando o restante…",
           "closed_issues_are_capped_at_the_100_most_recentl": "As issues fechadas são limitadas às 100 atualizadas mais recentemente",
           "issue_many": "{{count}} issues",
           "issue_one": "{{count}} issue",
@@ -1263,6 +1264,9 @@
         "resize_sidebar": "Redimensionar barra lateral",
         "select_a": "Selecione um",
         "select_an_issue_to_see_its_details": "Selecione uma issue para ver os detalhes.",
+        "selected_issue_hidden_by_filters": "A issue selecionada está oculta pelos filtros ativos.",
+        "selected_change_hidden_by_filters": "O item {{subject}} selecionado está oculto pelos filtros ativos.",
+        "clear_filters": "Limpar filtros",
         "to_see_its_details": "para ver os detalhes."
       },
       "api": {

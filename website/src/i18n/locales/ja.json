@@ -836,6 +836,7 @@
         },
         "issueList": {
           "clear_search": "検索をクリア",
+          "loading_the_rest": "残りを読み込んでいます…",
           "closed_issues_are_capped_at_the_100_most_recentl": "閉じたIssueは最近更新された100件までです",
           "issue_other": "{{count}}個のIssue",
           "issues": "Issue",
@@ -1384,6 +1385,9 @@
         "resize_sidebar": "サイドバーのサイズを変更",
         "select_a": "を選択",
         "select_an_issue_to_see_its_details": "詳細を表示する Issue を選択してください。",
+        "selected_issue_hidden_by_filters": "選択した Issue はアクティブなフィルターによって非表示になっています。",
+        "selected_change_hidden_by_filters": "選択した {{subject}} はアクティブなフィルターによって非表示になっています。",
+        "clear_filters": "フィルターをクリア",
         "to_see_its_details": "その詳細を表示するには"
       }
     },

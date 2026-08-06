@@ -586,6 +586,7 @@
         },
         "issueList": {
           "clear_search": "সার্চ সাফ করুন",
+          "loading_the_rest": "বাকিটা লোড হচ্ছে…",
           "closed_issues_are_capped_at_the_100_most_recentl": "বন্ধ ইস্যু সর্বশেষ আপডেট হওয়া 100টিতে সীমিত",
           "issue_one": "{{count}}টি ইস্যু",
           "issue_other": "{{count}}টি ইস্যু",
@@ -1125,6 +1126,9 @@
         "resize_sidebar": "সাইডবারের আকার বদলান",
         "select_a": "বেছে নিন একটি",
         "select_an_issue_to_see_its_details": "বিবরণ দেখতে একটি ইস্যু বেছে নিন।",
+        "selected_issue_hidden_by_filters": "নির্বাচিত ইস্যুটি সক্রিয় ফিল্টার দ্বারা লুকানো রয়েছে।",
+        "selected_change_hidden_by_filters": "নির্বাচিত {{subject}} সক্রিয় ফিল্টার দ্বারা লুকানো রয়েছে।",
+        "clear_filters": "ফিল্টার সাফ করুন",
         "to_see_its_details": "— এর বিবরণ দেখতে।"
       },
       "api": {

@@ -713,6 +713,7 @@
         },
         "issueList": {
           "clear_search": "Borrar la búsqueda",
+          "loading_the_rest": "Cargando el resto…",
           "closed_issues_are_capped_at_the_100_most_recentl": "Las incidencias cerradas se limitan a las 100 actualizadas más recientemente",
           "issue_many": "{{count}} incidencias",
           "issue_one": "{{count}} incidencia",
@@ -1263,6 +1264,9 @@
         "resize_sidebar": "Redimensionar la barra lateral",
         "select_a": "Selecciona un",
         "select_an_issue_to_see_its_details": "Selecciona una incidencia para ver sus detalles.",
+        "selected_issue_hidden_by_filters": "La incidencia seleccionada está oculta por los filtros activos.",
+        "selected_change_hidden_by_filters": "El elemento {{subject}} seleccionado está oculto por los filtros activos.",
+        "clear_filters": "Borrar filtros",
         "to_see_its_details": "para ver sus detalles."
       },
       "api": {

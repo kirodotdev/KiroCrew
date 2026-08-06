@@ -715,6 +715,7 @@
         },
         "issueList": {
           "clear_search": "Очистить поиск",
+          "loading_the_rest": "Загрузка остального…",
           "closed_issues_are_capped_at_the_100_most_recentl": "Закрытые задачи ограничены 100 последними обновлёнными",
           "issue_few": "{{count}} задачи",
           "issue_many": "{{count}} задач",
@@ -1276,6 +1277,9 @@
         "resize_sidebar": "Изменить размер боковой панели",
         "select_a": "Выберите",
         "select_an_issue_to_see_its_details": "Выберите задачу для просмотра подробностей.",
+        "selected_issue_hidden_by_filters": "Выбранная задача скрыта активными фильтрами.",
+        "selected_change_hidden_by_filters": "Выбранный элемент {{subject}} скрыт активными фильтрами.",
+        "clear_filters": "Сбросить фильтры",
         "to_see_its_details": "для просмотра подробностей."
       },
       "api": {

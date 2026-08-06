@@ -781,6 +781,7 @@
         },
         "issueList": {
           "clear_search": "Effacer la recherche",
+          "loading_the_rest": "Chargement du reste…",
           "closed_issues_are_capped_at_the_100_most_recentl": "Les tickets fermés sont limités aux 100 mis à jour le plus récemment",
           "issue_many": "{{count}} issues",
           "issue_one": "{{count}} issue",
@@ -1331,6 +1332,9 @@
         "resize_sidebar": "Redimensionner la barre latérale",
         "select_a": "Sélectionnez un",
         "select_an_issue_to_see_its_details": "Sélectionnez un ticket pour voir ses détails.",
+        "selected_issue_hidden_by_filters": "Le ticket sélectionné est masqué par les filtres actifs.",
+        "selected_change_hidden_by_filters": "L’élément {{subject}} sélectionné est masqué par les filtres actifs.",
+        "clear_filters": "Effacer les filtres",
         "to_see_its_details": "pour voir ses détails."
       },
       "api": {
