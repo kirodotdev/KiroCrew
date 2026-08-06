@@ -31,6 +31,16 @@ Parameters:
   SubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet to launch into (a public subnet in the chosen VPC).
+  AssociatePublicIp:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Attach a public IP to the instance ENI. The launcher passes "false" for
+      NAT-routed (private) subnets, where a public IP is unused surface and can
+      trip SCPs that deny RunInstances-with-public-IP, and "true" for
+      IGW-routed subnets, where it is REQUIRED for egress. Default "true"
+      preserves the historical behavior for direct template deploys.
   StackTag:
     Type: String
     Default: kirocrew
@@ -123,6 +133,7 @@ Conditions:
   HasSshCidr: !Not [!Equals [!Ref AllowSshCidr, ""]]
   IsArm: !Equals [!Ref Architecture, arm64]
   HasS3Source: !Not [!Equals [!Ref SourceBucket, ""]]
+  WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
 
 Resources:
   # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
@@ -218,28 +229,29 @@ Resources:
             - !FindInMap [ArchToAmiParam, arm64, Param]
             - !FindInMap [ArchToAmiParam, x8664, Param]
       IamInstanceProfile: !Ref InstanceProfile
-      # Attach the ENI explicitly so we can force a public IP. discover_network
-      # prefers a NAT subnet, but when only an internet-gateway subnet is
-      # available a public IP is REQUIRED for egress — and the subnet's
-      # MapPublicIpOnLaunch may be false. AssociatePublicIpAddress overrides that
-      # at the instance level so bootstrap (dnf/npm/pip + SSM) can't silently hang
-      # to the WaitCondition timeout. Harmless in a NAT/private subnet (the extra
-      # public IP is simply unused). SubnetId/SecurityGroupIds move here because
-      # they're mutually exclusive with the top-level forms.
+      # Attach the ENI explicitly so the public-IP decision is instance-level
+      # (the subnet's MapPublicIpOnLaunch may disagree either way). The launcher
+      # computes the subnet's egress kind and passes AssociatePublicIp
+      # accordingly: "true" for IGW-routed subnets — where a public IP is
+      # REQUIRED for egress or bootstrap (dnf/npm/pip + SSM) silently hangs to
+      # the WaitCondition timeout — and "false" for NAT-routed (private)
+      # subnets, where a public IP is unused attack surface and can violate
+      # SCPs that deny RunInstances-with-public-IP. SubnetId/SecurityGroupIds
+      # move here because they're mutually exclusive with the top-level forms.
       NetworkInterfaces:
         - DeviceIndex: 0
           # ── Documented accepted tradeoff (CWE-1188) ──
-          # A public IP widens attack surface, but is REQUIRED for egress when
-          # only an IGW subnet is available (bootstrap would otherwise hang). It
-          # is accepted, not an oversight, because it is defense-in-depth capped:
+          # On IGW-only subnets a public IP widens attack surface but is
+          # REQUIRED for egress (bootstrap would otherwise hang). It is
+          # accepted, not an oversight, because it is defense-in-depth capped:
           #   * InstanceSecurityGroup has NO default inbound ingress (SSM-only,
           #     egress-only); optional SSH is gated behind HasSshCidr with a
           #     validated CIDR (rejects ranges wider than /16).
           #   * IMDSv2 enforced (HttpTokens: required, HopLimit: 1) below.
           #   * EBS root encrypted.
-          # Preferred posture is still a private subnet + NAT (discover_network
-          # picks that first); this only forces the public IP on IGW-only subnets.
-          AssociatePublicIpAddress: true
+          # NAT-routed (private) subnets — discovery's first preference and the
+          # --subnet flag's advertised posture — launch with NO public IP.
+          AssociatePublicIpAddress: !If [WantPublicIp, true, false]
           SubnetId: !Ref SubnetId
           GroupSet: [!Ref InstanceSecurityGroup]
       # Enforce IMDSv2 (token-required) and a hop limit of 1. KiroCrew runs a

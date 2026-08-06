@@ -1574,6 +1574,7 @@ Examples:
   kirocrew cloud launch                  # interactive: provision + configure + open dashboard
   kirocrew cloud launch --size power     # non-interactive size
   kirocrew cloud launch --new            # create a separate new instance
+  kirocrew cloud launch --subnet subnet-0abc…  # pin the launch to an exact subnet
   kirocrew cloud list                    # list your cloud instances
   kirocrew cloud connect                 # reopen the dashboard over SSM
   kirocrew cloud stop | start            # pause / resume (save cost)
@@ -1605,6 +1606,15 @@ Examples:
         default="",
         choices=_cloud_size_choices(),
         help="Instance size tier (default: balanced / interactive picker)",
+    )
+    _c_launch.add_argument(
+        "--subnet",
+        default="",
+        metavar="SUBNET_ID",
+        help="Launch into this exact subnet (subnet-xxxx) instead of network "
+        "auto-discovery — required to target a dedicated/private-subnet VPC "
+        "when a default VPC exists. The subnet must have internet egress "
+        "(NAT or IGW route).",
     )
     _c_launch.add_argument("-y", "--yes", action="store_true", help="Accept defaults, no prompts")
     _c_launch.add_argument(
