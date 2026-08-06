@@ -82,6 +82,29 @@ prints an `MCP Governance (enterprise)` section on Identity Center hosts with th
 current state. Full walkthrough, including the registry JSON your administrator
 needs: `docs/guides/enterprise-mcp-governance.md`.
 
+### A remote MCP server shows "Not verified"
+
+Remote MCP servers that authenticate with OAuth — Atlassian, for example — can
+show **Not verified** under Connections → MCP Servers while working perfectly in
+chat. Nothing is wrong with the server. The badge describes what the dashboard
+can see, not what the server can do.
+
+The Kiro CLI runs the OAuth flow and keeps the token in its own credential store;
+Kiro Crew never holds it. The dashboard's status probe therefore connects without a
+token, and the server answers `401`. That single answer covers two situations the
+dashboard cannot tell apart: a server nobody has authorized, and a server already
+authorized through the Kiro CLI. So it reports only what it knows.
+
+To find out which one you have:
+
+- If an agent can call that server's tools in chat, it is authorized and working.
+- If tool calls fail, use the server in chat once. The Kiro CLI starts the OAuth
+  flow on the `401` and Kiro Crew shows the consent link as a banner; approve it
+  there and the calls succeed.
+
+A server that is genuinely broken reads **Error** with the reason next to it, not
+**Not verified**.
+
 ### Dashboard not loading
 
 ```bash

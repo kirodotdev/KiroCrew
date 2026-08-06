@@ -197,6 +197,17 @@ Probes run from `POST /api/mcp/probe`:
   excluded from the shared per-name probe cache, because a synthetic-identity
   handshake is a diagnostic and not the canonical observation the dashboard
   renders.
+- A remote server that answers the handshake with `401` — or with `403` carrying a
+  `WWW-Authenticate` challenge — and whose config has no static `Authorization`
+  header gets status `needs_auth` and an empty `error`, not `error`. The probe
+  holds no OAuth token, because kiro-cli owns token custody
+  ([design-notes/mcp-oauth-ownership.md](design-notes/mcp-oauth-ownership.md)), so
+  that answer carries no verdict on the server: an unauthorized server and one the
+  runtime calls successfully both return it. The dashboard renders `needs_auth` as
+  "Not verified" for that reason — naming an action the user may not need would
+  assert more than the probe observed. A `401` on an entry that DOES carry a static
+  `Authorization` header stays `error`: a supplied credential was rejected, which
+  is a real fault.
 - A probed stdio child that ignores a closed stdin costs
   `_PROBE_TEARDOWN_WAIT_SECS` twice (graceful wait, then again after SIGKILL)
   before the process-group reap, which is why that budget is a named constant

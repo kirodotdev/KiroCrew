@@ -84,3 +84,66 @@ describe('McpTab restructure', () => {
     await waitFor(() => expect(screen.getByText('Managed by Connections')).toBeInTheDocument())
   })
 })
+
+/**
+ * #1853: the status probe runs without the OAuth token kiro-cli holds, so a
+ * remote OAuth server answers it with 401 while the agent runtime calls the same
+ * server fine. The gateway reports that as `needs_auth`, and the table must say
+ * only what it knows — the authorization is not visible from here — rather than
+ * calling a working server broken or claiming it needs a grant it may already have.
+ */
+describe('McpTab needs_auth status', () => {
+  const remote = (status: string): McpServer => ({
+    name: 'atlassian',
+    command: '',
+    url: 'https://mcp.atlassian.com/v1/sse',
+    status,
+    source: 'mcp.json',
+    enabled: true,
+    tools: [],
+  })
+
+  it('renders the not-verified state, not an error badge', async () => {
+    mockApi.mcpServers.mockResolvedValue([remote('needs_auth')])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Not verified')).toBeInTheDocument())
+    // The badge carries the warn tone, never the error tone.
+    expect(screen.getByText('Not verified').className).toContain('text-warn')
+    expect(screen.getByText('Not verified').className).not.toContain('text-danger')
+    // Neither the old "Error" label nor the uninformative "Unknown" fallback.
+    expect(screen.queryByText('Error')).not.toBeInTheDocument()
+    expect(screen.queryByText('Unknown')).not.toBeInTheDocument()
+  })
+
+  it('explains the unverifiable status on hover, naming the server', async () => {
+    mockApi.mcpServers.mockResolvedValue([remote('needs_auth')])
+    renderTab()
+
+    const badge = await screen.findByText('Not verified')
+    const hint = badge.getAttribute('title') || ''
+    // Says who holds the token and that a working server is still working —
+    // the two facts that make the badge honest instead of alarming.
+    expect(hint).toContain('atlassian')
+    expect(hint).toContain('Kiro CLI')
+    expect(hint).toMatch(/cannot see the authorization/)
+  })
+
+  it('leaves every other status without a hover explanation', async () => {
+    mockApi.mcpServers.mockResolvedValue([remote('ok')])
+    renderTab()
+
+    const badge = await screen.findByText('Online')
+    expect(badge).not.toHaveAttribute('title')
+  })
+
+  it('still renders a real failure as an error badge with its message', async () => {
+    mockApi.mcpServers.mockResolvedValue([{ ...remote('error'), error: 'HTTP 500' }])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument())
+    expect(screen.getByText('Error').className).toContain('text-danger')
+    expect(screen.getByText('HTTP 500')).toBeInTheDocument()
+    expect(screen.queryByText('Not verified')).not.toBeInTheDocument()
+  })
+})

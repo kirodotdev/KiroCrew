@@ -28,6 +28,7 @@ const mcpServers = vi.fn()
 const mcpProbe = vi.fn()
 const mcpApply = vi.fn()
 const mcpCustomAdd = vi.fn()
+const mcpCustomGet = vi.fn()
 const mcpCustomUpdate = vi.fn()
 const mcpOAuthRelay = vi.fn()
 const connectionsMint = vi.fn()
@@ -39,6 +40,7 @@ vi.mock('../api/client', () => ({
     mcpProbe: (...a: unknown[]) => mcpProbe(...a),
     mcpApply: (...a: unknown[]) => mcpApply(...a),
     mcpCustomAdd: (...a: unknown[]) => mcpCustomAdd(...a),
+    mcpCustomGet: (...a: unknown[]) => mcpCustomGet(...a),
     mcpCustomUpdate: (...a: unknown[]) => mcpCustomUpdate(...a),
     mcpOAuthRelay: (...a: unknown[]) => mcpOAuthRelay(...a),
     connectionsMint: (...a: unknown[]) => connectionsMint(...a),
@@ -116,6 +118,13 @@ beforeEach(() => {
   mcpProbe.mockReset().mockResolvedValue([])
   mcpApply.mockReset().mockResolvedValue({ ok: true })
   mcpCustomAdd.mockReset().mockResolvedValue({ ok: true, added: [], enabled: true })
+  // Stored spec deliberately carries OAuth hints, so the reconnect assertions
+  // pin that a url rewrite round-trips them instead of clearing them.
+  mcpCustomGet.mockReset().mockResolvedValue({
+    name: 'notion',
+    spec: { url: 'https://old.example/mcp', scopes: ['read'], clientId: 'client-1' },
+    enabled: true,
+  })
   mcpCustomUpdate.mockReset().mockResolvedValue({ ok: true, name: 'notion' })
   mcpOAuthRelay.mockReset().mockResolvedValue({ ok: true })
   connectionsMint.mockReset().mockResolvedValue({
@@ -398,7 +407,9 @@ describe('a provider that needs attention', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect/ })))
 
-    await waitFor(() => expect(mcpCustomUpdate).toHaveBeenCalledWith('notion', { url: NOTION_URL }))
+    await waitFor(() => expect(mcpCustomUpdate).toHaveBeenCalledWith('notion', {
+      url: NOTION_URL, scopes: ['read'], clientId: 'client-1',
+    }))
     // Global scopes are passed through unchanged; only Kiro Crew's own is turned on.
     expect(mcpApply).toHaveBeenCalledWith([{ name: 'notion', kirocrew: true, kiroGlobal: true, ccGlobal: false }])
   })
@@ -409,7 +420,9 @@ describe('a provider that needs attention', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: /Reconnect/ })))
 
-    await waitFor(() => expect(mcpCustomUpdate).toHaveBeenCalledWith('notion', { url: NOTION_URL }))
+    await waitFor(() => expect(mcpCustomUpdate).toHaveBeenCalledWith('notion', {
+      url: NOTION_URL, scopes: ['read'], clientId: 'client-1',
+    }))
     expect(mcpApply).not.toHaveBeenCalled()
   })
 })
