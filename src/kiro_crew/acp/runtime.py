@@ -244,9 +244,12 @@ def _get_rss_mb(pid: int) -> float | None:
 
     # macOS / other: no /proc, fall back to ps (mirrors the sysctl/ps pattern
     # used elsewhere in this codebase for darwin system info).
+    ps_bin = platform_compat.trusted_system_bin("ps")
+    if ps_bin is None:
+        return None
     try:
         out = (
-            subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], timeout=2)
+            subprocess.check_output([ps_bin, "-o", "rss=", "-p", str(pid)], timeout=2)
             .decode()
             .strip()
         )
@@ -342,8 +345,13 @@ def _get_rss_tree_mb(pid: int) -> float | None:
 
     # macOS / other: build a ppid map from a single ps snapshot, then sum the
     # descendant subtree rooted at pid (ps reports RSS in KiB).
+    ps_bin = platform_compat.trusted_system_bin("ps")
+    if ps_bin is None:
+        return _get_rss_mb(pid)
     try:
-        out = subprocess.check_output(["ps", "-Ao", "pid=,ppid=,rss="], timeout=2).decode().strip()
+        out = (
+            subprocess.check_output([ps_bin, "-Ao", "pid=,ppid=,rss="], timeout=2).decode().strip()
+        )
     except (OSError, subprocess.SubprocessError):
         return _get_rss_mb(pid)
     children: dict[int, list[int]] = {}

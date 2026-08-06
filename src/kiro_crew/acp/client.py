@@ -1399,8 +1399,11 @@ def _get_start_time(pid: int) -> int | None:
             fields = stat.rsplit(")", 1)[1].split()
             return int(fields[19])  # field 22 = starttime
         # macOS: use ps -o lstart= (absolute start timestamp, constant for process lifetime)
+        ps_bin = platform_compat.trusted_system_bin("ps")
+        if ps_bin is None:
+            return None
         out = subprocess_mod.check_output(
-            ["ps", "-o", "lstart=", "-p", str(pid)], stderr=subprocess_mod.DEVNULL, timeout=2
+            [ps_bin, "-o", "lstart=", "-p", str(pid)], stderr=subprocess_mod.DEVNULL, timeout=2
         )
         return hash(out.strip())  # stable per-process, changes on recycle
     except Exception:
@@ -1426,8 +1429,11 @@ def _read_basename(pid: int) -> bytes | None:
                 return None
             return cmdline.split(b"\x00", 1)[0].rsplit(b"/", 1)[-1]
         else:
+            ps_bin = platform_compat.trusted_system_bin("ps")
+            if ps_bin is None:
+                return None
             out = subprocess_mod.check_output(
-                ["ps", "-o", "comm=", "-p", str(pid)], stderr=subprocess_mod.DEVNULL, timeout=2
+                [ps_bin, "-o", "comm=", "-p", str(pid)], stderr=subprocess_mod.DEVNULL, timeout=2
             )
             name = out.strip()
             if not name:

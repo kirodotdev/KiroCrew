@@ -413,17 +413,32 @@ def _stop(cli_port: int | None = None) -> None:
         # would then double-spawn).
         if not platform_compat.listening_pid_tool_available():
             _tool = platform_compat.listening_pid_tool()
+            # A host that keeps its binaries outside the system directories
+            # (NixOS, a Homebrew or conda prefix) has the tool and still lands
+            # here, because the lookup is pinned to those directories. Telling
+            # that operator to install what they already have sends them in
+            # circles, so name where it actually is instead.
+            _unpinned = platform_compat.tool_outside_trusted_dirs(_tool)
+            _reason = f"{_tool}_outside_trusted_dirs" if _unpinned else f"{_tool}_not_found"
             sel().log_api_access(
                 caller="cli",
                 operation="gateway_stop",
                 outcome="no_target",
                 source="cli",
-                resources=f"port={port} reason={_tool}_not_found",
+                resources=f"port={port} reason={_reason}",
             )
-            print(
-                f"`{_tool}` not found — cannot look up the gateway process on "
-                f"port {port}. Install {_tool} and retry."
-            )
+            if _unpinned:
+                print(
+                    f"`{_tool}` is installed at {_unpinned}, outside the system directories "
+                    f"Kiro Crew resolves it from, so it cannot look up the gateway process "
+                    f"on port {port}. Falling back to PATH is deliberately refused: a "
+                    f"gateway's PATH can lead with writable directories."
+                )
+            else:
+                print(
+                    f"`{_tool}` not found — cannot look up the gateway process on "
+                    f"port {port}. Install {_tool} and retry."
+                )
             sys.exit(1)
         sel().log_api_access(
             caller="cli",
