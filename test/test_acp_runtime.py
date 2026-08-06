@@ -3028,11 +3028,43 @@ class TestAcpRuntimePidTracking:
         monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: calls["session"].append(p))
         # os.killpg / getpgid on the fake PID would raise — the kill() body
         # already guards those with OSError/ProcessLookupError, so let them fire.
+        #
+        # kill() only untracks once pid_exists() confirms the process is GONE, so
+        # stub that decision instead of betting the fake PID is absent from the
+        # host's process table. It is not a safe bet: Windows recycles PIDs from a
+        # small space, and on a CI runner spawning subprocesses across xdist
+        # workers 4242 was intermittently a REAL live process -- kill() then took
+        # the survivor branch and this asserted `[] == [4242]`.
+        monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
 
         await rt.kill()
 
         assert calls["pid"] == [4242]
         assert calls["session"] == [4242]
+
+    @pytest.mark.asyncio
+    async def test_kill_keeps_pid_tracked_when_the_process_survives(self, monkeypatch):
+        """A survivor must STAY tracked so the orphan sweeps can still reach it.
+
+        The counterpart to the test above, and the reason that one has to stub
+        `pid_exists` rather than rely on the ambient process table: untracking a
+        process that outlived SIGTERM/SIGKILL escalation would leak it until
+        reboot, because the sweep would no longer have a handle on it.
+        """
+        rt, _, proc = _make_runtime()
+        proc.wait = AsyncMock(return_value=0)
+
+        calls: dict[str, list[int]] = {"pid": [], "session": []}
+        import kiro_crew.acp.runtime as rt_mod
+
+        monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: calls["pid"].append(p))
+        monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: calls["session"].append(p))
+        monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: True)
+
+        await rt.kill()
+
+        assert calls["pid"] == []
+        assert calls["session"] == []
 
 
 class TestAcpRuntimeLoadSession:

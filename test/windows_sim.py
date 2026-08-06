@@ -49,6 +49,7 @@ __all__ = [
     "colliding_clock",
     "increasing_clock",
     "read_sharing_violation",
+    "builtin_open_sharing_violation",
     "replace_sharing_violation",
     "open_sharing_violation",
     "unlink_sharing_violation",
@@ -196,6 +197,43 @@ def replace_sharing_violation(
 
 
 @contextmanager
+def builtin_open_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make the builtin ``open()`` raise a Windows-style sharing violation.
+
+    The counterpart to :func:`read_sharing_violation` (which covers
+    ``Path.read_bytes``) for the very common case of code that reads through
+    ``open(path)`` directly -- e.g. a streaming ``readline()`` that must not slurp
+    a large file. Note that patching ``os.open`` does NOT reach either of those:
+    CPython's ``builtins.open`` and ``pathlib`` read paths go through the C
+    ``_io`` layer and never call the ``os.open`` Python attribute, so
+    :func:`open_sharing_violation` only intercepts explicit ``os.open`` callers.
+
+    Raises ``PermissionError`` for the first *times* matching opens, then
+    delegates to the real call -- so a caller that retries is expected to
+    succeed. *match* filters on the path (basename-equality or substring);
+    ``None`` faults every open. Yields a ``{"n": count}`` dict of how many
+    matching opens were seen, useful for asserting a retry happened.
+    """
+    real_open = open
+    state = {"n": 0}
+
+    def _patched(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+        p = str(file)
+        if match is None or os.path.basename(p) == match or match in p:
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation opening {p}"
+                )
+        return real_open(file, *args, **kwargs)
+
+    with mock.patch("builtins.open", _patched):
+        yield state
+
+
+@contextmanager
 def open_sharing_violation(
     *, match: Optional[str] = None, times: int = 1, create_only: bool = True
 ) -> Iterator[dict]:
@@ -209,9 +247,14 @@ def open_sharing_violation(
 
     *match* filters on the path (basename-equality or substring); ``None`` faults
     every ``os.open``. *create_only* (default ``True``) restricts faults to opens
-    that include ``os.O_CREAT`` — so plain reads (``pathlib`` read paths call
-    ``os.open`` with ``O_RDONLY``) are left untouched and only the exclusive
-    create is exercised. Yields a ``{"n": count}`` dict.
+    that include ``os.O_CREAT``, so only the exclusive create is exercised.
+
+    Reaches ONLY code that calls ``os.open`` itself (e.g. ``atomic_write``'s
+    ``O_CREAT | O_EXCL``). It does NOT intercept the builtin ``open()`` or the
+    ``pathlib`` read helpers: those go through the C ``_io`` layer and never
+    consult the ``os.open`` Python attribute. Use
+    :func:`builtin_open_sharing_violation` or :func:`read_sharing_violation` for
+    those. Yields a ``{"n": count}`` dict.
     """
     real_open = os.open
     state = {"n": 0}

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from windows_sim import builtin_open_sharing_violation
 
 from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
@@ -3487,3 +3489,94 @@ async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp
     # Not live (would be an auto-publish); staged for review instead.
     assert skills.list_auto_skills() == []
     assert any(s["slug"] == "scripted-skill" for s in skills.list_pending_skills())
+
+
+class TestMetadataReadSurvivesATransientSharingViolation:
+    """A read that FAILED must not be reported as a session with no metadata.
+
+    ``_read_metadata`` returns ``{}`` both for "this session has no metadata line"
+    and (previously) for "I could not open the file". Callers cannot tell those
+    apart and at least one acts destructively on the answer -- the open-tab
+    restore treats ``{}`` as "never persisted" and silently drops the tab. On
+    Windows a just-written file is transiently unopenable while an indexer or AV
+    scanner holds it (``ERROR_SHARING_VIOLATION`` -> ``PermissionError``), which
+    is the shape ``windows_sim.builtin_open_sharing_violation`` reproduces.
+    """
+
+    def test_a_transient_violation_is_retried_not_reported_as_absent(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s1", "user", "hello", agent="my-agent")
+        # Drop the cache so the read genuinely has to touch the file.
+        log._meta_cache.pop("s1", None)
+
+        with builtin_open_sharing_violation(match="s1.jsonl", times=1) as seen:
+            meta = log.get_metadata("s1")
+
+        assert seen["n"] >= 1, "the simulator never intercepted the open"
+        assert meta.get("agent") == "my-agent", (
+            f"a single transient sharing violation was reported as absence: {meta!r}"
+        )
+
+    def test_the_retry_never_sleeps_on_the_event_loop(self, tmp_path):
+        """The retry delay must not run on the loop.
+
+        ``restore_open_slots_async`` keeps the restore ON the event loop on
+        purpose, and reaches here through ``_rehydrate_slot_from_history``. A
+        kernel sleep on that path stops ``_loop_heartbeat`` petting the
+        LoopStallWatchdog, whose ``exit_after`` timer then kills the gateway --
+        the crash-loop the async restore exists to prevent. So on the loop the
+        retry must be immediate, and it must still recover the metadata.
+        """
+        import kiro_crew.history as history_mod
+
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s1", "user", "hello", agent="my-agent")
+        log._meta_cache.pop("s1", None)
+
+        slept: list[float] = []
+
+        async def _on_loop():
+            with patch.object(history_mod._time, "sleep", lambda s: slept.append(s)):
+                with builtin_open_sharing_violation(match="s1.jsonl", times=1):
+                    return log.get_metadata("s1")
+
+        meta = asyncio.run(_on_loop())
+
+        assert slept == [], f"blocking sleep(s) ran on the event loop: {slept}"
+        # The immediate retry still has to work.
+        assert meta.get("agent") == "my-agent", f"on-loop retry lost the metadata: {meta!r}"
+
+    def test_the_retry_does_sleep_off_the_event_loop(self, tmp_path):
+        """Off the loop the pause is safe and worth taking -- a sharing violation
+        clears in milliseconds, so retrying instantly would usually just fail."""
+        import kiro_crew.history as history_mod
+
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s1", "user", "hello", agent="my-agent")
+        log._meta_cache.pop("s1", None)
+
+        slept: list[float] = []
+        with patch.object(history_mod._time, "sleep", lambda s: slept.append(s)):
+            with builtin_open_sharing_violation(match="s1.jsonl", times=1):
+                meta = log.get_metadata("s1")
+
+        assert slept, "no retry pause off the event loop"
+        assert meta.get("agent") == "my-agent"
+
+    def test_a_persistent_violation_still_reports_absence_but_warns(
+        self, tmp_path, caplog
+    ):
+        """Fail closed after the retries, but leave a traceable warning rather
+        than a confident empty dict."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s1", "user", "hello", agent="my-agent")
+        log._meta_cache.pop("s1", None)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.history"):
+            with builtin_open_sharing_violation(match="s1.jsonl", times=99):
+                meta = log.get_metadata("s1")
+
+        assert meta == {}
+        assert any(
+            "could not read metadata" in r.getMessage() for r in caplog.records
+        ), f"no warning recorded; got {[r.getMessage() for r in caplog.records]}"

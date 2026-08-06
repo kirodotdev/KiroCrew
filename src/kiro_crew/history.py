@@ -717,6 +717,14 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
 #: while giving the working set a deterministic ceiling.
 _TRANSCRIPT_CACHE_MAX = 256
 
+# Metadata reads retry briefly before reporting "no metadata": on Windows a
+# just-written session file can be transiently unopenable while an indexer or AV
+# scanner holds it (ERROR_SHARING_VIOLATION -> PermissionError). Those holds are
+# measured in milliseconds, and the caller that matters here (the open-tab
+# restore) treats an empty result as "session never existed" and drops the tab.
+_METADATA_READ_ATTEMPTS = 3
+_METADATA_READ_RETRY_SECS = 0.02
+
 
 _V = TypeVar("_V")
 
@@ -2391,38 +2399,82 @@ class ConversationLog:
         """Read the metadata line (first line) from a session JSONL file.
 
         Uses mtime-based caching to avoid re-reading unchanged files.
+
+        Returns ``{}`` for a session that genuinely has no metadata. A caller
+        cannot distinguish that from a transient read failure, and at least one
+        does something destructive with the answer: the open-tab restore treats
+        ``{}`` as "never persisted" and silently drops the tab. So absorb the
+        transient case HERE rather than reporting it as absence -- retry a few
+        times, and if it still fails, say so at warning level instead of
+        returning a confident empty dict. Windows makes this more than
+        theoretical: a freshly written file can be briefly unopenable while an
+        indexer or AV scanner holds it (``ERROR_SHARING_VIOLATION``), which
+        surfaces as ``PermissionError`` -- an ``OSError`` subclass.
         """
         path = self._path(key)
         if not path.exists():
             self._meta_cache.pop(key, None)
             return {}
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return {}
-        cached = self._meta_cache.get(key)
-        if cached and cached[0] == mtime:
-            return cached[1]
-        # Read ONLY the first line. The previous form slurped the entire file via
-        # read_text() and then threw all but the first line away — on a 26 MB
-        # transcript that is ~10ms and ~26 MB of transient allocation to obtain a
-        # few hundred bytes (measured ~32x slower than readline()). Startup
-        # restore calls this once per tab, so the waste scaled with both tab count
-        # and transcript size, pushing the event loop toward the stall watchdog.
-        try:
-            with open(path, encoding="utf-8") as fh:
-                first = fh.readline().strip()
-        except OSError:
-            return {}
-        if not first:
-            return {}
-        try:
-            data = json.loads(first)
-            meta = data if data.get("_type") == "metadata" else {}
-        except json.JSONDecodeError:
-            meta = {}
-        self._meta_cache[key] = (mtime, meta)
-        return meta
+        for attempt in range(_METADATA_READ_ATTEMPTS):
+            try:
+                mtime = path.stat().st_mtime
+                cached = self._meta_cache.get(key)
+                if cached and cached[0] == mtime:
+                    return cached[1]
+                # Read ONLY the first line. The previous form slurped the entire
+                # file via read_text() and then threw all but the first line away
+                # — on a 26 MB transcript that is ~10ms and ~26 MB of transient
+                # allocation to obtain a few hundred bytes (measured ~32x slower
+                # than readline()). Startup restore calls this once per tab, so
+                # the waste scaled with both tab count and transcript size,
+                # pushing the event loop toward the stall watchdog.
+                with open(path, encoding="utf-8") as fh:
+                    first = fh.readline().strip()
+            except OSError:
+                if attempt + 1 < _METADATA_READ_ATTEMPTS:
+                    # Pause before retrying ONLY off the event loop. This path is
+                    # reached ON it: ``restore_open_slots_async`` keeps the whole
+                    # restore on the loop deliberately (creating a slot broadcasts
+                    # through ``asyncio.Queue.put_nowait`` / ``Event.set``, neither
+                    # thread-safe), and a kernel sleep there stops
+                    # ``_loop_heartbeat`` from petting the LoopStallWatchdog --
+                    # whose ``exit_after`` timer then kills the gateway. That
+                    # crash-loop is the exact thing the async restore exists to
+                    # prevent, so it must not be reintroduced here. Same probe as
+                    # the cross-process lock acquire above.
+                    on_loop = True
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        on_loop = False
+                    if not on_loop:
+                        _time.sleep(_METADATA_READ_RETRY_SECS)
+                    # On the loop the retry is immediate instead. It costs a stat
+                    # plus an open, so it is cheap enough to be worth taking, and
+                    # losing it only yields the same ``{}`` this returned before
+                    # any retry existed -- never worse than the old behaviour.
+                    continue
+                # Out of retries. Distinguish this from "no metadata" in the log
+                # so a dropped tab is traceable to its cause instead of looking
+                # like a session that was never written.
+                logger.warning(
+                    "history: could not read metadata for %s after %d attempts; "
+                    "reporting no metadata",
+                    key,
+                    _METADATA_READ_ATTEMPTS,
+                    exc_info=True,
+                )
+                return {}
+            if not first:
+                return {}
+            try:
+                data = json.loads(first)
+                meta = data if data.get("_type") == "metadata" else {}
+            except json.JSONDecodeError:
+                meta = {}
+            self._meta_cache[key] = (mtime, meta)
+            return meta
+        return {}
 
     def sliding_window(self, key: str, keep_recent: int = 5) -> tuple[list[dict], list[dict]]:
         """Split messages into (older, recent) for compaction.

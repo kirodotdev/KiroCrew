@@ -2024,6 +2024,16 @@ def test_trusted_system_bin_rejects_a_name_not_in_system_dirs(tmp_path, monkeypa
     assert platform_compat.trusted_system_bin("ps") is not None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "asserts the POSIX degradation path: neutering trusted_system_bin only "
+        "disarms _posix_process_parent_map, while process_descendants on Windows "
+        "goes through the Win32 snapshot and still reports this process's real "
+        "live children -- so the == [] assertion depends on whether the xdist "
+        "worker happens to have a subprocess alive at that instant"
+    ),
+)
 def test_parent_map_is_empty_when_no_trusted_ps_exists(monkeypatch):
     """No trusted binary must degrade to best-effort, never fall back to PATH."""
     from kiro_crew import platform_compat
