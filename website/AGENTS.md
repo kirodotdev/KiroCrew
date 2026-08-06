@@ -69,6 +69,11 @@ ones (e.g. `typeof Notification !== 'undefined'`).
 
 ## Rules that must not wait for a pointer
 
+- **Settings primitives: pass `configKey` on every new `SettingsToggle`/`SettingsField`**
+  that writes a config path. It flows into the generated settings registry and makes
+  `<SettingRef configKey="...">` chips deep-link to the control; omit it and the chip
+  silently degrades to a CLI popover even though a toggle exists. Backend drift guards
+  catch bad keys, not missing ones — this rule is the only gate for the missing case.
 - **Icons: `lucide-react` only, with `className="lucide-inline"`.** Never an emoji,
   never a hand-rolled SVG, never `size={N}`. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).

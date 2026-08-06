@@ -14,8 +14,11 @@ import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
 
+import { Trans } from 'react-i18next'
+
 import { fmtBytes, fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { SettingRef } from '../../components/settingRef/SettingRef'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /** Humanize a kebab/snake-case skill name for display. */
@@ -220,6 +223,7 @@ export default function SkillsTab() {
     </Modal>
 
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="ml-auto flex items-center gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <p className="text-[12px] text-muted mb-2"><Trans i18nKey="pages.overview.skillsTab.auto_create_hint" components={{ settingRef: <SettingRef configKey="skills.auto_create_from_sessions" /> }} /></p>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
@@ -597,6 +601,11 @@ function PendingSkillsPanel() {
           {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
           <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
         </h4>
+      )}
+      {pending.length > 0 && (
+        <p className="text-[11px] text-muted mb-2">
+          <Trans i18nKey="pages.overview.skillsTab.approval_required_hint" components={{ settingRef: <SettingRef configKey="skills.approval_required" /> }} />
+        </p>
       )}
       {reviewMissing && (
         <div className="mb-2 text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">

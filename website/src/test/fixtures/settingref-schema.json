@@ -1,0 +1,30 @@
+[
+ {
+  "path": "telemetry.enabled",
+  "type": "boolean",
+  "label": "Enabled",
+  "help": "Main switch for Kiro Crew metrics telemetry.",
+  "tags": []
+ },
+ {
+  "path": "telemetry.beacon_enabled",
+  "type": "boolean",
+  "label": "Anonymous Usage Beacon",
+  "help": "Anonymous daily heartbeat.",
+  "tags": []
+ },
+ {
+  "path": "instances.enabled",
+  "type": "boolean",
+  "label": "Enabled",
+  "help": "Enable multi-instance management.",
+  "tags": []
+ },
+ {
+  "path": "instances.warm_set_cap",
+  "type": "integer",
+  "label": "Warm Set Cap",
+  "help": "Max number of remote instances kept warm at once.",
+  "tags": []
+ }
+]

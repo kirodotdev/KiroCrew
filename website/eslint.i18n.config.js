@@ -60,6 +60,15 @@ export default [
       // the module may contain ONLY paint data, so the filename IS the
       // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
       'src/components/folderColorPaint.ts',
+      // Per-shell env-var export command builders for SettingRef's env popover:
+      // every string is CLI syntax handed to a terminal (`export`, `$env:`,
+      // `set`, `=1`), never user-visible copy — translating a fragment would
+      // break the command. Same named-boundary idiom as `*.prompt.ts` above:
+      // the module may contain ONLY command builders (shell display names live
+      // in the catalog as `privacyDisclosure.shell*Label` keys), so the
+      // filename IS the boundary and its consumer (SettingRef.tsx) stays fully
+      // covered by the gate.
+      'src/components/settingRef/envShellCommands.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
       // Generated sources: the copy's real home is the panel that declares the

@@ -3781,7 +3781,8 @@
     "shellWindowsCmdLabel": "Windows Command Prompt",
     "toggleDescription": "Saved for future launches.",
     "toggleLabel": "Send anonymous usage heartbeat",
-    "toggleSaveFailed": "Couldn't save your telemetry choice. Try again."
+    "toggleSaveFailed": "Couldn't save your telemetry choice. Try again.",
+    "envOverrideWithSettingRef": "The heartbeat is off because <settingRef/> is set in this environment. Unset it to manage telemetry here."
   },
   "settings": {
     "display": {

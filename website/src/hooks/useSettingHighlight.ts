@@ -52,16 +52,68 @@ export const SETTINGS_DEFAULT_MODEL_ID = 'chat.fallback-model'
  * Reads `?highlight=<id>` from the URL, resolves the id to a label via
  * SETTINGS_REGISTRY, finds the element by `data-setting-label`, scrolls it
  * into view, applies a temporary 2s ring flash, then strips the param.
+ *
+ * Also accepts `?highlight=key:<configKey>` — first tries direct DOM lookup
+ * via `data-setting-key` attribute (zero round-trip); falls back to resolving
+ * the dotted config key to the registry entry's id via the configKey field,
+ * then proceeds with the standard label-based DOM highlight.
  */
 export function useSettingHighlight(): void {
   const [params, setParams] = useSearchParams()
   const rawHighlightId = params.get('highlight')
-  const highlightId = rawHighlightId ? resolveLegacyHighlightId(rawHighlightId) : rawHighlightId
+
+  // Resolve key: prefix to a registry id via configKey lookup
+  let highlightId: string | null = null
+  let directConfigKey: string | null = null
+  if (rawHighlightId) {
+    if (rawHighlightId.startsWith('key:')) {
+      const configKey = rawHighlightId.slice(4)
+      directConfigKey = configKey
+      const entry = SETTINGS_REGISTRY.find(e => e.configKey === configKey)
+      highlightId = entry ? entry.id : null
+      // If no entry found for this configKey, still null — effect will strip param
+      if (!highlightId) highlightId = rawHighlightId // let the effect handle the strip
+    } else {
+      highlightId = resolveLegacyHighlightId(rawHighlightId)
+    }
+  }
 
   useEffect(() => {
     if (!highlightId) return
 
-    // Resolve id → label
+    // key: path — try direct DOM lookup via data-setting-key FIRST
+    if (directConfigKey) {
+      const directEl = document.querySelector(`[data-setting-key="${CSS.escape(directConfigKey)}"]`) as HTMLElement | null
+      if (directEl) {
+        const timer = setTimeout(() => {
+          directEl.scrollIntoView({ block: 'center', behavior: 'smooth' })
+          directEl.style.outline = '2px solid var(--accent)'
+          directEl.style.outlineOffset = '4px'
+          directEl.style.borderRadius = '8px'
+          directEl.style.transition = 'outline-color 0.3s ease'
+
+          setTimeout(() => {
+            directEl.style.outlineColor = 'transparent'
+            setTimeout(() => {
+              directEl.style.outline = ''
+              directEl.style.outlineOffset = ''
+              directEl.style.borderRadius = ''
+              directEl.style.transition = ''
+            }, 300)
+          }, 2000)
+
+          setParams(prev => {
+            const next = new URLSearchParams(prev)
+            next.delete('highlight')
+            return next
+          }, { replace: true })
+        }, 100)
+        return () => clearTimeout(timer)
+      }
+      // Fall through to legacy label-based resolution if data-setting-key not found
+    }
+
+    // Resolve id → label (legacy path)
     const entry = SETTINGS_REGISTRY.find(e => e.id === highlightId)
     if (!entry) {
       // Unknown id, strip param
@@ -108,5 +160,5 @@ export function useSettingHighlight(): void {
     }, 100)
 
     return () => clearTimeout(timer)
-  }, [highlightId, setParams])
+  }, [highlightId, directConfigKey, setParams])
 }

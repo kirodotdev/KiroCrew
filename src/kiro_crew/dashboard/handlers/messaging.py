@@ -1175,7 +1175,11 @@ async def api_send_message(request: web.Request) -> web.Response:
             resources=f"target_user={target_user}",
         )
         return web.json_response(
-            {"error": "user not in allowlist — configure allowed_users in config.json"}, status=403
+            {
+                "error": "user not in allowlist — configure allowed_users in config.json",
+                "code": "user_not_in_allowlist",
+            },
+            status=403,
         )
 
     sent_slack = False

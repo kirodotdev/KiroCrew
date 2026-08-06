@@ -5953,6 +5953,18 @@
       "select": "選択",
       "workspace_name": "ワークスペース名",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "環境変数 {{key}}",
+      "envVarDescription": "Kiro Crew を起動する前にこの環境変数を設定してください。",
+      "envVarUnsetDescription": "Kiro Crew を起動する前にこの環境変数を解除してください。",
+      "fileOnlyDescription": "以下の CLI コマンドでこの値を設定してください。",
+      "copied": "コピーしました！",
+      "copyFailed": "コピーに失敗しました",
+      "copyCommand": "コマンドをコピー",
+      "orEditConfigJson": "または、~/.kiro/crew/config.json を直接編集してください。",
+      "openSettingsAriaLabel": "設定 → {{tab}} で {{key}} を開く",
+      "fileSettingAriaLabel": "ファイル専用設定 {{key}}"
     }
   },
   "hooks": {
@@ -8224,7 +8236,8 @@
         "reembedding": "メモリを再埋め込み中…",
         "subtitle": "ローカルで実行されます。変更するとバックグラウンドで保存されたメモリが再埋め込みされます。",
         "title": "埋め込みモデル",
-        "will_revert": "空です。バンドルされたモデルに戻ります。"
+        "will_revert": "空です。バンドルされたモデルに戻ります。",
+        "err_env_override_with_ref": "<settingRef/> が設定されており、この設定を上書きしています。ここでモデルを変更するには、設定を解除してください。"
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。再起動が必要です。",
@@ -8510,7 +8523,9 @@
         "this_skill_changed_after_this_update_was_written": "このスキルはこの更新が書かれた後に変更されたため、今すぐ適用するとそれより新しい変更が元に戻ります。承認がブロックされています — この候補を破棄するか、現在のバージョンに対して新しい更新が提案されます。",
         "update": "更新",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "ワークスペース"
+        "workspace": "ワークスペース",
+        "auto_create_hint": "Kiro Crewは完了したセッションからスキルを自動的に下書きすることもできます — デフォルトでオフ、<settingRef/>で制御されます。",
+        "approval_required_hint": "候補はあなたが承認するまでここで待機します — <settingRef/>で必須です。"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "常にすべてのセッションに注入される Markdown 規約。グローバルファイルは ~/.kiro/steering にあり、すべての場所に適用されます; ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトにのみ適用されます。",
@@ -9022,11 +9037,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "ファジィフィルタ（部分文字列マッチ）",
       "loading": "読み込み中…",
-      "no_archives_archives_are_created_when_session_fi": "アーカイブはありません。セッションファイルがローテーション（>2MB）またはコンパクト化されるときに作成されます。",
       "no_matches_for_query": "「{{query}}」に一致するものはありません。",
       "reload": "再読み込み",
       "select_an_archive_to_view_its_contents": "アーカイブを選択してその内容を表示",
-      "truncated_showing_first_200kb": "… 切り詰め（最初の 200KB を表示）…"
+      "truncated_showing_first_200kb": "… 切り詰め（最初の 200KB を表示）…",
+      "no_archives_with_compaction_hint": "アーカイブはありません。セッションファイルがローテーション（>2MB）またはコンパクト化されるときに作成されます。自動コンパクションは <settingRef/> で制御されます。"
     },
     "sessionStorage": {
       "back_to_disk": "システム · パフォーマンス › ディスク",
@@ -9591,7 +9606,6 @@
         "enabled": "有効",
         "enabled_but_not_active_yet_restart_the_gateway": "有効ですが、まだアクティブではありません。ゲートウェイを再起動してください（",
         "enabling": "有効化中…",
-        "equivalent_cli": "同等の CLI:",
         "failed_to_add_remote_crew": "リモートクルーの追加に失敗",
         "failed_to_load_remote_crews": "リモートクルーの読み込みに失敗",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew — 標準インストールの場合は空白のままにしてください",
@@ -9629,7 +9643,6 @@
         "ssm_target_instance_id": "SSM ターゲット（インスタンス ID）",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "ゲートウェイはトンネル（SSH または AWS SSM）を開き、接続時に短命トークンを生成します。\n        ローカルフォワードポートはリモートポートをミラーするため、接続されたリモートクルーのそれぞれが\n        個別のリモートポートを使用する必要があります。",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "リモートゲートウェイが実行されるユーザー — SSM コマンドは sudo -u を経由して実行されます。Ubuntu AMI では ubuntu を使用してください。",
-        "then": "その後",
         "to_fully_tear_down_any_tunnels_still_running_fro": "以前から実行中のトンネルを完全に破棄するために。",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "SSH トンネルマネージャーを開始し、リモートクルー切り替えを有効化するために。",
         "token_left": "· トークン残り {{time}}",
@@ -9639,7 +9652,8 @@
         "unknown_error": "不明なエラー",
         "up_to": "最大",
         "update_setting_failed": "設定の更新に失敗しました: {{error}}",
-        "use_an_absolute_path_no": ")。\n            絶対パスを使用してください (相対パスではなく"
+        "use_an_absolute_path_no": ")。\n            絶対パスを使用してください (相対パスではなく",
+        "enable_via_setting": "または、<settingRef/> を設定してから、<restartCmd/> を実行してください。"
       },
       "mcpPoolableServers": {
         "blocked": "ブロック済み",
@@ -10315,7 +10329,6 @@
       "daily_trend_point": "{{date}} · コールド {{cold}} · ウォーム {{warm}} · 起動 {{count}} 回",
       "days": "日",
       "distribution_col": "分布",
-      "enable_with": "有効にする",
       "fault_rate": "障害率",
       "group_by": "グループ化",
       "growth_col": "成長率",
@@ -10327,7 +10340,6 @@
       "mean_col": "平均",
       "mean_credits_by_occupancy": "ターンあたりの平均クレジット、コンテキスト使用率でグループ化",
       "measured_from_token_records": "ターンごとの使用記録から直近{{days}}日のローカル計測 — テレメトリスイッチに関係なく保持",
-      "metrics_stay_local": "。メトリクスはローカルに保持 (",
       "min_col": "min",
       "min_max": "最小{{min}} · 最大{{max}}",
       "model_col": "モデル",
@@ -10337,7 +10349,6 @@
       "no_startups_recorded": "このウィンドウでは記録されたスタートアップがありません",
       "no_telemetry_recorded_yet_in_the_last": "直近",
       "no_turns_yet": "まだターンがありません",
-      "nothing_leaves_this_machine": ") — 何もこのマシンを離れません。",
       "occupancy_p50": "コンテキスト使用率 (p50)",
       "occupancy_p90": "コンテキスト使用率 (p90)",
       "otel_has_no_per_conversation_split": "OTELヒストグラムはセッションIDを含まないため、これらはプロセス全体の数値です — ターンレイテンシはこのストアから単一の会話に帰属させることはできません。",
@@ -10387,7 +10398,8 @@
       "warm_start_p50": "ウォームスタート (p50)",
       "was_value": "前回 {{value}}",
       "window_last": "OTELセクション · ウィンドウ: 直近",
-      "window_tokens_col": "ウィンドウ (トークン)"
+      "window_tokens_col": "ウィンドウ (トークン)",
+      "off_body": "<settingRef/> で有効にします。メトリクスはローカルに保存されます (<metricsDir/>) — このマシンの外には何も送信されません。"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",
@@ -10672,7 +10684,8 @@
     "shellWindowsCmdLabel": "Windows コマンドプロンプト",
     "toggleDescription": "今後の起動のために保存されます。",
     "toggleLabel": "匿名の使用状況ハートビートを送信",
-    "toggleSaveFailed": "テレメトリの選択を保存できませんでした。もう一度試してください。"
+    "toggleSaveFailed": "テレメトリの選択を保存できませんでした。もう一度試してください。",
+    "envOverrideWithSettingRef": "<settingRef/> がこの環境で設定されているため、ハートビートはオフです。ここでテレメトリを管理するには、設定を解除してください。"
   },
   "settings": {
     "display": {

@@ -5953,6 +5953,18 @@
       "select": "选择",
       "workspace_name": "工作区名称",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "环境变量 {{key}}",
+      "envVarDescription": "在启动 Kiro Crew 之前设置此环境变量。",
+      "envVarUnsetDescription": "在启动 Kiro Crew 之前取消设置此环境变量。",
+      "fileOnlyDescription": "使用下面的 CLI 命令设置此值。",
+      "copied": "已复制！",
+      "copyFailed": "复制失败",
+      "copyCommand": "复制命令",
+      "orEditConfigJson": "或者，直接编辑 ~/.kiro/crew/config.json。",
+      "openSettingsAriaLabel": "在设置 → {{tab}} 中打开 {{key}}",
+      "fileSettingAriaLabel": "仅文件设置 {{key}}"
     }
   },
   "hooks": {
@@ -8224,7 +8236,8 @@
         "reembedding": "正在重新嵌入记忆…",
         "subtitle": "在本地运行。更改后将在后台重新嵌入已存储的记忆。",
         "title": "嵌入模型",
-        "will_revert": "为空 — 将恢复为内置模型。"
+        "will_revert": "为空 — 将恢复为内置模型。",
+        "err_env_override_with_ref": "<settingRef/> 已设置并覆盖此设置。取消设置以在此处更改模型。"
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "用于池化进程的代理。留空则使用默认代理。需要重启。",
@@ -8510,7 +8523,9 @@
         "this_skill_changed_after_this_update_was_written": "这个 skill 在这条更新写好之后又变过，所以现在应用它会撤销那些更新的改动。批准已被阻止——忽略这个候选项，系统会针对当前版本重新提出一条更新。",
         "update": "更新",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "工作区"
+        "workspace": "工作区",
+        "auto_create_hint": "Kiro Crew 还可以从已完成的会话中自动起草技能 — 默认关闭，由 <settingRef/> 控制。",
+        "approval_required_hint": "候选项在此等待你的批准 — 由 <settingRef/> 要求。"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "注入到每个会话的常开 markdown 约定。全局文件位于 ~/.kiro/steering，在所有位置生效；工作区文件位于 <project>/.kiro/steering，仅对相应项目生效。",
@@ -9022,11 +9037,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "模糊筛选（子串匹配）",
       "loading": "正在加载…",
-      "no_archives_archives_are_created_when_session_fi": "暂无归档。归档在会话文件轮转（>2MB）或压缩时创建。",
       "no_matches_for_query": "无匹配结果：“{{query}}”。",
       "reload": "重新加载",
       "select_an_archive_to_view_its_contents": "选择一个归档以查看其内容。",
-      "truncated_showing_first_200kb": "…已截断（仅显示前 200KB）…"
+      "truncated_showing_first_200kb": "…已截断（仅显示前 200KB）…",
+      "no_archives_with_compaction_hint": "暂无归档。归档在会话文件轮转（>2MB）或压缩时创建。自动压缩由 <settingRef/> 控制。"
     },
     "sessionStorage": {
       "back_to_disk": "系统 · 性能 › 磁盘",
@@ -9591,7 +9606,6 @@
         "enabled": "已启用",
         "enabled_but_not_active_yet_restart_the_gateway": "已启用，但尚未生效。请重启网关（",
         "enabling": "正在启用…",
-        "equivalent_cli": "等效 CLI：",
         "failed_to_add_remote_crew": "添加远程 Crew 失败",
         "failed_to_load_remote_crews": "加载远程 Crew 失败",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  标准安装请留空",
@@ -9629,7 +9643,6 @@
         "ssm_target_instance_id": "SSM 目标（实例 id）",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "网关在连接时会打开隧道（SSH 或 AWS SSM）并签发一个短期令牌。\n        本地转发端口与远程端口保持一致，因此每个已连接的远程 Crew\n        必须使用不同的远程端口。",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "远程网关运行所用的用户 —— SSM 命令通过 sudo -u 执行。Ubuntu AMI 请使用 ubuntu。",
-        "then": "然后",
         "to_fully_tear_down_any_tunnels_still_running_fro": "以彻底关闭此前仍在运行的隧道。",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "以启动隧道管理器并启用远程 Crew 切换。",
         "token_left": "· 令牌剩余 {{time}}",
@@ -9639,7 +9652,8 @@
         "unknown_error": "未知错误",
         "up_to": "最多",
         "update_setting_failed": "更新设置失败：{{error}}",
-        "use_an_absolute_path_no": "）。\n            请使用绝对路径（不含"
+        "use_an_absolute_path_no": "）。\n            请使用绝对路径（不含",
+        "enable_via_setting": "或者，设置 <settingRef/>，然后运行 <restartCmd/>。"
       },
       "mcpPoolableServers": {
         "blocked": "已阻止",
@@ -10315,7 +10329,6 @@
       "daily_trend_point": "{{date}} · 冷启动 {{cold}} · 热启动 {{warm}} · {{count}} 次启动",
       "days": "天。",
       "distribution_col": "分布",
-      "enable_with": "启用方式",
       "fault_rate": "故障率",
       "group_by": "分组",
       "growth_col": "增长",
@@ -10327,7 +10340,6 @@
       "mean_col": "均值",
       "mean_credits_by_occupancy": "按已用上下文分档的每轮平均额度",
       "measured_from_token_records": "在本地按此处列出的会话统计，最近 {{days}} 天 —— 与遥测开关无关，始终保留",
-      "metrics_stay_local": "。指标仅保留在本地（",
       "min_col": "min",
       "min_max": "最小 {{min}} · 最大 {{max}}",
       "model_col": "模型",
@@ -10337,7 +10349,6 @@
       "no_startups_recorded": "此窗口内无启动记录",
       "no_telemetry_recorded_yet_in_the_last": "最近尚未记录任何遥测数据：",
       "no_turns_yet": "暂无轮次",
-      "nothing_leaves_this_machine": "）— 不会离开这台机器。",
       "occupancy_p50": "占用率（p50）",
       "occupancy_p90": "占用率（p90）",
       "otel_has_no_per_conversation_split": "OTEL 直方图不携带会话 ID，因此这些是全进程汇总 — 无法从该数据源归因到单个会话的轮次延迟。",
@@ -10387,7 +10398,8 @@
       "warm_start_p50": "热启动（p50）",
       "was_value": "此前 {{value}}",
       "window_last": "OTEL 部分 · 窗口：最近",
-      "window_tokens_col": "窗口（tokens）"
+      "window_tokens_col": "窗口（tokens）",
+      "off_body": "使用 <settingRef/> 启用。指标保留在本地 (<metricsDir/>) — 不会离开此计算机。"
     },
     "terminalPopoutFrame": {
       "return": "返回停靠面板",
@@ -10672,7 +10684,8 @@
     "shellWindowsCmdLabel": "Windows 命令提示符",
     "toggleDescription": "已保存，以后启动时生效。",
     "toggleLabel": "发送匿名使用心跳",
-    "toggleSaveFailed": "无法保存你的遥测选择。请重试。"
+    "toggleSaveFailed": "无法保存你的遥测选择。请重试。",
+    "envOverrideWithSettingRef": "心跳已关闭，因为 <settingRef/> 在此环境中已设置。取消设置以在此处管理遥测。"
   },
   "settings": {
     "display": {

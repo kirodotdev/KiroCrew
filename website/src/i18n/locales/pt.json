@@ -6123,6 +6123,18 @@
       "select": "Selecionar",
       "workspace_name": "Nome do espaço de trabalho",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "Variável de ambiente {{key}}",
+      "envVarDescription": "Defina esta variável de ambiente antes de iniciar o Kiro Crew.",
+      "envVarUnsetDescription": "Remova esta variável de ambiente antes de iniciar o Kiro Crew.",
+      "fileOnlyDescription": "Defina este valor com o comando de CLI abaixo.",
+      "copied": "Copiado!",
+      "copyFailed": "Falha ao copiar",
+      "copyCommand": "Copiar comando",
+      "orEditConfigJson": "Alternativamente, edite ~/.kiro/crew/config.json diretamente.",
+      "openSettingsAriaLabel": "Abrir {{key}} em Configurações → {{tab}}",
+      "fileSettingAriaLabel": "Configuração somente de arquivo {{key}}"
     }
   },
   "hooks": {
@@ -8438,7 +8450,8 @@
         "reembedding": "Regenerando embeddings…",
         "subtitle": "Roda localmente. Alterá-lo regenera os embeddings das memórias em segundo plano.",
         "title": "Modelo de embeddings",
-        "will_revert": "Vazio — voltará ao modelo incluído."
+        "will_revert": "Vazio — voltará ao modelo incluído.",
+        "err_env_override_with_ref": "<settingRef/> está definida e substitui esta configuração. Remova-a para alterar o modelo aqui."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "Agente para os processos do pool. Vazio usa o agente padrão. Requer reinício.",
@@ -8730,7 +8743,9 @@
         "this_skill_changed_after_this_update_was_written": "Este skill mudou depois que esta atualização foi escrita, então aplicá-la agora desfaria essas mudanças mais novas. A aprovação está bloqueada — descarte este candidato e uma atualização nova será proposta sobre a versão atual.",
         "update": "Atualizar",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "auto_create_hint": "O Kiro Crew também pode rascunhar habilidades de sessões concluídas automaticamente — desativado por padrão, controlado por <settingRef/>.",
+        "approval_required_hint": "Candidatos aguardam aqui até que você os aprove — exigido por <settingRef/>."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenções de markdown sempre ativas, injetadas em todas as sessões. Os arquivos globais ficam em ~/.kiro/steering e valem para todos os projetos; os arquivos de workspace ficam em <project>/.kiro/steering e valem somente para aquele projeto.",
@@ -9250,11 +9265,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Filtro aproximado (correspondência parcial)",
       "loading": "Carregando…",
-      "no_archives_archives_are_created_when_session_fi": "Nenhum arquivamento. Os arquivamentos são criados quando os arquivos de sessão são rotacionados (>2MB) ou compactados.",
       "no_matches_for_query": "Nenhum resultado para \"{{query}}\".",
       "reload": "Recarregar",
       "select_an_archive_to_view_its_contents": "Selecione um arquivamento para ver seu conteúdo.",
-      "truncated_showing_first_200kb": "… truncado (mostrando os primeiros 200KB) …"
+      "truncated_showing_first_200kb": "… truncado (mostrando os primeiros 200KB) …",
+      "no_archives_with_compaction_hint": "Nenhum arquivamento. Os arquivamentos são criados quando os arquivos de sessão são rotacionados (>2MB) ou compactados. A compactação automática é controlada por <settingRef/>."
     },
     "sessionStorage": {
       "back_to_disk": "Sistema · Desempenho › Disco",
@@ -9819,7 +9834,6 @@
         "enabled": "ativado",
         "enabled_but_not_active_yet_restart_the_gateway": "Ativado, mas ainda não está ativo. Reinicie o gateway (",
         "enabling": "Ativando…",
-        "equivalent_cli": "CLI equivalente:",
         "failed_to_add_remote_crew": "Falha ao adicionar a crew remota",
         "failed_to_load_remote_crews": "Falha ao carregar as crews remotas",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  deixe em branco para instalações padrão",
@@ -9857,7 +9871,6 @@
         "ssm_target_instance_id": "Destino SSM (id da instância)",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "O gateway abre um túnel (SSH ou AWS SSM) e emite um token de curta duração ao conectar.\n        A porta de encaminhamento local espelha a porta remota, então cada crew remota conectada\n        deve usar uma porta remota distinta.",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "O usuário com que o gateway remoto roda — comandos SSM usam sudo -u. Use ubuntu em AMIs Ubuntu.",
-        "then": "depois",
         "to_fully_tear_down_any_tunnels_still_running_fro": "para encerrar completamente quaisquer túneis ainda em execução de antes.",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "para iniciar o gerenciador de túneis e ativar a alternância entre crews remotas.",
         "token_left": "· token: restam {{time}}",
@@ -9867,7 +9880,8 @@
         "unknown_error": "erro desconhecido",
         "up_to": "Até",
         "update_setting_failed": "Falha ao atualizar a configuração: {{error}}",
-        "use_an_absolute_path_no": ").\n            Use um caminho absoluto (sem"
+        "use_an_absolute_path_no": ").\n            Use um caminho absoluto (sem",
+        "enable_via_setting": "Alternativamente, defina <settingRef/> e depois execute <restartCmd/>."
       },
       "mcpPoolableServers": {
         "blocked": "bloqueado",
@@ -10543,7 +10557,6 @@
       "daily_trend_point": "{{date}} · a frio {{cold}} · a quente {{warm}} · {{count}} inicializações",
       "days": "dias.",
       "distribution_col": "Distribuição",
-      "enable_with": "Ative com",
       "fault_rate": "Taxa de falhas",
       "group_by": "Agrupar por",
       "growth_col": "Crescimento",
@@ -10555,7 +10568,6 @@
       "mean_col": "Média",
       "mean_credits_by_occupancy": "Créditos médios por turno, agrupados por contexto usado",
       "measured_from_token_records": "Medido localmente a partir das sessões aqui listadas nos últimos {{days}} dias — mantido independentemente do interruptor de telemetria",
-      "metrics_stay_local": ". As métricas ficam locais (",
       "min_col": "mín",
       "min_max": "mín {{min}} · máx {{max}}",
       "model_col": "Modelo",
@@ -10565,7 +10577,6 @@
       "no_startups_recorded": "Nenhuma inicialização registrada nesta janela",
       "no_telemetry_recorded_yet_in_the_last": "Nenhuma telemetria registrada ainda nos últimos",
       "no_turns_yet": "Nenhum turno ainda",
-      "nothing_leaves_this_machine": ") — nada sai desta máquina.",
       "occupancy_p50": "Ocupação (p50)",
       "occupancy_p90": "Ocupação (p90)",
       "otel_has_no_per_conversation_split": "Os histogramas OTEL não possuem id de sessão, então estes são valores do processo inteiro — a latência por turno não pode ser atribuída a uma única conversa a partir deste armazenamento.",
@@ -10621,7 +10632,8 @@
       "warm_start_p50": "Início a quente (p50)",
       "was_value": "antes {{value}}",
       "window_last": "Seções OTEL · janela: últimos",
-      "window_tokens_col": "Janela (tokens)"
+      "window_tokens_col": "Janela (tokens)",
+      "off_body": "Ativar com <settingRef/>. As métricas ficam locais (<metricsDir/>) — nada sai desta máquina."
     },
     "terminalPopoutFrame": {
       "return": "Voltar ao dock",
@@ -10914,7 +10926,8 @@
     "shellWindowsCmdLabel": "Prompt de Comando do Windows",
     "toggleDescription": "Salvo para as próximas inicializações.",
     "toggleLabel": "Enviar sinal de uso anônimo",
-    "toggleSaveFailed": "Não foi possível salvar sua escolha de telemetria. Tente novamente."
+    "toggleSaveFailed": "Não foi possível salvar sua escolha de telemetria. Tente novamente.",
+    "envOverrideWithSettingRef": "O heartbeat está desativado porque <settingRef/> está definida neste ambiente. Remova-a para gerenciar a telemetria aqui."
   },
   "settings": {
     "display": {

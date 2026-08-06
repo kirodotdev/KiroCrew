@@ -890,6 +890,58 @@ async def test_dashboard_loop_does_not_self_rearm(svc, monkeypatch):
     svc.stop()
 
 
+class TestAutonudgeDisabledSettingLink:
+    """All autonudge endpoints return 503 with code+setting when disabled."""
+
+    def _app(self, monkeypatch):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import autonudge as _handler
+
+        monkeypatch.setattr(_handler, "_autonudge_get", lambda: None)
+        app = web.Application()
+        app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
+        app.router.add_patch("/api/autonudge/{loop_id}", _handler.api_autonudge_update)
+        app.router.add_delete("/api/autonudge/{loop_id}", _handler.api_autonudge_delete)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_start_disabled_503_has_code(self, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app = self._app(monkeypatch)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/autonudge",
+                json={"slot_key": "chat-1-1", "message": "go", "idle_secs": 30},
+            )
+            assert resp.status == 503
+            data = await resp.json()
+            assert data["code"] == "autonudge_disabled"
+
+    @pytest.mark.asyncio
+    async def test_update_disabled_503_has_code(self, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app = self._app(monkeypatch)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/autonudge/loop-1", json={"message": "x"})
+            assert resp.status == 503
+            data = await resp.json()
+            assert data["code"] == "autonudge_disabled"
+
+    @pytest.mark.asyncio
+    async def test_delete_disabled_503_has_code(self, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app = self._app(monkeypatch)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.delete("/api/autonudge/loop-1")
+            assert resp.status == 503
+            data = await resp.json()
+            assert data["code"] == "autonudge_disabled"
+
+
 class TestAutonudgeStartIntCoercion:
     """POST /api/autonudge passed idle_secs/max_cycles through int() with no
     guard, so a non-numeric ("abc"), null, or list value 500'd instead of

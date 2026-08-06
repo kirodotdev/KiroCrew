@@ -6208,6 +6208,18 @@
       "select": "Выбрать",
       "workspace_name": "Название рабочей области",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "Переменная окружения {{key}}",
+      "envVarDescription": "Установите эту переменную окружения перед запуском Kiro Crew.",
+      "envVarUnsetDescription": "Удалите эту переменную окружения перед запуском Kiro Crew.",
+      "fileOnlyDescription": "Задайте это значение с помощью приведённой ниже команды CLI.",
+      "copied": "Скопировано!",
+      "copyFailed": "Ошибка копирования",
+      "copyCommand": "Скопировать команду",
+      "orEditConfigJson": "Либо отредактируйте ~/.kiro/crew/config.json напрямую.",
+      "openSettingsAriaLabel": "Открыть {{key}} в разделе Настройки → {{tab}}",
+      "fileSettingAriaLabel": "Настройка только через файл {{key}}"
     }
   },
   "hooks": {
@@ -8545,7 +8557,8 @@
         "reembedding": "Перевычисление эмбеддингов…",
         "subtitle": "Работает локально. При смене сохранённые воспоминания перевычисляются в фоне.",
         "title": "Модель эмбеддингов",
-        "will_revert": "Пусто — вернётся встроенная модель."
+        "will_revert": "Пусто — вернётся встроенная модель.",
+        "err_env_override_with_ref": "<settingRef/> установлена и переопределяет этот параметр. Удалите её, чтобы изменить модель здесь."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "Агент для процессов пула. Пусто — используется агент по умолчанию. Требуется перезапуск.",
@@ -8840,7 +8853,9 @@
         "this_skill_changed_after_this_update_was_written": "Этот skill изменился после того, как было написано это обновление, поэтому применить его сейчас значило бы откатить те более новые изменения. Одобрение заблокировано — отклони этого кандидата, и будет предложено свежее обновление к текущей версии.",
         "update": "Обновить",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "рабочая область"
+        "workspace": "рабочая область",
+        "auto_create_hint": "Kiro Crew также может автоматически создавать черновики навыков из завершённых сессий — по умолчанию отключено, управляется <settingRef/>.",
+        "approval_required_hint": "Кандидаты ждут здесь, пока вы их не одобрите — требуется <settingRef/>."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Постоянные соглашения в Markdown, добавляемые в каждую сессию. Глобальные файлы лежат в ~/.kiro/steering и действуют везде; файлы рабочей области лежат в <project>/.kiro/steering и действуют только для этого проекта.",
@@ -9364,11 +9379,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Нечёткий фильтр (поиск подстроки)",
       "loading": "Загрузка…",
-      "no_archives_archives_are_created_when_session_fi": "Архивов нет. Архивы создаются при ротации файлов сессий (>2MB) или их сжатии.",
       "no_matches_for_query": "Нет совпадений для «{{query}}».",
       "reload": "Перезагрузить",
       "select_an_archive_to_view_its_contents": "Выберите архив, чтобы посмотреть его содержимое.",
-      "truncated_showing_first_200kb": "... обрезано (показаны первые 200KB) ..."
+      "truncated_showing_first_200kb": "... обрезано (показаны первые 200KB) ...",
+      "no_archives_with_compaction_hint": "Архивов нет. Архивы создаются при ротации файлов сессий (>2MB) или их сжатии. Автоматическое сжатие управляется через <settingRef/>."
     },
     "sessionStorage": {
       "back_to_disk": "Система · Производительность › Диск",
@@ -9933,7 +9948,6 @@
         "enabled": "включено",
         "enabled_but_not_active_yet_restart_the_gateway": "Включено, но пока не активно. Перезапустите шлюз (",
         "enabling": "Включение...",
-        "equivalent_cli": "Эквивалент в CLI:",
         "failed_to_add_remote_crew": "Не удалось добавить удалённую команду",
         "failed_to_load_remote_crews": "Не удалось загрузить удалённые команды",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  оставьте пустым для стандартной установки",
@@ -9971,7 +9985,6 @@
         "ssm_target_instance_id": "Цель SSM (id инстанса)",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "При подключении шлюз открывает туннель (SSH или AWS SSM) и выдаёт короткоживущий токен.\n        Локальный порт переадресации повторяет удалённый, поэтому каждая подключённая удалённая команда\n        должна использовать свой удалённый порт.",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "Пользователь, от имени которого работает удалённый шлюз — команды SSM выполняются через sudo -u. На AMI Ubuntu укажите ubuntu.",
-        "then": "затем",
         "to_fully_tear_down_any_tunnels_still_running_fro": "чтобы полностью закрыть туннели, оставшиеся с прошлого раза.",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "чтобы запустить менеджер туннелей и включить переключение между удалёнными командами.",
         "token_left": "· токен: осталось {{time}}",
@@ -9981,7 +9994,8 @@
         "unknown_error": "неизвестная ошибка",
         "up_to": "Не более",
         "update_setting_failed": "Не удалось обновить настройку: {{error}}",
-        "use_an_absolute_path_no": ").\n            Используйте абсолютный путь (без"
+        "use_an_absolute_path_no": ").\n            Используйте абсолютный путь (без",
+        "enable_via_setting": "Или задайте <settingRef/>, затем выполните <restartCmd/>."
       },
       "mcpPoolableServers": {
         "blocked": "заблокировано",
@@ -10657,7 +10671,6 @@
       "daily_trend_point": "{{date}} · холодный {{cold}} · тёплый {{warm}} · запусков: {{count}}",
       "days": "дней.",
       "distribution_col": "Распределение",
-      "enable_with": "Включите через",
       "fault_rate": "Частота ошибок",
       "group_by": "Группировка",
       "growth_col": "Рост",
@@ -10669,7 +10682,6 @@
       "mean_col": "Среднее",
       "mean_credits_by_occupancy": "Средние кредиты за ход по группам использованного контекста",
       "measured_from_token_records": "Измерено локально по перечисленным здесь сессиям за последние {{days}} дн. — сохраняется независимо от переключателя телеметрии",
-      "metrics_stay_local": ". Метрики остаются локальными (",
       "min_col": "мин",
       "min_max": "мин {{min}} · макс {{max}}",
       "model_col": "Модель",
@@ -10679,7 +10691,6 @@
       "no_startups_recorded": "Запусков за этот период нет",
       "no_telemetry_recorded_yet_in_the_last": "Телеметрия ещё не записана за последние",
       "no_turns_yet": "Ходов пока нет",
-      "nothing_leaves_this_machine": ") — ничего не покидает эту машину.",
       "occupancy_p50": "Заполнение (p50)",
       "occupancy_p90": "Заполнение (p90)",
       "otel_has_no_per_conversation_split": "OTEL-гистограммы не несут id сессии, поэтому показаны данные по всему процессу — задержку хода нельзя отнести к отдельному диалогу из этого источника.",
@@ -10738,7 +10749,8 @@
       "warm_start_p50": "Тёплый старт (p50)",
       "was_value": "было {{value}}",
       "window_last": "Разделы OTEL · окно: последние",
-      "window_tokens_col": "Окно (токены)"
+      "window_tokens_col": "Окно (токены)",
+      "off_body": "Включить через <settingRef/>. Метрики остаются локальными (<metricsDir/>) — ничего не покидает эту машину."
     },
     "terminalPopoutFrame": {
       "return": "Вернуть в док",
@@ -11003,7 +11015,8 @@
     "worldsPopout": {
       "hide_controls": "Скрыть управление",
       "show_controls": "Показать управление"
-    }
+    },
+    "sessionMemoryCard": {}
   },
   "privacyDisclosure": {
     "anonymousHeartbeatBody": "Не более одного в день. Он обозначает установленную копию, а не человека.",
@@ -11035,7 +11048,8 @@
     "shellWindowsCmdLabel": "Командная строка Windows",
     "toggleDescription": "Сохранено для последующих запусков.",
     "toggleLabel": "Отправлять анонимный сигнал об использовании",
-    "toggleSaveFailed": "Не удалось сохранить ваш выбор телеметрии. Попробуйте снова."
+    "toggleSaveFailed": "Не удалось сохранить ваш выбор телеметрии. Попробуйте снова.",
+    "envOverrideWithSettingRef": "Heartbeat отключён, потому что <settingRef/> установлена в этой среде. Удалите её, чтобы управлять телеметрией здесь."
   },
   "settings": {
     "display": {

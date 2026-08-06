@@ -6038,6 +6038,18 @@
       "select": "নির্বাচন করুন",
       "workspace_name": "ওয়ার্কস্পেসের নাম",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "পরিবেশ পরিবর্তনশীল {{key}}",
+      "envVarDescription": "Kiro Crew শুরু করার আগে এই পরিবেশ ভেরিয়েবলটি সেট করুন।",
+      "envVarUnsetDescription": "Kiro Crew শুরু করার আগে এই পরিবেশ ভেরিয়েবলটি আনসেট করুন।",
+      "fileOnlyDescription": "নিচের CLI কমান্ড দিয়ে এই মানটি সেট করুন।",
+      "copied": "কপি হয়েছে!",
+      "copyFailed": "কপি ব্যর্থ হয়েছে",
+      "copyCommand": "কমান্ড কপি করুন",
+      "orEditConfigJson": "বিকল্পভাবে, সরাসরি ~/.kiro/crew/config.json সম্পাদনা করুন।",
+      "openSettingsAriaLabel": "সেটিংস → {{tab}}-এ {{key}} খুলুন",
+      "fileSettingAriaLabel": "শুধুমাত্র ফাইল সেটিং {{key}}"
     }
   },
   "hooks": {
@@ -8331,7 +8343,8 @@
         "reembedding": "স্মৃতি পুনরায় এমবেড হচ্ছে…",
         "subtitle": "স্থানীয়ভাবে চলে। পরিবর্তন করলে সংরক্ষিত স্মৃতি পটভূমিতে পুনরায় এমবেড হয়।",
         "title": "এমবেডিং মডেল",
-        "will_revert": "খালি — অন্তর্ভুক্ত মডেলে ফিরে যাবে।"
+        "will_revert": "খালি — অন্তর্ভুক্ত মডেলে ফিরে যাবে।",
+        "err_env_override_with_ref": "<settingRef/> সেট করা আছে এবং এই সেটিং ওভাররাইড করে। এখানে মডেল পরিবর্তন করতে এটি আনসেট করুন।"
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়। রিস্টার্ট প্রয়োজন।",
@@ -8620,7 +8633,9 @@
         "this_skill_changed_after_this_update_was_written": "এই হালনাগাদ লেখার পরে skill বদলে গেছে, তাই এখন এটা লাগালে সেই নতুন পরিবর্তনগুলো উল্টে যাবে। মঞ্জুরি আটকানো — এই প্রার্থীকে সরিয়ে দাও, বর্তমান সংস্করণের জন্য নতুন হালনাগাদ প্রস্তাব করা হবে।",
         "update": "হালনাগাদ করো",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "ওয়ার্কস্পেস"
+        "workspace": "ওয়ার্কস্পেস",
+        "auto_create_hint": "Kiro Crew সম্পন্ন সেশন থেকে স্বয়ংক্রিয়ভাবে দক্ষতা খসড়া তৈরি করতে পারে — ডিফল্টভাবে বন্ধ, <settingRef/> দ্বারা নিয়ন্ত্রিত।",
+        "approval_required_hint": "প্রার্থীরা আপনার অনুমোদন না পাওয়া পর্যন্ত এখানে অপেক্ষা করে — <settingRef/> দ্বারা প্রয়োজনীয়।"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "সব সময় চালু Markdown নিয়মকানুন, প্রতিটি সেশনে ঢোকানো হয়। গ্লোবাল ফাইল ~/.kiro/steering এ থাকে ও সব জায়গায় খাটে; ওয়ার্কস্পেস ফাইল <project>/.kiro/steering এ থাকে ও শুধু সেই প্রজেক্টে খাটে।",
@@ -9136,11 +9151,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "ফাজি ফিল্টার (সাবস্ট্রিং মিল)",
       "loading": "লোড হচ্ছে…",
-      "no_archives_archives_are_created_when_session_fi": "কোনো আর্কাইভ নেই। সেশন ফাইল রোটেট (>2MB) বা কম্প্যাক্ট হলে আর্কাইভ তৈরি হয়।",
       "no_matches_for_query": "কোনো মিল পাওয়া যায়নি: \"{{query}}\"।",
       "reload": "আবার লোড করুন",
       "select_an_archive_to_view_its_contents": "বিষয়বস্তু দেখতে একটি আর্কাইভ নির্বাচন করুন।",
-      "truncated_showing_first_200kb": "… সংক্ষিপ্ত করা হয়েছে (প্রথম 200KB দেখানো হচ্ছে) …"
+      "truncated_showing_first_200kb": "… সংক্ষিপ্ত করা হয়েছে (প্রথম 200KB দেখানো হচ্ছে) …",
+      "no_archives_with_compaction_hint": "কোনো আর্কাইভ নেই। সেশন ফাইল রোটেট (>2MB) বা কম্প্যাক্ট হলে আর্কাইভ তৈরি হয়। স্বয়ংক্রিয় কম্প্যাকশন <settingRef/> দ্বারা নিয়ন্ত্রিত হয়।"
     },
     "sessionStorage": {
       "back_to_disk": "সিস্টেম · পারফরম্যান্স › ডিস্ক",
@@ -9705,7 +9720,6 @@
         "enabled": "চালু",
         "enabled_but_not_active_yet_restart_the_gateway": "চালু আছে, কিন্তু এখনও সক্রিয় হয়নি। গেটওয়ে রিস্টার্ট করুন (",
         "enabling": "সক্রিয় করা হচ্ছে…",
-        "equivalent_cli": "সমতুল্য CLI:",
         "failed_to_add_remote_crew": "রিমোট crew যোগ করা যায়নি",
         "failed_to_load_remote_crews": "রিমোট crew লোড করা যায়নি",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  স্ট্যান্ডার্ড ইনস্টলের জন্য ফাঁকা রাখুন",
@@ -9743,7 +9757,6 @@
         "ssm_target_instance_id": "SSM টার্গেট (ইনস্ট্যান্স id)",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "গেটওয়ে একটি টানেল (SSH বা AWS SSM) খোলে এবং সংযোগের সময় একটি স্বল্পস্থায়ী টোকেন তৈরি করে।\n        লোকাল ফরোয়ার্ড পোর্ট রিমোট পোর্টকেই মিরর করে, তাই সংযুক্ত প্রতিটি রিমোট ক্রুকে\n        আলাদা রিমোট পোর্ট ব্যবহার করতে হবে।",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "রিমোট গেটওয়ে যে ব্যবহারকারী হিসেবে চলে — SSM কমান্ড sudo -u দিয়ে চলে। Ubuntu AMI-তে ubuntu ব্যবহার করুন।",
-        "then": "তারপর",
         "to_fully_tear_down_any_tunnels_still_running_fro": "আগে থেকে চলতে থাকা যেকোনো টানেল সম্পূর্ণরূপে বন্ধ করতে।",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "টানেল ম্যানেজার চালু করতে এবং রিমোট ক্রু অদলবদল সক্রিয় করতে।",
         "token_left": "· টোকেনের {{time}} বাকি",
@@ -9753,7 +9766,8 @@
         "unknown_error": "অজানা ত্রুটি",
         "up_to": "সর্বোচ্চ",
         "update_setting_failed": "সেটিং আপডেট করা যায়নি: {{error}}",
-        "use_an_absolute_path_no": ")।\n            একটি অ্যাবসোলিউট পাথ ব্যবহার করুন (কোনো"
+        "use_an_absolute_path_no": ")।\n            একটি অ্যাবসোলিউট পাথ ব্যবহার করুন (কোনো",
+        "enable_via_setting": "বিকল্পভাবে, <settingRef/> সেট করুন, তারপর <restartCmd/> চালান।"
       },
       "mcpPoolableServers": {
         "blocked": "ব্লক করা",
@@ -10429,7 +10443,6 @@
       "daily_trend_point": "{{date}} · কোল্ড {{cold}} · ওয়ার্ম {{warm}} · {{count}} স্টার্ট",
       "days": "দিন।",
       "distribution_col": "বিতরণ",
-      "enable_with": "সক্রিয় করতে ব্যবহার করুন",
       "fault_rate": "ফল্ট রেট",
       "group_by": "গ্রুপ",
       "growth_col": "বৃদ্ধি",
@@ -10441,7 +10454,6 @@
       "mean_col": "গড়",
       "mean_credits_by_occupancy": "ব্যবহৃত কনটেক্সট অনুসারে প্রতি টার্নের গড় ক্রেডিট",
       "measured_from_token_records": "এখানে তালিকাভুক্ত সেশন থেকে গত {{days}} দিনের জন্য স্থানীয়ভাবে পরিমাপ করা — টেলিমেট্রি স্যুইচ নির্বিশেষে রাখা হয়",
-      "metrics_stay_local": ". মেট্রিক স্থানীয়ই থাকে (",
       "min_col": "min",
       "min_max": "min {{min}} · max {{max}}",
       "model_col": "মডেল",
@@ -10451,7 +10463,6 @@
       "no_startups_recorded": "এই উইন্ডোতে কোনো স্টার্টআপ রেকর্ড হয়নি",
       "no_telemetry_recorded_yet_in_the_last": "এখনও কোনো টেলিমেট্রি রেকর্ড হয়নি, গত",
       "no_turns_yet": "এখনো কোনো টার্ন নেই",
-      "nothing_leaves_this_machine": ") — কোনো কিছুই এই মেশিন থেকে বাইরে যায় না।",
       "occupancy_p50": "ব্যবহার (p50)",
       "occupancy_p90": "ব্যবহার (p90)",
       "otel_has_no_per_conversation_split": "OTEL হিস্টোগ্রামে সেশন id থাকে না, তাই এগুলো পুরো প্রক্রিয়ার পরিসংখ্যান — টার্ন লেটেন্সি এই স্টোর থেকে একটি কথোপকথনে আলাদা করা যায় না।",
@@ -10504,7 +10515,8 @@
       "warm_start_p50": "ওয়ার্ম স্টার্ট (p50)",
       "was_value": "আগে {{value}}",
       "window_last": "OTEL বিভাগ · উইন্ডো: গত",
-      "window_tokens_col": "উইন্ডো (টোকেন)"
+      "window_tokens_col": "উইন্ডো (টোকেন)",
+      "off_body": "সক্রিয় করুন <settingRef/> দিয়ে। মেট্রিক্স স্থানীয় থাকে (<metricsDir/>) — এই মেশিন থেকে কিছুই বের হয় না।"
     },
     "terminalPopoutFrame": {
       "return": "ডকে ফিরে যান",
@@ -10761,7 +10773,8 @@
     "worldsPopout": {
       "hide_controls": "কন্ট্রোল লুকাও",
       "show_controls": "কন্ট্রোল দেখাও"
-    }
+    },
+    "sessionMemoryCard": {}
   },
   "privacyDisclosure": {
     "anonymousHeartbeatBody": "দিনে সর্বোচ্চ একটি। এটি একটি ইনস্টল করা কপি শনাক্ত করে, কোনো ব্যক্তিকে নয়।",
@@ -10793,7 +10806,8 @@
     "shellWindowsCmdLabel": "Windows কমান্ড প্রম্পট",
     "toggleDescription": "পরবর্তী চালুর জন্য সংরক্ষিত।",
     "toggleLabel": "বেনামী ব্যবহারের হার্টবিট পাঠান",
-    "toggleSaveFailed": "আপনার টেলিমেট্রি পছন্দ সংরক্ষণ করা যায়নি। আবার চেষ্টা করুন।"
+    "toggleSaveFailed": "আপনার টেলিমেট্রি পছন্দ সংরক্ষণ করা যায়নি। আবার চেষ্টা করুন।",
+    "envOverrideWithSettingRef": "হার্টবিট বন্ধ আছে কারণ <settingRef/> এই পরিবেশে সেট করা আছে। এখানে টেলিমেট্রি পরিচালনা করতে এটি আনসেট করুন।"
   },
   "settings": {
     "display": {
