@@ -9027,6 +9027,7 @@
       "block_loaded_skill": "完整加载的技能",
       "block_memory": "关于你的记忆",
       "block_semantic_memory": "你告诉过它的事实",
+      "block_skill_hint": "相关技能",
       "block_skill_index": "技能索引",
       "block_unclassified": "未分类",
       "block_your_message": "你的消息",

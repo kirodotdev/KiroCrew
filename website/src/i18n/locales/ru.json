@@ -9288,6 +9288,7 @@
       "block_loaded_skill": "Полностью загруженный навык",
       "block_memory": "Память о вас",
       "block_semantic_memory": "Факты, которые вы сообщили",
+      "block_skill_hint": "Релевантные навыки",
       "block_skill_index": "Указатель навыков",
       "block_unclassified": "Не классифицировано",
       "block_your_message": "Ваше сообщение",

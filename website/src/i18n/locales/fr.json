@@ -9201,6 +9201,7 @@
       "block_loaded_skill": "Compétence chargée entièrement",
       "block_memory": "Mémoire à votre sujet",
       "block_semantic_memory": "Faits que vous avez indiqués",
+      "block_skill_hint": "Compétences pertinentes",
       "block_skill_index": "Index des compétences",
       "block_unclassified": "Non classé",
       "block_your_message": "Votre message",

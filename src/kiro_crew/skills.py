@@ -2290,9 +2290,10 @@ class SkillsLoader:
         scored.sort(key=lambda x: x[1], reverse=True)
         triggered = [name for name, _ in scored[: self._max_triggered]]
 
-        # Record usage — triggered skills are injected full-body this turn, so
-        # this is the authoritative "skill was used" signal that feeds the
-        # lazy-load hotness ranking in get_context.
+        # Record usage — a trigger match is the authoritative "this skill was
+        # relevant" signal that feeds the lazy-load hotness ranking in
+        # get_context, independently of whether the agent goes on to read the
+        # file.
         for name in triggered:
             self._record_use(name)
 
@@ -2308,6 +2309,13 @@ class SkillsLoader:
             metadata = {"text_hash": hashlib.sha256(text.encode()).hexdigest()[:16]}
             if triggered:
                 metadata["skills"] = ",".join(triggered)
+                # Record HOW each match was delivered, not just that it matched.
+                # A pointer is an offer the agent may decline, so an auditor
+                # reconstructing "was this procedure actually in the prompt?"
+                # needs the split — the skill list alone no longer answers it.
+                bodies, pointers = self.split_triggered(triggered)
+                metadata["bodies"] = ",".join(bodies)
+                metadata["pointers"] = ",".join(pointers)
             if negated_skills:
                 metadata["negated"] = ",".join(negated_skills)
             sel().log_tool_invocation(
@@ -2318,6 +2326,90 @@ class SkillsLoader:
                 metadata=metadata,
             )
         return triggered
+
+    def split_triggered(self, names: list[str]) -> tuple[list[str], list[str]]:
+        """Split matched *names* into (inject-body, pointer-only), order preserved.
+
+        Full-body injection is the DEFAULT: a matched skill's procedure lands in
+        the prompt whether or not the agent chooses to read a file. A skill opts
+        out with ``inject_on_trigger: false``, which reduces its contribution to
+        a single pointer line naming it and its path.
+
+        The default is deliberately the expensive one. A pointer makes delivery
+        voluntary, so a skill authored to be *obeyed* on match — a mandatory
+        pre-flight check, say — would be silently skipped by an agent that
+        declines to read it, and a silent miss is the failure mode with no
+        signal to catch it. Defaulting the other way would make forgetting the
+        field fail open. Opting out is a per-skill statement that the skill is
+        an offer rather than a mandate, which only its author can make.
+        """
+        enforced: list[str] = []
+        pointer_only: list[str] = []
+        for name in names:
+            skill_file = self._resolve_path(name)
+            if skill_file is None:
+                continue
+            meta = self._cached_frontmatter(skill_file)
+            if meta.get("inject_on_trigger", "").strip().lower() == "false":
+                pointer_only.append(name)
+            else:
+                enforced.append(name)
+        return enforced, pointer_only
+
+    def trigger_hint(self, names: list[str]) -> str:
+        """Return a pointer block naming *names* and where to read each one.
+
+        The counterpart to :meth:`get_triggered_skills` for a skill that opted
+        out of full-body injection with ``inject_on_trigger: false``: the matcher
+        decides which skills look relevant, and this renders that verdict as one
+        line per skill instead of the skill's body. A body costs 8k-34k chars and
+        is charged again on every turn the match repeats; a line costs ~150.
+
+        The agent reaches the procedure the same way ``get_context``'s
+        ``## Available Skills`` block already directs it to — by reading the
+        path. The wording deliberately does NOT ask for a re-read of a skill
+        already present earlier in the conversation: ACP replays native
+        history, so that content is still in the window, and a needless ``cat``
+        would spend a tool round-trip only to put the body back in as tool
+        output.
+
+        Returns ``""`` for an empty *names* (no block, not an empty header).
+        """
+        lines: list[str] = []
+        for name in names:
+            skill_file = self._resolve_path(name)
+            if skill_file is None:
+                continue
+            meta = self._cached_frontmatter(skill_file)
+            desc = (meta.get("description", "") or name).strip()
+            if len(desc) > _SHORT_DESC_CHARS:
+                desc = desc[:_SHORT_DESC_CHARS].rstrip() + "…"
+            lines.append(
+                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}` "
+                f"(dir: `{skill_file.parent}`)"
+            )
+        if not lines:
+            return ""
+        return (
+            "[Relevant skills for this message]\n"
+            "These skills match this message. If one applies, read its file "
+            "before acting — unless it already appears earlier in this "
+            "conversation, in which case you already have its instructions.\n"
+            + "\n".join(lines)
+            + "\n[End of relevant skills]\n\n"
+        )
+
+    def _resolve_path(self, name: str) -> Path | None:
+        """Return the ``SKILL.md`` path for an enumerated skill *name*.
+
+        Allowlist-only, like ``resolve_dollar_skills``: the path comes from the
+        enumeration rather than being constructed from *name*, so a crafted
+        name cannot escape the skill roots.
+        """
+        for candidate, skill_file in self._iter():
+            if candidate == name:
+                return skill_file
+        return None
 
     def get_context(self, budget: int | None = None, only: list[str] | None = None) -> str:
         """Build skills context for prompt injection (lazy-loaded).

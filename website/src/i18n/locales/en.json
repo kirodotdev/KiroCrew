@@ -6492,6 +6492,7 @@
       "block_loaded_skill": "Full skill loaded",
       "block_memory": "Memory of you",
       "block_semantic_memory": "Facts you told it",
+      "block_skill_hint": "Relevant skills",
       "block_skill_index": "Skill index",
       "block_unclassified": "Unclassified",
       "block_your_message": "Your message",

@@ -9201,6 +9201,7 @@
       "block_loaded_skill": "Habilidad cargada completa",
       "block_memory": "Memoria sobre ti",
       "block_semantic_memory": "Datos que le contaste",
+      "block_skill_hint": "Habilidades relevantes",
       "block_skill_index": "Índice de habilidades",
       "block_unclassified": "Sin clasificar",
       "block_your_message": "Tu mensaje",

@@ -2215,16 +2215,36 @@ class ContextBuilder:
                 "the same folder are likely about the same work.\n\n"
             )
 
-        # Triggered skills (on-demand, any message) — skip for custom agents
+        # Triggered skills (on-demand, any message) — skip for custom agents.
+        # A match injects the skill's full body by DEFAULT, unchanged. A skill
+        # that declares itself an offer rather than a mandate opts out with
+        # `inject_on_trigger: false` and contributes a pointer line instead:
+        # word-overlap matching pulls in large unrelated skills often enough
+        # that body price per match is the largest single block of assembled
+        # context, and ACP replays native history so a body already sent earlier
+        # in the conversation is still in the window.
         if not is_custom and not minimal_context:
             triggered = self.skills.get_triggered_skills(text)
             if triggered:
-                logger.info("Triggered skills: %s", ", ".join(triggered))
-            for name in triggered:
-                content = self.skills.load_skill(name)
-                if content:
-                    stripped = self.skills.strip_frontmatter(content)
-                    parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
+                enforced, pointer_only = self.skills.split_triggered(triggered)
+                # Log the split, not just the match: a pointed-at skill the
+                # agent declines to read leaves no other trace, so without this
+                # "the skill stopped being followed" is indistinguishable from
+                # "the skill never matched".
+                logger.info(
+                    "Triggered skills: %s (bodies=%s pointers=%s)",
+                    ", ".join(triggered),
+                    ", ".join(enforced) or "-",
+                    ", ".join(pointer_only) or "-",
+                )
+                for name in enforced:
+                    content = self.skills.load_skill(name)
+                    if content:
+                        stripped = self.skills.strip_frontmatter(content)
+                        parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
+                hint = self.skills.trigger_hint(pointer_only)
+                if hint:
+                    parts.append(hint)
 
         # Hook-injected context — apply to all agents
         if hook_result.action == HOOK_INJECT_CONTEXT:

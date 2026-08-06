@@ -61,6 +61,7 @@ const BLOCK_KEY: Record<string, string> = {
   semantic_memory: 'pages.contextBreakdown.block_semantic_memory',
   episodic_memory: 'pages.contextBreakdown.block_episodic_memory',
   skill_index: 'pages.contextBreakdown.block_skill_index',
+  skill_hint: 'pages.contextBreakdown.block_skill_hint',
   loaded_skill: 'pages.contextBreakdown.block_loaded_skill',
   critical_rules: 'pages.contextBreakdown.block_critical_rules',
   [EVERY_TURN_KEY]: 'pages.contextBreakdown.block_every_turn',
