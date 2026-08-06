@@ -113,6 +113,28 @@ describe('language registry', () => {
   it('includes the fallback language', () => {
     expect(isSupportedLanguage(DEFAULT_LANGUAGE)).toBe(true)
   })
+
+  it('does not add a thirteenth statically bundled catalog', () => {
+    // The lazy-loading ratchet, as a GATE rather than a sentence.
+    //
+    // `index.ts` and `docs/system-specs/modules/config.md` both say catalog #13
+    // belongs behind the `i18next-http-backend` seam, because every catalog ships
+    // to every user whatever language they read (~173 KB gzip each, ~2.0 MB gzip
+    // for the twelve). A doc cannot hold that line: the PR that crosses it is
+    // also the PR that can rewrite the doc, which is exactly how #12 landed in
+    // front of a seam #12 was supposed to trigger.
+    //
+    // Raising this number is legitimate ONLY together with the seam, or with a
+    // re-measured figure in `config.md` and a reviewer who accepted the deferral.
+    // The pseudolocale is excluded: it is DEV-only and Rollup drops it from a
+    // production build.
+    const authored = SUPPORTED_LANGUAGES.filter(l => !l.devOnly)
+    expect(
+      authored.length,
+      'Adding a catalog puts its full weight in every user\'s first load. Land the '
+      + 'lazy-loading seam in i18n/index.ts instead, or re-measure and say why here.',
+    ).toBeLessThanOrEqual(12)
+  })
 })
 
 describe('catalog parity', () => {

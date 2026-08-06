@@ -41,7 +41,7 @@ Catalogs live in `src/i18n/locales/`:
 | `en-XA.json` | generated pseudolocale, dev-only. Not a language. |
 
 Shipped languages, ordered by global speaker count (which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `it`.
+order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`.
 
 **Right-to-left languages (Arabic, Urdu) are intentionally not shipped.** The
 layout is built from physical-direction utilities (`pl-*`, `left-*`, `text-left`)
@@ -165,7 +165,7 @@ prose, byte for byte.
    (`display_name`, `description`, `page_label`, `highlight_1..N`) with values
    **identical** to the manifest.
 3. Add the entry to `APP_MANIFEST_KEY`, one `highlights` key per bullet.
-4. Translate into the other ten catalogs — `catalogParity.test.ts` is all-or-nothing.
+4. Translate into the other eleven catalogs — `catalogParity.test.ts` is all-or-nothing.
 5. Run `npm run i18n:check`.
 
 Two traps worth knowing before you debug them:
@@ -259,7 +259,7 @@ container tolerates it.
 ## Script fonts: keep the aliases first
 
 `index.css` declares `@font-face` aliases carrying `unicode-range` for Han,
-Kana, Devanagari and Bengali, collects them into `--script-fallbacks` and
+Kana, Hangul, Devanagari and Bengali, collects them into `--script-fallbacks` and
 `--script-fallbacks-mono`, and puts **that token first** in `--font-body` and
 `--mono`. The range restriction is what makes this safe: the aliases are never
 consulted for Latin or general punctuation, so they cannot change Latin metrics
@@ -268,18 +268,21 @@ or leading, and they are a no-op when the named face is not installed.
 The `:root` tokens use the Simplified Chinese `KC Han Fallback` and
 `KC Han Mono Fallback` aliases. Under `html:lang(ja)`, both shared tokens switch
 to `KC Japanese Fallback` and `KC Japanese Mono Fallback`, whose ranges include
-Kana as well as shared ideographs. Keep the Chinese aliases out of the Japanese
-tokens: if the named Japanese face is unavailable, the browser must reach its
-language-aware Japanese fallback instead of being forced through a Simplified
-Chinese alias. Every user font choice and theme declaration consumes the shared
-tokens, so changing the document language updates proportional and monospace
-fallbacks without a component-specific font stack.
+Kana as well as shared ideographs; under `html:lang(ko)` they switch to
+`KC Korean Fallback` and `KC Korean Mono Fallback`, whose ranges add the Hangul
+syllable and Jamo blocks. Keep every other locale's aliases out of these tokens:
+if the named face is unavailable, the browser must reach its language-aware
+fallback for that script instead of being forced through a Simplified Chinese
+alias — which for Korean cannot draw Hangul at all. Every user font choice and
+theme declaration consumes the shared tokens, so changing the document language
+updates proportional and monospace fallbacks without a component-specific font
+stack.
 
 **Do not reorder those stacks or drop the token when adding a family.** Moving a
-Latin family in front silently returns zh-CN, ja, hi and bn to whatever the platform
-picks for a missing glyph. A test pins the `:root` tokens, every declaration site
-(including the theme blocks, which redeclare both), the Japanese locale override,
-and the ordering.
+Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
+platform picks for a missing glyph. A test pins the `:root` tokens, every
+declaration site (including the theme blocks, which redeclare both), the Japanese
+and Korean locale overrides, and the ordering.
 
 ## Translating the corpus
 

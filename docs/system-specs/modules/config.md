@@ -831,7 +831,7 @@ the picker entry in `SUPPORTED_LANGUAGES`, and add the static import plus
 well-formed tag with no catalog falls back to detection client-side.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `it`. Right-to-left
+order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`. Right-to-left
 languages are deliberately **not** shipped yet: the catalogs would translate
 fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
 `left-*`, `text-left`) and unmirrored directional icons, so an RTL locale would
@@ -840,18 +840,19 @@ logical-property conversion first.
 
 All catalogs are **statically bundled**, so `t()` stays synchronous (see the
 rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
-every language: at 8315 keys the catalogs share one chunk that is **~165 KB gzip
-per catalog, ~1.8 MB gzip for the eleven combined** (`npm run analyze`, then gzip
+every language: at 8592 keys the catalogs share one chunk that is **~173 KB gzip
+per catalog, ~2.0 MB gzip for the twelve combined** (`npm run analyze`, then gzip
 the `assets/t-*.js` chunk). This is tolerable only because the dashboard is served
 from a loopback gateway — over a network it is already past the point of
-justification, and each further catalog adds another ~165 KB to every user's first
+justification, and each further catalog adds another ~173 KB to every user's first
 load regardless of the language they read.
 
 The documented next step is therefore to keep `en` static and lazily fetch the
 active non-English catalog. That seam is already isolated to
 `website/src/i18n/index.ts` plus a `<Suspense>` boundary in `main.tsx`; no call
-site changes. **Re-measure before adding catalog #12** — the figure above is what
-tells you whether the seam is still deferrable.
+site changes. **Catalog #13 belongs behind that seam**: Korean is #12 and the last
+one this chunk absorbs in front of it. Re-measure when the seam lands — the figure
+above is what says whether it worked.
 
 #### The tag reaches the agent, too
 
