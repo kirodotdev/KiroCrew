@@ -67,7 +67,7 @@ jobs:
         # override-able. The always()-run steps below still post a leak-safe
         # comment and log the outcome regardless.
         if: github.actor != 'dependabot[bot]'
-        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
