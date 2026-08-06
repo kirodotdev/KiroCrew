@@ -28,7 +28,7 @@ kirocrew = "kiro_crew.cli:main"
 [dependency-groups]
 # Pinned dev tool versions for reproducible CI. Bump as needed.
 dev = [
-    "pytest==8.4.1",
+    "pytest==9.0.3",
     "pytest-xdist==3.5.0",
     "pytest-timeout==2.2.0",
     "pytest-asyncio==0.20.3",
@@ -36,7 +36,7 @@ dev = [
     "coverage==7.10.6",
     "pytest-cov>=5",
     # Duration-balanced test sharding across parallel CI jobs (--splits/--group).
-    "pytest-split==0.9.0",
+    "pytest-split==0.11.0",
     "flake8==7.1.0",
     "mypy==1.14.1",
     "black==26.3.1",
