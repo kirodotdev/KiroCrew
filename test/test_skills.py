@@ -275,9 +275,7 @@ class TestRelocatedSkillCleanup:
         assert (old / "scripts" / "helper.py").exists()
         assert (new / "SKILL.md").exists()
 
-    def test_repeated_migration_never_overwrites_prior_quarantine(
-        self, tmp_path: Path
-    ) -> None:
+    def test_repeated_migration_never_overwrites_prior_quarantine(self, tmp_path: Path) -> None:
         # HIGH regression (GPT 5.6): a rollback/reinstall can recreate
         # SKILL.md AFTER a prior migration quarantined a user-edited copy.
         # The second migration must NOT os.replace over the first quarantine
@@ -307,15 +305,20 @@ class TestRelocatedSkillCleanup:
         assert second.read_text(encoding="utf-8").endswith("SECOND rollback copy")
         assert not (old / "SKILL.md").exists()
 
-    def test_flat_copy_untouched_when_nested_missing(self, tmp_path: Path) -> None:
+    def test_flat_copy_untouched_when_nested_missing(self, tmp_path: Path, monkeypatch) -> None:
         # Fail-safe: if the nested replacement never synced, the flat copy is
-        # the ONLY working copy — it must stay discoverable.
+        # the ONLY working copy — it must stay discoverable. Uses
+        # kirocrew-worktree-dev, the relocated skill whose nested copy is NOT
+        # bundled (it stays repo-checkout-only), so builtin sync can't supply
+        # one. Pin the project dir off too, so top-level skills/ can't either.
         from kiro_crew.skills import _ensure_builtin_skills
 
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+
         base = tmp_path / "skills"
-        old = base / "babysit"
+        old = base / "kirocrew-worktree-dev"
         old.mkdir(parents=True)
-        (old / "SKILL.md").write_text("---\nname: babysit\n---\nonly copy")
+        (old / "SKILL.md").write_text("---\nname: kirocrew-worktree-dev\n---\nonly copy")
 
         _ensure_builtin_skills(base)
 
@@ -925,7 +928,9 @@ class TestUpdateAutoSkill:
             provenance=self._make_provenance(refined_at="2026-05-06T09:00:00+00:00"),
         )
         assert ok is True
-        content = (tmp_path / "skills" / "auto" / "refine-me" / "SKILL.md").read_text(encoding="utf-8")
+        content = (tmp_path / "skills" / "auto" / "refine-me" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         assert "refined desc" in content
         assert "run Y (better)" in content
         assert "refined_at: 2026-05-06T09:00:00+00:00" in content
@@ -1042,7 +1047,9 @@ class TestUpdateAutoSkillPreservesCreatedAt:
             provenance=bogus_new,
         )
         assert ok is True
-        content = (tmp_path / "skills" / "auto" / "preserved-ts" / "SKILL.md").read_text(encoding="utf-8")
+        content = (tmp_path / "skills" / "auto" / "preserved-ts" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
         # Original created_at must survive
         assert "created_at: 2026-05-05T11:00:00+00:00" in content
         # New refined_at was honored
@@ -1459,9 +1466,7 @@ class TestResolveDollarSkills:
             "HoangvpPrivatePackage/personal-kb-sync",
             "---\nname: personal-kb-sync\ndescription: Sync\n---\n# Sync\nAIM KB BODY",
         )
-        monkeypatch.setattr(
-            DefaultMcpToolingProvider, "extra_skills", lambda self: [aim_root]
-        )
+        monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [aim_root])
         # No extra_paths configured — resolution must come from the edition root.
         loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
         out = loader.resolve_dollar_skills("run $personal-kb-sync")
@@ -1476,9 +1481,7 @@ class TestResolveDollarSkills:
 
         aim_root = tmp_path / "aim_skills"
         _create_skill(aim_root, "SomePkg/grill", "---\nname: grill\n---\nAIM GRILL")
-        monkeypatch.setattr(
-            DefaultMcpToolingProvider, "extra_skills", lambda self: [aim_root]
-        )
+        monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: [aim_root])
         local = tmp_path / "skills"
         _create_skill(local, "grill", "---\nname: grill\n---\nLOCAL GRILL")
         loader = SkillsLoader(skills_path=local, install_builtins=False)

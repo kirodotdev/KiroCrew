@@ -53,8 +53,8 @@ may be absent.
 1. **Get a loopback URL serving your change.** Never the live gateway. For the
    KiroCrew repo that means an isolated instance from the worktree you edited
    (`./dev-backend.sh`, or `kirocrew pod up <worktree> --json` for a
-   `{base_url, token}` handle — see the `kirocrew-worktree-dev` and `pod-e2e`
-   skills). For a user's own project it's their dev server (`npm run dev`, …).
+   `{base_url, token}` handle — see the `pod-e2e` skill). For a user's own
+   project it's their dev server (`npm run dev`, …).
    Rebuild the frontend first if the server serves a built bundle — otherwise
    you will screenshot the old UI and pass it off as the new one.
 2. **Confirm it's actually up** (HTTP 200/401/403) before navigating, and emit
