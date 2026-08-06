@@ -119,7 +119,11 @@ instruction for two of the three kinds.
 - `GET /api/voice/voices` — list available Polly voices via `aws polly
   describe-voices` (respects `aws_profile`/`region`), cached in-process for 1
   hour. Each entry: `{ id, name, language, languageCode, gender, engines }`,
-  sorted by `languageCode` then `name`
+  sorted by `languageCode` then `name`. If the `aws` CLI is not resolvable on
+  the gateway's PATH (it is optional — the default Piper provider doesn't
+  need it), the endpoint returns `{ "voices": [] }` with a 200 instead of
+  erroring; the empty result is not cached, so the list recovers once `aws`
+  becomes available
 
 ## Content Filtering for Speech
 
