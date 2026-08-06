@@ -174,6 +174,7 @@ from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
+from kiro_crew.power import SleepInhibitor
 from kiro_crew.safety_override import (
     apply_config_duration,
     grant_declared_yolo,
@@ -214,6 +215,43 @@ logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _DIST_DIR = _STATIC_DIR / "dist"
+
+# How often the prevent-sleep poll re-evaluates whether the host should be kept
+# awake. It only needs to beat OS idle-sleep timers (minutes), so a coarse
+# interval keeps the overhead negligible; a turn shorter than one interval never
+# outlasts a sleep timer, so not catching it is harmless.
+_PREVENT_SLEEP_POLL_INTERVAL_SECS = 15.0
+
+
+async def _should_prevent_sleep(state: DashboardState) -> bool:
+    """Whether the host should be kept awake right now.
+
+    True only when the user opted in (``dashboard.prevent_sleep``) AND some live
+    session has a turn in flight. Reads config live so toggling the flag takes
+    effect on the next poll without a restart. Fail-closed: any error resolves to
+    "allow sleep" so a config/lookup hiccup can never wedge the machine awake.
+    """
+    try:
+        # KiroCrewConfig.load() does a stat and, on a cache miss, a JSON read +
+        # schema validation. On a slow home filesystem that is a blocking call,
+        # and this runs on the gateway event loop every poll — offload it so a
+        # slow read can never stall chat/heartbeat (no-blocking-call-on-event-loop).
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if not cfg.dashboard.prevent_sleep:
+            return False
+    except Exception:
+        logger.debug("prevent-sleep config read failed", exc_info=True)
+        return False
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        # In-memory dict scan on the loop thread (no await inside, so no
+        # concurrent mutation) — cheap and non-blocking.
+        return sessions.any_active_turn()
+    except Exception:
+        logger.debug("prevent-sleep active-turn check failed", exc_info=True)
+        return False
 
 
 # Strict internal API paths — exact paths that ONLY internal processes
@@ -1543,6 +1581,77 @@ def _wire_tunnel_shutdown(app: web.Application, state: DashboardState) -> None:
         await _stop_bounded(lambda: current_context().tunnel.stop(), "Tunnel provider stop")
 
     app.on_cleanup.append(_tunnel_shutdown)
+
+
+def _register_prevent_sleep_shutdown(app: web.Application, state: DashboardState) -> None:
+    """Register the on_cleanup hook that cancels the prevent-sleep poll and
+    releases the OS block.
+
+    MUST be called BEFORE ``runner.setup()`` freezes the app's signal lists. The
+    inhibitor and task are created after setup (by :func:`_arm_prevent_sleep_poll`)
+    and resolved here lazily via ``getattr``. Shared by both ``start_dashboard``
+    and the headless ``start_api_server`` (``--slack-only``) so a graceful stop
+    never leaves caffeinate / systemd-inhibit / the Windows execution-state
+    request dangling, in either mode.
+    """
+
+    async def _prevent_sleep_shutdown(app_: web.Application) -> None:
+        task = getattr(state, "_prevent_sleep_task", None)
+        if task is not None:
+            task.cancel()
+        inhibitor = getattr(state, "_sleep_inhibitor", None)
+        if inhibitor is not None:
+            try:
+                inhibitor.set_active(False)
+            except Exception:
+                logger.debug("prevent-sleep release on shutdown failed", exc_info=True)
+
+    app.on_cleanup.append(_prevent_sleep_shutdown)
+
+
+def _arm_prevent_sleep_poll(state: DashboardState) -> None:
+    """Create the sleep inhibitor and start its poll task on the running loop.
+
+    Keeps the host awake while any session has a turn in flight, but only when
+    the user opted in via ``dashboard.prevent_sleep``. Decoupled from the turn
+    paths on purpose: polling the same active-turn signal the shutdown drain
+    filters on covers every surface (dashboard, Slack, CLI, task runner, and
+    sub-agents running under a parent turn) without threading acquire/release
+    through each path.
+
+    MUST be called AFTER ``runner.setup()`` (it needs a running loop), and paired
+    with :func:`_register_prevent_sleep_shutdown` (registered before setup) for
+    release. Shared by both server entrypoints so headless ``--slack-only`` mode
+    keeps the host awake identically to the full dashboard — a long Slack task
+    on a laptop is the case this feature exists for.
+    """
+    inhibitor = SleepInhibitor()
+    state._sleep_inhibitor = inhibitor  # prevent GC; released on cleanup
+
+    async def _prevent_sleep_poll() -> None:
+        try:
+            while True:
+                await asyncio.sleep(_PREVENT_SLEEP_POLL_INTERVAL_SECS)
+                try:
+                    inhibitor.set_active(await _should_prevent_sleep(state))
+                except Exception:
+                    logger.debug("prevent-sleep poll toggle failed", exc_info=True)
+        except asyncio.CancelledError:
+            # Release the OS block before propagating so a cancel (shutdown)
+            # never leaves the machine unable to sleep.
+            inhibitor.set_active(False)
+            raise
+
+    def _prevent_sleep_done(task: "asyncio.Task") -> None:  # type: ignore[type-arg]
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("prevent-sleep poll task exited unexpectedly", exc_info=exc)
+
+    task = asyncio.create_task(_prevent_sleep_poll())
+    task.add_done_callback(_prevent_sleep_done)
+    state._prevent_sleep_task = task  # prevent GC; cancelled on cleanup
 
 
 async def start_dashboard(
@@ -2910,6 +3019,12 @@ async def start_dashboard(
 
     app.on_cleanup.append(_watchdog_shutdown)
 
+    # ── Prevent-sleep inhibitor shutdown ─────────────────────────────────────
+    # Registered HERE (before runner.setup freezes the signal lists) for the
+    # same reason as the watchdog hook above. The inhibitor + poll task are
+    # created after runner.setup by _arm_prevent_sleep_poll and released here.
+    _register_prevent_sleep_shutdown(app, state)
+
     async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
         await app_["kiro_prerequisite_service"].close()
 
@@ -3006,6 +3121,11 @@ async def start_dashboard(
     _hb = asyncio.create_task(_loop_heartbeat())
     _hb.add_done_callback(_heartbeat_done)
     state._loop_heartbeat = _hb  # prevent GC
+
+    # ── Prevent-sleep poll ───────────────────────────────────────────────────
+    # Keep the host awake while a turn is in flight (opt-in via
+    # dashboard.prevent_sleep). Shared with the headless --slack-only entrypoint.
+    _arm_prevent_sleep_poll(state)
 
     # Arm the stall watchdog only when faulthandler is enabled — i.e. under the
     # real gateway entrypoint (see cli `gateway` dispatch). Tests that spin up
@@ -3427,6 +3547,12 @@ async def start_api_server(
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
 
+    # Prevent-sleep shutdown hook — registered before runner.setup freezes the
+    # signal lists; the poll itself is armed after the port binds (below). This
+    # is what makes headless --slack-only keep the host awake during a long
+    # Slack task, identically to the full dashboard.
+    _register_prevent_sleep_shutdown(app, state)
+
     # Hardened runner: same slowloris / CWE-400 mitigation as start_dashboard,
     # plus the raised max_field_size (see start_dashboard for the cookie-jar
     # rationale).
@@ -3455,6 +3581,11 @@ async def start_api_server(
         raise
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
+
+    # Arm the prevent-sleep poll now the loop is up and the port is bound
+    # (shutdown hook already registered above). Headless --slack-only mode keeps
+    # the host awake during a long Slack task exactly as the full dashboard does.
+    _arm_prevent_sleep_poll(state)
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.

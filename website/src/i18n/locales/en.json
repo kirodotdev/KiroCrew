@@ -5928,6 +5928,9 @@
         "off_by_admin": "Off by admin"
       },
       "chatPanel": {
+        "power": "Power",
+        "prevent_sleep_while_running": "Prevent sleep while running",
+        "keep_your_computer_awake_while_a_task_is_running": "Keep your computer awake while a task is running",
         "about_you": "About You",
         "auto_compact_threshold": "Auto-Compact Threshold",
         "combine_follow_up_messages_into_a_single_labeled": "Combine follow-up messages into a single labeled prompt while the agent is busy",

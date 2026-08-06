@@ -8420,6 +8420,9 @@
         "status_unavailable": "ステータスが利用不可"
       },
       "chatPanel": {
+        "power": "電源",
+        "prevent_sleep_while_running": "実行中はスリープを防止",
+        "keep_your_computer_awake_while_a_task_is_running": "タスクの実行中はコンピューターをスリープさせません",
         "about_you": "自分について",
         "auto_add_documents": "ドキュメントの自動追加",
         "auto_add_saved_artifacts": "保存されたアーティファクトの自動追加",

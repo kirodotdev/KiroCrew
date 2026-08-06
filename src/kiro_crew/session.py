@@ -654,6 +654,17 @@ class SessionManager:
         """
         return [sess.provider for sess in self._sessions.values()]
 
+    def any_active_turn(self) -> bool:
+        """True if ANY live session currently has a turn in flight.
+
+        The gateway's prevent-sleep poll reads this to decide whether to keep the
+        host awake. It filters on the same real-turn signal the shutdown drain
+        uses (:func:`_provider_has_active_turn`), so a session whose provider
+        does not implement the probe (warm-pool doubles, stubs) contributes
+        nothing rather than a false positive.
+        """
+        return any(_provider_has_active_turn(sess.provider) for sess in self._sessions.values())
+
     def get_pid(self, key: str) -> int | None:
         """Return the kiro-cli PID for a session, or None."""
         sess = self._sessions.get(self._fold_key(key))

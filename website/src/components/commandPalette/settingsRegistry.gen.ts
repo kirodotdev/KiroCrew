@@ -261,6 +261,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.prevent-sleep-while-running",
+    "label": "Prevent sleep while running",
+    "description": "Keep your computer awake while a task is running",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "tab": "chat",

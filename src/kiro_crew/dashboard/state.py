@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
+    from kiro_crew.power import SleepInhibitor  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -1948,6 +1949,11 @@ class DashboardState:
         # entrypoint (faulthandler enabled) and stopped on shutdown. Annotated
         # here so the assignment in start_dashboard type-checks under mypy strict.
         self._loop_watchdog: "LoopStallWatchdog | None" = None
+        # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
+        # released/cancelled on shutdown; annotated here so the assignments in
+        # start_dashboard type-check under mypy.
+        self._sleep_inhibitor: "SleepInhibitor | None" = None
+        self._prevent_sleep_task: asyncio.Task | None = None  # type: ignore[type-arg]
 
         # Knowledge Library
         self._knowledge_store: "KnowledgeStore | None" = None  # Lazy-initialized on first access

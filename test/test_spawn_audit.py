@@ -420,6 +420,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform_compat.py::process_owner_uid",
         "platform_compat.py::process_matches",
         "platform_compat.py::restrict_to_owner",
+        # OS keep-awake helper for the prevent-sleep feature (power.py). FIXED
+        # argv — `caffeinate -i -w <pid>` on macOS, `systemd-inhibit
+        # --what=idle:sleep --mode=block … /bin/sh -c 'while kill -0 <pid> …'`
+        # on Linux — whose binaries are resolved from fixed absolute system
+        # paths (never PATH), and whose ONLY variable is os.getpid() (an int,
+        # never agent input). No shell PATH lookup, no cwd, nothing
+        # agent-influenced. It is an OS power utility, not an agent/LLM
+        # subprocess, so the AcpClient sandbox chokepoint does not apply and a
+        # resource ceiling adds nothing to a fixed caffeinate/systemd-inhibit.
+        "power.py::_spawn_posix_inhibitor",
         "pod/cli.py::_logs",
         # launchd twin of pod/runtime.py::_run below: the single chokepoint for
         # `launchctl <verb> gui/<uid>/dev.kirocrew.pod.<name>`. Argv is a fixed

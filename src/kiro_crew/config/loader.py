@@ -1927,6 +1927,17 @@ class DashboardConfig:
             "Open the dashboard URL in the default browser on gateway startup.",
         ),
     )
+    prevent_sleep: bool = field(
+        default=False,
+        metadata=_meta(
+            "Prevent Sleep While Running",
+            "Keep this computer awake while the agent is running a task, so a long "
+            "task is not interrupted by the machine going to sleep. Off by default. "
+            "Uses caffeinate on macOS, systemd-inhibit on Linux, and "
+            "SetThreadExecutionState on Windows; on a host with no keep-awake "
+            "backend it is a no-op.",
+        ),
+    )
     quick_send: bool = field(
         default=False,
         metadata=_meta(
@@ -4858,6 +4869,7 @@ class KiroCrewConfig:
                     LOOP_STALL_EXIT_AFTER_MAX,
                 ),
                 auto_open_browser=dashboard_data.get("auto_open_browser", True),
+                prevent_sleep=_safe_bool(dashboard_data.get("prevent_sleep"), False),
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
                 mcp_app_panel=dashboard_data.get("mcp_app_panel", False),

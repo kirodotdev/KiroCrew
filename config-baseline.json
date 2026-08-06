@@ -3964,6 +3964,7 @@
         "link_previews": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
+        "prevent_sleep": false,
         "quick_send": false,
         "session_grid": false,
         "mcp_app_panel": false,
@@ -4193,6 +4194,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.prevent_sleep",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Prevent Sleep While Running",
+      "help": "Keep this computer awake while the agent is running a task, so a long task is not interrupted by the machine going to sleep. Off by default. Uses caffeinate on macOS, systemd-inhibit on Linux, and SetThreadExecutionState on Windows; on a host with no keep-awake backend it is a no-op.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.quick_send",
