@@ -3578,7 +3578,14 @@
       "upload_file": "ফাইল আপলোড করুন",
       "use_a_skill": "একটি স্কিল ব্যবহার করুন",
       "used": "ব্যবহৃত",
-      "voice_input": "ভয়েস ইনপুট"
+      "voice_input": "ভয়েস ইনপুট",
+      "dev_container": "Dev Container",
+      "devcontainer_running_for_project": "এই প্রজেক্টের জন্য একটি Dev Container চলছে",
+      "devcontainer_running_for_project_id": "এই প্রজেক্টের জন্য একটি Dev Container চলছে ({{id}})",
+      "devcontainer_trusted_not_running": "এই প্রজেক্টের Dev Container সেটআপ অনুমোদিত। এখন কোনো কনটেইনার চলছে না।",
+      "withdraw_trust": "আস্থা প্রত্যাহার করুন",
+      "could_not_withdraw_trust": "আস্থা প্রত্যাহার করা যায়নি",
+      "withdrawing_stops_future_sessions": "প্রত্যাহারের পর পরবর্তী সেশনগুলি আর কনটেইনারটি ব্যবহার করবে না। পুনরায় চালু হওয়া পর্যন্ত এই সেশনটি এর মধ্যেই থাকবে।"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -5250,6 +5257,46 @@
       "move_to_folder_question": "এই সেশনটি {{folder}}-এ সরানো হবে?",
       "no_thanks": "এখন নয়",
       "yes_move_it": "সরান"
+    },
+    "devcontainerTrustCard": {
+      "configuration": "কনফিগারেশন",
+      "could_not_grant_trust": "আস্থা দেওয়া যায়নি",
+      "dev_container": "Dev Container",
+      "dev_container_trust_confirmation": "Dev Container-এ আস্থার নিশ্চিতকরণ",
+      "dev_container_trust_prompt": "Dev Container-এর জন্য আস্থার অনুরোধ",
+      "dev_container_trusted": "Dev Container-এ আস্থা রাখা হয়েছে",
+      "fingerprint": "ফিঙ্গারপ্রিন্ট",
+      "got_it": "বুঝেছি",
+      "hide_details": "বিবরণ লুকান",
+      "image": "ইমেজ",
+      "name": "নাম",
+      "not_now": "এখন নয়",
+      "nothing_is_built_or_changed": "কিছুই তৈরি বা পরিবর্তন হবে না — আপনার চ্যাট সরাসরি এই মেশিনেই চলতে থাকবে।",
+      "run_this_project_s_agent_inside_its_dev_container": "এই প্রকল্পের এজেন্ট এর Dev Container-এর ভিতরে চালাবেন?",
+      "show_what_this_will_run": "কী চালানো হবে তা দেখান",
+      "the_next_session_for_this_project": "এই প্রকল্পের পরবর্তী সেশন Dev Container-এ শুরু হবে। নতুন সেশন শুরু না করা পর্যন্ত এই সেশনটি সরাসরি এই মেশিনেই চলতে থাকবে।",
+      "these_files_are_also_part_of_the_fingerprint": "এই ফাইলগুলিও ফিঙ্গারপ্রিন্টের অংশ, তাই আস্থা এগুলির উপরেও প্রযোজ্য। এখানে এগুলির বিষয়বস্তু দেখানো হয় না — পড়তে হলে প্রকল্পে খুলুন।",
+      "this_project_ships_a_dev_container": "এই প্রকল্পে একটি Dev Container রয়েছে — devcontainer.json-এ বর্ণিত একটি প্রস্তুত পরিবেশ। আপনি আস্থা রাখলে Kiro Crew এটি Docker দিয়ে তৈরি করে এবং এজেন্টকে তার ভিতরে চালায়, তাই কমান্ড ও বিল্ড প্রকল্পের নিজস্ব সরঞ্জাম ব্যবহার করে।",
+      "trust": "আস্থা রাখুন",
+      "trust_applies_to_this_exact_configuration": "আস্থা ঠিক এই কনফিগারেশনের জন্যই প্রযোজ্য — এটি বদলালে আপনাকে আবার জিজ্ঞাসা করা হবে। Dev Container চিপ থেকে আপনি আস্থা প্রত্যাহার করতে পারেন।",
+      "trusting": "আস্থা দেওয়া হচ্ছে…",
+      "trusting_runs_the_setup_commands_in_this_file": "আস্থা দিলে এই ফাইলের সেটআপ কমান্ডগুলো চালানো হয় এবং কনটেইনার যে অ্যাক্সেস চায় তা দেওয়া হয়। কেবল সেই প্রকল্পগুলোতেই আস্থা রাখুন যেগুলো আপনি চেনেন।",
+      "while_a_session_runs_in_the_container": "কোনো সেশন কনটেইনারে চলার সময় নির্ধারিত কাজ, সাব-এজেন্ট এবং সংরক্ষিত শিক্ষা পাওয়া যাবে না।"
+    },
+    "devcontainerExecutionChip": {
+      "in_container": "কনটেইনারে",
+      "on_your_machine": "তোমার মেশিনে",
+      "running_in_container": "এই সেশনটি প্রকল্পের কনটেইনারের ভিতরে চলছে।",
+      "running_in_container_named": "এই সেশনটি প্রকল্পের {{name}} কনটেইনারের ভিতরে চলছে।",
+      "running_on_your_machine": "এই সেশনটি প্রকল্পের কনটেইনারের ভিতরে নয়, তোমার নিজের মেশিনে চলছে।",
+      "container_effect": "এই সেশনের ফাইল ও কমান্ড সেই কনটেইনারের ভিতরে চলে, সরাসরি তোমার কম্পিউটারে নয়।",
+      "host_effect": "এই সেশনের ফাইল ও কমান্ড সরাসরি তোমার কম্পিউটারে চলে।",
+      "reason_untrusted": "তুমি এখনও এই প্রকল্পের কনটেইনার সেটআপে ভরসা করনি, তাই সেটি চালু হয়নি।",
+      "reason_build_failed": "প্রকল্পের কনটেইনার তৈরি করা যায়নি, তাই সেটি ব্যবহার হয়নি।",
+      "reason_docker_unavailable": "এই কম্পিউটারে Docker নেই, তাই কনটেইনার চালু করার কোনও জায়গা ছিল না।",
+      "reason_config_changed": "তুমি ভরসা করার পরে প্রকল্পের কনটেইনার সেটআপ বদলে গেছে, তাই সেটি আবার চালু হয়নি।",
+      "reason_unsupported_platform": "এই কম্পিউটার প্রকল্পের কনটেইনার চালাতে পারে না।",
+      "reason_unavailable": "প্রকল্পের কনটেইনার ব্যবহার করা যায়নি।"
     }
   },
   "hooks": {

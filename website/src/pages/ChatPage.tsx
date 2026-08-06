@@ -30,7 +30,7 @@ import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistr
 import { interceptSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
-import type { PlanStepInput } from '../api/client'
+import type { DevcontainerStatus, PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import { type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { fileReadUrl } from '../utils/fileReadUrl'
@@ -84,6 +84,7 @@ import { modelSupportsEffort } from '../lib/effort'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
+import DevcontainerTrustCard from '../components/DevcontainerTrustCard'
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import type { FollowupItem } from '../store/chatSlice'
 
@@ -3751,6 +3752,90 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const projectBranch = projectGitError
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
+  // Dev Container state for the active project. Polled on the same slow cadence
+  // as the branch: the config can appear (a checkout brings one in) and the
+  // container can stop outside the dashboard, so neither is read once. Called
+  // through `?.` because test suites mock the api client partially.
+  const { data: devcontainer, refetch: refetchDevcontainer } = useQuery({
+    queryKey: ['devcontainer-status', _slotProject],
+    queryFn: () => Promise.resolve(api.devcontainerStatus?.(_slotProject)),
+    enabled: !!_slotProject,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  })
+  // "Not now" is remembered per config FILE, not per render, so dismissing does
+  // not immediately re-prompt and switching projects back and forth does not
+  // either. Deliberately component state rather than storage: a dismissal is
+  // scoped to this page's lifetime, so a fresh load asks again — the decision it
+  // defers (build and run a container) is worth re-surfacing.
+  //
+  // Only an explicit refusal belongs in here. The key is the config PATH, which
+  // does not change when the file is edited, so a dismissal recorded for any
+  // other reason would also suppress the re-prompt that a later edit must raise.
+  const [devcontainerDismissed, setDevcontainerDismissed] = useState<Record<string, boolean>>({})
+  // Identity of the config the prompt and the chip both act on, independent of
+  // `has_config`: withdrawal needs it to record a dismissal even though the
+  // status that follows may no longer describe a prompt-worthy project.
+  const devcontainerKey = devcontainer?.config_path || devcontainer?.project_dir || _slotProject
+  const devcontainerPromptKey = devcontainer?.has_config ? devcontainerKey : ''
+  // A granted card is NOT unmounted on the spot. The grant changes nothing
+  // observable until the next session spawns, so the card keeps rendering its own
+  // confirmation until the user acknowledges it — otherwise trusting looks like a
+  // no-op that silently removed the question.
+  const [devcontainerGranted, setDevcontainerGranted] = useState('')
+  // `enabled` is the feature switch (`agent.devcontainer: auto`), and it gates the
+  // prompt as hard as `has_config` does: a repo ships a `devcontainer.json`
+  // whether or not this instance would ever use one, so without this the card
+  // asks for a decision that changes nothing.
+  const showDevcontainerTrust = !!devcontainer?.enabled
+    && !!devcontainerPromptKey
+    && !devcontainerDismissed[devcontainerPromptKey]
+    && (!devcontainer?.trusted || devcontainerGranted === devcontainerPromptKey)
+  const trustDevcontainer = useCallback(async (reviewedDigest: string) => {
+    if (!_slotProject) return
+    // The card passes back the digest it showed; the backend refuses a grant
+    // whose digest no longer matches what is on disk.
+    await api.devcontainerTrust?.(_slotProject, reviewedDigest)
+    // The grant returned, so trust IS held — record that locally before the
+    // refetch. The status query runs with `retry: false`, so a refetch that
+    // fails leaves the previous (untrusted) payload in place, and acknowledging
+    // the confirmation would then re-raise the prompt for a grant that landed.
+    queryClient.setQueryData(
+      ['devcontainer-status', _slotProject],
+      (prev: DevcontainerStatus | undefined) => (prev ? { ...prev, trusted: true } : prev),
+    )
+    setDevcontainerGranted(devcontainerPromptKey)
+    await refetchDevcontainer()
+  }, [_slotProject, devcontainerPromptKey, refetchDevcontainer, queryClient])
+  // The card raises one callback for both of its negative answers, and they mean
+  // opposite things. Before a grant it is "Not now" — an explicit refusal, which
+  // must be remembered. After a grant it is "Got it" — an acknowledgement of the
+  // confirmation, which must NOT be: the key is the config path, so a dismissal
+  // written here would outlive the grant it acknowledged, and editing
+  // `devcontainer.json` (which invalidates trust, because the grant is bound to
+  // the file's digest) would report untrusted with the prompt permanently
+  // suppressed. Clearing the pending-grant marker is enough to take the card
+  // down, and it leaves a later invalidation free to ask again.
+  const dismissDevcontainer = useCallback(() => {
+    if (devcontainerGranted && devcontainerGranted === devcontainerPromptKey) {
+      setDevcontainerGranted('')
+      return
+    }
+    setDevcontainerDismissed(prev => ({ ...prev, [devcontainerPromptKey]: true }))
+  }, [devcontainerGranted, devcontainerPromptKey])
+  // Withdrawal is an explicit "no", so it must not be re-asked. Revoking only
+  // deletes the grant — the container and the session keep running — which flips
+  // `trusted` back to false and would otherwise re-mount the trust card
+  // immediately after the user declined it.
+  const untrustDevcontainer = useCallback(async () => {
+    if (devcontainerKey) {
+      setDevcontainerDismissed(prev => ({ ...prev, [devcontainerKey]: true }))
+    }
+    setDevcontainerGranted('')
+    await refetchDevcontainer()
+  }, [devcontainerKey, refetchDevcontainer])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const isMobile = useIsMobile()
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -5221,6 +5306,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   />
                 </div>
               )}
+              {showDevcontainerTrust && (
+                <div className="px-5 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                  <DevcontainerTrustCard
+                    projectDir={_slotProject}
+                    configPath={devcontainer?.config_path}
+                    onTrust={trustDevcontainer}
+                    onDismiss={dismissDevcontainer}
+                  />
+                </div>
+              )}
               <ChatInput
               aboveComposer={
                 /* In-flow tip inside the composer's own width wrapper: shares
@@ -5273,6 +5368,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               project={currentSlot?.project || ''}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
+              devcontainerRunning={!!devcontainer?.enabled && !!devcontainer?.running}
+              devcontainerId={devcontainer?.container_id || undefined}
+              devcontainerProject={devcontainer?.project_dir || _slotProject}
+              devcontainerTrusted={!!devcontainer?.enabled && !!devcontainer?.trusted}
+              onDevcontainerUntrust={untrustDevcontainer}
+              /* Session-scoped, unlike the three props above: those come from the
+                 project-level status poll, while this is what the backend recorded
+                 for THIS slot when it spawned. Absent for a project with no Dev
+                 Container config, which renders no chip. */
+              execution={currentSlot?.execution}
               isMac={isMac}
               onDrop={handleDrop}
               dragOver={dragOver}

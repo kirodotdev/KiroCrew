@@ -74,6 +74,54 @@ export interface InstallStreamResult {
 }
 
 
+/**
+ * Dev Container state for one project directory (GET /api/devcontainer/status).
+ *
+ * `has_config` is about the file on disk; `trusted` is about the user's decision
+ * on the config's CURRENT content. The two are independent: editing
+ * `devcontainer.json` changes its digest and drops trust back to false, which is
+ * what re-opens the trust prompt. `container_id` and `running` describe the live
+ * container and are null/false until one has been brought up in this process.
+ *
+ * `enabled` mirrors the `agent.devcontainer` config mode (true only for `auto`).
+ * It gates every Dev Container surface: a repo that ships a `devcontainer.json`
+ * still sets `has_config`, so without this the trust prompt would ask for a
+ * decision that changes nothing while the feature is off.
+ */
+export interface DevcontainerStatus {
+  project_dir: string
+  enabled: boolean
+  has_config: boolean
+  config_path: string | null
+  trusted: boolean
+  container_id: string | null
+  running: boolean
+  remote_workspace_folder: string | null
+}
+
+/**
+ * Config preview for the trust prompt (GET /api/devcontainer/config).
+ *
+ * `raw` is the config file's untrusted text, server-truncated to 64 KiB. It is
+ * rendered as text only — the whole point of the prompt is that the user reads
+ * what they are about to authorize. `digest` is what trust is granted against.
+ *
+ * `other_inputs` are the OTHER files the digest hashes — Dockerfiles, lifecycle
+ * scripts, local features — as posix paths relative to the config's directory,
+ * capped server-side at 64 entries. They are listed, never fetched: the point is
+ * that the fingerprint covers more than `raw` shows, so a card that displayed
+ * only `raw` was asking the user to authorize files it never named.
+ */
+export interface DevcontainerConfig {
+  config_path: string
+  digest: string
+  raw: string
+  name: string | null
+  image: string | null
+  trusted: boolean
+  other_inputs?: string[]
+}
+
 /** ADVISORY macOS permission rows. Never a gate — macOS attributes a TCC grant
  * to the responsible parent process, so `missing` can coexist with a working
  * capture, and `unknown` means the probe could not be run. */
@@ -1118,6 +1166,23 @@ export const api = {
   browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
   browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
   projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
+  // Dev Containers. Every verb is keyed by an absolute project path, which the
+  // server only accepts when it realpath-matches a live chat slot's project —
+  // so these reject (400 "unknown project") for a directory no session is
+  // scoped to rather than probing arbitrary paths.
+  devcontainerStatus: (project: string) =>
+    fetch('/api/devcontainer/status?project=' + encodeURIComponent(project)).then(j) as Promise<DevcontainerStatus>,
+  devcontainerConfig: (project: string) =>
+    fetch('/api/devcontainer/config?project=' + encodeURIComponent(project)).then(j) as Promise<DevcontainerConfig>,
+  // Grant trust, BOUND to the digest the user was shown. The backend rejects a
+  // mismatch (409) rather than granting whatever is on disk, so an edit between
+  // the preview and the click cannot get itself authorized.
+  devcontainerTrust: (project: string, digest: string) =>
+    post('/api/devcontainer/trust', { project, digest }).then(j) as Promise<{ trusted: boolean; digest: string }>,
+  devcontainerUntrust: (project: string) =>
+    del('/api/devcontainer/trust', { project }).then(j) as Promise<{ trusted: boolean; removed: boolean }>,
+  devcontainerRebuild: (project: string) =>
+    post('/api/devcontainer/rebuild', { project }).then(j) as Promise<{ container_id: string; remote_workspace_folder: string }>,
   workspaces: () => fetch('/api/workspaces').then(j),
   createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
   updateWorkspace: (name: string, body: object) =>

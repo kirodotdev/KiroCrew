@@ -868,6 +868,21 @@ class AgentConfig:
             "never enabled implicitly by the platform.",
         ),
     )
+    devcontainer: str = field(
+        default="off",
+        metadata=_meta(
+            "Dev Containers",
+            "Run a session's agent inside the project's Dev Container (VS Code "
+            "parity). 'auto': when the session's project directory carries a "
+            ".devcontainer/devcontainer.json (or .devcontainer.json) that a "
+            "dashboard user has trusted, the agent process is executed inside a "
+            "container built by the @devcontainers/cli, with the project's own "
+            "toolchain. 'off' (default): agent runs on the host as before. "
+            "Requires Docker and the devcontainer CLI on a Linux host; trust is "
+            "granted per config file content and re-prompted on any edit.",
+            enum=["auto", "off"],
+        ),
+    )
     apps_allow_third_party: bool = field(
         default=False,
         metadata=_meta(
@@ -4515,6 +4530,7 @@ class KiroCrewConfig:
                 sandbox_allow_unsandboxed_exec=bool(
                     agent_data.get("sandbox_allow_unsandboxed_exec", False)
                 ),
+                devcontainer=agent_data.get("devcontainer", "off"),
                 apps_allow_third_party=_safe_bool(
                     agent_data.get("apps_allow_third_party", False), False
                 ),

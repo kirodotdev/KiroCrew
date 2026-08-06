@@ -3625,7 +3625,14 @@
       "upload_file": "Importer un fichier",
       "use_a_skill": "Utiliser une compétence",
       "used": "Utilisé",
-      "voice_input": "Saisie vocale"
+      "voice_input": "Saisie vocale",
+      "dev_container": "Dev Container",
+      "devcontainer_running_for_project": "Un Dev Container est actif pour ce projet",
+      "devcontainer_running_for_project_id": "Un Dev Container est actif pour ce projet ({{id}})",
+      "devcontainer_trusted_not_running": "La configuration Dev Container de ce projet est approuvée. Aucun conteneur n'est actif pour le moment.",
+      "withdraw_trust": "Retirer ma confiance",
+      "could_not_withdraw_trust": "Impossible de retirer la confiance",
+      "withdrawing_stops_future_sessions": "Une fois la confiance retirée, les prochaines sessions n'utilisent plus le conteneur. La session en cours y reste jusqu'à son redémarrage."
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -5310,6 +5317,46 @@
       "move_to_folder_question": "Déplacer cette session vers {{folder}} ?",
       "no_thanks": "Pas maintenant",
       "yes_move_it": "Déplacer"
+    },
+    "devcontainerTrustCard": {
+      "configuration": "Configuration",
+      "could_not_grant_trust": "Impossible d'accorder la confiance",
+      "dev_container": "Dev Container",
+      "dev_container_trust_confirmation": "Confirmation de confiance du Dev Container",
+      "dev_container_trust_prompt": "Demande de confiance du Dev Container",
+      "dev_container_trusted": "Dev Container approuvé",
+      "fingerprint": "Empreinte",
+      "got_it": "J'ai compris",
+      "hide_details": "Masquer les détails",
+      "image": "Image",
+      "name": "Nom",
+      "not_now": "Pas maintenant",
+      "nothing_is_built_or_changed": "Rien n'est construit ni modifié — votre conversation continue de s'exécuter directement sur cette machine.",
+      "run_this_project_s_agent_inside_its_dev_container": "Exécuter l'agent de ce projet dans son Dev Container ?",
+      "show_what_this_will_run": "Afficher ce qui sera exécuté",
+      "the_next_session_for_this_project": "La prochaine session de ce projet démarrera dans le Dev Container. Celle-ci continue de s'exécuter directement sur cette machine jusqu'à ce que vous en lanciez une nouvelle.",
+      "these_files_are_also_part_of_the_fingerprint": "Ces fichiers font aussi partie de l'empreinte : la confiance les couvre donc également. Leur contenu n'est pas affiché ici — ouvrez-les dans le projet pour les lire.",
+      "this_project_ships_a_dev_container": "Ce projet fournit un Dev Container — un environnement prêt à l'emploi décrit dans devcontainer.json. Si vous lui accordez votre confiance, Kiro Crew le construit avec Docker et y exécute l'agent, de sorte que les commandes et les builds utilisent les outils propres au projet.",
+      "trust": "Accorder ma confiance",
+      "trust_applies_to_this_exact_configuration": "La confiance s'applique exactement à cette configuration — si elle change, la question vous sera posée à nouveau. Vous pouvez retirer votre confiance depuis la puce Dev Container.",
+      "trusting": "Confiance en cours…",
+      "trusting_runs_the_setup_commands_in_this_file": "Accorder votre confiance exécute les commandes d'installation de ce fichier et donne au conteneur les accès qu'il demande. N'accordez votre confiance qu'aux projets que vous connaissez.",
+      "while_a_session_runs_in_the_container": "Pendant qu'une session s'exécute dans le conteneur, les tâches planifiées, les sous-agents et les leçons enregistrées ne sont pas disponibles."
+    },
+    "devcontainerExecutionChip": {
+      "in_container": "Dans le conteneur",
+      "on_your_machine": "Sur ta machine",
+      "running_in_container": "Cette session s'exécute dans le conteneur du projet.",
+      "running_in_container_named": "Cette session s'exécute dans le conteneur {{name}} du projet.",
+      "running_on_your_machine": "Cette session s'exécute sur ta propre machine, et non dans le conteneur du projet.",
+      "container_effect": "Les fichiers et les commandes de cette session s'exécutent dans ce conteneur, et non directement sur ta machine.",
+      "host_effect": "Les fichiers et les commandes de cette session s'exécutent directement sur ta machine.",
+      "reason_untrusted": "Tu n'as pas encore approuvé la configuration du conteneur de ce projet, il n'a donc pas été démarré.",
+      "reason_build_failed": "Le conteneur du projet n'a pas pu être préparé, il n'a donc pas été utilisé.",
+      "reason_docker_unavailable": "Docker n'est pas disponible sur cette machine, il n'y avait donc nulle part pour démarrer le conteneur.",
+      "reason_config_changed": "La configuration du conteneur du projet a changé après ton approbation, il n'a donc pas été redémarré.",
+      "reason_unsupported_platform": "Cette machine ne peut pas exécuter le conteneur du projet.",
+      "reason_unavailable": "Le conteneur du projet n'a pas pu être utilisé."
     }
   },
   "hooks": {

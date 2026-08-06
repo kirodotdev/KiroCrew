@@ -3672,7 +3672,14 @@
       "upload_file": "Загрузить файл",
       "use_a_skill": "Использовать навык",
       "used": "Использовано",
-      "voice_input": "Голосовой ввод"
+      "voice_input": "Голосовой ввод",
+      "dev_container": "Dev Container",
+      "devcontainer_running_for_project": "Для этого проекта запущен Dev Container",
+      "devcontainer_running_for_project_id": "Для этого проекта запущен Dev Container ({{id}})",
+      "devcontainer_trusted_not_running": "Конфигурация Dev Container для этого проекта одобрена. Сейчас контейнер не запущен.",
+      "withdraw_trust": "Отозвать доверие",
+      "could_not_withdraw_trust": "Не удалось отозвать доверие",
+      "withdrawing_stops_future_sessions": "После отзыва следующие сессии перестанут использовать контейнер. Текущая сессия остаётся в нём до перезапуска."
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -5370,6 +5377,46 @@
       "move_to_folder_question": "Переместить эту сессию в {{folder}}?",
       "no_thanks": "Не сейчас",
       "yes_move_it": "Переместить"
+    },
+    "devcontainerTrustCard": {
+      "configuration": "Конфигурация",
+      "could_not_grant_trust": "Не удалось предоставить доверие",
+      "dev_container": "Dev Container",
+      "dev_container_trust_confirmation": "Подтверждение доверия к Dev Container",
+      "dev_container_trust_prompt": "Запрос доверия к Dev Container",
+      "dev_container_trusted": "Dev Container получил доверие",
+      "fingerprint": "Отпечаток",
+      "got_it": "Понятно",
+      "hide_details": "Скрыть подробности",
+      "image": "Образ",
+      "name": "Имя",
+      "not_now": "Не сейчас",
+      "nothing_is_built_or_changed": "Ничего не собирается и не изменяется — ваш чат продолжает работать прямо на этой машине.",
+      "run_this_project_s_agent_inside_its_dev_container": "Запустить агента этого проекта внутри его Dev Container?",
+      "show_what_this_will_run": "Показать, что будет запущено",
+      "the_next_session_for_this_project": "Следующая сессия этого проекта запустится в Dev Container. Текущая сессия продолжает работать прямо на этой машине, пока вы не начнёте новую.",
+      "these_files_are_also_part_of_the_fingerprint": "Эти файлы тоже входят в отпечаток, поэтому доверие распространяется и на них. Их содержимое здесь не показано — откройте их в проекте, чтобы прочитать.",
+      "this_project_ships_a_dev_container": "В этом проекте есть Dev Container — готовое окружение, описанное в devcontainer.json. Если вы ему доверяете, Kiro Crew собирает его с помощью Docker и запускает агента внутри, поэтому команды и сборки используют собственные инструменты проекта.",
+      "trust": "Доверять",
+      "trust_applies_to_this_exact_configuration": "Доверие относится именно к этой конфигурации — если она изменится, вас спросят снова. Отозвать доверие можно через чип Dev Container.",
+      "trusting": "Предоставление доверия…",
+      "trusting_runs_the_setup_commands_in_this_file": "Доверие запускает команды настройки из этого файла и даёт контейнеру запрошенный им доступ. Доверяйте только тем проектам, которые вы знаете.",
+      "while_a_session_runs_in_the_container": "Пока сеанс выполняется в контейнере, запланированные задания, субагенты и сохранённые уроки недоступны."
+    },
+    "devcontainerExecutionChip": {
+      "in_container": "В контейнере",
+      "on_your_machine": "На твоём компьютере",
+      "running_in_container": "Эта сессия выполняется внутри контейнера проекта.",
+      "running_in_container_named": "Эта сессия выполняется внутри контейнера {{name}} проекта.",
+      "running_on_your_machine": "Эта сессия выполняется на твоём компьютере, а не внутри контейнера проекта.",
+      "container_effect": "Файлы и команды этой сессии выполняются внутри этого контейнера, а не напрямую на твоём компьютере.",
+      "host_effect": "Файлы и команды этой сессии выполняются напрямую на твоём компьютере.",
+      "reason_untrusted": "Ты пока не доверил настройку контейнера этого проекта, поэтому он не был запущен.",
+      "reason_build_failed": "Не удалось подготовить контейнер проекта, поэтому он не использовался.",
+      "reason_docker_unavailable": "Docker недоступен на этом компьютере, поэтому контейнер негде было запустить.",
+      "reason_config_changed": "Настройка контейнера проекта изменилась после того, как ты её доверил, поэтому контейнер не запускался снова.",
+      "reason_unsupported_platform": "Этот компьютер не может запустить контейнер проекта.",
+      "reason_unavailable": "Не удалось использовать контейнер проекта."
     }
   },
   "hooks": {

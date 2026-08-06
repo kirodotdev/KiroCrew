@@ -102,6 +102,13 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_me,
     api_auth_refresh,
 )
+from kiro_crew.dashboard.handlers.devcontainer import (
+    api_devcontainer_config,
+    api_devcontainer_rebuild,
+    api_devcontainer_status,
+    api_devcontainer_trust,
+    api_devcontainer_untrust,
+)
 from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover,
     api_skills_discover_install,
@@ -2174,6 +2181,11 @@ async def start_dashboard(
     # Follow-up suggestion card (suggest_followup MCP tool -> card below composer)
     app.router.add_post("/api/chat/slots/{slot}/followup", chat.api_chat_slot_followup)
     app.router.add_post("/api/worktree/create", api_worktree_create)
+    app.router.add_get("/api/devcontainer/status", api_devcontainer_status)
+    app.router.add_get("/api/devcontainer/config", api_devcontainer_config)
+    app.router.add_post("/api/devcontainer/trust", api_devcontainer_trust)
+    app.router.add_delete("/api/devcontainer/trust", api_devcontainer_untrust)
+    app.router.add_post("/api/devcontainer/rebuild", api_devcontainer_rebuild)
     app.router.add_get("/api/recent-projects", chat.api_recent_projects)
     app.router.add_patch("/api/chat/slots/{slot}/color", chat.api_chat_slot_color)
     # Context injection (App Kit — silent background context)

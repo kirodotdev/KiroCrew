@@ -3464,7 +3464,12 @@
       "continue_interrupted_turn": "中断されたターンを継続",
       "continue_thread": "エージェントに続行を依頼",
       "could_not_submit_that_decision_see_the_console_f": "その決定を送信できません — 詳細はコンソールを参照してください。",
+      "could_not_withdraw_trust": "信頼を取り消せませんでした",
       "detached_head_at": "{{branch}} で HEAD が切り離されています",
+      "dev_container": "Dev Container",
+      "devcontainer_running_for_project": "このプロジェクトで Dev Container が実行中です",
+      "devcontainer_running_for_project_id": "このプロジェクトで Dev Container が実行中です ({{id}})",
+      "devcontainer_trusted_not_running": "このプロジェクトの Dev Container 設定は承認済みです。現在、実行中のコンテナはありません。",
       "drag_to_resize_double_click_to_reset": "ドラッグしてリサイズ (ダブルクリックでリセット)",
       "file": "ファイル",
       "force_kill_discards_in_progress_work_and_queued": "強制終了 — 進行中の作業とキューに入れられたメッセージを破棄",
@@ -3536,7 +3541,9 @@
       "upload_file": "ファイルをアップロード",
       "use_a_skill": "スキルを使用",
       "used": "使用済み",
-      "voice_input": "音声入力"
+      "voice_input": "音声入力",
+      "withdraw_trust": "信頼を取り消す",
+      "withdrawing_stops_future_sessions": "取り消すと、以降のセッションはコンテナを使用しなくなります。このセッションは再起動するまでコンテナ内で実行されたままです。"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -3721,6 +3728,46 @@
     "detailPanel": {
       "close_panel": "パネルを閉じる",
       "resize_panel": "パネルのサイズを変更"
+    },
+    "devcontainerTrustCard": {
+      "configuration": "設定",
+      "could_not_grant_trust": "信頼を付与できませんでした",
+      "dev_container": "Dev Container",
+      "dev_container_trust_confirmation": "Dev Container の信頼確認",
+      "dev_container_trust_prompt": "Dev Container の信頼リクエスト",
+      "dev_container_trusted": "Dev Container を信頼しました",
+      "fingerprint": "フィンガープリント",
+      "got_it": "了解しました",
+      "hide_details": "詳細を隠す",
+      "image": "イメージ",
+      "name": "名前",
+      "not_now": "今はしない",
+      "nothing_is_built_or_changed": "ビルドも変更も行われません — チャットはこのマシン上で直接実行されたままです。",
+      "run_this_project_s_agent_inside_its_dev_container": "このプロジェクトのエージェントを Dev Container 内で実行しますか？",
+      "show_what_this_will_run": "実行される内容を表示",
+      "the_next_session_for_this_project": "このプロジェクトの次のセッションは Dev Container 内で開始されます。新しいセッションを開始するまで、このセッションはこのマシン上で直接実行されたままです。",
+      "these_files_are_also_part_of_the_fingerprint": "これらのファイルもフィンガープリントの一部であるため、信頼はこれらにも適用されます。内容はここには表示されません — 読むにはプロジェクト内で開いてください。",
+      "this_project_ships_a_dev_container": "このプロジェクトには Dev Container が同梱されています — devcontainer.json に記述された、すぐに使える環境です。信頼すると、Kiro Crew は Docker でこれをビルドし、その内部でエージェントを実行するため、コマンドやビルドはプロジェクト独自のツールを使用します。",
+      "trust": "信頼する",
+      "trust_applies_to_this_exact_configuration": "信頼はこの設定そのものにのみ適用されます — 設定が変更された場合は再度確認されます。信頼は Dev Container チップから取り消せます。",
+      "trusting": "信頼を付与中…",
+      "trusting_runs_the_setup_commands_in_this_file": "信頼すると、このファイル内のセットアップコマンドが実行され、コンテナが要求するアクセス権が付与されます。心当たりのあるプロジェクトだけを信頼してください。",
+      "while_a_session_runs_in_the_container": "セッションがコンテナ内で実行されている間、スケジュール済みジョブ、サブエージェント、保存された学習内容は利用できません。"
+    },
+    "devcontainerExecutionChip": {
+      "in_container": "コンテナ内",
+      "on_your_machine": "自分のマシン",
+      "running_in_container": "このセッションはプロジェクトのコンテナ内で実行されています。",
+      "running_in_container_named": "このセッションはプロジェクトのコンテナ「{{name}}」内で実行されています。",
+      "running_on_your_machine": "このセッションはプロジェクトのコンテナ内ではなく、自分のマシン上で実行されています。",
+      "container_effect": "このセッションのファイルとコマンドは、コンピューターに直接ではなく、そのコンテナ内で実行されます。",
+      "host_effect": "このセッションのファイルとコマンドは、コンピューター上で直接実行されます。",
+      "reason_untrusted": "このプロジェクトのコンテナ設定をまだ信頼していないため、コンテナは起動されませんでした。",
+      "reason_build_failed": "プロジェクトのコンテナを準備できなかったため、コンテナは使用されませんでした。",
+      "reason_docker_unavailable": "このコンピューターでは Docker が利用できないため、コンテナを起動する場所がありませんでした。",
+      "reason_config_changed": "信頼したあとにプロジェクトのコンテナ設定が変更されたため、コンテナは再度起動されませんでした。",
+      "reason_unsupported_platform": "このコンピューターではプロジェクトのコンテナを実行できません。",
+      "reason_unavailable": "プロジェクトのコンテナを使用できませんでした。"
     },
     "dialog": {
       "close": "閉じる"

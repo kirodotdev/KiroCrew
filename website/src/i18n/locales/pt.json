@@ -3625,7 +3625,14 @@
       "upload_file": "Enviar arquivo",
       "use_a_skill": "Usar uma habilidade",
       "used": "Usado",
-      "voice_input": "Entrada de voz"
+      "voice_input": "Entrada de voz",
+      "dev_container": "Dev Container",
+      "devcontainer_running_for_project": "Há um Dev Container em execução para este projeto",
+      "devcontainer_running_for_project_id": "Há um Dev Container em execução para este projeto ({{id}})",
+      "devcontainer_trusted_not_running": "A configuração do Dev Container deste projeto está autorizada. Nenhum contêiner em execução no momento.",
+      "withdraw_trust": "Retirar a confiança",
+      "could_not_withdraw_trust": "Não foi possível retirar a confiança",
+      "withdrawing_stops_future_sessions": "Ao retirá-la, as próximas sessões deixam de usar o contêiner. Esta sessão permanece nele até ser reiniciada."
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -5310,6 +5317,46 @@
       "move_to_folder_question": "Mover esta sessão para {{folder}}?",
       "no_thanks": "Agora não",
       "yes_move_it": "Mover"
+    },
+    "devcontainerTrustCard": {
+      "configuration": "Configuração",
+      "could_not_grant_trust": "Não foi possível conceder confiança",
+      "dev_container": "Dev Container",
+      "dev_container_trust_confirmation": "Confirmação de confiança do Dev Container",
+      "dev_container_trust_prompt": "Solicitação de confiança do Dev Container",
+      "dev_container_trusted": "Dev Container confiável",
+      "fingerprint": "Impressão digital",
+      "got_it": "Entendi",
+      "hide_details": "Ocultar os detalhes",
+      "image": "Imagem",
+      "name": "Nome",
+      "not_now": "Agora não",
+      "nothing_is_built_or_changed": "Nada é compilado nem alterado — seu chat continua sendo executado diretamente nesta máquina.",
+      "run_this_project_s_agent_inside_its_dev_container": "Executar o agente deste projeto dentro do seu Dev Container?",
+      "show_what_this_will_run": "Mostrar o que será executado",
+      "the_next_session_for_this_project": "A próxima sessão deste projeto será iniciada no Dev Container. Esta sessão continua sendo executada diretamente nesta máquina até você iniciar uma nova.",
+      "these_files_are_also_part_of_the_fingerprint": "Estes arquivos também fazem parte da impressão digital, então a confiança abrange todos eles. O conteúdo não é mostrado aqui — abra-os no projeto para ler.",
+      "this_project_ships_a_dev_container": "Este projeto inclui um Dev Container — um ambiente pronto descrito em devcontainer.json. Se você confiar nele, o Kiro Crew o compila com o Docker e executa o agente lá dentro, de modo que os comandos e as compilações usem as ferramentas do próprio projeto.",
+      "trust": "Confiar",
+      "trust_applies_to_this_exact_configuration": "A confiança se aplica exatamente a esta configuração — se ela mudar, você será perguntado novamente. Você pode retirar a confiança pelo chip Dev Container.",
+      "trusting": "A conceder confiança…",
+      "trusting_runs_the_setup_commands_in_this_file": "Confiar executa os comandos de configuração deste arquivo e concede ao contêiner o acesso que ele pede. Confie apenas em projetos que você reconhece.",
+      "while_a_session_runs_in_the_container": "Enquanto uma sessão é executada no contêiner, as tarefas agendadas, os subagentes e as lições salvas ficam indisponíveis."
+    },
+    "devcontainerExecutionChip": {
+      "in_container": "No contêiner",
+      "on_your_machine": "Na sua máquina",
+      "running_in_container": "Esta sessão está sendo executada dentro do contêiner do projeto.",
+      "running_in_container_named": "Esta sessão está sendo executada dentro do contêiner {{name}} do projeto.",
+      "running_on_your_machine": "Esta sessão está sendo executada na sua própria máquina, não dentro do contêiner do projeto.",
+      "container_effect": "Os arquivos e comandos desta sessão são executados dentro desse contêiner, não diretamente no seu computador.",
+      "host_effect": "Os arquivos e comandos desta sessão são executados diretamente no seu computador.",
+      "reason_untrusted": "Você ainda não confiou na configuração do contêiner deste projeto, então ele não foi iniciado.",
+      "reason_build_failed": "Não foi possível preparar o contêiner do projeto, então ele não foi usado.",
+      "reason_docker_unavailable": "O Docker não está disponível neste computador, então não havia onde iniciar o contêiner.",
+      "reason_config_changed": "A configuração do contêiner do projeto mudou depois que você confiou nela, então ele não foi iniciado novamente.",
+      "reason_unsupported_platform": "Este computador não pode executar o contêiner do projeto.",
+      "reason_unavailable": "Não foi possível usar o contêiner do projeto."
     }
   },
   "hooks": {

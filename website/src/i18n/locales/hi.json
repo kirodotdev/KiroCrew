@@ -3578,7 +3578,14 @@
       "upload_file": "फ़ाइल अपलोड करें",
       "use_a_skill": "स्किल का उपयोग करें",
       "used": "उपयोग",
-      "voice_input": "वॉइस इनपुट"
+      "voice_input": "वॉइस इनपुट",
+      "dev_container": "Dev Container",
+      "devcontainer_running_for_project": "इस प्रोजेक्ट के लिए एक Dev Container चल रहा है",
+      "devcontainer_running_for_project_id": "इस प्रोजेक्ट के लिए एक Dev Container चल रहा है ({{id}})",
+      "devcontainer_trusted_not_running": "इस प्रोजेक्ट के Dev Container सेटअप को भरोसा दिया गया है। अभी कोई कंटेनर नहीं चल रहा।",
+      "withdraw_trust": "भरोसा वापस लें",
+      "could_not_withdraw_trust": "भरोसा वापस नहीं लिया जा सका",
+      "withdrawing_stops_future_sessions": "भरोसा वापस लेने पर आगे के सत्र इस कंटेनर का उपयोग नहीं करेंगे। यह सत्र पुनः आरंभ होने तक इसी में बना रहेगा।"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -5250,6 +5257,46 @@
       "move_to_folder_question": "इस सत्र को {{folder}} में ले जाएँ?",
       "no_thanks": "अभी नहीं",
       "yes_move_it": "ले जाएँ"
+    },
+    "devcontainerTrustCard": {
+      "configuration": "कॉन्फ़िगरेशन",
+      "could_not_grant_trust": "भरोसा प्रदान नहीं किया जा सका",
+      "dev_container": "Dev Container",
+      "dev_container_trust_confirmation": "Dev Container भरोसे की पुष्टि",
+      "dev_container_trust_prompt": "Dev Container के लिए भरोसे का अनुरोध",
+      "dev_container_trusted": "Dev Container पर भरोसा कर लिया गया",
+      "fingerprint": "फ़िंगरप्रिंट",
+      "got_it": "समझ गया",
+      "hide_details": "विवरण छिपाएँ",
+      "image": "इमेज",
+      "name": "नाम",
+      "not_now": "अभी नहीं",
+      "nothing_is_built_or_changed": "कुछ भी नहीं बनाया या बदला जाता — चैट सीधे इसी मशीन पर चलती रहेगी।",
+      "run_this_project_s_agent_inside_its_dev_container": "इस प्रोजेक्ट के एजेंट को उसके Dev Container के अंदर चलाएँ?",
+      "show_what_this_will_run": "दिखाएँ कि क्या चलाया जाएगा",
+      "the_next_session_for_this_project": "इस प्रोजेक्ट का अगला सत्र Dev Container में शुरू होगा। नया सत्र शुरू करने तक यह सत्र सीधे इसी मशीन पर चलता रहेगा।",
+      "these_files_are_also_part_of_the_fingerprint": "ये फ़ाइलें भी फ़िंगरप्रिंट का हिस्सा हैं, इसलिए भरोसा इन पर भी लागू होता है। इनकी सामग्री यहाँ नहीं दिखाई जाती — पढ़ने के लिए इन्हें प्रोजेक्ट में खोलें।",
+      "this_project_ships_a_dev_container": "इस प्रोजेक्ट के साथ एक Dev Container आता है — devcontainer.json में वर्णित एक तैयार वातावरण। भरोसा करने पर Kiro Crew इसे Docker से बनाता है और एजेंट को उसके अंदर चलाता है, जिससे कमांड और बिल्ड प्रोजेक्ट के अपने टूल का उपयोग करते हैं।",
+      "trust": "भरोसा करें",
+      "trust_applies_to_this_exact_configuration": "भरोसा ठीक इसी कॉन्फ़िगरेशन पर लागू होता है — यह बदलने पर फिर से पूछा जाएगा। Dev Container चिप से भरोसा वापस लिया जा सकता है।",
+      "trusting": "भरोसा दिया जा रहा है…",
+      "trusting_runs_the_setup_commands_in_this_file": "भरोसा करने पर इस फ़ाइल के सेटअप कमांड चलते हैं और कंटेनर को वह पहुँच मिलती है जो वह मांगता है। केवल पहचाने हुए प्रोजेक्ट पर ही भरोसा करें।",
+      "while_a_session_runs_in_the_container": "जब कोई सत्र कंटेनर में चल रहा हो, तब निर्धारित कार्य, सब-एजेंट और सहेजे गए सबक उपलब्ध नहीं होते।"
+    },
+    "devcontainerExecutionChip": {
+      "in_container": "कंटेनर में",
+      "on_your_machine": "तुम्हारी मशीन पर",
+      "running_in_container": "यह सत्र प्रोजेक्ट के कंटेनर के अंदर चल रहा है।",
+      "running_in_container_named": "यह सत्र प्रोजेक्ट के कंटेनर {{name}} के अंदर चल रहा है।",
+      "running_on_your_machine": "यह सत्र प्रोजेक्ट के कंटेनर के अंदर नहीं, बल्कि तुम्हारी अपनी मशीन पर चल रहा है।",
+      "container_effect": "इस सत्र की फ़ाइलें और कमांड उस कंटेनर के अंदर चलते हैं, सीधे तुम्हारे कंप्यूटर पर नहीं।",
+      "host_effect": "इस सत्र की फ़ाइलें और कमांड सीधे तुम्हारे कंप्यूटर पर चलते हैं।",
+      "reason_untrusted": "तुमने इस प्रोजेक्ट के कंटेनर सेटअप पर अभी भरोसा नहीं किया है, इसलिए वह शुरू नहीं हुआ।",
+      "reason_build_failed": "प्रोजेक्ट का कंटेनर तैयार नहीं हो सका, इसलिए उसका उपयोग नहीं हुआ।",
+      "reason_docker_unavailable": "इस कंप्यूटर पर Docker उपलब्ध नहीं है, इसलिए कंटेनर शुरू करने की कोई जगह नहीं थी।",
+      "reason_config_changed": "भरोसा करने के बाद प्रोजेक्ट का कंटेनर सेटअप बदल गया, इसलिए वह दोबारा शुरू नहीं हुआ।",
+      "reason_unsupported_platform": "यह कंप्यूटर प्रोजेक्ट का कंटेनर नहीं चला सकता।",
+      "reason_unavailable": "प्रोजेक्ट के कंटेनर का उपयोग नहीं हो सका।"
     }
   },
   "hooks": {

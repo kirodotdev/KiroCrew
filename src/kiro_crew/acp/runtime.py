@@ -429,6 +429,11 @@ class AcpRuntime:
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
+        # Dev Container state: set in spawn() when this runtime's work dir
+        # resolves to a trusted devcontainer. exec_id names the in-container
+        # pidfile/environ marker that kill() signals through.
+        self._devcontainer_info: Any = None
+        self._devcontainer_exec_id: str | None = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -562,6 +567,52 @@ class AcpRuntime:
         """
         return bool(self._session_queues)
 
+    # ── Dev Container ──
+
+    async def _maybe_devcontainer_info(self) -> Any:
+        """Resolve this runtime's devcontainer, or None to run on the host.
+
+        Thin seam over the shared resolver: the eligibility rules (config mode,
+        platform, config presence, docker, trust) are security-sensitive and
+        have a second caller in AcpClient, so they live in one place rather than
+        being restated per spawn path.
+        """
+        from kiro_crew.devcontainer import resolve_with_locus
+
+        info, _locus = await resolve_with_locus(self._work_dir)
+        return info
+
+    def _session_cwd(self, cwd: str | Path | None) -> str:
+        """The cwd to send over ACP for a session on this runtime.
+
+        Host runtime: the caller's cwd (or the runtime's work dir).
+
+        Containerized runtime: the container-side workspace folder. One runtime
+        hosts MANY ACP sessions (session sharing) but exactly ONE container, so
+        a session whose cwd is not this runtime's work dir has no correct path
+        inside it. That case is REFUSED rather than silently mapped: handing the
+        agent a path that does not exist in the container — or worse, one that
+        exists and belongs to a different project — is a correctness bug the
+        caller can recover from by cold-starting its own runtime.
+
+        In practice the refusal should not fire: a project-scoped session cannot
+        claim a pooled runtime (``cwd_blocks_pool`` in session.py), so it gets a
+        runtime whose work_dir IS its project. The check enforces that invariant
+        instead of assuming it.
+        """
+        info = getattr(self, "_devcontainer_info", None)
+        if info is None:
+            return str(cwd if cwd else self._work_dir)
+        if cwd is None:
+            return str(info.remote_workspace_folder)
+        if os.path.realpath(str(cwd)) == os.path.realpath(str(self._work_dir)):
+            return str(info.remote_workspace_folder)
+        raise AcpRuntimeError(
+            f"cannot host a session for {cwd} on a runtime containerized for "
+            f"{self._work_dir}: one runtime has one Dev Container, so this "
+            f"session needs its own runtime"
+        )
+
     # ── Lifecycle ──
 
     async def spawn(self) -> None:
@@ -597,23 +648,68 @@ class AcpRuntime:
             # cross provider boundaries, and agent configs may pin a model.
             argv += ["--model", self._model]
 
-        # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
-        # MCP-gateway overlay is NOT delivered through the sandbox: its broker
-        # stubs are injected at ACP session/new (see new_session), so pooling
-        # needs no bind-mount and works with sandbox mode "off". strip_python_env
-        # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
-        # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        argv, self._sandbox_cleanup = wrap_argv(
-            argv,
-            mode=self._sandbox_mode,
-            strip_python_env=True,
-            is_kiro_cli=True,
-        )
-        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-        # No-op + loud warning where cgroup delegation is unavailable. --scope
-        # execs into the target, so self._pid below is still the real child.
-        argv = cgroup_scope_argv(argv)
+        # Dev Container path (VS Code parity): when the work dir carries a
+        # trusted devcontainer config, this runtime's kiro-cli runs INSIDE the
+        # project's container. This is the path real sessions take —
+        # AcpProvider.start() routes every non-claude session through
+        # _start_kiro_runtime().
+        #
+        # Mutually exclusive with the host sandbox + cgroup wrappers below: both
+        # are host mechanisms that cannot cross the container boundary. The
+        # container's namespaces stand in for the isolation, but NOT for
+        # everything the host path does, so the pieces that still apply are
+        # carried over explicitly rather than assumed:
+        #   - the environment is scrubbed here too, because the gateway's channel
+        #     credentials live in the inherited env and a namespace does nothing
+        #     about them;
+        #   - the config's own bind mounts are screened against
+        #     is_sensitive_path before a container is ever built (see
+        #     devcontainer.assert_no_sensitive_host_mounts), since a bind can
+        #     hand the agent exactly the paths the sandbox withholds;
+        #   - the DoS ceilings are re-applied as container limits
+        #     (devcontainer._apply_default_resource_caps), because namespaces
+        #     isolate what a process can SEE and do not cap what it can CONSUME:
+        #     a fork bomb or RSS balloon inside the container still lands on the
+        #     shared host kernel.
+        #
+        # The eligibility gate, the exec-id mint and the kill are shared with
+        # AcpClient's spawn path (kiro_crew.devcontainer) so the two cannot
+        # drift; only the inner argv differs between them.
+        devc_info = await self._maybe_devcontainer_info()
+        if devc_info is not None:
+            from kiro_crew.devcontainer import containerize_spawn
+
+            devc_env: dict[str, str] = scrub_agent_denied_env(dict(self._extra_env or {}))
+            # The container's own PATH resolves kiro-cli; the host-resolved
+            # kiro_bin path is meaningless inside the image.
+            inner = [KIRO_CLI_BIN, KIRO_CLI_SUBCMD, "--agent", self._agent]
+            if self._model:
+                inner += ["--model", self._model]
+            spawned = containerize_spawn(devc_info, inner, env=devc_env)
+            argv = spawned.argv
+            self._devcontainer_exec_id = spawned.exec_id
+            self._devcontainer_info = spawned.info
+            self._sandbox_cleanup = None
+        else:
+            # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
+            # MCP-gateway overlay is NOT delivered through the sandbox: its broker
+            # stubs are injected at ACP session/new (see new_session), so pooling
+            # needs no bind-mount and works with sandbox mode "off".
+            # strip_python_env IS applied to keep the host PYTHONPATH/PYTHONHOME
+            # out of kiro-cli's foreign MCP subprocesses (which bundle their own
+            # interpreter + deps).
+            argv, self._sandbox_cleanup = wrap_argv(
+                argv,
+                mode=self._sandbox_mode,
+                strip_python_env=True,
+                is_kiro_cli=True,
+            )
+            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+            # tool descendants with pids.max (fork bomb) + memory.max (RSS
+            # balloon). No-op + loud warning where cgroup delegation is
+            # unavailable. --scope execs into the target, so self._pid below is
+            # still the real child.
+            argv = cgroup_scope_argv(argv)
 
         env = {**os.environ}
         if self._extra_env:
@@ -650,8 +746,7 @@ class AcpRuntime:
             # from the windowless gateway (0 on POSIX, so no effect there).
             start_new_session=platform_compat.IS_POSIX,
             creationflags=(
-                platform_compat.CREATE_NEW_PROCESS_GROUP
-                | platform_compat._SUBPROCESS_NO_WINDOW
+                platform_compat.CREATE_NEW_PROCESS_GROUP | platform_compat._SUBPROCESS_NO_WINDOW
             ),
             env=env,
             profile=RLIMIT_PROFILE_SESSION_HOST,
@@ -736,6 +831,20 @@ class AcpRuntime:
         # waiters learn the runtime died. Calling it after setting _dead=True
         # would hit its early-return guard and skip all cleanup.
         self._mark_dead("killed")
+
+        # Containerized runtime: killing the host-side `docker exec` client only
+        # detaches it — the in-container kiro-cli keeps running. Signal that tree
+        # first, then fall through to the normal host teardown (which reaps the
+        # docker exec client process itself).
+        #
+        # getattr defaults: some test fixtures build a runtime without running
+        # __init__, so these attributes may be absent.
+        from kiro_crew.devcontainer import kill_containerized_tree
+
+        await kill_containerized_tree(
+            getattr(self, "_devcontainer_info", None),
+            getattr(self, "_devcontainer_exec_id", None),
+        )
 
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
@@ -976,9 +1085,7 @@ class AcpRuntime:
                     queue = self._session_queues.get(session_id)
                     if queue is not None:
                         await queue.put(msg)
-                    elif self._session_inits_in_flight and msg.is_method(
-                        METHOD_MCP_OAUTH_REQUEST
-                    ):
+                    elif self._session_inits_in_flight and msg.is_method(METHOD_MCP_OAUTH_REQUEST):
                         # session/new can emit OAuth before its response. The
                         # response is what gives create_session the id needed to
                         # register this queue, so retain the frame until then.
@@ -1275,7 +1382,7 @@ class AcpRuntime:
                 pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
         params = build_session_new_params(
-            cwd if cwd else self._work_dir,
+            self._session_cwd(cwd),
             mcp_servers=mcp_servers,
         )
 
@@ -1371,7 +1478,7 @@ class AcpRuntime:
 
         load_params = {
             "sessionId": resume_sid,
-            "cwd": str(cwd if cwd else self._work_dir),
+            "cwd": self._session_cwd(cwd),
             "mcpServers": [],  # kiro-cli gets its servers via --agent
             "_meta": {"_kiro.dev/session_file": session_file},
         }
@@ -1383,9 +1490,7 @@ class AcpRuntime:
             # A genuine resume echoes "modes" in the response (same signal AcpClient
             # keys on). Anything else means load did not actually restore state.
             if "modes" not in resp:
-                raise AcpRuntimeError(
-                    f"session/load did not resume session {resume_sid}: {resp}"
-                )
+                raise AcpRuntimeError(f"session/load did not resume session {resume_sid}: {resp}")
             loaded_session_id = resume_sid
         finally:
             buffered_init = self._finish_session_init(loaded_session_id)

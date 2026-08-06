@@ -25,6 +25,7 @@
         "sandbox": "off",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
+        "devcontainer": "off",
         "apps_allow_third_party": false,
         "jail": "auto",
         "dangerously_skip_permissions": false,
@@ -259,6 +260,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.devcontainer",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dev Containers",
+      "help": "Run a session's agent inside the project's Dev Container (VS Code parity). 'auto': when the session's project directory carries a .devcontainer/devcontainer.json (or .devcontainer.json) that a dashboard user has trusted, the agent process is executed inside a container built by the @devcontainers/cli, with the project's own toolchain. 'off' (default): agent runs on the host as before. Requires Docker and the devcontainer CLI on a Linux host; trust is granted per config file content and re-prompted on any edit.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "off"
+      ],
+      "defaultValue": "off"
     },
     {
       "path": "agent.apps_allow_third_party",

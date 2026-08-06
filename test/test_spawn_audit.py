@@ -138,6 +138,37 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
         "acp/runtime.py::_get_rss_tree_mb",
+        # Dev Container lifecycle (devcontainer.py): fixed CLI heads — the
+        # @devcontainers/cli for `up`, `docker` for inspect / exec-kill / rm —
+        # always list-argv, never shell=True. The only caller-influenced value
+        # is the project directory, which is realpath-validated to exactly
+        # match an existing chat slot's project by the HTTP layer, and the
+        # container id, which comes from our own `up` result. NOT routed
+        # through sandboxed_spawn_argv for two reasons: (1) the standard/cc
+        # tiers bind-mount ~/.docker away, which breaks registry auth for the
+        # very image pull `up` exists to perform; (2) the container the CLI
+        # creates IS the execution boundary for the session — wrapping the
+        # container-runtime *client* in the host sandbox isolates nothing the
+        # container does not already isolate. `up` is additionally gated on a
+        # human trust grant bound to the config file's SHA-256 (see
+        # devcontainer.is_trusted), so an agent editing devcontainer.json
+        # cannot trigger a build without a fresh human decision.
+        "devcontainer.py::_alive",
+        "devcontainer.py::up",
+        # `docker rm -f <container-id>` — the teardown every path uses to discard
+        # a container that failed post-build verification. The id comes from the
+        # CLI's own success record, not from the config, so nothing here is
+        # agent-influenced; it is shared so a refusal can never leave a container
+        # running.
+        "devcontainer.py::_discard_container",
+        "devcontainer.py::kill_exec",
+        "devcontainer.py::down",
+        # `docker ps -q --filter label=kirocrew.devcontainer=<sha256[:24]>` —
+        # the id-label recovery path that lets status()/down() find a live
+        # container after a gateway restart. The only interpolated value is a
+        # hex digest this module computes from the realpath-validated project
+        # directory, so no caller text reaches argv.
+        "devcontainer.py::_find_by_label",
         # Ops Mission Control ledger-sync tests: fixed `git` argv (init --bare / ls-files)
         # against a per-test tempdir. Nothing here is agent-influenced — the repo path is
         # `tempfile.mkdtemp()` and every argument is a literal in the test file. These are

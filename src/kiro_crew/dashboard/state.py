@@ -1741,7 +1741,26 @@ class _ChatSlot:
             "forked_from": self.forked_from,
             "linked_session_key": self.linked_session_key,
             "app": self._app,
+            "execution": self._execution_payload(),
         }
+
+    def _execution_payload(self) -> dict[str, str | None] | None:
+        """Currently always None: the recorded verdict cannot be attributed to
+        one session, and a wrong answer here is worse than no answer.
+
+        The verdict is recorded per WORK DIR, but several sessions can share a
+        project. A session that fell back to the host, followed by a later
+        session on the same project that did enter a container, would read the
+        newer verdict and render "in container" -- the precise false reassurance
+        this indicator exists to prevent. Over-warning would be tolerable;
+        under-warning is not.
+
+        Reporting resumes once the verdict is keyed by the identity of the
+        process that resolved it rather than by its working directory. The
+        recording side (``devcontainer.resolve_with_locus``) stays in place and
+        tested, and the frontend already renders nothing for an absent value.
+        """
+        return None
 
 
 class DashboardState:
@@ -2916,9 +2935,7 @@ class DashboardState:
                 # The previous owner's slot may already be gone; fall back to
                 # deriving its key from the name in that case.
                 old_key = (
-                    effective_session_key(old_slot)
-                    if old_slot
-                    else _history_key_for(old_owner)
+                    effective_session_key(old_slot) if old_slot else _history_key_for(old_owner)
                 )
                 self.sessions.set_slack_link(old_key, "", "")
         slot._slack_linked = True
@@ -2929,9 +2946,7 @@ class DashboardState:
         if self.sessions:
             from kiro_crew.dashboard.chat_utils import effective_session_key
 
-            self.sessions.set_slack_link(
-                effective_session_key(slot), thread_ts, channel_id
-            )
+            self.sessions.set_slack_link(effective_session_key(slot), thread_ts, channel_id)
         self.push_slots_update()
 
     def get_or_create_slot(

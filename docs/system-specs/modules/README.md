@@ -27,6 +27,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [security.md](security.md) | Sensitive paths, denied commands, credential redaction, the sandbox, and the keystone. |
+| [devcontainers.md](devcontainers.md) | Running a session's agent inside the project's Dev Container: the trust store, container lifecycle, and exec plumbing. |
 | [governance.md](governance.md) | The two-level governance model, the scope catalog, and the PreToolUse gate. |
 | [platform-context.md](platform-context.md) | The Composed Platform Providers seam, edition resolution, and signed-plugin admission. |
 | [computer-use.md](computer-use.md) | Native desktop GUI automation, its keystone opt-in, and the in-band refusals. |

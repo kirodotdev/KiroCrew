@@ -4201,6 +4201,22 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Kiro identity credentials. Agent reads/writes must not be able to replace
     # this trust decision.
     ".kiro_cli_binary_trust.json",
+    # Dev Container trust store (``devcontainers/trust.json``). Same class as
+    # the kiro-cli binary trust above, and the same class as the five Ops
+    # Mission Control entries below: it is an INPUT TO AN AUTHORIZATION
+    # DECISION. ``devcontainer.is_trusted()`` compares the project's current
+    # ``.devcontainer/`` digest against a grant recorded here, and a grant
+    # authorizes ``devcontainer up`` to build and run that configuration —
+    # including its lifecycle commands and whatever ``runArgs`` /
+    # ``privileged`` / ``mounts`` it declares. An agent that could write this
+    # file would record a matching digest for a config it just authored and
+    # self-approve arbitrary container execution, bypassing the human trust
+    # prompt that is the entire premise of the feature. Read-blocked as well
+    # as write-blocked (unlike the Ops entries, which teammates must read):
+    # nothing outside the gateway needs to read it, and the gateway's own
+    # reader opens it directly rather than through this gate. Classified as
+    # the whole directory so future sidecars are covered too.
+    "devcontainers",
     # MCP Apps spool (SEP-1865). Defense-in-depth: the per-render callback
     # capability (`callback_secret`) is delivered owner-WS-only and never
     # written to model-visible text, but the spool records also hold app HTML
