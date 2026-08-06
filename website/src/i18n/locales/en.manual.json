@@ -1415,9 +1415,9 @@
       "tearing_down": "Tearing down..."
     },
     "webPreviewPanel": {
-      "exit_expanded_preview": "Exit expanded preview",
+      "exit_expanded_preview": "Collapse",
       "expand_preview": "Expand preview",
-      "expand_preview_hide_nav_sessions": "Expand preview (hide nav & sessions)",
+      "expand_preview_hide_nav_sessions": "Expand (hide nav and sessions)",
       "responsive_desktop": "Responsive (desktop)"
     },
     "welcomeView": {
