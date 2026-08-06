@@ -235,6 +235,14 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
         monkeypatch.setattr(sandbox, "_inside_macos_sandbox", lambda: False)
         monkeypatch.setattr(sandbox, "is_docker_container", lambda: False)
+        # The guidance branch is chosen by reading the REAL
+        # /proc/sys/kernel/apparmor_restrict_unprivileged_userns. Ubuntu 23.10+
+        # ships that as 1 — including the GitHub-hosted runners — so without this
+        # stub the AppArmor branch answers instead of the generic one and the
+        # assertion below fails on CI while passing on any host that lacks the
+        # restriction. "Bare metal, no backend" is a claim about the scenario, not
+        # about the machine running the test.
+        monkeypatch.setattr(sandbox, "_apparmor_userns_restricted", lambda: False)
         monkeypatch.setattr(
             sandbox,
             "_last_unshare_failure",
@@ -248,3 +256,43 @@ class TestWrapArgvDockerGuidance:
             wrap_argv(["kiro-cli", "chat"], mode="auto")
         assert "install a supported sandbox backend" in str(exc_info.value)
         assert "KIROCREW_ALLOW_UNSANDBOXED" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_apparmor_restricted_host_gets_profile_guidance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On an AppArmor-restricted host the remedy is the profile, not the opt-out.
+
+        The counterpart of the generic case above. Both branches are now asserted
+        against an EXPLICIT host state, so neither is decided by whatever kernel
+        happens to run the suite — which is how the generic case came to fail on
+        Ubuntu runners while passing locally.
+        """
+        from kiro_crew import sandbox
+        from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
+
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_kw: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: False)
+        monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox, "_inside_macos_sandbox", lambda: False)
+        monkeypatch.setattr(sandbox, "is_docker_container", lambda: False)
+        monkeypatch.setattr(sandbox, "_apparmor_userns_restricted", lambda: True)
+        monkeypatch.delenv("APPIMAGE", raising=False)
+        monkeypatch.setattr(
+            sandbox,
+            "_last_unshare_failure",
+            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)"),
+        )
+        fake_sel = MagicMock()
+        fake_sel.return_value = fake_sel
+        monkeypatch.setattr(sandbox, "sel", fake_sel, raising=False)
+
+        if not sys.platform.startswith("linux"):
+            pytest.skip("AppArmor userns restriction is a Linux-only branch")
+
+        with pytest.raises(SandboxUnavailableError) as exc_info:
+            wrap_argv(["kiro-cli", "chat"], mode="auto")
+        message = str(exc_info.value)
+        assert "apparmor_restrict_unprivileged_userns" in message
+        # The profile is offered before the opt-out, and the opt-out is still named.
+        assert message.index("kirocrew service install") < message.index("last resort")
