@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ── Script fallback faces ──
-   zh-CN, ja, hi and bn have no font coverage otherwise: every family in --font-body
+   zh-CN, ja, ko, hi and bn have no font coverage otherwise: every family in --font-body
    and --mono below covers Latin only, so those scripts fall through to the
    browser's per-script fallback, which picks a face per character and silently
    mismatches. CJK punctuation makes it visible — Unicode uses one code point for
@@ -87,6 +87,38 @@
                  U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
                  U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
+/* Korean needs its own alias for a different reason than Japanese does: Hangul
+   (U+AC00-D7AF and the Jamo blocks) is absent from the SC and JP faces' coverage
+   in practice, so leaving zh-CN's alias in front for html:lang(ko) puts an alias
+   that cannot draw Hangul ahead of one that can, and the browser resolves each
+   syllable from the OS cascade instead. The Han ranges are claimed too — Korean
+   copy is Hangul-only, but a quoted 한자 in user content should draw the Korean
+   glyph form, not the Simplified one. */
+@font-face {
+  font-family: 'KC Korean Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Apple SD Gothic Neo'), local('AppleSDGothicNeo-Regular'),
+       local('Malgun Gothic'), local('MalgunGothic'), local('Noto Sans CJK KR'),
+       local('NotoSansCJKkr-Regular'), local('Noto Sans KR'), local('NotoSansKR-Regular'),
+       local('Source Han Sans KR'), local('SourceHanSansKR-Regular'),
+       local('Nanum Gothic'), local('NanumGothic');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Korean Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Apple SD Gothic Neo Bold'), local('AppleSDGothicNeo-Bold'),
+       local('Malgun Gothic Bold'), local('MalgunGothic-Bold'),
+       local('Noto Sans CJK KR Bold'), local('NotoSansCJKkr-Bold'),
+       local('Noto Sans KR Bold'), local('NotoSansKR-Bold'),
+       local('Source Han Sans KR Bold'), local('SourceHanSansKR-Bold'),
+       local('Nanum Gothic Bold'), local('NanumGothic-Bold');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
 /* Monospace Han, for code and CLI surfaces. Rarely installed on a stock machine;
    when absent 'KC Han Fallback' follows it in --script-fallbacks-mono, so Han in a
    code block draws from a proportional face — the same pairing the browser's own
@@ -126,6 +158,26 @@
   unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3040-309F, U+30A0-30FF,
                  U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
                  U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Korean Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('D2Coding'), local('D2Coding-Regular'), local('Sarasa Mono K'),
+       local('SarasaMonoK-Regular'), local('Noto Sans Mono CJK KR'),
+       local('NotoSansMonoCJKkr-Regular');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Korean Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('D2Coding Bold'), local('D2Coding-Bold'), local('Sarasa Mono K Bold'),
+       local('SarasaMonoK-Bold'), local('Noto Sans Mono CJK KR Bold'),
+       local('NotoSansMonoCJKkr-Bold');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
 @font-face {
   font-family: 'KC Devanagari Fallback';
@@ -176,6 +228,12 @@ html:lang(ja) {
      falling through lets the browser use its lang-aware Japanese fallback. */
   --script-fallbacks:'KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+}
+html:lang(ko) {
+  /* Never retain the SC or JP aliases here. Neither draws Hangul, so leaving one
+     in front only delays resolution to the browser's lang-aware Korean fallback. */
+  --script-fallbacks:'KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 /* Dark theme shadows */
 :root,[data-theme="dark"],[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="amber-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
