@@ -104,8 +104,9 @@ that dir is appended to the MCP spawn `PATH` automatically
 ## The unsandboxed-exec opt-in
 
 Windows has no OS sandbox backend, and `wrap_argv` fails closed rather than running
-an agent subprocess unconfined without consent. So chat tool calls, and the Papyrus
-compile and git paths, need an explicit opt-in in `%USERPROFILE%\.kiro\crew\config.json`:
+an agent subprocess unconfined without consent. So chat tool calls, the dashboard
+model picker, and the Papyrus compile and git paths, need an explicit opt-in in
+`%USERPROFILE%\.kiro\crew\config.json`:
 
 ```json
 { "agent": { "sandbox_allow_unsandboxed_exec": true } }
@@ -130,6 +131,7 @@ the remedy rather than failing obscurely.
 | Feature | Status on Windows |
 |---------|-------------------|
 | Core gateway / chat / cron / dashboard | works |
+| Dashboard model picker | needs the `agent.sandbox_allow_unsandboxed_exec` opt-in above — the list comes from a `kiro-cli chat --list-models` spawn that routes through `wrap_argv`, so without it `/api/models` answers 503 (`model_list_sandbox_unavailable`) and the picker offers only `auto` |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
 | Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
