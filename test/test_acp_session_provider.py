@@ -1008,3 +1008,77 @@ class TestNewConversation:
         # destroyed and stays the provider's handle for the hard-reset fallback.
         new_handle.destroy.assert_awaited_once()
         assert provider._handle is old
+
+
+class TestLivePathModelEntitlement:
+    """The guard has to sit on the path real sessions actually take.
+
+    Dashboard sessions do NOT go through AcpClient's handshake — providers.acp
+    spawns an AcpRuntime and applies the configured model with
+    ``handle.set_model``. A guard in AcpClient alone would be inert here, which
+    is exactly how the unusable model kept reaching the wire.
+    """
+
+    @staticmethod
+    def _provider(advertised):
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        handle = _make_handle()
+        handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+        handle.set_model = AsyncMock()
+        return AcpSessionProvider(handle, MagicMock()), handle
+
+    @pytest.mark.asyncio
+    async def test_explicit_switch_refused_on_live_path(self):
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        provider, handle = self._provider(["claude-sonnet-4.6", "claude-haiku-4.5"])
+
+        with pytest.raises(AcpModelUnavailable) as excinfo:
+            await provider.set_model("claude-opus-4.8")
+
+        handle.set_model.assert_not_awaited()
+        msg = str(excinfo.value)
+        assert "not available on your account" in msg
+        assert "claude-sonnet-4.6" in msg
+        # Terminal, so the retry ladder does not reproduce the same rejection.
+        assert excinfo.value.transient is False
+
+    @pytest.mark.asyncio
+    async def test_advertised_switch_still_applied_on_live_path(self):
+        provider, handle = self._provider(["claude-sonnet-4.6", "claude-opus-4.8"])
+
+        await provider.set_model("claude-opus-4.8")
+
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_unknown_advertised_set_still_applied(self):
+        """A backend that advertises nothing must not have every switch refused."""
+        provider, handle = self._provider([])
+
+        await provider.set_model("claude-opus-4.8")
+
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_malformed_advertised_payload_does_not_raise(self):
+        """Remote-shaped input degrades to "unknown", never an exception."""
+        provider, handle = self._provider([])
+        handle.available_models = "not-a-list"
+
+        await provider.set_model("claude-opus-4.8")
+
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+
+class TestAdvertisedModelIds:
+    def test_extracts_ids_and_tolerates_junk(self):
+        from kiro_crew.acp.client import advertised_model_ids
+
+        assert advertised_model_ids([{"modelId": "a"}, {"value": "b"}]) == ["a", "b"]
+        # Non-list, non-dict members, and blank ids are all dropped rather than
+        # raising inside session startup.
+        assert advertised_model_ids(None) == []
+        assert advertised_model_ids("nope") == []
+        assert advertised_model_ids([{"modelId": "  "}, "x", 7]) == []

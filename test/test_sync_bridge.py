@@ -7,8 +7,8 @@ import time
 from unittest.mock import patch
 
 import pytest
-from conftest import MockSlackClient
 
+from conftest import MockSlackClient
 from kiro_crew.history import ConversationLog
 from kiro_crew.sync_bridge import (
     _PENDING_RESUME_TTL,

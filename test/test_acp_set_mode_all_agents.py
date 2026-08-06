@@ -49,3 +49,61 @@ async def test_set_mode_called_for_all_agents(agent, tmp_path):
         f"set_mode not called for agent={agent!r}; calls: {client._send_request.call_args_list}"
     )
     assert set_mode_calls[0].args[1]["modeId"] == agent
+
+
+async def _wait_with_modes(mode_ids):
+    """Init-step response factory that advertises a `modes` payload."""
+
+    async def _fake(rid, timeout=None):
+        return {
+            "protocolVersion": "1.0",
+            "sessionId": "sess-123",
+            "modes": {
+                "currentModeId": "kirocrew",
+                "availableModes": [{"id": m} for m in mode_ids],
+            },
+        }
+
+    return _fake
+
+
+@pytest.mark.asyncio
+async def test_set_mode_fails_closed_when_agent_not_in_advertised_modes(tmp_path):
+    """Guard (A): backend advertises a `modes` list that excludes the agent →
+    FAIL CLOSED (raise), never silently run kiro-cli's default mode in place of
+    the requested (possibly more-restricted) agent."""
+    from kiro_crew.acp.client import AcpError
+
+    client = _make_client("ghost-agent", tmp_path)
+    client._session_id = None  # force the session/new path so modes are captured
+    client._send_request = AsyncMock(return_value=1)
+    client._wait_for_response = AsyncMock(side_effect=await _wait_with_modes(["kirocrew"]))
+    client._drain_notifications = AsyncMock()
+
+    with patch("pathlib.Path.exists", return_value=False), patch("pathlib.Path.stat"):
+        with pytest.raises(AcpError, match="not available"):
+            await client._initialize_session()
+
+    set_mode_calls = [
+        c for c in client._send_request.call_args_list if c.args[0] == METHOD_SET_MODE
+    ]
+    assert set_mode_calls == [], "the wrong agent mode must never be activated"
+
+
+@pytest.mark.asyncio
+async def test_set_mode_sent_when_agent_in_advertised_modes(tmp_path):
+    """When the agent IS advertised, set_mode still fires with its modeId."""
+    client = _make_client("ops", tmp_path)
+    client._session_id = None  # force the session/new path so modes are captured
+    client._send_request = AsyncMock(return_value=1)
+    client._wait_for_response = AsyncMock(side_effect=await _wait_with_modes(["kirocrew", "ops"]))
+    client._drain_notifications = AsyncMock()
+
+    with patch("pathlib.Path.exists", return_value=False), patch("pathlib.Path.stat"):
+        await client._initialize_session()
+
+    set_mode_calls = [
+        c for c in client._send_request.call_args_list if c.args[0] == METHOD_SET_MODE
+    ]
+    assert len(set_mode_calls) == 1
+    assert set_mode_calls[0].args[1]["modeId"] == "ops"

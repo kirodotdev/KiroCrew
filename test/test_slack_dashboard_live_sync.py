@@ -28,7 +28,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
 from kiro_crew.dashboard.channel_slots import refresh_channel_window, surface_channel_session
-from kiro_crew.history import ConversationLog
+from kiro_crew.history import ConversationLog, transcript_sort_key
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.slack import transport_dispatch
 
@@ -298,15 +298,17 @@ class TestDTheQuestionIsRecordedBeforeTheAnswer:
         # Splitting the write must not double the question.
         assert rows == [("user", "the question"), ("assistant", "the reply")]
 
-    def test_the_two_rows_carry_distinct_timestamps(self, tmp_path):
+    def test_the_two_rows_sort_in_the_order_they_happened(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
 
         _drive_transport(log)
 
         rows = log.read_messages(_SESSION_KEY)
-        # Co-stamping them microseconds apart lost how long the turn took and
-        # made the pair sort unstably at the millisecond precision JS carries.
-        assert rows[0]["ts"] != rows[1]["ts"]
+        # Asserting the two are merely DIFFERENT was a proxy for this, and it
+        # depended on the clock ticking between the two writes -- which on a
+        # ~15.6 ms-granularity clock it often does not. Assert what consumers
+        # actually need: the question sorts before the answer.
+        assert transcript_sort_key(rows[0]["ts"]) < transcript_sort_key(rows[1]["ts"])
 
     def test_a_failed_receipt_write_still_records_the_whole_turn(self, tmp_path):
         class _FailsFirstAppend(ConversationLog):

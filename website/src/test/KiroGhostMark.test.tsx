@@ -36,7 +36,13 @@ describe('KiroGhostMark', () => {
     // currentColor is what makes the glyph inherit the nav row's text colour.
     expect(getByTestId('kiro-ghost-mark').style.backgroundColor).toBe('currentcolor')
     const style = maskStyle()
-    expect(style).toContain('kiro-ghost-mark') // the ghost asset is the mask source
+    // The ghost SVG (1.2 KB, under the 4 KB inline limit) is inlined as a
+    // `data:image/svg+xml,…` URI by the bundler, so the mask paints the ghost
+    // art directly. (Vite 5 returned the dev file path — containing the asset
+    // filename — in the test transform; Vite 8 inlines it, matching what the
+    // production build already shipped. The component's `url={ghostMarkUrl}`
+    // binding guarantees it is the ghost asset specifically.)
+    expect(style).toContain('data:image/svg+xml') // the ghost asset is the mask source
     expect(style).toContain('mask-size:contain')
   })
 

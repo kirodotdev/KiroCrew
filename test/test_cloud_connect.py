@@ -401,15 +401,76 @@ class TestRegistryIntegration:
 
         monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
 
-        rid = connect.register_instance("i-0abc", name="KiroCrew Cloud")
+        rid = connect.register_instance(
+            "i-0abc1234", name="Kiro Crew Cloud", profile="dev", region="us-west-2"
+        )
         assert rid is not None
-        assert any(i.ssh_host == "i-0abc" for i in reg.list())
+        # Registers over the native SSM transport, not the legacy ssh_host path.
+        inst = next(i for i in reg.list() if i.id == rid)
+        assert inst.connection_method == "ssm"
+        assert inst.ssm_target == "i-0abc1234"
+        assert inst.aws_profile == "dev"
+        assert inst.aws_region == "us-west-2"
+        assert inst.ssh_host == ""
 
-    def test_unregister_instance(self, monkeypatch, tmp_path):
+    def test_register_instance_is_idempotent_on_relaunch(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
-        reg.add(name="KiroCrew Cloud", ssh_host="i-0abc")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+
+        first = connect.register_instance("i-0abc1234", name="Kiro Crew Cloud")
+        assert first is not None
+        # Simulate persisted per-instance state a re-launch must NOT wipe:
+        # customized TTL, an allocated local port, and sticky connect intent.
+        reg.update(first, ttl="30m", local_port=5599, was_connected=True)
+
+        second = connect.register_instance("i-0abc1234", name="Kiro Crew Cloud")
+        # Re-launch updates in place: same id, no duplicate, state preserved.
+        assert second == first
+        matches = [i for i in reg.list() if i.ssm_target == "i-0abc1234"]
+        assert len(matches) == 1
+        rec = matches[0]
+        assert rec.ttl == "30m"
+        assert rec.local_port == 5599
+        assert rec.was_connected is True
+
+    def test_unregister_instance_empty_arg_is_noop(self, monkeypatch, tmp_path):
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+        # An SSM record (ssh_host="") and an SSH record (ssm_target="") coexist.
+        connect.register_instance("i-0abc1234", name="Kiro Crew Cloud")
+        reg.add(name="dev-box", ssh_host="dev-box")
+
+        # An empty needle must NOT match an empty transport field of either record.
+        assert connect.unregister_instance("") is False
+        assert len(reg.list()) == 2
+
+    def test_unregister_instance_ssm(self, monkeypatch, tmp_path):
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        import kiro_crew.instances.registry as regmod
+
+        monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)
+
+        connect.register_instance("i-0abc1234", name="Kiro Crew Cloud")
+        # Removal matches on ssm_target (the native registration).
+        assert connect.unregister_instance("i-0abc1234") is True
+        assert not any(i.ssm_target == "i-0abc1234" for i in reg.list())
+
+    def test_unregister_instance_legacy_ssh_host(self, monkeypatch, tmp_path):
+        from kiro_crew.instances.registry import InstancesRegistry
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        # A box registered the old way (ssh_host = instance id) still unregisters.
+        reg.add(name="Kiro Crew Cloud", ssh_host="i-0abc")
         import kiro_crew.instances.registry as regmod
 
         monkeypatch.setattr(regmod, "InstancesRegistry", lambda *a, **k: reg)

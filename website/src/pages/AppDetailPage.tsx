@@ -159,7 +159,7 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
             <button
               key={i}
               type="button"
-              aria-label={`Open screenshot ${i + 1}`}
+              aria-label={i18nT('pages.appDetailPage.open_screenshot', { n: i + 1 })}
               className="p-0 border-none bg-transparent shrink-0 cursor-pointer"
               onClick={() => setSelected(i)}
             >
@@ -168,7 +168,7 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
               {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
               <img
                 src={url}
-                alt={`Screenshot ${i + 1}`}
+                alt={i18nT('pages.appDetailPage.screenshot', { n: i + 1 })}
                 className="h-40 rounded-lg border border-border hover:border-accent/40 hover:shadow-md transition-all object-cover"
                 onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
               />
@@ -324,7 +324,7 @@ export default function AppDetailPage() {
           platform: registryEntry.platform,
         })
       } else {
-        setError(`App "${name}" not found`)
+        setError(i18nT('pages.appDetailPage.app_not_found_2', { name }))
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_load_app'))
@@ -433,7 +433,7 @@ export default function AppDetailPage() {
       window.dispatchEvent(new Event('mc:apps-changed'))
     } catch (e: unknown) {
       setDeniedByPolicy(isExecutionDenied(e))
-      setError(e instanceof Error ? e.message : `Failed to ${action}`)
+      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
     } finally {
       setActionLoading(null)
     }
@@ -471,7 +471,7 @@ export default function AppDetailPage() {
   if (!app) {
     return (
       <>
-        <PageHeader title={i18nT('pages.appDetailPage.app_not_found')} subtitle={error || `"${name}" doesn't exist`} />
+        <PageHeader title={i18nT('pages.appDetailPage.app_not_found')} subtitle={error || i18nT('pages.appDetailPage.doesnt_exist', { name })} />
         <div className="flex-1 flex items-center justify-center p-8">
           <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}</Btn>
         </div>
@@ -532,7 +532,7 @@ export default function AppDetailPage() {
               </span>
               {deniedByPolicy ? (
                 <div className="mt-2">
-                  <Btn danger onClick={() => navigate('/settings?tab=security')}>
+                  <Btn danger onClick={() => navigate('/settings?tab=security&section=apps')}>
                     {i18nT('pages.appDetailPage.open_security_settings')}
                   </Btn>
                 </div>

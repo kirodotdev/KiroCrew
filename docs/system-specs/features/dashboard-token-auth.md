@@ -13,10 +13,10 @@ Kiro CLI prerequisite gate. A cold browser with a stale access cookie can
 therefore rotate its refresh cookie even while the main dashboard tree is not
 yet mounted, rather than being trapped behind the setup screen.
 
-The first-run Kiro CLI routes (`GET /api/kiro-prerequisite`,
-`POST /api/kiro-prerequisite/install`, and
-`POST /api/kiro-prerequisite/login`) are deliberately **not** token-bypass or
-internal-secret routes. They inherit normal dashboard-user authentication,
+The first-run Kiro CLI routes (`GET /api/kiro-prerequisite` and
+`POST /api/kiro-prerequisite/repair-specs` — Kiro Crew neither installs the CLI
+nor signs in, so there is no install or login route) are deliberately **not**
+token-bypass or internal-secret routes. They inherit normal dashboard-user authentication,
 Host validation, POST CSRF protection, app-token deny-by-default scoping, and
 SEL API auditing. Each handler also rejects every non-empty app claim even if
 the app manifest declares this API prefix. The browser's

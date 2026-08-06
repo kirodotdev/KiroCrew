@@ -296,7 +296,6 @@ class TestHandlerChannelAgent:
     async def test_channel_agent_passed_to_session(self):
         """channel_agent parameter is used for session agent selection."""
         from conftest import MockSlackClient
-
         from kiro_crew.slack.handler import handle_message
 
         class FakeProvider:

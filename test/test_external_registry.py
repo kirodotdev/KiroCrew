@@ -2091,6 +2091,7 @@ class TestManifestOriginGate:
     def _seed_stale_clone(self, tmp_path, marker):
         clone_dir = tmp_path / "app-sources" / "myapp"
         (clone_dir / ".git").mkdir(parents=True)
+        (clone_dir / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
         (clone_dir / "app.json").write_text(
             json.dumps({"name": "myapp", "version": marker}), encoding="utf-8"
         )
@@ -3593,11 +3594,391 @@ class TestStaleCheckoutSweep:
         removed = _sweep_stale_checkouts_sync(sources, time.time())
 
         # The refreshed dir must survive — its mtime is now < retention.
-        assert moved.exists(), (
-            "Move-aside dir with refreshed mtime should NOT be swept"
-        )
+        assert moved.exists(), "Move-aside dir with refreshed mtime should NOT be swept"
         assert "myapp.stale-aabb0011" not in removed
 
         # The genuinely old one must still be swept.
         assert not genuinely_old.exists()
         assert "other.stale-cc001122" in removed
+
+
+# ---------------------------------------------------------------------------
+# Branch-aware manifest fast path: persistent clone on branch A + entry
+# branch B must NOT serve the stale (branch-A) manifest through the fast path.
+# (registry-admission-branch-consistency)
+# ---------------------------------------------------------------------------
+
+
+class TestManifestBranchGate:
+    """Regression: the fast path must require BOTH origin AND branch to match.
+
+    The pre-fix chain:
+      1. _fetch_app_manifest served app.json from persistent clone (branch A)
+      2. Admission gated on branch-A's manifest
+      3. _git_clone_or_pull fast-forwarded onto branch B
+      4. Branch-B code ran with admission decided on branch-A's manifest
+
+    Post-fix: the fast path also checks ``_clone_branch_matches`` — it only
+    serves the local manifest when clone branch == requested branch. Mismatch
+    falls through to the throwaway clone that fetches the correct branch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_branch_mismatch_skips_fast_path(self, tmp_path):
+        """Persistent clone on branch A must NOT supply its manifest when
+        the entry requests branch B."""
+        from kiro_crew.apps import registry as reg
+
+        clone_url = "https://example.com/target-app.git"
+
+        # Set up a fake persistent clone on "old-branch" with a stale manifest.
+        clone_dir = tmp_path / "app-sources" / "target-app"
+        clone_dir.mkdir(parents=True)
+        git_dir = clone_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {clone_url}\n',
+            encoding="utf-8",
+        )
+        (git_dir / "HEAD").write_text(
+            "ref: refs/heads/old-branch\n",
+            encoding="utf-8",
+        )
+        (clone_dir / "app.json").write_text(
+            '{"name": "target-app", "version": "1.0.0", "stale": true}',
+            encoding="utf-8",
+        )
+
+        # The throwaway clone (new branch) returns a different manifest.
+        new_manifest = {"name": "target-app", "version": "2.0.0", "stale": False}
+
+        async def _fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=clone_dir,
+            ),
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                lambda argv, **k: (list(argv), None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.cgroup_scope_argv",
+                side_effect=lambda a: a,
+            ),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_exec,
+            ),
+            patch("tempfile.mkdtemp", return_value=str(tmp_path / "throwaway")),
+        ):
+            # Ensure the throwaway dir has app.json from the new branch.
+            throwaway = tmp_path / "throwaway"
+            throwaway.mkdir(parents=True, exist_ok=True)
+            (throwaway / "app.json").write_text(json.dumps(new_manifest), encoding="utf-8")
+
+            result = await reg._fetch_app_manifest(
+                clone_url,
+                "new-branch",  # entry wants branch B
+                "",
+                app_name="target-app",
+                git_url=clone_url,
+                owner_designated=False,
+            )
+
+        # The stale manifest (branch-A, version 1.0.0) must NOT be returned.
+        assert result is not None
+        assert result.get("stale") is not True
+        assert result.get("version") == "2.0.0"
+
+    @pytest.mark.asyncio
+    async def test_same_branch_serves_fast_path(self, tmp_path):
+        """Persistent clone with matching origin AND branch still serves its
+        local manifest (fast path preserved)."""
+        from kiro_crew.apps import registry as reg
+
+        matching_url = "https://example.com/matching-app.git"
+
+        clone_dir = tmp_path / "app-sources" / "matching-app"
+        clone_dir.mkdir(parents=True)
+        git_dir = clone_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {matching_url}\n',
+            encoding="utf-8",
+        )
+        (git_dir / "HEAD").write_text(
+            "ref: refs/heads/main\n",
+            encoding="utf-8",
+        )
+        (clone_dir / "app.json").write_text(
+            '{"name": "matching-app", "version": "3.0.0"}',
+            encoding="utf-8",
+        )
+
+        captured: dict = {}
+
+        async def _fake_exec(*args, **kwargs):
+            captured.setdefault("calls", []).append(list(args))
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(matching_url.encode() + b"\n", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=clone_dir,
+            ),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                side_effect=lambda a, mode="standard": (a, None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.cgroup_scope_argv",
+                side_effect=lambda a: a,
+            ),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_exec,
+            ),
+        ):
+            result = await reg._fetch_app_manifest(
+                matching_url,
+                "main",
+                "",
+                app_name="matching-app",
+                git_url=matching_url,
+                owner_designated=False,
+            )
+
+        # Origin + branch match → persistent clone manifest served directly.
+        assert result is not None
+        assert result["version"] == "3.0.0"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_branch_fails_closed(self, tmp_path):
+        """If .git/HEAD is missing (detached or corrupt), the fast path is NOT
+        used — fail closed to throwaway clone."""
+        from kiro_crew.apps import registry as reg
+
+        matching_url = "https://example.com/target-app.git"
+
+        # Set up persistent clone with matching origin but NO .git/HEAD.
+        clone_dir = tmp_path / "app-sources" / "target-app"
+        clone_dir.mkdir(parents=True)
+        git_dir = clone_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {matching_url}\n',
+            encoding="utf-8",
+        )
+        # No HEAD file — _read_clone_branch returns None.
+        (clone_dir / "app.json").write_text(
+            '{"name": "target-app", "version": "1.0.0", "should-not-serve": true}',
+            encoding="utf-8",
+        )
+
+        new_manifest = {"name": "target-app", "version": "2.0.0"}
+
+        async def _fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=clone_dir,
+            ),
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                lambda argv, **k: (list(argv), None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.cgroup_scope_argv",
+                side_effect=lambda a: a,
+            ),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_exec,
+            ),
+            patch("tempfile.mkdtemp", return_value=str(tmp_path / "throwaway")),
+        ):
+            throwaway = tmp_path / "throwaway"
+            throwaway.mkdir(parents=True, exist_ok=True)
+            (throwaway / "app.json").write_text(json.dumps(new_manifest), encoding="utf-8")
+
+            result = await reg._fetch_app_manifest(
+                matching_url,
+                "main",
+                "",
+                app_name="target-app",
+                git_url=matching_url,
+                owner_designated=False,
+            )
+
+        # Unreadable branch → fail closed → throwaway clone manifest served.
+        assert result is not None
+        assert result.get("should-not-serve") is not True
+        assert result.get("version") == "2.0.0"
+
+    @pytest.mark.asyncio
+    async def test_detached_head_fails_closed(self, tmp_path):
+        """Detached HEAD (raw SHA in .git/HEAD) → fail closed, throwaway clone
+        used even though origin matches."""
+        from kiro_crew.apps import registry as reg
+
+        matching_url = "https://example.com/target-app.git"
+
+        clone_dir = tmp_path / "app-sources" / "target-app"
+        clone_dir.mkdir(parents=True)
+        git_dir = clone_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {matching_url}\n',
+            encoding="utf-8",
+        )
+        # Detached HEAD — raw SHA, not a branch ref.
+        (git_dir / "HEAD").write_text(
+            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n",
+            encoding="utf-8",
+        )
+        (clone_dir / "app.json").write_text(
+            '{"name": "target-app", "version": "1.0.0", "stale": true}',
+            encoding="utf-8",
+        )
+
+        new_manifest = {"name": "target-app", "version": "2.0.0"}
+
+        async def _fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=clone_dir,
+            ),
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                lambda argv, **k: (list(argv), None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.cgroup_scope_argv",
+                side_effect=lambda a: a,
+            ),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_exec,
+            ),
+            patch("tempfile.mkdtemp", return_value=str(tmp_path / "throwaway")),
+        ):
+            throwaway = tmp_path / "throwaway"
+            throwaway.mkdir(parents=True, exist_ok=True)
+            (throwaway / "app.json").write_text(json.dumps(new_manifest), encoding="utf-8")
+
+            result = await reg._fetch_app_manifest(
+                matching_url,
+                "main",
+                "",
+                app_name="target-app",
+                git_url=matching_url,
+                owner_designated=False,
+            )
+
+        # Detached HEAD → _read_clone_branch returns None → fail closed.
+        assert result is not None
+        assert result.get("stale") is not True
+        assert result.get("version") == "2.0.0"
+
+    @pytest.mark.asyncio
+    async def test_non_utf8_head_fails_closed(self, tmp_path):
+        """Non-UTF-8 bytes in .git/HEAD → _read_clone_branch returns None,
+        _clone_branch_matches returns False, no UnicodeDecodeError propagates.
+
+        Regression: before the fix, read_text("utf-8") raised
+        UnicodeDecodeError which was not caught by the except-OSError handler.
+        """
+        from kiro_crew.apps import registry as reg
+
+        matching_url = "https://example.com/target-app.git"
+
+        clone_dir = tmp_path / "app-sources" / "target-app"
+        clone_dir.mkdir(parents=True)
+        git_dir = clone_dir / ".git"
+        git_dir.mkdir()
+        (git_dir / "config").write_text(
+            f'[remote "origin"]\n\turl = {matching_url}\n',
+            encoding="utf-8",
+        )
+        # Write non-UTF-8 bytes into HEAD — triggers UnicodeDecodeError on read.
+        (git_dir / "HEAD").write_bytes(b"ref: refs/heads/\xff\xfe\n")
+        (clone_dir / "app.json").write_text(
+            '{"name": "target-app", "version": "1.0.0", "stale": true}',
+            encoding="utf-8",
+        )
+
+        # Unit-level: _read_clone_branch must return None, no exception.
+        assert reg._read_clone_branch(clone_dir) is None
+
+        # Unit-level: _clone_branch_matches must return False, no exception.
+        assert await reg._clone_branch_matches(clone_dir, "main") is False
+
+        # Integration: fetch_app_manifest fails closed → throwaway clone used.
+        new_manifest = {"name": "target-app", "version": "2.0.0"}
+
+        async def _fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with (
+            patch(
+                "kiro_crew.apps.registry.app_source_dir",
+                return_value=clone_dir,
+            ),
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch(
+                "kiro_crew.apps.registry.wrap_argv",
+                lambda argv, **k: (list(argv), None),
+            ),
+            patch(
+                "kiro_crew.apps.registry.cgroup_scope_argv",
+                side_effect=lambda a: a,
+            ),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_exec,
+            ),
+            patch("tempfile.mkdtemp", return_value=str(tmp_path / "throwaway")),
+        ):
+            throwaway = tmp_path / "throwaway"
+            throwaway.mkdir(parents=True, exist_ok=True)
+            (throwaway / "app.json").write_text(json.dumps(new_manifest), encoding="utf-8")
+
+            result = await reg._fetch_app_manifest(
+                matching_url,
+                "main",
+                "",
+                app_name="target-app",
+                git_url=matching_url,
+                owner_designated=False,
+            )
+
+        # Non-UTF-8 HEAD → fail closed → throwaway clone manifest served.
+        assert result is not None
+        assert result.get("stale") is not True
+        assert result.get("version") == "2.0.0"

@@ -9,11 +9,14 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useLineReveal, REVEAL_FLASH_MS, type RevealTarget } from '../hooks/useLineReveal'
+import { useLineReveal, REVEAL_FLASH_MS, REVEAL_HOLD_MS, REVEAL_FADE_MS, type RevealTarget } from '../hooks/useLineReveal'
 
 /** Minimal stand-in for the surface useLineReveal actually touches. */
 function fakeEditor(lineCount = 1000) {
   const decorations = { clear: vi.fn() }
+  /** Stands in for the editor container: the hook publishes the fade timings onto
+   *  it as custom properties so index.css animates on the same numbers. */
+  const container = document.createElement('div')
   const dispose = vi.fn()
   /** Fires the layout listener, standing in for automaticLayout's ResizeObserver
    *  handing the editor a real height a beat after mount. `height` is what the
@@ -24,14 +27,16 @@ function fakeEditor(lineCount = 1000) {
     getModel: () => ({ getLineCount: () => lineCount }),
     getLayoutInfo: () => ({ height }),
     revealLineInCenter: vi.fn(),
+    revealLinesInCenter: vi.fn(),
     setPosition: vi.fn(),
+    getContainerDomNode: () => container,
     focus: vi.fn(),
     createDecorationsCollection: vi.fn(() => decorations),
     onDidLayoutChange: vi.fn((cb: () => void) => { onLayout = cb; return { dispose } }),
   }
   const monaco = { Range: class { constructor(public a: number, public b: number, public c: number, public d: number) {} } }
   return {
-    ed, monaco, decorations, dispose,
+    ed, monaco, decorations, dispose, container,
     /** Emit a layout change. `h` is the viewport height the editor now reports;
      *  0 models the pre-layout state that causes the top-edge bug. */
     relayout: (h = 600) => { height = h; onLayout?.() },
@@ -46,6 +51,7 @@ const mount = (result: { current: { onEditorMount: (e: any, m: any) => void } },
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 const target = (line: number, nonce = 1): RevealTarget => ({ line, nonce })
+const span = (line: number, endLine: number, nonce = 1): RevealTarget => ({ line, endLine, nonce })
 
 beforeEach(() => { vi.useFakeTimers() })
 afterEach(() => { vi.useRealTimers() })
@@ -221,6 +227,112 @@ describe('useLineReveal', () => {
     mount(result, f)
     act(() => { f.relayout() })
     expect(f.ed.revealLineInCenter).not.toHaveBeenCalled()
+  })
+
+  it('reveals a RANGE with revealLinesInCenter, not just its first line', () => {
+    // A `file.md:10-16` citation should fit the whole passage on screen; centring
+    // line 10 alone would leave the rest of what was cited below the fold.
+    const f = fakeEditor()
+    const { result } = renderHook(() => useLineReveal(span(10, 16)))
+    mount(result, f)
+    expect(f.ed.revealLinesInCenter).toHaveBeenCalledWith(10, 16)
+    expect(f.ed.revealLineInCenter).not.toHaveBeenCalled()
+    // The caret goes to the START of the span, not the end.
+    expect(f.ed.setPosition).toHaveBeenCalledWith({ lineNumber: 10, column: 1 })
+  })
+
+  it('decorates every line of the range', () => {
+    const f = fakeEditor()
+    const { result } = renderHook(() => useLineReveal(span(10, 16)))
+    mount(result, f)
+    const deco = f.ed.createDecorationsCollection.mock.calls[0][0][0]
+    // isWholeLine over start..end is what paints the whole block.
+    expect(deco.options.isWholeLine).toBe(true)
+    expect([deco.range.a, deco.range.c]).toEqual([10, 16])
+  })
+
+  it('clamps a range at both ends and collapses one wholly past EOF', () => {
+    const f = fakeEditor(120)
+    const { result } = renderHook(() => useLineReveal(span(100, 9999)))
+    mount(result, f)
+    expect(f.ed.revealLinesInCenter).toHaveBeenCalledWith(100, 120)
+
+    const g = fakeEditor(50)
+    const r2 = renderHook(() => useLineReveal(span(400, 500)))
+    mount(r2.result, g)
+    // Both ends clamp to the last line, so the span degenerates to one line and
+    // takes the single-line path rather than asking for a zero-height range.
+    expect(g.ed.revealLineInCenter).toHaveBeenCalledWith(50)
+    expect(g.ed.revealLinesInCenter).not.toHaveBeenCalled()
+  })
+
+  it('re-centres a range on layout settle, not just its first line', () => {
+    const f = fakeEditor()
+    const { result } = renderHook(() => useLineReveal(span(10, 16)))
+    mount(result, f)
+    f.ed.revealLinesInCenter.mockClear()
+    act(() => { f.relayout(600) })
+    expect(f.ed.revealLinesInCenter).toHaveBeenCalledWith(10, 16)
+  })
+
+  it('publishes the fade timings to CSS so the stylesheet cannot drift', () => {
+    // The highlight fades via a CSS animation on the decoration class, because a
+    // `transition` cannot run: clearing the decoration removes Monaco's element
+    // outright and a removed element does not animate. These custom properties
+    // are what keep the keyframe delay/duration equal to the JS clear schedule.
+    const f = fakeEditor()
+    const { result } = renderHook(() => useLineReveal(target(42)))
+    mount(result, f)
+    expect(f.container.style.getPropertyValue('--mc-line-reveal-hold')).toBe(`${REVEAL_HOLD_MS}ms`)
+    expect(f.container.style.getPropertyValue('--mc-line-reveal-fade')).toBe(`${REVEAL_FADE_MS}ms`)
+  })
+
+  it('clears only AFTER the fade has finished, never mid-animation', () => {
+    // Clearing at the hold point would cut the fade off and reproduce the abrupt
+    // disappearance this replaced. NOTE this timing alone does not prove a fade —
+    // the old abrupt version also stayed decorated until 2800ms — which is why the
+    // animation-name assertions below and scripts/probe-reveal-fade.mjs exist.
+    const f = fakeEditor()
+    const { result } = renderHook(() => useLineReveal(target(42)))
+    mount(result, f)
+    act(() => { vi.advanceTimersByTime(REVEAL_HOLD_MS + 1) })
+    expect(f.decorations.clear).not.toHaveBeenCalled()
+    act(() => { vi.advanceTimersByTime(REVEAL_FADE_MS) })
+    expect(f.decorations.clear).toHaveBeenCalled()
+    expect(REVEAL_FLASH_MS).toBe(REVEAL_HOLD_MS + REVEAL_FADE_MS)
+  })
+
+  it('requests a fade animation by name, so the class animates itself out', () => {
+    // The mechanism, not just the timing: a `transition` could never fire here
+    // because clearing the decoration removes Monaco's node, so the class has to
+    // carry its own keyframe animation.
+    const f = fakeEditor()
+    const { result } = renderHook(() => useLineReveal(target(42)))
+    mount(result, f)
+    expect(f.container.style.getPropertyValue('--mc-line-reveal-anim')).toMatch(/^mc-line-reveal-out/)
+    expect(f.container.style.getPropertyValue('--mc-line-reveal-gutter-anim'))
+      .toMatch(/^mc-line-reveal-gutter-out/)
+  })
+
+  it('alternates the animation name so a repeat reveal restarts the fade', () => {
+    // Monaco reuses a rendered line node when the overlay HTML is unchanged, so a
+    // clear+add in one tick leaves the same element with its animation already
+    // finished and `forwards` pinning it transparent. Re-clicking the same chip
+    // inside the flash window would then scroll but paint nothing — the exact case
+    // the nonce exists for. A different animation-name is what restarts it.
+    const f = fakeEditor()
+    const { result, rerender } = renderHook(
+      ({ t }: { t: RevealTarget | undefined }) => useLineReveal(t),
+      { initialProps: { t: target(42, 1) as RevealTarget | undefined } },
+    )
+    mount(result, f)
+    const first = f.container.style.getPropertyValue('--mc-line-reveal-anim')
+    // Re-click mid-window: same line, new nonce.
+    act(() => { vi.advanceTimersByTime(REVEAL_HOLD_MS + 100) })
+    act(() => rerender({ t: target(42, 2) }))
+    const second = f.container.style.getPropertyValue('--mc-line-reveal-anim')
+    expect(second).not.toBe(first)
+    expect(second).toMatch(/^mc-line-reveal-out/)
   })
 
   it('clears the decoration and the pending timer on unmount', () => {

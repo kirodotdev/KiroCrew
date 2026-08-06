@@ -6429,11 +6429,19 @@ class TestFormatAcpError:
         assert _format_acp_error("boom") == "Prompt error: boom"
 
     def test_unknown_dict_preserves_raw(self):
+        """An unrecognised shape must lose no information.
+
+        The fallback now leads with the provider's own text rather than a repr
+        of the JSON-RPC dict, but both fields still have to survive: the
+        provider detail AND the non-boilerplate JSON-RPC message, which for
+        codes other than -32603 is the only summary the error carries.
+        """
         err = {"code": -32000, "message": "Something else", "data": "weird"}
         out = _format_acp_error(err)
-        assert out.startswith("Prompt error: ")
         assert "Something else" in out
         assert "weird" in out
+        # No dict repr: punctuation soup is not a user-facing error message.
+        assert "Prompt error: {" not in out
 
     def test_model_not_available_rewrite(self):
         # With NO advertised list the caller cannot know whether this is an
@@ -6455,6 +6463,9 @@ class TestFormatAcpError:
         # the model lives in config.json / the agent spec.
         assert "settings.json" not in out
         assert "config.json" in out
+        # Nor echo the provider's own "use '/model'" advice: that is a kiro-cli
+        # TUI command, inert in the dashboard, Slack, and cron.
+        assert "/model" not in out
         # Request id is preserved for support correlation.
         assert "3ce0318a-24d6-4b1a-a4a7-ee81f1a3991e" in out
         # Should not leak the raw dict prefix when we have a real rewrite.
@@ -6595,8 +6606,10 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "AKIAIOSFODNN7EXAMPLE" not in out
-        # Fallback prefix is preserved so operators can recognize the shape.
-        assert "Prompt error:" in out
+        # The scrubbed placeholder proves redaction ran on this path.
+        assert "REDACTED" in out
+        # The surrounding provider text still reaches the user.
+        assert "leak:" in out
 
     def test_exfiltration_url_in_unknown_dict_fallback_is_redacted(self):
         """The fallback path echoes raw dict — exfil URLs must also be scrubbed.
@@ -6732,7 +6745,7 @@ class TestFormatAcpError:
         canonical JSON-RPC message 'Internal error' must NOT be misclassified
         as transient. The transient branch keys off the provider `data` field
         only (never the generic `message`), so a deterministic failure like a
-        ValidationException preserves the raw dict and the real cause survives.
+        ValidationException surfaces its real cause instead.
         """
         err = {
             "code": -32603,
@@ -6741,8 +6754,11 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        # Unknown-shape fallback preserved for the most common error code.
-        assert "Prompt error: {" in out
+        # The real cause is shown verbatim — stronger than the old assertion,
+        # which only required a dict repr containing it somewhere.
+        assert "ValidationException: input contains an unsupported field 'foo'" in out
+        # The -32603 boilerplate message is dropped as noise next to that.
+        assert "Internal error" not in out
 
     def test_bare_500_token_is_not_treated_as_5xx(self):
         """A standalone numeric (e.g. a token-limit value) must not match the
@@ -6757,7 +6773,7 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        assert "Prompt error: {" in out
+        assert "max_tokens 500 exceeds the model limit of 200000" in out
 
     def test_http_500_status_context_still_classifies_transient(self):
         """An HTTP/status-anchored 50x token IS a genuine transient signal."""
@@ -6795,7 +6811,7 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        assert "Prompt error: {" in out
+        assert "ValidationException: input contains an unsupported field 'foo'" in out
 
 
 class TestIsTransientRawError:
@@ -8843,3 +8859,144 @@ class TestCompactionResetsContextStats:
         assert stats.context_pct == 0.0
         assert stats.context_used_tokens == 0
         assert stats.context_window_tokens == 200_000
+
+
+class TestModelEntitlementPreflight:
+    """An unusable model is stopped BEFORE the wire, not explained afterwards.
+
+    PR #1550 made a post-hoc rejection readable and terminal. These cover the
+    turn never failing in the first place: the advertised set is known at
+    session/new, so a model the account cannot run has no business being sent.
+    """
+
+    @staticmethod
+    def _client(advertised, model, is_claude=False):
+        from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, AcpClient
+
+        client = AcpClient()
+        client._session_id = "sess-1"
+        client._model = model
+        # _is_claude is derived from the backend seam, not settable directly.
+        client._acp_backend = ACP_BACKEND_CLAUDE if is_claude else ""
+        client._available_models = [{"modelId": m, "name": m} for m in advertised]
+        return client
+
+    def test_unadvertised_model_is_unusable(self):
+        client = self._client(["claude-sonnet-4.6"], "claude-opus-4.8")
+        assert client._model_is_unusable("claude-opus-4.8") is True
+
+    def test_advertised_model_is_usable(self):
+        client = self._client(["claude-sonnet-4.6", "claude-opus-4.8"], "claude-opus-4.8")
+        assert client._model_is_unusable("claude-opus-4.8") is False
+
+    def test_unknown_entitlement_allows_the_send(self):
+        """Empty advertised set means "unknowable", never "nothing is allowed".
+
+        A backend that omits ``models`` must not have every model withheld.
+        """
+        client = self._client([], "claude-opus-4.8")
+        assert client._model_is_unusable("claude-opus-4.8") is False
+
+    def test_match_is_case_and_space_insensitive(self):
+        client = self._client(["Claude-Opus-4.8"], "claude-opus-4.8")
+        assert client._model_is_unusable("  claude-opus-4.8 ") is False
+
+    @pytest.mark.asyncio
+    async def test_startup_withholds_unusable_model(self):
+        """The screenshot case: a stale default the account cannot run.
+
+        Nothing goes on the wire and the session is recorded as running the
+        backend default, so the turn proceeds instead of dying three retries in.
+        """
+        from kiro_crew.acp.client import DEFAULT_MODEL
+
+        client = self._client(["claude-sonnet-4.6"], "claude-opus-4.8")
+        client._resolved_model_id = "claude-sonnet-4.6"
+        sent = []
+        client._send_request = _record(sent)
+
+        await client._apply_startup_model()
+
+        assert sent == []
+        # Not left holding the id we declined -- the warm-pool re-apply path
+        # reads this and would re-offer it on every claim.
+        assert client._model == DEFAULT_MODEL
+
+    @pytest.mark.asyncio
+    async def test_startup_still_applies_a_usable_model(self):
+        client = self._client(["claude-sonnet-4.6", "claude-opus-4.8"], "claude-opus-4.8")
+        sent = []
+        client._send_request = _record(sent)
+
+        await client._apply_startup_model()
+
+        assert len(sent) == 1
+        assert sent[0][1]["modelId"] == "claude-opus-4.8"
+        assert client._model == "claude-opus-4.8"
+
+    @pytest.mark.asyncio
+    async def test_startup_leaves_claude_backend_alone(self):
+        """The claude backend advertises BARE ids while _model is prefixed.
+
+        Comparing the two namespaces would call every legitimate model unusable,
+        so that backend keeps its own session/new substitution advisory.
+        """
+        client = self._client(
+            ["claude-opus-4-8[1m]"],
+            "global.anthropic.claude-opus-4-8[1m]",
+            is_claude=True,
+        )
+        applied = []
+
+        async def _set_config_option(config_id, value):
+            applied.append((config_id, value))
+
+        client.set_config_option = _set_config_option
+
+        await client._apply_startup_model()
+
+        assert applied == [("model", "global.anthropic.claude-opus-4-8[1m]")]
+
+    @pytest.mark.asyncio
+    async def test_explicit_switch_is_refused_not_downgraded(self):
+        """An explicit pick gets an error, because silence would misreport it."""
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        client = self._client(["claude-sonnet-4.6", "claude-haiku-4.5"], "claude-sonnet-4.6")
+        sent = []
+        client._send_request = _record(sent)
+
+        with pytest.raises(AcpModelUnavailable) as excinfo:
+            await client.set_model("claude-opus-4.8")
+
+        assert sent == []
+        msg = str(excinfo.value)
+        assert "claude-opus-4.8" in msg
+        assert "not available on your account" in msg
+        # The actionable part: what they CAN pick.
+        assert "claude-sonnet-4.6" in msg
+        assert "claude-haiku-4.5" in msg
+        # Terminal, and EXPLICITLY so -- None would send the retry layer back to
+        # string-matching, which is what produced the retry rows.
+        assert excinfo.value.transient is False
+
+    @pytest.mark.asyncio
+    async def test_explicit_switch_to_advertised_model_works(self):
+        client = self._client(["claude-sonnet-4.6", "claude-opus-4.8"], "claude-sonnet-4.6")
+        sent = []
+        client._send_request = _record(sent)
+
+        await client.set_model("claude-opus-4.8")
+
+        assert len(sent) == 1
+        assert client._model == "claude-opus-4.8"
+
+
+def _record(sink):
+    """An async _send_request stub that records calls and returns a request id."""
+
+    async def _send_request(method, params=None):
+        sink.append((method, params or {}))
+        return 1
+
+    return _send_request

@@ -66,7 +66,10 @@ def _build_link_summary_prompt(links: list[dict]) -> str:
     return _LINK_SUMMARY_PROMPT.format(items="\n".join(items))
 
 
-_LINK_SUMMARY_MODEL = "claude-haiku-4.5"
+# "auto" = inherit the session's governed default (run_bg_oneliner skips the
+# override for auto). A hardcoded model id 400s on accounts/partitions that do
+# not serve it.
+_LINK_SUMMARY_MODEL = "auto"
 
 
 async def _resolve_link_summaries(state: DashboardState, links: list[dict]) -> list[str]:

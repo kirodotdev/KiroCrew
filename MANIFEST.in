@@ -53,3 +53,10 @@ global-exclude *.py[cod]
 global-exclude *.so
 global-exclude .DS_Store
 recursive-include src/kiro_crew/deploy/skills *
+# Re-include the vendored llama.cpp runtime AFTER the excludes: the
+# `global-exclude *.so` above strips exactly `libllama.so` (the Linux libs whose
+# names end in `.so.0` and the macOS/Windows libs escape the glob), and
+# `python -m build` builds the wheel FROM the sdist, so without this line every
+# published Linux wheel ships a vendored llama_cpp that cannot load its own
+# shared library and in-process embeddings fail at gateway startup.
+recursive-include src/kiro_crew/_vendor/llama_cpp_libs *

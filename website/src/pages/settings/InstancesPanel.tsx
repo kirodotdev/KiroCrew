@@ -63,19 +63,35 @@ function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
 
 function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPorts: number[] }) {
   const [name, setName] = useState('')
+  const [method, setMethod] = useState<'ssh' | 'ssm'>('ssh')
   const [sshHost, setSshHost] = useState('')
+  const [ssmTarget, setSsmTarget] = useState('')
+  const [awsProfile, setAwsProfile] = useState('')
+  const [awsRegion, setAwsRegion] = useState('')
+  const [ssmRunAs, setSsmRunAs] = useState('')
   const [remotePort, setRemotePort] = useState('7777')
   const [ttl, setTtl] = useState('20h')
   const [remoteBin, setRemoteBin] = useState('')
 
   const portNum = Number(remotePort) || 0
   const dupPort = portNum > 0 && usedPorts.includes(portNum)
+  const isSsm = method === 'ssm'
+  // The transport-specific required field: ssh_host for SSH, ssm_target for SSM.
+  const targetFilled = isSsm ? !!ssmTarget.trim() : !!sshHost.trim()
 
   const addMutation = useMutation({
     mutationFn: () =>
       api.addInstance({
         name: name.trim(),
-        ssh_host: sshHost.trim(),
+        connection_method: method,
+        ...(isSsm
+          ? {
+              ssm_target: ssmTarget.trim(),
+              aws_profile: awsProfile.trim() || undefined,
+              aws_region: awsRegion.trim() || undefined,
+              ssm_run_as: ssmRunAs.trim() || undefined,
+            }
+          : { ssh_host: sshHost.trim() }),
         remote_port: Number(remotePort) || 7777,
         ttl: ttl.trim() || '20h',
         remote_bin: remoteBin.trim() || undefined,
@@ -83,6 +99,9 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
     onSuccess: () => {
       setName('')
       setSshHost('')
+      setSsmTarget('')
+      setAwsProfile('')
+      setAwsRegion('')
       setRemotePort('7777')
       setTtl('20h')
       setRemoteBin('')
@@ -108,10 +127,55 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
           {i18nT('pages.settings.instancesPanel.name')}
           <input id="add-instance-name" aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={name} onChange={e => setName(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} />
         </label>
-        <label htmlFor="add-instance-ssh-host" className="flex flex-col gap-1 text-[13px] text-muted">
-          {i18nT('pages.settings.instancesPanel.ssh_host_alias')}
-          <input id="add-instance-ssh-host" aria-label={i18nT('pages.settings.instancesPanel.ssh_host_alias')} className={inputCls} value={sshHost} onChange={e => setSshHost(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.host_1_alias')} />
+        <label htmlFor="add-instance-method" className="flex flex-col gap-1 text-[13px] text-muted">
+          {i18nT('pages.settings.instancesPanel.connection_method')}
+          <select
+            id="add-instance-method"
+            aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
+            className={inputCls}
+            value={method}
+            onChange={e => setMethod(e.target.value as 'ssh' | 'ssm')}
+          >
+            <option value="ssh">{i18nT('pages.settings.instancesPanel.ssh_tunnel')}</option>
+            <option value="ssm">{i18nT('pages.settings.instancesPanel.aws_ssm_session_manager')}</option>
+          </select>
+          <span className="text-[12px] text-muted leading-snug">
+            {isSsm
+              ? i18nT('pages.settings.instancesPanel.tunnels_via_aws_ssm_start_session_no_inbound_ssh')
+              : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
+          </span>
         </label>
+        {isSsm ? (
+          <>
+            <label htmlFor="add-instance-ssm-target" className="flex flex-col gap-1 text-[13px] text-muted">
+              {i18nT('pages.settings.instancesPanel.ssm_target_instance_id')}
+              <input id="add-instance-ssm-target" aria-label={i18nT('pages.settings.instancesPanel.ssm_target_instance_id')} className={inputCls} value={ssmTarget} onChange={e => setSsmTarget(e.target.value)} placeholder="i-0123456789abcdef0" />
+              <span className="text-[12px] text-muted leading-snug">
+                {i18nT('pages.settings.instancesPanel.ec2_instance_id_i_or_ssm_managed_instance_id_mi')}
+              </span>
+            </label>
+            <label htmlFor="add-instance-aws-profile" className="flex flex-col gap-1 text-[13px] text-muted">
+              {i18nT('pages.settings.instancesPanel.aws_profile')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
+              <input id="add-instance-aws-profile" aria-label={i18nT('pages.settings.instancesPanel.aws_profile')} className={inputCls} value={awsProfile} onChange={e => setAwsProfile(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.default_credential_chain')} />
+            </label>
+            <label htmlFor="add-instance-aws-region" className="flex flex-col gap-1 text-[13px] text-muted">
+              {i18nT('pages.settings.instancesPanel.aws_region')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
+              <input id="add-instance-aws-region" aria-label={i18nT('pages.settings.instancesPanel.aws_region')} className={inputCls} value={awsRegion} onChange={e => setAwsRegion(e.target.value)} placeholder="us-east-1" />
+            </label>
+            <label htmlFor="add-instance-ssm-run-as" className="flex flex-col gap-1 text-[13px] text-muted">
+              {i18nT('pages.settings.instancesPanel.remote_user')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
+              <input id="add-instance-ssm-run-as" aria-label={i18nT('pages.settings.instancesPanel.remote_user')} className={inputCls} value={ssmRunAs} onChange={e => setSsmRunAs(e.target.value)} placeholder="ec2-user" />
+              <span className="text-[12px] text-muted leading-snug">
+                {i18nT('pages.settings.instancesPanel.the_user_the_remote_gateway_runs_as_sudo_u_for_s')}
+              </span>
+            </label>
+          </>
+        ) : (
+          <label htmlFor="add-instance-ssh-host" className="flex flex-col gap-1 text-[13px] text-muted">
+            {i18nT('pages.settings.instancesPanel.ssh_host_alias')}
+            <input id="add-instance-ssh-host" aria-label={i18nT('pages.settings.instancesPanel.ssh_host_alias')} className={inputCls} value={sshHost} onChange={e => setSshHost(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.host_1_alias')} />
+          </label>
+        )}
         <label htmlFor="add-instance-remote-port" className="flex flex-col gap-1 text-[13px] text-muted">
           {i18nT('pages.settings.instancesPanel.remote_port')}
           <input id="add-instance-remote-port" aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={remotePort} onChange={e => setRemotePort(e.target.value)} placeholder="7777" inputMode="numeric" />
@@ -149,7 +213,7 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
         <Btn
           primary
           onClick={() => addMutation.mutate()}
-          disabled={addMutation.isPending || !name.trim() || !sshHost.trim() || dupPort}
+          disabled={addMutation.isPending || !name.trim() || !targetFilled || dupPort}
         >
           {addMutation.isPending ? i18nT('pages.settings.instancesPanel.adding') : i18nT('pages.settings.instancesPanel.add_remote_crew')}
         </Btn>
@@ -184,8 +248,13 @@ function InstanceRow({
       <div className="min-w-0">
         <div className="text-text text-sm font-medium truncate">{inst.name}</div>
         <div className="text-[12px] text-muted truncate">
-          {inst.ssh_host} {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
-          {typeof ttl === 'number' ? ` · token ${humanizeSecs(ttl)} left` : ''}
+          <span className="uppercase tracking-wide text-muted-strong">
+            {inst.connection_method === 'ssm' ? 'SSM' : 'SSH'}
+          </span>{' '}
+          {inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host}
+          {inst.connection_method === 'ssm' && inst.aws_region ? ` (${inst.aws_region})` : ''}{' '}
+          {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
+          {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
         {diag && !diag.ok ? (
@@ -193,7 +262,7 @@ function InstanceRow({
         ) : null}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <Btn onClick={() => onDiagnose(inst.id)} disabled={!!busy} aria-label={`Diagnose ${inst.name}`}>
+        <Btn onClick={() => onDiagnose(inst.id)} disabled={!!busy} aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}>
           <Stethoscope className="lucide-inline" /> {busy === `diagnose:${inst.id}` ? '…' : i18nT('pages.settings.instancesPanel.diagnose')}
         </Btn>
         {connected ? (
@@ -205,7 +274,7 @@ function InstanceRow({
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}
-        <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={`Remove ${inst.name}`}>
+        <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
           <Trash2 className="lucide-inline" />
         </Btn>
       </div>
@@ -261,7 +330,7 @@ export function InstancesPanel() {
     onSuccess: (st, id) => {
       if (st.state === 'connected') {
         const name = instances.find(i => i.id === id)?.name || id
-        setConnectedNote(`Connected “${name}”. Switch to it from the tab strip in the top header.`)
+        setConnectedNote(i18nT('pages.settings.instancesPanel.connected_switch_from_tab_strip', { name }))
       } else {
         setActionErr(st.error || i18nT('pages.settings.instancesPanel.connection_did_not_complete_try_diagnose_for_det'))
       }

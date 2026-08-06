@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import TelemetryPanel from '../pages/TelemetryPanel'
@@ -115,6 +116,30 @@ describe('TelemetryPanel bucket generations', () => {
     await waitFor(() => expect(screen.getByText('1,090 startups recorded')).toBeInTheDocument())
     expect(screen.getByText(CAVEAT)).toBeInTheDocument()
     expect(screen.getByText(/Showing 1090 of 1730 samples/i)).toBeInTheDocument()
+  })
+
+  it('keeps the latency caveat a marker in the cell, with the sentence in the tooltip', async () => {
+    // Rendered inline, the sentence wrapped to nine lines inside a 64px cell,
+    // tripled three of six row heights and collided the max value with the count.
+    // The caveat must stay visible but compact.
+    await mount(resp({
+      other: [acquireRow({ ...stat({ count: 56917, other_generations: 1, total_count: 83679 }) })],
+    }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Latency/ })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /Latency/ }))
+
+    const marker = await waitFor(() => {
+      const el = document.querySelector('[title*="56,917"], [title*="56917"]')
+      if (!el) throw new Error('caveat marker not rendered')
+      return el as HTMLElement
+    })
+    // A marker in the cell; the numbers live in the tooltip where they cannot
+    // reflow the row.
+    expect(marker.textContent?.trim()).toBe('*')
+    expect(marker.getAttribute('title') ?? '').toMatch(/83,?679/)
+    // The sentence itself must not be visible text anywhere in the profile row.
+    const row = marker.closest('div')
+    expect(row?.textContent ?? '').not.toMatch(/histogram boundaries/i)
   })
 })
 

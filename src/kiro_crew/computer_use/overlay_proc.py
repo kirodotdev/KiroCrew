@@ -67,6 +67,7 @@ from kiro_crew import platform_compat
 from kiro_crew.computer_use.types import (
     CLICK_PULSE_DEPTH,
     CLICK_PULSE_GAP_MS,
+    CLICK_PULSE_MAX_STEP,
     CLICK_PULSE_MS,
     CURSOR_GLYPH_HEIGHT,
     CURSOR_GLYPH_WIDTH,
@@ -439,9 +440,21 @@ class CursorOverlayWindow:
         duration = CLICK_PULSE_MS / 1000.0
         for pulse in range(pulses):
             started = time.monotonic()
+            progress = 0.0
             while True:
-                elapsed = time.monotonic() - started
-                progress = 1.0 if duration <= 0.0 else min(max(elapsed / duration, 0.0), 1.0)
+                if duration <= 0.0:
+                    target = 1.0
+                else:
+                    target = min(max((time.monotonic() - started) / duration, 0.0), 1.0)
+                # Follow the clock, but never let one frame jump the whole pulse:
+                # alpha is `sin(progress * pi)`, which is 0 at progress 0.0 AND
+                # 1.0, so a stall spanning the pulse would draw alpha 1.0 twice
+                # and the dip that IS the click would never reach the screen.
+                # Capping the advance keeps the peak on screen on a loaded
+                # machine, at a floor of ceil(1 / CLICK_PULSE_MAX_STEP) frames.
+                progress = target if duration <= 0.0 else min(
+                    target, progress + CLICK_PULSE_MAX_STEP
+                )
                 self._set_alpha(1.0 - CLICK_PULSE_DEPTH * math.sin(progress * math.pi))
                 if progress >= 1.0:
                     break

@@ -270,7 +270,7 @@ export default function AppsPage() {
       recordEvent('app_enable', { app: name })
       invalidate()
     } catch (e) {
-      setError((e as Error)?.message || `Failed to enable ${name}`)
+      setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_enable', { name }))
     } finally {
       setActionLoading(null)
     }
@@ -315,7 +315,7 @@ export default function AppsPage() {
         }
       }
     } catch (e) {
-      setError((e as Error)?.message || `Failed to ${action} ${name}`)
+      setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
     } finally {
       setActionLoading(null)
     }
@@ -331,7 +331,7 @@ export default function AppsPage() {
       recordEvent('app_uninstall', { app: name, version: uninstallTarget.version })
       invalidate()
     } catch (e) {
-      setError((e as Error)?.message || `Failed to uninstall ${name}`)
+      setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_uninstall', { name }))
     } finally {
       setActionLoading(null)
       setUninstallTarget(null)
@@ -355,7 +355,7 @@ export default function AppsPage() {
     }
     setUpdatingAll(null)
     invalidate()
-    if (failed.length) setError(`Failed to update: ${failed.join(', ')}`)
+    if (failed.length) setError(i18nT('pages.appsPage.failed_to_update', { names: failed.join(', ') }))
     else {
       setSuccessMsg(`Updated ${targets.length} app${targets.length === 1 ? '' : 's'}.`)
       setTimeout(() => setSuccessMsg(''), 4000)
@@ -485,7 +485,7 @@ export default function AppsPage() {
                                 <input
                                   id={`keep-dep-${d.id}`}
                                   type="checkbox"
-                                  aria-label={`Keep dependency ${d.id.split('/').pop()}`}
+                                  aria-label={i18nT('pages.appsPage.keep_dependency', { name: d.id.split('/').pop() })}
                                   checked={keepSpecific.has(d.id)}
                                   onChange={e => {
                                     const next = new Set(keepSpecific)
@@ -654,7 +654,7 @@ export default function AppsPage() {
                     onClick={updateAll}
                     disabled={!!updatingAll}
                   >
-                    {updatingAll ? `Updating ${updatingAll.done}/${updatingAll.total}…` : i18nT('pages.appsPage.update_all')}
+                    {updatingAll ? i18nT('pages.appsPage.updating_progress', { done: updatingAll.done, total: updatingAll.total }) : i18nT('pages.appsPage.update_all')}
                   </Btn>
                 </div>
               )}

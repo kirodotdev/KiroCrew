@@ -26,6 +26,14 @@ on:
       - Design Review
       - UX Review
       - CodeQL
+      # Stage-2 fork AI reviewers. They run from the default branch via
+      # `workflow_run` (on CI's completion), so their own completion must
+      # re-trigger this job to publish the fork PR's real verdict once the
+      # reviews land -- otherwise the fork verdict freezes at `checking`.
+      - Fork Opus 5 Review
+      - Fork GPT 5.6 Review
+      - Fork Design Review
+      - Fork UX Review
     # `completed` publishes the real verdict. `requested`/`in_progress` exist so
     # a monitored workflow flipping BACK to running -- most commonly a re-run of
     # a reviewer (e.g. Opus 5 re-run after a human override) -- re-triggers this
@@ -71,18 +79,24 @@ concurrency:
   # conclusion (success / failure / skipped), never cancelled. The evaluate and
   # publish steps are idempotent and stale-SHA guarded, so un-collapsed PT runs
   # on superseded revisions simply no-op green. workflow_run / workflow_dispatch
-  # runs do NOT appear in the rollup, so they keep the cheap per-(pr, sha)
-  # burst collapse via cancel-in-progress.
+  # runs do NOT appear in the rollup, so they keep the cheap per-revision burst
+  # collapse via cancel-in-progress. A workflow_run burst collapses on
+  # (head repository, head branch, head SHA) and NOT on the PR number, because
+  # `workflow_run.pull_requests` is empty whenever the head repository is a
+  # fork -- keying on it degraded every fork burst to one group per run. That
+  # triple identifies the same PR, since only one open PR can exist per source
+  # repository + branch.
   group: >-
     ${{
       github.event_name == 'pull_request_target'
       && format('pr-readiness-pt-{0}', github.run_id)
-      || format('pr-readiness-wr-{0}-{1}',
-           inputs.pr
-             || github.event.workflow_run.pull_requests[0].number
+      || github.event_name == 'workflow_dispatch'
+      && format('pr-readiness-wd-{0}-{1}', inputs.pr, inputs.sha)
+      || format('pr-readiness-wr-{0}-{1}-{2}',
+           github.event.workflow_run.head_repository.full_name
              || github.run_id,
-           inputs.sha
-             || github.event.workflow_run.head_sha
+           github.event.workflow_run.head_branch || '',
+           github.event.workflow_run.head_sha
              || github.run_id)
     }}
   cancel-in-progress: true
@@ -90,11 +104,26 @@ concurrency:
 jobs:
   readiness:
     name: Publish readiness signal
+    # This gate MUST NOT consult `workflow_run.pull_requests`: that array is
+    # empty whenever the head repository is a fork, so requiring a number in it
+    # skipped every fork PR's re-evaluation. A fork PR's verdict was then only
+    # ever computed by the pull_request_target run -- which fires BEFORE the
+    # monitored workflows exist -- and the commit status stayed pending forever
+    # with no later event able to recompute it. The head SHA is the fork-safe
+    # key, and the step below resolves it to a PR (skipping cleanly when no
+    # open PR owns it), so admitting every pull_request run is correct and the
+    # non-PR events are already excluded by the event check.
+    #
+    # `workflow_run.event == 'workflow_run'` is admitted so the Stage-2 fork AI
+    # reviewers (fork-*-review.yml, themselves triggered by CI's workflow_run)
+    # re-trigger this job when they complete -- that is how a fork PR's verdict
+    # refreshes to "passed" once its reviews land. Which workflows can fire this
+    # is already fenced by the `on.workflow_run.workflows` allowlist above.
     if: >-
       github.event_name != 'workflow_run'
-      || (github.event.workflow_run.event == 'pull_request'
-          && github.event.workflow_run.pull_requests[0].number != null)
+      || github.event.workflow_run.event == 'pull_request'
       || github.event.workflow_run.event == 'dynamic'
+      || github.event.workflow_run.event == 'workflow_run'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -110,7 +139,6 @@ jobs:
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
         run: |
           set -euo pipefail
           case "$EVENT" in
@@ -118,7 +146,10 @@ jobs:
             workflow_run)
               PR="$RUN_PR"
               EXPECTED_SHA="$RUN_SHA"
-              if [ -z "$PR" ] && [ "$RUN_EVENT" = "dynamic" ]; then
+              # `workflow_run.pull_requests` is empty for a fork head AND for
+              # the managed `dynamic` CodeQL runs, so it can never be the only
+              # way in. Resolve the PR from the immutable head SHA instead.
+              if [ -z "$PR" ]; then
                 associated="$(gh api "repos/$REPO/commits/$RUN_SHA/pulls")"
                 PR="$(jq -r --arg sha "$RUN_SHA" '
                   [.[] | select(.state == "open" and .head.sha == $sha)]
@@ -139,7 +170,7 @@ jobs:
           esac
 
           pr_json="$(gh pr view "$PR" --repo "$REPO" \
-            --json number,state,isDraft,isCrossRepository,headRefOid,url)"
+            --json number,state,isDraft,isCrossRepository,headRefName,headRefOid,headRepository,headRepositoryOwner,url)"
           SHA="$(jq -r '.headRefOid' <<<"$pr_json")"
           STATE="$(jq -r '.state' <<<"$pr_json")"
 
@@ -150,6 +181,13 @@ jobs:
             echo "fork=$(jq -r '.isCrossRepository' <<<"$pr_json")"
             echo "draft=$(jq -r '.isDraft' <<<"$pr_json")"
             echo "url=$(jq -r '.url' <<<"$pr_json")"
+            # (head repository, head branch) is how a monitored workflow run is
+            # bound back to this PR below. Both fields are populated on a fork
+            # run, unlike `pull_requests`.
+            echo "head_repo=$(jq -r '
+              "\(.headRepositoryOwner.login)/\(.headRepository.name)"
+            ' <<<"$pr_json")"
+            echo "head_ref=$(jq -r '.headRefName' <<<"$pr_json")"
           } >> "$GITHUB_OUTPUT"
 
           if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$SHA" ]; then
@@ -187,6 +225,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
+          HEAD_REPO: ${{ steps.context.outputs.head_repo }}
+          HEAD_REF: ${{ steps.context.outputs.head_ref }}
           DRAFT: ${{ steps.context.outputs.draft }}
           FORK: ${{ steps.context.outputs.fork }}
           TRIGGER_EVENT: ${{ github.event_name }}
@@ -201,16 +241,20 @@ jobs:
           )
           skipped=()
           if [ "$FORK" = "true" ]; then
-            # Fork PRs cannot receive repository OIDC credentials or secrets,
-            # and this repository's managed default-setup CodeQL workflow is
-            # not scheduled for fork heads. Public CI, build, and static review
-            # still determine readiness.
-            skipped+=(
-              "CodeQL (fork PR)"
-              "Opus 5 Review (fork PR)"
-              "GPT 5.6 Review (fork PR)"
-              "Design Review (fork PR)"
-              "UX Review (fork PR)"
+            # A fork head cannot run the repository's managed default-setup
+            # CodeQL, so that lane stays ineligible. The AI code reviews DO run
+            # on forks: the privileged Stage-2 fork-*-review.yml pipeline fires
+            # on CI completion from the default branch and posts a check-run
+            # named exactly like the same-repo lane ("Opus 5 Review", etc.).
+            # Read those results from the head SHA's check-runs (checkrun:
+            # specs) so a fully-reviewed green fork can reach "passed" instead
+            # of being forced to a maintainer-review verdict.
+            skipped+=("CodeQL (fork PR)")
+            workflow_specs+=(
+              "checkrun:Opus 5 Review|Opus 5 Review"
+              "checkrun:GPT 5.6 Review|GPT 5.6 Review"
+              "checkrun:Design Review|Design Review"
+              "checkrun:UX Review|UX Review"
             )
           else
             workflow_specs+=(
@@ -228,6 +272,50 @@ jobs:
           for spec in "${workflow_specs[@]}"; do
             file="${spec%%|*}"
             label="${spec#*|}"
+            if [[ "$file" == checkrun:* ]]; then
+              # Fork AI-review lane: the verdict lives in the head SHA's
+              # check-runs, not a PR-bound workflow run (the fork reviewer runs
+              # via workflow_run from the default branch, so its workflow-run
+              # head ref does not bind back to the fork). The same-repo lane
+              # posts a `skipped` check-run under this same name on a fork, and
+              # the GPT lane posts several passes -- so collapse ALL check-runs
+              # of this name: any still running -> pending; any failure-class
+              # -> fail; else any success/neutral -> pass; only skipped (the
+              # real review has not posted yet) -> pending.
+              cname="${file#checkrun:}"
+              enc="$(jq -rn --arg v "$cname" '$v | @uri')"
+              cruns="$(gh api --method GET \
+                "repos/$REPO/commits/$SHA/check-runs?check_name=$enc&per_page=100")"
+              total="$(jq '.check_runs | length' <<<"$cruns")"
+              incomplete="$(jq '[.check_runs[]
+                | select(.status != "completed")] | length' <<<"$cruns")"
+              fail="$(jq '[.check_runs[]
+                | select(.status == "completed"
+                    and (.conclusion | IN("failure","timed_out","cancelled",
+                                           "action_required","stale",
+                                           "startup_failure")))] | length' <<<"$cruns")"
+              pass="$(jq '[.check_runs[]
+                | select(.status == "completed"
+                    and (.conclusion | IN("success","neutral")))] | length' <<<"$cruns")"
+              if [ "$total" -eq 0 ] || [ "$incomplete" -gt 0 ]; then
+                pending+=("$label (not started)")
+              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ]; then
+                # Advisory: once the real review posts any decisive result it
+                # never blocks; only-skipped means it has not posted yet.
+                if [ "$fail" -gt 0 ] || [ "$pass" -gt 0 ]; then
+                  passed+=("$label (advisory)")
+                else
+                  pending+=("$label (not started)")
+                fi
+              elif [ "$fail" -gt 0 ]; then
+                failed+=("$label (failure)")
+              elif [ "$pass" -gt 0 ]; then
+                passed+=("$label")
+              else
+                pending+=("$label (not started)")
+              fi
+              continue
+            fi
             if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
               runs="$(gh api --method GET \
                 "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100")"
@@ -239,9 +327,16 @@ jobs:
             else
               runs="$(gh api --method GET \
                 "repos/$REPO/actions/workflows/$file/runs?event=pull_request&head_sha=$SHA&per_page=20")"
-              run="$(jq -c --argjson pr "$PR" '
+              # Bind the run to this PR by (head repository, head branch), NOT
+              # by `.pull_requests`: that array is empty on every fork run, so
+              # filtering on it matched nothing and reported each already-green
+              # workflow as "(not started)" -- a permanent pending verdict. The
+              # query is already pinned to this exact head SHA, and only one
+              # open PR can exist per source repository + branch.
+              run="$(jq -c --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
                 [.workflow_runs[]
-                 | select([.pull_requests[]?.number] | index($pr))]
+                 | select(.head_repository.full_name == $head_repo
+                          and .head_branch == $head_ref)]
                 | sort_by(.created_at)
                 | last // empty
               ' <<<"$runs")"
@@ -323,21 +418,13 @@ jobs:
             label="readiness: checking"
             status_state="pending"
             description="${#waiting[@]} readiness check(s) still pending"
-          elif [ "$FORK" = "true" ]; then
-            # Fork PRs structurally CANNOT run the AI code reviews (Opus/GPT/
-            # Design/UX) or CodeQL -- those are guarded off on fork
-            # heads and cannot be made to run there. Passing public CI/Build/
-            # Code Review is therefore NOT full validation, so a fork PR must
-            # never reach "passed". Emit a dedicated RED (failure) terminal
-            # verdict instead: it is unmistakable in the merge box and, as a
-            # required status check, blocks an accidental merge of code the AI
-            # reviewers never saw. A maintainer must review manually, or re-run
-            # validation from a trusted in-repo branch, before merge.
-            state="maintainer_review"
-            label="readiness: maintainer review"
-            status_state="failure"
-            description="Fork PR — AI reviews could not run; maintainer review required before merge"
           else
+            # Fork PRs reach this branch too: the AI code reviews run on forks
+            # via the Stage-2 fork-*-review.yml pipeline and are evaluated above
+            # from the head SHA's check-runs, so a fully-green fork is fully
+            # validated (CodeQL is the only ineligible lane, listed as a
+            # non-blocking "Not eligible" note) and earns "passed" like any
+            # same-repo PR.
             state="passed"
             label="readiness: passed"
             status_state="success"
@@ -357,12 +444,6 @@ jobs:
             echo "- PR: #$PR"
             echo "- Revision: \`$SHA\`"
             echo "- Passed components: ${#passed[@]}"
-            if [ "$state" = "maintainer_review" ]; then
-              echo
-              echo "> ⚠️ **Fork PR — automated AI code reviews (Opus/GPT/Design/UX) and CodeQL cannot run on a fork head.**"
-              echo "> Passing public CI/Build/Code Review is NOT full validation. A maintainer must review manually,"
-              echo "> or re-run validation from a trusted in-repo branch, before this PR is merged."
-            fi
             if [ "${#skipped[@]}" -gt 0 ]; then
               echo
               echo "**Not eligible**"
@@ -402,7 +483,6 @@ jobs:
           label_specs=(
             "readiness: checking|BFDADC|Automated validation is still running"
             "readiness: action required|D73A4A|A blocking check or review needs attention"
-            "readiness: maintainer review|B60205|Fork PR — AI reviews could not run; maintainer must review before merge"
             "readiness: passed|0E8A16|Eligible automated validation passed for the current revision"
           )
           existing_labels="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"

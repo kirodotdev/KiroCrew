@@ -36,6 +36,7 @@ from kiro_crew.slack.handler import (
     _tool_to_phase,
     build_timing_footer,
 )
+from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
 #: Block Kit action_id prefixes for tool approve/deny buttons.
 TOOL_APPROVE_ACTION_PREFIX = "mc_tool_approve_"
@@ -47,18 +48,9 @@ TOOL_TRUST_ACTION_PREFIX = "mc_tool_trust_"
 #: Thread-status text shown while the turn is in flight (mirrors handler).
 _STATUS_WORKING = "is working on your request"
 
-#: Slack channel capabilities (Block Kit, streaming, reactions, ~40k chars).
-SLACK_CAPABILITIES = TransportCapabilities(
-    streaming=True,
-    edit=True,
-    reactions=True,
-    files=True,
-    rich_blocks=True,
-    threads=True,
-    max_message_chars=40000,
-    max_buttons=5,
-    supports_proactive_send=True,
-)
+#: Slack channel capabilities live in ``slack/transport.py`` (imported above).
+#: This module used to carry a second literal copy of the declaration; two
+#: literals for one fact is a drift hazard, and they had already diverged once.
 
 
 def _approval_registry_key(session_key: str, request_id: str | int) -> str:

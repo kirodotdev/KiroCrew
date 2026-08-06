@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, Play, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -299,6 +299,24 @@ interface ChatInputProps {
   showContextPct?: boolean
   isRunning?: boolean
   onStop?: () => void
+  /**
+   * True when an EMPTY composer can hand the thread back to the agent, so the
+   * dead send button becomes a Continue control instead. Offered on any idle
+   * slot with a conversation — a force-quit leaves no trace of the turn it
+   * killed, so restricting this to visibly-broken transcripts would miss exactly
+   * the case that needs it most.
+   */
+  continuable?: boolean
+  /**
+   * True when the transcript SHOWS the last turn ending badly (unanswered user
+   * row, or a trailing error). Copy only: it picks between "the last turn was
+   * interrupted" and the neutral "keep going" wording, so the button never
+   * asserts a breakage it cannot see.
+   */
+  continueIsRecovery?: boolean
+  onContinue?: () => void
+  /** True while a continue request is in flight. */
+  continuing?: boolean
   isQueued?: boolean
   stopState?: 'idle' | 'soft_pending' | 'killing'
   approvalMode?: string
@@ -375,7 +393,7 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
       <span
         ref={ref}
         tabIndex={0}
-        aria-label={`Resized to fit model limits: ${resize.fromW}×${resize.fromH} to ${resize.toW}×${resize.toH}`}
+        aria-label={i18nT('components.chatInput.resized_to_fit_model_limits_2', { fromW: resize.fromW, fromH: resize.fromH, toW: resize.toW, toH: resize.toH })}
         className="absolute bottom-1 left-1 z-10 px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default"
         onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
       >{i18nT('components.chatInput.resized')}</span>
@@ -409,7 +427,7 @@ function FilePreviewStrip({ files, resizedInfo, onRemove }: { files: string[]; r
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
             <button
               type="button"
-              aria-label={`Open preview of ${path.split('/').pop()}`}
+              aria-label={i18nT('components.chatInput.open_preview_of', { name: path.split('/').pop() })}
               className="block cursor-pointer"
               onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
             >
@@ -493,6 +511,10 @@ function ChatInput({
   showContextPct,
   isRunning = false,
   onStop,
+  continuable = false,
+  continueIsRecovery = false,
+  onContinue,
+  continuing = false,
   isQueued = false,
   stopState,
   approvalMode,
@@ -634,7 +656,7 @@ function ChatInput({
         // a dashboard bug rather than the job's documented timeout.
         setApprovalNotice(
           approvalIsUnattended
-            ? `That ${approvalSource} request already timed out and was denied — the job is no longer waiting. Check the approvals feed for the record.`
+            ? i18nT('components.chatInput.that_request_already_timed_out_and_was_denied', { source: approvalSource })
             : i18nT('components.chatInput.that_approval_expired_the_turn_it_belonged_to_is')
         )
         return
@@ -785,11 +807,11 @@ function ChatInput({
   // is truncated or the shelf has collapsed to icon-only.
   const projectChipTitle = useMemo(() => {
     if (!project) return i18nT('components.chatInput.select_project')
-    const base = `Project: ${project}`
+    const base = i18nT('components.chatInput.project_2', { path: project })
     if (!projectBranch) return base
     return projectDetached
-      ? `${base}\nDetached HEAD at ${projectBranch}`
-      : `${base}\nBranch: ${projectBranch}`
+      ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
+      : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [project, projectBranch, projectDetached])
   // Focus the composer when the dictation panel is up (as before) OR while a
   // batch transcript is landing (voiceTranscribing), so Enter sends and typing
@@ -955,6 +977,24 @@ function ChatInput({
   const isMobile = useIsMobile()
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
+  // An icon swap alone announces nothing, so the empty-state placeholder carries
+  // the explanation — and it names typing as the other way out, so the morph
+  // never feels like a trap.
+  //
+  // But ONLY when the transcript actually shows a broken turn. The default
+  // placeholder is not dead space: it is the only surface that teaches the three
+  // sigils (`/command · @file · $skill`). Continue is now offered on EVERY idle
+  // slot holding a conversation, so overriding unconditionally would delete that
+  // hint permanently for any returning chat and leave it visible only in a
+  // brand-new one. A visibly-interrupted turn is rare and genuinely needs the
+  // explanation more than the hint; the steady state does not, and gets the ▶
+  // button plus its label instead.
+  const continuePlaceholder = continuable && onContinue && continueIsRecovery
+    ? i18nT('components.chatInput.turn_interrupted_press_continue')
+    : ''
+  const continueLabel = i18nT(continueIsRecovery
+    ? 'components.chatInput.continue_interrupted_turn'
+    : 'components.chatInput.continue_thread')
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileQuery, setFileQuery] = useState('')
@@ -2090,7 +2130,7 @@ function ChatInput({
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
-                            aria-label={`Approve sub-agent: ${a.task || a.agent || a.id}`}
+                            aria-label={i18nT('components.chatInput.approve_sub_agent', { name: a.task || a.agent || a.id })}
                             onClick={() => resolveOneSpawn(a, 'approve')}
                             className={approvalBtnClass}
                           >
@@ -2098,7 +2138,7 @@ function ChatInput({
                           </button>
                           <button
                             type="button"
-                            aria-label={`Reject sub-agent: ${a.task || a.agent || a.id}`}
+                            aria-label={i18nT('components.chatInput.reject_sub_agent', { name: a.task || a.agent || a.id })}
                             onClick={() => resolveOneSpawn(a, 'reject')}
                             className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`}
                           >
@@ -2305,7 +2345,7 @@ function ChatInput({
           aria-label={i18nT('components.chatInput.message_input')}
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : resolvedPlaceholder}
+          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2601,12 +2641,34 @@ function ChatInput({
                 // disabled on the originating session too.
                 disabled={!value.trim() || optimizePending || !connected}
                 aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
-                title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
+                title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : i18nT('components.chatInput.optimize_prompt_2', { shortcut: platformShortcut('Cmd+Shift+Enter') })}
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
               </button>
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
+              {/*
+                Sixth state of this button. The first five are send / stop /
+                queue / steer / disabled; this one claims the ONE state that was
+                previously dead weight — an empty composer on an idle slot that
+                already holds a conversation. Pressing it hands the thread back
+                to the agent instead of sending nothing. The moment the user
+                types a character the arrow and the send action come back, so the
+                control never carries two meanings at once.
+              */}
+              {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
+                <button
+                  className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  onClick={onContinue}
+                  disabled={continuing || disabled || optimizing || !connected}
+                  aria-label={continueLabel}
+                  title={continueLabel}
+                  data-testid="composer-continue"
+                  {...offlineProps(connected, 'continue', continueLabel)}
+                >
+                  {continuing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                </button>
+              ) : (
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
@@ -2616,6 +2678,7 @@ function ChatInput({
               >
                 <ArrowUp size={18} />
               </button>
+              )}
             </>)}
           </div>
         </div>
@@ -2637,8 +2700,8 @@ function ChatInput({
               className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
               onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
-              aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : i18nT('components.chatInput.agent', { name: agentName })}
+              aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : i18nT('components.chatInput.agent', { name: agentName })}
             >
               <Bot size={13} className="shrink-0 opacity-70" />
               {!shelfCompact && <span className="truncate max-w-[160px]">{agentName}</span>}
@@ -2733,7 +2796,7 @@ function ChatInput({
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : `Model: ${modelName}`}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : i18nT('components.chatInput.model_2', { name: modelName })}
             >
               <span className="truncate max-w-[180px]">{modelName}</span>
               {onReasoningEffortClick && !shelfCompact && (

@@ -39,12 +39,12 @@ from kiro_crew.acp._dispatch import (
     set_model_params,
 )
 from kiro_crew.acp.client import (
-    AcpError,
     AcpProcessDied,
     AcpTimeoutError,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
-    _is_transient_raw_error,
+    _raise_acp_error,
+    resolve_usable_model,
 )
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -553,23 +553,41 @@ class AcpSessionHandle:
         )
 
     async def set_model(self, model_id: str) -> None:
-        """Switch model via session/set_model."""
+        """Switch model via session/set_model.
+
+        This is the shared-runtime SUBSTITUTE path (background one-liners, tips,
+        contradiction sweep, and any caller that did not pre-guard an explicit
+        user pick). ``resolve_usable_model`` maps the request to what the account
+        can run: a served id is sent; ``"auto"`` is sent only when the backend
+        advertises it; and anything else — ``"auto"`` on a partition that doesn't
+        serve it, or an unentitled concrete id — resolves to ``""``,
+        meaning **inherit the session's backend default** (the served model
+        ``session/new`` assigned). So this path never puts an unserved model on
+        the wire, exactly like the interactive ``_wire_model_id``
+        reset-to-default. Explicit user picks raise instead, upstream in
+        ``AcpSessionProvider.set_model`` / ``AcpClient.set_model``.
+        """
+        resolved = resolve_usable_model(model_id, self._advertised_model_ids())
+        if not resolved:
+            # Inherit the backend default — nothing to send. For the ephemeral
+            # _bg session the current model IS session/new's served default.
+            return
         await self._runtime.send_request(
             METHOD_SET_MODEL,
-            set_model_params(self._session_id, model_id),
+            set_model_params(self._session_id, resolved),
         )
-        self._model = model_id
+        self._model = resolved
         # Parity with AcpClient.set_model: keep _resolved_model_id in sync so
         # _backfill_context_window looks up the NEW model's window after a switch
         # (otherwise the context meter converts pct against the stale session/new
         # model until the next session refresh).
-        self._resolved_model_id = model_id
+        self._resolved_model_id = resolved
         # Also rebase the meter stats themselves — the old model's window and
         # its authoritative usage_update no longer describe this session
         # (mirrors AcpClient.set_model).
         win = (
-            model_registry.model_window(model_id)
-            if model_registry.has_known_window(model_id)
+            model_registry.model_window(resolved)
+            if model_registry.has_known_window(resolved)
             else None
         )
         self.last_prompt_stats.rebase_to_window(win or 0)
@@ -844,6 +862,25 @@ class AcpSessionHandle:
         """Models advertised by the backend at session init."""
         return list(self._available_models)
 
+    def _advertised_model_ids(self) -> list[str]:
+        """Advertised model ids, for the model-rejection error path.
+
+        Parity with ``AcpClient._advertised_model_ids``. Empty when the backend
+        advertised nothing (no session yet, or a backend that omits ``models``),
+        which the error path reads as "entitlement unknown" and leaves the
+        transient/capacity handling alone.
+
+        This handle is the shared-runtime path every dashboard chat takes, so
+        without it the entitlement discrimination in ``_model_is_unentitled``
+        would only ever fire for direct-spawn ``AcpClient`` sessions.
+        """
+        ids = []
+        for entry in self._available_models:
+            model_id = entry.get("modelId") if isinstance(entry, dict) else None
+            if isinstance(model_id, str) and model_id.strip():
+                ids.append(model_id)
+        return ids
+
     def supports_config_option(self, config_id: str) -> bool:
         """Whether the session advertised a config option with this id.
 
@@ -1011,17 +1048,18 @@ class AcpSessionHandle:
                     raise AcpProcessDied("Runtime process died while waiting for response")
                 if msg.is_response_for(req_id):
                     if msg.error:
-                        # Classify the raw JSON-RPC error so the chat_runner /
-                        # llm_helpers retry ladder recognizes transient backend 5xx
-                        # (e.g. a mid-stream InternalServerError surfaced as -32603)
-                        # instead of surfacing a bare error card. The transient=
-                        # flag is set explicitly because the string fallback
-                        # classifier misses the raw "InternalServerError" dict.
-                        # Mirrors client._raise_acp_error.
-                        raise AcpError(
-                            f"ACP error: {msg.error}",
-                            transient=_is_transient_raw_error(msg.error),
-                        )
+                        # Delegate to the shared raise helper so this path gets
+                        # the SAME treatment as AcpClient: actionable prose from
+                        # _format_acp_error (model-unavailable / throttle / auth /
+                        # 5xx), credential+URL redaction, the transient= verdict
+                        # for the chat_runner / llm_helpers retry ladder, and the
+                        # AcpPromptBusy subclass for a concurrent in-flight
+                        # prompt. Raising a bare f"ACP error: {msg.error}" here
+                        # put the raw JSON-RPC dict in front of the user.
+                        # The advertised ids let the shared entitlement
+                        # discriminator tell "your plan lacks this model"
+                        # (terminal) from a capacity blip (retryable).
+                        _raise_acp_error(msg.error, self._advertised_model_ids())
                     return msg
                 # Not our response — buffer (do not drop) for re-injection.
                 buffered.append(msg)
@@ -1178,17 +1216,14 @@ class AcpSessionHandle:
                 # Turn-complete response
                 if msg.is_response_for(req_id):
                     if msg.error:
-                        # Classify the raw JSON-RPC error so the chat_runner /
-                        # llm_helpers retry ladder recognizes transient backend 5xx
-                        # (e.g. a mid-stream InternalServerError surfaced as -32603)
-                        # instead of surfacing a bare error card. The transient=
-                        # flag is set explicitly because the string fallback
-                        # classifier misses the raw "InternalServerError" dict.
-                        # Mirrors client._raise_acp_error.
-                        raise AcpError(
-                            f"ACP error: {msg.error}",
-                            transient=_is_transient_raw_error(msg.error),
-                        )
+                        # Same as _wait_for_response: route through the shared
+                        # raise helper so a mid-turn failure surfaces actionable
+                        # prose instead of the raw JSON-RPC dict, keeps its
+                        # transient verdict for the retry ladder, and raises
+                        # AcpPromptBusy when the backend reports a concurrent
+                        # in-flight prompt. Advertised ids feed the entitlement
+                        # discriminator (see _wait_for_response).
+                        _raise_acp_error(msg.error, self._advertised_model_ids())
                     result = msg.result or {}
                     reason = ""
                     if isinstance(result, dict):

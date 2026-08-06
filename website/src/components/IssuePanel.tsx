@@ -397,7 +397,9 @@ export default function IssuePanel({
             />
             <div className="text-[13px] font-medium text-text">
               {queryError.loginCommand
-                ? `${queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab'} CLI login required`
+                ? i18nT('components.issuePanel.cli_login_required', {
+                    provider: queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab',
+                  })
                 : i18nT('components.issuePanel.could_not_load_this_issue')}
             </div>
             {queryError.loginCommand ? (
@@ -480,7 +482,7 @@ export default function IssuePanel({
               {source.createdAt && <span>{i18nT('components.issuePanel.opened_time', { time: age(source.createdAt) })}</span>}
               {source.updatedAt && <span>{i18nT('components.issuePanel.updated_time', { time: age(source.updatedAt) })}</span>}
               {source.assignees.length > 0 && (
-                <span className="inline-flex items-center gap-1" title={`Assigned to ${source.assignees.join(', ')}`}>
+                <span className="inline-flex items-center gap-1" title={i18nT('components.issuePanel.assigned_to', { name: source.assignees.join(', ') })}>
                   <Users className="lucide-inline" aria-hidden="true" />
                   {source.assignees.join(', ')}
                 </span>
@@ -488,7 +490,7 @@ export default function IssuePanel({
               {source.milestone && (
                 <span
                   className="inline-flex items-center gap-1"
-                  title={source.milestone.dueOn ? `Due ${source.milestone.dueOn}` : undefined}
+                  title={source.milestone.dueOn ? i18nT('components.issuePanel.due', { time: source.milestone.dueOn }) : undefined}
                 >
                   <MilestoneIcon className="lucide-inline" aria-hidden="true" />
                   {source.milestone.title}

@@ -105,8 +105,10 @@ export default function ArtifactDeployPage() {
     mutationFn: (p: { name: string; region: string; create?: boolean; account?: string; role?: string; default?: boolean }) =>
       jsend<{ error?: string }>('/profiles', p),
     onSuccess: ({ status, data }, p) => {
-      if (status >= 400) { setNotice(`Error: ${data?.error || 'add failed'}`); return }
-      setNotice(p.create ? `Created + registered profile '${p.name}'.` : `Registered profile '${p.name}'.`)
+      if (status >= 400) { setNotice(i18nT('pages.artifactDeployPage.error', { error: data?.error || i18nT('pages.artifactDeployPage.add_failed') })); return }
+      setNotice(p.create
+        ? i18nT('pages.artifactDeployPage.created_and_registered_profile', { name: p.name })
+        : i18nT('pages.artifactDeployPage.registered_profile', { name: p.name }))
       setShowNewProfile(false); setNpName(''); setNpAccount(''); setNpRole(''); setNpCreate(false)
       refreshProfiles()
     },
@@ -114,14 +116,14 @@ export default function ArtifactDeployPage() {
   const setDefaultProfile = useMutation({
     mutationFn: (name: string) => jsend<{ error?: string }>(`/profiles/${encodeURIComponent(name)}`, { default: true }, 'PUT'),
     onSuccess: ({ status, data }) => {
-      if (status >= 400) { setNotice(`Error: ${data?.error || 'update failed'}`); return }
+      if (status >= 400) { setNotice(i18nT('pages.artifactDeployPage.error', { error: data?.error || i18nT('pages.artifactDeployPage.update_failed') })); return }
       refreshProfiles()
     },
   })
   const removeProfile = useMutation({
     mutationFn: (name: string) => jsend<{ error?: string }>(`/profiles/${encodeURIComponent(name)}`, {}, 'DELETE'),
     onSuccess: ({ status, data }) => {
-      if (status >= 400) { setNotice(`Error: ${data?.error || 'remove failed'}`); return }
+      if (status >= 400) { setNotice(i18nT('pages.artifactDeployPage.error', { error: data?.error || i18nT('pages.artifactDeployPage.remove_failed') })); return }
       setNotice(i18nT('pages.artifactDeployPage.removed_from_registry_your_aws_config_is_untouche'))
       refreshProfiles()
     },
@@ -150,7 +152,7 @@ export default function ArtifactDeployPage() {
       const prev = await jsend<any>('/recall', { site_id: s.site_id, profile: s.profile || '' })
       if (prev.status !== 200) throw new Error(prev.data?.error || `Recall preview failed (${prev.status})`)
       const r = prev.data.resources || {}
-      const ok = window.confirm(`Recall '${s.site_id}'? Empties bucket ${r.bucket || '?'} (URL → 404, reversible). Edge caches may serve briefly; already-downloaded content can't be recalled.`)
+      const ok = window.confirm(i18nT('pages.artifactDeployPage.recall_confirm', { name: s.site_id, bucket: r.bucket || '?' }))
       if (!ok) return { status: 0, data: { cancelled: true } }
       return jsend<any>('/recall', {
         site_id: s.site_id, confirm: true, profile: s.profile || '',
@@ -159,7 +161,9 @@ export default function ArtifactDeployPage() {
     },
     onSuccess: ({ status, data }, s) => {
       if (status === 0) return
-      setNotice(status === 200 ? `Recalled '${s.site_id}'.` : `Error: ${data?.error}`)
+      setNotice(status === 200
+        ? i18nT('pages.artifactDeployPage.recalled', { name: s.site_id })
+        : i18nT('pages.artifactDeployPage.error', { error: data?.error ?? '' }))
       qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] })
     },
   })
@@ -172,7 +176,7 @@ export default function ArtifactDeployPage() {
       const prev = await jsend<any>('/destroy', { site_id: s.site_id, profile: s.profile || '' })
       if (prev.status !== 200) throw new Error(prev.data?.error || `Destroy preview failed (${prev.status})`)
       const r = prev.data.resources || {}
-      const ok = window.confirm(`DESTROY '${s.site_id}'? Permanently deletes bucket ${r.bucket || '?'} and distribution ${r.distribution_id || '?'}. Cannot be undone.`)
+      const ok = window.confirm(i18nT('pages.artifactDeployPage.destroy_confirm', { name: s.site_id, bucket: r.bucket || '?', distribution: r.distribution_id || '?' }))
       if (!ok) return { status: 0, data: { cancelled: true } }
       return jsend<any>('/destroy', {
         site_id: s.site_id, confirm: true, profile: s.profile || '',
@@ -181,7 +185,9 @@ export default function ArtifactDeployPage() {
     },
     onSuccess: ({ status, data }, s) => {
       if (status === 0) return
-      setNotice(status === 200 ? `Destroying '${s.site_id}' (CloudFront disable can take 5–15 min).` : `Error: ${data?.error}`)
+      setNotice(status === 200
+        ? i18nT('pages.artifactDeployPage.destroying', { name: s.site_id })
+        : i18nT('pages.artifactDeployPage.error', { error: data?.error ?? '' }))
       qc.invalidateQueries({ queryKey: ['deploy-web', 'sites'] })
     },
   })
@@ -344,7 +350,9 @@ export default function ArtifactDeployPage() {
                   <td className="px-2.5 py-2 border-b border-border">
                     <Btn
                       title={p.name === defaultProfile ? i18nT('pages.artifactDeployPage.default_profile') : i18nT('pages.artifactDeployPage.make_default')}
-                      aria-label={p.name === defaultProfile ? `${p.name} is the default profile` : `Make ${p.name} the default profile`}
+                      aria-label={p.name === defaultProfile
+                        ? i18nT('pages.artifactDeployPage.is_the_default_profile', { name: p.name })
+                        : i18nT('pages.artifactDeployPage.make_the_default_profile', { name: p.name })}
                       onClick={() => p.name !== defaultProfile && setDefaultProfile.mutate(p.name)}
                       style={{ background: 'transparent', border: 'none', padding: 0, display: 'inline-flex' }}
                       className="!px-0 !py-0 !border-0">
@@ -362,8 +370,8 @@ export default function ArtifactDeployPage() {
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     <span style={{ display: 'flex', gap: 6 }}>
                       <Btn onClick={() => verify.mutate(p.name)}><ShieldCheck size={11} /> {i18nT('pages.artifactDeployPage.verify')}</Btn>
-                      <Btn aria-label={`Remove ${p.name} from registry`}
-                        onClick={() => window.confirm(`Remove '${p.name}' from the registry? Your ~/.aws/config is NOT touched.`) && removeProfile.mutate(p.name)}>
+                      <Btn aria-label={i18nT('pages.artifactDeployPage.remove_from_registry', { name: p.name })}
+                        onClick={() => window.confirm(i18nT('pages.artifactDeployPage.remove_profile_confirm', { name: p.name })) && removeProfile.mutate(p.name)}>
                         <Trash2 size={11} /> {i18nT('pages.artifactDeployPage.remove')}
                       </Btn>
                     </span>
@@ -496,7 +504,7 @@ export default function ArtifactDeployPage() {
                     </td>
                     <td className="px-2.5 py-2 border-b border-border text-sm text-right">
                       <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                        <Btn primary onClick={() => deployDraft(a.slug)} aria-label={`Deploy ${a.slug}`}>
+                        <Btn primary onClick={() => deployDraft(a.slug)} aria-label={i18nT('pages.artifactDeployPage.deploy_artifact', { name: a.slug })}>
                           <Rocket size={11} /> {i18nT('pages.artifactDeployPage.deploy')}
                         </Btn>
                         <Link to={`/artifacts/${encodeURIComponent(a.slug)}`} style={linkBtn}>

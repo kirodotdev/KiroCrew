@@ -274,7 +274,8 @@ QA screenshots and demo videos follow a **review-then-attach** contract:
 2. **Wait for explicit approval of the media.** A silent user is NOT approval.
 3. **On approval, attach to the PR automatically -- do NOT ask again.**
    - Copy the approved files into `<worktree>/temp-screenshots/<feature>/`
-     (top-level ephemeral dir; NEVER under `docs/` or `src/kiro_crew/**` --
+     (top-level ephemeral dir, see [its README](../../../../../../../temp-screenshots/README.md)
+     for the full convention; NEVER under `docs/` or `src/kiro_crew/**` --
      those trees ship in the wheel/sdist and desktop DMG).
    - Stage `temp-screenshots/<feature>/`, **amend into the PR's single
      commit**, and force-push with lease (standalone push command naming the

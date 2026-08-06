@@ -45,6 +45,11 @@ services:
       # Sandbox consent: if this runtime blocks user namespaces (no inner
       # sandbox), agent command execution stays disabled unless you
       # explicitly accept container-as-only-boundary by setting this to 1.
+      # Alternative: use the custom seccomp profile to enable the inner
+      # sandbox (adds unconditional unshare/clone/mount allows to the Docker
+      # default; see docs/guides/docker.md "Sandbox troubleshooting"):
+      #   security_opt:
+      #     - seccomp:./docker/seccomp/kirocrew-seccomp.json
       KIROCREW_ALLOW_UNSANDBOXED: ${KIROCREW_ALLOW_UNSANDBOXED:-}
     # The image's HEALTHCHECK covers liveness; this block is only needed if
     # you override the port.

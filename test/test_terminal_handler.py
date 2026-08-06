@@ -30,17 +30,30 @@ def _clear_enabled_cache(monkeypatch):
 # ── Helpers ──
 
 
-def _make_request(user="testuser", session_id="abc123", registry=None, cfg=None):
-    """Build a mock aiohttp request with state and match_info."""
+def _make_request(
+    user="testuser",
+    session_id="abc123",
+    registry=None,
+    cfg=None,
+    origin=None,
+    remote="127.0.0.1",
+):
+    """Build a mock aiohttp request with state and match_info.
+
+    ``origin`` is the Origin header the handshake carries. Left unset it is
+    absent, which ``check_origin`` trusts from loopback — a browser always
+    sends one, so its absence means a local process rather than a page.
+    """
     state = MagicMock()
     state._terminal_sessions = registry if registry is not None else {}
-    app = {"state": state}
+    app = {"state": state, "allowed_origins": {"http://localhost:5476"}}
     request = MagicMock()
     request.app = app
     request.get = lambda k, default=None: user if k == "user" else default
     request.match_info = MagicMock()
     request.match_info.get = lambda k, default="": session_id if k == "session_id" else default
-    request.remote = "127.0.0.1"
+    request.remote = remote
+    request.headers = {} if origin is None else {"Origin": origin}
     return request
 
 
@@ -1213,6 +1226,79 @@ class TestApiTerminalList:
 # ── api_terminal_ws ──
 
 
+class TestApiTerminalWsOrigin:
+    """The handshake must validate its Origin before anything else.
+
+    A WebSocket upgrade is a GET, and ``csrf_middleware`` checks the origin only
+    for unsafe methods, so without an in-handler check the handshake arrives
+    unvalidated. The cookie rides along automatically and SameSite=Lax does not
+    distinguish ports, so another loopback origin could otherwise drive a PTY
+    under the operator's own session.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_cross_origin_handshake(self):
+        req = _make_request(origin="http://127.0.0.1:9999")
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            with pytest.raises(web.HTTPForbidden):
+                await terminal.api_terminal_ws(req)
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_remote_origin(self):
+        req = _make_request(origin="https://evil.example")
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            with pytest.raises(web.HTTPForbidden):
+                await terminal.api_terminal_ws(req)
+
+    @pytest.mark.asyncio
+    async def test_origin_is_checked_before_authentication(self):
+        """A cross-origin handshake is refused whether or not it is authorised.
+
+        Ordering matters for the audit trail: the rejection has to name the
+        origin rather than report an unauthenticated caller, or a CSWSH attempt
+        is indistinguishable from someone opening the panel while logged out.
+        """
+        req = _make_request(user=None, origin="http://127.0.0.1:9999")
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            with pytest.raises(web.HTTPForbidden):
+                await terminal.api_terminal_ws(req)
+
+    @pytest.mark.asyncio
+    async def test_allows_the_dashboard_origin(self):
+        """An allowed Origin passes the check and reaches the later gates."""
+        req = _make_request(user=None, origin="http://localhost:5476")
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_ws(req)
+        # Past the origin gate, so it fails on authentication instead.
+        assert isinstance(resp, web.Response)
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_allows_a_loopback_client_with_no_origin(self):
+        """No Origin from loopback is a local process, not a browser page.
+
+        ``check_origin`` trusts this case and local callers depend on it.
+        """
+        req = _make_request(user=None, origin=None, remote="127.0.0.1")
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_ws(req)
+        assert isinstance(resp, web.Response)
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_non_loopback_client_with_no_origin(self):
+        req = _make_request(user=None, origin=None, remote="10.0.0.5")
+        with patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            with pytest.raises(web.HTTPForbidden):
+                await terminal.api_terminal_ws(req)
+
+
 class TestApiTerminalWs:
     @pytest.mark.asyncio
     async def test_rejects_unauthenticated(self):
@@ -1498,6 +1584,9 @@ def _make_app(registry=None, cfg=None, user="testuser"):
 
     app = web.Application(middlewares=[fake_auth])
     app["state"] = state
+    # The handshake validates its Origin in the handler, so the app needs the
+    # same allowlist the real gateway builds.
+    app["allowed_origins"] = {"http://localhost:5476"}
     app.router.add_get("/api/ws/terminal/{session_id}", terminal.api_terminal_ws)
     app.router.add_post("/api/terminal/sessions", terminal.api_terminal_create)
     app.router.add_get("/api/terminal/sessions", terminal.api_terminal_list)

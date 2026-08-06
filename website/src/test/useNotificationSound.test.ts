@@ -35,7 +35,7 @@ const mockCtx = {
   })),
 }
 
-;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => mockCtx)
+;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(function () { return mockCtx })
 
 beforeEach(() => {
   localStorage.clear()

@@ -181,7 +181,7 @@ describe('ChatPanel — default reasoning effort', () => {
     seed({ model: 'auto', reasoning_effort: '' })
     wrap(<ChatPanel />)
     await expectSelectInert('Default Reasoning Effort')
-    expect(screen.getByTitle(/not available on auto/)).toBeInTheDocument()
+    expect(screen.getAllByTitle(/reasoning-capable/).length).toBeGreaterThan(0)
     expect(patchConfigMock).not.toHaveBeenCalled()
   })
 
@@ -189,7 +189,7 @@ describe('ChatPanel — default reasoning effort', () => {
     seed({ model: 'claude-haiku-4.5', reasoning_effort: '' })
     wrap(<ChatPanel />)
     await expectSelectInert('Default Reasoning Effort')
-    expect(screen.getByTitle(/not available on claude-haiku-4\.5/)).toBeInTheDocument()
+    expect(screen.getAllByTitle(/reasoning-capable/).length).toBeGreaterThan(0)
   })
 
   it('surfaces an error banner when the write fails', async () => {

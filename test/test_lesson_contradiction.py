@@ -119,9 +119,11 @@ class TestResolveContradictions:
         result = await _resolve_contradictions(state, "Do NOT use X format", candidates)
 
         assert result == ["lesson.old"]
-        # Model was pinned to the cheap contradiction model and the ephemeral
-        # handle was destroyed.
-        session.set_model.assert_awaited_once_with("claude-haiku-4.5")
+        # The contradiction model preference ("auto", the governed default) is
+        # passed to set_model, which resolves it against the advertised list at
+        # the wire chokepoint (AcpSessionHandle.set_model). The fake bg session
+        # just records the requested value. The ephemeral handle is destroyed.
+        session.set_model.assert_awaited_once_with("auto")
         session.destroy.assert_awaited_once()
 
     async def test_complementary_verdict_keeps_lesson(self):
@@ -157,7 +159,9 @@ class TestResolveContradictions:
         state.sessions.get_bg_session = AsyncMock(return_value=session)
 
         candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
-        with patch.object(cron, "_sel") as mock_sel:
+        # SEL logging now happens inside run_bg_oneliner (cron delegates to it),
+        # so patch where the name is looked up, not cron._sel.
+        with patch("kiro_crew.llm_helpers._sel") as mock_sel:
             result = await cron._resolve_contradictions(state, "Do NOT use X", candidates)
 
         assert result == ["lesson.old"]
@@ -179,7 +183,8 @@ class TestResolveContradictions:
         state.sessions.get_bg_session = AsyncMock(return_value=session)
 
         candidates = [{"key": "lesson.x", "rule": "r", "similarity": 0.6}]
-        with patch.object(cron, "_sel") as mock_sel:
+        # SEL logging now happens inside run_bg_oneliner (cron delegates to it).
+        with patch("kiro_crew.llm_helpers._sel") as mock_sel:
             result = await cron._resolve_contradictions(state, "new", candidates)
 
         assert result == []  # UNRELATED verdict keeps the lesson

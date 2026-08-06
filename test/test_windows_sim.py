@@ -10,6 +10,7 @@ import os
 
 import pytest
 from windows_sim import (
+    builtin_open_sharing_violation,
     colliding_clock,
     increasing_clock,
     nonatomic_write,
@@ -49,8 +50,8 @@ class TestCollidingClock:
             aware = h.datetime.now(dt.timezone.utc)
         assert aware.tzinfo is not None
 
-    def test_real_appends_collide(self, tmp_path):
-        from kiro_crew.history import ConversationLog
+    def test_real_appends_survive_the_collision(self, tmp_path):
+        from kiro_crew.history import ConversationLog, transcript_sort_key
 
         log = ConversationLog(base_dir=tmp_path)
         with colliding_clock("kiro_crew.history"):
@@ -58,7 +59,13 @@ class TestCollidingClock:
             log.append("t", "user", "b")
             log.append("t", "user", "c")
         ts = [m["ts"] for m in log.read_messages("t")]
-        assert len(set(ts)) == 1  # the exact coarse-clock collision Windows hits
+        # The simulator still hands every call one instant (test_now_is_frozen
+        # proves that in isolation). ``append`` no longer lets it reach the file:
+        # it stamps each row strictly after the one before, so the coarse-clock
+        # collision Windows hits can no longer collapse a turn onto one stamp.
+        assert len(set(ts)) == 3
+        keys = [transcript_sort_key(t) for t in ts]
+        assert keys == sorted(keys)
 
 
 class TestIncreasingClock:
@@ -146,6 +153,45 @@ class TestOpenSharingViolation:
             fd = os.open(str(f), os.O_RDONLY)  # no O_CREAT — not faulted
             os.close(fd)
         assert f.read_bytes() == b"x"
+
+
+class TestBuiltinOpenSharingViolation:
+    def test_first_open_raises_then_succeeds(self, tmp_path):
+        f = tmp_path / "cred"
+        f.write_text("data\n")
+        with builtin_open_sharing_violation(match="cred", times=1) as state:
+            with pytest.raises(PermissionError):
+                open(f).close()
+            with open(f) as fh:  # the retry sees the real content
+                assert fh.readline() == "data\n"
+        assert state["n"] >= 2
+
+    def test_non_matching_path_unaffected(self, tmp_path):
+        other = tmp_path / "other"
+        other.write_text("x")
+        with builtin_open_sharing_violation(match="cred"):
+            with open(other) as fh:
+                assert fh.read() == "x"  # different name — never faults
+
+    def test_times_zero_never_faults(self, tmp_path):
+        f = tmp_path / "cred"
+        f.write_text("data")
+        with builtin_open_sharing_violation(match="cred", times=0):
+            with open(f) as fh:
+                assert fh.read() == "data"
+
+    def test_it_reaches_what_os_open_patching_cannot(self, tmp_path):
+        """Why this simulator exists alongside ``open_sharing_violation``.
+
+        CPython's builtin ``open()`` goes through the C ``_io`` layer and never
+        consults the ``os.open`` Python attribute, so patching ``os.open`` cannot
+        fault a plain read.
+        """
+        f = tmp_path / "cred"
+        f.write_text("data")
+        with open_sharing_violation(match="cred", times=1, create_only=False):
+            with open(f) as fh:  # unaffected: os.open was never consulted
+                assert fh.read() == "data"
 
 
 class TestUnlinkSharingViolation:

@@ -54,6 +54,31 @@ const FIND_HL_CURRENT = 'mc-find-current'
  * equals source text. For markdown, used as a fallback when DOM-based
  * `resolveSourcePos` can't resolve coordinates (rare). Exported for tests.
  */
+/** One rendered breadcrumb segment: its display text, the ABSOLUTE path up to
+ *  and including it (so a clicked directory opens that exact folder even though
+ *  only the last three segments are shown), and whether it is the file itself. */
+export interface BreadcrumbSegment { seg: string; path: string; isFile: boolean }
+
+/**
+ * Split a file path into the last three breadcrumb segments, each carrying its
+ * own absolute path. The final segment is the open file (never a folder target);
+ * the earlier ones are its ancestor directories.
+ *
+ * A leading slash is preserved explicitly: joining segments with '/' drops it,
+ * which would turn an absolute path into a relative one the folder browser then
+ * resolves against the wrong root. Exported for unit tests.
+ */
+export function breadcrumbSegments(filePath: string): BreadcrumbSegment[] {
+  const isAbs = filePath.startsWith('/')
+  const allSegs = filePath.replace(/\/+$/, '').split('/').filter(Boolean)
+  const shown = Math.min(3, allSegs.length)
+  return allSegs.slice(-3).map((seg, j) => {
+    const absIndex = allSegs.length - shown + j
+    const joined = allSegs.slice(0, absIndex + 1).join('/')
+    return { seg, path: isAbs ? '/' + joined : joined, isFile: absIndex === allSegs.length - 1 }
+  })
+}
+
 export function findCoords(content: string, selected: string): { line: number; column: number } | undefined {
   if (!selected) return undefined
   const idx = content.indexOf(selected)
@@ -162,6 +187,10 @@ interface Props {
   onDiffModeChange?: (diffMode: boolean) => void
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
+  /** Open a directory (e.g. a clicked path-breadcrumb segment) as a folder tab.
+   *  Omitted where no filesystem-navigation surface exists (the standalone,
+   *  non-embedded panel), in which case breadcrumb segments stay inert text. */
+  onOpenFolder?: (dirPath: string) => void
   /** The on-disk (last-saved) content. When provided, "dirty" is computed as
    *  content !== savedBaseline instead of only being set by local edits — so an
    *  editor RESTORED with a pre-edited buffer (e.g. the Files-tab inline draft
@@ -404,7 +433,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             <button
               role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none"
               onClick={() => { navigate(`/artifacts/${encodeURIComponent(artifact.existing!.slug)}`); setOpen(false) }}
-              title={`Open artifact ${artifact.existing.slug}`}
+              title={i18nT('components.markdownPanel.open_artifact', { name: artifact.existing.slug })}
             >
               <BookmarkPlus size={14} className="lucide-inline" style={{ color: 'var(--ok)' }} /> {i18nT('components.markdownPanel.in_artifacts')} <Check size={14} className="lucide-inline" />
             </button>
@@ -707,7 +736,7 @@ const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComm
  *  control can't bypass the "Discard unsaved changes?" confirmation. */
 export interface MarkdownPanelHandle { requestClose: () => void }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed, onOpenFolder }: Props, ref) {
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
   // "preview" was just a read-only render of the same text. They open
@@ -1419,7 +1448,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   </>)
 
   // Breadcrumb: last two directories + filename (full path in tooltip/copy).
-  const crumbs = filePath.replace(/\/+$/, '').split('/').filter(Boolean).slice(-3)
+  const crumbs = breadcrumbSegments(filePath)
   // Diff-mode +N/-N stats over the same original/modified pair Monaco shows.
   const diffStats = useMemo(() => countLines(originalContent, content), [originalContent, content])
   // Snapshot (⋯ menu): capture current content as a new artifact version;
@@ -1452,12 +1481,23 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           <div className="flex items-center gap-2 h-[38px] px-3">
             <FileText size={14} className="text-muted shrink-0" />
             <span className="flex items-center min-w-0" title={filePath}>
-              {crumbs.map((seg, i) => (
-                <span key={i} className="flex items-center min-w-0 text-[12px]">
-                  {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
-                  <span className={`truncate ${i === crumbs.length - 1 ? 'text-text-strong font-medium' : 'text-muted'}`}>{seg}</span>
-                </span>
-              ))}
+              {crumbs.map((c, i) => {
+                const clickable = !c.isFile && !!onOpenFolder
+                return (
+                  <span key={i} className="flex items-center min-w-0 text-[12px]">
+                    {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
+                    {clickable ? (
+                      <Clickable
+                        onClick={() => onOpenFolder?.(c.path)}
+                        className="truncate text-muted hover:text-text hover:underline cursor-pointer rounded px-0.5 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                        title={i18nT('components.markdownPanel.open_folder', { path: c.path })}
+                      >{c.seg}</Clickable>
+                    ) : (
+                      <span className={`truncate ${c.isFile ? 'text-text-strong font-medium' : 'text-muted'}`}>{c.seg}</span>
+                    )}
+                  </span>
+                )
+              })}
             </span>
             {dirty && <span className="text-warn text-[15px] leading-none shrink-0" title={i18nT('components.markdownPanel.unsaved_changes')}>●</span>}
             {diffMode && (diffStats.added > 0 || diffStats.removed > 0) && (

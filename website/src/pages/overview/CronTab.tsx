@@ -112,7 +112,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
   }
   return (<>
     {noCrons && <div className="bg-yellow-900/30 border border-yellow-700/50 text-yellow-200 px-4 py-2 rounded-lg mb-3 text-sm"><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.cronTab.cron_execution_disabled')}<code className="text-yellow-300">{i18nT('pages.overview.cronTab.no_crons')}</code>{i18nT('pages.overview.cronTab.jobs_are_managed_by_another_instance')}</div>}
-    <Card><CardTitle>{i18nT('pages.overview.cronTab.add_job')} <InfoTip text={`Schedule recurring or one-time tasks. Jobs run in their own ${provider.labels.sessionProcess} session. Use cron expressions or interval seconds.`} /></CardTitle>
+    <Card><CardTitle>{i18nT('pages.overview.cronTab.add_job')} <InfoTip text={i18nT('pages.overview.cronTab.schedule_recurring_or_one_time_tasks', { sessionProcess: provider.labels.sessionProcess })} /></CardTitle>
       <div className="flex flex-col gap-3">
         <fieldset className="contents" aria-label={i18nT('pages.overview.cronTab.job_details')}>
         <div className="flex gap-2 items-center flex-wrap">

@@ -23,7 +23,7 @@ def launchd_live_program() -> "os.PathLike[str]":
     only re-reads a plist on ``bootout`` + ``bootstrap`` (``kickstart`` restarts
     the in-memory job definition), and ``bootout`` kills the very process that
     would have to run the ``bootstrap``. The gateway would stop and never come
-    back. Rewriting THIS file plus ``kickstart -k`` leaves nothing for a dying
+    back. Rewriting THIS file plus ``launchctl stop`` leaves nothing for a dying
     process to do.
 
     It is a generated launcher SCRIPT rather than a symlink to the binary
@@ -124,6 +124,23 @@ def service_environment(home: str) -> "dict[str, str]":
     kiro_bin = os.environ.get("KIROCREW_KIRO_BIN", "").strip()
     if kiro_bin:
         env["KIROCREW_KIRO_BIN"] = os.path.abspath(kiro_bin)
+    # KIROCREW_PORT is the ONLY input DASHBOARD_PORT reads, so a service that
+    # cannot carry it can only ever bind the default 5476 — broken by
+    # construction on a host where that port is already taken, which includes
+    # every host running Kiro Crew's own instance tunnel (it pins
+    # local_port == remote_port). Propagated the same way KIROCREW_KIRO_BIN is:
+    # captured from the installer's environment, so
+    # `KIROCREW_PORT=5477 kirocrew service install` bakes 5477 into the unit.
+    #
+    # No validation here on purpose. `cli.py`'s main() already rejects a
+    # KIROCREW_PORT that is not an integer in 1-65535 before any subcommand
+    # runs, install included, so a check here could only become a second policy
+    # that drifts from the first. It must reject rather than silently drop an
+    # out-of-range value: dropping would install the DEFAULT port while the
+    # operator believes they set theirs.
+    port = os.environ.get("KIROCREW_PORT", "").strip()
+    if port:
+        env["KIROCREW_PORT"] = port
     return env
 
 

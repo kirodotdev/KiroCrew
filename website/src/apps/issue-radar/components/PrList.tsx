@@ -245,8 +245,8 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           <input
             value={prQuery}
             onChange={(e) => setPrQuery(e.target.value)}
-            placeholder={`Search ${terms.changeRequestPluralTitle}…`}
-            aria-label={`Search ${terms.changeRequestPluralTitle}`}
+            placeholder={i18nT('apps.issueRadar.components.prList.search', { label: terms.changeRequestPluralTitle })}
+            aria-label={i18nT('apps.issueRadar.components.prList.search_2', { label: terms.changeRequestPluralTitle })}
             className="flex-1 min-w-0 bg-transparent py-2.5 text-[13px] text-text placeholder:text-muted outline-none"
           />
           {prQuery && (
@@ -322,7 +322,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
         <span title={
           prPersonFilterActive
             ? (prSearchTruncatedAt
-              ? `Resolved by GitHub search across the whole repo, capped at the ${prSearchTruncatedAt} most recently updated matches`
+              ? i18nT('apps.issueRadar.components.prList.resolved_by_github_search_capped', { n: prSearchTruncatedAt })
               : i18nT('apps.issueRadar.components.prList.resolved_by_github_search_across_the_whole_repo'))
             : prStateFilter !== 'open'
               ? i18nT('apps.issueRadar.components.prList.closed_merged_prs_are_capped_at_the_100_most_rec')
@@ -340,8 +340,8 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           <button
             onClick={refreshPulls}
             disabled={pullsRefreshing}
-            title={`Re-fetch ${terms.changeRequestPluralTitle} from ${terms.providerName}`}
-            aria-label={`Refresh ${terms.changeRequestPlural}`}
+            title={i18nT('apps.issueRadar.components.prList.re_fetch_from', { label: terms.changeRequestPluralTitle, provider: terms.providerName })}
+            aria-label={i18nT('apps.issueRadar.components.prList.refresh', { label: terms.changeRequestPlural })}
             className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
           >
             <RefreshCw size={13} className={pullsRefreshing ? 'animate-spin' : ''} />

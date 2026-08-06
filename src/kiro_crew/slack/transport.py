@@ -25,10 +25,30 @@ from kiro_crew.messaging.transport import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.slack.client import SlackClientOps
+from kiro_crew.slack.format import SLACK_MSG_LIMIT
 
 # A dispatch callback consumes a normalized, already-authorized message and
 # drives a turn. The gateway supplies the real implementation later.
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
+
+# Slack's capabilities — the SINGLE declaration (the renderer imports this
+# object; it was previously declared twice, an un-DRY drift hazard).
+# max_message_chars matches the SHIPPED send path: slack/format.py splits at
+# SLACK_MSG_LIMIT (3900), not the platform's ~40000 ceiling that was declared
+# before. Declaring the ceiling was a lie waiting for a capability-aware
+# caller to trust it and emit messages 10x larger than the renderer ever sends.
+SLACK_CAPABILITIES = TransportCapabilities(
+    streaming=True,
+    edit=True,
+    reactions=True,
+    files_inbound=True,  # slack/files.py -> messaging/attachments.py ingestion
+    files_outbound=True,  # /api/slack/upload-file external-upload flow
+    rich_blocks=True,
+    threads=True,
+    max_message_chars=SLACK_MSG_LIMIT,
+    max_buttons=5,
+    supports_proactive_send=True,
+)
 
 
 class SlackTransport(MessagingTransport):
@@ -48,18 +68,8 @@ class SlackTransport(MessagingTransport):
         # mutated out from under an in-flight authorization decision.
         self._allowed_users: frozenset[str] = frozenset(allowed_users)
         self._dispatch = dispatch
-        # Slack's real capabilities (it is the rich end of the spectrum).
-        self.capabilities = TransportCapabilities(
-            streaming=True,
-            edit=True,
-            reactions=True,
-            files=True,
-            rich_blocks=True,
-            threads=True,
-            max_message_chars=40000,
-            max_buttons=5,
-            supports_proactive_send=True,
-        )
+        # Single source of truth (the renderer imports this same object).
+        self.capabilities = SLACK_CAPABILITIES
 
     # -- G2: the transport holds and exposes its client --------------------
     @property

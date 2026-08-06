@@ -55,7 +55,7 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
         <div className="mc-fe-viewer-title">
           <FileText size={14} style={{ marginRight: 6, opacity: 0.6 }} />
           <span className="mc-fe-viewer-filename">{fileName}</span>
-          <button className="mc-fe-iconbtn" title={`Copy path: ${filePath}`} onClick={copyPath} aria-label={i18nT('apps.fileExplorer.fileViewer.copy_path')}>
+          <button className="mc-fe-iconbtn" title={i18nT('apps.fileExplorer.fileViewer.copy_path_2', { path: filePath })} onClick={copyPath} aria-label={i18nT('apps.fileExplorer.fileViewer.copy_path')}>
             <Copy size={11} />
           </button>
         </div>

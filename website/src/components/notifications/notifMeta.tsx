@@ -2,7 +2,6 @@ import { ClipboardList, Anchor, Heart, Bot, Lock, GitBranch, Bell, Clock, BookOp
 import type { ReactNode } from 'react'
 
 import { i18nT } from '../../i18n/t'
-import { safeGetItem } from '../../utils/safeStorage'
 // Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
 // unknown-date fallback on top of these.
 import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/format'
@@ -10,101 +9,20 @@ import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/
 /**
  * Shared notification metadata + helpers, so the full page and the topbar bell
  * popover render notifications through the exact same code (one source of truth
- * for kinds, filters, formatting, and date grouping).
+ * for kinds, formatting, and date grouping).
+ *
+ * There is deliberately NO per-kind filter here. The feed used to carry a row of
+ * nine toggle chips plus a persisted selection, which cost real complexity for
+ * no reach: the list is short, free-text search already narrows it, and the
+ * page's stat cards already break down volume by kind. Worse, the selection was
+ * stored as an explicit list while the feed treated "every known kind selected"
+ * as the special include-unknown-kinds state, so ADDING a kind silently turned a
+ * stored full set into a partial one and hid the new kind for every existing
+ * install. Removing the filter makes that failure mode impossible by
+ * construction rather than managing it with a storage migration.
  */
 
 export type Kind = 'cron' | 'hook' | 'heartbeat' | 'agent' | 'approval' | 'subagent' | 'taskrunner' | 'skills'
-export type Category = 'all' | Kind
-
-export const KIND_KEYS: Kind[] = ['cron', 'hook', 'heartbeat', 'agent', 'approval', 'subagent', 'taskrunner', 'skills']
-
-/** The kind set that shipped under {@link LEGACY_KINDS_STORAGE_KEY}, frozen.
- *  Used ONLY by the one-time filter migration in {@link loadActiveKinds} to tell
- *  "the user had everything selected" apart from "the user chose these seven" --
- *  which are byte-identical in the v1 payload. Never extend it. */
-const LEGACY_KIND_KEYS: Kind[] = ['cron', 'hook', 'heartbeat', 'agent', 'approval', 'subagent', 'taskrunner']
-
-/**
- * Filter chips across the top of the feed.
- *
- * `label` is a GETTER, not a string: this table is evaluated once at module load,
- * so an `i18nT()` call in the initializer would freeze the boot language and never
- * re-resolve when the language switches. A getter moves the lookup to property-access
- * time, which happens during `NotificationFeed`'s render.
- *
- * `lib/effort.ts` solves the same problem with a key table plus an exported resolver;
- * a getter is used here because the two consumers that read `.label`
- * (`NotificationFeed.tsx`, `NotificationDetailPanel.tsx`) stay untouched, so the
- * property has to keep behaving like a `string`.
- *
- * The keys are inline literals at each `i18nT()` call — the only form
- * `scripts/check-i18n-keys.mjs` can resolve statically.
- */
-export const CATEGORIES: { key: Category; label: string; icon: ReactNode }[] = [
-  { key: 'all', get label() { return i18nT('components.notifications.notifMeta.kind_all') }, icon: <ClipboardList className="lucide-inline" /> },
-  { key: 'cron', get label() { return i18nT('components.notifications.notifMeta.kind_cron') }, icon: <Clock className="lucide-inline" /> },
-  { key: 'hook', get label() { return i18nT('components.notifications.notifMeta.kind_hooks') }, icon: <Anchor className="lucide-inline" /> },
-  { key: 'heartbeat', get label() { return i18nT('components.notifications.notifMeta.kind_heartbeat') }, icon: <Heart className="lucide-inline" /> },
-  { key: 'agent', get label() { return i18nT('components.notifications.notifMeta.kind_agent') }, icon: <Bot className="lucide-inline" /> },
-  { key: 'approval', get label() { return i18nT('components.notifications.notifMeta.kind_approval') }, icon: <Lock className="lucide-inline" /> },
-  { key: 'subagent', get label() { return i18nT('components.notifications.notifMeta.kind_subagent') }, icon: <GitBranch className="lucide-inline" /> },
-  { key: 'taskrunner', get label() { return i18nT('components.notifications.notifMeta.kind_tasks') }, icon: <ClipboardList className="lucide-inline" /> },
-  { key: 'skills', get label() { return i18nT('components.notifications.notifMeta.kind_skills') }, icon: <BookOpen className="lucide-inline" /> },
-]
-
-/** Current filter-selection storage key.
- *
- *  Versioned because the selection is stored as an EXPLICIT list of kinds while
- *  `NotificationFeed` treats "every known kind selected" as the special
- *  include-unknown-kinds state (`allActive`). Adding a kind therefore turns a
- *  stored full set into a 7-of-8 PARTIAL set, which flips filtering to strict
- *  and hides the new kind permanently -- for every existing install, with no
- *  chip that brings it back until the user happens to toggle something. The
- *  version bump makes that migration explicit instead of silent. */
-export const KINDS_STORAGE_KEY = 'mc:notif:activeKinds:v2'
-/** Pre-`skills` key. Read by {@link loadActiveKinds} and never written.
- *
- *  Deliberately NOT deleted after migrating: `loadActiveKinds` is a `useState`
- *  initializer, so removing it there would put a storage write in render, and
- *  the stale entry is inert once the versioned key exists (v2 always wins). It
- *  costs a few bytes per install and buys a render with no side effects. */
-export const LEGACY_KINDS_STORAGE_KEY = 'mc:notif:activeKinds'
-
-function parseKinds(raw: string | null): Kind[] | null {
-  if (!raw) return null
-  try {
-    const arr = JSON.parse(raw)
-    if (!Array.isArray(arr)) return null
-    return arr.filter((k: unknown): k is Kind => typeof k === 'string' && (KIND_KEYS as string[]).includes(k))
-  } catch {
-    return null
-  }
-}
-
-export function loadActiveKinds(): Set<Kind> {
-  // `safeGetItem`, not a bare `localStorage.getItem`: reading storage THROWS
-  // (SecurityError) when a browser policy or embedding context blocks it, and
-  // this function is a `useState` initializer -- an uncaught throw there takes
-  // the whole notification feed down, not just the filter selection. The
-  // try/catch inside `parseKinds` covers only JSON.parse, which is a different
-  // failure.
-  const current = parseKinds(safeGetItem(KINDS_STORAGE_KEY))
-  if (current) return new Set(current)
-  // One-time migration off the unversioned key. A v1 set covering every legacy
-  // kind meant "all" (the default, and the state the "All" chip produces), so
-  // it migrates to all CURRENT kinds -- otherwise the user silently loses the
-  // include-unknown-kinds behaviour they never opted out of. A genuine subset
-  // carries over verbatim: it was a deliberate choice, and the kinds added
-  // since were not available to deselect, so leaving them off is the honest
-  // reading. Not written back here -- the feed's persist effect owns writes.
-  const legacy = parseKinds(safeGetItem(LEGACY_KINDS_STORAGE_KEY))
-  if (legacy) {
-    const had = new Set(legacy)
-    if (LEGACY_KIND_KEYS.every(k => had.has(k))) return new Set(KIND_KEYS)
-    return had
-  }
-  return new Set(KIND_KEYS)
-}
 
 export function parseTs(ts: string | number): Date {
   // A numeric epoch (number, or an all-digits string) can arrive in any unit —
@@ -148,13 +66,14 @@ export function dateGroup(d: Date): string {
   return fmtDateFields(d, { year: 'numeric', month: 'short' })
 }
 
-/** Per-kind badge treatment. `label` is a getter for the same reason as
- *  `CATEGORIES` above — module-load evaluation would freeze the boot language.
- *  The badge register is INDEPENDENT of the chip register: three kinds are
- *  deliberately worded differently here ('Cron Job' vs the 'Cron' chip,
- *  'Webhook' vs 'Hooks', 'Task Runner' vs 'Tasks'), so those get their own keys;
- *  the four that read identically share the chip's key rather than shipping a
- *  duplicate English string to ten locales. */
+/** Per-kind badge treatment. `label` is a getter, not a plain string: resolving
+ *  it at module load would freeze every badge to the boot language and leave it
+ *  stale after a language switch.
+ *
+ *  Three keys read fuller than their kind — `kind_cron_job`, `kind_webhook` and
+ *  `kind_task_runner` back `cron`/`hook`/`task` — because a badge stands alone
+ *  as a noun ('Cron Job', not 'Cron'). Don't rename them to match the kind for
+ *  symmetry: these are the only labels these kinds have. */
 export const KIND_META: Record<string, { icon: ReactNode; color: string; label: string; borderColor: string }> = {
   cron:       { icon: <Clock className="lucide-inline" />, color: 'bg-accent/15 text-accent',  get label() { return i18nT('components.notifications.notifMeta.kind_cron_job') },     borderColor: 'border-l-accent' },
   hook:       { icon: <Anchor className="lucide-inline" />, color: 'bg-info/15 text-info',      get label() { return i18nT('components.notifications.notifMeta.kind_webhook') },      borderColor: 'border-l-info' },

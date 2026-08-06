@@ -45,10 +45,10 @@ export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelPr
         <Search size={14} style={{ color: 'var(--muted)' }} />
         <input
           ref={inputRef}
-          aria-label={`Search in ${basename(rootPath) || rootPath}`}
+          aria-label={i18nT('apps.fileExplorer.searchPanel.search_in', { name: basename(rootPath) || rootPath })}
           className="mc-fe-search-input"
           type="text"
-          placeholder={`Search in ${basename(rootPath) || rootPath}...`}
+          placeholder={i18nT('apps.fileExplorer.searchPanel.search_in_2', { name: basename(rootPath) || rootPath })}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}

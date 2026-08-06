@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
-from conftest import MockSlackClient
 
+from conftest import MockSlackClient
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import build_default_context

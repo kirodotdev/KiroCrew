@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { safeSetItem, safeSetSessionItem, isQuotaExceededError } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem, safeGetSessionItem, safeSetSessionItem, isQuotaExceededError } from '../utils/safeStorage'
 
 /** Build a DOMException that looks like a browser quota error. */
 function quotaError(name = 'QuotaExceededError', code = 22): DOMException {
@@ -242,5 +242,71 @@ describe('safeSetSessionItem', () => {
     expect(() => safeSetSessionItem('k', 'v')).not.toThrow()
     expect(safeSetSessionItem('k', 'v')).toBe(false)
     spy.mockRestore()
+  })
+})
+
+/**
+ * The storage-DENIED platform, which is different from the storage-rejects-a-write
+ * platform above. Chrome with cookies blocked (and a sandboxed iframe) makes the
+ * global `sessionStorage` / `localStorage` accessor itself throw SecurityError.
+ * `typeof` does NOT suppress that: it only suppresses ReferenceError for an
+ * undeclared identifier, so a `typeof x === 'undefined'` availability probe
+ * sitting outside the try/catch throws on exactly the platform it exists to
+ * survive — taking the calling component's render down with it.
+ */
+describe('storage-denied platform (global accessor throws)', () => {
+  /** Replace a storage global with a throwing accessor for one test. */
+  function denyStorage(name: 'localStorage' | 'sessionStorage'): () => void {
+    const original = Object.getOwnPropertyDescriptor(window, name)
+    Object.defineProperty(window, name, {
+      configurable: true,
+      get() {
+        throw new DOMException('access denied', 'SecurityError')
+      },
+    })
+    return () => {
+      if (original) Object.defineProperty(window, name, original)
+      else delete (window as unknown as Record<string, unknown>)[name]
+    }
+  }
+
+  it('safeGetSessionItem returns null instead of throwing', () => {
+    const restore = denyStorage('sessionStorage')
+    try {
+      expect(() => safeGetSessionItem('k')).not.toThrow()
+      expect(safeGetSessionItem('k')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('safeSetSessionItem returns false instead of throwing', () => {
+    const restore = denyStorage('sessionStorage')
+    try {
+      expect(() => safeSetSessionItem('k', 'v')).not.toThrow()
+      expect(safeSetSessionItem('k', 'v')).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('safeGetItem returns null instead of throwing', () => {
+    const restore = denyStorage('localStorage')
+    try {
+      expect(() => safeGetItem('k')).not.toThrow()
+      expect(safeGetItem('k')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('safeSetItem returns false instead of throwing', () => {
+    const restore = denyStorage('localStorage')
+    try {
+      expect(() => safeSetItem('k', 'v')).not.toThrow()
+      expect(safeSetItem('k', 'v')).toBe(false)
+    } finally {
+      restore()
+    }
   })
 })

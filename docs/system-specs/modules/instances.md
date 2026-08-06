@@ -1,9 +1,10 @@
 # Instances Module (multi-instance management over SSH tunnels)
 
 Lets a single Kiro Crew gateway (the **hub**) manage and switch between several
-**remote** Kiro Crew instances (dev hosts, EC2, home servers) over SSH tunnels,
-embedding each remote dashboard as an iframe pane below a tab strip. Opt-in: off
-by default (`instances.enabled`).
+**remote** Kiro Crew instances (dev hosts, EC2, home servers) over SSH **or AWS
+SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
+below a tab strip. Opt-in: off by default (`instances.enabled`). The transport is
+per-instance (`connection_method`) — see §13.
 
 > **Section numbers in this document are an API.** `src/kiro_crew/cloud/connect.py`
 > cites "instances.md §9" from two docstrings (the module docstring and
@@ -31,6 +32,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [10. Troubleshooting](#10-troubleshooting)
 - [11. Input validation (`validation.py`)](#11-input-validation-validationpy)
 - [12. The gateway run-marker (`run_marker.py`)](#12-the-gateway-run-marker-run_markerpy)
+- [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 
 ---
 
@@ -120,13 +122,14 @@ Module responsibilities:
 
 | Module | Responsibility |
 |--------|----------------|
-| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` at add/update; every mutation re-reads the file and writes atomically, so a live gateway and a CLI edit cannot clobber each other. |
+| `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; every mutation re-reads the file and writes atomically, so a live gateway and a CLI edit cannot clobber each other. |
 | `port_allocator.py` | Probes for a free loopback port at or above `tunnel_base_port` (7778). The probe sets `SO_REUSEADDR` so a `TIME_WAIT` remnant from a just-closed forward is not a false "in use". |
 | `token_mint.py` | Runs `kirocrew token --ttl --port --embed-parent-port` on the remote over SSH (run-marker first, then a bin-candidate ladder) and parses the JWT out of the printed URL. Token is returned in memory only, **never logged**. |
-| `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, applied immediately before any command line is built. See §11. |
+| `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
+| `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
-| `ssh_tunnel_manager.py` | Supervises one `ssh -N -L` child per instance: readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart, orphan-forwarder reaping. |
-| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. |
+| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart, orphan-forwarder reaping. One state machine, two transports. |
+| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder) and `diagnose_instance_ssm` (SSM ladder). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
 
 **The local forward port mirrors the remote port.** `connect()` sets
@@ -455,12 +458,16 @@ Simpler cases work without an alias: `ec2-user@10.0.1.5` and
 values, provided the matching key is the default identity or in the agent.
 
 **The cloud launcher registers instances here.** `kirocrew cloud launch`
-best-effort registers the box it created in this registry using the EC2 instance
-id as `ssh_host` (`cloud/connect.py:ssm_proxy_ssh_host` returns the id verbatim,
-which is charset-safe for the registry validator); the operator's `~/.ssh/config`
-carries the SSM `ProxyCommand` that makes that id resolvable. `kirocrew cloud
-destroy` unregisters it after deletion confirms. This is why `cloud/connect.py`
-cites this section, and why its numbering must not move.
+best-effort registers the box it created in this registry using the **native SSM
+transport** — `connection_method="ssm"` with the EC2 instance id as `ssm_target`,
+plus the launcher's `aws_profile`/`aws_region` (`cloud/connect.py:register_instance`).
+The dashboard then tunnels, refreshes tokens, and self-heals the box over SSM with
+no SSH key, no inbound port, and no hand-edited `~/.ssh/config`. `kirocrew cloud
+destroy` unregisters it (matched by `ssm_target`) after deletion confirms. This is
+why `cloud/connect.py` cites this section, and why its numbering must not move.
+The legacy `ssm_proxy_ssh_host` helper (registering the id as `ssh_host` behind an
+`~/.ssh/config` `ProxyCommand`) is retained for reference only and is no longer
+used by the managed path.
 
 ### What is reachable through which mechanism
 
@@ -634,3 +641,116 @@ not re-apply mode) and both files are written `0600` through the shared
 same-user symlink TOCTOU a predictable `<name>.tmp` would leave open. Every
 legitimate writer opens these paths directly and does not route through the file
 gate, so gateway startup and spawn are unaffected.
+
+---
+
+## 13. The SSM connection method (`connection_method`)
+
+Each instance record carries a `connection_method`: `"ssh"` (default) or `"ssm"`.
+SSM tunnels over AWS Systems Manager Session Manager, so it needs no inbound
+port, no sshd and no distributed key — reachability is an IAM decision
+(`ssm:StartSession` on the instance ARN) rather than a network one.
+
+| Method | Tunnel command | Client prerequisites | Mint path |
+|--------|----------------|----------------------|-----------|
+| `ssh` (default) | `ssh -N -L 127.0.0.1:LP:127.0.0.1:RP <ssh_host>` | non-interactive SSH access | `ssh <host> kirocrew token` |
+| `ssm` | `aws ssm start-session --document-name AWS-StartPortForwardingSession --target <ssm_target> --parameters portNumber=RP,localPortNumber=LP` | AWS CLI + `session-manager-plugin`; `ssm:StartSession`, `ssm:SendCommand`, `ssm:GetCommandInvocation` | `aws ssm send-command` → `kirocrew token` |
+
+Records are back-compatible: an `instances.json` written before this feature has
+no `connection_method` and loads as `"ssh"`.
+
+SSM-only registry fields: `ssm_target` (an EC2 `i-…` or SSM managed-instance
+`mi-…` id), plus optional `aws_profile`, `aws_region` and `ssm_run_as`. Only the
+profile **name** is persisted — never a credential; the AWS CLI resolves
+credentials via its own provider chain.
+
+`ssm_run_as` is the **remote POSIX user** SSM commands run as: `cloud.ssm.run_command`
+wraps every remote command in `sudo -u <user> -i bash`, and its default
+(`ec2-user`) is a *launcher* assumption that holds only for provisioned AL2023
+boxes. Without a per-instance override, an Ubuntu AMI would bring the tunnel up
+and then fail the mint — and, because the readiness probe also runs through that
+same wrapper, `diagnose_instance_ssm` would report `remote_down` for a perfectly
+healthy remote gateway. The field defaults to `ec2-user` (so existing records and
+launcher-provisioned boxes are unaffected), is charset-validated as a Unix
+username like the other SSM coordinates, and an empty value resolves to the
+default rather than emitting a bare `sudo -u ''`.
+
+### One state machine, two transports
+
+`_SshTunnel` builds either argv from the same class, and `_TransportParams`
+(resolved once per operation by `_resolve_transport`) carries the validated
+per-transport values so `connect` / `_rebuild` / `_recover` /
+`_refresh_token_once` / `restart_remote` share one code path. The health probe,
+2-tier self-heal, proactive refresh, stored-token liveness probe and startup
+auto-revive are transport-agnostic.
+
+Two SSM-specific behaviours:
+
+- **Process-tree teardown (all platforms).** The SSM child gets process-group
+  isolation at spawn — `start_new_session` on POSIX, `CREATE_NEW_PROCESS_GROUP`
+  on Windows, passed explicitly per the `platform_compat` recipe — and teardown
+  reaps the whole tree through `platform_compat.kill_process_tree` (`killpg`
+  POSIX / `taskkill /T` Windows). This matters because the
+  `session-manager-plugin` grandchild is what actually holds the forwarded port:
+  `terminate()` on the `aws` wrapper alone orphans it and wedges the port. Doing
+  this with raw `os.killpg`/`os.getpgid` would silently degrade to
+  wrapper-only termination on Windows, which Kiro Crew supports.
+- **Readiness timeout.** `session-manager-plugin` completes a WebSocket handshake
+  with the SSM service before binding, so the SSM transport uses a longer default
+  connect timeout than a direct ssh TCP connect. An explicit caller-supplied
+  timeout still wins for both.
+
+`_ssm_exit_error` classifies the child's exit with SSM vocabulary (expired
+credentials, `ssm:StartSession` denial, missing plugin, target not a connected
+managed node, local bind conflict) rather than running SSM stderr through the ssh
+auth/transport matchers, which would mislabel an `AccessDenied` as an ssh auth
+failure.
+
+### Diagnosis ladder
+
+`diagnose_instance_ssm` mirrors the SSH ladder with an SSM first rung, so an
+offline agent is not reported as a dead remote gateway:
+
+1. managed node online? (`describe-instance-information`) → no ⇒ `ssm_unreachable`
+2. remote dashboard up? (`send-command` + curl on the remote loopback) → no ⇒ `remote_down`
+3. local forward reachable? → no ⇒ `tunnel_down`, else `ok`
+
+`ssm_unreachable` is a new diagnosis code; the shared rungs reuse SSM-worded
+reasons so the copy never tells an SSM user to "check SSH access".
+
+### Reuse of the launcher's SSM primitives
+
+Argv building and remote execution delegate to `cloud.ssm`
+(`build_port_forward_argv`, `run_command`) rather than duplicating them, so the
+two features cannot drift on the SSM document or parameter shape. Those calls run
+in the gateway process, which has no `KIROCREW_SESSION_KEY`, so the launcher's
+agent-session chokepoint does not apply; the `hooks.py` denied-command list gates
+agent *tool* calls and likewise does not gate the gateway's own children.
+
+### Trade-off: the mint transits SSM command history
+
+The mint runs over `send-command`, so the token appears in that invocation's
+output, which SSM retains for up to 30 days and is readable with
+`ssm:GetCommandInvocation`. It is **not** in CloudTrail (which records the API
+call, not the output), and no S3/CloudWatch output destination is configured.
+
+Bounded by: the token is TTL-capped and only usable against the remote's
+loopback, so *using* it requires `ssm:StartSession` — a superset of the access
+needed to read the history. The generated launcher policy also withholds
+`ssm:ListCommandInvocations`, so a holder cannot enumerate command ids hunting
+for tokens. The SSH transport has no equivalent exposure. This mirrors the
+accepted posture in `cloud/connect.py::mint_token`.
+
+`ssm_token_mint.py` is listed in `security_posture.NON_EGRESS_REDACTION_MODULES`
+alongside its SSH sibling: it redacts remote output on the way into an exception,
+which is not an egress boundary.
+
+### Interaction with §9
+
+§9 documents reaching an SSM-only instance through an `~/.ssh/config`
+`ProxyCommand` — still valid as a manual option, and still `connection_method="ssh"`:
+the reachability lives in ssh config and Kiro Crew is unaware of it.
+`connection_method="ssm"` is the direct alternative, requiring neither sshd nor a
+key on the remote — and it is now what `cloud/connect.py`'s registry integration
+uses (`register_instance` sets `connection_method="ssm"`, `ssm_target=<instance-id>`).
+The legacy `ssm_proxy_ssh_host` helper is kept for reference only.

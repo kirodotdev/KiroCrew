@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import copy
 import hashlib
+import inspect
 import json
 import os
 import sqlite3
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +26,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
@@ -32,27 +35,43 @@ from kiro_crew.dashboard.chat_regenerate import (
 from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.handlers.kiro_prerequisite import (
-    api_kiro_prerequisite_install,
-    api_kiro_prerequisite_login,
+    api_kiro_prerequisite_repair_specs,
     api_kiro_prerequisite_status,
 )
 from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.kiro_prerequisite import (
-    OFFICIAL_INSTALL_URL,
-    OFFICIAL_WINDOWS_INSTALL_URL,
+    KIRO_CLI_LOGIN_COMMAND,
+    OFFICIAL_INSTALL_DOCS_URL,
     KiroPrerequisiteService,
-    OperationStatus,
+    PrerequisiteStatus,
     ProcessResult,
-    _installer_proxy,
     _run_process,
-    _trusted_installer_path,
-    _trusted_installer_url,
-    extract_secure_login_url,
     find_kiro_cli_candidates,
-    official_installer_command,
-    validate_installer_script,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_specs(tmp_path_factory, monkeypatch):
+    """Point the agents dir at a POPULATED tmp dir for every test in this module.
+
+    Readiness folds agent-spec presence into ``ready``: a missing spec means
+    kiro-cli cannot resolve the agent, so the install is not ready. Those specs
+    live in a MACHINE-WIDE directory that no ``KIROCREW_HOME`` override isolates,
+    so an unpinned probe test reads the developer's real ``~/.kiro/agents`` and its
+    verdict follows host state rather than the code under test. This pin removes
+    that confound.
+
+    Tests that exercise the missing-spec behaviour re-patch the same hook inside
+    the test body, which runs after this fixture and therefore wins.
+    """
+    from kiro_crew import agent as agent_module
+    from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+    agents = tmp_path_factory.mktemp("kiro-agents")
+    for name in REQUIRED_KIRO_AGENT_FILES:
+        (agents / name).write_text('{"name": "probe-fixture"}', encoding="utf-8")
+    monkeypatch.setattr(agent_module, "KIRO_AGENTS_DIR", agents)
 
 
 def _make_executable(path: Path) -> None:
@@ -67,7 +86,6 @@ class _FakeRuntime:
         self.installed = executable.exists()
         self.authenticated = False
         self.calls: list[tuple[str, list[str]]] = []
-        self.sandboxed: list[bool | None] = []
         self.kwargs: list[dict[str, Any]] = []
 
     async def run(
@@ -77,25 +95,12 @@ class _FakeRuntime:
         **kwargs: Any,
     ) -> ProcessResult:
         self.calls.append((command, args))
-        self.sandboxed.append(kwargs.get("sandboxed"))
         self.kwargs.append(kwargs)
         if args == ["--version"]:
             return ProcessResult(ok=self.installed)
         if args == ["whoami"]:
             return ProcessResult(ok=self.authenticated)
-        if args == ["login", "--use-device-flow"]:
-            callback = kwargs.get("on_output")
-            if callback:
-                callback(
-                    "Open https://view.awsapps.com/start/#/device?"
-                    "user_code=ABCD-EFGH and enter code ABCD-EFGH\n"
-                )
-            self.authenticated = True
-            return ProcessResult(ok=True)
-
-        _make_executable(self.executable)
-        self.installed = True
-        return ProcessResult(ok=True, output="installed")
+        return ProcessResult(ok=False)
 
 
 async def _no_audit(**kwargs: Any) -> None:
@@ -396,162 +401,6 @@ class TestKiroPrerequisiteHelpers:
                 environ={},
             )
 
-    def test_extract_secure_login_url_rejects_non_https(self) -> None:
-        assert (
-            extract_secure_login_url("Open https://view.awsapps.com/start/#/device?user_code=ABCD.")
-            == "https://view.awsapps.com/start/#/device?user_code=ABCD"
-        )
-        assert extract_secure_login_url("Open http://example.test/device") == ""
-        assert extract_secure_login_url("Open https://phishing.example/device") == ""
-        assert extract_secure_login_url("Open https://app.kiro.dev.evil.test/device") == ""
-        assert extract_secure_login_url("Open https://view.awsapps.com.evil.test/start") == ""
-        assert extract_secure_login_url("Open https://view.awsapps.com/not-start") == ""
-        assert extract_secure_login_url("Open https://evil.example\\@view.awsapps.com/start") == ""
-        assert extract_secure_login_url("Open https://user@app.kiro.dev/device") == ""
-
-    def test_installer_validation_is_digest_pinned(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        posix = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
-        windows = (
-            b"# Kiro CLI Installation Script for Windows\n" b'$ErrorActionPreference = "Stop"\n'
-        )
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "posix",
-            hashlib.sha256(posix).hexdigest(),
-        )
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "win32",
-            hashlib.sha256(windows).hexdigest(),
-        )
-
-        assert validate_installer_script("linux", posix)
-        assert validate_installer_script("win32", windows)
-        assert not validate_installer_script("linux", posix + b"# modified\n")
-        assert not validate_installer_script("linux", b"<html>error</html>")
-        assert not validate_installer_script("win32", b"#!/bin/bash\n")
-
-    def test_windows_installer_uses_fixed_system_powershell(self, tmp_path: Path) -> None:
-        powershell = tmp_path / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-        _make_executable(powershell)
-        plan = official_installer_command(
-            "win32",
-            {"SystemRoot": str(tmp_path)},
-        )
-
-        assert plan is not None
-        assert plan[0] == str(powershell)
-        assert plan[1][-2:] == ["-Command", "-"]
-        assert "-NonInteractive" in plan[1]
-
-    def test_installer_path_excludes_user_writable_discovery_dirs(self, tmp_path: Path) -> None:
-        environ = {
-            "HOME": str(tmp_path),
-            "PATH": str(tmp_path / ".local" / "bin"),
-            "SystemRoot": r"C:\Windows",
-        }
-
-        assert _trusted_installer_path("linux", environ) == "/usr/bin:/bin:/usr/sbin:/sbin"
-        windows_path = _trusted_installer_path("win32", environ)
-        assert str(tmp_path) not in windows_path
-        assert windows_path.startswith(r"C:\Windows\System32")
-
-    def test_installer_proxy_is_explicit_and_honors_no_proxy(self) -> None:
-        environ = {
-            "HTTPS_PROXY": "http://proxy.example:8443",
-            "NO_PROXY": "localhost,.internal.example",
-        }
-
-        assert (
-            _installer_proxy("https://cli.kiro.dev/install", environ) == "http://proxy.example:8443"
-        )
-        assert _installer_proxy("https://api.internal.example/install", environ) is None
-        assert (
-            _installer_proxy(
-                "https://cli.kiro.dev/install",
-                {"HTTPS_PROXY": "file:///tmp/proxy"},
-            )
-            is None
-        )
-
-    def test_installer_url_is_restricted_to_exact_official_endpoints(self) -> None:
-        assert _trusted_installer_url("https://cli.kiro.dev/install")
-        assert _trusted_installer_url("https://cli.kiro.dev/install.ps1")
-        assert not _trusted_installer_url("https://evil.example/install")
-        assert not _trusted_installer_url("https://cli.kiro.dev.evil.example/install")
-        assert not _trusted_installer_url("https://cli.kiro.dev/other")
-        assert not _trusted_installer_url("https://user@cli.kiro.dev/install")
-        assert not _trusted_installer_url("https://cli.kiro.dev:444/install")
-        assert not _trusted_installer_url("https://cli.kiro.dev/install?channel=other")
-
-    @pytest.mark.asyncio
-    async def test_installer_redirect_is_validated_before_destination_request(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        requested: list[str] = []
-
-        async def redirect(request: web.Request) -> web.StreamResponse:
-            requested.append(request.path)
-            raise web.HTTPFound(location="/private")
-
-        async def private(request: web.Request) -> web.Response:
-            requested.append(request.path)
-            return web.Response(body=b"must not be fetched")
-
-        app = web.Application()
-        app.router.add_get("/install", redirect)
-        app.router.add_get("/private", private)
-
-        async with TestServer(app) as server:
-            installer_url = str(server.make_url("/install"))
-            monkeypatch.setattr(
-                prerequisite_module,
-                "_trusted_installer_url",
-                lambda candidate: candidate == installer_url,
-            )
-
-            with pytest.raises(RuntimeError, match="redirect left"):
-                await prerequisite_module._download_installer(installer_url, {})
-
-        assert requested == ["/install"]
-
-    @pytest.mark.asyncio
-    async def test_installer_download_follows_validated_redirect(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        requested: list[str] = []
-
-        async def redirect(request: web.Request) -> web.StreamResponse:
-            requested.append(request.path)
-            raise web.HTTPFound(location="/install.ps1")
-
-        async def installer(request: web.Request) -> web.Response:
-            requested.append(request.path)
-            return web.Response(body=b"validated installer")
-
-        app = web.Application()
-        app.router.add_get("/install", redirect)
-        app.router.add_get("/install.ps1", installer)
-
-        async with TestServer(app) as server:
-            install_url = str(server.make_url("/install"))
-            windows_url = str(server.make_url("/install.ps1"))
-            monkeypatch.setattr(
-                prerequisite_module,
-                "_trusted_installer_url",
-                lambda candidate: candidate in {install_url, windows_url},
-            )
-
-            content = await prerequisite_module._download_installer(install_url, {})
-
-        assert content == b"validated installer"
-        assert requested == ["/install", "/install.ps1"]
-
     def test_windows_candidate_includes_official_msi_directory(self, tmp_path: Path) -> None:
         program_files = tmp_path / "Program Files"
         executable = program_files / "Kiro-Cli" / "kiro-cli.exe"
@@ -688,138 +537,6 @@ class TestKiroPrerequisiteHelpers:
 
         assert str(executable) in candidates
 
-    def test_install_output_does_not_become_a_login_link(self, tmp_path: Path) -> None:
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": ""},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._operation = OperationStatus(kind="install", status="running")
-
-        service._capture_operation_output("Downloaded https://example.test/kiro.zip\n")
-
-        assert service._operation.url == ""
-        assert service._operation.message == ""
-
-    def test_capture_operation_output_drops_progress_spinner(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._operation = OperationStatus(kind="login", status="running")
-
-        # Real kiro-cli separates repaints with carriage returns; the frames here
-        # deliberately mix a CR-delimited pair with a CR-less pair so neither
-        # delimiter alone can carry the dedupe.
-        service._capture_operation_output(
-            "\x1b[?25l▰▱▱▱▱▱▱ Logging in... | Press (^) + C to cancel\r"
-            "▰▰▱▱▱▱▱ Logging in... | Press (^) + C to cancel"
-            "▰▰▰▱▱▱▱ Logging in... | Press (^) + C to cancel"
-        )
-
-        assert "▰" not in service._operation.detail
-        assert "▱" not in service._operation.detail
-        assert "\x1b" not in service._operation.detail
-        # A repeated one-line spinner must not accumulate.
-        assert service._operation.detail.count("Logging in") <= 1
-
-    def test_capture_operation_output_keeps_device_code_line(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._operation = OperationStatus(kind="login", status="running")
-
-        service._capture_operation_output(
-            "Confirm the code: ABCD-1234\nhttps://view.awsapps.com/start/#/device\n"
-        )
-
-        assert "ABCD-1234" in service._operation.detail
-        assert service._operation.url == "https://view.awsapps.com/start/#/device"
-
-    def test_capture_operation_output_keeps_chunks_on_separate_lines(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # Each stream read is re-deduped over the WHOLE accumulated detail, so a
-        # newline-terminated chunk must keep its terminator -- otherwise the next
-        # chunk fuses onto the device-code line and the URL fallback can capture
-        # trailing text.
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._operation = OperationStatus(kind="login", status="running")
-
-        service._capture_operation_output("Confirm the code: ABCD-1234\n")
-        service._capture_operation_output("https://view.awsapps.com/start/#/device\n")
-        service._capture_operation_output("Waiting for the browser confirmation...\n")
-
-        lines = service._operation.detail.splitlines()
-        assert lines == [
-            "Confirm the code: ABCD-1234",
-            "https://view.awsapps.com/start/#/device",
-            "Waiting for the browser confirmation...",
-        ]
-        assert "ABCD-1234\nhttps://" in service._operation.detail
-        assert service._operation.url == "https://view.awsapps.com/start/#/device"
-
-    def test_capture_operation_output_keeps_install_progress_lines_separate(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # The installer emits plain multi-line progress with no spinner glyphs at
-        # all; consecutive reads must not fuse into one unreadable line.
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._operation = OperationStatus(kind="install", status="running")
-
-        service._capture_operation_output("Downloading Kiro CLI...\nVerifying signature...\n")
-        service._capture_operation_output("Installing to /usr/local/bin...\nDone.\n")
-
-        assert service._operation.detail.splitlines() == [
-            "Downloading Kiro CLI...",
-            "Verifying signature...",
-            "Installing to /usr/local/bin...",
-            "Done.",
-        ]
-
-    def test_capture_operation_output_reassembles_url_split_across_chunks(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # One stream read can split the URL, so the accumulated-text fallback has
-        # to keep working: a chunk with NO trailing newline must not gain one.
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._operation = OperationStatus(kind="login", status="running")
-
-        service._capture_operation_output("Open https://view.awsapps.com/start")
-        service._capture_operation_output("/#/device\n")
-
-        assert service._operation.url == "https://view.awsapps.com/start/#/device"
-
 
 class TestKiroPrerequisiteWorkflow:
     @pytest.mark.asyncio
@@ -908,7 +625,6 @@ class TestKiroPrerequisiteWorkflow:
         status = await service.snapshot(force=True)
 
         assert status["installed"] is True
-        assert status["can_login"] is True
         assert status["authenticated"] is False
         assert calls == [["--version"], ["whoami"]]
 
@@ -944,9 +660,8 @@ class TestKiroPrerequisiteWorkflow:
             audit_writer=_no_audit,
         )
 
-        status = await service.snapshot(force=True)
+        await service.snapshot(force=True)
 
-        assert status["can_login"] is True
         # whoami runs against the symlink name, never the realpath'd toolbox-exec.
         assert str(symlink) in commands
         assert str(real) not in commands
@@ -978,7 +693,6 @@ class TestKiroPrerequisiteWorkflow:
         status = await service.snapshot(force=True)
 
         assert status["installed"] is True
-        assert status["can_login"] is True
         assert status["authenticated"] is False
         assert status["ready"] is False
 
@@ -1049,7 +763,6 @@ class TestKiroPrerequisiteWorkflow:
         status = await service.snapshot(force=True)
 
         assert status["installed"] is True
-        assert status["can_login"] is True
         assert status["authenticated"] is False
         # A single whoami, run against the real home (no isolated staging).
         assert whoami_homes == [str(tmp_path)]
@@ -1185,8 +898,8 @@ class TestKiroPrerequisiteWorkflow:
         tmp_path: Path,
     ) -> None:
         # A Kiro CLI whose bytes changed after startup (its own self-updater ran
-        # as the user) must still sign in — trust is "it runs + valid login",
-        # not a pinned digest that a legitimate update invalidates.
+        # as the user) must still sign in: trust is "it runs + valid login", so a
+        # legitimate update cannot lock the user out.
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
         runtime = _FakeRuntime(executable)
@@ -1200,44 +913,15 @@ class TestKiroPrerequisiteWorkflow:
             process_runner=runtime.run,
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
         executable.write_text("#!/bin/sh\n# self-updated\n", encoding="utf-8")
         executable.chmod(0o700)
 
         status = await service.snapshot(force=True)
 
-        assert status["can_login"] is True
         assert status["ready"] is True
 
-    @pytest.mark.parametrize("payload", ("[]", "null"))
-    def test_non_object_binary_trust_payload_is_ignored(
-        self,
-        tmp_path: Path,
-        payload: str,
-    ) -> None:
-        # A malformed trust file must never crash the recorded-digest reader;
-        # it simply yields no pinned digest (trust no longer depends on it).
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": ""},
-            home=tmp_path,
-            audit_writer=_no_audit,
-        )
-        service._binary_trust_path.parent.mkdir(parents=True, exist_ok=True)
-        service._binary_trust_path.write_text(payload, encoding="utf-8")
-
-        assert (
-            prerequisite_module._recorded_trust_digest(
-                service._binary_trust_path,
-                str(executable),
-            )
-            is None
-        )
-
     @pytest.mark.asyncio
-    async def test_runnable_path_cli_can_login_without_attestation(
+    async def test_runnable_path_cli_is_usable_without_attestation(
         self,
         tmp_path: Path,
     ) -> None:
@@ -1261,17 +945,16 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
         assert status["installed"] is True
-        assert status["can_login"] is True
         assert status["ready"] is True
         assert status["repair_required"] is False
 
     @pytest.mark.asyncio
-    async def test_runnable_path_cli_not_signed_in_still_offers_login(
+    async def test_runnable_path_cli_not_signed_in_is_reported_not_ready(
         self,
         tmp_path: Path,
     ) -> None:
-        # Zezhen's exact stuck state: installed + runnable but no valid login.
-        # Must offer sign-in (can_login=True), NOT a button-less dead end.
+        # Installed + runnable but no valid login. Reported honestly as
+        # installed-but-not-ready; the user signs in with Kiro CLI.
         executable = tmp_path / "toolbox" / "bin" / "kiro-cli"
         _make_executable(executable)
         runtime = _FakeRuntime(executable)
@@ -1288,7 +971,6 @@ class TestKiroPrerequisiteWorkflow:
 
         status = await service.snapshot(force=True)
         assert status["installed"] is True
-        assert status["can_login"] is True
         assert status["ready"] is False
         assert status["repair_required"] is False
 
@@ -1308,46 +990,6 @@ class TestKiroPrerequisiteWorkflow:
             environ={},
         )
         assert snapshot.launch_path
-
-    @pytest.mark.asyncio
-    async def test_login_runs_against_real_home_without_staging(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """Login delegates fully to kiro-cli: no staged home, no copy-back."""
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        seen: dict[str, object] = {}
-
-        async def runner(command, args, **kwargs):
-            if args == ["--version"]:
-                return ProcessResult(ok=True, output="kiro-cli 1.0")
-            if args == ["whoami"]:
-                # Signed out before login, signed in after it runs.
-                return ProcessResult(ok=bool(seen.get("login")))
-            if args[:1] == ["login"]:
-                seen["login"] = True
-                seen["env_home"] = kwargs["env"].get("HOME")
-                return ProcessResult(ok=True)
-            return ProcessResult(ok=False)
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
-            home=tmp_path,
-            process_runner=runner,
-            audit_writer=_no_audit,
-        )
-
-        await service._login("tester")
-
-        assert seen["login"] is True
-        # The login child saw the user's REAL home, not a staging dir.
-        assert seen["env_home"] == str(tmp_path)
-        # No staging dir was left behind under the auth-staging parent.
-        staging = tmp_path / ".kiro" / "crew-auth-staging"
-        assert list(staging.glob("auth-*")) == []
-        assert service._operation.status == "succeeded"
 
     @pytest.mark.asyncio
     async def test_run_auth_command_no_longer_accepts_commit(
@@ -1399,7 +1041,6 @@ class TestKiroPrerequisiteWorkflow:
             process_runner=probe,
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
 
         with pytest.raises(OSError, match="could not be read safely"):
             await service._run_auth_command(
@@ -1488,7 +1129,6 @@ class TestKiroPrerequisiteWorkflow:
             process_runner=capture,
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
 
         result = await service._run_auth_command(
             str(executable), ["whoami"], base_env={}, timeout_secs=5
@@ -1681,7 +1321,6 @@ class TestKiroPrerequisiteWorkflow:
             process_runner=cancel_after_write,
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
 
         with pytest.raises(asyncio.CancelledError):
             await service._run_auth_command(
@@ -1731,7 +1370,6 @@ class TestKiroPrerequisiteWorkflow:
             ("probe_identity", "invoked"),
             ("probe_identity", "failed"),
         ]
-        assert status["can_login"] is True
         assert status["ready"] is False
         assert events[0]["critical"] is True
         assert all("secret" not in repr(item) for item in events)
@@ -2059,43 +1697,6 @@ class TestKiroPrerequisiteWorkflow:
         assert snapshot["initial_setup_complete"] is True
 
     @pytest.mark.asyncio
-    async def test_mark_signed_out_defers_to_a_running_operation(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """A live install/login owns the status; latching must not race it."""
-
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        runtime = _FakeRuntime(executable)
-        runtime.authenticated = True
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            data_home=tmp_path / "data-home",
-            process_runner=runtime.run,
-            audit_writer=_no_audit,
-        )
-        await service._probe()
-
-        never_finishes: asyncio.Future[None] = asyncio.Future()
-
-        async def _hold() -> None:
-            await never_finishes
-
-        service._task = asyncio.create_task(_hold())
-        try:
-            assert service.operation_running is True
-            service.mark_signed_out()
-            # The operation's own probe decides the outcome, not this latch.
-            assert await service.session_ready() is True
-        finally:
-            service._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await service._task
-
-    @pytest.mark.asyncio
     async def test_close_cancels_the_boot_warm_up_probe(
         self,
         tmp_path: Path,
@@ -2191,7 +1792,6 @@ class TestKiroPrerequisiteWorkflow:
             process_runner=runtime.run,
             audit_writer=_no_audit,
         )
-        service._attest_candidate(str(executable))
 
         ready = await service.snapshot(force=True)
         restarted = KiroPrerequisiteService(
@@ -2396,322 +1996,6 @@ class TestKiroPrerequisiteWorkflow:
 
         assert service.initial_setup_complete is False
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="requires the POSIX Kiro installer")
-    @pytest.mark.asyncio
-    async def test_linux_clean_install_then_device_login(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        runtime = _FakeRuntime(executable)
-        downloaded: list[str] = []
-
-        async def download(url: str) -> bytes:
-            downloaded.append(url)
-            return b"#!/bin/bash\n# Kiro CLI Installation Script\n"
-
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "posix",
-            hashlib.sha256(b"#!/bin/bash\n# Kiro CLI Installation Script\n").hexdigest(),
-        )
-
-        environ = {
-            "HOME": str(tmp_path),
-            "PATH": "/usr/bin:/bin",
-            "https_proxy": "http://proxy.example:8443",
-        }
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ=environ,
-            home=tmp_path,
-            process_runner=runtime.run,
-            downloader=download,
-            audit_writer=_no_audit,
-        )
-
-        initial = await service.snapshot(force=True)
-        assert initial["installed"] is False
-        assert initial["can_auto_install"] is True
-
-        service.start_install("test-user")
-        await _wait_for_operation(service)
-        installed = await service.snapshot(force=True)
-        assert downloaded == [OFFICIAL_INSTALL_URL]
-        assert installed["installed"] is True
-        assert installed["authenticated"] is False
-        assert installed["operation"]["status"] == "succeeded"
-        assert "KIROCREW_KIRO_BIN" not in environ
-        assert all(
-            sandboxed is True
-            for call, sandboxed in zip(runtime.calls, runtime.sandboxed)
-            if call[1] in (["--version"], ["whoami"])
-        )
-        whoami_indexes = [
-            index for index, call in enumerate(runtime.calls) if call[1] == ["whoami"]
-        ]
-        assert whoami_indexes
-        # The readiness whoami now runs against the real home (like ACP): the
-        # standard sandbox, HOME left as the real home, and only Kiro Crew's own
-        # secret home hidden (not the identity stores).
-        assert all(runtime.kwargs[index]["sandbox_mode"] == "standard" for index in whoami_indexes)
-        assert all(
-            runtime.kwargs[index]["env"]["HOME"] == str(tmp_path) for index in whoami_indexes
-        )
-        assert all(
-            runtime.kwargs[index]["extra_hidden_dirs"]
-            == (
-                str(tmp_path / ".kiro" / "crew"),
-                str(tmp_path / ".kirocrew"),
-            )
-            for index in whoami_indexes
-        )
-        installer_index = next(
-            index for index, call in enumerate(runtime.calls) if call[1] == ["-s"]
-        )
-        assert runtime.kwargs[installer_index]["stdin_data"].startswith(b"#!/bin/bash")
-        assert runtime.kwargs[installer_index]["env"]["PATH"] == ("/usr/bin:/bin:/usr/sbin:/sbin")
-        assert runtime.kwargs[installer_index]["env"]["https_proxy"] == "http://proxy.example:8443"
-        assert (
-            str(tmp_path / ".local" / "bin") not in runtime.kwargs[installer_index]["env"]["PATH"]
-        )
-
-        service.start_login("test-user")
-        await _wait_for_operation(service)
-        ready = await service.snapshot(force=True)
-        assert ready["ready"] is True
-        assert ready["operation"]["status"] == "succeeded"
-        assert (str(executable), ["login", "--use-device-flow"]) in runtime.calls
-        login_index = runtime.calls.index((str(executable), ["login", "--use-device-flow"]))
-        assert runtime.sandboxed[login_index] is True
-        assert runtime.kwargs[login_index]["sandbox_mode"] == "standard"
-        assert runtime.kwargs[login_index]["env"]["https_proxy"] == ("http://proxy.example:8443")
-        # Sign-in is fully delegated: kiro-cli runs against the REAL home and
-        # writes its own credential store there, as it does from a terminal.
-        assert runtime.kwargs[login_index]["env"]["HOME"] == str(tmp_path)
-        assert runtime.kwargs[login_index]["extra_hidden_dirs"] == (
-            str(tmp_path / ".kiro" / "crew"),
-            str(tmp_path / ".kirocrew"),
-        )
-        assert list((tmp_path / ".kiro" / "crew-auth-staging").glob("auth-*")) == []
-        for index, call in enumerate(runtime.calls):
-            if call[1] in (["--version"], ["whoami"]):
-                assert "https_proxy" not in runtime.kwargs[index]["env"]
-                assert "DISPLAY" not in runtime.kwargs[index]["env"]
-
-    @pytest.mark.asyncio
-    async def test_windows_clean_install_uses_powershell_script(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        system_root = tmp_path / "Windows"
-        powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-        _make_executable(powershell)
-        program_files = tmp_path / "Program Files"
-        executable = program_files / "Kiro-Cli" / "kiro-cli.exe"
-        runtime = _FakeRuntime(executable)
-        downloaded: list[str] = []
-
-        installer_bytes = (
-            b"# Kiro CLI Installation Script for Windows\n" b'$ErrorActionPreference = "Stop"\n'
-        )
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "win32",
-            hashlib.sha256(installer_bytes).hexdigest(),
-        )
-
-        async def download(url: str) -> bytes:
-            downloaded.append(url)
-            return installer_bytes
-
-        service = KiroPrerequisiteService(
-            platform_name="win32",
-            environ={
-                "HOME": str(tmp_path),
-                "PATH": "",
-                "ProgramFiles": str(program_files),
-                "SystemRoot": str(system_root),
-            },
-            home=tmp_path,
-            process_runner=runtime.run,
-            downloader=download,
-            audit_writer=_no_audit,
-        )
-
-        service.start_install("test-user")
-        await _wait_for_operation(service)
-        status = await service.snapshot(force=True)
-
-        assert downloaded == [OFFICIAL_WINDOWS_INSTALL_URL]
-        assert status["installed"] is True
-        installer_index = next(
-            index for index, call in enumerate(runtime.calls) if call[0] == str(powershell)
-        )
-        installer_call = runtime.calls[installer_index]
-        assert installer_call[1][-2:] == ["-Command", "-"]
-        assert runtime.kwargs[installer_index]["stdin_data"] == installer_bytes
-        assert (
-            str(tmp_path / ".local" / "bin") not in runtime.kwargs[installer_index]["env"]["PATH"]
-        )
-
-    @pytest.mark.asyncio
-    async def test_cargo_install_is_usable_without_reattestation(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # A ``~/.cargo/bin`` install that runs is directly usable — no
-        # "repair", no forced reinstall. Clicking Install reports it is already
-        # installed rather than reinstalling to earn a provenance pin.
-        cargo_executable = tmp_path / ".cargo" / "bin" / "kiro-cli"
-        _make_executable(cargo_executable)
-        runtime = _FakeRuntime(cargo_executable)
-        runtime.installed = True
-        runtime.authenticated = True
-        installer = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "posix",
-            hashlib.sha256(installer).hexdigest(),
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "official_installer_command",
-            lambda _platform, _environ: ("bash", ["-s"]),
-        )
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
-            home=tmp_path,
-            process_runner=runtime.run,
-            downloader=lambda _url: asyncio.sleep(0, result=installer),
-            audit_writer=_no_audit,
-        )
-        before = await service.snapshot(force=True)
-        assert before["installed"] is True
-        assert before["can_login"] is True
-        assert before["repair_required"] is False
-
-        service.start_install("test-user")
-        await _wait_for_operation(service)
-        after = await service.snapshot(force=True)
-
-        assert after["can_login"] is True
-        assert after["operation"]["status"] == "succeeded"
-        assert "already installed" in after["operation"]["message"]
-
-    @pytest.mark.asyncio
-    async def test_installer_refuses_shadowing_candidate_instead_of_attesting_it(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # linux keeps candidate discovery to home-relative dirs (no real system
-        # install can leak in). The installer's official target lands in a dir
-        # that is not searched, while ``.local/bin`` shadows it as the first
-        # resolved candidate — the install-quality guard must refuse rather than
-        # bless the shadow, even though the shadow itself runs.
-        installer = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "posix",
-            hashlib.sha256(installer).hexdigest(),
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_official_install_target",
-            lambda _platform, _home, _environ: str(tmp_path / "official" / "kiro-cli"),
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_interactive_repair_required",
-            lambda _platform, _candidates, _home: False,
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "official_installer_command",
-            lambda _platform, _environ: ("bash", ["-s"]),
-        )
-        shadow_executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        official_executable = tmp_path / "official" / "kiro-cli"
-        installed = {"done": False}
-
-        async def run(command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
-            if args == ["--version"]:
-                # Only the tmp-path shadow is viable, and only after install —
-                # so no real system CLI on the host can leak into discovery.
-                return ProcessResult(ok=installed["done"] and command == str(shadow_executable))
-            installed["done"] = True
-            _make_executable(shadow_executable)
-            _make_executable(official_executable)
-            return ProcessResult(ok=True)
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": ""},
-            home=tmp_path,
-            process_runner=run,
-            downloader=lambda _url: asyncio.sleep(0, result=installer),
-            audit_writer=_no_audit,
-        )
-
-        service.start_install("test-user")
-        await _wait_for_operation(service)
-
-        assert service._operation.status == "failed"
-        assert "shadowed" in service._operation.error
-        assert not service._binary_trust_path.exists()
-
-    @pytest.mark.asyncio
-    async def test_installer_refuses_unchanged_existing_target(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        executable = tmp_path / ".local" / "bin" / "kiro-cli"
-        _make_executable(executable)
-        # The target exists but is not runnable yet (so Install is entered, not
-        # short-circuited). The installer "runs" but leaves the exact same bytes
-        # in place; the guard must refuse a no-op install rather than pin it.
-        runtime = _FakeRuntime(executable)
-        runtime.installed = False
-        installer = b"#!/bin/bash\n# Kiro CLI Installation Script\n"
-        monkeypatch.setitem(
-            prerequisite_module._INSTALLER_SHA256,
-            "posix",
-            hashlib.sha256(installer).hexdigest(),
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "_interactive_repair_required",
-            lambda _platform, _candidates, _home: False,
-        )
-        monkeypatch.setattr(
-            prerequisite_module,
-            "official_installer_command",
-            lambda _platform, _environ: ("bash", ["-s"]),
-        )
-
-        service = KiroPrerequisiteService(
-            platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": ""},
-            home=tmp_path,
-            process_runner=runtime.run,
-            downloader=lambda _url: asyncio.sleep(0, result=installer),
-            audit_writer=_no_audit,
-        )
-
-        service.start_install("test-user")
-        await _wait_for_operation(service)
-
-        assert service._operation.status == "failed"
-        assert "did not replace" in service._operation.error
-        assert not service._binary_trust_path.exists()
-
     @pytest.mark.asyncio
     async def test_probe_does_not_skip_broken_first_acp_candidate(self, tmp_path: Path) -> None:
         first = tmp_path / ".local" / "bin" / "kiro-cli"
@@ -2768,7 +2052,6 @@ class TestKiroPrerequisiteWorkflow:
         status = await service.snapshot(force=True)
 
         assert status["installed"] is True
-        assert status["can_login"] is True
         assert status["ready"] is True
         assert calls == [
             (str(planted), ["--version"]),
@@ -2850,7 +2133,7 @@ class TestKiroPrerequisiteWorkflow:
         ]
 
     @pytest.mark.asyncio
-    async def test_broken_linux_target_requires_manual_repair(self, tmp_path: Path) -> None:
+    async def test_broken_linux_target_reports_not_installed(self, tmp_path: Path) -> None:
         executable = tmp_path / ".local" / "bin" / "kiro-cli"
         _make_executable(executable)
 
@@ -2873,15 +2156,15 @@ class TestKiroPrerequisiteWorkflow:
         status = await service.snapshot(force=True)
 
         assert status["installed"] is False
-        assert status["repair_required"] is True
-        assert status["can_auto_install"] is False
+        # No gateway-side remedy is claimed: the user obtains the CLI from Kiro.
+        assert status["repair_required"] is False
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,
         reason="Windows cannot represent POSIX execute-bit semantics",
     )
     @pytest.mark.asyncio
-    async def test_non_executable_linux_target_requires_manual_repair(
+    async def test_non_executable_linux_target_reports_not_installed(
         self,
         tmp_path: Path,
     ) -> None:
@@ -2912,8 +2195,8 @@ class TestKiroPrerequisiteWorkflow:
 
         assert str(executable) not in run_calls
         assert status["installed"] is False
-        assert status["repair_required"] is True
-        assert status["can_auto_install"] is False
+        # No gateway-side remedy is claimed: the user obtains the CLI from Kiro.
+        assert status["repair_required"] is False
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,
@@ -2969,7 +2252,6 @@ class TestKiroPrerequisiteWorkflow:
             ["--version"],
             env={"PATH": "/tmp/agent-writable"},
             timeout_secs=1,
-            sandboxed=True,
         )
 
         assert result.ok is True
@@ -3017,7 +2299,6 @@ class TestKiroPrerequisiteWorkflow:
             ["--version"],
             env={"PATH": "/usr/bin:/bin"},
             timeout_secs=1,
-            sandboxed=False,
         )
 
         assert result.ok is False
@@ -3075,7 +2356,6 @@ class TestKiroPrerequisiteWorkflow:
             ["--version"],
             env={"PATH": "/trusted/bin"},
             timeout_secs=1,
-            sandboxed=True,
         )
 
         assert result.ok is True
@@ -3143,8 +2423,7 @@ class TestKiroPrerequisiteWorkflow:
                 ["--version"],
                 env={},
                 timeout_secs=1,
-                sandboxed=True,
-            )
+                )
         )
         assert await asyncio.to_thread(preparation_started.wait, 1)
         ticked_during_preparation = False
@@ -3198,10 +2477,23 @@ class TestKiroPrerequisiteWorkflow:
         async def kill_tree(pid: int, signal_number: int) -> None:
             tree_kills.append((pid, signal_number))
 
+        async def passthrough_sandbox(
+            argv: list[str],
+            **_kwargs: Any,
+        ) -> tuple[list[str], dict[str, str], str | None]:
+            return list(argv), {}, None
+
         monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
         monkeypatch.setattr(platform_compat, "kill_process_tree_async", kill_tree)
         monkeypatch.setattr(platform_compat, "IS_POSIX", True)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        # This case is about the timeout escalation, not about sandbox building,
+        # and every spawn is sandboxed now — so stub the builder rather than let
+        # host sandbox availability decide the outcome.
+        monkeypatch.setattr(
+            "kiro_crew.kiro_prerequisite._prepare_sandboxed_spawn",
+            passthrough_sandbox,
+        )
         monkeypatch.setattr(
             "kiro_crew.kiro_prerequisite._TERMINATION_GRACE_SECS",
             0.001,
@@ -3212,7 +2504,6 @@ class TestKiroPrerequisiteWorkflow:
             ["--version"],
             env={},
             timeout_secs=0.01,
-            sandboxed=False,
         )
 
         assert result.timed_out is True
@@ -3225,18 +2516,28 @@ class TestKiroPrerequisiteWorkflow:
         not platform_compat.IS_POSIX,
         reason="POSIX process-group supervisor",
     )
-    @pytest.mark.asyncio
-    async def test_posix_supervisor_rejects_relative_executable(self) -> None:
-        result = await _run_process(
-            "kiro-cli",
-            ["--version"],
+    def test_posix_supervisor_rejects_relative_executable(self) -> None:
+        # The supervisor is the last line of defence against resolving a bare
+        # program name through an agent-writable PATH. Exercised directly rather
+        # than through _run_process: every spawn is sandboxed now, and that path
+        # hands the supervisor an absolute /usr/bin/env, so the guard cannot be
+        # reached from there.
+        completed = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                prerequisite_module._PROCESS_GROUP_SUPERVISOR_CODE,
+                "kiro-cli",
+                "--version",
+            ],
             env={"PATH": "/tmp/agent-writable"},
-            timeout_secs=1,
-            sandboxed=False,
+            capture_output=True,
+            timeout=30,
+            check=False,
         )
 
-        assert result.ok is False
-        assert result.returncode == 127
+        assert completed.returncode == 127
 
     @pytest.mark.asyncio
     async def test_windows_timeout_terminates_retained_descendant_handle(
@@ -3305,7 +2606,6 @@ class TestKiroPrerequisiteWorkflow:
             ["--version"],
             env={},
             timeout_secs=0.01,
-            sandboxed=False,
         )
 
         assert result.timed_out is True
@@ -3371,7 +2671,6 @@ class TestKiroPrerequisiteWorkflow:
             ["--version"],
             env={},
             timeout_secs=1,
-            sandboxed=False,
         )
 
         assert result.ok is True
@@ -3452,8 +2751,7 @@ class TestKiroPrerequisiteWorkflow:
                 ["install"],
                 env={},
                 timeout_secs=1,
-                sandboxed=False,
-            )
+                )
         )
         await asyncio.wait_for(child_observed.wait(), timeout=1)
         await asyncio.sleep(0)
@@ -3694,60 +2992,6 @@ class TestKiroPrerequisiteWorkflow:
 
         assert tracked == {9876: 9002}
 
-    @pytest.mark.asyncio
-    async def test_broken_stdin_cleans_up_process_and_readers(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        terminated: list[int] = []
-
-        class _HeldOpenStream:
-            async def read(self, _size: int) -> bytes:
-                await asyncio.Event().wait()
-                return b""
-
-        class _BrokenStdin:
-            def write(self, _data: bytes) -> None:
-                raise BrokenPipeError("closed")
-
-        class _RunningProcess:
-            pid = 7654
-            returncode: int | None = None
-            stdout = _HeldOpenStream()
-            stderr = _HeldOpenStream()
-            stdin = _BrokenStdin()
-
-            async def wait(self) -> int:
-                await asyncio.Event().wait()
-                return 0
-
-            def terminate(self) -> None:
-                terminated.append(self.pid)
-                self.returncode = 1
-
-            def kill(self) -> None:
-                self.returncode = 1
-
-        async def spawn(*_args: str, **_kwargs: Any) -> _RunningProcess:
-            return _RunningProcess()
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
-        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-
-        result = await _run_process(
-            "/fixed/tool",
-            ["--version"],
-            env={},
-            timeout_secs=1,
-            sandboxed=False,
-            stdin_data=b"installer",
-        )
-
-        assert result.ok is False
-        assert result.error == "closed"
-        assert terminated == [7654]
-
 
 class TestKiroPrerequisiteHandlers:
     @staticmethod
@@ -3772,21 +3016,20 @@ class TestKiroPrerequisiteHandlers:
         app["kiro_prerequisite_service"] = service
         app.router.add_get("/api/kiro-prerequisite", api_kiro_prerequisite_status)
         app.router.add_post(
-            "/api/kiro-prerequisite/install",
-            api_kiro_prerequisite_install,
-        )
-        app.router.add_post(
-            "/api/kiro-prerequisite/login",
-            api_kiro_prerequisite_login,
+            "/api/kiro-prerequisite/repair-specs",
+            api_kiro_prerequisite_repair_specs,
         )
         return app
 
     @pytest.mark.asyncio
-    async def test_dashboard_user_can_read_and_start_setup(
+    async def test_dashboard_user_reads_status_and_no_setup_verb_exists(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # The owner can READ readiness. Neither setup step is a Kiro Crew verb:
+        # obtaining the CLI and signing in both belong to Kiro CLI, so both
+        # routes are absent by construction rather than guarded.
         service = KiroPrerequisiteService(
             platform_name="linux",
             environ={"HOME": str(tmp_path), "PATH": ""},
@@ -3799,43 +3042,26 @@ class TestKiroPrerequisiteHandlers:
             "authenticated": False,
             "ready": False,
             "initial_setup_complete": False,
-            "can_auto_install": True,
-            "can_login": False,
             "repair_required": False,
-            "docs_url": "https://kiro.dev/docs/cli/installation/",
-            "operation": {
-                "kind": "",
-                "status": "idle",
-                "message": "",
-                "detail": "",
-                "url": "",
-                "error": "",
-            },
+            "docs_url": OFFICIAL_INSTALL_DOCS_URL,
+            "login_command": KIRO_CLI_LOGIN_COMMAND,
         }
-        calls: list[tuple[str, str]] = []
 
-        async def fake_snapshot(*, force: bool = False) -> dict[str, Any]:
-            del force
+        async def fake_snapshot(
+            *, force: bool = False, coalesce: bool = False
+        ) -> dict[str, Any]:
+            del force, coalesce
             return snapshot
 
         monkeypatch.setattr(service, "snapshot", fake_snapshot)
-        monkeypatch.setattr(
-            service,
-            "start_install",
-            lambda caller: calls.append(("install", caller)) or snapshot,
-        )
-        monkeypatch.setattr(
-            service,
-            "start_login",
-            lambda caller: calls.append(("login", caller)) or snapshot,
-        )
 
         async with TestClient(TestServer(self._app(service, app_claim=""))) as client:
-            assert (await client.get("/api/kiro-prerequisite")).status == 200
-            assert (await client.post("/api/kiro-prerequisite/install")).status == 202
-            assert (await client.post("/api/kiro-prerequisite/login")).status == 202
-
-        assert calls == [("install", "test-user"), ("login", "test-user")]
+            read = await client.get("/api/kiro-prerequisite")
+            assert read.status == 200
+            body = await read.json()
+            assert body["login_command"] == KIRO_CLI_LOGIN_COMMAND
+            assert (await client.post("/api/kiro-prerequisite/login")).status == 404
+            assert (await client.post("/api/kiro-prerequisite/install")).status == 404
 
     @pytest.mark.asyncio
     async def test_status_endpoint_returns_not_ready_instead_of_500_on_probe_error(
@@ -3864,7 +3090,9 @@ class TestKiroPrerequisiteHandlers:
             body = await resp.json()
 
         assert body["ready"] is False
-        assert body["operation"]["status"] == "failed"
+        # Reported as a retryable not-ready 200, never a 500 that would flash the
+        # full-screen "could not check Kiro CLI" gate on reload.
+        assert body["installed"] is True
         assert body["setup_allowed"] is True
 
     @pytest.mark.asyncio
@@ -4255,8 +3483,7 @@ class TestKiroPrerequisiteHandlers:
         async with TestClient(TestServer(self._app(service, app_claim="untrusted-app"))) as client:
             for method, path in (
                 ("get", "/api/kiro-prerequisite"),
-                ("post", "/api/kiro-prerequisite/install"),
-                ("post", "/api/kiro-prerequisite/login"),
+                ("post", "/api/kiro-prerequisite/repair-specs"),
             ):
                 response = await getattr(client, method)(path)
                 assert response.status == 403
@@ -4281,18 +3508,18 @@ class TestKiroPrerequisiteHandlers:
             owner_id="configured-owner",
         )
 
-        async def ready_snapshot(*, force: bool = False) -> dict[str, Any]:
-            del force
+        async def ready_snapshot(
+            *, force: bool = False, coalesce: bool = False
+        ) -> dict[str, Any]:
+            del force, coalesce
             return {
                 "platform": "Linux",
                 "installed": True,
                 "authenticated": True,
                 "ready": True,
                 "initial_setup_complete": True,
-                "can_auto_install": True,
-                "can_login": True,
                 "repair_required": False,
-                "docs_url": "https://kiro.dev/docs/cli/installation/",
+                "docs_url": OFFICIAL_INSTALL_DOCS_URL,
                 "operation": {
                     "kind": "login",
                     "status": "succeeded",
@@ -4312,12 +3539,18 @@ class TestKiroPrerequisiteHandlers:
             assert body["initial_setup_complete"] is True
             assert body["setup_allowed"] is False
             assert body["platform"] == "gateway"
-            assert body["operation"]["detail"] == ""
-            assert body["operation"]["url"] == ""
+            # Present but empty: the payload shape must not vary by caller, and
+            # only the owner can act on a missing spec.
+            assert body["missing_agent_specs"] == []
+            assert body["agent_spec_repair_error"] == ""
+            # The pre-upgrade-tab shim is served to every caller, so the payload
+            # shape does not vary by who asks.
+            assert body["operation"]["status"] == "idle"
 
+            # The repair route is a mutation on the agent home, so it is
+            # owner-gated. It is also the ONLY mutation left on this surface.
             for method, path in (
-                ("post", "/api/kiro-prerequisite/install"),
-                ("post", "/api/kiro-prerequisite/login"),
+                ("post", "/api/kiro-prerequisite/repair-specs"),
             ):
                 response = await getattr(client, method)(path)
                 assert response.status == 403
@@ -4458,10 +3691,8 @@ class TestSandboxUnavailableIsNotAMissingBinary:
         # is not installed is the bug being fixed.
         assert status["installed"] is True
         assert status["ready"] is False
-        # Neither reinstalling nor signing in can fix a missing sandbox backend,
-        # so no action that cannot help is offered.
-        assert status["can_auto_install"] is False
-        assert status["can_login"] is False
+        # Signing in cannot fix a missing sandbox backend, so an action that
+        # cannot help is not offered.
         assert status["repair_required"] is False
 
     @pytest.mark.asyncio
@@ -4537,6 +3768,192 @@ class TestSandboxUnavailableIsNotAMissingBinary:
         assert status["sandbox_detail"] == ""
 
 
+class TestKiroCrewNeverSetsUpKiroCli:
+    """Kiro Crew DETECTS Kiro CLI. It never installs it and never signs in.
+
+    These are contract tests, not behavior tests: they pin the ABSENCE of both
+    setup capabilities. The removed install path downloaded a remote shell script
+    and executed it unsandboxed, with a digest pin that silently broke setup
+    whenever Kiro republished the script. The removed login path spawned a
+    credential-writing child process on the user's behalf. Both belong to Kiro
+    CLI, and a change that reintroduces either — or an unsandboxed spawn hook to
+    build one on — fails here.
+    """
+
+    def test_no_login_execution_surface_exists(self) -> None:
+        for attribute in (
+            "extract_secure_login_url",
+            "_TRUSTED_LOGIN_HOSTS",
+            "_LOGIN_TIMEOUT_SECS",
+            "OperationStatus",
+        ):
+            assert not hasattr(prerequisite_module, attribute), attribute
+        for method in ("start_login", "_login", "_capture_operation_output"):
+            assert not hasattr(KiroPrerequisiteService, method), method
+
+    @pytest.mark.asyncio
+    async def test_auto_poll_is_coalesced_but_check_again_always_probes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The blocking first-run gate polls with refresh=1 every 5s, and each
+        # browser tab polls independently. Without a floor, N tabs mean N times
+        # the kiro-cli spawns; with it they collapse onto one probe per interval.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.installed = True
+        runtime.authenticated = True
+        clock = {"now": 1_000.0}
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            clock=lambda: clock["now"],
+        )
+
+        await service.snapshot(force=True, coalesce=True)
+        first = len(runtime.calls)
+        assert first > 0, "the first forced probe must actually run"
+
+        # Three more tabs poll within the floor: no new spawns.
+        for _ in range(3):
+            await service.snapshot(force=True, coalesce=True)
+        assert len(runtime.calls) == first
+
+        # A HUMAN Check again is never coalesced — a button that returns a cached
+        # answer looks broken, so it probes even inside the floor.
+        await service.snapshot(force=True)
+        explicit = len(runtime.calls)
+        assert explicit > first
+
+        # Past the floor, the machine poll runs again too.
+        clock["now"] += prerequisite_module._FORCED_PROBE_FLOOR_SECS
+        await service.snapshot(force=True, coalesce=True)
+        assert len(runtime.calls) > explicit
+
+    @pytest.mark.asyncio
+    async def test_simultaneous_auto_polls_collapse_to_one_probe(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The floor in snapshot() is read OUTSIDE _probe_lock, so tabs polling in
+        # the same instant all see the same stale timestamp and all pass it. What
+        # stops N tabs from becoming N probes is handing the machine poll
+        # force=False, so _probe's cache recheck -- which runs inside the lock,
+        # after the winner refreshed the timestamp -- drops the queued callers.
+        executable = tmp_path / ".local" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.installed = True
+        runtime.authenticated = True
+        # Frozen clock: every caller reads an identical, floor-passing age, which
+        # is the burst this guards against.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": str(executable.parent)},
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+            clock=lambda: 5_000.0,
+        )
+
+        await asyncio.gather(
+            *(service.snapshot(force=True, coalesce=True) for _ in range(6))
+        )
+
+        # Exactly one probe's worth of spawns: --version then whoami.
+        assert [args for _, args in runtime.calls] == [["--version"], ["whoami"]]
+
+    def test_status_names_the_command_the_user_runs(self) -> None:
+        # The UI needs the command to show, and the user runs it themselves.
+        assert KIRO_CLI_LOGIN_COMMAND == "kiro-cli login"
+        assert PrerequisiteStatus(platform="Linux").login_command == KIRO_CLI_LOGIN_COMMAND
+
+    @pytest.mark.asyncio
+    async def test_payload_keeps_an_idle_operation_for_pre_upgrade_tabs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # No operation exists any more, but a dashboard loaded BEFORE this change
+        # reads status.operation.status unconditionally (its optional chain guards
+        # `status`, not `operation`) in a callback that runs for EVERY user. A tab
+        # open across a gateway upgrade must not throw on its next poll, so the
+        # payload keeps a permanently idle object.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+            assume_ready=True,
+        )
+
+        payload = await service.snapshot()
+
+        assert payload["operation"] == {
+            "kind": "",
+            "status": "idle",
+            "message": "",
+            "detail": "",
+            "url": "",
+            "error": "",
+        }
+        # A fresh dict per call: a caller mutating one payload cannot poison the next.
+        other = await service.snapshot()
+        assert other["operation"] is not payload["operation"]
+
+    def test_status_advertises_no_startable_action(self) -> None:
+        status = PrerequisiteStatus(platform="Linux")
+        for gone in ("can_login", "can_auto_install"):
+            assert not hasattr(status, gone), gone
+
+    def test_every_spawn_is_a_read_only_probe(self) -> None:
+        # Only --version and whoami remain, so no spawn can mutate the user's
+        # machine or write a credential.
+        source = Path(prerequisite_module.__file__).read_text(encoding="utf-8")
+        assert '"--version"' in source
+        assert '"whoami"' in source
+        assert "--use-device-flow" not in source
+
+    def test_no_installer_download_or_execution_surface_exists(self) -> None:
+        for attribute in (
+            "OFFICIAL_INSTALL_URL",
+            "OFFICIAL_WINDOWS_INSTALL_URL",
+            "_INSTALLER_SHA256",
+            "_download_installer",
+            "validate_installer_script",
+            "official_installer_command",
+            "_trusted_installer_url",
+            "_trusted_installer_path",
+            "_installer_proxy",
+            "InstallerDownloader",
+        ):
+            assert not hasattr(prerequisite_module, attribute), attribute
+
+    def test_service_exposes_no_install_operation(self) -> None:
+        assert not hasattr(KiroPrerequisiteService, "start_install")
+        assert not hasattr(KiroPrerequisiteService, "_install")
+        assert not hasattr(KiroPrerequisiteService, "_attest_candidate")
+
+    def test_status_carries_no_auto_install_capability(self) -> None:
+        assert not hasattr(PrerequisiteStatus(platform="Linux"), "can_auto_install")
+
+    def test_docs_url_points_at_kiros_official_setup_page(self) -> None:
+        assert OFFICIAL_INSTALL_DOCS_URL == "https://kiro.dev/cli/"
+        assert PrerequisiteStatus(platform="Linux").docs_url == OFFICIAL_INSTALL_DOCS_URL
+
+    def test_process_runner_cannot_be_asked_for_an_unsandboxed_spawn(self) -> None:
+        # `sandboxed=False` and `stdin_data` existed only to feed the installer
+        # script to an unsandboxed interpreter. Every spawn left is sandboxed, so
+        # there is no parameter through which to request otherwise.
+        parameters = inspect.signature(_run_process).parameters
+        assert "sandboxed" not in parameters
+        assert "stdin_data" not in parameters
+
+
 class TestSandboxUnavailableErrorIsTyped:
     """The sandbox refusal must be catchable structurally, not by prose match."""
 
@@ -4549,3 +3966,516 @@ class TestSandboxUnavailableErrorIsTyped:
         assert isinstance(exc, RuntimeError)
         assert exc.kind == "no_backend"
         assert exc.detail == "EPERM at NEWNS"
+
+
+class TestAgentSpecsNarrowReadiness:
+    """A viable binary + a good ``whoami`` are NOT sufficient for readiness.
+
+    Kiro Crew's own agent specs (``~/.kiro/agents/kirocrew*.json``) were not an
+    input to ``ready`` at all, so an install whose spec write failed reported
+    ready while kiro-cli answered every ``session/set_mode`` with
+    ``Mode '<name>' not found`` — the gate affirmatively told the user setup was
+    complete on an install that could not run one turn. That is the customer
+    report these tests pin.
+
+    The status is set directly rather than probed: the probe's two subprocesses
+    are irrelevant here (both of its inputs are already true in the scenario),
+    and ``snapshot()`` without ``force`` reads the latch, so the overlay is what
+    is under test.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path) -> KiroPrerequisiteService:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._status = PrerequisiteStatus(
+            platform="Linux",
+            installed=True,
+            authenticated=True,
+            ready=True,
+            initial_setup_complete=True,
+        )
+        service._has_probed = True
+        return service
+
+    @staticmethod
+    def _agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, specs: bool) -> Path:
+        """Point the agents dir at a tmp path, optionally fully populated."""
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        agents = tmp_path / "agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        if specs:
+            for name in REQUIRED_KIRO_AGENT_FILES:
+                (agents / name).write_text('{"name": "x"}', encoding="utf-8")
+        monkeypatch.setattr(agent_module, "KIRO_AGENTS_DIR", agents)
+        return agents
+
+    @pytest.mark.asyncio
+    async def test_missing_specs_make_a_ready_install_not_ready(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["missing_agent_specs"] == list(REQUIRED_KIRO_AGENT_FILES)
+        assert status["ready"] is False
+        assert status["repair_required"] is True
+        # Untouched: the binary IS installed and the user IS signed in. Reporting
+        # either as false would send them to re-install or re-login for a
+        # condition neither one causes.
+        assert status["installed"] is True
+        assert status["authenticated"] is True
+
+    @pytest.mark.asyncio
+    async def test_present_specs_leave_readiness_alone(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._agents_dir(tmp_path, monkeypatch, specs=True)
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["missing_agent_specs"] == []
+        assert status["ready"] is True
+        assert status["repair_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_overlay_only_narrows_never_grants(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._agents_dir(tmp_path, monkeypatch, specs=True)
+        service = self._service(tmp_path)
+        service._status = replace(service._status, authenticated=False, ready=False)
+
+        status = await service.snapshot()
+
+        # Specs on disk say nothing about auth — present specs must not promote a
+        # signed-out install to ready. The second assertion is what makes this
+        # revert-verified: only the overlay populates that key, so a reverted
+        # feature fails here instead of passing on the constructor's own False.
+        assert status["ready"] is False
+        assert status["missing_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_unreadable_agents_dir_does_not_block_a_working_install(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed CHECK is not evidence of a missing spec."""
+        from kiro_crew import agent as agent_module
+
+        def _boom() -> list[str]:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(agent_module, "missing_required_agent_specs", _boom)
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["ready"] is True
+        assert status["missing_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_instance_that_may_not_write_the_specs_reports_none(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pod or worktree gateway must never be gated on specs it cannot write.
+
+        ``_decline_shared_agent_home`` refuses the write for an ephemeral instance
+        by design, and the overlay reads the AMBIENT machine-wide agents dir. On a
+        host whose ``~/.kiro/agents`` is empty that combination would report
+        ``ready=False`` permanently, put the whole dashboard behind the
+        missing-spec screen, and offer a repair that declines every time -- turning
+        "chat is broken" into "the product is unreachable" for exactly the
+        instances an operator uses to diagnose.
+        """
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+        monkeypatch.setattr(
+            agent_module,
+            "_decline_shared_agent_home",
+            lambda *, audit=True: tmp_path / "agents" / AGENT_FILENAME,
+        )
+
+        status = await self._service(tmp_path).snapshot()
+
+        assert status["missing_agent_specs"] == []
+        assert status["ready"] is True
+        assert status["repair_required"] is False
+
+    def test_the_decline_check_is_audit_free_when_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The status read must not write SEL records.
+
+        ``_decline_shared_agent_home`` audits both its grant and its refusal
+        because they are permission decisions about a WRITE. A polled status read
+        is not one, and emitting a record every 30 seconds per client would bury
+        the real decisions.
+        """
+        from kiro_crew import agent as agent_module
+
+        events: list[str] = []
+
+        class _Recorder:
+            def log_api_access(self, **kwargs: Any) -> None:
+                events.append(str(kwargs.get("outcome")))
+
+        monkeypatch.setattr(agent_module, "sel", lambda: _Recorder())
+        agent_module._decline_shared_agent_home(audit=False)
+
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_assume_ready_bypasses_the_overlay(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``assume_ready`` is the deliberate host-reality bypass.
+
+        Test-mode gateways, fixtures and the offline E2E suite run on homes with
+        no managed specs; applying the overlay there would put every one of them
+        behind a repair gate.
+        """
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+            assume_ready=True,
+        )
+
+        status = await service.snapshot()
+
+        assert status["ready"] is True
+        assert status["missing_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_session_ready_is_not_narrowed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The overlay is dashboard-facing only, by design.
+
+        ``session_ready()`` gates poll-driven spawn sites, and turn-starting paths
+        deliberately do not block on it — they let the turn carry the failure,
+        which now arrives as an actionable missing-spec message. Narrowing it here
+        would re-introduce the stale-latch lockout that design removed.
+        """
+        self._agents_dir(tmp_path, monkeypatch, specs=False)
+        service = self._service(tmp_path)
+
+        assert (await service.snapshot())["ready"] is False
+        assert await service.session_ready() is True
+
+
+class TestAgentSpecRepairIsAPostNotAGet:
+    """The repair must never be reachable from the status GET.
+
+    ``/api/kiro-prerequisite`` is an ``add_get``, and BOTH dashboard barriers are
+    method-scoped: ``csrf_middleware`` skips ``check_origin`` for
+    ``{GET, HEAD, OPTIONS}`` and ``sel_audit_middleware`` logs only
+    ``{POST, PUT, DELETE, PATCH}``. A spec rewrite hung off that GET would be
+    cross-site triggerable (a ``SameSite=Lax`` cookie rides a top-level cross-site
+    GET) and would leave no SEL record, so it lives on its own POST route.
+    """
+
+    @staticmethod
+    def _service(tmp_path: Path) -> KiroPrerequisiteService:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        service._status = PrerequisiteStatus(
+            platform="Linux",
+            installed=True,
+            authenticated=True,
+            ready=True,
+            initial_setup_complete=True,
+        )
+        service._has_probed = True
+
+        async def _no_probe(*, force: bool = False) -> PrerequisiteStatus:
+            del force
+            return service._status
+
+        service._probe = _no_probe  # type: ignore[method-assign]
+        return service
+
+    @staticmethod
+    def _agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        from kiro_crew import agent as agent_module
+
+        agents = tmp_path / "agents"
+        agents.mkdir(exist_ok=True)
+        monkeypatch.setattr(agent_module, "KIRO_AGENTS_DIR", agents)
+        return agents
+
+    @pytest.mark.asyncio
+    async def test_forced_status_read_never_writes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Even ``?refresh=1`` is a pure read — this is the regression guard."""
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+        calls: list[int] = []
+        monkeypatch.setattr(
+            agent_module, "rebuild_agent_config", lambda: calls.append(1)
+        )
+
+        status = await self._service(tmp_path).snapshot(force=True)
+
+        assert calls == []
+        # Still fully REPORTED — the read half of the feature is unaffected.
+        assert status["missing_agent_specs"] != []
+        assert status["ready"] is False
+
+    def test_repair_route_accepts_only_POST(self) -> None:
+        """Asserted over the ROUTE TABLE, not the module text.
+
+        A source-text match proves nothing about what was registered and breaks on
+        any reflow. What matters is the method the router will accept: GET is the
+        one method csrf_middleware and sel_audit_middleware both skip.
+        """
+        from kiro_crew.dashboard.handlers.kiro_prerequisite import (
+            api_kiro_prerequisite_repair_specs,
+        )
+
+        app = web.Application()
+        app.router.add_post(
+            "/api/kiro-prerequisite/repair-specs",
+            api_kiro_prerequisite_repair_specs,
+        )
+        methods = {
+            route.method
+            for route in app.router.routes()
+            if getattr(route.resource, "canonical", "")
+            == "/api/kiro-prerequisite/repair-specs"
+        }
+
+        assert methods == {"POST"}, methods
+
+
+class TestAgentSpecRepair:
+    """``repair_agent_specs`` — the POST handler's service call."""
+
+    _service = staticmethod(TestAgentSpecRepairIsAPostNotAGet._service)
+    _agents_dir = staticmethod(TestAgentSpecRepairIsAPostNotAGet._agents_dir)
+
+    @pytest.mark.asyncio
+    async def test_writes_the_specs_and_returns_ready(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        agents = self._agents_dir(tmp_path, monkeypatch)
+        calls: list[int] = []
+
+        def _rebuild() -> Path:
+            calls.append(1)
+            for name in REQUIRED_KIRO_AGENT_FILES:
+                (agents / name).write_text('{"name": "x"}', encoding="utf-8")
+            return agents / REQUIRED_KIRO_AGENT_FILES[0]
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert calls == [1]
+        # The response IS the post-repair snapshot, so one request fixes and
+        # reports rather than making the user press the button twice.
+        assert status["missing_agent_specs"] == []
+        assert status["ready"] is True
+        assert status["agent_spec_repair_error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_failed_repair_reports_a_sanitized_exception(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The swallowed boot exception is what made the original undiagnosable.
+
+        Sanitized like every other dashboard-facing string here: the rebuild's call
+        graph merges ``mcpServers[*].env``, so raw exception text can carry a
+        credential.
+        """
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+
+        def _rebuild() -> Path:
+            raise FileNotFoundError("no shipped defaults.json")
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert "FileNotFoundError: no shipped defaults.json" in (
+            status["agent_spec_repair_error"]
+        )
+        assert status["ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_credential_shaped_exception_text_is_redacted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+        # Assembled at runtime so the literal never sits in the file for scrub-lint.
+        secret = "ghp_" + "A" * 36
+
+        def _rebuild() -> Path:
+            raise RuntimeError(f"bad env GITHUB_TOKEN={secret}")
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert secret not in status["agent_spec_repair_error"]
+
+    @pytest.mark.asyncio
+    async def test_silent_no_op_rebuild_is_reported_as_a_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``rebuild_agent_config`` can decline WITHOUT raising.
+
+        ``_decline_shared_agent_home`` returns early when an ephemeral instance
+        would rewrite a shared agent home. Reporting that as success would leave
+        the gate showing no error and a button that changes nothing on every press.
+        """
+        from kiro_crew import agent as agent_module
+
+        self._agents_dir(tmp_path, monkeypatch)
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: None)
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert "still missing" in status["agent_spec_repair_error"]
+        assert "kirocrew setup --agent-only --clean" in status["agent_spec_repair_error"]
+        assert status["ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_does_not_rebuild_over_a_present_main_spec(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A present kirocrew.json is never regenerated by this route.
+
+        ``rebuild_agent_config`` rewrites the whole file. It re-merges
+        ``mcpServers`` under ``bridges._mcp_lock``, but NOT the
+        ``tools``/``allowedTools`` half ``api_mcp_toggle`` writes in a separate
+        step — so rebuilding over an existing spec can drop a concurrent toggle's
+        edit and resurrect a server the user just disabled. Gating on the MAIN
+        spec's ABSENCE removes that window: with no file there is no edit to lose.
+        """
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import LITE_AGENT_FILENAME
+
+        agents = self._agents_dir(tmp_path, monkeypatch)
+        (agents / AGENT_FILENAME).write_text('{"name": "kirocrew"}', encoding="utf-8")
+        calls: list[int] = []
+        monkeypatch.setattr(
+            agent_module, "rebuild_agent_config", lambda: calls.append(1)
+        )
+
+        status = await self._service(tmp_path).repair_agent_specs("owner")
+
+        assert calls == []
+        assert status["missing_agent_specs"] == [LITE_AGENT_FILENAME]
+        assert status["agent_spec_repair_error"] == ""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_repairs_rebuild_exactly_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two owner POSTs landing together must produce ONE rebuild.
+
+        ``operation_running`` does not cover repair -- it tracks ``_task``, which
+        only install/login set -- so both callers pass that guard. Without the
+        repair lock both observe the spec missing and both rebuild, and the second
+        regenerates the file the first just wrote: the rebuild-over-an-existing-spec
+        case the main-spec gate exists to avoid, which can drop a concurrent
+        ``api_mcp_toggle`` write to ``tools``/``allowedTools``.
+
+        The interleaving is FORCED rather than hoped for. An earlier version of
+        this test simply gathered two calls and passed even with the lock removed,
+        because the event loop happened to run them end to end. Here the stub parks
+        inside the rebuild until the second caller has had its chance to reach its
+        own check, which is the only ordering that distinguishes the two versions.
+        """
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+        agents = self._agents_dir(tmp_path, monkeypatch)
+        calls: list[int] = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _rebuild() -> None:
+            calls.append(1)
+            entered.set()
+            # Runs on a worker thread (asyncio.to_thread), so parking here does not
+            # block the loop -- the second caller keeps running.
+            release.wait(timeout=10)
+            for name in REQUIRED_KIRO_AGENT_FILES:
+                (agents / name).write_text('{"name": "x"}', encoding="utf-8")
+
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", _rebuild)
+        service = self._service(tmp_path)
+
+        first = asyncio.ensure_future(service.repair_agent_specs("owner"))
+        # Wait until the first caller is INSIDE the rebuild, off-loop so the await
+        # does not starve it.
+        await asyncio.to_thread(entered.wait, 10)
+        second = asyncio.ensure_future(service.repair_agent_specs("owner"))
+        # Give the second caller room to run its own overlay + check. Unlocked, it
+        # gets through both and starts a second rebuild here.
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        release.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        assert calls == [1], "the second repair must be a no-op, not a second rebuild"
+        # Both callers still get a truthful post-repair answer.
+        for payload in (first_result, second_result):
+            assert payload["missing_agent_specs"] == []
+            assert payload["agent_spec_repair_error"] == ""

@@ -108,7 +108,7 @@ export default function RemoteArtifactCard({
           openRemote()
         }
       }}
-      title={`Open read-only viewer (read & comment; open the original on ${remoteName} from there)`}
+      title={i18nT('components.remoteArtifactCard.open_read_only_viewer', { name: remoteName })}
       className="flex items-start justify-between gap-3 py-2.5 px-3 rounded-lg hover:bg-bg-elevated/60 transition-colors cursor-pointer focus-ring outline-none"
     >
       <div className="min-w-0 flex-1">

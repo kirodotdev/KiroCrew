@@ -431,8 +431,8 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           className="pi-morph shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-tight bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
-          title={`Open ${filePath} in side panel`}
-          aria-label={`Open ${filePath} in side panel`}
+          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
+          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
           <PanelRightSolid size={12} className="shrink-0" />

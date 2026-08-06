@@ -59,7 +59,7 @@ export default function BrowserAuthPrompt() {
       <div className="flex flex-col gap-0.5 flex-1 min-w-0">
         <span className="text-[13px] font-medium">{i18nT('components.browserAuthPrompt.browser_needs_authentication')}</span>
         <span className="text-[12px] opacity-80 truncate">
-          {authEvent.hint || `Auth gate: ${authEvent.gate_type || 'unknown'}`}
+          {authEvent.hint || i18nT('components.browserAuthPrompt.auth_gate', { gateType: authEvent.gate_type || i18nT('components.browserAuthPrompt.unknown') })}
         </span>
       </div>
       <button

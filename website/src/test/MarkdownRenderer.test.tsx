@@ -261,6 +261,32 @@ describe('splitLineRef — file:line references', () => {
     expect(splitLineRef('a/b.ts:12345678')).toEqual({ path: 'a/b.ts:12345678' })
   })
 
+  it('splits an inclusive line RANGE', () => {
+    expect(splitLineRef('/Users/me/notes/blue-angels-seattle-2026.md:10-16'))
+      .toEqual({ path: '/Users/me/notes/blue-angels-seattle-2026.md', line: 10, endLine: 16 })
+  })
+
+  it('collapses a reversed or degenerate range to its start', () => {
+    // Guessing which end the author meant would be worse than honouring the
+    // number they put first, so `16-10` and `10-10` are read as line 10 / 16.
+    expect(splitLineRef('a/b.ts:16-10')).toEqual({ path: 'a/b.ts', line: 16 })
+    expect(splitLineRef('a/b.ts:10-10')).toEqual({ path: 'a/b.ts', line: 10 })
+    expect(splitLineRef('a/b.ts:10-0')).toEqual({ path: 'a/b.ts', line: 10 })
+  })
+
+  it('does not read a hyphenated filename as a range', () => {
+    // The suffix must be `:digits-digits` at the very end; a hyphen inside the
+    // NAME is untouched, which is the common case for dated notes.
+    expect(splitLineRef('/x/blue-angels-seattle-2026.md'))
+      .toEqual({ path: '/x/blue-angels-seattle-2026.md' })
+    expect(splitLineRef('/x/report-2026-05-17.md:8'))
+      .toEqual({ path: '/x/report-2026-05-17.md', line: 8 })
+  })
+
+  it('still admits a range citation through the pre-filter', () => {
+    expect(isPathCandidate(splitLineRef('docs/notes.md:10-16').path)).toBe(true)
+  })
+
   it('makes a relative file:line reference a candidate — it was not before', () => {
     // As one token the extension test fails (it ends in digits, not `.py`), so
     // candidacy has to be decided on the split path.
@@ -509,6 +535,42 @@ describe('MarkdownRenderer path chips — file:line references', () => {
     expect(chip.textContent).toContain(':447')
     fireEvent.click(chip)
     expect(onFileOpen).toHaveBeenCalledWith('/Users/me/src/_dispatch.py', { line: 447 })
+  })
+
+  it('opens a RANGE citation and carries both ends', async () => {
+    // The shape a note-taker writes when pointing at a passage rather than a
+    // single statement: `…/blue-angels-seattle-2026.md:10-16`.
+    stubPaths(['/Users/me/notes/blue-angels-seattle-2026.md'])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer
+        content={'`/Users/me/notes/blue-angels-seattle-2026.md:10-16`'}
+        onFileOpen={onFileOpen}
+      />,
+    )
+    const chip = await chipOf(container)
+    expect(chip.dataset.path).toBe('/Users/me/notes/blue-angels-seattle-2026.md')
+    // The location suffix must not be breakable: wrapped as `…md:10-` / `16` a
+    // range reads as a citation ending at line 10. The path stays breakable.
+    const nowrap = chip.querySelector('.whitespace-nowrap')
+    expect(nowrap?.textContent).toBe(':10-16')
+    expect(chip.textContent).toContain('/Users/me/notes/blue-angels-seattle-2026.md:10-16')
+    expect(chip.dataset.pathLine).toBe('10')
+    expect(chip.dataset.pathEndLine).toBe('16')
+    // The visible text keeps the citation verbatim.
+    expect(chip.textContent).toContain(':10-16')
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith(
+      '/Users/me/notes/blue-angels-seattle-2026.md', { line: 10, endLine: 16 },
+    )
+  })
+
+  it('sends no endLine for a single-line citation', async () => {
+    stubPaths(['/x/a.py'])
+    const onFileOpen = vi.fn()
+    const { container } = render(<MarkdownRenderer content={'`/x/a.py:5`'} onFileOpen={onFileOpen} />)
+    fireEvent.click(await chipOf(container))
+    expect(onFileOpen).toHaveBeenCalledWith('/x/a.py', { line: 5 })
   })
 
   it('admits a relative citation that the old pre-filter rejected', async () => {

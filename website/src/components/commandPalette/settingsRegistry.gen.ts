@@ -105,6 +105,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.background-effort",
+    "label": "Background Effort",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.background-model",
+    "label": "Background Model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.completion-event-characters",
     "label": "Completion Event Characters",
     "tab": "chat",
@@ -188,6 +202,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "How file diff chips appear below assistant messages",
     "tab": "chat",
     "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.folder-suggestions",
+    "label": "Folder suggestions",
+    "description": "Offer to file a new session into a matching folder once it has a title.",
+    "tab": "chat",
+    "type": "toggle",
     "occurrence": 1
   },
   {
@@ -315,6 +337,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.subagent-effort",
+    "label": "Subagent Effort",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.subagent-model",
+    "label": "Subagent Model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.tail-only-fork",
     "label": "Tail-only Fork",
     "description": "Fork keeps only the messages after the chosen point instead of those up to it.",
@@ -411,11 +447,27 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.font",
+    "label": "Font",
+    "description": "Font for the built-in terminal. Enter a monospace font installed on your computer — use a Nerd Font to render Powerline and prompt-theme glyphs.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
     "id": "display.font-family",
     "label": "Font Family",
     "description": "UI font family for the dashboard",
     "tab": "display",
     "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
+    "id": "display.font-size",
+    "label": "Font size",
+    "description": "Text size in the built-in terminal, measured in pixels.",
+    "tab": "display",
+    "type": "stepper",
     "occurrence": 1
   },
   {

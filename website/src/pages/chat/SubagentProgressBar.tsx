@@ -200,7 +200,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   type="button"
                   className="min-w-0 flex-1 flex items-start gap-1.5 rounded-sm text-left text-[12px] text-muted hover:bg-accent/5 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                   onClick={() => openAgent(a.id)}
-                  aria-label={`Open ${agentLabel} in subagents sidebar`}
+                  aria-label={i18nT('pages.chat.subagentProgressBar.open_in_subagents_sidebar', { label: agentLabel })}
                 >
                   {/* Box-drawing glyphs stay mono so `├─` and `└─` keep an
                       identical advance width and the rows line up. */}
@@ -230,7 +230,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                   <button
                     className="shrink-0 flex items-center text-[11px] px-1 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
                     onClick={() => stopAgent(a.id)}
-                    aria-label={`Stop subagent ${sanitizeLlmOutput(a.agent || a.id)}`}
+                    aria-label={i18nT('pages.chat.subagentProgressBar.stop_subagent', { name: sanitizeLlmOutput(a.agent || a.id) })}
                     title={i18nT('pages.chat.subagentProgressBar.stop_this_subagent')}
                   >
                     <X size={11} />

@@ -2,8 +2,9 @@
 
 Backs the *Instances* feature (multi-instance management). The registry is a
 small JSON file at ``~/.kiro/crew/instances.json``. Each record describes how to
-reach one remote KiroCrew over SSH; the *local* instance is implicit (the
-gateway itself) and is never stored here.
+reach one remote Kiro Crew over **either SSH or AWS SSM Session Manager**
+(``connection_method``); the *local* instance is implicit (the gateway itself)
+and is never stored here.
 
 Two persisted hints support lazy reconnect on gateway restart:
 
@@ -58,8 +59,32 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,255}$")
 _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}$")
 
+# ssm_target: an EC2 instance id (i-<17 hex>) or an SSM managed-instance id
+# (mi-<17 hex>); early reject only, mirroring the ssh_host guard above — the
+# authoritative validation lives with the tunnel manager (validation.py).
+_SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}$")
+# aws_profile: named profile in ~/.aws/config; conservative charset, no shell
+# metacharacters. Empty string means "default credential chain".
+_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.\-]{0,128}$")
+# aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
+# string means "use the profile's/environment's default region".
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}$|^$")
+# ssm_run_as: the remote POSIX user that SSM commands are wrapped in
+# (``sudo -u <user> -i``). Unix username shape, matching the charset
+# cloud.ssm.run_command validates at the chokepoint. Defaults to the
+# launcher-provisioned AL2023 user; an Ubuntu AMI needs "ubuntu".
+_SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_DEFAULT_SSM_RUN_AS = "ec2-user"
+
 _DEFAULT_REMOTE_PORT = 7777
 _DEFAULT_TTL = "20h"
+
+# Supported connection transports. "ssh" is the original/default transport
+# (ssh -N -L); "ssm" tunnels over AWS Systems Manager Session Manager
+# (aws ssm start-session --document-name AWS-StartPortForwardingSession),
+# needing no inbound SSH port and no SSH key — only IAM + the SSM agent.
+CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm")
+_DEFAULT_CONNECTION_METHOD = "ssh"
 
 # ``local_port == 0`` is the sentinel for "not yet allocated" — the port
 # allocator (Stage 3) assigns a real port at connect time.
@@ -91,20 +116,38 @@ def _slugify(name: str) -> str:
 
 @dataclass
 class Instance:
-    """One remote KiroCrew instance reachable over SSH.
+    """One remote Kiro Crew instance reachable over SSH or SSM.
 
     Holds the connection coordinates plus the lazy-reconnect ``was_connected``
     hint. The local instance is implicit and is never represented by an
     ``Instance`` record.
+
+    ``connection_method`` selects the transport: ``"ssh"`` (default, uses
+    ``ssh_host``/``remote_bin``) or ``"ssm"`` (uses ``ssm_target`` — an EC2/SSM
+    managed-instance id — plus optional ``aws_profile``/``aws_region``; no SSH
+    key or inbound port needed). Both methods share ``remote_port``/``ttl``.
     """
 
     id: str
     name: str
-    ssh_host: str
+    ssh_host: str = ""
     remote_port: int = _DEFAULT_REMOTE_PORT
     local_port: int = _UNALLOCATED_PORT
     ttl: str = _DEFAULT_TTL
     remote_bin: str = ""
+    # "ssh" (default) or "ssm" — see CONNECTION_METHODS.
+    connection_method: str = _DEFAULT_CONNECTION_METHOD
+    # SSM-only fields. ssm_target is an EC2 instance id (i-...) or SSM managed
+    # instance id (mi-...); aws_profile/aws_region are optional (empty = use the
+    # default credential chain / region).
+    ssm_target: str = ""
+    aws_profile: str = ""
+    aws_region: str = ""
+    # Remote POSIX user for SSM commands (mint / restart / probe), which
+    # cloud.ssm.run_command wraps in `sudo -u <user> -i`. Defaults to the
+    # launcher-provisioned AL2023 user; set "ubuntu" (or whoever runs the remote
+    # gateway) on other AMIs, otherwise the tunnel comes up but the mint fails.
+    ssm_run_as: str = _DEFAULT_SSM_RUN_AS
     # Sticky "connection intent" — the source of truth for whether a tab should
     # exist for this instance. Set True when a tunnel is opened and cleared ONLY
     # on an explicit user disconnect; deliberately LEFT TRUE across gateway
@@ -121,10 +164,33 @@ class Instance:
             )
         if not self.name or not self.name.strip():
             raise InvalidInstanceError("instance name must be non-empty")
-        if not self.ssh_host or not _SSH_HOST_RE.match(self.ssh_host):
+        if self.connection_method not in CONNECTION_METHODS:
             raise InvalidInstanceError(
-                f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
+                f"invalid connection_method {self.connection_method!r}: "
+                f"must be one of {CONNECTION_METHODS}"
             )
+        if self.connection_method == "ssh":
+            if not self.ssh_host or not _SSH_HOST_RE.match(self.ssh_host):
+                raise InvalidInstanceError(
+                    f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
+                )
+        else:  # ssm
+            if not self.ssm_target or not _SSM_TARGET_RE.match(self.ssm_target):
+                # No regex in the message — it reaches the Settings form verbatim.
+                raise InvalidInstanceError(
+                    f"invalid ssm_target {self.ssm_target!r}: must be an EC2/SSM "
+                    f"managed-instance id (i-... or mi-...) followed by 8 to 17 "
+                    f"hex digits"
+                )
+            if self.aws_profile and not _AWS_PROFILE_RE.match(self.aws_profile):
+                raise InvalidInstanceError(f"invalid aws_profile {self.aws_profile!r}")
+            if self.aws_region and not _AWS_REGION_RE.match(self.aws_region):
+                raise InvalidInstanceError(f"invalid aws_region {self.aws_region!r}")
+            if not _SSM_RUN_AS_RE.match(self.ssm_run_as):
+                raise InvalidInstanceError(
+                    f"invalid ssm_run_as {self.ssm_run_as!r}: must be a Unix "
+                    f"username (lowercase, starts with a letter or underscore)"
+                )
         if self.remote_bin and not _REMOTE_BIN_RE.match(self.remote_bin):
             raise InvalidInstanceError(f"invalid remote_bin {self.remote_bin!r}")
         for label, port, allow_zero in (
@@ -148,6 +214,11 @@ class Instance:
             "local_port": self.local_port,
             "ttl": self.ttl,
             "remote_bin": self.remote_bin,
+            "connection_method": self.connection_method,
+            "ssm_target": self.ssm_target,
+            "aws_profile": self.aws_profile,
+            "aws_region": self.aws_region,
+            "ssm_run_as": self.ssm_run_as,
             "was_connected": self.was_connected,
         }
 
@@ -155,7 +226,8 @@ class Instance:
     def from_dict(cls, data: dict) -> Instance:
         """Build an :class:`Instance` from a stored dict, coercing types.
 
-        Tolerant of missing/extra keys so older registry files load cleanly.
+        Tolerant of missing/extra keys so older registry files (pre-SSM, with
+        no ``connection_method``) load cleanly — they default to ``"ssh"``.
         """
 
         def _as_int(value: object, default: int) -> int:
@@ -172,6 +244,14 @@ class Instance:
             local_port=_as_int(data.get("local_port"), _UNALLOCATED_PORT),
             ttl=str(data.get("ttl", _DEFAULT_TTL)),
             remote_bin=str(data.get("remote_bin", "")),
+            connection_method=str(data.get("connection_method", _DEFAULT_CONNECTION_METHOD)),
+            ssm_target=str(data.get("ssm_target", "")),
+            aws_profile=str(data.get("aws_profile", "")),
+            aws_region=str(data.get("aws_region", "")),
+            # `or _DEFAULT_SSM_RUN_AS` (not just a dict default): a record written
+            # by an older build has no key, and one written with an explicit
+            # empty string would fail validation — both mean "use the default".
+            ssm_run_as=str(data.get("ssm_run_as", "") or _DEFAULT_SSM_RUN_AS),
             was_connected=bool(data.get("was_connected", False)),
         )
 
@@ -272,11 +352,16 @@ class InstancesRegistry:
         self,
         *,
         name: str,
-        ssh_host: str,
+        ssh_host: str = "",
         remote_port: int = _DEFAULT_REMOTE_PORT,
         local_port: int = _UNALLOCATED_PORT,
         ttl: str = _DEFAULT_TTL,
         remote_bin: str = "",
+        connection_method: str = _DEFAULT_CONNECTION_METHOD,
+        ssm_target: str = "",
+        aws_profile: str = "",
+        aws_region: str = "",
+        ssm_run_as: str = _DEFAULT_SSM_RUN_AS,
         instance_id: str | None = None,
     ) -> Instance:
         """Add a new instance and return it.
@@ -284,6 +369,9 @@ class InstancesRegistry:
         *instance_id* is derived from *name* when omitted, with a numeric suffix
         to disambiguate collisions. Raises :class:`DuplicateInstanceError` if an
         explicit id already exists, or :class:`InvalidInstanceError` on bad input.
+
+        *connection_method* selects the transport ("ssh" or "ssm"); the fields
+        required depend on it — see :meth:`Instance.validate`.
         """
         with self._lock:
             doc = self._read()
@@ -309,20 +397,33 @@ class InstancesRegistry:
                 local_port=local_port,
                 ttl=ttl,
                 remote_bin=remote_bin,
+                connection_method=connection_method,
+                ssm_target=ssm_target,
+                aws_profile=aws_profile,
+                aws_region=aws_region,
+                ssm_run_as=ssm_run_as or _DEFAULT_SSM_RUN_AS,
                 was_connected=False,
             )
             inst.validate()
             doc.instances.append(inst)
             self._write(doc)
-            logger.info("Added instance %s (%s)", inst.id, inst.ssh_host)
+            logger.info(
+                "Added instance %s (%s: %s)",
+                inst.id,
+                inst.connection_method,
+                inst.ssh_host or inst.ssm_target,
+            )
             return inst
 
     def update(self, instance_id: str, **changes: object) -> Instance:
         """Patch fields on an existing instance and return the updated record.
 
         Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
-        ``ttl``, ``remote_bin``, ``was_connected``. The ``id`` is immutable.
-        Raises :class:`InstanceNotFoundError` / :class:`InvalidInstanceError`.
+        ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
+        ``ssm_run_as``,
+        ``aws_profile``, ``aws_region``, ``was_connected``. The ``id`` is
+        immutable. Raises :class:`InstanceNotFoundError` /
+        :class:`InvalidInstanceError`.
         """
         allowed = {
             "name",
@@ -331,6 +432,11 @@ class InstancesRegistry:
             "local_port",
             "ttl",
             "remote_bin",
+            "connection_method",
+            "ssm_target",
+            "ssm_run_as",
+            "aws_profile",
+            "aws_region",
             "was_connected",
         }
         unknown = set(changes) - allowed

@@ -8,8 +8,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from conftest import requires_git
 
+from conftest import requires_git
 from kiro_crew.task_models import PROGRESS_FILE
 from kiro_crew.taskrunner import (
     _STALL_CANCEL_TIMEOUT,

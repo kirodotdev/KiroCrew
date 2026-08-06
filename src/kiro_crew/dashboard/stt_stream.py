@@ -60,10 +60,12 @@ _active_sessions = 0
 # ── Semantic endpointing (stt.endpointing, default off) ──
 # On each stable Transcribe `final`, a fast background model judges whether the
 # user has finished a complete request; a COMPLETE verdict emits an `endpoint`
-# frame so the frontend can auto-submit. Pinned to the cheap Haiku-class model
-# (parity with title/tip generation). Debounced so mid-utterance finals don't
-# each fire a model call, and single-flight so at most one bg call runs at once.
-_ENDPOINT_MODEL = "claude-haiku-4.5"
+# frame so the frontend can auto-submit. "auto" inherits the session's governed
+# default (run_bg_oneliner skips the override for auto) — a hardcoded model id
+# 400s on accounts/partitions that do not serve it.
+# Debounced so mid-utterance finals don't each fire a model call, and
+# single-flight so at most one bg call runs at once.
+_ENDPOINT_MODEL = "auto"
 _ENDPOINT_DEBOUNCE_SECS = 0.35
 _ENDPOINT_TIMEOUT_SECS = 5.0
 _ENDPOINT_PROMPT = (

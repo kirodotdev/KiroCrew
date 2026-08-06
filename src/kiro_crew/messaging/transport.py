@@ -34,10 +34,35 @@ class ConfiguredChannelTarget:
 class TransportCapabilities:
     """What a messaging channel can do.
 
-    Boolean flags gate features. The integer *parameters* capture where
-    channels differ quantitatively (so the Renderer can chunk / degrade
-    rather than assume a single shape), and the send-policy flag gates
-    proactive / delayed sends.
+    HONESTY CONTRACT. A declaration here is a claim other code is entitled to
+    trust, so every field carries its real enforcement status below and
+    ``test/test_capability_ledger.py`` forces any new field to be classified.
+    History: several flags drifted into being false (a channel declaring
+    ``threads=False`` while threading end to end; a ``max_buttons`` cap no
+    renderer applied; docstrings describing gates that did not exist). Declare
+    what the CODE does today — not the platform ceiling, and not intent.
+
+    ENFORCED (something behaves differently when the value changes):
+
+    * ``max_message_chars`` — the cross-surface mirror leg chunks on it
+      (``dashboard/chat_runner.py``) and five renderers size their own chunks
+      from it. This is a CHARACTER count. A byte-capped platform (Webex) must
+      declare a character value that is safe under its byte limit, because the
+      chunker counts chars and cannot see bytes.
+    * ``supports_proactive_send`` — gates mirror-link creation (HTTP 400) and
+      the outbound mirror leg (skipped).
+
+    ASPIRATIONAL (declared, honest, but nothing reads them yet — the
+    capability-gated interface work will consume them; do NOT write code that
+    assumes they are enforced):
+
+    * ``streaming``, ``edit``, ``reactions``, ``rich_blocks``, ``threads``
+    * ``max_buttons`` — per-renderer caps are currently hardcoded
+      (slack ``[:10]``, discord ``[:25]``); no renderer reads this field.
+    * ``files_inbound`` / ``files_outbound`` — split because one boolean was
+      undecidable: discord ingests attachments but cannot upload, slack does
+      both. Inbound = the transport ingests user attachments into the turn;
+      outbound = the transport can deliver a file to the user.
 
     Defaults are deliberately conservative (the WhatsApp-like floor) so a
     transport that forgets to declare a capability degrades safely rather
@@ -48,11 +73,12 @@ class TransportCapabilities:
     streaming: bool = False
     edit: bool = False
     reactions: bool = False
-    files: bool = False
+    files_inbound: bool = False
+    files_outbound: bool = False
     rich_blocks: bool = False
     threads: bool = False
     # parameters (channels differ widely -- NOT booleans)
-    max_message_chars: int = 4096  # Slack ~40000, Telegram 4096, Discord 2000, WhatsApp 4096
+    max_message_chars: int = 4096  # CHARS. Slack path caps 3900, Telegram 4000, Discord 1900
     max_buttons: int = 3  # interactive choices per prompt (WhatsApp reply buttons = 3)
     # send-policy
     supports_proactive_send: bool = True  # WhatsApp: False outside the 24h window
@@ -62,7 +88,8 @@ class TransportCapabilities:
             "streaming": self.streaming,
             "edit": self.edit,
             "reactions": self.reactions,
-            "files": self.files,
+            "files_inbound": self.files_inbound,
+            "files_outbound": self.files_outbound,
             "rich_blocks": self.rich_blocks,
             "threads": self.threads,
             "max_message_chars": self.max_message_chars,

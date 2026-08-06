@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
@@ -65,7 +65,17 @@ _TRANSIENT_MARKERS = (
     "connectionreset",
     "dispatch failure",  # AWS SDK connector-level I/O failure (conn/DNS/TLS drop)
     "dispatchfailure",  # Rust DispatchFailure variant (unspaced)
-    "is unavailable on bedrock",  # capacity/region rollout (formatted message)
+    # Model-unavailable capacity/rollout, matched against _format_acp_error's
+    # wording. Two phrasings are listed: the current "on the backend" text
+    # (#1550) and the pre-2026-08 "on Bedrock" one, so a transcript or log line
+    # written by an older gateway still classifies. Any future rewording of
+    # that branch must add its marker here.
+    #
+    # Deliberately does NOT cover the sibling unentitled-model branch: that one
+    # is terminal by design (_model_is_unentitled), so a marker matching it
+    # would resurrect the pointless retry loop #1550 removed.
+    "is unavailable on the backend",
+    "is unavailable on bedrock",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
 )
 
@@ -264,38 +274,95 @@ async def run_bg_oneliner(
     """
     session = await sessions.get_bg_session()
 
-    async def _drive() -> str:
+    def _first_advertised_fallback(advertised: Any, rejected: str | None) -> str | None:
+        """First advertised model that is neither the rejected id nor the
+        ``"auto"`` sentinel — the reactive replacement when the preferred model
+        is refused mid-prompt."""
+        rej = (rejected or "").strip().lower()
+        for m in advertised or []:
+            if not isinstance(m, str) or not m.strip():
+                continue
+            low = m.strip().lower()
+            if low == rej or low == "auto":
+                continue
+            return m
+        return None
+
+    async def _drive(model_to_use: str | None) -> str:
         text = ""
         set_model = getattr(session, "set_model", None)
-        if model and set_model is not None:
+        # Pass the caller's preference (often the governed "auto") to set_model,
+        # which resolves it against the session's advertised model list at the
+        # wire chokepoint (AcpSessionHandle.set_model -> resolve_usable_model):
+        # a hardcoded/unentitled id, or "auto" on a partition that does not serve
+        # it, is swapped for the first advertised model instead of
+        # reaching the wire and failing mid-prompt with Invalid model ID.
+        # Best-effort: a failed override falls back to the default.
+        if model_to_use and set_model is not None:
             try:
-                await set_model(model)
+                await set_model(model_to_use)
             except Exception:
-                logger.debug("bg oneliner: model override to %s failed; using default", model)
+                logger.debug(
+                    "bg oneliner: model override to %s failed; using default", model_to_use
+                )
         async for event in session.prompt(prompt):
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
             elif event.kind == EVENT_PERMISSION_REQUEST:
-                await session.reject_tool(event.request_id)
-                # Every permission decision must be audited — always emit the
-                # SEL denial event (backend-security-controls). ``sel_source``
-                # carries a non-empty default so callers that don't attribute a
-                # feature still produce an audit record.
+                # Audit the denial BEFORE rejecting: every permission decision
+                # must be SEL-logged (backend-security-controls), and a
+                # reject_tool transport failure must NOT skip the audit.
+                # ``sel_source`` carries a non-empty default so callers that
+                # don't attribute a feature still produce an audit record.
                 _sel().log_tool_invocation(
                     session_key=sel_session_key,
-                    tool_name="unknown",
+                    tool_name=getattr(event, "title", "unknown") or "unknown",
                     outcome="denied",
                     source=sel_source or "bg_oneliner",
                     request_id=str(event.request_id),
+                )
+                await session.reject_tool(event.request_id)
+            elif event.kind == EVENT_TOOL_CALL:
+                # Tool-free by contract, but an AUTO-APPROVED tool arrives with no
+                # permission request to reject — audit it so no invocation escapes
+                # the SEL log (backend-security-controls; mirrors the cron/
+                # contradiction bg path this helper subsumes).
+                _sel().log_tool_invocation(
+                    session_key=sel_session_key,
+                    tool_name=getattr(event, "title", "unknown") or "unknown",
+                    outcome="allowed",
+                    source=sel_source or "bg_oneliner",
                 )
             elif event.kind == EVENT_COMPLETE:
                 break
         return text
 
-    try:
+    async def _run(model_to_use: str | None) -> str:
         if timeout is not None:
-            return await asyncio.wait_for(_drive(), timeout)
-        return await _drive()
+            return await asyncio.wait_for(_drive(model_to_use), timeout)
+        return await _drive(model_to_use)
+
+    try:
+        try:
+            return await _run(model)
+        except AcpError as exc:
+            # Reactive fallback: the model was rejected mid-prompt — e.g. "auto"
+            # on a partition that does not serve it, or any id the
+            # account cannot run. The advertised list can't be used
+            # to gate "auto" statically (it is a sentinel, never advertised), so
+            # this is the layer that turns your spec's "else the first available
+            # model" into action: retry ONCE with the first advertised model that
+            # is neither the rejected id nor "auto". Only fires when the raise-time
+            # classifier tagged a rejected model AND named an advertised set.
+            rejected = getattr(exc, "rejected_model", None)
+            advertised = getattr(exc, "advertised", None) or []
+            fallback = _first_advertised_fallback(advertised, rejected) if rejected else None
+            if not fallback:
+                raise
+            logger.warning(
+                "bg oneliner: model %r rejected; retrying once with %r", rejected, fallback
+            )
+            return await _run(fallback)
     finally:
         await session.destroy()
 
@@ -435,7 +502,18 @@ async def stream_and_collect(
             return result_text
         except AcpError as exc:
             msg = str(exc)
-            busy = "already in progress" in msg
+            # Prompt-busy is matched STRUCTURALLY first, with the substring kept
+            # as a fallback. _format_acp_error rewrites the backend's "prompt
+            # already in progress" into friendly prose that no longer carries
+            # the marker, so a string-only check silently loses BOTH arms below
+            # (cancel+retry and PromptBusyExhaustedError) for any producer that
+            # formats before raising — which the shared-runtime AcpSessionHandle
+            # now does. Unattended callers (workflows/agent_pool, handlers/side,
+            # the subagent-completion injector) depend on those arms to reset a
+            # wedged parent session, so losing them surfaces a generic failure
+            # and leaves the session stuck. The fallback still covers
+            # unformatted / history-restored messages.
+            busy = isinstance(exc, AcpPromptBusy) or "already in progress" in msg
 
             # ── Case 1: prompt-busy (provider mid-turn) — cancel + retry. ──
             if busy:

@@ -224,6 +224,53 @@ def normalize_agent_model(model: object) -> str:
     return "" if m == DEFAULT_MODEL else m
 
 
+# Per-task-class model overrides (agent.role_models). These are the ONLY
+# sanctioned place to pin a model for a class of work — never hardcode a model
+# id in code. Every role defaults to "" ("inherit"), which resolves down to
+# agent.model and finally to DEFAULT_MODEL ("auto"), so an unpinned role is
+# entitlement-safe on every subscription tier (the provider picks a served
+# model). An operator who deliberately wants a cheaper model for background /
+# sub-agent work pins it here without changing the interactive chat default.
+ROLE_MODEL_KEYS: tuple[str, ...] = ("background", "subagent")
+
+
+def coerce_role_models(raw: object) -> dict[str, str]:
+    """Normalize the per-role model map from hand-edited config / request bodies.
+
+    Only the known :data:`ROLE_MODEL_KEYS` are kept; each value passes through
+    :func:`normalize_agent_model`, so an ``"auto"`` or non-string entry collapses
+    to ``""`` ("inherit the next tier down"). Empty results are dropped so the
+    stored map only ever carries real pins — a role absent from the map and a
+    role explicitly set to ``"auto"`` behave identically (both inherit).
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for role in ROLE_MODEL_KEYS:
+        val = normalize_agent_model(raw.get(role))
+        if val:
+            out[role] = val
+    return out
+
+
+def coerce_role_efforts(raw: object) -> dict[str, str]:
+    """Normalize the per-role reasoning-effort map (agent.role_efforts).
+
+    Same role keys as :data:`ROLE_MODEL_KEYS`. Each value must be a concrete,
+    valid effort level; ``""`` / an invalid / non-string entry is dropped so the
+    stored map carries only real pins — an absent role and an empty one both
+    mean "inherit the chat default effort, then the provider/model default".
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for role in ROLE_MODEL_KEYS:
+        val = raw.get(role)
+        if isinstance(val, str) and val.strip() and is_valid_effort(val.strip()):
+            out[role] = val.strip()
+    return out
+
+
 _DEFAULT_PORT = 5476
 
 # KIROCREW_PORT is validated at CLI entry (cli.py main()).
@@ -741,6 +788,29 @@ class AgentConfig:
         default=DEFAULT_MODEL,
         metadata=_meta("Model", "LLM model identifier. 'auto' resolves from agent config."),
     )
+    role_models: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-role models",
+            "Optional per-task-class model overrides. Keys: 'background' "
+            "(lite / heartbeat background workers) and 'subagent' (spawned "
+            "sub-agents). An empty value or 'auto' defers to the chat default "
+            "(agent.model) and then to the provider default, so an unpinned "
+            "role stays usable on every subscription tier. Pin a cheaper model "
+            "here to run background / sub-agent work on it without changing the "
+            "interactive chat default.",
+        ),
+    )
+    role_efforts: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Per-role reasoning effort",
+            "Optional per-task-class reasoning effort, paired with role_models "
+            "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
+            "default (agent.reasoning_effort) and then the provider/model default. "
+            "Only applies on reasoning-capable models.",
+        ),
+    )
     reasoning_effort: str = field(
         default="",
         metadata=_meta(
@@ -1091,6 +1161,34 @@ class AgentConfig:
                 clamped,
             )
             self.soft_stop_budget_secs = clamped
+        # Keep only known role keys, each normalized ("auto"/non-str -> "").
+        # Defensive for directly-constructed instances; the load() path already
+        # feeds coerced input.
+        self.role_models = coerce_role_models(self.role_models)
+        self.role_efforts = coerce_role_efforts(self.role_efforts)
+
+    def resolve_model(self, role: str) -> str:
+        """Effective model id for a task ``role`` — INDEPENDENT of the chat model.
+
+        Returns the role's own pin (``role_models[role]``) or :data:`DEFAULT_MODEL`
+        (``"auto"``). It deliberately does NOT inherit ``agent.model``: background
+        workers (lite / heartbeat) run unattended, so riding the interactive chat
+        flagship on every cycle would be a silent cost regression. ``"auto"`` lets
+        the provider pick a served model, entitlement-safe on every tier. Callers
+        that write a kiro agent spec / cc_model store this verbatim.
+        """
+        return normalize_agent_model(self.role_models.get(role, "")) or DEFAULT_MODEL
+
+    def resolve_effort(self, role: str) -> str:
+        """Effective reasoning effort for a task ``role`` — INDEPENDENT of the chat
+        default.
+
+        Returns ``role_efforts[role]`` or ``""`` (the provider/model default). It
+        does not inherit ``agent.reasoning_effort``, for the same reason
+        :meth:`resolve_model` does not inherit ``agent.model``. Effort only takes
+        effect on reasoning-capable models; on others it is ignored downstream.
+        """
+        return self.role_efforts.get(role, "")
 
 
 @dataclass
@@ -1977,6 +2075,13 @@ class DashboardConfig:
             "Show feature tip cards while the agent is thinking.",
         ),
     )
+    folder_suggestions_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Folder Suggestions Enabled",
+            "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
     tips_cadence_hours: float = field(
         default=6.0,
         metadata=_meta(
@@ -1999,10 +2104,12 @@ class DashboardConfig:
         ),
     )
     tips_model: str = field(
-        default="claude-haiku-4.5",
+        default="auto",
         metadata=_meta(
             "Tips Model",
-            "Model ID for tips generation (pinned to Haiku-class for cost efficiency).",
+            "Model ID for tips generation. Defaults to \"auto\" so it inherits the "
+            "account's governed model; a hardcoded id can be rejected on accounts "
+            "or partitions that do not serve it.",
         ),
     )
     tips_explore_ratio: float = field(
@@ -2117,7 +2224,16 @@ class ExternalRegistryConfig:
 class SkillsConfig:
     max_triggered: int = field(
         default=3,
-        metadata=_meta("Max Triggered", "Maximum number of skills to load per message (≥1)."),
+        metadata=_meta(
+            "Max Triggered",
+            "Maximum number of skills a single message may flag as relevant (≥0). "
+            "Each match injects that skill's full content, unless the skill sets "
+            "inject_on_trigger: false in its frontmatter, in which case it "
+            "contributes a one-line pointer naming it and its path and the agent "
+            "reads the file if the skill applies. Set to 0 to stop flagging "
+            "entirely and rely only on the Available Skills index, $skillname, "
+            "and skill_search.",
+        ),
     )
     # ── Lazy skill injection (opt-in, like MCP prewarm) ──
     lazy_load: bool = field(
@@ -2230,11 +2346,13 @@ class SkillsConfig:
         ),
     )
     judge_model: str = field(
-        default="claude-haiku-4.5",
+        default="auto",
         metadata=_meta(
             "Skill Judge Model",
-            "Cheap model used for the dedupe judge and the advisory pending review. "
-            "Kept separate from the main chat model to bound cost.",
+            "Model used for the dedupe judge and the advisory pending review. "
+            "Defaults to \"auto\" to inherit the account's governed model; the "
+            "value only gates whether the judge runs (any truthy value enables "
+            "it) — the judge turn itself runs on the shared background session.",
         ),
     )
     extra_paths: list[str] = field(
@@ -2248,9 +2366,9 @@ class SkillsConfig:
     )
 
     def __post_init__(self) -> None:
-        if self.max_triggered < 1:
-            logger.warning("max_triggered %d < 1, using 1", self.max_triggered)
-            object.__setattr__(self, "max_triggered", 1)
+        if self.max_triggered < 0:
+            logger.warning("max_triggered %d < 0, using 0", self.max_triggered)
+            object.__setattr__(self, "max_triggered", 0)
         if self.auto_min_tool_calls < 2:
             logger.warning("auto_min_tool_calls %d < 2, using 2", self.auto_min_tool_calls)
             object.__setattr__(self, "auto_min_tool_calls", 2)
@@ -4385,6 +4503,8 @@ class KiroCrewConfig:
                 approval_mode=agent_data.get("approval_mode", "auto"),
                 streaming=agent_data.get("streaming", True),
                 model=agent_data.get("model", DEFAULT_MODEL),
+                role_models=coerce_role_models(agent_data.get("role_models")),
+                role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
                 default_agent=agent_data.get("default_agent", ""),
@@ -4769,6 +4889,9 @@ class KiroCrewConfig:
                 user_role_other=str(dashboard_data.get("user_role_other", "")),
                 user_technical_level=str(dashboard_data.get("user_technical_level", "")),
                 tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
+                folder_suggestions_enabled=bool(
+                    dashboard_data.get("folder_suggestions_enabled", True)
+                ),
                 tips_cadence_hours=_safe_float(
                     dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0
                 ),
@@ -4778,7 +4901,7 @@ class KiroCrewConfig:
                 tips_recency_decay=_safe_float(
                     dashboard_data.get("tips_recency_decay", 0.6), 0.6, lo=0.0, hi=1.0
                 ),
-                tips_model=str(dashboard_data.get("tips_model", "claude-haiku-4.5")),
+                tips_model=str(dashboard_data.get("tips_model", "auto")),
                 tips_explore_ratio=_safe_float(
                     dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0
                 ),
@@ -4976,7 +5099,7 @@ class KiroCrewConfig:
                 pending_ttl_days=_safe_int(skills_data.get("pending_ttl_days", 30), 30),
                 generate_scripts=bool(skills_data.get("generate_scripts", True)),
                 judge_model=str(
-                    skills_data.get("judge_model", "claude-haiku-4.5") or "claude-haiku-4.5"
+                    skills_data.get("judge_model", "auto") or "auto"
                 ),
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
@@ -5329,7 +5452,15 @@ class KiroCrewConfig:
             # pick up effort already recovered from a pre-existing overlay,
             # never the freshly-set slot value. Mirrors the _claude_code path.
             _eff_per_model: dict[str, str] = {}
-            _eff = reasoning_effort_override or default_effort
+            # Role-aware effort default: background worker agents (lite /
+            # heartbeat) resolve the "background" role effort; everything else
+            # uses the chat default. An explicit override (the dashboard slot's
+            # effort, or a sub-agent's resolved "subagent" effort) still wins.
+            if agent in ("kirocrew-lite", "kirocrew-heartbeat"):
+                base_effort = self.agent.resolve_effort("background")
+            else:
+                base_effort = default_effort
+            _eff = reasoning_effort_override or base_effort
             if m and _eff and is_valid_effort(_eff) and model_supports_effort(m):
                 _eff_per_model[m] = _eff
             return AcpProvider(

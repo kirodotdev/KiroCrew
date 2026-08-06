@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator
 
 from kiro_crew import platform_compat, shutdown_event
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir
 from kiro_crew.config.paths import legacy_home
 from kiro_crew.security import is_sensitive_path
@@ -363,9 +364,12 @@ class AutoNudgeService:
 
     def _write_state(self, payload: dict) -> None:
         # Atomic write: serialize to a temp file in the same dir, fsync, then
-        # os.replace() onto the target path. Eliminates the truncate-before-
+        # replace onto the target path. Eliminates the truncate-before-
         # flock race that plain open(path, "w") has — readers always see either
         # the old complete file or the new complete file, never a partial one.
+        # The rename goes through replace_with_retry because on Windows it can
+        # fail with PermissionError while another handle is transiently open on
+        # the fresh temp file (indexer / AV), which loses the write (issue #1105).
         # Blocking (fsync) — async callers offload this to an executor.
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
@@ -374,7 +378,7 @@ class AutoNudgeService:
                 json.dump(payload, fh, indent=2)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp_path, self._path)
+            replace_with_retry(tmp_path, self._path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)

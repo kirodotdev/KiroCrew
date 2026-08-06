@@ -1827,7 +1827,14 @@ async def _handle_connection(
             # new gateway and run the ensure_backend pre-flight. Absent on an
             # old gateway, so the new stub skips the pre-flight (no 25s skew
             # penalty) and falls back to the legacy lazy-spawn path.
-            "capabilities": ["ensure_backend"],
+            #
+            # ``bridge_ping`` gates the stub's bridge-phase liveness monitor the
+            # same way. It must be negotiated rather than assumed: a daemon that
+            # outlived a package upgrade has no ``{"type": "ping"}`` handler, so
+            # the frame would fall through to the forward path and no pong would
+            # ever return — turning any call slower than the grace window into a
+            # forced degrade of a perfectly healthy pooled session.
+            "capabilities": ["ensure_backend", "bridge_ping"],
         },
     )
     logger.info(
@@ -1960,6 +1967,17 @@ async def _handle_connection(
                     caller.session_key,
                     caller.session_type,
                 )
+                continue
+
+            # Bridge-phase liveness ping: the stub sends ``{"type": "ping"}``
+            # while it has outstanding requests to verify the gateway is still
+            # responsive. Reply with ``{"type": "pong"}`` — never forwarded
+            # to the backend.
+            if msg.get("type") == "ping":
+                try:
+                    await _write_json_line(writer, {"type": "pong"})
+                except (OSError, ConnectionError):
+                    return
                 continue
 
             # B1 pre-flight: the stub sends ``ensure_backend``

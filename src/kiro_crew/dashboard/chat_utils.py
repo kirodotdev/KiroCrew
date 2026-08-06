@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     EMPTY_RESPONSE_RECOVERY_PREFIX,
+    MANUAL_RESUME_RECOVERY_PREFIX,
     POSTTOKEN_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
@@ -705,6 +706,43 @@ _EMPTY_AUTO_CONTINUE_MSG = (
     "NOT re-run steps or tools that already completed successfully."
 )
 _SYNTHETIC_RECOVERY_MSGS = (_POSTTOKEN_RECOVER_MSG, _EMPTY_AUTO_CONTINUE_MSG)
+# Injected when the USER presses Continue on an interrupted turn. Worded to be
+# TRUE in both interruption shapes, which is why the endpoint needs no branch:
+# a turn that streamed partway and one that produced nothing at all read this
+# same text correctly. It must not assert that completed work exists above —
+# _POSTTOKEN_RECOVER_MSG does ("The work already done above ... is preserved"),
+# and after a gateway restart mid-first-turn that is simply false, which would
+# point the model at progress it cannot find.
+_MANUAL_RESUME_MSG = (
+    f"{MANUAL_RESUME_RECOVERY_PREFIX}\n"
+    "The previous turn was interrupted before it finished (a dropped "
+    "connection, a restart, or a backend error) and the user has asked you to "
+    "carry on. Look at the conversation above, work out what was already "
+    "completed, and finish the user's most recent request from there. Do NOT "
+    "re-run steps or tools that already completed successfully, and do NOT "
+    "assume any particular progress was made — if nothing was done yet, simply "
+    "start the request now."
+)
+# Injected when the user presses Continue on a slot whose last turn ended
+# NORMALLY. Continue is offered on any idle slot with a transcript (a killed
+# gateway writes no error row, so an interrupted turn can be shape-identical to
+# a clean one — see ``_is_interrupted``), which means the button must also have
+# something true to say when nothing was actually cut short. Sharing
+# ``MANUAL_RESUME_RECOVERY_PREFIX`` is deliberate: to the user the two are one
+# button, so they must fold into the same RecoveryCard.
+#
+# The closing sentence is load-bearing. Without an explicit licence to say "this
+# is done", a model handed a bare "keep going" on a finished thread invents
+# follow-up work to justify the turn.
+_MANUAL_CONTINUE_MSG = (
+    f"{MANUAL_RESUME_RECOVERY_PREFIX}\n"
+    "The user pressed Continue without typing a new instruction. Look at the "
+    "conversation above and carry on with their most recent request: take the "
+    "next step that was still outstanding, or finish anything left half-done. "
+    "Do NOT re-run steps or tools that already completed successfully. If the "
+    "request is genuinely complete, say so in one line instead of inventing "
+    "further work."
+)
 
 
 def is_system_injection(content: str) -> bool:

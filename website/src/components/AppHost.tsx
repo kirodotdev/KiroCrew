@@ -138,7 +138,7 @@ function AppNotFound({ name }: { name: string }) {
   const navigate = useNavigate()
   return (
     <>
-      <PageHeader title={i18nT('components.appHost.app_not_found')} subtitle={`"${name}" is not installed`} />
+      <PageHeader title={i18nT('components.appHost.app_not_found')} subtitle={i18nT('components.appHost.not_installed', { name })} />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center">
           <div className="text-[48px] mb-4 opacity-20"><Package size={48} /></div>
