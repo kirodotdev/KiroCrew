@@ -2635,6 +2635,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // "session not found" timeout that keys off it; the POP effect reads
   // searchParams live and is gated separately below.
   const initialSidRef = useRef(noUrlSync ? null : (searchParams.get('sid') || searchParams.get('slot')))
+  // The active slot as of MOUNT. Redux outlives this component, so `activeSlot`
+  // being set says nothing about whether the USER chose it during this visit —
+  // only a change away from this snapshot does.
+  const mountSlotRef = useRef(activeSlot)
+  // A deep link (?sid=) naming a DIFFERENT session than the one Redux carried
+  // over owns the first switch of this mount — see the mount re-fetch effect.
+  const deepLinkPendingRef = useRef(!!initialSidRef.current && initialSidRef.current !== activeSlot)
   const initialMsgRef = useRef(searchParams.get('msg'))
   const initialNewRef = useRef(searchParams.get('new') === '1')
   // Deep-link mount activation in progress — stops the sync effect from stripping
@@ -2671,15 +2678,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (embedded && !embedMode) return
     if (!connected) return  // offline: defer URL-driven switchSlot until reconnect
     const urlSlot = initialSidRef.current
-    if (!urlSlot || filteredSlots.length === 0) return
+    if (!urlSlot) return
     // The deep-link ?sid only sets the INITIAL active slot. The slot list can
     // populate AFTER the user has already clicked a different session in the
     // sidebar (switchSlot.pending sets activeSlot synchronously); without this
     // guard the delayed activation would override that click and snap the UI
     // back to the deep-linked session.
-    if (activeSlot) { initialSidRef.current = null; return }
+    //
+    // The comparison is against the slot as of MOUNT, not against "is there any
+    // active slot at all". `activeSlot` lives in Redux, which outlives this
+    // component: a deep link followed from another dashboard page (the System
+    // page's Session & Task Memory rows, Telemetry's conversation links) mounts
+    // here with the previously-visited session already active, and a bare
+    // truthiness check read that as "the user already chose" and silently
+    // dropped the link — you clicked a session and landed on a different one.
+    // Only a switch that happened AFTER this mount is a real user choice.
+    // Both abandon paths clear the in-flight flag, because arming happens BELOW
+    // and this effect re-runs: an earlier run can have armed it while waiting for
+    // a slot that had not arrived, and the run that abandons the link is a
+    // different one. Leaving it set would kill URL sync for the rest of the mount
+    // — and the not-found timeout is no backstop here, since it only acts while
+    // `initialSidRef` is still set, which these branches clear.
+    if (activeSlot !== mountSlotRef.current) {
+      initialSidRef.current = null
+      popInFlightRef.current = false
+      return
+    }
+    if (activeSlot === urlSlot) {
+      initialSidRef.current = null
+      popInFlightRef.current = false
+      return
+    }
+    // Armed BEFORE the slot is known to exist, because the wait is exactly when
+    // the damage happens: a session created and linked in one go (the app pages'
+    // create-then-navigate) puts `?sid=` in the URL before its slots frame
+    // arrives, and during that window the URL-sync effect below sees a `sid` it
+    // cannot match and PUSHes a history entry for the carried-over session — so
+    // Back opens that session instead of the page the link came from. Same
+    // stale-closure hazard a Back/Forward has, so it takes the same guard.
+    // Released by the sync effect once activeSlot matches the URL, and by the
+    // not-found timeout, so a link that never resolves cannot wedge URL sync.
+    popInFlightRef.current = true
+    // `some` on an empty list is false, so an unpopulated slot list waits here
+    // too; this effect re-runs when `filteredSlots` arrives.
     if (filteredSlots.some(s => s.key === urlSlot)) {
       initialSidRef.current = null
+      popInFlightRef.current = true
       dispatch(switchSlot(urlSlot))
     }
     // Don't error immediately — slot may arrive via SSE shortly
@@ -2754,6 +2798,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         pendingSidRef.current = false
         popInFlightRef.current = false
         setSidError(i18nT('pages.chatPage.session_not_found', { name: urlSlot }))
+        // Deliberately does NOT refresh the session on screen. The deep link did
+        // own this mount's fetch, so that session's messages can be as stale as
+        // Redux left them — but a refresh here races the user: five seconds is
+        // long enough to type and send, and the in-flight response would land
+        // after the optimistic row and replace both it and `running`, making the
+        // turn they just sent disappear. Stale-until-next-interaction is the
+        // lesser fault, and the banner above tells them the link failed.
       }
     }, 5000)
     return () => clearTimeout(timer)
@@ -2789,7 +2840,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // matches the URL, then fall through for replace-only slug normalization (a POP
     // must never produce a push).
     if (popInFlightRef.current) {
-      if (!activeSlot || activeSlot !== sp.get('sid')) return
+      // `sid || slot` — the same pair the READ paths accept. A legacy `?slot=`
+      // link resolves through this flag too, and matching on `sid` alone would
+      // never release it: the flag would stay armed for the life of the mount,
+      // so URL sync would be dead and a later session switch would leave the
+      // URL (and therefore a reload) pointing at the wrong session.
+      const urlSlot = sp.get('sid') || sp.get('slot')
+      if (!activeSlot || activeSlot !== urlSlot) return
       popInFlightRef.current = false
     }
     if (!activeSlot) {
@@ -2821,7 +2878,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
   // dispatching switchSlot here would race and overwrite it.
-  useEffect(() => { if (activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  //
+  // Also skipped while a deep link (?sid=) names a DIFFERENT session: this
+  // effect runs after the sid-activation effect above, so re-fetching the slot
+  // Redux carried over from the previous page would switch straight back and
+  // silently undo the link — clicking a session on the System page landed you
+  // in whatever chat you had open before. The sid effect's own switchSlot
+  // fetches, so nothing is lost by skipping here.
+  useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Clear activeSlot when it belongs to a different mode (page switch)
   useEffect(() => {
     if (activeSlot && slots.length > 0 && !filteredSlots.find(s => s.key === activeSlot)) {
