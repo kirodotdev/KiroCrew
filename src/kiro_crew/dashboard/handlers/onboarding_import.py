@@ -19,6 +19,7 @@ _SOURCE_IDS = frozenset(
     {
         "codex",
         "claude_code",
+        "gemini",
         "meshclaw",
         "openclaw",
         "hermes",
@@ -38,6 +39,7 @@ _CATEGORY_IDS = frozenset(
 _SOURCE_NAMES = {
     "codex": "Codex",
     "claude_code": "Claude Code",
+    "gemini": "Gemini CLI / Antigravity",
     "meshclaw": "MeshClaw",
     "openclaw": "OpenClaw",
     "hermes": "Hermes Agent",

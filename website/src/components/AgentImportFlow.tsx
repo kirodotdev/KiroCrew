@@ -61,6 +61,7 @@ const STAGES: Stage[] = [1, 2, 3, 4]
 const SUPPORTED_SOURCE_IDS = new Set([
   'codex',
   'claude_code',
+  'gemini',
   'meshclaw',
   'openclaw',
   'hermes',
