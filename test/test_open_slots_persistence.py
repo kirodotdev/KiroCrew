@@ -724,47 +724,48 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
     """The async restore must hand the loop back per tab so the heartbeat can run.
 
     Pins the actual crash mechanism: a coroutine running concurrently with the
-    restore has to get scheduled. If restore ever goes back to blocking straight
-    through, the ticker records no ticks and this fails.
+    restore must observe a partially restored slot set. If restore ever blocks
+    through every tab and yields only after the work is done, this fails.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
-    for i in range(6):
+    tab_count = 6
+    for i in range(tab_count):
         _seed_session(state, f"chat-{i}-yield")
     (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": [f"chat-{i}-yield" for i in range(6)], "ts": 0.0})
+        json.dumps({"keys": [f"chat-{i}-yield" for i in range(tab_count)], "ts": 0.0})
     )
 
     state2 = _make_state(tmp_path / "sessions")
-    ticks = 0
+    partial_restore_observed = False
 
     async def _drive():
-        stop = False
-
         async def ticker():
-            nonlocal ticks
-            while not stop:
-                ticks += 1
+            nonlocal partial_restore_observed
+            while True:
+                restored_so_far = len(state2._slots)
+                if 0 < restored_so_far < tab_count:
+                    partial_restore_observed = True
                 await asyncio.sleep(0)
 
         t = asyncio.create_task(ticker())
-        await asyncio.sleep(0)  # let the ticker reach its first await
-        restored = await restore_open_slots_async(state2)
-        stop = True
-        t.cancel()
-        # `cancel()` only requests cancellation; without awaiting it the ticker is
-        # still live when `asyncio.run` tears the loop down, leaving a "coroutine
-        # ignored GeneratorExit" for a later test to trip over.
         try:
-            await t
-        except asyncio.CancelledError:
-            pass
-        return restored
+            return await restore_open_slots_async(state2)
+        finally:
+            t.cancel()
+            # `cancel()` only requests cancellation; without awaiting it the ticker is
+            # still live when `asyncio.run` tears the loop down, leaving a "coroutine
+            # ignored GeneratorExit" for a later test to trip over.
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
     restored = asyncio.run(_drive())
-    assert restored == 6
-    # One yield per tab at minimum; the ticker interleaves on each.
-    assert ticks >= 6, f"restore starved the loop (ticks={ticks})"
+    assert restored == tab_count
+    # Observe intermediate progress rather than an incidental number of scheduler
+    # turns; a single yield after all tab work is complete must not satisfy the test.
+    assert partial_restore_observed, "restore did not yield between tabs"
 
 
 def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
