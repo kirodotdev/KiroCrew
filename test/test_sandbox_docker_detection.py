@@ -235,6 +235,14 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
         monkeypatch.setattr(sandbox, "_inside_macos_sandbox", lambda: False)
         monkeypatch.setattr(sandbox, "is_docker_container", lambda: False)
+        # "Bare metal" means the sysctl is RELAXED. Without pinning this the
+        # probe reads the real host, and on any Ubuntu 23.10+ kernel — which is
+        # every GitHub Linux runner — it returns True, so _no_backend_guidance()
+        # returns the AppArmor remedy instead of the generic one and the assert
+        # below cannot pass. The other tests in this class set
+        # is_docker_container=True and short-circuit before that branch, which is
+        # why this is the only one that was host-dependent.
+        monkeypatch.setattr(sandbox, "_apparmor_userns_restricted", lambda: False)
         monkeypatch.setattr(
             sandbox,
             "_last_unshare_failure",
