@@ -2097,10 +2097,12 @@ class DashboardConfig:
         ),
     )
     tips_model: str = field(
-        default="claude-haiku-4.5",
+        default="auto",
         metadata=_meta(
             "Tips Model",
-            "Model ID for tips generation (pinned to Haiku-class for cost efficiency).",
+            "Model ID for tips generation. Defaults to \"auto\" so it inherits the "
+            "account's governed model; a hardcoded id can be rejected on accounts "
+            "or partitions that do not serve it.",
         ),
     )
     tips_explore_ratio: float = field(
@@ -2328,11 +2330,13 @@ class SkillsConfig:
         ),
     )
     judge_model: str = field(
-        default="claude-haiku-4.5",
+        default="auto",
         metadata=_meta(
             "Skill Judge Model",
-            "Cheap model used for the dedupe judge and the advisory pending review. "
-            "Kept separate from the main chat model to bound cost.",
+            "Model used for the dedupe judge and the advisory pending review. "
+            "Defaults to \"auto\" to inherit the account's governed model; the "
+            "value only gates whether the judge runs (any truthy value enables "
+            "it) — the judge turn itself runs on the shared background session.",
         ),
     )
     extra_paths: list[str] = field(
@@ -4878,7 +4882,7 @@ class KiroCrewConfig:
                 tips_recency_decay=_safe_float(
                     dashboard_data.get("tips_recency_decay", 0.6), 0.6, lo=0.0, hi=1.0
                 ),
-                tips_model=str(dashboard_data.get("tips_model", "claude-haiku-4.5")),
+                tips_model=str(dashboard_data.get("tips_model", "auto")),
                 tips_explore_ratio=_safe_float(
                     dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0
                 ),
@@ -5076,7 +5080,7 @@ class KiroCrewConfig:
                 pending_ttl_days=_safe_int(skills_data.get("pending_ttl_days", 30), 30),
                 generate_scripts=bool(skills_data.get("generate_scripts", True)),
                 judge_model=str(
-                    skills_data.get("judge_model", "claude-haiku-4.5") or "claude-haiku-4.5"
+                    skills_data.get("judge_model", "auto") or "auto"
                 ),
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)

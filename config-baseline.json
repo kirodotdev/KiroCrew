@@ -17,6 +17,8 @@
         "approval_mode": "auto",
         "streaming": true,
         "model": "auto",
+        "role_models": {},
+        "role_efforts": {},
         "reasoning_effort": "",
         "provider": "acp",
         "default_agent": "",
@@ -105,6 +107,62 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto"
+    },
+    {
+      "path": "agent.role_models",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Per-role models",
+      "help": "Optional per-task-class model overrides. Keys: 'background' (lite / heartbeat background workers) and 'subagent' (spawned sub-agents). An empty value or 'auto' defers to the chat default (agent.model) and then to the provider default, so an unpinned role stays usable on every subscription tier. Pin a cheaper model here to run background / sub-agent work on it without changing the interactive chat default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.role_models.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "agent.role_efforts",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Per-role reasoning effort",
+      "help": "Optional per-task-class reasoning effort, paired with role_models (keys: 'background', 'subagent'). Empty for a role inherits the chat default (agent.reasoning_effort) and then the provider/model default. Only applies on reasoning-capable models.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.role_efforts.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.reasoning_effort",
@@ -197,7 +255,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Allow Unsandboxed Execution",
-      "help": "When true, allow agent subprocesses to execute without any sandbox backend (fail-open). When false (default), wrap_argv raises a RuntimeError if no sandbox backend is available and mode is not 'off', preventing unsandboxed execution entirely (fail-closed). This is distinct from sandbox_allow_no_isolation which only controls warning severity — this field controls whether execution proceeds at all.",
+      "help": "When true, allow agent subprocesses to execute without any sandbox backend (fail-open). When false (default), wrap_argv raises a RuntimeError if no sandbox backend is available and mode is not 'off', preventing unsandboxed execution entirely (fail-closed). This is distinct from sandbox_allow_no_isolation which only controls warning severity — this field controls whether execution proceeds at all. The default is platform-independent: on a host with no backend (any Windows host, a Linux kernel refusing user namespaces) `kirocrew setup` OFFERS this opt-in interactively and writes it only on an explicit yes, so unconfined execution stays operator-declared and is never enabled implicitly by the platform.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -1550,7 +1608,7 @@
         "archive_after_days": 90,
         "pending_ttl_days": 30,
         "generate_scripts": true,
-        "judge_model": "claude-haiku-4.5",
+        "judge_model": "auto",
         "extra_paths": []
       }
     },
@@ -1731,10 +1789,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Skill Judge Model",
-      "help": "Cheap model used for the dedupe judge and the advisory pending review. Kept separate from the main chat model to bound cost.",
+      "help": "Model used for the dedupe judge and the advisory pending review. Defaults to \"auto\" to inherit the account's governed model; the value only gates whether the judge runs (any truthy value enables it) — the judge turn itself runs on the shared background session.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "claude-haiku-4.5"
+      "defaultValue": "auto"
     },
     {
       "path": "skills.extra_paths",
@@ -3928,7 +3986,7 @@
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
         "tips_recency_decay": 0.6,
-        "tips_model": "claude-haiku-4.5",
+        "tips_model": "auto",
         "tips_explore_ratio": 0.2,
         "gitlab_hosts": []
       }
@@ -4431,10 +4489,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Tips Model",
-      "help": "Model ID for tips generation (pinned to Haiku-class for cost efficiency).",
+      "help": "Model ID for tips generation. Defaults to \"auto\" so it inherits the account's governed model; a hardcoded id can be rejected on accounts or partitions that do not serve it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "claude-haiku-4.5"
+      "defaultValue": "auto"
     },
     {
       "path": "dashboard.tips_explore_ratio",

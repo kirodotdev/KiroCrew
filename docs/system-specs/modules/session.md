@@ -63,10 +63,21 @@ when done. See [acp-client.md](acp-client.md) for `AcpRuntime` /
 `AcpSessionHandle`.
 
 **Cheapest-model bg tasks**: the categorical/classification background tasks
-force `claude-haiku-4.5` via a best-effort per-session `set_model` (guarded so
-backends that can't switch fall through to their default): folder-icon
-(`chat_folders.py`), link-summary (`chat_nav.py`), and lesson-contradiction
-check (`dashboard/handlers/cron.py`).
+(folder-icon `chat_folders.py`, link-summary `chat_nav.py`, session title
+`chat_title.py`, session-summary `handlers/sessions.py`, STT endpointing
+`stt_stream.py`, and the lesson-contradiction check `dashboard/handlers/cron.py`,
+plus tips generation) express a `"auto"` model preference and pass it to a
+best-effort per-session `set_model`. The wire chokepoint
+(`AcpSessionHandle.set_model` → `resolve_usable_model`) mirrors the interactive
+`_wire_model_id`: it sends a served id, sends `"auto"` only when the backend
+advertises it, and for anything else — `"auto"` where a partition doesn't serve
+it, or an unentitled concrete id — resolves to `""` and **skips the
+send**, inheriting the session's served backend default. So these tasks never
+put an unserved model or a literal unavailable `"auto"` on the wire (which would
+fail with `Invalid model ID`). A reactive retry in `run_bg_oneliner`
+(retry once with the first advertised model on a mid-prompt rejection) remains a
+thin backstop for the fail-open case where the advertised set was unknown at
+send time.
 
 ## Key Behaviors
 

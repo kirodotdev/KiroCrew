@@ -690,7 +690,7 @@ async def api_sessions(request: web.Request) -> web.Response:
 
 
 _SUMMARIZE_MAX_SESSIONS = 8  # bound cost/latency: only the top-N get an LLM pass
-_SUMMARIZE_MODEL = "claude-haiku-4.5"  # cheap/fast — a one-liner needs no heavy model
+_SUMMARIZE_MODEL = "auto"  # inherit the governed default; a hardcoded id 400s where unavailable
 _SUMMARIZE_MSG_LIMIT = 12  # messages fed to the summarizer per session
 _SUMMARIZE_TIMEOUT_SECS = 30  # per-session deadline so one stalled prompt can't pin the shared _bg session
 _SUMMARIZE_PROMPT = (

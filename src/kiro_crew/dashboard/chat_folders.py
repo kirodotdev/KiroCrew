@@ -69,7 +69,10 @@ def _is_single_emoji(s: str) -> bool:
     return clusters == 1
 
 
-_FOLDER_ICON_MODEL = "claude-haiku-4.5"
+# "auto" = inherit the session's governed default (run_bg_oneliner skips the
+# override for auto). A hardcoded model id 400s on accounts/partitions that do
+# not serve it.
+_FOLDER_ICON_MODEL = "auto"
 
 
 # Folder color palette — the identity mark a user picks for a folder in the

@@ -124,10 +124,33 @@ Never hardcode a model id (`claude-*`, `opus*`, `sonnet*`, `haiku*`, `gpt-*`,
 specific model — fails at runtime for anyone not entitled to it, with a
 silent-until-first-prompt shape.
 
-- The entitlement-safe default is the `"auto"` sentinel: the provider resolves it
-  server-side against what the account is actually served. `agent.model` and
+- The default is the `"auto"` sentinel: the provider resolves it server-side
+  against what the account is actually served. `agent.model` and
   `config/defaults.json` ship `"auto"` for exactly this reason — do not replace it
-  with a concrete model.
+  with a concrete model. But `"auto"` is NOT universally available: some
+  partitions (e.g. PDT, OSU) do not serve it, and sending it there fails with
+  `Invalid model ID: auto`. So `"auto"` is validated against the advertised list
+  like any other id — never assume it is usable.
+- Model resolution is UNIFIED at the wire chokepoint (`AcpSessionHandle.set_model`
+  → `acp.client.resolve_usable_model(preferred, advertised)`) for every model
+  chosen on the caller's behalf (not an explicit user pick), and it mirrors the
+  interactive path's reset-to-default (`_wire_model_id`): a served id is sent;
+  `"auto"` is sent ONLY when the backend advertises it; and anything else —
+  `"auto"` on a partition that doesn't serve it, or an unentitled
+  concrete id — resolves to `""`, meaning **inherit the session's backend
+  default** (the served model `session/new` assigned). So background one-liners,
+  tips, the contradiction sweep, and inherited/cold-start applies never put an
+  unserved model (or a literal unavailable `"auto"`) on the wire. A reactive
+  retry in `run_bg_oneliner` (`_rejected_model_from_error` tags the rejection,
+  then retries once with the first advertised model) stays as a thin backstop for
+  the fail-open case where `advertised` was unknown at send time. An EXPLICIT
+  user pick is the opposite: it must `raise` (`model_is_unusable`), never
+  silently substitute — a user who chose a model should see an error, not another
+  model.
+- All model dropdowns/pickers MUST source their options from the available-models
+  endpoint (`GET /api/models`, which reflects the account's advertised set), never
+  a static in-code list. The picker offers `"auto"` only when it is advertised (or
+  entitlement is unknown); otherwise the first advertised model leads.
 - To deliberately run a class of work on a cheaper model, use
   `agent.role_models.<role>` (roles: `background`, `subagent`) resolved through
   `AgentConfig.resolve_model(role)` — the ONLY sanctioned place to pin a model.
@@ -140,10 +163,11 @@ silent-until-first-prompt shape.
   fallbacks off the user-facing default path.
 - When checking whether an account may use a model id, use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` with `advertised_model_ids(...)`
-  — the SAME check the session-init withhold uses — so the picker, the config
-  validator, and the wire cannot disagree. It compares within one namespace
-  (kiro's advertised ids are exactly the ids `set_model` accepts) and treats an
-  empty/unknown advertised set as "allow", so never hand-roll a membership test.
+  — the SAME check the session-init withhold and `resolve_usable_model` use — so
+  the picker, the config validator, and the wire cannot disagree. It compares
+  within one namespace (kiro's advertised ids are exactly the ids `set_model`
+  accepts) and treats an empty/unknown advertised set as "allow", so never
+  hand-roll a membership test.
 
 `code-review.yml` carries a deterministic tripwire that fails on a newly added
 hardcoded model literal outside `model_registry*`, the config schema, and tests.

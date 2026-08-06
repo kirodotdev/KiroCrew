@@ -41,12 +41,14 @@ _TITLE_SOURCE_SCAN_LIMIT = _TITLE_TEXT_LIMIT + _TITLE_MAX_ATTACHMENT_FILES * (
     _TITLE_MAX_ATTACHMENT_PATH_LENGTH + 32
 )
 
-# Titling is a trivial 3-6 word task, so pin it to the cheapest/fastest model
-# (Haiku) rather than the kirocrew-lite default ("auto" on the kiro-cli path).
-# Applied per-session via set_model so heavier background work (compaction,
-# optimizer) keeps the lite agent's default model. Best-effort: a failed
-# override just falls back to the session's default model.
-_TITLE_MODEL = "claude-haiku-4.5"
+# Titling is a trivial 3-6 word task. It formerly pinned Haiku for cost, but a
+# hardcoded model id is not governance-aware: on an account/partition that does
+# not serve that model (e.g. where Haiku is unavailable) the wire
+# rejects it with ``Invalid model ID``. ``"auto"`` means "inherit
+# the session's governed default" — ``run_bg_oneliner`` skips the per-session
+# set_model override for auto, so titling runs on the backend-resolved entitled
+# model instead of a literal the account may not have.
+_TITLE_MODEL = "auto"
 
 # Per-word delay for the word-by-word title reveal animation. LLM chunk
 # streaming arrives in a sub-second burst (too fast to perceive), so the reveal

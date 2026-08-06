@@ -654,7 +654,7 @@ class DashboardConfig:
     tips_cadence_hours: float = 6.0    # min hours between surfaced tips (server-side gate; clamped >= 0)
     tips_snooze_hours: float = 48.0    # hours before a snoozed tip is eligible again (clamped >= 0)
     tips_recency_decay: float = 0.6    # weighted-random newer-bias decay (clamped to [0, 1])
-    tips_model: str = "claude-haiku-4.5"  # model for tips generation (pinned to Haiku for cost)
+    tips_model: str = "auto"  # model for tips generation ("auto" inherits the account's governed model)
     tips_explore_ratio: float = 0.2    # probability of random catalog pick vs personalized (clamped to [0, 1])
 
 @dataclass

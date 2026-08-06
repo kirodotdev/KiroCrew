@@ -654,6 +654,14 @@ class AcpError(Exception):
     def __init__(self, *args: object, transient: bool | None = None) -> None:
         super().__init__(*args)
         self.transient = transient
+        # Reactive-fallback metadata, set by :func:`_raise_acp_error` when a
+        # prompt-time error names a rejected model (so run_bg_oneliner can retry
+        # once with a served model). Guarded so AcpModelUnavailable — which sets
+        # ``advertised`` BEFORE calling super().__init__ — is not clobbered.
+        if not hasattr(self, "rejected_model"):
+            self.rejected_model: str | None = None
+        if not hasattr(self, "advertised"):
+            self.advertised: list[str] = []
 
 
 class AcpTimeoutError(AcpError):
@@ -745,6 +753,10 @@ _NOT_LOGGED_IN_MESSAGE = (
 # string); throttle, auth, and the 5xx family match the combined
 # `data + message` haystack so a 5xx token in either field is caught.
 _RE_MODEL_UNAVAILABLE = re.compile(r"[Tt]he model '([^']+)' is not available")
+# MPS ValidationException wording for a model the partition/account does not
+# serve — distinct from the "is not available" capacity string above. Covers the
+# ``auto`` sentinel in partitions that do not serve it.
+_RE_INVALID_MODEL_ID = re.compile(r"[Ii]nvalid model ID:\s*([^\s,;'\"]+)")
 _RE_THROTTLE_NAMED = re.compile(
     r"\b(ThrottlingException|TooManyRequestsException|ServiceQuotaExceededException)\b"
 )
@@ -951,6 +963,43 @@ def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
     return wanted not in {m.strip().lower() for m in advertised if m and m.strip()}
 
 
+def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
+    """Resolve a SUBSTITUTE (non-explicit) model choice to what the account can
+    run, mirroring the interactive path's reset-to-default (``_wire_model_id``).
+
+    Returns ``""`` to mean **"do NOT override — inherit the session's backend
+    default"** (the served model ``session/new`` already assigned), so the wire
+    never receives a model the partition does not serve. Rules:
+
+      - empty ``preferred``           -> ``""`` (already inheriting the default);
+      - ``advertised`` unknown/empty  -> ``""`` for the ``"auto"`` sentinel (never
+        send a literal ``"auto"`` we cannot verify — some partitions do not
+        serve it), else trust a concrete caller-supplied id (nothing to check
+        it against);
+      - ``"auto"``                    -> ``"auto"`` IFF the backend advertises it,
+        else ``""`` — exactly ``_wire_model_id``'s
+        ``"auto" if "auto" in advertised else ""``;
+      - concrete + usable             -> that id;
+      - concrete + not served         -> ``""`` (inherit the served default rather
+        than substituting a possibly-unavailable ``"auto"``).
+
+    The EXPLICIT user-pick paths do NOT use this: they ``raise``
+    (``model_is_unusable``) so a user who chose a model sees an error, not a swap.
+    A reactive retry (``run_bg_oneliner``) remains a thin backstop for the
+    fail-open case where ``advertised`` was unknown at send time.
+    """
+    if not preferred:
+        return ""
+    if not advertised:
+        return "" if preferred == "auto" else preferred
+    ids = [m for m in advertised if m and m.strip()]
+    if preferred == "auto":
+        return "auto" if not model_is_unusable("auto", ids) else ""
+    if not model_is_unusable(preferred, ids):
+        return preferred
+    return ""
+
+
 def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
@@ -1150,6 +1199,23 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
 _PROMPT_BUSY_RE = re.compile(r"already in progress", re.IGNORECASE)
 
 
+def _rejected_model_from_error(error: object) -> str | None:
+    """Return the model id a prompt-time error reports as invalid/unavailable.
+
+    Powers the reactive fallback in ``run_bg_oneliner``: on the SUBSTITUTE
+    (background) path, a rejected model is retried once against the account's
+    advertised list. Matches both the MPS ``Invalid model ID: X``
+    ValidationException (including the ``auto`` sentinel where a partition does
+    not serve it) and the ``The model 'X' is not
+    available`` wording. Returns None when the error names no specific model.
+    """
+    if not isinstance(error, dict):
+        return None
+    data = f"{error.get('data', '')} {error.get('message', '')}"
+    m = _RE_INVALID_MODEL_ID.search(data) or _RE_MODEL_UNAVAILABLE.search(data)
+    return m.group(1) if m else None
+
+
 def _raise_acp_error(error: object, available_models: Sequence[str] | None = None) -> None:
     """Format and raise the appropriate AcpError subclass for *error*.
 
@@ -1168,7 +1234,14 @@ def _raise_acp_error(error: object, available_models: Sequence[str] | None = Non
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
-    raise AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+    err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+    # Tag a model-rejection so the SUBSTITUTE (background) retry layer can pick a
+    # served model; harmless on every other error (attributes just stay unset).
+    rejected = _rejected_model_from_error(error)
+    if rejected:
+        err.rejected_model = rejected
+        err.advertised = list(available_models or [])
+    raise err
 
 
 # Matches claude-agent-acp policy-substitution advisories:
