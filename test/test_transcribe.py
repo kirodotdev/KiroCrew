@@ -16,6 +16,7 @@ from kiro_crew.transcribe import (
     BREW_PATH_DIRS,
     _find_mlx_whisper,
     _find_whisper,
+    _is_openai_whisper,
     _ProfileCredentialResolver,
     find_brew,
     is_available,
@@ -148,6 +149,89 @@ class TestFindWhisper:
             monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: str(scripts))
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
             assert _find_whisper("") == str(exe)
+
+
+# ---------------------------------------------------------------------------
+# _is_openai_whisper — the --fp16 gate (issue #1896)
+# ---------------------------------------------------------------------------
+
+
+class TestIsOpenaiWhisper:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "whisper",
+            "/usr/bin/whisper",
+            "/opt/homebrew/bin/whisper",
+            "whisper.exe",  # Windows console script — .stem drops the suffix
+            "/usr/bin/WHISPER",  # case-insensitive
+        ],
+    )
+    def test_reference_binary_is_openai(self, path):
+        assert _is_openai_whisper(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "whisper-ctranslate2",
+            "/usr/local/bin/whisper-ctranslate2",
+            "/home/u/.local/bin/faster-whisper",
+            "/usr/bin/whisperx",
+            "/opt/whisper-cpp/main",
+        ],
+    )
+    def test_dropin_engines_are_not_openai(self, path):
+        assert _is_openai_whisper(path) is False
+
+
+# ---------------------------------------------------------------------------
+# _transcribe_native --fp16 gating end-to-end (issue #1896)
+# ---------------------------------------------------------------------------
+
+
+class TestNativeFp16Gating:
+    """``--fp16 False`` must reach openai-whisper but never a drop-in engine.
+
+    Passing it to whisper-ctranslate2 makes the CLI exit rc=2 and the user sees
+    a silent empty transcript, so the flag is gated on the resolved binary name.
+    """
+
+    async def _run_native(self, tmp_path, whisper_bin: str) -> list:
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True, provider="whisper", timeout_secs=10)
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        captured: dict = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"] = list(args)
+            out_dir = args[args.index("--output_dir") + 1]
+            Path(out_dir).joinpath("test.txt").write_text("hello world")
+            return mock_proc
+
+        with patch("kiro_crew.transcribe._find_whisper", return_value=whisper_bin):
+            with patch(
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
+            ):
+                result = await transcribe_audio(str(audio), cfg)
+        assert result == "hello world"
+        return captured["args"]
+
+    @pytest.mark.asyncio
+    async def test_openai_whisper_gets_fp16(self, tmp_path):
+        args = await self._run_native(tmp_path, "/usr/bin/whisper")
+        assert "--fp16" in args
+        assert args[args.index("--fp16") + 1] == "False"
+
+    @pytest.mark.asyncio
+    async def test_dropin_engine_omits_fp16(self, tmp_path):
+        args = await self._run_native(tmp_path, "/usr/local/bin/whisper-ctranslate2")
+        assert "--fp16" not in args
+        # The rest of the invocation is unchanged — the engine still gets its model/output flags.
+        assert "--model" in args and "--output_format" in args
 
 
 # ---------------------------------------------------------------------------

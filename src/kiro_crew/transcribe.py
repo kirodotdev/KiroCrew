@@ -699,12 +699,32 @@ async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type:
     return text
 
 
+def _is_openai_whisper(whisper_bin: str) -> bool:
+    """True when *whisper_bin* is the reference openai-whisper CLI.
+
+    ``--fp16`` is an openai-whisper-only flag (it silences the "FP16 is not
+    supported on CPU" warning). Drop-in replacements advertised as
+    openai-whisper-compatible — e.g. ``whisper-ctranslate2`` — do not implement
+    it and exit ``rc=2`` (``unrecognized arguments: --fp16``), which surfaces to
+    the user as a silent empty transcript. openai-whisper's console script is
+    always named ``whisper`` (``whisper`` / ``whisper.exe``), so gating on the
+    resolved binary's stem lets a compatible engine work through the existing
+    ``stt.whisper_path`` setting with no extra config. Getting this wrong for a
+    genuine openai-whisper install only restores a harmless CPU warning; wrongly
+    passing the flag to an engine that rejects it breaks transcription outright,
+    so the check errs toward omitting the flag when unsure.
+    """
+    return Path(whisper_bin).stem.lower() == "whisper"
+
+
 async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe using the native openai-whisper binary."""
+    """Transcribe using the native openai-whisper (or a compatible) binary."""
     whisper_bin = await asyncio.to_thread(_find_whisper, stt_config.whisper_path)
     if not whisper_bin:
         logger.error("whisper not found — install: pip install openai-whisper")
         return None
+
+    add_fp16 = _is_openai_whisper(whisper_bin)
 
     return await _run_whisper_cli(
         whisper_bin,
@@ -718,8 +738,9 @@ async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type
             out_dir,
             "--output_format",
             "txt",
-            "--fp16",
-            "False",
+            # ``--fp16`` is openai-whisper-only; omit it for compatible engines
+            # (e.g. whisper-ctranslate2) that would reject it with rc=2.
+            *(["--fp16", "False"] if add_fp16 else []),
         ],
         stt_config.timeout_secs,
         label="whisper",
