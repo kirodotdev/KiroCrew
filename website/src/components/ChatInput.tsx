@@ -977,19 +977,20 @@ function ChatInput({
   const isMobile = useIsMobile()
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
-  // An icon swap alone announces nothing: the user would not learn that the
-  // button in the usual send position now means something else. The empty-state
-  // placeholder is dead space too, so it carries the explanation — and it names
-  // typing as the other way out, so the morph never feels like a trap.
+  // An icon swap alone announces nothing, so the empty-state placeholder carries
+  // the explanation — and it names typing as the other way out, so the morph
+  // never feels like a trap.
   //
-  // Two wordings, because Continue now covers two situations. Only claim an
-  // interruption when the transcript actually shows one: after a force-quit it
-  // shows nothing, and after a clean turn nothing broke at all, so the honest
-  // offer there is "carry on", not a false report of a failure.
-  const continuePlaceholder = continuable && onContinue
-    ? i18nT(continueIsRecovery
-      ? 'components.chatInput.turn_interrupted_press_continue'
-      : 'components.chatInput.press_continue_to_carry_on')
+  // But ONLY when the transcript actually shows a broken turn. The default
+  // placeholder is not dead space: it is the only surface that teaches the three
+  // sigils (`/command · @file · $skill`). Continue is now offered on EVERY idle
+  // slot holding a conversation, so overriding unconditionally would delete that
+  // hint permanently for any returning chat and leave it visible only in a
+  // brand-new one. A visibly-interrupted turn is rare and genuinely needs the
+  // explanation more than the hint; the steady state does not, and gets the ▶
+  // button plus its label instead.
+  const continuePlaceholder = continuable && onContinue && continueIsRecovery
+    ? i18nT('components.chatInput.turn_interrupted_press_continue')
     : ''
   const continueLabel = i18nT(continueIsRecovery
     ? 'components.chatInput.continue_interrupted_turn'
