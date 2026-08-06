@@ -4685,10 +4685,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "Ce document est suivi comme un artefact de session, pas comme une modification de fichier source"
     },
     "filePickerMenu": {
+      "folder": "Dossier",
+      "folder_kind": "dossier",
       "no_matches": "Aucun résultat",
       "open_in_viewer": "Ouvrir dans la visionneuse",
+      "remove_folder": "Retirer le dossier",
       "searching": "Recherche…",
-      "type_2_chars_to_search_files": "Saisissez 2 caractères ou plus pour rechercher des fichiers…"
+      "type_2_chars_to_search_files": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers…"
     },
     "fileRenderers": {
       "empty_file": "Fichier vide",

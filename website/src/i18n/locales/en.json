@@ -3543,10 +3543,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "This document is tracked as a session artifact, not a source-file change"
     },
     "filePickerMenu": {
+      "folder": "Folder",
+      "folder_kind": "folder",
       "no_matches": "No matches",
       "open_in_viewer": "Open in viewer",
+      "remove_folder": "Remove folder",
       "searching": "Searching…",
-      "type_2_chars_to_search_files": "Type 2+ chars to search files…"
+      "type_2_chars_to_search_files": "Type 2+ chars to search files and folders…"
     },
     "fileRenderers": {
       "empty_file": "Empty file",

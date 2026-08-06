@@ -4533,10 +4533,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "이 문서는 소스 파일 변경이 아니라 세션 아티팩트로 추적됩니다"
     },
     "filePickerMenu": {
+      "folder": "폴더",
+      "folder_kind": "폴더",
       "no_matches": "일치 항목 없음",
       "open_in_viewer": "뷰어에서 열기",
+      "remove_folder": "폴더 제거",
       "searching": "검색 중…",
-      "type_2_chars_to_search_files": "파일을 검색하려면 2자 이상 입력하세요…"
+      "type_2_chars_to_search_files": "파일 및 폴더를 검색하려면 2자 이상 입력하세요…"
     },
     "fileRenderers": {
       "empty_file": "빈 파일",

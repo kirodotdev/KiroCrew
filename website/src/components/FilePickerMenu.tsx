@@ -1,18 +1,23 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { FileText, Eye } from 'lucide-react'
+import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 
 import { i18nT } from '../i18n/t'
 import { fmtBytes, fmtDateFields, fmtRelative } from '../i18n/format'
+
+export type FileKind = 'file' | 'dir'
+
 interface FileResult {
   path: string
   name: string
   size: number
   mtime: number
+  /** Absent on responses from older backends — treated as 'file'. */
+  kind?: FileKind
 }
 
 interface FileSearchResponse {
@@ -24,7 +29,7 @@ interface Props {
   query: string
   anchorRef: React.RefObject<HTMLElement | null>
   open: boolean
-  onSelect: (info: { path: string; relativePath: string }) => void
+  onSelect: (info: { path: string; relativePath: string; kind: FileKind }) => void
   onClose: () => void
   onFileOpen?: (path: string) => void
   project?: string
@@ -40,10 +45,38 @@ function formatAge(mtime: number): string {
   return fmtDateFields(mtime, { month: 'short', day: 'numeric' })
 }
 
-function makeRelative(path: string, root: string): string {
+/**
+ * Strip the project root prefix so the inserted token is a short relative path.
+ *
+ * Separator-aware: on native Windows the search result and the root both use
+ * backslashes, so a `/`-only prefix check would never match and the picker
+ * would insert the ABSOLUTE path instead of the short relative form.
+ */
+export function makeRelative(path: string, root: string): string {
   if (!root) return path
-  const r = root.endsWith('/') ? root : root + '/'
+  const r = /[/\\]$/.test(root) ? root : root + (root.includes('\\') && !root.includes('/') ? '\\' : '/')
   return path.startsWith(r) ? path.slice(r.length) : path
+}
+
+/** Normalize a possibly-absent kind from the search response. */
+export function resultKind(f: { kind?: FileKind }): FileKind {
+  return f.kind === 'dir' ? 'dir' : 'file'
+}
+
+/**
+ * Build the payload handed to onSelect. Directory paths get a trailing slash on
+ * the relative form so the inserted @-token reads unambiguously as a folder.
+ */
+export function selectionFor(f: FileResult, root: string): { path: string; relativePath: string; kind: FileKind } {
+  const kind = resultKind(f)
+  const rel = makeRelative(f.path, root)
+  return {
+    path: f.path,
+    // `endsWith` covers either separator so a Windows path is not given a second
+    // trailing one; the inserted token then always ends in a slash.
+    relativePath: kind === 'dir' && !/[/\\]$/.test(rel) ? rel + '/' : rel,
+    kind,
+  }
 }
 
 export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project }: Props) {
@@ -88,10 +121,13 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // Open the highlighted file in the viewer (the eye/preview action) instead of
   // inserting an @-mention. Shared by the Cmd/Ctrl+Enter path (via onChoose's
   // withModifier flag) and the Alt+Enter path (via onAltEnter). Returns true so
-  // the hook knows the default choose was superseded.
+  // the hook knows the default choose was superseded. Directories have nothing
+  // to preview, so they fall through to the normal insert.
   const openInViewer = useCallback((idx: number): boolean => {
     const f = resultsRef.current[idx]
-    if (f && onFileOpenRef.current) { onFileOpenRef.current(f.path); onClose(); return true }
+    if (f && resultKind(f) === 'file' && onFileOpenRef.current) {
+      onFileOpenRef.current(f.path); onClose(); return true
+    }
     return false
   }, [onClose])
 
@@ -104,7 +140,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     const f = r[eff]
     if (!f) return
     if (withModifier && openInViewer(eff)) return
-    onSelect({ path: f.path, relativePath: makeRelative(f.path, rootRef.current) })
+    onSelect(selectionFor(f, rootRef.current))
   }, [onSelect, openInViewer])
 
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
@@ -151,25 +187,33 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
       role="listbox"
       style={{ top, left, width: Math.min(width, 420), maxHeight }}
     >
-      {results.length === 0 ? empty : results.map((f, i) => (
+      {results.length === 0 ? empty : results.map((f, i) => {
+        const kind = resultKind(f)
+        const isDir = kind === 'dir'
+        return (
         <div
           role="option"
           aria-selected={i === selected}
+          data-kind={kind}
           tabIndex={-1}
           key={f.path}
           ref={el => { itemRefs.current[i] = el }}
           className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
           title={f.path}
           onMouseEnter={() => setSelected(i)}
-          onMouseDown={e => { e.preventDefault(); onSelect({ path: f.path, relativePath: makeRelative(f.path, rootRef.current) }) }}
+          onMouseDown={e => { e.preventDefault(); onSelect(selectionFor(f, rootRef.current)) }}
         >
-          <FileText size={14} className="shrink-0 lucide-inline" />
+          {isDir
+            ? <Folder size={14} aria-label={i18nT('components.filePickerMenu.folder')} className="shrink-0 lucide-inline" />
+            : <FileText size={14} className="shrink-0 lucide-inline" />}
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-mono font-semibold truncate">{f.name}</div>
+            <div className="text-[13px] font-mono font-semibold truncate">{isDir ? f.name + '/' : f.name}</div>
             <div className="text-[11px] text-muted truncate">{f.path}</div>
           </div>
-          <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">{formatSize(f.size)} · {formatAge(f.mtime)}</span>
-          {onFileOpen && (
+          <span className="text-[11px] text-muted shrink-0 whitespace-nowrap">
+            {isDir ? `${i18nT('components.filePickerMenu.folder_kind')} · ${formatAge(f.mtime)}` : `${formatSize(f.size)} · ${formatAge(f.mtime)}`}
+          </span>
+          {onFileOpen && !isDir && (
             <button
               type="button"
               aria-label={i18nT('components.filePickerMenu.open_in_viewer')}
@@ -182,7 +226,8 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
             </button>
           )}
         </div>
-      ))}
+        )
+      })}
     </div>,
     document.body
   )
