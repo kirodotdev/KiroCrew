@@ -72,6 +72,70 @@ func makeBuffer(_ bytes: [UInt8], format: AVAudioFormat) -> AVAudioPCMBuffer? {
     return buffer
 }
 
+// MARK: - Format conversion
+
+/// Renders the Int16 PCM the client streams into the format `SpeechAnalyzer` asked for.
+///
+/// `SpeechAnalyzer` accepts audio only in the format reported by
+/// `bestAvailableAudioFormat(compatibleWith:)` — a Float32 layout at whatever rate the
+/// on-device model wants, never the 16 kHz interleaved Int16 the browser sends. The
+/// framework ships no converter of its own for this, so `AVAudioConverter` does the
+/// work and each result is wrapped in `AnalyzerInput(buffer:)`.
+///
+/// `primeMethod = .none` trades a little resampling quality for latency: with priming
+/// on, the converter withholds the leading frames of the stream to fill its filter
+/// history, which delays the first partial against a ~100 ms chunk cadence.
+final class AnalyzerFormatConverter {
+    enum Failure: Error {
+        case unsupported(from: AVAudioFormat, to: AVAudioFormat)
+        case noOutputBuffer
+        case failed(NSError?)
+    }
+
+    private let target: AVAudioFormat
+    private var converter: AVAudioConverter?
+
+    init(target: AVAudioFormat) {
+        self.target = target
+    }
+
+    /// *buffer* in the analyzer's format — or *buffer* itself when the formats already
+    /// match, since the copy would be pure overhead.
+    func convert(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+        let source = buffer.format
+        guard source != target else { return buffer }
+        if converter == nil || converter?.inputFormat != source {
+            guard let made = AVAudioConverter(from: source, to: target) else {
+                throw Failure.unsupported(from: source, to: target)
+            }
+            made.primeMethod = .none
+            converter = made
+        }
+        guard let converter else { throw Failure.unsupported(from: source, to: target) }
+
+        // Output frames scale with the sample-rate ratio. Round UP: truncating the
+        // fractional frame would silently drop audio on every single chunk.
+        let ratio = target.sampleRate / source.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
+        guard capacity > 0,
+            let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity)
+        else { throw Failure.noOutputBuffer }
+
+        var error: NSError?
+        var consumed = false
+        let status = converter.convert(to: out, error: &error) { _, inputStatus in
+            // Exactly one input buffer per call: `.haveData` once, then `.noDataNow` so
+            // the converter emits what it holds instead of waiting for more input that
+            // this call will never supply.
+            defer { consumed = true }
+            inputStatus.pointee = consumed ? .noDataNow : .haveData
+            return consumed ? nil : buffer
+        }
+        guard status != .error else { throw Failure.failed(error) }
+        return out
+    }
+}
+
 // MARK: - Main
 
 @main
@@ -225,7 +289,6 @@ struct StreamTranscribe {
                 interleaved: true)
         else { die("could not build a \(Int(sampleRate)) Hz mono Int16 input format") }
 
-        let converter = AnalyzerInputConverter(analyzerFormat: analyzerFormat)
         let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
         let analyzer = SpeechAnalyzer(modules: [module])
 
@@ -257,6 +320,10 @@ struct StreamTranscribe {
         // them on the cooperative pool would starve the analyzer's own tasks.
         let readerDone = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
+            // Built HERE, not in the enclosing scope: this thread is the converter's
+            // only user, so owning it locally keeps it off a cross-thread capture and
+            // out of the way of Swift's Sendable checking.
+            let converter = AnalyzerFormatConverter(target: analyzerFormat)
             let input = FileHandle.standardInput
             var carry: [UInt8] = []  // odd trailing byte from a torn Int16
             while true {
@@ -277,18 +344,17 @@ struct StreamTranscribe {
                     offset = end
                     guard let buffer = makeBuffer(slice, format: inputFormat) else { continue }
                     do {
-                        let converted = try converter.convert(buffer, at: nil)
-                        trace("fed \(slice.count)B -> \(converted.count) analyzerInput(s)")
-                        for c in converted {
-                            inputContinuation.yield(c)
-                        }
+                        let converted = try converter.convert(buffer)
+                        // A converter that produced no frames (short chunk swallowed by
+                        // resampling) has nothing to analyze; yielding it would only cost
+                        // a needless trip through the analyzer.
+                        guard converted.frameLength > 0 else { continue }
+                        trace("fed \(slice.count)B -> \(converted.frameLength) frame(s)")
+                        inputContinuation.yield(AnalyzerInput(buffer: converted))
                     } catch {
                         note("convert failed: \(error)")
                     }
                 }
-            }
-            if let flushed = try? converter.flush() {
-                for converted in flushed { inputContinuation.yield(converted) }
             }
             inputContinuation.finish()
             readerDone.signal()
