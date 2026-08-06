@@ -7,8 +7,9 @@ often they've actually been used) and leaves the long tail discoverable via the
 
 Design mirrors an MCP-gateway-style warm-pool ``HotKeyStore``: an in-memory
 tally per key with a time-based TTL and atomic persistence — but simplified for
-a *synchronous* caller. Skill usage is recorded from ``get_triggered_skills`` / ``load_skill``
-(sync, once per message / load), not from an async event-loop hot path, so:
+a *synchronous* caller. Skill usage is recorded from the body-delivery loop in the context builder
+(sync, once per triggered body actually injected) and from ``load_skill``
+via ``resolve_dollar_skills``, not from an async event-loop hot path, so:
 
 * ``record`` bumps an in-memory counter and only touches disk on a debounce
   (at most once per ``_FLUSH_DEBOUNCE_SECS``), so the per-message path stays
@@ -83,7 +84,7 @@ class SkillUsageLedger:
             last_seen = self._last_seen.get(key, 0.0)
         return (float(hits), max(last_seen, recency_boost))
 
-    # --- write path (used by get_triggered_skills / load_skill) ----------
+    # --- write path (used by body-delivery in context builder / resolve_dollar_skills) ----------
 
     def record(self, key: str) -> None:
         """Bump ``key``'s usage. In-memory O(1); flushes to disk on a debounce.
@@ -104,7 +105,7 @@ class SkillUsageLedger:
                 self._last_flush = now
                 should_flush = True
         if should_flush:
-            # record() runs on the gateway event loop (via get_triggered_skills /
+            # record() runs on the gateway event loop (via the body-delivery loop /
             # resolve_dollar_skills), so the blocking file write is offloaded to a
             # daemon thread. flush() snapshots the tally under the lock before any
             # IO, so a background write is safe and keeps the loop unblocked.

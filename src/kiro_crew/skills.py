@@ -2290,13 +2290,6 @@ class SkillsLoader:
         scored.sort(key=lambda x: x[1], reverse=True)
         triggered = [name for name, _ in scored[: self._max_triggered]]
 
-        # Record usage — a trigger match is the authoritative "this skill was
-        # relevant" signal that feeds the lazy-load hotness ranking in
-        # get_context, independently of whether the agent goes on to read the
-        # file.
-        for name in triggered:
-            self._record_use(name)
-
         # Emit ONE audit event for the matched + denied sets rather than one per
         # skill. Previously this wrote a SEL entry for every skill (incl. every
         # non-match) on every message — N synchronous writes per message that
