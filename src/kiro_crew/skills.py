@@ -61,8 +61,13 @@ def _matches_any(path: str, globs: list[str]) -> bool:
 # affords a bounded slice of the context budget, so on-demand skills are ranked
 # by usage and summarized top-down; the tail is discoverable via `skill_search`.
 # Per-skill description is truncated to this many chars in the summary line so a
-# few verbose descriptions can't dominate the block.
-_SHORT_DESC_CHARS = 160
+# few verbose descriptions can't dominate the block. Sized as a guardrail against
+# a pathological description rather than a routine trim: the description is the
+# only signal the model has for deciding whether to load a skill, so the cap sits
+# above the typical length (~290 chars across the built-in set) and bites only the
+# outliers. Descriptions also arrive from the public registry, where their length
+# is not ours to control — hence a cap rather than hand-trimming.
+_SHORT_DESC_CHARS = 300
 # A skill whose file mtime is within this window gets a recency boost in the
 # ranking so a freshly-added, never-used skill still surfaces instead of being
 # starved by the rich-get-richer usage ordering.
@@ -2534,12 +2539,9 @@ class SkillsLoader:
             if skill_file is None:
                 continue
             meta = self._cached_frontmatter(skill_file)
-            desc = (meta.get("description", "") or name).strip()
-            if len(desc) > _SHORT_DESC_CHARS:
-                desc = desc[:_SHORT_DESC_CHARS].rstrip() + "…"
+            desc = self._short_desc(meta.get("description", "") or name, suffix="…")
             lines.append(
-                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}` "
-                f"(dir: `{skill_file.parent}`)"
+                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}`"
             )
         if not lines:
             return ""
@@ -2647,7 +2649,7 @@ class SkillsLoader:
             for s in ranked:
                 line = (
                     f"- **{s['name']}**: {self._short_desc(s['description'])} "
-                    f"-> `{s['path']}` (dir: `{s['dir']}`)"
+                    f"-> `{s['path']}`"
                 )
                 if (
                     budget is not None
@@ -2701,12 +2703,12 @@ class SkillsLoader:
                 "",
                 "If a user request relates to any skill below, read the full "
                 "skill file first with `cat <path>` before responding.",
-                "To run a skill's scripts, `cd` into its directory first.",
+                "To run a skill's scripts, `cd` into the directory containing its `SKILL.md`.",
                 "",
             ]
             for s in on_demand:
                 summary_lines.append(
-                    f"- **{s['name']}**: {s['description']} → `{s['path']}` (dir: `{s['dir']}`)"
+                    f"- **{s['name']}**: {self._short_desc(s['description'])} → `{s['path']}`"
                 )
             parts.append("\n".join(summary_lines))
         return "[Skills:]\n" + "\n\n---\n\n".join(parts) + "\n[End of skills]\n\n"
@@ -2739,12 +2741,21 @@ class SkillsLoader:
         return self._usage.score(s["key"], recency_boost=boost)
 
     @staticmethod
-    def _short_desc(desc: str) -> str:
-        """Collapse whitespace and truncate a description for the summary line."""
+    def _short_desc(desc: str, suffix: str = "...") -> str:
+        """Collapse whitespace and truncate a description for the summary line.
+
+        Cuts on a word boundary when one falls in the last fifth of the budget so
+        the line ends on a readable word instead of mid-token; a description with
+        no such boundary (one very long token) is cut hard.
+        """
         d = " ".join((desc or "").split())
-        if len(d) > _SHORT_DESC_CHARS:
-            return d[:_SHORT_DESC_CHARS].rstrip() + "..."
-        return d
+        if len(d) <= _SHORT_DESC_CHARS:
+            return d
+        cut = d[:_SHORT_DESC_CHARS]
+        space = cut.rfind(" ")
+        if space >= _SHORT_DESC_CHARS * 4 // 5:
+            cut = cut[:space]
+        return cut.rstrip() + suffix
 
     def search_skills(self, query: str, limit: int = 20) -> list[dict]:
         """Grep skills by keyword for on-demand discovery (the skill_search tool).

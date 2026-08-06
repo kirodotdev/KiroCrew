@@ -2234,16 +2234,16 @@ class ExternalRegistryConfig:
 @dataclass
 class SkillsConfig:
     max_triggered: int = field(
-        default=3,
+        default=0,
         metadata=_meta(
             "Max Triggered",
             "Maximum number of skills a single message may flag as relevant (≥0). "
             "Each match injects that skill's full content, unless the skill sets "
-            "inject_on_trigger: false in its frontmatter, in which case it "
-            "contributes a one-line pointer naming it and its path and the agent "
-            "reads the file if the skill applies. Set to 0 to stop flagging "
-            "entirely and rely only on the Available Skills index, $skillname, "
-            "and skill_search.",
+            "inject_on_trigger: false (pointer-only; requires max_triggered > 0 to "
+            "have any effect). Defaults to 0 (disabled): the agent discovers skills "
+            "from the Available Skills index and reads them on demand via cat, "
+            "$skillname, or skill_search. Set to a positive integer to re-enable "
+            "per-turn word-overlap trigger matching.",
         ),
     )
     # ── Lazy skill injection (opt-in, like MCP prewarm) ──
@@ -5096,7 +5096,7 @@ class KiroCrewConfig:
             ),
             heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
             skills=SkillsConfig(
-                max_triggered=_safe_int(skills_data.get("max_triggered", 3), 3),
+                max_triggered=_safe_int(skills_data.get("max_triggered", 0), 0),
                 lazy_load=bool(skills_data.get("lazy_load", False)),
                 auto_create_from_sessions=bool(skills_data.get("auto_create_from_sessions", False)),
                 auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),

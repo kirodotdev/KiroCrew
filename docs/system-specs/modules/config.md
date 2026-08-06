@@ -630,7 +630,7 @@ class MessagingConfig:
 
 @dataclass
 class SkillsConfig:
-    max_triggered: int = 3         # max skills loaded per message (>=1)
+    max_triggered: int = 0         # max skills loaded per message (>=0)
     lazy_load: bool = False        # inject only a usage-ranked top-K of on-demand skills (long tail via skill_search / $skillname / triggers); off = legacy full skills dump
     # ... auto_create_from_sessions / auto_refine_on_deviation / extra_paths
 

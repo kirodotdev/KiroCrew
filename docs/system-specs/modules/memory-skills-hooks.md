@@ -609,7 +609,7 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 - **OFF** (`get_context(budget=None)`): the byte-for-byte legacy full dump — every on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`.
 - **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
 
-**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
+**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
 
@@ -778,8 +778,9 @@ setting that the runtime reads must be added to that carry list, or an unrelated
 approval will silently undo it.
 
 Unchanged: `always: true` pinned skills (skipped by the matcher entirely) and the
-explicit `$skillname` token. Set `skills.max_triggered = 0` to stop flagging
-altogether and rely only on the index, `$skillname`, and `skill_search`. The
+explicit `$skillname` token. `skills.max_triggered` defaults to 0 (disabled): the
+trigger matcher does not fire in stock config, so the agent relies only on the
+index, `$skillname`, and `skill_search`. Set to a positive integer to re-enable. The
 pointer block is attributed as `skill_hint` in the per-turn context breakdown, so
 it is never folded into whatever precedes it.
 
@@ -796,14 +797,7 @@ opt-out is stateless and has neither failure mode. Dedup remains a legitimate
 future addition — it is orthogonal, since re-sending a body ACP already replays
 does nothing for enforcement even on a skill that must be enforced.
 
-**What `_record_use` counts.** A trigger match, which is what it has always
-counted — the call sits in `get_triggered_skills` ahead of any delivery decision,
-as it did when delivery was unconditional. Decoupling delivery does make the
-consequence plainer: the lazy-load hotness ledger accrues hits for skills the
-agent may never read, so a matcher false positive still earns ranking weight.
-That is pre-existing, and cheaper to correct now that a false positive costs a
-line rather than a body — measuring the matcher's false-positive rate is the
-prerequisite, not a change to the ledger.
+**What `_record_use` counts.** Actual body delivery — the call now sits in the body-delivery loop in `context.py`, after `load_skill` confirms the content and the body is appended to the prompt. Only skills whose body is actually injected earn a hit; pointer-only skills (`inject_on_trigger: false`) and undelivered false positives contribute nothing to the ranking. The `resolve_dollar_skills` path also records, since `$skillname` is an intentional user action. With `max_triggered` defaulting to 0 in stock config, this recorder is inactive — only `resolve_dollar_skills` contributes hits unless the trigger matcher is re-enabled. This ensures the lazy-load hotness ledger ranks by actual utility to the agent, not by how often the word-overlap matcher fires on common words.
 
 **CRUD operations** (via `SkillsLoader`):
 - `create_skill(name, content)` — creates `{name}/SKILL.md`, supports nested paths
@@ -991,7 +985,7 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 ```json
 {
   "skills": {
-    "max_triggered": 3,
+    "max_triggered": 0,
     "auto_create_from_sessions": false,
     "approval_required": true,
     "auto_refine_on_deviation": false,
