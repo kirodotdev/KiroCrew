@@ -36,6 +36,26 @@ describe('Btn', () => {
     render(<Btn onClick={() => {}} danger>Del</Btn>)
     expect(screen.getByText('Del').className).toContain('hover:text-danger')
   })
+
+  // ── Enabled/disabled affordance ────────────────────────────────────────
+  //
+  // Idle secondary/danger Btns used to render their label in `text-muted`,
+  // which is visually near-identical to the disabled state (opacity-30 on an
+  // already-grey label) — enabled buttons read as greyed out until hovered
+  // (reported against the Skills pending-review row, whose Review/Dismiss
+  // buttons were mistaken for disabled). The idle label must use `text-text`;
+  // a bare `text-muted` class on an enabled Btn is the regression. Asserted
+  // on the exact class token so `hover:text-muted` (fine) can never satisfy
+  // or trip the check.
+  it.each([
+    ['default', {}],
+    ['danger', { danger: true }],
+  ] as const)('idle %s Btn label is not muted, so enabled ≠ disabled at a glance', (_name, props) => {
+    render(<Btn {...props}>Review</Btn>)
+    const classes = screen.getByText('Review').className.split(/\s+/)
+    expect(classes).not.toContain('text-muted')
+    expect(classes).toContain('text-text')
+  })
 })
 
 describe('SendBtn', () => {
