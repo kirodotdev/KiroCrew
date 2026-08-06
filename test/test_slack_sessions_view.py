@@ -14,8 +14,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import MockSlackClient
 
+from conftest import MockSlackClient
 from kiro_crew.slack.handler import _handle_sessions_command
 from kiro_crew.slack.sessions_view import (
     _SESSION_KIND_DASHBOARD,

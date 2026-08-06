@@ -6,8 +6,8 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import MockSlackClient
 
+from conftest import MockSlackClient
 from kiro_crew.slack.handler import (
     _discover_project_agents,
     _hydrate_thread_overrides,
