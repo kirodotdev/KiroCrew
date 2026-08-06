@@ -270,6 +270,52 @@ class TestCommandExecution:
         assert args[0] == "echo hello"
         assert args[1] == 120  # the timeout value
 
+    @pytest.mark.asyncio
+    async def test_fire_time_command_deny_blocks_execution(self):
+        # A policy tightened after this job was scheduled must still block it at
+        # fire time, not just at cron_add authoring time.
+        gw = _make_gw()
+        job = _make_command_job()
+        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None), \
+             patch(
+                 "kiro_crew.mcp_cron._vet_command_governance",
+                 return_value="Error: cron command blocked by governance policy: denied",
+             ):
+            result, mock_run = await _run_command_callback(
+                gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
+            )
+        assert result is None
+        assert job.last_status == "error"
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fire_time_capability_deny_blocks_execution(self):
+        # capabilities.cron can be disabled after the job was scheduled too.
+        gw = _make_gw()
+        job = _make_command_job()
+        with patch(
+            "kiro_crew.mcp_cron._vet_cron_capability_governance",
+            return_value="Error: cron scheduling blocked by governance policy: disabled",
+        ):
+            result, mock_run = await _run_command_callback(
+                gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
+            )
+        assert result is None
+        assert job.last_status == "error"
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fire_time_governance_allow_still_executes(self):
+        gw = _make_gw()
+        job = _make_command_job()
+        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=None), \
+             patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None):
+            result, mock_run = await _run_command_callback(
+                gw, job, {"status": "ok", "output": "hello\n", "exit_code": 0}
+            )
+        assert job.last_status == "ok"
+        mock_run.assert_called_once()
+
 
 class TestTimeoutPersistence:
     """Test that timeout field survives save/load cycle."""

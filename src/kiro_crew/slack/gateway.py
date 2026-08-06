@@ -1768,6 +1768,38 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron command invoked path", exc_info=True
                         )
+                    # Re-run governance at fire time, not just at cron_add authoring
+                    # time. A job vetted when it was scheduled can outlive a later
+                    # policy tightening: mcp_cron._vet_cron_capability_governance and
+                    # _vet_command_governance only run once, at authoring, so a
+                    # ceiling change has no effect on an already-scheduled job until
+                    # someone notices and re-authors it. Denial here does not delete
+                    # the job, so a later policy loosening lets it resume on its own.
+                    from kiro_crew.mcp_cron import (
+                        _vet_command_governance,
+                        _vet_cron_capability_governance,
+                    )
+
+                    gate_reason = _vet_cron_capability_governance() or _vet_command_governance(
+                        job.command
+                    )
+                    if gate_reason:
+                        job.last_status = "error"
+                        job.last_error = redact(gate_reason)
+                        job.record_failure()
+                        try:
+                            sel().log_tool_invocation(
+                                session_key=f"cron:{job.id}",
+                                tool_name="cron_command_exec",
+                                tool_kind="cron_command",
+                                outcome="denied",
+                            )
+                        except Exception:
+                            logger.debug(
+                                "SEL logging failed in cron command fire-time deny path",
+                                exc_info=True,
+                            )
+                        return None
                     cmd_timeout = job.timeout or 300
                     result = await asyncio.wait_for(
                         asyncio.get_running_loop().run_in_executor(

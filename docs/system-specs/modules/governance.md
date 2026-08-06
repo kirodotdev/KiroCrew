@@ -650,8 +650,14 @@ read-your-writes should add it deliberately, with its own tests.
   is authoritative; KiroCrew does not regenerate `~/.kiro/agents/*.json`.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
-  cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`
-  (at `cron_add`); the sandbox ordinal floor is clamped in `sandbox.wrap_argv`;
+  cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`.
+  Both run at `cron_add` (authoring) AND again at fire time, in
+  `slack.gateway._cron_callback`, immediately before the sandboxed subprocess
+  is spawned — a policy tightened after a job was scheduled denies that job's
+  next run instead of only affecting jobs authored after the change. Denial at
+  fire time marks the run `last_status="error"` and does not delete or pause
+  the job, so a later policy loosening lets it resume on its own; the sandbox
+  ordinal floor is clamped in `sandbox.wrap_argv`;
   spawn in `subagent._vet_spawn_governance`; outbound messaging in
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check
   in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
