@@ -235,6 +235,13 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
         monkeypatch.setattr(sandbox, "_inside_macos_sandbox", lambda: False)
         monkeypatch.setattr(sandbox, "is_docker_container", lambda: False)
+        # Pin the AppArmor predicate: without this the test asserts the GENERIC
+        # guidance but any host with kernel.apparmor_restrict_unprivileged_userns=1
+        # (the default on Ubuntu 23.10+, including GitHub's ubuntu-latest runners)
+        # takes the AppArmor branch instead, whose text deliberately omits the
+        # "install a supported sandbox backend" advice. Same convention as
+        # test_sandbox_backend_cache.py.
+        monkeypatch.setattr(sandbox, "_apparmor_userns_restricted", lambda: False)
         monkeypatch.setattr(
             sandbox,
             "_last_unshare_failure",
