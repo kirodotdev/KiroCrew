@@ -3,21 +3,81 @@ title: Update Architecture (install-shape capability contract)
 status: draft
 author: zezhexu
 created: 2026-07-31
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-08-06
+audited-at: 8861f89e
 doc-pr: 1003
-implementation-prs: []
+implementation-prs: [1734]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: Update Architecture (install-shape capability contract)
 
-- Status: draft — the document is merged (PR #1003) but **zero of its three phases has any implementation on main.** `platform/update_capability.py` does not exist; `KIROCREW_DISTRIBUTION` is still telemetry-only with one caller (`beacon.py:438`); the three divergent `.git` derivations are intact; boot-time git auto-apply is still armed (`slack/gateway.py:5145`); all three SPA surfaces remain install-shape-coupled; no wheel/pipx self-replacement path exists; no on-disk update lease. Adjacent in-flight under a **different** design: PR #999 (`feat/emergency-release-controls`, open) adds a feed-served minimum version + mandatory-update modal for the desktop lane only, without the capability contract.
+- Status: draft — **Phase 1 is now partly implemented.** PR #1734 (merged,
+  `8861f89e`) shipped the install-shape → behavior derivation for the *check* path
+  and the SPA surfaces that read it. What that PR closed, and what it did not, is
+  itemized under **Implementation status** below; the phase list further down has
+  been amended to match. Adjacent in-flight under a **different** design: PR #999
+  (`feat/emergency-release-controls`, open) adds a feed-served minimum version +
+  mandatory-update modal for the desktop lane only, without the capability
+  contract.
 - Correction to the reference below: KiroCrew ships **five** distribution shapes, not the set implied — `beacon.py:155` lists `{dmg, appimage, wheel, source, docker}`.
 - Author: zezhexu
 - Created: 2026-07-31
-- Related: `docs/build/release.md` (channels, release branches, promotion), `docs/request-for-change/version-compliance-framework.md` (the policy ceiling this RFC must honor)
+- Related: `docs/build/release.md` (channels, release branches, promotion),
+  `docs/request-for-change/version-compliance-framework.md` (the policy ceiling
+  this RFC must honor)
+
+## Implementation status (as of `8861f89e`)
+
+**Landed in PR #1734** — the tactical half of Phase 1, driven by a user-visible
+defect rather than the architecture: the dashboard told wheel installs "you're on
+the latest version" while they were two releases behind, because the check was
+git-only and never ran (its cache stayed at the initial `available: False`, and
+the SPA rendered success on any HTTP 200). Independently, `_version_tuple` raised
+on `int("2rc3")` and fell back to `(0,)`, collapsing every prerelease to one key
+so no rc-to-rc step was detectable.
+
+- Install shape is derived **once, in the backend**, from `beacon.distribution()`
+  — so the claim above that the stamp "is read only by telemetry" is **no longer
+  true**: `dashboard/handlers/updates.py` is now a second, non-telemetry caller.
+- Shapes are matched **by exclusion**, not by an `== "wheel"` allowlist: wheels
+  published before `_build_info` existed carry no stamp and report the `source`
+  default, so an allowlist would have skipped every already-released CLI install
+  — precisely the population the fix was for.
+- `dmg` / `appimage` / `docker` **defer**: they report which surface owns the
+  upgrade instead of reading the CLI feed. This is load-bearing, not tidiness —
+  the desktop bundles embed this backend (a PBS tree inside the .app / AppImage),
+  so they execute this code, and reading the CLI feed there would compare against
+  the wrong release stream and then light the Settings nav dot
+  (`status.update_available || desktopUpdateAvailable`) pointing at a desktop
+  About panel that reports "up to date".
+- The SPA reads capability, not shape: `self_updatable` suppresses the in-app
+  Update button unconditionally where `POST /api/update` would 409, and the
+  installer command is surfaced instead.
+- An **honesty contract** the original draft did not specify (see the amended
+  §2): a check that could not run is distinguishable from a check that found
+  nothing.
+- The **Electron OTA engine, its feeds, and its consent flow are untouched** —
+  no file under `website/electron/` or `packaging/` is in that commit, and the
+  desktop branch of `AboutPanel.tsx` is byte-identical to its parent.
+
+**Still open from Phase 1** — the architectural half:
+
+- `platform/update_capability.py` does not exist; the fields shipped are the
+  tactical set (`install_kind` / `self_updatable` / `checked` / `error` /
+  `update_command`), not the contract vocabulary in §2.
+- Boot-time git auto-apply is **still armed** for a `mainline` (and, via the
+  detached-HEAD coercion, a detached) checkout. #1734 only added a guard so a
+  non-git install notifies instead of driving `git reset` in a tree with no
+  `.git`.
+- The `.git` derivation is **still done in three places** —
+  `updates.py:383`, `updates.py:871`, and `cli_server.py:1173`. They now agree
+  (all three use an `exists()` check; see the correction under *Problems*), so
+  this is a drift risk and a "not git's own answer" problem rather than the
+  semantic split the original draft described.
+- The `auto_update` retirement surfaces named under Migration are untouched.
+
 
 ## Summary
 
@@ -64,19 +124,35 @@ Three mechanisms:
 | — none — | | `wheel`, `docker` |
 
 All three backend entry points to the git path guard on roughly the same two
-conditions — `KIROCREW_PROJECT_DIR` set, and a `.git` present — but **not with
-the same semantics**:
+conditions — `KIROCREW_PROJECT_DIR` set, and a `.git` present — and, as of
+`8861f89e`, with the **same** semantics:
 
-- `dashboard/handlers/updates.py:75,82` (`_do_update_check`) — `os.path.exists`
-- `dashboard/handlers/updates.py:382,388` (`api_update_apply`) — `os.path.exists`
-- `cli_server.py:1145,1150` (`kirocrew update`) — `Path.is_dir()`
+- `dashboard/handlers/updates.py:383` (`_do_update_check`) — `os.path.exists`
+- `dashboard/handlers/updates.py:871` (`api_update_apply`) — `os.path.exists`
+- `cli_server.py:1173` (the CLI update command) — `(proj_path / ".git").exists()`
 
-In a linked worktree or a submodule, `.git` is a **file**, not a directory (the
-comment at `updates.py:80-81` says so explicitly). So the HTTP paths accept a
-linked worktree that `kirocrew update` rejects. Three re-derivations of the same
-fact, none of them the build-time value, and two answers between them. Any
-collapse to one derivation must therefore pick a semantic deliberately rather
-than inherit one by accident.
+**Correction to the original draft.** This section previously said the third site
+used `Path.is_dir()`, and drew the conclusion that "the HTTP paths accept a linked
+worktree that the CLI rejects." That is **false against the tree**: all three use
+an `exists()` check, and `cli_server.py` carries an explicit comment saying it
+accepts both forms precisely so a linked worktree is not wrongly refused. There is
+no exists-vs-is_dir divergence, and no contributor-visible behavior gap between
+the paths.
+
+What survives the correction is a weaker but still real problem, and it is the one
+Phase 1b should be built against:
+
+- **Three call sites, one fact.** They agree *today* by coincidence of three
+  independent edits, with nothing enforcing that they keep agreeing — the drift
+  risk is structural even while the values match.
+- **`exists()` is not git's answer.** It accepts any `.git` entry, including a
+  stray file or directory that is not a gitlink, and it is blind to whether the
+  directory is actually inside a working tree.
+- **None of the three consults the build-time value**, which is the fact the rest
+  of this RFC treats as authoritative.
+
+So a collapse to one derivation is still warranted; it just is not a
+tie-break between two live semantics. Open Question 5 picks the semantic.
 
 ### How it got split
 
@@ -125,6 +201,16 @@ re-asked which shapes it still governs.
      a cloud launcher.
 
    Three surfaces, three different couplings to the same unstated fact.
+
+   **Partly closed by #1734.** `AboutPanel.tsx` no longer branches on
+   `isDesktop` for the check/notify path: it reads capability, suppresses the
+   in-app Update button where `POST /api/update` would 409, and surfaces the
+   installer command instead. The other two surfaces are **unchanged** —
+   `SettingsPage.tsx` still selects the desktop-only `desktopUpdateAvailable`
+   (so its nudge still never lights on a wheel install), and the `App.tsx`
+   changelog modal still has no capability check at all. Phase 1b converts both.
+   Note also that #1734 fixed the *check*, not the *apply*: Problem 1 stands in
+   full.
 
 3. **A daemon rewrites its own source tree at boot, unattended.**
    `_auto_apply_update` hard-resets the tree it runs from, reinstalls, and
@@ -201,6 +287,9 @@ first-class runtime property, and one module — `platform/update_capability.py`
   "channel": "nightly | insider | stable",
   "current_version": "0.1.2",
   "latest_version": "0.1.3",
+  "check_status": "unchecked | checking | succeeded | failed | deferred",
+  "update_available": null,
+  "error_code": null,
   "minimum_version_enforced": null,
   "unavailable_reason": null,
   "remediation": null,
@@ -209,13 +298,79 @@ first-class runtime property, and one module — `platform/update_capability.py`
 }
 ```
 
+### §2.1 The honesty pair: `check_status` + a nullable `update_available`
+
+This pair is not decoration and it is not derivable from the rest of the
+contract. The original draft implied a verdict was always available; PR #1734 shipped
+against the bug that assumption produces, and the shape it arrived at belongs
+here rather than in the implementation.
+
+- **`update_available` is nullable, and `null` is not `false`.** "Up to date"
+  means `check_status == "succeeded" && update_available == false`. Any consumer
+  that treats a missing verdict as "current" reproduces the original defect: a
+  check that never ran, rendered as a check that passed.
+- **`check_status` is the single source of that distinction.** `unchecked` (no
+  check has run this process), `checking` (in flight), `succeeded` (a real
+  comparison completed — `update_available` is now authoritative), `failed`
+  (something prevented a comparison; see `error_code`), `deferred` (this shape's
+  updates are owned elsewhere; see `unavailable_reason`).
+- **`deferred` is not `failed`.** A `dmg` reporting "the app updates itself" has
+  not malfunctioned, and rendering it as an error is a different lie from the one
+  this RFC set out to fix. #1734 initially routed both through one `error` field
+  and had to add a frontend set of "info codes" to stop them rendering as
+  failures — evidence that the two states want separate slots. `electron` and
+  `container` shapes therefore report `check_status: "deferred"` +
+  `unavailable_reason: managed_by_app | managed_by_image`, never `error_code`.
+- **`error_code` is the machine-readable failure class**, distinct from
+  `unavailable_reason` (which explains a *deferral* or a permanently unsupported
+  shape). #1734's shipped set is the starting vocabulary: `feed_unreachable`,
+  `feed_malformed`, `git_fetch_failed`, `git_read_failed`,
+  `version_unparseable`, `unknown`. A consumer that does not recognise a code
+  must still render "the check failed" — never fall through to success.
+
+### §2.2 `remediation` is structured, not a string
+
+```json
+"remediation": { "kind": "command | image_pull | store | none",
+                 "message": "…", "command": "…" }
+```
+
+`kind` lets the UI choose an affordance without parsing prose; `command` carries
+the exact copyable line (#1734's `update_command`). Two constraints, both learned
+the hard way in that PR:
+
+- **The command is display/copy-only.** The check endpoint must never execute it,
+  and it must be composed **locally** from already-validated inputs — never
+  assembled from feed fields. The feed the check reads is unsigned display
+  metadata (the signature check lives in `cli.sh`, which pins the key offline and
+  is the only thing that installs bytes), so a URL taken from it would let a
+  tampered feed choose what the user pastes into a shell.
+- **It must pin its transport.** `--proto '=https'` is mandatory on any emitted
+  `curl … | sh`: the artifact base is overridable (`KIROCREW_CDN_BASE`), so
+  without it an `http://` override hands the user a command that fetches an
+  installer in plaintext and executes it. This was a blocking review finding on
+  #1734, and `cli.sh` already passes the flag on every fetch it makes itself —
+  the emitted command must not be laxer than the thing it invokes.
+- **The command must name the channel.** `cli.sh` defaults to `stable` and never
+  reads back the channel file it writes, so a bare re-run silently moves an
+  insider install onto the stable lane.
+
+### §2.3 `state` and `progress` are Phase-2+ and must not ship early
+
+Both describe an apply/drain lifecycle that does not exist yet. Serving
+`state: "idle"` and `progress: null` from a backend with no state machine
+advertises a guarantee the contract cannot keep — a consumer would reasonably
+poll for transitions that never come. They stay specified here (the wheel engine
+and the drain orchestrator need them) but are **additive fields introduced with
+their implementation**, not placeholders shipped with Phase 1.
+
 `progress` is `{ "percent": 0-100, "bytes_per_second": 0 } | null`, and it is
-load-bearing rather than decorative: `AboutPanel.tsx:278` already renders
-`<Progress value={cardPercent}>` plus a transfer-rate label from `percent` /
-`bytesPerSecond` (`:28-29`), which today arrive over the Electron IPC channel.
-Without `progress` in the contract, Phase 1 would have to either keep that
-out-of-contract channel alive — the exact shape-coupling this RFC exists to
-delete — or leave the wheel engine's bar permanently indeterminate.
+load-bearing rather than decorative: `AboutPanel.tsx` already renders
+`<Progress value={cardPercent}>` plus a transfer-rate label, which today arrive
+over the Electron IPC channel. Without `progress` in the contract, Phase 2 would
+have to either keep that out-of-contract channel alive — the exact
+shape-coupling this RFC exists to delete — or leave the wheel engine's bar
+permanently indeterminate.
 
 `can_apply` means **appliable by the running process without the user leaving
 the app**. It is not "can this install ever be updated": `source` and `wheel`
@@ -351,29 +506,57 @@ is the fragile seam and it gets explicit tests.
 
 ## Phases
 
-**Phase 1 — the contract.** Add `platform/update_capability.py`; serve the
-contract; collapse the three ad-hoc `.git` derivations into it (picking a
-semantic deliberately — Open Question 5); convert all three SPA surfaces to
-consume it; de-arm the boot-time git apply; and retire the three `auto_update`
-surfaces named under Migration. This alone closes Problem 2 and prevents
-Problem 4. Smallest change of the three, and a prerequisite for the others —
-shipping a wheel updater first would deliver it into surfaces that currently
-misreport what is possible.
+**Phase 1 — the contract.** Split by #1734 into a landed half and a remaining
+half; the split was not planned, but it is a reasonable seam and worth recording
+as one.
+
+- **Phase 1a — landed (#1734).** Backend-authoritative shape derivation for the
+  *check* path; deferral for `electron` / `container` shapes; the honesty pair
+  (§2.1); a PEP 440 comparator; and the SPA surfaces reading capability instead
+  of `isDesktop`. Field names are tactical, not §2's vocabulary — see
+  *Vocabulary migration* below.
+- **Phase 1b — remaining.** Add `platform/update_capability.py` and serve the §2
+  contract; collapse the three ad-hoc `.git` derivations into it (Open Question
+  5); convert the two SPA surfaces 1a did **not** touch — `SettingsPage.tsx`
+  (still selecting the desktop-only `desktopUpdateAvailable`) and the `App.tsx`
+  changelog modal (still no capability check at all); de-arm the boot-time git
+  apply; retire the three `auto_update` surfaces named under Migration.
+  **Problem 2 is only PARTLY closed by 1a** — `AboutPanel.tsx` reads capability,
+  the other two surfaces do not, so the third-instance-of-the-same-class defect
+  survives until those conversions land. Problem 3 and Problem 4 need 1b outright.
+
+Sequencing rationale is unchanged: this is still the prerequisite for the others
+— shipping a wheel updater first would deliver it into surfaces that misreport
+what is possible.
+
+**Vocabulary migration (Phase 1b).** #1734 shipped `install_kind` /
+`self_updatable` / `checked` / `error` / `update_command`; §2 specifies
+`managed_by` / `can_apply` / `check_status` / `error_code` /
+`remediation.command`. Phase 1b renames rather than aliases, and does so in one
+commit with its consumers, because **the only consumer is the SPA that ships in
+the same artifact as the backend** — every install shape bundles a version-locked
+pair, so there is no third-party integration to deprecate against and no skew to
+support. (The one exception is a dashboard driving a *remote* gateway over the
+Instances tunnel, where an older SPA can meet a newer backend. That path must
+tolerate unknown/missing fields, which the honesty rules already require: a
+missing `check_status` reads as `unchecked`, never as "current".)
 
 **Phase 2 — wheel updater.** A wheel apply path: feed resolution, **provenance
 verification** (§3), external-helper pipx replacement, and a gateway drain
 request when one is running. Reachable two ways from the same backend entry
 point — `kirocrew update` in a terminal, and an in-app Apply button — which is
-what flips `can_apply` true for `wheel` (§4).
+what flips `can_apply` true for `wheel` (§4). Introduces `state` and the
+download half of `progress` (§2.3).
 
 **Phase 3 — shared drain-and-restart handshake.** Extract §5 into one
 orchestrator used by both engines, with the on-disk update lease honored by the
 watchdog, the quit path, **and the supervisor unit**; the post-restart
 verification handshake; and the policy-forced-update deadline + user messaging
-that §4 identifies as new.
+that §4 identifies as new. Completes the `state` machine.
 
-De-arming the git boot-apply (Problem 3) lands in Phase 1 with the contract,
+De-arming the git boot-apply (Problem 3) lands in Phase **1b** with the contract,
 since the contract is what makes `source` report `can_apply: false`.
+
 
 ## Migration and compatibility
 
@@ -480,12 +663,49 @@ see §4.
    worth having.
 4. Does the contract belong on the status payload, its own endpoint, or both?
    Both duplicates state; status-only couples update state to a hot path.
-5. When the three `.git` derivations collapse into one, which semantic wins —
-   `os.path.exists` (accepts a linked worktree, today's HTTP behavior) or
-   `Path.is_dir()` (rejects it, today's CLI behavior)? `exists` is the more
-   permissive and better-documented choice, but it means `kirocrew update`
-   starts accepting worktrees it currently refuses, which is a behavior change
-   for contributors.
+5. **RESOLVED (recommendation) — and the question's own premise was wrong.** It
+   asked which of `os.path.exists(".git")` (assumed: today's HTTP behavior) or
+   `Path(".git").is_dir()` (assumed: today's CLI behavior) should win when the
+   three derivations collapse. Against the tree, **all three already use an
+   `exists()` check** — see the correction under *Problems*. There is no live
+   divergence to tie-break, and no linked-worktree behavior gap to close.
+
+   The remaining problem is that `exists()` is not git's answer: it accepts any
+   `.git` entry, including one that is not a gitlink, and cannot tell whether the
+   directory is really inside a working tree.
+
+   The obvious git-native replacement — `git rev-parse --git-dir` — is **wrong
+   here**: it succeeds for any directory whose *ancestor* is a repository. The
+   `exists()` check it would replace is at least anchored to the install root;
+   `--git-dir` is not. A wheel or source install nested under an unrelated
+   checkout (a venv inside a project tree, a home directory that is itself a
+   dotfiles repo) would classify as a git checkout — and while the boot-time git
+   auto-apply remains armed, Phase 1b built on that would `git reset` a tree with
+   nothing to do with the install.
+
+   So Phase 1b should use the git-native answer **with the anchor kept**:
+
+   ```
+   git -C <root> rev-parse --show-toplevel   # exit 0 AND realpath(output) == realpath(<root>)
+   ```
+
+   `--show-toplevel` returns the working tree's own root, so it is correct for a
+   linked worktree and a submodule (each reports its own top level) while the
+   equality check rejects ancestor capture. Both halves are required: exit status
+   alone reintroduces the ancestor hazard, and the path comparison alone cannot
+   distinguish a real worktree from a stray `.git` entry.
+
+   **No user-visible behavior change** relative to today for the worktree case —
+   linked worktrees are accepted before and after. What changes is that a stray
+   `.git` entry stops being mistaken for a checkout, and one derivation replaces
+   three. Cost: one subprocess where there was a `stat`, on a path that already
+   shells out to git immediately afterwards.
+6. Should the honesty pair extend to the desktop lane? #1734's `check_status`
+   equivalent covers the gateway check only; the Electron updater has its own
+   `updatesDisabled` enum and its own idle/checking/error states, folded into
+   `unavailable_reason` by §2 but not yet expressed as `check_status`. Unifying
+   them is right in principle and may not be worth a Phase 1b churn on a lane
+   that currently works.
 
 ## Provenance
 
@@ -499,10 +719,70 @@ scope the git path — is recorded under Alternatives with the adjudication.
 The draft was then adversarially reviewed against the tree by two further
 model-pinned reviewers (`gpt-5.6-sol` mirroring `codex-review.yml`,
 `claude-opus-5` mirroring `claude-review.yml` + the AUTOSDE rules), which
-produced 11 accepted corrections before this revision: one blocking security
+produced 11 accepted corrections before that revision: one blocking security
 gap (checksums are not authenticity — the already-published SLSA attestation is
 the missing half), one design defect that would have refused every non-git
 update on any pinned fleet, one process-local-lock generalization that would
 have reintroduced a fixed respawn race on the wheel path, four incorrect claims
 about current behavior, and four scope or definition gaps. Two findings were
 raised independently by both reviewers.
+
+### This revision (2026-08-06, after #1734)
+
+Convened for one question: PR #1734 shipped a working install-shape-aware check
+with its own field names while this RFC specified different ones — should the PR's
+shape be adopted, renamed, or superseded? Four cross-vendor members answered blind
+(`gpt-5.6-sol`, `deepseek-3.2`, `glm-5`, `minimax-m2.5`; `kimi-k3` dropped —
+model unavailable on two attempts), each also researching how comparable
+multi-install-shape products handle it.
+
+**Unanimous, and the reason this revision exists:** the shipped honesty semantics
+belong *in the contract*, not in the implementation. All four independently called
+their absence a gap in the RFC rather than surplus in the PR. Also unanimous:
+`managed_by`'s capability taxonomy is the better long-term vocabulary, and
+`state` / `progress` must not ship before their backend (§2.3).
+
+**Split, and recorded as such:** rename timing went 2 (rename before merging) : 1
+(merge as-is, migrate later) : 1 (revise the RFC around the shipped shape). The
+adjudication took the merge-then-migrate path on a fact the panel did not have —
+the SPA and backend ship version-locked in every distribution shape, so the API
+stability cost the two rename-now members were pricing is close to zero. That
+reasoning is written into *Vocabulary migration* under Phases so a later reader
+can re-test the premise rather than inherit the conclusion.
+
+**Two design refinements came from the panel, not from the PR:** `check_status`
+as a single enum in place of two loosely-coupled booleans, and `deferred` as a
+first-class state distinct from `failed` (§2.1). The second was corroborated by
+implementation evidence — #1734 had to add a frontend "info codes" set to stop
+deferrals rendering as failures, which is what a missing state looks like from
+the inside.
+
+**Research findings that bear on the design** (each member searched
+independently; sources in the session record):
+
+- The organizing rule holds up. Tailscale routes `tailscale update` to whatever
+  installed it, refuses on Snap and tells the user to `snap refresh`, and
+  documents containers as immutable ("pull a newer image"). rustup ships a
+  build-time `no-self-update` for distributors. uv enables `self update` only for
+  its own standalone installer and points Homebrew users at `brew upgrade`.
+  VS Code hides its update affordance under Snap/Flatpak and lets enterprise
+  policy disable it outright. Docker Desktop disables in-app updates for PKG
+  installs. Capability is provenance; consent is policy.
+- **No comparable product exposes a machine-readable capability contract.** They
+  all express this through CLI text, hidden menu items, and docs. That is not an
+  argument against §2 — Kiro Crew has one SPA talking to one backend across five
+  materially different shapes, which none of them do — but it does mean there is
+  no prior art to copy, and the contract's cost/benefit rests on that
+  single-SPA-many-shapes property specifically.
+- **A published walk-back worth heeding:** uv had to fix a case where PATH
+  shadowing made its self-update target the wrong binary, and Tailscale had one
+  where `tailscale update` broke after assuming a specific apt repository
+  filename. Both are the same failure: reconstructing install provenance from
+  incidental filesystem layout. It is a direct argument for this RFC's
+  build-time stamp over runtime path-sniffing — and for Open Question 5's
+  anchored `rev-parse --show-toplevel` over `.git` shape-guessing. Note the
+  symmetry: the *unanchored* form of that same check (`rev-parse --git-dir`,
+  which walks up to any ancestor repo) is itself an instance of the failure
+  these two walk-backs describe, which is why OQ5 requires the equality check
+  rather than the exit status alone.
+
