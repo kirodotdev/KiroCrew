@@ -989,20 +989,30 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
-    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.chat_utils import slot_history_key, slot_transcript_key
     from kiro_crew.history import _safe_key
 
     protected: set[str] = set()
     for slot in state._slots.values():
-        hk = effective_session_key(slot)
-        protected.add(hk)
-        # ``list_sessions`` reports filename stems, so protect the stem too.
-        # ``_safe_key`` is the function that produced the filename: a
-        # single-colon replace would leave a multi-colon channel key like
-        # ``discord:kirocrew:direct:123`` mapped to a stem that does not exist,
-        # so the open session would fall outside ``protected`` and this bulk
-        # delete would remove a live conversation's transcript.
-        protected.add(_safe_key(hk))
+        # Protect EVERY transcript this slot could be reading, not just the one
+        # it currently writes. ``list_sessions`` reports filename stems, so each
+        # candidate contributes its key AND its stem: ``_safe_key`` is the
+        # function that produced the filename, and a single-colon replace would
+        # leave a multi-colon channel key like ``discord:kirocrew:direct:123``
+        # mapped to a stem that does not exist, putting a live conversation
+        # outside ``protected`` so this bulk delete removes it.
+        #
+        # The union matters because a slot's write target and its DISPLAY source
+        # can differ: a channel tab the dashboard could not bind runs under
+        # ``dashboard:<stem>`` while the conversation on screen lives in the
+        # channel transcript. Choosing between them here would make deletion
+        # depend on provenance resolving correctly, and provenance is exactly
+        # what a legacy transcript cannot supply. Protection only ever PREVENTS
+        # a delete, so covering both candidates is the safe direction: the worst
+        # case is that Clear All skips a transcript nobody is reading.
+        for candidate in (slot_history_key(slot), slot_transcript_key(slot.key)):
+            protected.add(candidate)
+            protected.add(_safe_key(candidate))
 
     sessions = state.conversation_log.list_sessions()
     count = 0

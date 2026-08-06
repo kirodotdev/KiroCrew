@@ -3377,10 +3377,10 @@ class GatewayOrchestrator:
         if conv_log is None:
             return
         # Lazy import avoids a circular dependency (dashboard.chat_utils → gateway).
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.chat_utils import slot_history_key
 
         try:
-            await asyncio.to_thread(conv_log.set_title, effective_session_key(slot), slot.title)
+            await asyncio.to_thread(conv_log.set_title, slot_history_key(slot), slot.title)
         except Exception:
             logger.warning(
                 "Heartbeat: failed to persist slot title for %s", slot.key, exc_info=True

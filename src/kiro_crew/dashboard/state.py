@@ -826,6 +826,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "channel_origin",
         "folder_id",
         "_folder_changed",
         "_folder_suggested",
@@ -1114,6 +1115,14 @@ class _ChatSlot:
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
+        # True only when this slot was created to DISPLAY a conversation that
+        # already lives in a channel transcript (the reconciler surfacing a
+        # thread, a restore, a History resume). It is what separates such a tab
+        # from a dashboard slot that merely happens to be NAMED like one --
+        # a filename-shaped name is not provenance, and inferring it from the
+        # name would let `POST /api/chat/slots` with a colliding `slack_<ts>`
+        # name write a fresh conversation into an existing thread's transcript.
+        self.channel_origin: bool = False
         self._browse_mode: bool = False  # per-turn: True when user explicitly enables browser
         self._side: SideState | None = None
         # Live inner AcpClient for the in-flight turn, published by _run_chat at
@@ -3030,6 +3039,7 @@ class DashboardState:
         ephemeral: bool | None = None,
         app: str = "",
         linked_session_key: str = "",
+        channel_origin: bool = False,
     ) -> _ChatSlot:
         """Return existing slot or create a new one.
 
@@ -3097,6 +3107,11 @@ class DashboardState:
         # write their namespaced origin id through the legacy channel field;
         # those are projected separately via ``links`` and must never make the
         # destructive Slack actions appear.
+        if channel_origin:
+            # Additive: never cleared, because get_or_create_slot also returns
+            # EXISTING slots and a later plain call must not downgrade a tab
+            # that a channel path already claimed.
+            slot.channel_origin = True
         if linked_session_key:
             slot.linked_session_key = linked_session_key
         elif self.sessions:
@@ -3108,12 +3123,14 @@ class DashboardState:
             # dashboard-only session whose replies never reach the thread.
             #
             # Only ever adopts a key the session map actually holds, so a slot
-            # whose name merely looks channel-shaped stays unbound.
-            from kiro_crew.messaging.link import is_channel_session_key
-
+            # whose name merely looks channel-shaped stays unbound. Validated the
+            # same way ``surface_channel_session`` validates its own argument:
+            # only a real channel key may become a binding, so a malformed map
+            # answer leaves the slot unbound (a supported state) rather than
+            # routing the user's replies to a session no channel reads.
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
-                if resolved:
+                if isinstance(resolved, str) and is_channel_session_key(resolved):
                     slot.linked_session_key = resolved
         try:
             if self.sessions:

@@ -430,8 +430,48 @@ def slot_transcript_key(slot_key: str) -> str:
     return _history_key_for(slot_key)
 
 
+def slot_history_key(slot: _ChatSlot) -> str:
+    """The TRANSCRIPT key for *slot* — the file its conversation is stored in.
+
+    Differs from :func:`effective_session_key` in exactly one case, and that
+    case is a real one: a channel-born slot the dashboard could not bind.
+    ``surface_channel_session`` deliberately surfaces such a slot **unbound**
+    when ``channel_key_for_stem`` cannot resolve its key (the session map was
+    pruned, or the thread predates it), because guessing would route replies to
+    a session the channel never reads. For that slot ``linked_session_key`` is
+    empty, so ``effective_session_key`` falls back to ``_history_key_for``,
+    which prefixes ``dashboard:`` and names a file NO restore path reads —
+    while every read path resolves the same slot through
+    :func:`slot_transcript_key` and gets the channel transcript. Reads and
+    writes then address different files: a close flag, a fork, or a backfill
+    lands on (or is looked for in) a phantom transcript.
+
+    Resolving the fallback through :func:`slot_transcript_key` puts both back on
+    one file. Deliberately does NOT change the slot's SESSION identity — an
+    unbound channel slot keeps running under ``dashboard:<name>``, so approval
+    policy and restricted-key bookkeeping keyed on that prefix stay intact.
+
+    Gated on the slot's ``channel_origin`` provenance, NOT on its name's shape.
+    A name is not provenance: ``POST /api/chat/slots`` accepts a client-supplied
+    slot name, so keying off the ``slack_<ts>`` shape alone would let a fresh
+    dashboard conversation write itself into an existing thread's transcript and
+    merge two unrelated histories. Only the paths that adopt an EXISTING channel
+    conversation (``surface_channel_session``, the restore, a History resume)
+    set the flag.
+
+    Use this wherever a slot is turned into a transcript path; use
+    :func:`effective_session_key` where a slot is turned into a session.
+    """
+    linked = getattr(slot, "linked_session_key", "")
+    if linked:
+        return linked
+    if getattr(slot, "channel_origin", False):
+        return slot_transcript_key(slot.key)
+    return _history_key_for(slot.key)
+
+
 def effective_session_key(slot: _ChatSlot) -> str:
-    """The session key AND transcript key for *slot* — one identity, one file.
+    """The session key for *slot* — the session its turns run on.
 
     A channel-born slot carries the real channel key (``slack:<ts>``) in
     ``linked_session_key``, so its turns run on the channel's own session and
@@ -440,10 +480,11 @@ def effective_session_key(slot: _ChatSlot) -> str:
     ``.jsonl``, so one key addresses both the live session and the file the
     channel side appends to. Everything else derives from the slot key.
 
-    Use this anywhere a slot's conversation is addressed — reading or writing
-    its transcript, resolving its session, mirroring its links. Reserve
-    :func:`_history_key_for` for the cases that genuinely start from a slot key
-    with no slot in hand.
+    Use this anywhere a slot's SESSION is addressed — resolving the session its
+    turns run on, mirroring its links. For the slot's TRANSCRIPT use
+    :func:`slot_history_key`, which resolves the unbound-channel-slot case onto
+    the file the read paths actually use. Reserve :func:`_history_key_for` for
+    the cases that genuinely start from a slot key with no slot in hand.
     """
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
 

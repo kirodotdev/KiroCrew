@@ -83,6 +83,7 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     effective_session_key,
     is_system_injection,
+    slot_history_key,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -3191,7 +3192,7 @@ async def _run_chat(
                     _last_stop_soft = True
                 break
             if not _last_stop_soft:
-                history_key = effective_session_key(slot)
+                history_key = slot_history_key(slot)
                 disk_count = 0
                 if state.conversation_log:
                     disk_count = len(state.conversation_log.read_messages(history_key))

@@ -265,6 +265,7 @@ def surface_channel_session(
             name=slot_name,
             agent=meta.get("agent", "") or "",
             linked_session_key=session_key,
+            channel_origin=True,
         )
     except ValueError:
         # A slot with this name exists under a conflicting memory_mode. Leave it
