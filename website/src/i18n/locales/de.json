@@ -3652,6 +3652,10 @@
         },
         "skillsProvider": {
           "skills": "Skills"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Migration erforderlich"
         }
       },
       "search_everywhere": "Überall suchen",

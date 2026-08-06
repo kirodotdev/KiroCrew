@@ -3699,6 +3699,10 @@
         },
         "skillsProvider": {
           "skills": "Habilidades"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Requer migração"
         }
       },
       "search_everywhere": "Pesquisar em tudo",

@@ -759,6 +759,10 @@
         },
         "skillsProvider": {
           "skills": "Skills"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Needs migration"
         }
       },
       "search_for_anything": "Search for anything",

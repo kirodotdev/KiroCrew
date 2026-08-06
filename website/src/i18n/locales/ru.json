@@ -3746,6 +3746,10 @@
         },
         "skillsProvider": {
           "skills": "Навыки"
+        },
+        "appsProvider": {
+          "apps": "Приложения",
+          "needs_migration": "Требуется миграция"
         }
       },
       "search_everywhere": "Искать везде",

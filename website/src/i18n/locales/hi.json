@@ -3652,6 +3652,10 @@
         },
         "skillsProvider": {
           "skills": "स्किल"
+        },
+        "appsProvider": {
+          "apps": "ऐप्स",
+          "needs_migration": "माइग्रेशन आवश्यक"
         }
       },
       "search_everywhere": "हर जगह खोजें",

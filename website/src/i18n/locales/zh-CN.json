@@ -3605,6 +3605,10 @@
         },
         "skillsProvider": {
           "skills": "技能"
+        },
+        "appsProvider": {
+          "apps": "应用",
+          "needs_migration": "需要迁移"
         }
       },
       "search_everywhere": "全局搜索",

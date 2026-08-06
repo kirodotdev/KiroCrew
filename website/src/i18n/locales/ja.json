@@ -3610,6 +3610,10 @@
         },
         "skillsProvider": {
           "skills": "スキル"
+        },
+        "appsProvider": {
+          "apps": "アプリ",
+          "needs_migration": "移行が必要"
         }
       },
       "search_everywhere": "すべてから検索",

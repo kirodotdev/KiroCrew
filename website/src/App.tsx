@@ -99,7 +99,7 @@ import Modal from './components/Modal'
 import ReportProblemModal from './components/ReportProblemModal'
 
 import { i18nT } from './i18n/t'
-import { appPageLabel } from './components/appstore/appManifest'
+import { appNavTarget } from './appNav'
 import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
@@ -1082,44 +1082,38 @@ export default function App() {
     api.listApps()
       .then((apps: AppListEntry[]) => {
         const items = apps
-          .filter(a => a.enabled && (a.manifest?.ui?.pages?.length ?? 0) > 0)
           .flatMap(a => {
-            const page = a.manifest!.ui!.pages![0]
-            const isBuiltin = a.origin === 'builtin'
-            const isOrphaned = !!a.orphaned
-            // A builtin that ships a dynamic UI bundle (manifest.ui.entry) has no
-            // native compiled surface — route it through AppHost like an installed
-            // app. Native builtins (no ui.entry) use their registered surface route.
-            const hasDynamicUI = !!a.manifest?.ui?.entry
-            const dynamicApp = !isBuiltin || hasDynamicUI
-            // Orphaned apps route to migration page; native builtins use their
-            // surface route; dynamic-UI builtins + installed apps use /apps/{name}.
-            const path = isOrphaned
-              ? `/apps/migrate/${a.name}`
-              : dynamicApp ? `/apps/${a.name}` : page.route
-            const iconName = page.icon || ''
+            // Eligibility, route, id and label come from the shared derivation in
+            // `appNav.ts` — the palette's Apps provider resolves destinations
+            // through the same functions, so the rail and the palette cannot send
+            // a user to different places for the same app. Only the icon is built
+            // here, because the rail tints orphaned apps and sizes its glyph for a
+            // 16px row.
+            const target = appNavTarget(a)
+            if (!target) return []
+            const iconName = target.iconName
             // Prefer the app's custom top-level iconUrl (an absolute
             // /app-assets/... path — the same source the App Store card renders
             // via AppIcon) so builtin colorful SVG icons also show in the left
             // nav. Fall back to a page-relative ui/ icon (installed apps), then
             // the builtin lucide glyph, then the generic package icon.
-            const customIconUrl = a.manifest?.iconUrl || ''
-            const builtinIcon = isBuiltin ? getBuiltinIcon(iconName) : undefined
+            const customIconUrl = target.iconUrl
+            const builtinIcon = target.builtin ? getBuiltinIcon(iconName) : undefined
             const baseIcon = customIconUrl
               ? <AppIcon iconUrl={customIconUrl} icon={iconName} size={16} />
-              : page.iconUrl
-                ? <img src={'/apps/' + a.name + '/ui/' + page.iconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
+              : target.pageIconUrl
+                ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
                 : builtinIcon
                   ? builtinIcon
                   : <Package size={16} />
             // Orphaned apps get a warn-colored icon to signal migration needed
-            const icon = isOrphaned
+            const icon = target.orphaned
               ? <span className="text-warn">{baseIcon}</span>
               : baseIcon
             return [{
-              path,
-              id: dynamicApp ? `app-${a.name}` : a.name,
-              label: appPageLabel(a.name, page.label, a.displayName),
+              path: target.route,
+              id: target.id,
+              label: target.label,
               group: 'Apps',
               icon,
             }]
