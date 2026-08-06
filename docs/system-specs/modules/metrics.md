@@ -328,7 +328,8 @@ on two different populations.
 occupancy — `{turns, p50_pct, p90_pct, max_pct, sessions[]}` — sourced from the
 per-turn token row store below, NOT from the OTEL shards: occupancy is a
 per-session ratio and slot keys are unbounded-cardinality, which must not become
-a metric label. `sessions[]` is the top 8 by peak occupancy, each reporting peak
+a metric label. `sessions[]` is EVERY session in the window ordered by peak
+occupancy (bounded only by a payload backstop of 500), each reporting peak
 plus the LATEST turn's identity (agent/model/surface) and absolute
 used/window. Rows whose window is missing or zero are skipped rather than
 defaulted. The block is `null` when no row carries the fields, and is served
@@ -444,6 +445,17 @@ reads the store instead of losing one turn's numbers. `cost_breakdown`
 additionally skips non-finite rows on read, because shards written before this
 guard can already contain them.
 
+**Subagent turns are excluded from both readers.** `usage.is_session_slot(slot)`
+drops any row whose `telemetry_channel_of` is `subagent`, at the point the row is
+READ rather than where it is grouped — so the window totals, the prior-period
+deltas, `by_model`, `by_channel`, `by_category`, the context bands, the priciest
+turn and the occupancy percentiles are all computed over one population and cannot
+contradict each other. A subagent is a fragment of another session's turn rather
+than a session with its own lifecycle, and its usage row carries no field pointing
+back at the session that spawned it, so it can be neither listed nor attributed.
+The consequence is deliberate and worth stating: these totals are the totals of the
+sessions the panel lists, NOT of the account.
+
 **Read side.** `usage.context_occupancy(days)` aggregates these rows into
 per-turn occupancy percentiles plus a per-session peak ranking (own
 shard-fingerprint + 30s-TTL cache, same contract as `_parse_token_history`), and
@@ -499,7 +511,8 @@ from fields the row store already carries — no new instrumentation:
 | `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
 | `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
-| `conversations` | top spenders with peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction |
+| `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
+| `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
 
 **Channel comes from the slot key, not from `surface`.** `surface` cannot
 separate transports: `chat_runner` stamps `surface="dashboard"` for every turn

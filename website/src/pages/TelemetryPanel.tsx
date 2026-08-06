@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
-import { Btn, Card, CardTitle, EmptyState, SearchInput } from '../components/ui'
+import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { compareText, fmtDateNumeric, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -63,6 +63,11 @@ type Other = {
   count?: number
   p50_ms?: number
   p90_ms?: number
+  // Present on every histogram instrument and absent on counters. Declared here
+  // because a latency profile needs the extremes, not only the percentiles.
+  min_ms?: number
+  max_ms?: number
+  mean_ms?: number
   other_generations?: number
   total_count?: number
   total?: number
@@ -84,6 +89,18 @@ type CostRow = {
 type CostBand = { label: string; turns: number; mean_credits: number }
 type CostConvo = {
   slot: string
+  /**
+   * The session taxonomy: `dashboard`, `bg`, `telegram`, `slack`, … Classified
+   * by the backend, because it is the only place that knows every session-key
+   * form. Used for the category column and for linkability — only a `dashboard`
+   * session has a route to open, while a Telegram thread is every bit a session
+   * with nowhere for a dashboard link to go. Deriving either from the key shape
+   * here would put a second, drifting copy of session-key knowledge in the
+   * frontend.
+   */
+  category: string
+  /** The unollapsed channel underneath the category (`cron`, `heartbeat`, …). */
+  channel: string
   // Present only while the conversation is still open — titles are not persisted.
   title?: string
   credits: number
@@ -106,9 +123,12 @@ type Cost = {
   priciest: { credits: number; slot: string; ts: string }
   by_model: CostRow[]
   by_channel: CostRow[]
+  /** Spend by the session taxonomy — the grouping the panel offers. */
+  by_category: CostRow[]
   context_bands: CostBand[]
   conversations: CostConvo[]
   conversation_count: number
+  navigable_category: string
 }
 type Resp = {
   enabled: boolean
@@ -160,11 +180,27 @@ function Notice({ children }: { children: React.ReactNode }) {
 // count is an internal unit a reader cannot convert into missing data, which is
 // exactly the gap that made `n=1134` unreconcilable against a `2837 hit`
 // counter beside it.
-function GenNote({ shown, total }: { shown?: number; total?: number }) {
+function GenNote({ shown, total, compact }: { shown?: number; total?: number; compact?: boolean }) {
   if (shown == null || total == null || total <= shown) return null
+  const text = i18nT('pages.telemetryPanel.showing_partial_window', { shown, total })
+  // A fixed-width cell cannot hold the sentence: rendered inline it wraps to a
+  // nine-line sliver and pushes the row to ten times its height. The marker keeps
+  // the caveat visible and discoverable while the sentence moves to the tooltip.
+  if (compact) {
+    return (
+      <span
+        // Non-actionable metadata, so it does not spend the alarm colour.
+        className="cursor-help text-[11px] leading-none text-muted"
+        title={text}
+        aria-label={text}
+      >
+        *
+      </span>
+    )
+  }
   return (
     <div className="text-[10px] mt-1" style={{ color: 'var(--warn)' }}>
-      {i18nT('pages.telemetryPanel.showing_partial_window', { shown, total })}
+      {text}
     </div>
   )
 }
@@ -291,8 +327,6 @@ function DataTable<R>({
   rowKey,
   tableId,
   defaultSort,
-  filterOf,
-  filterLabel,
   emptyTitle,
 }: {
   rows: R[]
@@ -301,11 +335,8 @@ function DataTable<R>({
   /** Namespaces the persisted sort, so each tab and grouping remembers its own. */
   tableId: string
   defaultSort: string
-  filterOf?: (r: R) => string
-  filterLabel?: string
   emptyTitle: string
 }) {
-  const [filter, setFilter] = useState('')
   // A text column opens A→Z; a measurement opens largest-first, which is the
   // question being asked of it ("what cost the most", "what was slowest").
   //
@@ -335,18 +366,16 @@ function DataTable<R>({
   // table sorted by its first column with no header marked at all.
   const activeKey = (cols.find(c => c.key === sort.key) ?? cols[0])?.key
 
-  // Not memoised, for the same reason `initialDirs` is not: `cols` and
-  // `filterOf` are rebuilt by the parent on every render, so a dependency array
-  // naming them could never hit its cache. Hoisting the column builders to
-  // module scope WOULD stabilise them and is the wrong fix — they call `i18nT`
-  // per render on purpose, and freezing the labels at import time would leave
-  // the table in the old language after a locale switch. Sorting a handful of
-  // rows is cheaper than that bug.
+  // Not memoised, for the same reason `initialDirs` is not: `cols` is rebuilt
+  // by the parent on every render, so a dependency array naming it could never
+  // hit its cache. Hoisting the column builders to module scope WOULD stabilise
+  // them and is the wrong fix — they call `i18nT` per render on purpose, and
+  // freezing the labels at import time would leave the table in the old
+  // language after a locale switch. Sorting a handful of rows is cheaper than
+  // that bug.
   const shown = (() => {
-    const needle = filter.trim().toLowerCase()
     const col = cols.find(c => c.key === activeKey) ?? cols[0]
-    const kept = needle && filterOf ? rows.filter(r => filterOf(r).toLowerCase().includes(needle)) : rows.slice()
-    return kept.sort((a, b) => {
+    return rows.slice().sort((a, b) => {
       const av = col.sort(a)
       const bv = col.sort(b)
       if (av == null && bv == null) return 0
@@ -360,29 +389,8 @@ function DataTable<R>({
 
   return (
     <>
-      {filterOf && (
-        <div className="flex items-center mb-2">
-          <SearchInput
-            placeholder={filterLabel}
-            value={filter}
-            onChange={e => setFilter(e.currentTarget.value)}
-            className="ml-auto w-full sm:w-56"
-          />
-        </div>
-      )}
       {shown.length === 0 ? (
-        // A filter that matched nothing is NOT an absence of data. Rendering the
-        // no-data title in that case had the page assert that 252 conversations
-        // did not exist while it held all 252 — the same class of false claim as
-        // a real 0.4% share rendering as "0%".
-        <EmptyState
-          icon={<Activity className="lucide-inline" />}
-          title={
-            filter.trim() && rows.length > 0
-              ? i18nT('pages.telemetryPanel.no_rows_match_filter')
-              : emptyTitle
-          }
-        />
+        <EmptyState icon={<Activity className="lucide-inline" />} title={emptyTitle} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse table-striped">
@@ -450,33 +458,166 @@ function Sums({ items }: { items: Sum[] }) {
   )
 }
 
-// ── Spend ──────────────────────────────────────────────────────
+/**
+ * A latency profile: where p50 and p90 sit between this instrument's own min and
+ * max.
+ *
+ * LOGARITHMIC, because the measured data makes a linear axis useless. The gateway
+ * request histogram runs min 0ms, p50 2ms, p90 228ms, max 213.7s — a max a
+ * thousand times p90 — so on a linear scale both percentiles land inside the
+ * leftmost 0.1% of the bar and every row renders as one indistinguishable sliver.
+ * A log axis is how a latency distribution is read for exactly this reason.
+ *
+ * Normalised PER ROW as well: these instruments span four orders of magnitude
+ * between them, so one shared axis would flatten the fast ones against the
+ * slowest. Each bar therefore answers "how long is THIS one's tail"; the numbers
+ * beside it stay comparable across rows.
+ *
+ * A zero minimum has no logarithm, so the axis starts at a sub-millisecond floor
+ * rather than at zero. That is a floor on the AXIS, not a claim about the data —
+ * the real min is printed next to the bar.
+ */
+const _LOG_FLOOR_MS = 0.5
 
-type SpendGroup = 'conversation' | 'model' | 'channel'
+function RangeBar({ min, p50, p90, max }: { min: number; p50: number; p90: number; max: number }) {
+  const lo = Math.max(min, _LOG_FLOOR_MS)
+  const hi = Math.max(max, lo * 1.001)
+  const span = Math.log10(hi) - Math.log10(lo)
+  const at = (v: number) =>
+    span <= 0 ? 0 : Math.min(100, Math.max(0, ((Math.log10(Math.max(v, lo)) - Math.log10(lo)) / span) * 100))
+  const left = at(p50)
+  const right = at(p90)
+  return (
+    <div
+      className="relative h-1.5 w-full rounded-full bg-[var(--bg)]"
+      role="img"
+      aria-label={i18nT('pages.telemetryPanel.range_bar_label', {
+        min: fmtMs(min),
+        p50: fmtMs(p50),
+        p90: fmtMs(p90),
+        max: fmtMs(max),
+      })}
+    >
+      {/* p50→p90: where the bulk of the samples land. */}
+      <span
+        className="absolute top-0 h-full rounded-full"
+        style={{
+          left: `${left}%`,
+          width: `${Math.max(right - left, 1.5)}%`,
+          background: 'var(--muted-strong)',
+        }}
+      />
+      {/* p50 itself, so the bar reads as a position and not only a width. */}
+      <span
+        className="absolute top-[-2px] h-[10px] w-[2px] rounded-sm"
+        style={{ left: `${left}%`, background: 'var(--accent)' }}
+      />
+    </div>
+  )
+}
 
 /**
- * Conversation / model / channel are the same credits regrouped, so they are a
+ * A horizontal histogram. Bars carry magnitude by length and share one scale,
+ * which is exactly what a distribution needs — unlike the sortable bucket table
+ * this replaces, where sorting by count destroyed the bound order that IS the
+ * shape.
+ */
+function Histogram({ rows }: { rows: { label: string; count: number }[] }) {
+  const peak = Math.max(1, ...rows.map(r => r.count))
+  return (
+    <div className="flex flex-col gap-1">
+      {rows.map(r => (
+        <div key={r.label} className="flex items-center gap-2.5 text-[11px]">
+          <span className="w-20 shrink-0 text-right font-mono text-muted">{r.label}</span>
+          <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-sm bg-[var(--bg)]">
+            <span
+              className="block h-full rounded-sm"
+              style={{ width: `${(r.count / peak) * 100}%`, background: 'var(--muted-strong)' }}
+            />
+          </div>
+          <span className="w-12 shrink-0 text-right font-mono tabular-nums">{fmtNumber(r.count)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * A daily trend as columns. `startup.daily` has shipped in the payload since the
+ * startup block existed and was rendered nowhere, so the one time series this
+ * page has was invisible. Columns rather than a line: a line needs a path, and a
+ * path needs SVG.
+ *
+ * A day with no cold start reports 0, which is an absence rather than a fast
+ * start — those columns are drawn empty instead of as a floor value.
+ */
+function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms: number; warm_p50_ms: number }[] }) {
+  const peak = Math.max(1, ...rows.flatMap(r => [r.cold_p50_ms, r.warm_p50_ms]))
+  return (
+    <div className="flex items-end gap-[3px]" style={{ height: '52px' }}>
+      {rows.map(r => {
+        const cold = r.cold_p50_ms > 0 ? (r.cold_p50_ms / peak) * 100 : 0
+        const warm = r.warm_p50_ms > 0 ? (r.warm_p50_ms / peak) * 100 : 0
+        return (
+          <div
+            key={r.date}
+            className="flex h-full min-w-0 flex-1 flex-col justify-end gap-[1px]"
+            // The numbers exist nowhere else, so the column has to carry them for
+            // anyone not using a pointer.
+            role="img"
+            aria-label={i18nT('pages.telemetryPanel.daily_trend_point', {
+              date: r.date,
+              cold: fmtMs(r.cold_p50_ms),
+              warm: fmtMs(r.warm_p50_ms),
+              count: fmtNumber(r.count),
+            })}
+            title={i18nT('pages.telemetryPanel.daily_trend_point', {
+              date: r.date,
+              cold: fmtMs(r.cold_p50_ms),
+              warm: fmtMs(r.warm_p50_ms),
+              count: fmtNumber(r.count),
+            })}
+          >
+            <span className="block w-full rounded-t-sm" style={{ height: `${cold}%`, background: 'var(--accent)' }} />
+            <span className="block w-full rounded-t-sm" style={{ height: `${warm}%`, background: 'var(--muted-strong)' }} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Spend ──────────────────────────────────────────────────────
+
+type SpendGroup = 'session' | 'category' | 'model'
+
+/**
+ * Session / category / model are the same credits regrouped, so they are a
  * group-by over one table rather than three sections. As three sections they
  * were three separately-scrolled bar lists whose columns did not align and
  * whose empty rows — a model with a 0.4% share still drew a full-width rail —
  * made half the section blank.
  */
-function convoCols(): Col<CostConvo>[] {
+function convoCols(navigable: string): Col<CostConvo>[] {
   return [
     {
       key: 'name',
-      label: i18nT('pages.telemetryPanel.conversation_col'),
+      label: i18nT('pages.telemetryPanel.session_col'),
       left: true,
       sort: v => v.title ?? v.slot,
       render: v =>
-        // Only a conversation that is still open can be navigated to: ChatPage
-        // resolves ?sid against the live slot list and otherwise reports
-        // `Session "…" not found` after a 5s timeout. An unnamed row is unnamed
-        // BECAUSE the slot is gone, so linking it would buy the user a delayed
-        // error — it renders as plain text, which is also what the caption
-        // below promises. Open rows use a router link so the click switches
-        // slots instead of reloading the whole app.
-        v.title ? (
+        // TWO conditions, not one. A title alone is not enough: ChatPage
+        // resolves ?sid against the live DASHBOARD slot list, so a Telegram
+        // thread — a real conversation, often titled — would render as a link
+        // that lands on `Session "…" not found` after a 5s timeout. And a
+        // dashboard row with no title is untitled BECAUSE its slot is gone, so
+        // it has nothing to resolve either. Only a titled dashboard row gets a
+        // router link; everything else is plain text.
+        //
+        // The `!!navigable` guard makes this fail CLOSED: without it, a payload
+        // missing `navigable_category` would satisfy `v.category === navigable`
+        // for every row that also has no category, and link all of them.
+        v.title && !!navigable && v.category === navigable ? (
           <Link
             to={`/chat?sid=${encodeURIComponent(v.slot)}`}
             className="block max-w-[320px] truncate text-[var(--accent)] hover:underline"
@@ -486,11 +627,27 @@ function convoCols(): Col<CostConvo>[] {
           </Link>
         ) : (
           <span className="block max-w-[320px] truncate text-muted" title={v.slot}>
-            {i18nT('pages.telemetryPanel.untitled_conversation_on', {
-              date: fmtDateNumeric(v.first_ts * 1000),
-            })}
+            {v.title ??
+              i18nT('pages.telemetryPanel.untitled_conversation_on', {
+                date: fmtDateNumeric(v.first_ts * 1000),
+              })}
           </span>
         ),
+    },
+    {
+      key: 'category',
+      label: i18nT('pages.telemetryPanel.category_col'),
+      left: true,
+      // Rendered verbatim: these are backend enum values (`dashboard`, `bg`,
+      // `telegram`, `slack`), i.e. data, not copy to translate — the same
+      // treatment model names get one column over.
+      sort: v => v.category,
+      // Every sibling column has a breakpoint; without one this pushed Credits —
+      // the column the page exists for — off a narrow viewport.
+      hide: 'max-[900px]:hidden',
+      render: v => (
+        <span className="text-muted font-mono text-[11.5px]">{categoryLabel(v.category)}</span>
+      ),
     },
     {
       key: 'credits',
@@ -548,9 +705,22 @@ function convoCols(): Col<CostConvo>[] {
   ]
 }
 
+/**
+ * `bg` is a coined abbreviation with no external referent, so it gets a translated
+ * label; a transport name (`dashboard`, `telegram`, `slack`) is a proper noun the
+ * reader already knows and is shown as the backend sent it.
+ *
+ * This lives in ONE place because the category is rendered by two different
+ * surfaces — the Session table's column and the Group-by-Category table — and
+ * mapping it in only one produced two labels for the same value.
+ */
+function categoryLabel(name: string): string {
+  return name === 'bg' ? i18nT('pages.telemetryPanel.category_bg') : name
+}
+
 function shareCols(first: string, total: number): Col<CostRow>[] {
   return [
-    { key: 'name', label: first, left: true, sort: r => r.name, render: r => r.name },
+    { key: 'name', label: first, left: true, sort: r => r.name, render: r => categoryLabel(r.name) },
     {
       key: 'credits',
       label: i18nT('pages.telemetryPanel.credits_col'),
@@ -575,18 +745,11 @@ function shareCols(first: string, total: number): Col<CostRow>[] {
       sort: r => r.credits,
       render: r => fmtSharePct(r.credits, total),
     },
-    {
-      key: 'delta',
-      label: i18nT('pages.telemetryPanel.vs_last_col'),
-      hide: 'max-[720px]:hidden',
-      sort: r => r.delta_pct ?? null,
-      render: r => fmtDelta(r.delta_pct),
-    },
   ]
 }
 
 function SpendTab({ c }: { c: Cost }) {
-  const [group, setGroup] = useState<SpendGroup>('conversation')
+  const [group, setGroup] = useState<SpendGroup>('session')
   const bands = c.context_bands
   return (
     <Card className="mb-4">
@@ -614,33 +777,31 @@ function SpendTab({ c }: { c: Cost }) {
           value={group}
           onChange={setGroup}
           segments={[
-            { key: 'conversation', label: i18nT('pages.telemetryPanel.conversation_col') },
+            { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
+            { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
             { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
-            { key: 'channel', label: i18nT('pages.telemetryPanel.channel_col') },
           ]}
         />
       </div>
-      {group === 'conversation' ? (
+      {group === 'session' ? (
         <DataTable<CostConvo>
           rows={c.conversations}
           key="telemetry-spend-conversation"
           tableId="telemetry-spend-conversation"
-          cols={convoCols()}
+          cols={convoCols(c.navigable_category)}
           rowKey={v => v.slot}
           defaultSort="credits"
-          filterOf={v => `${v.title ?? ''} ${v.slot}`}
-          filterLabel={i18nT('pages.telemetryPanel.filter_conversations')}
           emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
         />
       ) : (
         <DataTable<CostRow>
-          rows={group === 'model' ? c.by_model : c.by_channel}
+          rows={group === 'model' ? c.by_model : c.by_category}
           key="telemetry-spend-share"
           tableId="telemetry-spend-share"
           cols={shareCols(
             group === 'model'
               ? i18nT('pages.telemetryPanel.model_col')
-              : i18nT('pages.telemetryPanel.channel_col'),
+              : i18nT('pages.telemetryPanel.category_col'),
             c.credits,
           )}
           rowKey={r => r.name}
@@ -676,8 +837,13 @@ function SpendTab({ c }: { c: Cost }) {
             // conversation outside that slice got "no rows match" and could
             // reasonably conclude it had spent nothing. The ratio states the
             // truncation without inventing new copy for it.
-            label: i18nT('pages.telemetryPanel.conversations_col'),
-            value: `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`,
+            label: i18nT('pages.telemetryPanel.sessions_col'),
+            // The list is no longer truncated, so the pair is now equal on every
+            // real payload and "45 / 45" spends a stat slot saying nothing. The
+            // ratio still appears if the payload backstop ever does clamp.
+            value: c.conversations.length === c.conversation_count
+              ? fmtNumber(c.conversation_count)
+              : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`,
             sub: i18nT('pages.telemetryPanel.top_spenders_link_to_chat'),
           },
         ]}
@@ -800,8 +966,6 @@ function ContextTab({ c }: { c: Context }) {
         cols={sessionCols()}
         rowKey={s => s.slot}
         defaultSort="peak"
-        filterOf={s => `${s.slot} ${s.model} ${s.agent} ${s.surface}`}
-        filterLabel={i18nT('pages.telemetryPanel.filter_sessions')}
         emptyTitle={i18nT('pages.telemetryPanel.no_occupancy_samples')}
       />
       <Sums
@@ -844,61 +1008,15 @@ function ContextTab({ c }: { c: Context }) {
  * Saying so with a different first column is more honest than an empty
  * per-conversation latency column would have been.
  */
-function otherCols(): Col<Other>[] {
-  return [
-    {
-      key: 'name',
-      label: i18nT('pages.telemetryPanel.metric_col'),
-      left: true,
-      sort: o => o.name,
-      render: o => (
-        <span className="block max-w-[340px] truncate font-mono text-[11.5px]" title={o.name}>
-          {o.name}
-        </span>
-      ),
-    },
-    {
-      key: 'kind',
-      label: i18nT('pages.telemetryPanel.kind_col'),
-      left: true,
-      hide: 'max-[720px]:hidden',
-      sort: o => o.kind,
-      render: o => <span className="text-muted">{o.kind}</span>,
-    },
-    {
-      key: 'samples',
-      label: i18nT('pages.telemetryPanel.samples_col'),
-      sort: o => o.count ?? o.total ?? null,
-      render: o => fmtNumber(o.count ?? o.total ?? 0),
-    },
-    {
-      key: 'p50',
-      label: i18nT('pages.telemetryPanel.p50_col'),
-      sort: o => o.p50_ms ?? null,
-      render: o => (o.p50_ms == null ? '—' : fmtMs(o.p50_ms)),
-    },
-    {
-      key: 'p90',
-      label: i18nT('pages.telemetryPanel.p90_col'),
-      sort: o => o.p90_ms ?? null,
-      render: o => (o.p90_ms == null ? '—' : fmtMs(o.p90_ms)),
-    },
-    {
-      key: 'partial',
-      label: i18nT('pages.telemetryPanel.of_total_col'),
-      hide: 'max-[900px]:hidden',
-      sort: o => o.total_count ?? null,
-      // Deliberately uncoloured. A truncated histogram window is metadata the
-      // reader cannot act on, so painting it in the alarm colour spends the
-      // page's loudest signal on something with no available response — the
-      // same reason peak occupancy is neutral. The caveat that explains it is
-      // already stated in words beside the figure it qualifies.
-      render: o => (o.total_count == null ? '—' : fmtNumber(o.total_count)),
-    },
-  ]
-}
 
 function LatencyTab({ other, days }: { other: Other[]; days: number }) {
+  // Histograms first and by volume: a counter has no percentiles to shape, so it
+  // cannot carry a profile bar and belongs after the things that can.
+  const hist = other
+    .filter(o => o.p50_ms != null && o.max_ms != null)
+    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+  const counters = other.filter(o => o.p50_ms == null)
+
   return (
     <Card className="mb-4">
       <CardTitle>
@@ -908,17 +1026,92 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
           {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) })}
         </span>
       </CardTitle>
-      <DataTable<Other>
-        rows={other}
-          key="telemetry-latency"
-          tableId="telemetry-latency"
-        cols={otherCols()}
-        rowKey={o => o.name}
-        defaultSort="samples"
-        filterOf={o => o.name}
-        filterLabel={i18nT('pages.telemetryPanel.filter_metrics')}
-        emptyTitle={i18nT('pages.telemetryPanel.no_instruments_recorded')}
-      />
+
+      {hist.length === 0 && counters.length === 0 ? (
+        <EmptyState
+          icon={<Activity className="lucide-inline" />}
+          title={i18nT('pages.telemetryPanel.no_instruments_recorded')}
+        />
+      ) : (
+        <>
+          <div className="text-[10px] text-muted mb-2">
+            {i18nT('pages.telemetryPanel.profile_scaled_per_row')}
+          </div>
+          <div className="overflow-x-auto">
+          <div className="mb-1 flex items-center gap-3 text-[10px] text-muted">
+            <span className="w-[260px] shrink-0" />
+            <span className="w-14 shrink-0 text-right">{i18nT('pages.telemetryPanel.min_col')}</span>
+            <span className="min-w-0 flex-1" />
+            <span className="w-14 shrink-0">{i18nT('pages.telemetryPanel.max_col')}</span>
+            <span className="w-16 shrink-0 text-right">{i18nT('pages.telemetryPanel.p50_col')}</span>
+            <span className="w-16 shrink-0 text-right">{i18nT('pages.telemetryPanel.p90_col')}</span>
+            <span className="w-16 shrink-0 text-right">{i18nT('pages.telemetryPanel.samples_col')}</span>
+          </div>
+          <div className="flex min-w-max flex-col gap-2">
+            {hist.map(o => (
+              <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
+                <span className="w-[260px] shrink-0 truncate font-mono text-[11px]" title={o.name}>
+                  {o.name}
+                </span>
+                {/* The endpoints flank the bar so each row is visibly its own
+                    scale, rather than a position on a shared axis it never had. */}
+                <span className="w-14 shrink-0 text-right font-mono tabular-nums text-muted">
+                  {fmtMs(o.min_ms)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <RangeBar
+                    min={o.min_ms ?? 0}
+                    p50={o.p50_ms ?? 0}
+                    p90={o.p90_ms ?? 0}
+                    max={o.max_ms ?? 0}
+                  />
+                </div>
+                <span className="w-14 shrink-0 font-mono tabular-nums text-muted">
+                  {fmtMs(o.max_ms)}
+                </span>
+                <span className="w-16 shrink-0 text-right font-mono tabular-nums">{fmtMs(o.p50_ms)}</span>
+                <span className="w-16 shrink-0 text-right font-mono tabular-nums">{fmtMs(o.p90_ms)}</span>
+                <span className="flex w-16 shrink-0 items-center justify-end gap-1 text-right font-mono tabular-nums text-muted">
+                  {fmtNumber(o.count ?? 0)}
+                  {/* The window can span a boundary change, and stats() then describe
+                      only the newest generation — say so rather than labelling a
+                      subset as the total. */}
+                  <GenNote shown={o.count} total={o.total_count} compact />
+                </span>
+              </div>
+            ))}
+          </div>
+          </div>
+          {/* The marker says WHICH rows are partial; this says what the marker
+              means, in text, so it needs neither a hover nor a tab stop. */}
+          {hist.some(o => o.total_count != null && o.count != null && o.total_count > o.count) && (
+            <div className="mt-2 text-[10px] text-muted">
+              {i18nT('pages.telemetryPanel.partial_window_legend')}
+            </div>
+          )}
+
+
+          {counters.length > 0 && (
+            <div className="mt-4 border-t border-border pt-3">
+              <div className="text-[10px] text-muted uppercase tracking-wide mb-1.5">
+                {i18nT('pages.telemetryPanel.counters')}
+              </div>
+              <div className="flex flex-col gap-1">
+                {counters.map(o => (
+                  <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={o.name}>
+                      {o.name}
+                    </span>
+                    <span className="shrink-0 font-mono tabular-nums">
+                      {fmtNumber(o.count ?? o.total ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </Card>
   )
 }
@@ -966,28 +1159,6 @@ function statCols(first: string): Col<Stat & { name: string }>[] {
 
 type Bucket = { label: string; count: number; idx: number }
 
-function bucketCols(): Col<Bucket>[] {
-  return [
-    {
-      key: 'label',
-      label: i18nT('pages.telemetryPanel.bucket_col'),
-      left: true,
-      // Ordered by the bucket's upper BOUND, carried as an index — never as
-      // text, where "≤ 1.0s" sorts before "≤ 500ms". This column previously
-      // sorted by `count` while claiming otherwise, which scrambled the one
-      // thing a latency distribution exists to show, and no click could get
-      // the bound order back.
-      sort: b => b.idx,
-      render: b => <span className="font-mono text-[11.5px]">{b.label}</span>,
-    },
-    {
-      key: 'count',
-      label: i18nT('pages.telemetryPanel.samples_col'),
-      sort: b => b.count,
-      render: b => fmtNumber(b.count),
-    },
-  ]
-}
 
 function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; total: number; days: number }) {
   const [group, setGroup] = useState<StartupGroup>('phase')
@@ -1031,15 +1202,14 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
         />
       </div>
       {group === 'distribution' ? (
-        <DataTable<Bucket>
-          rows={buckets}
-          key="telemetry-startup-buckets"
-          tableId="telemetry-startup-buckets"
-          cols={bucketCols()}
-          rowKey={b => b.label}
-          defaultSort="label"
-          emptyTitle={i18nT('pages.telemetryPanel.no_startups_recorded')}
-        />
+        buckets.length === 0 ? (
+          <EmptyState
+            icon={<Activity className="lucide-inline" />}
+            title={i18nT('pages.telemetryPanel.no_startups_recorded')}
+          />
+        ) : (
+          <Histogram rows={buckets} />
+        )
       ) : (
         <DataTable<Stat & { name: string }>
           rows={(group === 'phase' ? s.phases : s.by_channel) ?? []}
@@ -1086,6 +1256,28 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
           },
         ]}
       />
+      {(s.daily?.length ?? 0) > 1 && (
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="mb-2 flex items-center gap-3 text-[10px] text-muted uppercase tracking-wide">
+            <span>{i18nT('pages.telemetryPanel.daily_p50_trend')}</span>
+            {/* "cold above, warm below" only teaches the encoding on a day that
+                has both; a day with no cold start shows one unlabelled bar. */}
+            <span className="flex items-center gap-1 normal-case">
+              <span className="h-2 w-2 rounded-sm" style={{ background: 'var(--accent)' }} />
+              {i18nT('pages.telemetryPanel.cold_label')}
+            </span>
+            <span className="flex items-center gap-1 normal-case">
+              <span className="h-2 w-2 rounded-sm" style={{ background: 'var(--muted-strong)' }} />
+              {i18nT('pages.telemetryPanel.warm_label')}
+            </span>
+          </div>
+          <DailyTrend rows={s.daily} />
+          <div className="mt-1 flex justify-between text-[10px] text-muted font-mono">
+            <span>{s.daily[0]?.date}</span>
+            <span>{s.daily[s.daily.length - 1]?.date}</span>
+          </div>
+        </div>
+      )}
     </Card>
   )
 }

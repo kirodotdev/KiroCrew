@@ -199,11 +199,67 @@ class TestConversations:
         c = usage_mod.cost_breakdown(7)["conversations"][0]
         assert c["growth_pct_per_turn"] is not None
 
-    def test_the_full_population_is_reported_next_to_the_ranked_slice(self, store):
+    def test_every_session_is_reported_not_a_ranked_slice(self, store):
+        # This used to be a top-8 cut, which hid most of a user's sessions behind
+        # a count they could not reach. The list is now the whole population; the
+        # remaining cap is a payload backstop far above any real account.
         store([_row(slot=f"chat-{i}-1", credits=float(i)) for i in range(1, 15)])
         d = usage_mod.cost_breakdown(7)
         assert d["conversation_count"] == 14
-        assert len(d["conversations"]) == usage_mod._COST_TOP_CONVOS
+        assert len(d["conversations"]) == 14
+
+    def test_a_subagent_is_not_a_session_and_reaches_no_figure(self, store):
+        # A subagent is a fragment of another session's turn, and its row carries
+        # no field pointing back at the session that spawned it. It is dropped
+        # where the row is READ, so it must be absent from the rows AND from
+        # every aggregate — a filter applied at the grouping step instead would
+        # leave its credits in the window total with no row to explain them.
+        store(
+            [_row(slot="chat-1-1", credits=10.0)]
+            + [_row(slot=f"subagent:{i:08x}", credits=5.0) for i in range(4)]
+        )
+        d = usage_mod.cost_breakdown(7)
+        assert [r["slot"] for r in d["conversations"]] == ["chat-1-1"]
+        assert d["conversation_count"] == 1
+        assert d["credits"] == 10.0, "subagent credits leaked into the window total"
+        assert d["turns"] == 1
+        assert "subagent" not in {r["name"] for r in d["by_channel"]}
+        assert "subagent" not in {r["name"] for r in d["by_category"]}
+        assert json.dumps(d).lower().count("subagent") == 0
+
+    def test_an_unrecognised_surface_stays_visible_instead_of_becoming_bg(self, store):
+        # The whole point of deciding `bg` by DENYLIST is that a surface nobody
+        # taught the classifier about shows up under its own category, where it
+        # can be noticed and fixed. `telemetry_channel_of` answers `other` for a
+        # key shape it does not recognise, so if `other` were in the background
+        # set the new surface would be filed as background and buried — the exact
+        # outcome the denylist is chosen to avoid. This pins the set's membership
+        # rule: background BY NATURE, not merely unclassified.
+        store([
+            _row(slot="chat-1-1", credits=1.0),
+            _row(slot="cron:default:nightly", credits=2.0),
+            _row(slot="some-surface-nobody-taught-us-about", credits=3.0),
+        ])
+        rows = {r["slot"]: r for r in usage_mod.cost_breakdown(7)["conversations"]}
+        assert rows["cron:default:nightly"]["category"] == "bg"
+        unclassified = rows["some-surface-nobody-taught-us-about"]["category"]
+        assert unclassified != "bg", "an unrecognised surface was buried as background"
+        assert unclassified == "other"
+        # And it earns its own line in the breakdown rather than swelling bg.
+        by_cat = {r["name"] for r in usage_mod.cost_breakdown(7)["by_category"]}
+        assert "other" in by_cat
+
+    def test_a_session_carries_its_category_and_channel(self, store):
+        # `category` is what the panel groups by; `channel` is the unollapsed
+        # label beneath it, so a `bg` row still says which kind of bg it was.
+        store([
+            _row(slot="chat-1-1", credits=1.0),
+            _row(slot="cron:default:nightly", credits=2.0),
+        ])
+        rows = {r["slot"]: r for r in usage_mod.cost_breakdown(7)["conversations"]}
+        assert rows["chat-1-1"]["category"] == "dashboard"
+        assert rows["cron:default:nightly"]["category"] == "bg"
+        assert rows["cron:default:nightly"]["channel"] == "cron"
 
 
 class TestNonFiniteCredits:

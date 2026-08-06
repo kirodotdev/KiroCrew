@@ -33,6 +33,7 @@ import TelemetryPanel from '../pages/TelemetryPanel'
 
 const convo = (over: Record<string, unknown> = {}) => ({
   slot: 'chat-1-1700000000',
+  category: 'dashboard',
   title: 'A named conversation',
   credits: 100,
   turns: 10,
@@ -56,6 +57,7 @@ const cost = (over: Record<string, unknown> = {}) => ({
   priciest: { credits: 90, slot: 'chat-1-1700000000', ts: '2026-08-05' },
   by_model: [{ name: 'opus-5', credits: 800, turns: 80, per_turn: 10, share_pct: 80, delta_pct: 12 }],
   by_channel: [{ name: 'dashboard', credits: 900, turns: 90, per_turn: 10, share_pct: 90, delta_pct: 8 }],
+  by_category: [{ name: 'bg', credits: 900, turns: 90, per_turn: 10, share_pct: 90, delta_pct: 8 }],
   context_bands: [],
   conversations: [convo()],
   conversation_count: 1,
@@ -191,11 +193,11 @@ describe('TelemetryPanel — sorting', () => {
 
     const growth = screen.getByRole('button', { name: /Growth/ })
     await userEvent.click(growth)
-    const first = columnOrder('Conversation')
+    const first = columnOrder('Session')
     expect(first[first.length - 1]).toBe('unmeasured')
 
     await userEvent.click(growth)
-    const flipped = columnOrder('Conversation')
+    const flipped = columnOrder('Session')
     // The measured rows must have reversed — otherwise this asserts nothing.
     expect(flipped[0]).not.toBe(first[0])
     expect(flipped[flipped.length - 1]).toBe('unmeasured')
@@ -224,8 +226,8 @@ describe('TelemetryPanel — group by', () => {
     expect(screen.queryByText('A named conversation')).not.toBeInTheDocument()
     expect(document.querySelectorAll('table')).toHaveLength(1)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Channel' }))
-    await waitFor(() => expect(screen.getByText('dashboard')).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Category' }))
+    await waitFor(() => expect(screen.getByText('background')).toBeInTheDocument())
     expect(screen.queryByText('opus-5')).not.toBeInTheDocument()
   })
 })
@@ -294,25 +296,6 @@ describe('TelemetryPanel — share of spend', () => {
 })
 
 describe('TelemetryPanel — one mounted table per persisted sort', () => {
-  it('does not carry a filter across a group-by switch', async () => {
-    // Both groupings render a DataTable at the SAME position in one ternary, so
-    // React reconciled them as one instance and the filter useState survived the
-    // switch. The model table has no filter box, so the stale text was invisible
-    // there — and silently re-applied on the way back, hiding rows the user had
-    // no cue were filtered out.
-    await mount(only({ cost: cost() }))
-    await waitFor(() => expect(screen.getByText('A named conversation')).toBeInTheDocument())
-
-    await userEvent.type(screen.getByPlaceholderText(/Filter conversations/), 'nothing-matches-this')
-    await waitFor(() => expect(screen.queryByText('A named conversation')).not.toBeInTheDocument())
-
-    await userEvent.click(screen.getByRole('button', { name: 'Model' }))
-    await waitFor(() => expect(screen.getByText('opus-5')).toBeInTheDocument())
-
-    await userEvent.click(screen.getByRole('button', { name: 'Conversation' }))
-    await waitFor(() => expect(screen.getByText('A named conversation')).toBeInTheDocument())
-    expect((screen.getByPlaceholderText(/Filter conversations/) as HTMLInputElement).value).toBe('')
-  })
 
   it('marks the header that actually orders the rows, even from a stale saved sort', async () => {
     // A sort persisted by an older column layout names a column this set no
@@ -327,7 +310,7 @@ describe('TelemetryPanel — one mounted table per persisted sort', () => {
       th => th.getAttribute('aria-sort') !== 'none',
     )
     expect(marked).toHaveLength(1)
-    expect(marked[0].textContent).toMatch(/Conversation/)
+    expect(marked[0].textContent).toMatch(/Session/)
   })
 })
 
@@ -337,12 +320,70 @@ describe('TelemetryPanel — latency distribution order', () => {
     other_generations: 0, total_count: 10, ...over,
   })
 
-  it('opens in bucket-bound order, not by sample count', async () => {
-    // The one thing a distribution exists to show is its shape. Ordering the
-    // rows by count destroys it, and sorting the label column as TEXT is no
-    // better — "≤ 1.0s" collates before "≤ 500ms". The counts below are
-    // deliberately not monotonic with the bounds, so a count-ordered table
-    // cannot accidentally pass.
+  it('labels bg the same way in the session column and in the category grouping', async () => {
+    // `category_bg` was applied in the Session table's column but not in the
+    // Group-by-Category table, which renders through the shared share-columns —
+    // so ONE field read "background" in one view and the raw "bg" in the other.
+    await mount(only({
+      cost: cost({
+        conversations: [convo({ slot: 'cron:default:nightly', category: 'bg', channel: 'cron' })],
+        by_category: [{ name: 'bg', credits: 900, turns: 90, per_turn: 10, share_pct: 100 }],
+      }),
+    }))
+    await waitFor(() => expect(screen.getAllByText('background').length).toBeGreaterThan(0))
+    // The session view must not show the raw enum.
+    expect(screen.queryByText('bg')).toBeNull()
+
+    // The category grouping must agree rather than drift back to the enum.
+    await userEvent.click(screen.getAllByRole('button', { name: 'Category' })[0])
+    await waitFor(() => expect(screen.getAllByText('background').length).toBeGreaterThan(0))
+    expect(screen.queryByText('bg')).toBeNull()
+  })
+
+  it('gives each trend day a resolvable height so the bars are visible', async () => {
+    // The columns shipped without a height, so `height: N%` on each bar resolved
+    // against an auto-height parent and every column collapsed to zero: the
+    // section rendered as a heading over blank space no matter what the data said.
+    // A percentage height is only meaningful if an ancestor supplies one, so that
+    // is what this asserts — not the class name, but that the chain from the fixed
+    // 52px container down to the bar is unbroken.
+    await mount(
+      only({
+        startup: {
+          overall: stat({ count: 128 }), cold: stat(), warm: stat(),
+          outcome: { ready: 128 },
+          daily: [
+            { date: '2026-07-01', count: 4, cold_p50_ms: 4000, warm_p50_ms: 2000 },
+            { date: '2026-07-02', count: 6, cold_p50_ms: 8000, warm_p50_ms: 3000 },
+          ],
+          distribution: { buckets: [], bounds: [] },
+          phases: [],
+          by_channel: [],
+        },
+      }),
+    )
+    const day = await waitFor(() => {
+      const el = document.querySelector('[title*="2026-07-02"]')
+      if (!el) throw new Error('trend day not rendered')
+      return el as HTMLElement
+    })
+    // The day column must not be the thing that breaks the chain.
+    expect(day.className).toContain('h-full')
+    const bars = Array.from(day.querySelectorAll('span')) as HTMLElement[]
+    const heights = bars.map(b => b.style.height).filter(h => h.endsWith('%'))
+    expect(heights).toHaveLength(2)
+    // The tallest sample in the fixture defines the peak, so its bar is full height.
+    expect(heights[0]).toBe('100%')
+    expect(heights.every(h => parseFloat(h) > 0)).toBe(true)
+  })
+
+  it('renders buckets in bound order, not by sample count', async () => {
+    // The one thing a distribution exists to show is its shape, so the bars must
+    // follow the bounds. This was a sortable table whose label column sorted by
+    // COUNT, which scrambled the shape and gave no click that could restore it;
+    // it is now a histogram, where the order is the rendering order. The counts
+    // below are deliberately not monotonic with the bounds, so a count-ordered
+    // regression cannot pass.
     await mount(
       only({
         startup: {
@@ -359,33 +400,14 @@ describe('TelemetryPanel — latency distribution order', () => {
     await userEvent.click(screen.getByRole('button', { name: /Distribution/ }))
 
     await waitFor(() => expect(screen.getByText('≤ 500ms')).toBeInTheDocument())
-    expect(columnOrder('Latency bucket')).toEqual(['≤ 500ms', '≤ 1.0s', '≤ 3.0s', '> 3.0s'])
+    const labels = ['≤ 500ms', '≤ 1.0s', '≤ 3.0s', '> 3.0s']
+    const rendered = labels.map(l => screen.getByText(l))
+    // Document order must match bound order.
+    for (let i = 1; i < rendered.length; i++) {
+      expect(
+        rendered[i - 1].compareDocumentPosition(rendered[i]) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    }
   })
 })
 
-describe('TelemetryPanel — a filter that matches nothing', () => {
-  it('does not claim the data is missing', async () => {
-    // The table rendered its single no-data title whenever zero rows showed,
-    // so filtering 252 conversations down to none had the page assert that no
-    // spend was recorded — while holding all of it. Same class of false claim
-    // as a real 0.4% share rendering as "0%".
-    await mount(only({ cost: cost() }))
-    await waitFor(() => expect(screen.getByText('A named conversation')).toBeInTheDocument())
-
-    await userEvent.type(screen.getByPlaceholderText(/Filter conversations/), 'zzz-no-such-row')
-    await waitFor(() => expect(screen.queryByText('A named conversation')).not.toBeInTheDocument())
-
-    expect(screen.getByText('No rows match that filter')).toBeInTheDocument()
-    expect(screen.queryByText('No spend recorded in this window')).not.toBeInTheDocument()
-  })
-
-  it('still says so when the window really recorded nothing', async () => {
-    // The other half of the distinction: with no rows AND no filter, the
-    // no-data title is the correct and only honest message.
-    await mount(only({ cost: cost({ conversations: [], conversation_count: 0 }) }))
-    await waitFor(() =>
-      expect(screen.getByText('No spend recorded in this window')).toBeInTheDocument(),
-    )
-    expect(screen.queryByText('No rows match that filter')).not.toBeInTheDocument()
-  })
-})

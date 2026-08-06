@@ -142,6 +142,8 @@
     "pages.systemPage.cwd": "Abbreviation for \"current working directory\", labelling a filesystem path in the System diagnostics card. Practitioners in most languages keep the Latin acronym.",
     "pages.systemPage.os": "Abbreviation for \"operating system\", labelling the host OS name in the System diagnostics card. Keep whichever acronym practitioners in the target language use.",
     "pages.systemPage.pid": "Abbreviation for \"process ID\", labelling a numeric process identifier in the System diagnostics card. Keep the Latin acronym unless the target language has an established equivalent.",
+    "pages.telemetryPanel.max_col": "Column header on the latency profiles: the single slowest sample recorded. It is the far end of the tail and often orders of magnitude above p90, which is why the axis beside it is logarithmic.",
+    "pages.telemetryPanel.min_col": "Column header on the latency profiles: the single fastest sample this instrument recorded in the window. It anchors the left end of the log axis, so it is the floor the profile bar is measured from, not a typical value.",
     "pages.telemetryPanel.p50_col": "Column header on the latency tables: the median, i.e. half the measured samples finished at or below this duration. \"p50\" is standard percentile notation and is normally kept verbatim.",
     "pages.telemetryPanel.p90_col": "Column header on the latency tables: the slow tail, i.e. nine in ten measured samples finished at or below this duration. This is the figure a reader checks when something feels slow."
   }
