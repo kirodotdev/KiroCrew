@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleDashed,
   ExternalLink,
+  KeyRound,
   Link2,
   Loader2,
   RotateCw,
@@ -30,6 +31,7 @@ export type ConnectionCardState =
   | 'not-connected'
   | 'waiting-for-approval'
   | 'connected'
+  | 'not-verified'
   | 'needs-attention'
 
 type ConnectionAction = 'connect' | 'disconnect' | 'relay' | 'test'
@@ -129,6 +131,18 @@ export function connectionStateFor(
   if (oauth?.failed) return 'needs-attention'
   if (oauth?.completed || server.status === 'ok') return 'connected'
   if (locallyWaiting || oauth?.oauthUrl) return 'waiting-for-approval'
+  // The status probe carries no OAuth token — kiro-cli owns token custody and
+  // KiroCrew stores no credential — so a remote OAuth server answers it with 401
+  // and the gateway reports `needs_auth`. Two very different situations produce
+  // that identical answer: a server nobody has authorized, and a server
+  // authorized OUTSIDE the dashboard, which the runtime calls fine and which
+  // raised no `mcp_oauth` banner here. `needs_auth` is therefore honest about
+  // the PROBE (it needs authorization to see this server) and would be a claim
+  // we cannot support if restated as a fact about the server — which is why the
+  // state is named for what we know rather than for what the user must do. It
+  // must reach neither the error card (#1853) nor the spinner below, which would
+  // imply a grant is in flight.
+  if (server.status === 'needs_auth') return 'not-verified'
   if (server.status === 'error' || server.status === 'disabled') return 'needs-attention'
   return 'waiting-for-approval'
 }
@@ -215,6 +229,14 @@ function ConnectionCard({
       label: t('pages.connectionsPage.connected'),
       icon: <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />,
       tone: 'bg-ok-subtle text-ok',
+    },
+    // Warn tone, not the error tone: an unverifiable state is not a failure. The
+    // icon is static on purpose — a spinner would claim a grant is in flight
+    // when nothing is pending.
+    'not-verified': {
+      label: t('pages.connectionsPage.not_verified'),
+      icon: <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-warn-subtle text-warn',
     },
     'needs-attention': {
       label: t('pages.connectionsPage.needs_attention'),
@@ -340,6 +362,21 @@ function ConnectionCard({
                   {t('pages.connectionsPage.invalid_return_address')}
                 </p>
               )}
+            </div>
+          </div>
+        )}
+
+        {state === 'not-verified' && (
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn-subtle p-2.5 text-[12px] text-text">
+              <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
+              <span>{t('pages.connectionsPage.not_verified_help', { provider: provider.name })}</span>
+            </div>
+            <div className="flex justify-end">
+              <Btn primary onClick={() => void onReconnect()} disabled={!!busy}>
+                {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
+                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.authorize')}
+              </Btn>
             </div>
           </div>
         )}

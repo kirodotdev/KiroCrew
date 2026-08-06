@@ -26,6 +26,31 @@ describe('Connections card states', () => {
     expect(connectionStateFor(server('error'), undefined)).toBe('needs-attention')
   })
 
+  /**
+   * #1853: a tokenless probe of a remote OAuth server returns `needs_auth`. That
+   * must read as "we cannot see this server's authorization" — not as a broken
+   * connection, and not as the perpetual "waiting for approval" spinner the
+   * fallthrough produced before this state existed.
+   */
+  it('reports needs_auth as not-verified rather than an error card', () => {
+    expect(connectionStateFor(server('needs_auth'), undefined)).toBe('not-verified')
+  })
+
+  it('lets live OAuth evidence outrank a tokenless needs_auth probe', () => {
+    const oauth = (over: Partial<OAuthState>): OAuthState => ({
+      completed: false, failed: false, oauthUrl: '', error: '', timestamp: 1, ...over,
+    })
+    // A grant in flight owns the card: the spinner belongs to that attempt.
+    expect(connectionStateFor(server('needs_auth'), undefined, true)).toBe('waiting-for-approval')
+    expect(connectionStateFor(server('needs_auth'), oauth({ oauthUrl: 'https://example.com/auth' })))
+      .toBe('waiting-for-approval')
+    // A completed grant is stronger evidence than a probe that cannot see tokens.
+    expect(connectionStateFor(server('needs_auth'), oauth({ completed: true }))).toBe('connected')
+    // A refused grant is a real failure and still reads as one.
+    expect(connectionStateFor(server('needs_auth'), oauth({ failed: true, error: 'denied' })))
+      .toBe('needs-attention')
+  })
+
   it('keeps a newly added authorization error waiting until OAuth resolves', () => {
     expect(connectionStateFor(server('error'), undefined, true)).toBe('waiting-for-approval')
     expect(connectionStateFor(server('error'), {
