@@ -23,7 +23,7 @@ dynamic = ["dependencies", "optional-dependencies"]
 Homepage = "https://github.com/kirodotdev/KiroCrew"
 
 [project.scripts]
-kirocrew = "kiro_crew.cli:main"
+kirocrew = "kiro_crew._bootstrap:main"
 
 [dependency-groups]
 # Pinned dev tool versions for reproducible CI. Bump as needed.
