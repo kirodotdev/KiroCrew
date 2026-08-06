@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import threading
 import time
 from pathlib import Path
+
+from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -185,24 +185,15 @@ class SkillUsageLedger:
             }
             self._dirty = False
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(
-                prefix=".skill-usage-", suffix=".tmp", dir=str(self._path.parent)
-            )
-            try:
-                # os.fdopen takes ownership of fd immediately, so fd is always
-                # closed on context exit even if fchmod/dump raises. Doing
-                # os.fchmod(fd, ...) BEFORE fdopen would leak fd if it raised
-                # (the finally only unlinks tmp, it does not close fd).
-                with os.fdopen(fd, "w") as fh:
-                    os.fchmod(fh.fileno(), 0o600)
-                    json.dump(payload, fh)
-                os.replace(tmp, self._path)
-            finally:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
+            # The shared helper, not a hand-rolled temp-file dance: it applies
+            # the mode through ``platform_compat.fchmod_safe`` (a no-op where
+            # ``os.fchmod`` does not exist) and retries the rename against the
+            # Windows window in which an indexer or AV scanner holds a transient
+            # handle on either path. Naming ``os.fchmod`` directly would raise
+            # AttributeError there, which the handler below does NOT catch: it
+            # would escape the method with ``_dirty`` already cleared, so this
+            # snapshot is dropped instead of being retried by that handler.
+            atomic_write(self._path, json.dumps(payload), mode=0o600)
         except OSError as exc:
             logger.warning("skill-usage: could not write %s: %s", self._path, exc)
             with self._lock:
