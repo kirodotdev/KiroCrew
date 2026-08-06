@@ -666,11 +666,18 @@ The app bundles two skills declared in `app.json`:
   so a killed run still yields a verdict.
 - `skills/feature-demo-recording` — headless Playwright video recording
 
-`kirocrew-worktree-dev` is deliberately NOT bundled: the canonical copy is
-owned by the `skills/kirocrew-dev/` development-skills folder (synced into
-every install via the project-dir mechanism), and the app-bridged duplicate
-was removed because two copies of the same skill drift and get loaded
-nondeterministically against each other (PR #353 arbiter finding).
+`kirocrew-worktree-dev` carries no app-bridged copy: the canonical copy is
+owned by the `kirocrew-dev` development-skills suite under
+`src/kiro_crew/builtin_skills/`, and the app-bridged duplicate was removed
+because two copies of the same skill drift and get loaded nondeterministically
+against each other (PR #353 arbiter finding). That single-copy rule is what
+matters here; where the one copy lives is a packaging question, and it lives in
+the packaged tree so `_ensure_builtin_skills` reaches every distribution. The
+project-dir mechanism reaches only some: `_project_skills_dir()` reads
+`KIROCREW_PROJECT_DIR`, which a repo checkout and the desktop bundle both
+provide (`packaging/kirocrew-backend.spec` ships the top-level `skills/` tree
+and `website/electron/main.js` sets the variable), but a `pip install` from the
+wheel or sdist provides neither.
 
 Skills are registered as symlinks into `~/.kiro/crew/skills/` via the app bridge at
 two lifecycle points:

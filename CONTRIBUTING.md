@@ -74,8 +74,8 @@ without Slack.
 ## Development Skills (agents and humans)
 
 The contributor workflow is codified as agent-loadable skills in
-[`skills/kirocrew-dev/`](skills/kirocrew-dev/) — the canonical definition of
-how code gets written, tested, and reviewed here:
+[`src/kiro_crew/builtin_skills/kirocrew-dev/`](src/kiro_crew/builtin_skills/kirocrew-dev/)
+— the canonical definition of how code gets written, tested, and reviewed here:
 
 - **`kirocrew-worktree-dev`** — the HARD RULE workflow: every change in a git
   worktree, the blocking build gates, the built-dist gotcha, preview paths.

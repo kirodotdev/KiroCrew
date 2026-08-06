@@ -307,10 +307,19 @@ class TestRelocatedSkillCleanup:
         assert second.read_text(encoding="utf-8").endswith("SECOND rollback copy")
         assert not (old / "SKILL.md").exists()
 
-    def test_flat_copy_untouched_when_nested_missing(self, tmp_path: Path) -> None:
+    def test_flat_copy_untouched_when_nested_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Fail-safe: if the nested replacement never synced, the flat copy is
         # the ONLY working copy — it must stay discoverable.
+        #
+        # The empty source dir is what makes "never synced" real. Relying on a
+        # relocated skill simply not being packaged would stop testing this the
+        # moment that skill ships.
+        from kiro_crew import skills as skills_mod
         from kiro_crew.skills import _ensure_builtin_skills
+
+        monkeypatch.setattr(skills_mod, "_BUILTIN_SKILLS_DIR", tmp_path / "no-builtins")
 
         base = tmp_path / "skills"
         old = base / "babysit"
