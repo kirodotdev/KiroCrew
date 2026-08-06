@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1060,6 +1061,81 @@ class TestInitCron:
 
         assert result == "cron result"
         assert job.last_result == "cron result"
+
+    @pytest.mark.asyncio
+    async def test_cron_name_is_redacted_before_delivery(self):
+        """A cron NAME is LLM-authored text on its way to Slack.
+
+        The name is interpolated into the ``⏰ *Cron: …*`` header, which stays
+        outside the render pipeline on purpose (it is already Slack mrkdwn, so
+        converting it would re-interpret its ``*bold*``). Skipping conversion also
+        means skipping the pipeline's redaction, so the name needs its own pass --
+        an agent can create a cron via the ``cron_add`` tool, so a credential can
+        land in that field and ride into the channel header.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.script = ""
+        job.command = ""
+        job.id = "j1"
+        job.name = f"nightly {secret} sweep"
+        job.persistent_session = True
+        job.agent_sequence = []
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = "U1"
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+
+        with patch(
+            "kiro_crew.slack.gateway.stream_and_collect",
+            new_callable=AsyncMock,
+            return_value="cron result",
+        ):
+            with patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=("cron:j1", "run task"),
+            ):
+                await callback(job)
+
+        orch.slack.post_blocks.assert_awaited()
+        delivered = json.dumps(orch.slack.post_blocks.call_args.args)
+        assert secret not in delivered, "a credential in the cron name reached Slack"
+        assert secret[:8] not in delivered, "a credential fragment reached Slack"
 
     @pytest.mark.asyncio
     async def test_cron_callback_dedup_suppresses(self):
@@ -4088,24 +4164,45 @@ class TestDeliverCronResponse:
     async def test_redacts_before_posting(self):
         # Defense-in-depth: the helper must redact at the Slack boundary even
         # if the caller already redacted (security-controls).
+        #
+        # Asserted on the OUTCOME rather than on which redactor got called. The
+        # boundary is now render_for_slack (which runs redact_via_context on both
+        # sides of the mrkdwn conversion), so a mock-call assertion against
+        # gateway.redact_credentials would only prove the old wiring still
+        # existed -- it would pass for a path that redacted nothing and fail for
+        # a correct path that redacts somewhere else. What must be true is that
+        # the secret does not reach Slack.
         orch, slack = self._orch_with_slack()
         orch.sessions.get_channel = MagicMock(return_value="C123")
-        with (
-            patch(
-                "kiro_crew.slack.gateway.redact_exfiltration_urls",
-                return_value=("urlsafe", []),
-            ) as rurl,
-            patch(
-                "kiro_crew.slack.gateway.redact_credentials",
-                return_value=("REDACTED", []),
-            ) as rcred,
-        ):
-            posted = await orch._deliver_cron_response("cron:job1", "tok http://evil.example")
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        posted = await orch._deliver_cron_response("cron:job1", f"tok {secret}")
 
         assert posted is True
-        rurl.assert_called_once()
-        rcred.assert_called_once()
-        assert "REDACTED" in slack.post_message.call_args.args[1]
+        body = slack.post_message.call_args.args[1]
+        assert secret not in body
+        assert secret[:8] not in body, "a credential fragment reached Slack"
+
+    @pytest.mark.asyncio
+    async def test_redacts_a_credential_ansi_escapes_had_split(self):
+        """The reassembly hazard, at this call site.
+
+        An escape sequence dropped into the middle of a key hides it from the
+        credential regex, and the ANSI strip inside to_slack_mrkdwn puts it back
+        together -- so a path that redacts BEFORE normalising posts the key
+        intact. This is the case the old redact-then-convert ordering here got
+        wrong, and it is why the shared pipeline strips ANSI first.
+        """
+        orch, slack = self._orch_with_slack()
+        orch.sessions.get_channel = MagicMock(return_value="C123")
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        obfuscated = secret[:4] + "\x1b[0m" + secret[4:]
+        posted = await orch._deliver_cron_response("cron:job1", f"tok {obfuscated}")
+
+        assert posted is True
+        body = slack.post_message.call_args.args[1]
+        assert secret not in body, "the ANSI strip reassembled the credential"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

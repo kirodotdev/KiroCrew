@@ -5223,16 +5223,17 @@ async def _run_chat(
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
                     extract_options,
-                    split_message,
-                    to_slack_mrkdwn,
+                    render_for_slack,
                 )
 
-                _mirror_text = to_slack_mrkdwn(assistant_text)
-                _mirror_text = redact_exfiltration_urls(_mirror_text)[0]
-                _mirror_text = redact_credentials(_mirror_text)[0]
-                _mirror_text, _mirror_options = extract_options(_mirror_text)
+                # Extract the OPTIONS tag from the RAW text, before rendering.
+                # It is a plain-text marker, so pulling it off after conversion
+                # means whatever conversion did to the tail decides whether the
+                # controls render at all -- and a >39,000-char turn used to lose
+                # the tag entirely to to_slack_mrkdwn's self-truncation.
+                _mirror_body, _mirror_options = extract_options(assistant_text)
 
-                for _part in split_message(_mirror_text):
+                for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
                     await state.slack_client.post_blocks(
