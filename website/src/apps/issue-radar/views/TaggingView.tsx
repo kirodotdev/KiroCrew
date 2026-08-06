@@ -388,8 +388,7 @@ function TaggingDashboard() {
     issueRadarApi.addSettingLabel(active, key, rec.name)
       .then((res) => qc.setQueryData(['issue-radar', 'settings', scopeKey], res))
       .catch((e: Error) => setSettingsError(
-        `"${rec.name}" was created on GitHub, but this repo's local triage settings `
-        + `could not be updated: ${e.message}`,
+        i18nT('apps.issueRadar.views.taggingView.created_but_settings_not_updated', { name: rec.name, error: e.message }),
       ))
   }
 
@@ -499,8 +498,8 @@ function TaggingDashboard() {
               {batchPending
                 ? i18nT('apps.issueRadar.views.taggingView.analyzing')
                 : exhausted
-                  ? `Suggest again (${nextSlice})`
-                  : `Suggest labels (next ${nextSlice})`}
+                  ? i18nT('apps.issueRadar.views.taggingView.suggest_again', { n: nextSlice })
+                  : i18nT('apps.issueRadar.views.taggingView.suggest_labels_next', { n: nextSlice })}
             </button>
             <button
               onClick={() => applyAll.mutate(applicable)}

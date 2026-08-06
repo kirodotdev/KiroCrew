@@ -192,8 +192,8 @@ export function PostureDisclosureRow({
                   <SearchInput
                     value={filter}
                     onChange={e => setFilter(e.target.value)}
-                    placeholder={`Filter ${control.items.length} ${control.unit}…`}
-                    aria-label={`Filter ${control.label}`}
+                    placeholder={i18nT('pages.settings.postureDisclosure.filter_items', { n: control.items.length, unit: control.unit })}
+                    aria-label={i18nT('pages.settings.postureDisclosure.filter', { label: control.label })}
                   />
                 </div>
               )}

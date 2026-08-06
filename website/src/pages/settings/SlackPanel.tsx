@@ -51,7 +51,7 @@ function connectionHint(config: SlackConfigData): string {
     return i18nT('pages.settings.slackPanel.slack_rejected_the_stored_tokens_invalid_auth_re')
   }
   if (config.connect_error) {
-    return `Slack connection failed at startup (${config.connect_error}). Check network access to slack.com, then restart the gateway.`
+    return i18nT('pages.settings.slackPanel.slack_connection_failed_at_startup', { error: config.connect_error })
   }
   return i18nT('pages.settings.slackPanel.tokens_are_saved_but_not_yet_active_restart_the')
 }
@@ -71,7 +71,7 @@ export function TagListEditor({ label, description, values, placeholder, onChang
   const add = () => {
     const v = draft.trim()
     if (!v) return
-    if (validate && !validate(v)) { setErr(`"${v}" is not a valid ID`); return }
+    if (validate && !validate(v)) { setErr(i18nT('pages.settings.slackPanel.not_a_valid_id', { name: v })); return }
     if (values.includes(v)) { setDraft(''); return }
     onChange([...values, v])
     setDraft('')
@@ -88,7 +88,7 @@ export function TagListEditor({ label, description, values, placeholder, onChang
               {v}
               {!readOnly && (
                 <button type="button" onClick={() => onChange(values.filter(x => x !== v))}
-                  className="text-muted hover:text-danger transition-colors" aria-label={`Remove ${v}`}>
+                  className="text-muted hover:text-danger transition-colors" aria-label={i18nT('pages.settings.slackPanel.remove', { name: v })}>
                   <X size={12} />
                 </button>
               )}

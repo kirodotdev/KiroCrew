@@ -337,7 +337,9 @@ export default function ComputerUseLiveView() {
     )
   }
 
-  const headerLabel = appName ? `Desktop — ${appName}` : i18nT('components.computerUseLiveView.desktop_live')
+  const headerLabel = appName
+    ? i18nT('components.computerUseLiveView.desktop_app', { name: appName })
+    : i18nT('components.computerUseLiveView.desktop_live')
 
   return (
     <div

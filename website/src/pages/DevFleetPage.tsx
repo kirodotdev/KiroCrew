@@ -16,7 +16,7 @@ import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check, Video, X,
-  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info,
+  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 
@@ -376,7 +376,7 @@ interface Worktree {
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
   path?: string
 }
-interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; staged_target?: string | null; manual_restart?: string }
+interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -549,6 +549,11 @@ export default function DevFleetPage() {
   const [provLogOpen, setProvLogOpen] = useState<Record<string, boolean>>({})
   const provDoneTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const [rebaseResult, setRebaseResult] = useState<Record<string, RebaseResult>>({})
+  // A failed restart is the one error on this page that carries an instruction
+  // rather than just a symptom. Toasts are pointer-events:none and self-dismiss,
+  // so they cannot be selected or copied and a long message vanishes mid-read —
+  // keep the text on the page until it is dealt with.
+  const [gatewayError, setGatewayError] = useState<string | null>(null)
   const [podLogs, setPodLogs] = useState<Record<string, string>>({})
   const [podLogsLoading, setPodLogsLoading] = useState<Record<string, boolean>>({})
   const rebaseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -944,20 +949,34 @@ export default function DevFleetPage() {
       await sleep(2000)
     }
     setRestarting(false)
-    notify(i18nT('pages.devFleetPage.gateway_did_not_come_back_within_60s_reload_the'), { type: 'error' })
+    // Same treatment as a failed restart: the user may have walked away during
+    // the 60s overlay, and a self-dismissing toast leaves a stale page with no
+    // explanation for why it never came back.
+    const timedOut = i18nT('pages.devFleetPage.gateway_did_not_come_back_within_60s_reload_the')
+    notify(timedOut, { type: 'error' })
+    setGatewayError(timedOut)
   }
 
   async function restartGateway() {
     const ok = await askConfirm(i18nT('pages.devFleetPage.restart_gateway_2'), i18nT('pages.devFleetPage.applies_the_last_pull_build_the_dashboard_will_b'), { confirmLabel: i18nT('pages.devFleetPage.restart') })
     if (!ok) return
     setRestarting(true)
+    setGatewayError(null)
     try {
       const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
-      if (!r?.ok) { notify(r?.error || i18nT('pages.devFleetPage.restart_failed'), { type: 'error' }); setRestarting(false); return }
+      if (!r?.ok) {
+        const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
+        notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); return
+      }
       // Wait for the NEW process (a different start identity), not "a 200 came
       // back" — see gatewayRecovered.
       await awaitGatewayBack(r.start_id ?? null)
-    } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false) }
+    } catch (e: unknown) {
+      // Bare transport text ("Failed to fetch") says nothing on its own, and this
+      // lands in a persistent banner — lead with what failed.
+      const msg = `${i18nT('pages.devFleetPage.restart_failed')}: ${(e as Error)?.message || String(e)}`
+      notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false)
+    }
   }
 
   async function makeLive(w: Worktree) {
@@ -982,7 +1001,13 @@ export default function DevFleetPage() {
         ok?: boolean; error?: string; start_id?: string | null
         staged_only?: boolean; notice?: string
       }>('/make-live', { path: w.path })
-      if (!r?.ok) { notify(r?.error || i18nT('pages.devFleetPage.make_live_failed'), { type: 'error' }); setFlag(w.name + ':makelive', false); return }
+      if (!r?.ok) {
+        // Same treatment as a failed restart: this branch surfaces
+        // restart_detached's message, which names a remedy the operator has to
+        // act on — useless in a 7s toast.
+        const msg = r?.error || i18nT('pages.devFleetPage.make_live_failed')
+        notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(w.name + ':makelive', false); return
+      }
       // Staged, not bounced: this gateway is not a service Dev Fleet can
       // restart, so the operator finishes the cutover with the command the
       // backend names in `notice`. There is no replacement process coming, so
@@ -1002,7 +1027,10 @@ export default function DevFleetPage() {
       setRestarting(true)
       await awaitGatewayBack(r.start_id ?? null)
       setFlag(w.name + ':makelive', false)
-    } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }); setRestarting(false); setFlag(w.name + ':makelive', false) }
+    } catch (e: unknown) {
+      const msg = `${i18nT('pages.devFleetPage.make_live_failed')}: ${(e as Error)?.message || String(e)}`
+      notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); setFlag(w.name + ':makelive', false)
+    }
   }
 
   async function loadPodLogs(name: string) {
@@ -1031,6 +1059,11 @@ export default function DevFleetPage() {
   const gatewayReason = fleet?.gateway_service_active === false
     ? (fleet?.gateway_service_reason || null)
     : null
+  // Why the code being managed is not the code being run, when they differ.
+  // Rendered ABOVE the other two notices because it explains them: an older
+  // serving install is also what makes the Restart eligibility and the staged
+  // bundle wrong, so reading those first sends you down the wrong trail.
+  const servingReason = fleet?.serving_install_reason || null
   const isDiscoveryError = !fleetError && !!fleet?.error
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
@@ -1280,7 +1313,7 @@ export default function DevFleetPage() {
 
   const legacyToggle = legacyAll.length > 0 ? (
     <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)' }} title={i18nT('pages.devFleetPage.worktrees_created_under_a_previous_repository_na')}>
-      {showLegacy ? `Hide ${legacyAll.length} legacy worktrees` : `${legacyAll.length} legacy worktrees hidden \u00b7 Show`}
+      {showLegacy ? i18nT('pages.devFleetPage.hide_legacy_worktrees', { n: legacyAll.length }) : i18nT('pages.devFleetPage.legacy_worktrees_hidden_show', { n: legacyAll.length })}
     </Btn>
   ) : null
   let body: ReactNode
@@ -1306,7 +1339,7 @@ export default function DevFleetPage() {
               <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.remove')}</div>
               {pruneDialog.candidates.map((c) => (
                 <label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
-                  <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={`Select ${c.name}`} />
+                  <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={i18nT('pages.devFleetPage.select', { name: c.name })} />
                   <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{c.name}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{pruneVerdictLabel(c.code)}</span>
                 </label>
@@ -1400,6 +1433,40 @@ export default function DevFleetPage() {
               <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
             </p>
+            {gatewayError && (
+              <div
+                role="alert"
+                data-testid="gateway-restart-error"
+                className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed text-danger"
+              >
+                <AlertTriangle size={14} className="lucide-inline shrink-0 mt-0.5" />
+                {/* select-text + break-words: the message can be a pair of
+                    commands with absolute paths that the operator has to run. */}
+                <span className="min-w-0 flex-1 break-words select-text">{gatewayError}</span>
+                <Btn
+                  onClick={() => setGatewayError(null)}
+                  aria-label={i18nT('app.dismiss')}
+                  title={i18nT('app.dismiss')}
+                  className="shrink-0"
+                >
+                  <X size={13} className="lucide-inline" />
+                </Btn>
+              </div>
+            )}
+            {servingReason && (
+              <div
+                role="alert"
+                data-testid="serving-install-warning"
+                className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn-subtle px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed text-warn"
+              >
+                <AlertTriangle size={14} className="lucide-inline shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  {/* break-words: the two embedded install paths are unbroken
+                      tokens and CSS does not wrap at '/'. */}
+                  <span className="break-words">{servingReason}</span>
+                </div>
+              </div>
+            )}
             {!podsAvailable && (
               <div
                 role="note"

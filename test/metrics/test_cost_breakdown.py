@@ -8,6 +8,7 @@ dashboard spend.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from datetime import datetime, timedelta, timezone
 
@@ -301,6 +302,53 @@ class TestNonFiniteCredits:
         assert d["turns"] == 1
         assert d["credits"] == 5.0
         assert math.isfinite(d["credits"])
+
+    def test_the_substitution_is_reported(self, tmp_path, monkeypatch, caplog):
+        """Zeroing a provider's measurement books the turn as free.
+
+        Silently, before this: the row is valid JSON and reads as a real turn
+        that cost nothing, so nobody has a reason to look at the provider.
+        """
+        monkeypatch.setattr(usage_mod, "_token_usage_dir", lambda: tmp_path)
+        with caplog.at_level(logging.WARNING, logger=usage_mod.__name__):
+            usage_mod._write_token_record(
+                {"_type": "tokens", "credits": float("nan")}, datetime.now(timezone.utc)
+            )
+        assert "credits" in caplog.text
+        assert "non-finite" in caplog.text
+
+    def test_every_affected_field_is_named(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(usage_mod, "_token_usage_dir", lambda: tmp_path)
+        with caplog.at_level(logging.WARNING, logger=usage_mod.__name__):
+            usage_mod._write_token_record(
+                {"_type": "tokens", "credits": float("nan"), "cost": float("inf")},
+                datetime.now(timezone.utc),
+            )
+        assert "credits" in caplog.text and "cost" in caplog.text
+
+    def test_a_clean_record_is_written_quietly(self, tmp_path, monkeypatch, caplog):
+        # The warning has to mean something when it appears, so the ordinary
+        # path must not emit one.
+        monkeypatch.setattr(usage_mod, "_token_usage_dir", lambda: tmp_path)
+        with caplog.at_level(logging.WARNING, logger=usage_mod.__name__):
+            usage_mod._write_token_record(
+                {"_type": "tokens", "credits": 12.5}, datetime.now(timezone.utc)
+            )
+        assert caplog.records == []
+
+    def test_a_serialization_failure_that_is_not_a_non_finite_float_still_raises(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # `allow_nan=False` is not the only way json.dumps raises ValueError.
+        # Sanitizing cannot fix the others, so they must surface rather than be
+        # absorbed into a warning that names no field.
+        monkeypatch.setattr(usage_mod, "_token_usage_dir", lambda: tmp_path)
+        cyclic: dict = {"_type": "tokens"}
+        cyclic["self"] = cyclic
+        with caplog.at_level(logging.WARNING, logger=usage_mod.__name__):
+            with pytest.raises(ValueError):
+                usage_mod._write_token_record(cyclic, datetime.now(timezone.utc))
+        assert caplog.records == []
 
 
 class TestDegenerateInputs:

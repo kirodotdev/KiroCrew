@@ -393,7 +393,7 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
       <span
         ref={ref}
         tabIndex={0}
-        aria-label={`Resized to fit model limits: ${resize.fromW}×${resize.fromH} to ${resize.toW}×${resize.toH}`}
+        aria-label={i18nT('components.chatInput.resized_to_fit_model_limits_2', { fromW: resize.fromW, fromH: resize.fromH, toW: resize.toW, toH: resize.toH })}
         className="absolute bottom-1 left-1 z-10 px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default"
         onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
       >{i18nT('components.chatInput.resized')}</span>
@@ -427,7 +427,7 @@ function FilePreviewStrip({ files, resizedInfo, onRemove }: { files: string[]; r
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
             <button
               type="button"
-              aria-label={`Open preview of ${path.split('/').pop()}`}
+              aria-label={i18nT('components.chatInput.open_preview_of', { name: path.split('/').pop() })}
               className="block cursor-pointer"
               onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
             >
@@ -656,7 +656,7 @@ function ChatInput({
         // a dashboard bug rather than the job's documented timeout.
         setApprovalNotice(
           approvalIsUnattended
-            ? `That ${approvalSource} request already timed out and was denied — the job is no longer waiting. Check the approvals feed for the record.`
+            ? i18nT('components.chatInput.that_request_already_timed_out_and_was_denied', { source: approvalSource })
             : i18nT('components.chatInput.that_approval_expired_the_turn_it_belonged_to_is')
         )
         return
@@ -807,11 +807,11 @@ function ChatInput({
   // is truncated or the shelf has collapsed to icon-only.
   const projectChipTitle = useMemo(() => {
     if (!project) return i18nT('components.chatInput.select_project')
-    const base = `Project: ${project}`
+    const base = i18nT('components.chatInput.project_2', { path: project })
     if (!projectBranch) return base
     return projectDetached
-      ? `${base}\nDetached HEAD at ${projectBranch}`
-      : `${base}\nBranch: ${projectBranch}`
+      ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
+      : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [project, projectBranch, projectDetached])
   // Focus the composer when the dictation panel is up (as before) OR while a
   // batch transcript is landing (voiceTranscribing), so Enter sends and typing
@@ -2130,7 +2130,7 @@ function ChatInput({
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
-                            aria-label={`Approve sub-agent: ${a.task || a.agent || a.id}`}
+                            aria-label={i18nT('components.chatInput.approve_sub_agent', { name: a.task || a.agent || a.id })}
                             onClick={() => resolveOneSpawn(a, 'approve')}
                             className={approvalBtnClass}
                           >
@@ -2138,7 +2138,7 @@ function ChatInput({
                           </button>
                           <button
                             type="button"
-                            aria-label={`Reject sub-agent: ${a.task || a.agent || a.id}`}
+                            aria-label={i18nT('components.chatInput.reject_sub_agent', { name: a.task || a.agent || a.id })}
                             onClick={() => resolveOneSpawn(a, 'reject')}
                             className={`${approvalBtnClass} hover:!text-danger hover:!border-danger`}
                           >
@@ -2641,7 +2641,7 @@ function ChatInput({
                 // disabled on the originating session too.
                 disabled={!value.trim() || optimizePending || !connected}
                 aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
-                title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : `Optimize prompt (${platformShortcut('Cmd+Shift+Enter')})`}
+                title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : i18nT('components.chatInput.optimize_prompt_2', { shortcut: platformShortcut('Cmd+Shift+Enter') })}
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -2700,8 +2700,8 @@ function ChatInput({
               className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
               onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
-              aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : `Agent: ${agentName}`}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : i18nT('components.chatInput.agent', { name: agentName })}
+              aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : i18nT('components.chatInput.agent', { name: agentName })}
             >
               <Bot size={13} className="shrink-0 opacity-70" />
               {!shelfCompact && <span className="truncate max-w-[160px]">{agentName}</span>}
@@ -2796,7 +2796,7 @@ function ChatInput({
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : `Model: ${modelName}`}
+              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : i18nT('components.chatInput.model_2', { name: modelName })}
             >
               <span className="truncate max-w-[180px]">{modelName}</span>
               {onReasoningEffortClick && !shelfCompact && (

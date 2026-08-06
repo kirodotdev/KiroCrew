@@ -312,7 +312,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
           if (res.error) {
             // eslint-disable-next-line no-console -- surface STT failures for debugging
             console.error('[voice] STT error:', res.error)
-            setError(`Transcription failed: ${res.error}`)
+            setError(i18nT('hooks.useVoiceInput.transcription_failed', { error: res.error }))
           } else if (res.text) onText(res.text, sessionAtStart)
         } catch (err) {
           // eslint-disable-next-line no-console -- surface transcription failures for debugging

@@ -1914,7 +1914,7 @@ function ChatSidebar({
              *  the same one-click way to start a session inside a folder. */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-menu`} className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.more')} aria-label={`Folder options for ${folder.name}`} aria-haspopup="menu" onMouseDown={e => { e.stopPropagation() }} onClick={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
+                <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-menu`} className="text-muted hover:text-text bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.folder_options_for', { name: folder.name })} aria-haspopup="menu" onMouseDown={e => { e.stopPropagation() }} onClick={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
                   <MoreVertical size={11} />
                 </button>
               </DropdownMenuTrigger>
@@ -1928,7 +1928,7 @@ function ChatSidebar({
                   onPick={pid => moveFolderTo(folder.id, pid)} />
                 <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+                <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
             <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, columnId) }} onMouseDown={e => { e.stopPropagation() }} onKeyDown={e => { e.stopPropagation() }}>
@@ -1996,7 +1996,7 @@ function ChatSidebar({
     const subagentLabel = subagentStarted === 0
       ? `${subagentQueuedCount} agent${subagentQueuedCount === 1 ? '' : 's'} queued`
       : subagentQueuedCount > 0
-        ? `${subagentStarted} running · ${subagentQueuedCount} queued`
+        ? i18nT('pages.chatSidebar.running_queued', { started: subagentStarted, queued: subagentQueuedCount })
         : `${subagentStarted} agent${subagentStarted === 1 ? '' : 's'} running`
     // Plain literal, like the running/queued label above it: `en.json` is
     // codemod-generated and carries no interpolated values, so a counted
@@ -2021,8 +2021,8 @@ function ChatSidebar({
     const goalLoopLabel = !goalLoop
       ? ''
       : goalLoop.max_cycles > 0
-        ? `Loop ${goalLoop.cycle_count}/${goalLoop.max_cycles}`
-        : `Loop · ${goalLoop.cycle_count}`
+        ? i18nT('pages.chatSidebar.loop', { count: goalLoop.cycle_count, total: goalLoop.max_cycles })
+        : i18nT('pages.chatSidebar.loop_2', { count: goalLoop.cycle_count })
     // Whatever this row would have said if no loop were running, reused as the
     // loop line's trailing detail. This is why the loop branch can outrank the
     // working signals below without swallowing them: live workflow/subagent/tool
@@ -2211,7 +2211,7 @@ function ChatSidebar({
               {(scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]]) || s.last_ts || s.created ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
                   {scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]] && (
-                    <span className="text-[10px] text-muted font-normal inline-flex items-center gap-0.5 max-w-[90px]" title={`In folder: ${folderNameById[slotFolders[s.key]]}`}>
+                    <span className="text-[10px] text-muted font-normal inline-flex items-center gap-0.5 max-w-[90px]" title={i18nT('pages.chatSidebar.in_folder', { name: folderNameById[slotFolders[s.key]] })}>
                       <Folder size={9} className="shrink-0" aria-hidden />
                       <span className="truncate">{folderNameById[slotFolders[s.key]]}</span>
                     </span>
@@ -2257,7 +2257,7 @@ function ChatSidebar({
               // read as unattended progress. Nothing is lost by ranking it high
               // — `goalLoopDetail` carries whatever the lower branch would have
               // shown, so this line reads "Loop 7/24 · 3 agents running".
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoop.max_cycles > 0 ? `Goal loop · cycle ${goalLoop.cycle_count} of ${goalLoop.max_cycles}` : `Goal loop · cycle ${goalLoop.cycle_count} (no cap)`}>
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
                 <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden />
                 <span className="truncate"><span className="font-medium text-accent">{goalLoopLabel}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
               </div>
@@ -2443,7 +2443,7 @@ function ChatSidebar({
         // an interactive element can't legally contain other interactive
         // elements (invalid ARIA), and a folder row is a grouping, not an action.
         role="group"
-        aria-label={`Folder ${folder.name}`}
+        aria-label={i18nT('pages.chatSidebar.folder_2', { name: folder.name })}
         // The whole header is the drag-to-reorder handle (pointer listeners only,
         // no role override). 8px activation distance keeps the collapse toggle
         // and action buttons clickable; drag is off while renaming.
@@ -2479,7 +2479,7 @@ function ChatSidebar({
               {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
               <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
             </button>
-            {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={`Default agent: ${folder.default_agent}`}>{folder.default_agent}</span>}
+            {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={i18nT('pages.chatSidebar.default_agent', { name: folder.default_agent })}>{folder.default_agent}</span>}
           </>
         )}
         {!(editingId === folder.id && editScope === 'list') && (
@@ -2488,7 +2488,7 @@ function ChatSidebar({
            *  <button>s of the collapse toggle (valid ARIA — no nesting). */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.more')} aria-label={`Folder options for ${folder.name}`} aria-haspopup="menu" data-testid={`folder-menu-${folder.id}`} onMouseDown={e => { e.stopPropagation() }}><MoreVertical size={12} /></button>
+              <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.folder_options_for', { name: folder.name })} aria-haspopup="menu" data-testid={`folder-menu-${folder.id}`} onMouseDown={e => { e.stopPropagation() }}><MoreVertical size={12} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
               <DropdownMenuItem data-testid={`folder-rename-${folder.id}`} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
@@ -2514,7 +2514,7 @@ function ChatSidebar({
                 <DropdownMenuItem data-testid={`folder-hide-${folder.id}`} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(`Delete "${folder.name}"? Sessions will be ungrouped.`)) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+              <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
@@ -3096,8 +3096,8 @@ function ChatSidebar({
                         key={f.id}
                         style={{ paddingLeft: `${8 + depth * 14}px` }}
                         title={hiddenByAncestor
-                          ? `${f.name} is hidden because a parent folder is hidden`
-                          : hidden ? `Show ${f.name} in flat view` : `Hide ${f.name} from flat view`}
+                          ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
+                          : hidden ? i18nT('pages.chatSidebar.show_in_flat_view', { name: f.name }) : i18nT('pages.chatSidebar.hide_from_flat_view', { name: f.name })}
                         // Keep the menu open so several folders can be toggled.
                         onSelect={e => { e.preventDefault(); toggleFolderFilter(f.id) }}
                         data-testid={`folder-filter-${f.id}`}
@@ -3369,7 +3369,7 @@ function ChatSidebar({
                        focus, but we deliberately omit aria-modal — the popover has no
                        backdrop and is outside-click-dismissible, so claiming the rest of
                        the page is inert would mislead screen readers. */
-                    <div ref={columnPopoverRef} role="dialog" aria-label={`Filter tags: ${col.name || 'column'}`} tabIndex={-1} data-column-popover={col.id}
+                    <div ref={columnPopoverRef} role="dialog" aria-label={i18nT('pages.chatSidebar.filter_tags', { name: col.name || 'column' })} tabIndex={-1} data-column-popover={col.id}
                       className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px] outline-none"
                       style={{ top: popoverPos.top, left: popoverPos.left }}
                       onClick={e => e.stopPropagation()}

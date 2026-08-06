@@ -56,7 +56,7 @@ function StatusBadge({ config }: { config: TeamsConfigData }) {
 function connectionHint(config: TeamsConfigData): string {
   if (config.connected || !config.configured) return ''
   if (config.connect_error) {
-    return `Teams credential check failed (${config.connect_error}). Verify the App ID / password / tenant, then restart the gateway.`
+    return i18nT('pages.settings.teamsPanel.teams_credential_check_failed', { error: config.connect_error })
   }
   return i18nT('pages.settings.teamsPanel.settings_are_saved_but_the_channel_is_not_runnin')
 }

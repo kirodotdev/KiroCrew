@@ -904,7 +904,33 @@ def _token_auth_items() -> list[PostureItem]:
     # read at call time — the documented circular-import exception, and it keeps
     # the advertised windows derived from the enforcing module rather than
     # restated as literals that could drift.
-    from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS
+    from kiro_crew.dashboard.token_auth import (
+        LINK_WINDOW_SECS,
+        MAX_SESSION_TTL_SECS,
+        proxied_pin_observed,
+    )
+
+    # Tri-state, deliberately, and derived from the LIVE bindings so it recovers
+    # on its own. A pin that has collapsed onto a same-host proxy's loopback
+    # address is NOT the control this row used to advertise, and "nothing is
+    # pinned right now" is not evidence that pins are effective — rendering
+    # either as the plain claim is the failure this row is being corrected for.
+    _pinned = proxied_pin_observed()
+    if _pinned is None:
+        _pin_detail = (
+            "A session is bound to the address that first used it. No session is "
+            "currently pinned, so the effective scope is not known yet"
+        )
+    elif _pinned:
+        _pin_detail = (
+            "SHARED, not per-client: sessions are binding to a proxy's address rather than a "
+            "client's — either a same-host tunnel (cloudflared / ngrok / tailscale serve) or a "
+            "reverse proxy in front of this gateway — so every client reaching the dashboard "
+            "through it satisfies the same pin. Reach the dashboard directly, or over a "
+            "transport that preserves the client address, for the pin to identify one client"
+        )
+    else:
+        _pin_detail = "A session is bound to the client address that first used it"
 
     return [
         PostureItem(
@@ -913,7 +939,7 @@ def _token_auth_items() -> list[PostureItem]:
         ),
         PostureItem(
             label="IP pinning",
-            detail="A token is bound to the IP that first used it",
+            detail=_pin_detail,
         ),
         PostureItem(
             label="Single-use link nonce",

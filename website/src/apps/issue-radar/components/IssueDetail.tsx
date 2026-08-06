@@ -205,7 +205,9 @@ function AiSuggestions({
         {suggestions.map((s, i) => {
           const color = colorByName.get(s.name) ?? '888888'
           const tip = canWrite
-            ? (s.reason ? `Add “${s.name}” — ${s.reason}` : `Add “${s.name}”`)
+            ? (s.reason
+              ? i18nT('apps.issueRadar.components.issueDetail.add_with_reason', { name: s.name, reason: s.reason })
+              : i18nT('apps.issueRadar.components.issueDetail.add', { name: s.name }))
             : (s.reason || i18nT('apps.issueRadar.components.issueDetail.read_only_connect_with_triage_push_access_to_app_2'))
           return (
             <motion.button
@@ -772,7 +774,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               onClick={refreshDetail}
               disabled={detailQuery.isFetching}
               aria-label={i18nT('apps.issueRadar.components.issueDetail.refresh_issue_details')}
-              title={`Re-fetch this issue + its timeline from ${terms.providerName}`}
+              title={i18nT('apps.issueRadar.components.issueDetail.re_fetch_issue_and_timeline_from', { provider: terms.providerName })}
               className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
             >
               <RefreshCw size={14} className={detailQuery.isFetching ? 'animate-spin' : ''} />

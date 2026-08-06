@@ -84,7 +84,7 @@ export default function MigrationPage() {
 
   return (
     <>
-      <PageHeader title={i18nT('pages.migrationPage.app_migration')} subtitle={`Migration guide for ${displayName}`} />
+      <PageHeader title={i18nT('pages.migrationPage.app_migration')} subtitle={i18nT('pages.migrationPage.migration_guide_for', { name: displayName })} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
 
         {displayError && (

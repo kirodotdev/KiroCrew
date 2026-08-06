@@ -105,7 +105,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       // a failed refetch keeps serving the prior (stale) listing rather than
       // dropping the registry's apps, so the user must know it didn't sync.
       if (res?.ok === false && res.failed && res.failed.length > 0) {
-        setError(`Could not refresh: ${res.failed.join(', ')} — still showing the last-synced apps for these.`)
+        setError(i18nT('components.registryManager.could_not_refresh_still_showing_last_synced', { names: res.failed.join(', ') }))
       } else {
         setError('')
       }
@@ -126,7 +126,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       return
     }
     if (registries.some(r => r.repo === repo)) {
-      setError(`Registry "${repo}" already exists`)
+      setError(i18nT('components.registryManager.registry_already_exists', { repo }))
       return
     }
     // Keep the form open and populated until the mutation actually succeeds:
@@ -204,21 +204,21 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               <Clickable
                 className="text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
                 onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
-                aria-label={`Open ${reg.repo} repository`}
+                aria-label={i18nT('components.registryManager.open_repository', { repo: reg.repo })}
               >
                 <ExternalLink size={14} />
               </Clickable>
               <Clickable
                 className={`text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => refreshMutation.mutate(reg.repo)}
-                aria-label={`Refresh ${reg.name} registry`}
+                aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.name })}
               >
                 <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
               </Clickable>
               <Clickable
                 className={`text-muted hover:text-danger transition-colors opacity-0 group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => handleRemove(reg.repo)}
-                aria-label={`Remove ${reg.name} registry`}
+                aria-label={i18nT('components.registryManager.remove_registry', { name: reg.name })}
               >
                 <Trash2 size={14} />
               </Clickable>

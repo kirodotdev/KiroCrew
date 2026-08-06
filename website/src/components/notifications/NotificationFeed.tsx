@@ -293,7 +293,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       <div className={`flex ${mac ? 'items-start' : 'items-center'} gap-2.5`}>
                       <Clickable
                         onClick={() => { if (mac && collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
-                        aria-label={mac && collapsedStack ? `Expand ${stackCount} grouped notifications: ${n.title}` : `Open notification: ${n.title}`}
+                        aria-label={mac && collapsedStack
+                          ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title: n.title })
+                          : i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
                         className={`flex ${mac ? 'items-start' : 'items-center'} gap-2 flex-1 min-w-0 text-left cursor-pointer ${mac ? contentDim : ''}`}
                       >
                         {mac ? (

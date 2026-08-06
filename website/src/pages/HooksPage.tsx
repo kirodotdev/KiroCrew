@@ -96,7 +96,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     queryKey: ['hooks'],
     queryFn: () => api.hooks().then((r: { hooks?: Hook[] }) => r.hooks || []),
   })
-  const error = hooksErr ? `Failed to load hooks: ${hooksErr instanceof Error ? hooksErr.message : String(hooksErr)}` : null
+  const error = hooksErr ? i18nT('pages.hooksPage.failed_to_load_hooks', { error: hooksErr instanceof Error ? hooksErr.message : String(hooksErr) }) : null
   const { data: providerHooks = {}, error: providerHookErr } = useQuery({
     queryKey: ['provider-hooks', provider.id],
     queryFn: () => provider.fetchProviderHooks(),
@@ -229,7 +229,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         <div className="flex gap-1.5">
                           <Btn onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
                           <Btn onClick={() => { setEditing(h.id); setCreating(false) }}>{i18nT('pages.hooksPage.edit')}</Btn>
-                          <Btn danger onClick={() => { if (window.confirm(`Delete hook "${h.name}"?`)) handleDelete(h.id) }}>{i18nT('pages.hooksPage.delete')}</Btn>
+                          <Btn danger onClick={() => { if (window.confirm(i18nT('pages.hooksPage.delete_hook', { name: h.name }))) handleDelete(h.id) }}>{i18nT('pages.hooksPage.delete')}</Btn>
                         </div>
                       </td>
                     </tr>
@@ -257,9 +257,9 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         </Card>
         {provider.capabilities.hooks && (
         <Card>
-          <CardTitle>{provider.labels.hooksSection} <InfoTip text={`Read-only view of provider hooks from ${provider.labels.configFile || 'config'}. These fire on tool calls including auto-approved ones.`} /></CardTitle>
+          <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
           {providerHookError ? (
-            <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={`Failed to load ${provider.labels.hooksSection.toLowerCase()}`} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
+            <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
           ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse table-striped">
@@ -292,7 +292,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
               </table>
             </div>
           ) : (
-            <EmptyState icon={<Link2 className="lucide-inline" />} title={`No ${provider.labels.hooksSection.toLowerCase()} configured`} subtitle={provider.labels.configFile ? `Configure via ${provider.labels.configFile}.` : ''} />
+            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
           )}
         </Card>
         )}

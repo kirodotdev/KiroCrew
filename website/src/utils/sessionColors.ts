@@ -58,8 +58,8 @@ export function colorName(hex: string): string {
   // 12-name hue wheel keyed on HSL hue angle (degrees).
   const hues = ['Red', 'Orange', 'Yellow', 'Lime', 'Green', 'Teal', 'Cyan', 'Sky', 'Blue', 'Indigo', 'Purple', 'Pink']
   const base = hues[Math.round(h / 30) % 12]
-  if (l > 0.78) return `Light ${base.toLowerCase()}`
-  if (l < 0.32) return `Dark ${base.toLowerCase()}`
+  if (l > 0.78) return i18nT('utils.sessionColors.light', { name: base.toLowerCase() })
+  if (l < 0.32) return i18nT('utils.sessionColors.dark', { name: base.toLowerCase() })
   return base
 }
 

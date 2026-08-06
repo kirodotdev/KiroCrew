@@ -159,13 +159,129 @@ the version selector (channel tags track their channel; version tags pin).
   hardened native install. If no backend works, agent command execution
   stays DISABLED (fail-closed) — the gateway, dashboard, and channel bots
   run normally. To enable agents in that situation, either permit user
-  namespaces (`--security-opt seccomp=<profile permitting unshare/clone>`)
-  and restart, or restart with `-e KIROCREW_ALLOW_UNSANDBOXED=1` to
-  explicitly accept unsandboxed agent execution. In the consented posture
-  the container is the only isolation boundary: treat its contents
-  (mounted volumes included) as reachable by agent commands, and do not
-  mount host paths you would not hand to the agent. The startup log states
-  which posture was chosen.
+  namespaces (see **Sandbox troubleshooting** below) or restart with
+  `-e KIROCREW_ALLOW_UNSANDBOXED=1` to explicitly accept unsandboxed agent
+  execution. In the consented posture the container is the only isolation
+  boundary: treat its contents (mounted volumes included) as reachable by
+  agent commands, and do not mount host paths you would not hand to the
+  agent. The startup log states which posture was chosen.
+
+## Sandbox troubleshooting
+
+Kiro Crew runs agent commands inside a Linux user-namespace sandbox that
+bind-mounts empty dirs over credential paths (`~/.aws`, `~/.ssh`, etc.) so
+the agent subprocess cannot read gateway credentials. The sandbox requires
+two syscalls — `unshare(CLONE_NEWUSER)` and `unshare(CLONE_NEWNS)` — that
+the **Docker default seccomp profile blocks**. The probe inside the
+container therefore returns `EPERM`, the sandbox marks itself unavailable,
+and agent execution is disabled (fail-closed) until you choose a posture.
+
+### How the startup probe decides your posture
+
+On first run (no `config.json` in the volume) the entrypoint probes the
+sandbox and writes one of three postures:
+
+| Probe result | Env var set? | Posture written | Agent execution |
+|---|---|---|---|
+| Sandbox works ✅ | — | `sandbox=auto` | Namespace-isolated |
+| No backend ❌ | `KIROCREW_ALLOW_UNSANDBOXED=1` | `sandbox_allow_unsandboxed_exec=true` | Allowed — container is the only boundary |
+| No backend ❌ | _(not set)_ | `sandbox=auto` (default) | **Disabled** (fail-closed) |
+
+The startup log always states which posture was chosen:
+
+```
+[entrypoint] sandbox probe: namespace backend available → sandbox=auto
+[entrypoint] sandbox probe: no backend (EPERM) → allow_unsandboxed_exec=true (KIROCREW_ALLOW_UNSANDBOXED consent)
+[entrypoint] sandbox probe: no backend (EPERM) → agent exec DISABLED (set KIROCREW_ALLOW_UNSANDBOXED=1 to enable)
+```
+
+### Option A — Kiro Crew seccomp profile (recommended)
+
+The repo ships `docker/seccomp/kirocrew-seccomp.json`: the Docker default
+allow-list extended with unconditional `unshare`, `clone`, and `mount` rules.
+This is strictly less permissive than `--security-opt seccomp=unconfined` or
+`--privileged` — all other Docker default restrictions apply.
+
+**Image-only users** (no repo checkout): download the profile directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/docker/seccomp/kirocrew-seccomp.json \
+  -o kirocrew-seccomp.json
+```
+
+Then start the container:
+
+```bash
+docker run -d --name kirocrew \
+  -p 127.0.0.1:5476:5476 \
+  -v kirocrew-home:/home/kirocrew \
+  --security-opt seccomp=docker/seccomp/kirocrew-seccomp.json \
+  ghcr.io/kirodotdev/kirocrew:stable
+```
+
+Or in compose (add to the `kirocrew` service):
+
+```yaml
+security_opt:
+  - seccomp:./docker/seccomp/kirocrew-seccomp.json
+```
+
+With this profile the inner sandbox runs normally and credential directories
+are hidden from agent subprocesses inside the container.
+
+### Option B — Explicit unsandboxed consent
+
+If you cannot modify the seccomp policy (managed Kubernetes, locked-down
+runtime, Docker Desktop with restricted settings):
+
+```bash
+docker run -d --name kirocrew \
+  -p 127.0.0.1:5476:5476 \
+  -v kirocrew-home:/home/kirocrew \
+  -e KIROCREW_ALLOW_UNSANDBOXED=1 \
+  ghcr.io/kirodotdev/kirocrew:stable
+```
+
+In this posture the container is the only isolation boundary. Do not mount
+host paths you would not hand directly to the agent.
+
+### Option C — `--privileged` (not recommended)
+
+`--privileged` disables all seccomp, AppArmor, and capability restrictions.
+It does let the inner sandbox work, but the cost — full host device access
+and all capabilities inside the container — is disproportionate. Prefer
+Option A.
+
+### WSL2 + Docker CE (non-Desktop)
+
+Running Docker CE natively inside WSL2 without Docker Desktop can hit the
+same `EPERM` even with Option A, because the WSL2 kernel itself may have
+user-namespace support disabled (`CONFIG_USER_NS=n` in the WSL2 kernel
+config).
+
+Check from inside a running container:
+
+```bash
+docker exec kirocrew python3 -c \
+  "from kiro_crew.sandbox import userns_available; print(userns_available())"
+```
+
+- `True` → user namespaces work on the kernel; re-check your seccomp
+  profile (Option A).
+- `False` → the WSL2 kernel lacks user-namespace support; use Option B,
+  or switch to Docker Desktop which ships a kernel with `CONFIG_USER_NS=y`.
+
+### Verifying your posture
+
+```bash
+# Check which posture was chosen at startup
+docker logs kirocrew | grep '\[entrypoint\]'
+
+# Live check from inside the container
+docker exec kirocrew python3 -c \
+  "from kiro_crew.sandbox import detect_backend; print(detect_backend())"
+# Expected: "namespace" (inner sandbox active) or "none" (unsandboxed)
+```
 
 ## Health
 

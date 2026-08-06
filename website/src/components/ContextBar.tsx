@@ -1,3 +1,5 @@
+import { i18nT } from '../i18n/t'
+
 /** Clamp a raw context percentage to a safe display integer [0, 100]. */
 export function contextPctClamped(pct: number): number {
   return Math.round(Math.min(Math.max(Number.isFinite(pct) ? pct : 0, 0), 100))
@@ -11,7 +13,7 @@ export function contextColor(pct: number): string {
 
 /** Builds the context tooltip string. Shared so the bar and its parent pill show identical text. */
 export function contextTip(pct: number): string {
-  return `Context: ${contextPctClamped(pct)}%`
+  return i18nT('components.contextBar.context_pct', { pct: contextPctClamped(pct) })
 }
 
 /** Compact horizontal context-usage bar for the input bar. */

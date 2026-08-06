@@ -1672,6 +1672,99 @@ async def _fleet_cached() -> dict:
     return data
 
 
+#: Memoized ``(key, reason)``. The comparison needs real path resolution —
+#: a symlinked checkout otherwise reads as a mismatch — and that is filesystem
+#: IO, which on a network-backed checkout can stall. So it runs on the executor,
+#: once per distinct key, rather than on the event loop for every ``/fleet`` poll.
+_SERVING_REASON: "tuple[tuple[str, tuple[str, ...]], str | None] | None" = None
+
+
+def _is_checkout(path: str) -> bool:
+    """Whether *path* is a real git checkout. Blocking — executor only.
+
+    ``.git`` is tested rather than mere existence, and as a path rather than a
+    directory, because a linked worktree's ``.git`` is a FILE. An empty or absent
+    directory is not something Dev Fleet can be said to manage.
+    """
+    if not path:
+        return False
+    try:
+        return (Path(path) / ".git").exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _serving_install_reason_sync(
+    main_repo: str, managed: "tuple[str, ...]"
+) -> str | None:
+    """Why the install serving this dashboard is not one Dev Fleet manages.
+
+    Blocking — resolves paths. Call it through an executor, never on the loop.
+
+    Dev Fleet drives a set of checkouts, but the backend answering these routes
+    can be a different install altogether — a published desktop bundle, say,
+    whose own Pull+Build predates the dist-staging step. Every control then keeps
+    reporting success while doing an incomplete job: the checkout fast-forwards,
+    the bundle it serves does not, and a Restart button whose eligibility that
+    older backend computes never appears at all. Saying nothing is what turns a
+    one-line diagnosis into a long session chasing the downstream symptoms.
+
+    Every discovered worktree counts as managed, not just the primary checkout:
+    Make live deliberately points the gateway at a linked worktree that lives
+    outside it, and warning about a state this app just created would train the
+    user to dismiss the one signal built for the takeover case.
+    """
+    # __file__ is the strongest available evidence of which install is RUNNING:
+    # it is this very module, so it cannot disagree with the process the way a
+    # PATH-resolved binary can.
+    pkg = Path(__file__).resolve().parents[3]
+    for candidate in (main_repo, *managed):
+        if not candidate:
+            continue
+        try:
+            root = Path(candidate).resolve()
+        except (OSError, RuntimeError, ValueError):
+            # An unusable entry is skipped, not raised: /fleet is a read and every
+            # other field still describes the fleet correctly. RuntimeError is in
+            # the tuple because a symlink cycle surfaces as one rather than as an
+            # OSError — the same reason beacon.is_default_home() catches it.
+            continue
+        if pkg == root or root in pkg.parents:
+            return None
+    if not _is_checkout(main_repo):
+        # Nothing is actually being managed. MAIN_REPO defaults to ~/kirocrew
+        # whether or not it exists, so a desktop-bundle or pip install with no
+        # source checkout — the out-of-the-box case — would otherwise get a
+        # permanent warning whose remedy ("start the gateway from <path>") names
+        # a directory that is not there. A dead-end instruction on every visit is
+        # how a signal gets trained away.
+        return None
+    return (
+        "This dashboard is served by a different install than the checkout you are "
+        "managing, so Pull+Build here does not change the code that runs. "
+        f"Start the gateway from {_redact(main_repo)}, or Make live onto it. "
+        f"Serving now: {_redact(str(pkg))} — an install older than the pulled "
+        "revision may not refresh the dashboard bundle."
+    )
+
+
+async def _serving_install_reason(worktrees: "list[dict]") -> str | None:
+    global _SERVING_REASON
+    managed = tuple(sorted(
+        str(wt["path"]) for wt in worktrees if wt.get("path")
+    ))
+    key = (MAIN_REPO, managed)
+    if _SERVING_REASON is not None and _SERVING_REASON[0] == key:
+        return _SERVING_REASON[1]
+    loop = asyncio.get_running_loop()
+    reason = await loop.run_in_executor(
+        subprocess_executor(),
+        functools.partial(_serving_install_reason_sync, MAIN_REPO, managed),
+    )
+    _SERVING_REASON = (key, reason)
+    return reason
+
+
 async def _build_fleet() -> dict:
     live_path = await _live_worktree_path()
     staged_path = _staged_target()
@@ -1783,6 +1876,11 @@ async def _build_fleet() -> dict:
         # macOS user saw a Pull+Build succeed with no way to apply it and
         # nothing on screen saying why. ``None`` when the service is drivable.
         "gateway_service_reason": await _gateway_service_reason(),
+        # Non-null when the backend answering this request is NOT the checkout
+        # below. Reported for the same reason as gateway_service_reason: the
+        # controls stay clickable and keep succeeding, so nothing else on screen
+        # would ever reveal that the managed code is not the running code.
+        "serving_install_reason": await _serving_install_reason(worktrees),
         # Whether pods can run on THIS host, and if not, why. Previously
         # _POD_ERROR was computed and then never read by anything, so a
         # non-Linux user saw pod controls that silently failed with no
@@ -3789,8 +3887,11 @@ def _make_live_status_error(code: str) -> str:
         "live_program_missing": (
             f"the launchd agent {_LIVE_GATEWAY_LABEL} is loaded but its "
             "live-gateway launcher is missing (deleted application-support "
-            "directory?), so it has nothing to execute. Re-run "
-            "`kirocrew service install` to restore it"
+            "directory?), so it has nothing to execute. Make live onto a "
+            "worktree to rewrite it, or start a gateway from your source "
+            "checkout — either restores the launcher without touching the "
+            "agent definition, whereas kirocrew service install would rewrite "
+            "the whole plist and discard any environment you added to it"
         ),
     }.get(code, f"the live gateway cannot be repointed ({code})")
 

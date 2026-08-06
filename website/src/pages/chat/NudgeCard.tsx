@@ -73,7 +73,7 @@ export default memo(function NudgeCard({
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const { cycle, body } = parseNudgeMessage(message)
   const firstLine = body.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
-  const label = cycle !== null ? `Auto-nudge · cycle ${cycle}` : i18nT('pages.chat.nudgeCard.auto_nudge')
+  const label = cycle !== null ? i18nT('pages.chat.nudgeCard.auto_nudge_cycle', { count: cycle }) : i18nT('pages.chat.nudgeCard.auto_nudge')
 
   return (
     <div

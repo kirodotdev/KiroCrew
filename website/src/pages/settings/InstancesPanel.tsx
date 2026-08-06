@@ -254,7 +254,7 @@ function InstanceRow({
           {inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host}
           {inst.connection_method === 'ssm' && inst.aws_region ? ` (${inst.aws_region})` : ''}{' '}
           {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
-          {typeof ttl === 'number' ? ` · token ${humanizeSecs(ttl)} left` : ''}
+          {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
         {diag && !diag.ok ? (
@@ -262,7 +262,7 @@ function InstanceRow({
         ) : null}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <Btn onClick={() => onDiagnose(inst.id)} disabled={!!busy} aria-label={`Diagnose ${inst.name}`}>
+        <Btn onClick={() => onDiagnose(inst.id)} disabled={!!busy} aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}>
           <Stethoscope className="lucide-inline" /> {busy === `diagnose:${inst.id}` ? '…' : i18nT('pages.settings.instancesPanel.diagnose')}
         </Btn>
         {connected ? (
@@ -274,7 +274,7 @@ function InstanceRow({
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}
-        <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={`Remove ${inst.name}`}>
+        <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
           <Trash2 className="lucide-inline" />
         </Btn>
       </div>
@@ -330,7 +330,7 @@ export function InstancesPanel() {
     onSuccess: (st, id) => {
       if (st.state === 'connected') {
         const name = instances.find(i => i.id === id)?.name || id
-        setConnectedNote(`Connected “${name}”. Switch to it from the tab strip in the top header.`)
+        setConnectedNote(i18nT('pages.settings.instancesPanel.connected_switch_from_tab_strip', { name }))
       } else {
         setActionErr(st.error || i18nT('pages.settings.instancesPanel.connection_did_not_complete_try_diagnose_for_det'))
       }

@@ -5627,3 +5627,165 @@ def test_kill_tree_survives_an_already_dead_descendant():
 
     # 333 is still attempted after 222's ProcessLookupError.
     assert [c.args[0] for c in km.call_args_list] == [111, 222, 333]
+
+
+def test_live_program_missing_reason_names_the_non_destructive_repairs():
+    """`service install` rewrites the whole plist, discarding operator env.
+
+    Naming it as THE repair would contradict the reason this reconcile exists, so
+    the guidance points at the two routes that leave the agent definition alone.
+    """
+    reason = mod._make_live_status_error("live_program_missing")
+
+    assert "Make live" in reason
+    assert "source checkout" in reason
+    # The destructive route may be mentioned as a contrast, never as the remedy.
+    assert "discard" in reason
+
+
+# --- serving install vs managed checkout --------------------------------------
+
+def test_serving_install_reason_is_silent_for_a_source_install():
+    """The normal case: the package answering these routes lives in the checkout.
+
+    Asserted against the REAL package location rather than a fixture, so the
+    check cannot pass by accident on a layout that does not exist.
+    """
+    pkg = Path(mod.__file__).resolve().parents[3]
+
+    assert mod._serving_install_reason_sync(str(pkg.parents[1]), ()) is None
+
+
+def test_serving_install_reason_is_silent_when_the_checkout_is_the_package_dir():
+    """A managed path that IS the serving package is not a mismatch either."""
+    pkg = Path(mod.__file__).resolve().parents[3]
+
+    assert mod._serving_install_reason_sync(str(pkg), ()) is None
+
+
+def test_serving_install_reason_is_silent_after_make_live_onto_a_worktree(tmp_path):
+    """Make live points the gateway at a LINKED worktree, outside the primary
+    checkout. Warning about a state this app just created — and already labels
+    via `is_live` — would train the user to dismiss the takeover signal.
+    """
+    pkg = Path(mod.__file__).resolve().parents[3]
+    serving_checkout = str(pkg.parents[1])
+
+    reason = mod._serving_install_reason_sync(
+        str(tmp_path),                      # primary checkout: somewhere else
+        (str(tmp_path / "other-wt"), serving_checkout),
+    )
+
+    assert reason is None
+
+
+def test_serving_install_reason_names_both_installs_and_a_remedy(tmp_path):
+    """The silent-wrong-answer case: managing checkouts, running none of them.
+
+    Every Dev Fleet control keeps reporting success here, so this string is the
+    only thing that can tell the user the pulled code is not the running code —
+    which makes naming a next step part of the contract, not decoration.
+    """
+    (tmp_path / ".git").mkdir()
+
+    reason = mod._serving_install_reason_sync(
+        str(tmp_path), (str(tmp_path / "wt-a"), str(tmp_path / "wt-b"))
+    )
+
+    assert reason is not None
+    # Both sides must be named — one path alone does not identify the mismatch.
+    assert tmp_path.name in reason
+    assert "kiro_crew" in reason
+    assert "Make live" in reason
+    # Problem first, action before the paths: a warn banner that leads with two
+    # absolute paths and buries the remedy at the end gets skimmed.
+    assert reason.startswith("This dashboard is served by a different install")
+    assert reason.index("Make live") < reason.index("Serving now:")
+
+
+def test_serving_install_reason_is_silent_with_no_checkout_to_manage(tmp_path):
+    """MAIN_REPO defaults to ~/kirocrew whether or not it exists.
+
+    A desktop-bundle or pip install with no source checkout is the out-of-the-box
+    case; warning it to "start the gateway from <path>" names a directory that is
+    not there, and a dead-end instruction on every visit trains the signal away.
+    """
+    assert mod._serving_install_reason_sync(str(tmp_path / "absent"), ()) is None
+    # Present but not a checkout is equally unmanageable.
+    (tmp_path / "empty").mkdir()
+    assert mod._serving_install_reason_sync(str(tmp_path / "empty"), ()) is None
+
+
+def test_serving_install_reason_accepts_a_linked_worktree_dot_git_file(tmp_path):
+    """A linked worktree's `.git` is a FILE, so existence is the right test."""
+    (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+
+    assert mod._serving_install_reason_sync(str(tmp_path), ()) is not None
+
+
+def test_serving_install_reason_skips_unresolvable_entries(tmp_path):
+    """A bad path must be skipped, not abort the scan or crash the payload."""
+    pkg = Path(mod.__file__).resolve().parents[3]
+
+    # The poison entry comes FIRST; the healthy one after it must still be seen.
+    assert mod._serving_install_reason_sync(
+        "\x00not-a-path", (str(pkg.parents[1]),)
+    ) is None
+    # And with nothing healthy anywhere, it still returns without raising.
+    (tmp_path / ".git").mkdir()
+    assert mod._serving_install_reason_sync(str(tmp_path), ()) is not None
+
+
+@pytest.mark.asyncio
+async def test_serving_install_reason_resolves_paths_off_the_event_loop(monkeypatch):
+    """The resolution is filesystem IO, so it must not run on the loop.
+
+    Memoized on the checkout set as well: /fleet is polled, and repeating the
+    walk on every poll is what would make a network-backed checkout stall the
+    gateway.
+    """
+    monkeypatch.setattr(mod, "_SERVING_REASON", None)
+    monkeypatch.setattr(mod, "MAIN_REPO", "/nowhere/at/all")
+    calls: list[tuple] = []
+
+    def _spy(main_repo: str, managed: tuple) -> str | None:
+        calls.append((main_repo, managed))
+        return "mismatch"
+
+    monkeypatch.setattr(mod, "_serving_install_reason_sync", _spy)
+    loop = asyncio.get_running_loop()
+    offloaded: list[bool] = []
+    real_executor = loop.run_in_executor
+
+    def _tracking_executor(executor, func, *args):
+        offloaded.append(True)
+        return real_executor(executor, func, *args)
+
+    monkeypatch.setattr(loop, "run_in_executor", _tracking_executor)
+    wts = [{"path": "/wt/a"}, {"path": "/wt/b"}, {"no_path": 1}]
+
+    assert await mod._serving_install_reason(wts) == "mismatch"
+    assert await mod._serving_install_reason(wts) == "mismatch"
+
+    assert calls == [("/nowhere/at/all", ("/wt/a", "/wt/b"))], "second call must be memoized"
+    assert offloaded == [True], "the blocking work must go through an executor"
+
+
+@pytest.mark.asyncio
+async def test_serving_install_reason_recomputes_when_the_checkout_set_changes(
+    monkeypatch
+):
+    """A new worktree can make a previously-foreign serving install managed, so
+    the memo must be keyed on the set, not just on MAIN_REPO."""
+    monkeypatch.setattr(mod, "_SERVING_REASON", None)
+    monkeypatch.setattr(mod, "MAIN_REPO", "/nowhere")
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        mod, "_serving_install_reason_sync",
+        lambda repo, managed: seen.append(managed) or "r",
+    )
+
+    await mod._serving_install_reason([{"path": "/wt/a"}])
+    await mod._serving_install_reason([{"path": "/wt/a"}, {"path": "/wt/b"}])
+
+    assert seen == [("/wt/a",), ("/wt/a", "/wt/b")]

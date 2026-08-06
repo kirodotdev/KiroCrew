@@ -237,7 +237,7 @@ export default function SttSettings() {
           description={i18nT('pages.settings.sttSettings.input_device_used_to_capture_your_voice')}
           value={micId}
           options={['', ...mics.map(d => d.deviceId)]}
-          optionLabels={['System default', ...mics.map((d, i) => d.label || `Microphone ${i + 1}`)]}
+          optionLabels={[i18nT('pages.settings.sttSettings.system_default'), ...mics.map((d, i) => d.label || i18nT('pages.settings.sttSettings.microphone_2', { n: i + 1 }))]}
           onChange={changeMic}
           disabled={saving}
         />

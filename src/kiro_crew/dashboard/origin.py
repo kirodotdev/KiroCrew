@@ -111,6 +111,45 @@ def is_direct_local_request(request: web.Request) -> bool:
     return not any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
 
+def is_proxied_request(request: web.Request) -> bool:
+    """Return ``True`` when ``request.remote`` is a PROXY rather than the client.
+
+    The question this answers is narrow and specific: *can anything keyed on
+    ``request.remote`` identify one client?* It cannot when a proxy terminated
+    the connection, because then every client behind that proxy presents the
+    same address.
+
+    The signal is the presence of any :data:`_PROXY_FORWARD_HEADERS` entry, and
+    **peer locality is deliberately NOT part of the test**. Two proxy shapes
+    exist and both collapse the address:
+
+    * **same-host** — a tunnel or reverse proxy on this machine (cloudflared,
+      ngrok, ``tailscale serve``, a local nginx) connecting from loopback; and
+    * **upstream** — a proxy on *another* host (an nginx box, a container
+      bridge, a LAN jump host) in front of a widened bind
+      (``KIROCREW_BIND``), which presents a NON-loopback peer.
+
+    An earlier version of this predicate required a loopback peer, on the
+    premise that a non-loopback peer is the client itself. That premise is only
+    true when no upstream proxy exists — with one, the non-loopback peer is the
+    proxy and the address is just as shared. Scoping to loopback therefore
+    reported the second shape as per-client, reproducing exactly the untrue
+    claim this predicate was added to remove.
+
+    Accepted trade-off, stated because it is a deliberate direction: a client
+    that sends a forwarding header with no proxy in the path (a transparent
+    forward proxy, a misconfigured client) is reported as proxied when its
+    address is in fact its own. That is an OVER-warning. On a surface whose job
+    is to say whether a security control is effective, over-warning is the safe
+    error and under-warning is not.
+
+    This is NOT the inverse of :func:`is_direct_local_request`, which also
+    requires loopback because it answers a different question ("is this the
+    local machine", for the secret-reveal and config-write gates).
+    """
+    return any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
+
+
 def is_https_request(request: web.Request) -> bool:
     """Return ``True`` when the browser reached the dashboard over HTTPS.
 

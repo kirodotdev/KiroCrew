@@ -484,13 +484,13 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
         const fullPath = tok && mentionMap.get(tok)
         if (fullPath) {
           return (
-            <Clickable key={`${keyBase}-f${i}`} className={chipCls} title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
+            <Clickable key={`${keyBase}-f${i}`} className={chipCls} title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{tok}</Clickable>
           )
         }
         return <span key={`${keyBase}-p${i}`}>{part}</span>
       })}
       {cardPaths.map((p, i) => (
-        <Clickable key={`${keyBase}-uc${i}`} className={chipCls} title={p} onClick={() => onFileOpen(p)} aria-label={`Open file ${p}`}>@{labels.get(p) || p}</Clickable>
+        <Clickable key={`${keyBase}-uc${i}`} className={chipCls} title={p} onClick={() => onFileOpen(p)} aria-label={i18nT('pages.chatPage.open_file', { path: p })}>@{labels.get(p) || p}</Clickable>
       ))}
     </span>
   )
@@ -506,7 +506,7 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
       className="flex items-center gap-2.5 max-w-full bg-card border border-border rounded-lg px-3 py-2 text-sm no-underline text-text hover:border-accent transition-colors cursor-pointer animate-scale-in"
       title={fullPath}
       onClick={() => onFileOpen(fullPath)}
-      aria-label={`Open file ${fullPath}`}
+      aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}
     >
       <Paperclip size={15} className="shrink-0 text-muted" />
       <span className="font-medium truncate">{label}</span>
@@ -583,7 +583,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
         if (fullPath) {
           return (
             <Clickable key={`${keyBase}-f${i}`} className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
-              title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
+              title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{tok}</Clickable>
           )
         }
         return part ? <span key={`${keyBase}-p${i}`}>{part}</span> : null
@@ -2322,7 +2322,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setUploadError('')
     if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
     const big = files.find(f => f.size > 50 * 1024 * 1024)
-    if (big) { setUploadError(`File too large: ${big.name} (max 50 MB)`); return }
+    if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     setUploading(true)
     try {
       const res = await api.uploadFiles(files)
@@ -2753,7 +2753,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         initialSidRef.current = null
         pendingSidRef.current = false
         popInFlightRef.current = false
-        setSidError(`Session "${urlSlot}" not found`)
+        setSidError(i18nT('pages.chatPage.session_not_found', { name: urlSlot }))
       }
     }, 5000)
     return () => clearTimeout(timer)
@@ -3122,7 +3122,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             const newerIds = new Set(newer.map(i => i.id))
             knowledgeFetchRef.current.inject([...knowledgeBlock.items.filter(i => !newerIds.has(i.id)), ...newer])
           }
-          dispatch(appendMessage({ role: 'error', content: `Could not start a new session: ${createFailReason(e)}. Your message was restored — send it again to retry.`, cls: '' }))
+          dispatch(appendMessage({ role: 'error', content: i18nT('pages.chatPage.could_not_start_session_message_restored', { error: createFailReason(e) }), cls: '' }))
         }
         // Announce the failure wherever the in-chat bubble could not. Two shapes:
         //  - No origin slot at all: nothing durable can hold the text (a draft under
@@ -3160,7 +3160,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               kind: 'agent',
               priority: 'critical',
               title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-              body: `${createFailReason(e)}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.`,
+              body: i18nT('pages.chatPage.message_queued_until_session_ready', { error: createFailReason(e) }),
             }))
           }
         } else if (!onScreen) {
@@ -3177,7 +3177,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             kind: 'agent',
             priority: 'critical',
             title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-            body: `${createFailReason(e)}. Your message is saved as a draft in the session you sent it from.${lostContext}`,
+            body: i18nT('pages.chatPage.message_saved_as_draft', { error: createFailReason(e), extra: lostContext }),
             slot: uiSlot,
           }))
         }

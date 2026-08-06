@@ -9884,26 +9884,14 @@ class TestEmptyResponseRetry:
         ) as mock_consolidate, patch(
             "kiro_crew.dashboard.chat_runner._flush_file_changes"
         ) as mock_flush, patch(
-            "kiro_crew.dashboard.chat_runner.asyncio.create_task"
-        ) as mock_create_task:
-            # Deterministically neutralize the detached queue-drain task the
-            # finally block spawns after the empty re-queue. Under build-fleet
-            # load the loop can schedule that task (and its own cascading
-            # re-drains) before the assertions run, each calling the patched
-            # _flush_file_changes again (observed flaking as `assert 6 == 1`).
-            # Closing the coroutine and returning a completed future keeps this
-            # turn's behavior (re-queue + single finally flush) while making the
-            # spawn a no-op — no await path, no cascade, no timing dependence.
-            def _no_schedule(coro, *a, **kw):
-                try:
-                    coro.close()
-                except (AttributeError, RuntimeError):
-                    pass
-                fut: asyncio.Future = asyncio.get_event_loop().create_future()
-                fut.set_result(None)
-                return fut
-
-            mock_create_task.side_effect = _no_schedule
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            # The behavior under test is the re-queue itself. Keep the queued
+            # item in the slot, but stop the finally block from immediately
+            # launching a second turn. Patching the queue-drain boundary avoids
+            # globally replacing asyncio.create_task, which can otherwise let
+            # unrelated lifecycle tasks race the assertions under xdist load.
             await _run_chat(state, slot, "test message")
             for _bg_task in list(state._background_tasks):
                 _bg_task.cancel()

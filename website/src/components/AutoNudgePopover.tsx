@@ -168,8 +168,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               ? 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : i18nT('components.autoNudgePopover.set_a_goal')}
-          aria-label={loop?.active ? `Goal active (cycle ${loop.cycle_count})` : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={loop?.active ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.set_a_goal')}
+          aria-label={loop?.active ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.set_a_goal')}
         >
           <Goal size={16} className="shrink-0" />
           {loop?.active && loop.cycle_count > 0 ? loop.cycle_count : null}

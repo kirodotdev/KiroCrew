@@ -157,7 +157,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
             <div className="flex flex-col gap-1">
               {allTasks.filter(at => at.index < task.index).map(at => (
                 <label key={at.index} htmlFor={`dep-${at.index}`} className="flex items-center gap-2 text-[12px] text-text cursor-pointer">
-                  <input id={`dep-${at.index}`} type="checkbox" aria-label={`Depend on Task ${at.index}: ${at.title}`} checked={editDeps.includes(at.index)} disabled={saving} onChange={() => toggleDep(at.index)} />
+                  <input id={`dep-${at.index}`} type="checkbox" aria-label={i18nT('pages.aidlc.taskDetailPanel.depend_on_task', { n: at.index, title: at.title })} checked={editDeps.includes(at.index)} disabled={saving} onChange={() => toggleDep(at.index)} />
                   {i18nT('pages.aidlc.taskDetailPanel.task')} {at.index}: {at.title}
                 </label>
               ))}
@@ -178,7 +178,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
             </div>
           ) : (
             <div className="text-[12px] text-muted">
-              {i18nT('pages.aidlc.taskDetailPanel.depends_on_2')} {deps.map(d => `Task ${d.index} (${d.title})`).join(', ')}
+              {i18nT('pages.aidlc.taskDetailPanel.depends_on_2')} {deps.map(d => i18nT('pages.aidlc.taskDetailPanel.task_with_title', { n: d.index, title: d.title })).join(', ')}
             </div>
           )
         })()}

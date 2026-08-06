@@ -213,7 +213,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           className="w-full border-none bg-card"
           style={heightStyle ?? { height: 'calc(100vh - 240px)', minHeight: 480 }}
-          title={`Artifact: ${slug}`}
+          title={i18nT('components.artifactBody.artifact', { slug })}
         />
       ) : (
         <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>

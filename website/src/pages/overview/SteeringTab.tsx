@@ -149,7 +149,7 @@ export default function SteeringTab() {
         role="button"
         tabIndex={0}
         aria-current={isSel ? 'true' : undefined}
-        aria-label={`Select ${f.rel}`}
+        aria-label={i18nT('pages.overview.steeringTab.select', { path: f.rel })}
         onClick={() => select(f)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(f) } }}
         className={`flex flex-col gap-0.5 px-3 py-2.5 rounded-md cursor-pointer mb-1 transition-colors ${
@@ -267,7 +267,7 @@ export default function SteeringTab() {
         <EmptyState
           icon={<Compass className="lucide-inline" />}
           title={i18nT('pages.overview.steeringTab.no_steering_files_yet')}
-          subtitle={`Steering files are always-on markdown conventions. Looked in: ${rootHint || '~/.kiro/steering'}`}
+          subtitle={i18nT('pages.overview.steeringTab.steering_files_looked_in', { path: rootHint || '~/.kiro/steering' })}
         />
       ) : (
         <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
@@ -295,13 +295,13 @@ export default function SteeringTab() {
                       <Btn primary disabled={!draft.trim() || updateFile.isPending} onClick={() => updateFile.mutate({ key: selected.key, content: draft })}>{i18nT('pages.overview.steeringTab.save')}</Btn>
                     </>) : (<>
                       <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
-                      <Btn danger onClick={() => { if (confirm(`Delete "${selected.rel}"?`)) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
+                      <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
                   {editing
-                    ? <textarea className={EDITOR_CLASS} aria-label={`Edit ${selected.rel}`} value={draft} onChange={e => setDraft(e.target.value)} />
+                    ? <textarea className={EDITOR_CLASS} aria-label={i18nT('pages.overview.steeringTab.edit_2', { path: selected.rel })} value={draft} onChange={e => setDraft(e.target.value)} />
                     : detail === undefined
                       ? <div className="text-muted text-[13px]">{i18nT('pages.overview.steeringTab.loading')}</div>
                       : <div className="text-sm leading-relaxed"><MarkdownRenderer content={detail.content} /></div>}

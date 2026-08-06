@@ -1830,6 +1830,70 @@ class TestStop:
             assert exc.value.code == 1
         assert "No Kiro Crew gateway" in capsys.readouterr().out
 
+    def _tool_absent(self, unpinned_at):
+        # The lookup tool reads as unavailable; ``unpinned_at`` is where PATH
+        # finds it anyway (None when it is genuinely not installed).
+        return (
+            patch(
+                "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
+                return_value=False,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.listening_pid_tool", return_value="lsof"),
+            patch(
+                "kiro_crew.cli_server.platform_compat.tool_outside_trusted_dirs",
+                return_value=unpinned_at,
+            ),
+        )
+
+    def test_a_tool_outside_the_pin_is_not_reported_as_missing(self, capsys):
+        """A host that keeps binaries elsewhere has the tool; the pin declined it.
+
+        NixOS and Homebrew/conda prefixes are the real population here. Telling
+        that operator to install an ``lsof`` they already have sends them in
+        circles, so name the path and say the pin is deliberate.
+        """
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        available, tool, unpinned = self._tool_absent("/run/current-system/sw/bin/lsof")
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([]),
+            available,
+            tool,
+            unpinned,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "/run/current-system/sw/bin/lsof" in out, "must name where the tool actually is"
+        assert "Install lsof" not in out
+        # The audit log has to separate the two causes, not just the outcome.
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=lsof_outside_trusted_dirs" in resources
+
+    def test_a_genuinely_missing_tool_still_says_to_install_it(self, capsys):
+        """Nothing on PATH means the install advice is the correct advice."""
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        available, tool, unpinned = self._tool_absent(None)
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([]),
+            available,
+            tool,
+            unpinned,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Install lsof and retry." in out
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=lsof_not_found" in resources
+
     def test_no_kirocrew_process(self, capsys):
         # A listener exists but its cmdline isn't a kirocrew gateway → refuse to kill.
         from kiro_crew.cli_server import _stop

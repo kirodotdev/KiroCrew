@@ -136,7 +136,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
             with its own content — width AND height — exactly like the read-only
             bubble it replaces, capped by max-w-[550px]. No JS measurement. */}
         <div
-          className="edit-grow px-4 py-1.5 text-sm leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 max-w-[550px] ring-2 ring-accent/60"
+          className="edit-grow px-4 py-1.5 text-sm leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 max-w-[550px] outline outline-2 -outline-offset-2 outline-accent/60"
           data-replicated-value={draft}
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
         >

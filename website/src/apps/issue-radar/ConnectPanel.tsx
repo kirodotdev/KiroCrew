@@ -786,7 +786,7 @@ function RepoRow({ repo, checked, onToggle, disabled }: {
         checked={checked}
         onChange={onToggle}
         disabled={disabled}
-        aria-label={`Select ${repo.full_name}`}
+        aria-label={i18nT('apps.issueRadar.connectPanel.select', { name: repo.full_name })}
         className="flex-shrink-0 accent-[var(--accent)] cursor-pointer disabled:cursor-default"
       />
       <span className="flex-1 min-w-0 text-[12.5px] text-text truncate font-mono">

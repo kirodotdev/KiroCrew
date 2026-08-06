@@ -2242,6 +2242,11 @@ class ContextBuilder:
                     if content:
                         stripped = self.skills.strip_frontmatter(content)
                         parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
+                        # Record use only when the body is actually delivered --
+                        # a trigger match that never reaches the prompt (false
+                        # positive, pointer-only, or undelivered) must not earn
+                        # ranking weight in the lazy-load hotness ledger.
+                        self.skills._record_use(name)
                 hint = self.skills.trigger_hint(pointer_only)
                 if hint:
                     parts.append(hint)

@@ -207,7 +207,7 @@ function WidgetThumb({ content, slug }: { content: string; slug: string }) {
           ref={iframeRef}
           src={blobUrl}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
-          title={`Preview: ${slug}`}
+          title={i18nT('pages.artifactsPage.preview', { slug })}
           tabIndex={-1}
           className="border-none bg-card block"
           style={{
@@ -337,7 +337,7 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
             sandbox={previewBase ? 'allow-scripts' : 'allow-scripts allow-same-origin'}
             referrerPolicy="no-referrer"
             loading="lazy"
-            title={`App preview: ${art.slug}`}
+            title={i18nT('pages.artifactsPage.app_preview', { slug: art.slug })}
             tabIndex={-1}
             className="border-none bg-card block"
             style={{ width: BASE_W, height: BASE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}
@@ -517,7 +517,7 @@ function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; fold
           onClick={(e) => e.stopPropagation()}
           className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
           title={i18nT('pages.artifactsPage.folder_actions')}
-          aria-label={`Actions for folder ${folder.name}`}
+          aria-label={i18nT('pages.artifactsPage.actions_for_folder', { name: folder.name })}
         >
           <MoreVertical size={13} />
         </button>
@@ -592,7 +592,7 @@ function FolderCard({ folder, folders, previewArtifacts, actions }: {
               role="button"
               tabIndex={0}
               onKeyDown={(e) => { if (!renaming && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); actions.onOpen(folder.id) } }}
-              aria-label={`Open folder ${folder.name}`}
+              aria-label={i18nT('pages.artifactsPage.open_folder', { name: folder.name })}
               className={`group mr-3 mb-3 rounded-lg border bg-card p-3 cursor-pointer transition-all hover:border-border-strong hover:shadow-md ${
                 isOver ? 'border-accent ring-2 ring-accent/40 bg-accent/5' : 'border-border'
               }`}
@@ -751,7 +751,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
                 <Share2
                   size={12}
                   className={a.publication.last_error ? 'text-danger shrink-0' : 'text-ok shrink-0'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : `Published (${a.publication.visibility.toLowerCase()})`}
+                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
                 />
               )}
             </div>
@@ -966,7 +966,7 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
                 <Share2
                   size={12}
                   className={a.publication.last_error ? 'text-danger' : 'text-ok'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : `Published (${a.publication.visibility.toLowerCase()})`}
+                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
                 />
               )}
             </div>
@@ -1753,12 +1753,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   )
 
   const handleDelete = useCallback((a: Artifact) => {
-    if (window.confirm(
-      `Remove artifact "${a.slug}" from your library?\n\n` +
-      `This deletes the artifact entry and its version history. ` +
-      `If this artifact came from a file on disk or a chat widget, ` +
-      `the original is NOT touched — you can re-add it later.`
-    )) {
+    if (window.confirm(i18nT('pages.artifactsPage.remove_artifact_confirm', { slug: a.slug }))) {
       deleteMut.mutate(a.slug)
     }
   }, [deleteMut])
@@ -2111,7 +2106,7 @@ function RemoteBrowseSection({ provider, onForked, onCloned }: {
     <Card className="mt-4">
       <CardTitle>{i18nT('pages.artifactsPage.on')} {provider.display_name}</CardTitle>
       <div className="mb-2">
-        <SearchInput placeholder={`Filter ${provider.display_name} artifacts…`} value={search} onChange={e => setSearch((e.target as HTMLInputElement).value)} />
+        <SearchInput placeholder={i18nT('pages.artifactsPage.filter_artifacts', { provider: provider.display_name })} value={search} onChange={e => setSearch((e.target as HTMLInputElement).value)} />
       </div>
       <div className="divide-y divide-border">
         {filtered.map((a) => (
@@ -2133,7 +2128,7 @@ function RemoteBrowseSection({ provider, onForked, onCloned }: {
           <Btn
             onClick={() => fetchNextPage()}
             disabled={isFetchingNextPage}
-            aria-label={`Load more ${provider.display_name} artifacts`}
+            aria-label={i18nT('pages.artifactsPage.load_more_artifacts', { provider: provider.display_name })}
           >
             {isFetchingNextPage
               ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" />

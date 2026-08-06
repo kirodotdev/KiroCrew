@@ -27,6 +27,10 @@ import ChatPanel from '../app-sdk/ChatPanel'
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // vitest 4's restoreAllMocks only restores spyOn spies; it no longer clears
+  // the call history of standalone vi.fn() mocks (mockDispatch/mockSwitchSlot),
+  // so clear them explicitly or counts leak across tests.
+  vi.clearAllMocks()
   // Re-assign after restoreAllMocks clears the implementations
   mockDispatch.mockReturnValue({ unwrap: () => Promise.resolve() })
 })

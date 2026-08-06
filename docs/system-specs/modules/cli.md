@@ -607,8 +607,20 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    target a non-default dev gateway): `platform_compat.find_listening_pids(port)`
    to find PIDs — `lsof -ti TCP:{port} -sTCP:LISTEN` on POSIX, `netstat -ano`
    parsing on Windows (there is no `lsof` there; this previously made
-   `kirocrew stop` a no-op on Windows). `listening_pid_tool_available()`
-   distinguishes "no listener" from "lookup tool missing".
+   `kirocrew stop` a no-op on Windows). Both binaries are resolved through
+   `platform_compat.trusted_system_bin()` — the fixed system directories, never
+   `PATH`, which on a gateway can lead with same-uid-writable dirs — and a name
+   that does not resolve there counts as absent rather than falling back.
+   `listening_pid_tool_available()` performs the same pinned resolution, so it
+   distinguishes "no listener" from "lookup tool missing" without disagreeing
+   with the lookup it describes. A host that installs the tool outside those
+   directories (NixOS, a Homebrew or conda prefix) therefore reads as not having
+   it; `trusted_system_bin()` logs a warning once per name when the tool is on
+   `PATH` but not resolvable under the pin, and `tool_outside_trusted_dirs()`
+   lets `stop` name where the tool actually is rather than tell an operator who
+   already has it to install it. That case carries SEL
+   `reason=<tool>_outside_trusted_dirs`, distinct from `<tool>_not_found`, so
+   the two are separable in the audit log.
 3. `platform_compat.process_command_line(pid)` to verify it's a KiroCrew process —
    `/proc/<pid>/cmdline` (Linux), `ps -o command=` (macOS), `Win32_Process.CommandLine`
    via WMI (Windows). The Windows venv `kirocrew.exe` re-execs `python.exe`, so the

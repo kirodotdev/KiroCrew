@@ -62,9 +62,9 @@ export default function ReviewButton({
       startHint={
         recordQuery.isError
           ? 'Could not check for an existing review session — retrying on refresh'
-          : `Open an AI code-review chat session for this ${terms.changeRequestTitle}`
+          : i18nT('apps.issueRadar.components.reviewButton.open_ai_code_review_session_for_this', { label: terms.changeRequestTitle })
       }
-      resumeHint={`Resume the AI code-review chat session for this ${terms.changeRequestTitle}`}
+      resumeHint={i18nT('apps.issueRadar.components.reviewButton.resume_ai_code_review_session_for_this', { label: terms.changeRequestTitle })}
       // The review agent only DRAFTS comments for you — it records nothing, so a
       // status pill would sit on "Reviewing" forever. Resume is the only state
       // worth showing.

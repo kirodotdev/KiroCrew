@@ -331,7 +331,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
         )}
         {/* Context Window Usage */}
         <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
-          <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-1.5">{i18nT('pages.agentsPage.context_window_usage')} <InfoTip text={`Live context window utilization per active ${provider.labels.sessionProcess} session. Custom agents show their configured model. Compaction triggers at 90%.`} /></h3>
+          <h3 className="text-sm font-semibold text-text-strong mb-3.5 flex items-center gap-1.5">{i18nT('pages.agentsPage.context_window_usage')} <InfoTip text={i18nT('pages.agentsPage.context_window_usage_tip', { label: provider.labels.sessionProcess })} /></h3>
           {ctx.length === 0 ? <p className="text-muted italic text-sm">{i18nT('pages.agentsPage.no_active_sessions')}</p> : (
             <div className="space-y-4">
               {ctx.map(s => {
@@ -382,7 +382,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
         {usage && (
           <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{provider.displayName} {i18nT('pages.agentsPage.usage')} <InfoTip text={`${provider.displayName} consumption for the current billing period. Cached 10 min.`} /></h3>
+              <h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{provider.displayName} {i18nT('pages.agentsPage.usage')} <InfoTip text={i18nT('pages.agentsPage.consumption_for_current_billing_period', { provider: provider.displayName })} /></h3>
               <div className="flex items-center gap-2">
                 {usage.plan && <span className="px-2 py-0.5 rounded-full text-[12px] font-bold font-mono bg-accent/15 text-accent border border-accent/30">{usage.plan}</span>}
                 {usage.resets && <span className="text-[12px] text-muted">{i18nT('pages.agentsPage.resets')} {usage.resets}</span>}
@@ -427,7 +427,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
             <tbody>{agents.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.agentsPage.no_subagents')} subtitle={i18nT('pages.agentsPage.spawn_tasks_from_chat_or_cli')} /></td></tr> : agents.map(a => (
               <tr key={a.id} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{a.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{a.task}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{a.done ? (a.error ? <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-danger-subtle text-danger">{i18nT('pages.agentsPage.failed')}</span> : <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-ok-subtle text-ok">{i18nT('pages.agentsPage.done')}</span>) : <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono bg-warn-subtle text-warn">{i18nT('pages.agentsPage.running')}</span>}</td>
-                <td className="px-2.5 py-2 border-b border-border text-sm text-right"><button className="px-1.5 py-0.5 rounded border border-border bg-transparent text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" aria-label={`Delete subagent ${a.id}`} onClick={() => spawnDeleteMut.mutate(a.id)}><X className="lucide-inline" /></button></td></tr>
+                <td className="px-2.5 py-2 border-b border-border text-sm text-right"><button className="px-1.5 py-0.5 rounded border border-border bg-transparent text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" aria-label={i18nT('pages.agentsPage.delete_subagent', { id: a.id })} onClick={() => spawnDeleteMut.mutate(a.id)}><X className="lucide-inline" /></button></td></tr>
             ))}</tbody></table>
         </div>
       </div>

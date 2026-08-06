@@ -256,7 +256,7 @@ export default function ProjectsPage() {
             key={r.task_id}
             role="button"
             tabIndex={0}
-            aria-label={`Open project ${name}`}
+            aria-label={i18nT('pages.projectsPage.open_project', { name })}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all ${isActive ? 'bg-accent/15 border border-accent/40' : 'hover:bg-bg-elevated border border-transparent'}`}
             onClick={() => { setSelectedRun(r); setEditingName(false) }}
             onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setSelectedRun(r); setEditingName(false) } }}

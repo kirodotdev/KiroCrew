@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__, platform_compat
+from kiro_crew.beacon import is_default_home
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     _DEFAULT_PORT,
@@ -413,17 +414,32 @@ def _stop(cli_port: int | None = None) -> None:
         # would then double-spawn).
         if not platform_compat.listening_pid_tool_available():
             _tool = platform_compat.listening_pid_tool()
+            # A host that keeps its binaries outside the system directories
+            # (NixOS, a Homebrew or conda prefix) has the tool and still lands
+            # here, because the lookup is pinned to those directories. Telling
+            # that operator to install what they already have sends them in
+            # circles, so name where it actually is instead.
+            _unpinned = platform_compat.tool_outside_trusted_dirs(_tool)
+            _reason = f"{_tool}_outside_trusted_dirs" if _unpinned else f"{_tool}_not_found"
             sel().log_api_access(
                 caller="cli",
                 operation="gateway_stop",
                 outcome="no_target",
                 source="cli",
-                resources=f"port={port} reason={_tool}_not_found",
+                resources=f"port={port} reason={_reason}",
             )
-            print(
-                f"`{_tool}` not found — cannot look up the gateway process on "
-                f"port {port}. Install {_tool} and retry."
-            )
+            if _unpinned:
+                print(
+                    f"`{_tool}` is installed at {_unpinned}, outside the system directories "
+                    f"Kiro Crew resolves it from, so it cannot look up the gateway process "
+                    f"on port {port}. Falling back to PATH is deliberately refused: a "
+                    f"gateway's PATH can lead with writable directories."
+                )
+            else:
+                print(
+                    f"`{_tool}` not found — cannot look up the gateway process on "
+                    f"port {port}. Install {_tool} and retry."
+                )
             sys.exit(1)
         sel().log_api_access(
             caller="cli",
@@ -1317,6 +1333,35 @@ def _status(args: argparse.Namespace) -> None:
     print(f"  Lessons:     {data.get('lessons', 0)}")
 
 
+def _should_reconcile_launchd_launcher() -> bool:
+    """Whether this gateway may repair the shared launchd launcher.
+
+    Only a non-frozen production instance may.
+
+    ``LIVE_PROGRAM`` is a per-user path under Application Support that
+    ``KIROCREW_HOME`` does not scope, so a dev, pod, or worktree gateway
+    repairing it would repoint the user's REAL agent at its own venv —
+    recreating the serving-vs-managed mismatch the reconcile exists to prevent,
+    and doing it without the operator ever acting on the production instance.
+    ``is_default_home`` is reused rather than re-derived so the two cannot drift
+    on what counts as the real home.
+
+    A frozen build is excluded for a different reason: the launchd agent is a
+    ``service install`` artifact belonging to a source or pip install, while a
+    packaged app manages its own backend lifecycle and supplies environment its
+    interpreter needs — notably ``PYTHONPYCACHEPREFIX``, which keeps bytecode out
+    of the signed bundle. A launcher naming the bundled executable would be run by
+    launchd WITHOUT that environment, so the interpreter would write
+    ``__pycache__`` inside the app and invalidate its signature. The packaged app
+    has no business owning this artifact at all.
+    """
+    return (
+        sys.platform == "darwin"
+        and not getattr(sys, "frozen", False)
+        and is_default_home()
+    )
+
+
 async def _gateway(
     *,
     no_dashboard: bool = False,
@@ -1356,6 +1401,19 @@ async def _gateway(
             "Run `npm ci && npm run build` in the website/ directory to build "
             "the full dashboard."
         )
+
+    # Reconcile the other derived artifact that lives outside the install: the
+    # launchd agent's launcher script. It sits under Application Support, so a
+    # "reset the app" gesture that clears that directory leaves the agent loaded
+    # with nothing to execute and no in-product way back. Self-healing here
+    # rather than in the service installer keeps a hand-customized plist intact.
+    if _should_reconcile_launchd_launcher():
+        try:
+            svc_macos.ensure_live_program()
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "Could not restore the launchd live-gateway launcher: %s", exc
+            )
 
     if not config_path().exists():
         cfg = KiroCrewConfig()

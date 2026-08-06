@@ -29,7 +29,10 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
     if (d?.mcp_total == null) return '—'
     const s = d.mcp_processes?.sandbox ?? 0, k = d.mcp_processes?.kiro_cli ?? 0, m = d.mcp_processes?.builder_mcp ?? 0
     const providerLabel = providerAdapter.labels.processCountLabel === 'kiro_cli' ? 'kiro' : providerAdapter.labels.processCountLabel
-    return `${d.mcp_total}${s + k + m > d.mcp_total ? ' unique' : ''} (${s} sandbox · ${k} ${providerLabel} · ${m} mcp)`
+    const vars = { total: d.mcp_total, sandbox: s, provider: k, providerLabel, mcp: m }
+    return s + k + m > d.mcp_total
+      ? i18nT('pages.systemPage.mcp_process_breakdown_unique', vars)
+      : i18nT('pages.systemPage.mcp_process_breakdown', vars)
   })()
   return (
     <>
