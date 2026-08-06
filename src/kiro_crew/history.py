@@ -3740,6 +3740,117 @@ class ConversationLog:
             keeps that invariant explicit.
         """
         path = self._path(key)
+        # ── Warm path: LOCK-FREE, byte-for-byte the pre-fix behaviour ────────
+        # A hit whose stored mtime still matches the file is served with no
+        # lock at all. This matters beyond speed: ``_read_messages`` is reached
+        # ON the event loop (``api_session_detail``, and ``restore_open_slots_
+        # async`` which stays on-loop deliberately — see
+        # ``_pause_for_transient_retry``), while a WRITER holds this same RLock
+        # across its cross-process flock wait (up to ``_FLOCK_ACQUIRE_TIMEOUT_S``
+        # in ``_locked``). Taking the lock on every read would therefore let a
+        # writer stall the sole loop — chat, WebSockets and the liveness
+        # heartbeat — which is the ``no-blocking-call-on-event-loop`` hazard.
+        # The mtime guard is sufficient here: an mtime CHANGE is the only thing
+        # a hit has to notice, and a preserved-mtime rewrite (below) cannot
+        # invent a stale hit, it can only be raced while FILLING one.
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime is not None:
+            cached = self._msg_cache.get(key)
+            if cached and cached[0] == mtime:
+                return cached[1]
+        # ── Cold path: serialize the FILL against this key's writers ─────────
+        # The mtime guard cannot protect the fill window, because housekeeping
+        # rewrites deliberately RESTORE the pre-write mtime (``_restore_mtime``,
+        # so compaction does not reorder ``list_sessions``). A parse that
+        # started before such a rewrite and published after its
+        # ``_invalidate_cache`` would sit in the cache holding pre-rewrite
+        # messages under an mtime the file still has — undetectable, so the
+        # dashboard, session resume and the history tools would serve removed
+        # or replaced messages for the life of the process (issue #1835).
+        #
+        # ``_file_lock`` is the same in-process RLock every writer takes first
+        # in ``_locked``, so holding it across stat → read → publish orders the
+        # fill against append / rewrite / metadata edits for this key. Miss-only
+        # acquisition, plus the re-stat + re-check ``_read_messages_locked``
+        # already does at the top of its retry loop, is exactly the
+        # double-checked shape ``_folded_content`` uses for this identical race.
+        #
+        # An UNLOCKED fill (the bounded-acquire fallback) must not PUBLISH. It
+        # fires precisely when a writer holds the lock — i.e. exactly inside the
+        # window a rewrite can land in — so a parse it stored could be the
+        # pre-rewrite one, keyed by the mtime ``_restore_mtime`` puts back, which
+        # nothing can ever detect: that entry would serve removed messages for
+        # the life of the process, reintroducing the very bug this fix closes.
+        # Dropping it costs the next reader one re-parse and leaves the file the
+        # only source of truth.
+        with self._cache_fill_lock(key) as locked:
+            messages = self._read_messages_locked(key)
+            if not locked:
+                self._msg_cache.pop(key, None)
+            return messages
+
+    @contextlib.contextmanager
+    def _cache_fill_lock(self, key: str) -> Iterator[bool]:
+        """Best-effort hold of *key*'s writer RLock around a cache FILL.
+
+        Yields ``True`` when the lock is held, ``False`` when it was skipped.
+
+        The acquire is bounded on BOTH paths, because a read must never be able
+        to wait without an upper bound: ON a running loop exactly ONE
+        non-blocking attempt (never sleep/poll the sole event loop, the same
+        discipline ``_locked`` applies to its flock), and off the loop a wait
+        capped at ``_FLOCK_ACQUIRE_TIMEOUT_S`` — the same ceiling a writer's
+        cross-process acquire uses, so the read path's worst case is bounded by
+        the writer's.
+
+        A failed acquire fills WITHOUT the lock. Degrading is safe in a way it
+        is not for a writer: an unlocked fill can at worst lose the race this
+        lock exists to close, i.e. fall back to the pre-fix behaviour for that
+        one read, whereas an unlocked WRITE could clobber a concurrent rewrite.
+        A stalled reader is the strictly worse outcome (on the loop the
+        LoopStallWatchdog kills the gateway; off it, a wedged holder would hang
+        the caller forever), so we take the rare stale read instead.
+
+        Reentrant by construction: a writer that reaches ``_read_messages``
+        while already inside ``_locked`` on this thread re-acquires the RLock it
+        owns, bounded attempt included.
+        """
+        lock = self._file_lock(key)
+        on_loop = True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            held = lock.acquire(blocking=False)
+        else:
+            held = lock.acquire(timeout=_FLOCK_ACQUIRE_TIMEOUT_S)
+        if not held:
+            logger.debug(
+                "history: writer lock for %s still busy (%s); filling the "
+                "message cache unlocked rather than waiting unbounded",
+                key,
+                "event loop, single non-blocking attempt" if on_loop else "off-loop deadline",
+            )
+        try:
+            yield held
+        finally:
+            if held:
+                lock.release()
+
+    def _read_messages_locked(self, key: str) -> list[dict]:
+        """The cache-miss half of :meth:`_read_messages`.
+
+        Called under :meth:`_cache_fill_lock` (best-effort — see there). The
+        stat + cache check at the top of the retry loop is what makes the
+        caller's locking *double-checked*: two threads racing the same cold key
+        parse once, and a rewrite that landed between the caller's lock-free
+        probe and the acquire is seen here rather than overwritten.
+        """
+        path = self._path(key)
         if not path.exists():
             self._msg_cache.pop(key, None)
             return []

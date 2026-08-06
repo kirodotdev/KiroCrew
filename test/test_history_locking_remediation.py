@@ -18,8 +18,10 @@ Each test class reproduces one audited failure scenario:
 
 from __future__ import annotations
 
+import asyncio
 import multiprocessing
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -207,6 +209,182 @@ class TestCrossProcessLock:
         contents = {m["content"] for m in fresh._read_messages("k")}
         missing = [f"a-{i}" for i in range(n) if f"a-{i}" not in contents]
         assert not missing, f"cross-process rewrite lost {len(missing)} appends"
+
+
+class TestMessageCacheRewriteSerialization:
+    """The cache FILL is ordered against writers, but a warm read is not, and
+    an on-loop read never blocks on one."""
+
+    @staticmethod
+    def _hold(lock, acquired, release):  # type: ignore[no-untyped-def]
+        """Hold *lock* from a foreign thread until *release* (bounded)."""
+
+        def run() -> None:
+            with lock:
+                acquired.set()
+                # Bounded even if the test body raises before releasing, so a
+                # failure can never strand this thread holding the lock.
+                release.wait(5)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        assert acquired.wait(5)
+        return t
+
+    def test_cache_fill_holds_the_writer_lock(self, tmp_path: Path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        lock = log._file_lock("k")
+        log._invalidate_cache("k")
+
+        seen: list[bool] = []
+        real_locked = log._read_messages_locked
+
+        def observed(key: str) -> list[dict]:
+            # ``RLock`` exposes no owner query, and it is reentrant for THIS
+            # thread — so a FOREIGN thread failing a non-blocking acquire is the
+            # observable proof that the fill runs under the lock. Acquire and
+            # release both happen in that thread (releasing an RLock from
+            # another thread is an error).
+            box: list[bool] = []
+
+            def probe() -> None:
+                got = lock.acquire(blocking=False)
+                box.append(got)
+                if got:
+                    lock.release()
+
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join(5)
+            seen.append(not box[0])
+            return real_locked(key)
+
+        log._read_messages_locked = observed  # type: ignore[method-assign]
+        assert len(log._read_messages("k")) == 1
+        assert seen == [True], "cache fill must run under the per-session writer lock"
+
+    def test_warm_cache_hit_takes_no_lock(self, tmp_path: Path) -> None:
+        """A hit must not even try the lock: it is served on the event loop
+        while a writer can hold that RLock across a 10s flock wait."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        assert len(log._read_messages("k")) == 1  # warms the cache
+
+        acquired, release = threading.Event(), threading.Event()
+        t = self._hold(log._file_lock("k"), acquired, release)
+        try:
+            started = time.monotonic()
+            assert len(log._read_messages("k")) == 1
+            assert time.monotonic() - started < 1.0, "warm hit blocked on the writer lock"
+        finally:
+            release.set()
+            t.join(5)
+
+    def test_on_loop_miss_does_not_block_on_a_writer(self, tmp_path: Path) -> None:
+        """A cold read reached ON the loop degrades to an unlocked fill rather
+        than stalling behind a writer (LoopStallWatchdog hazard)."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        log._invalidate_cache("k")
+
+        acquired, release = threading.Event(), threading.Event()
+        t = self._hold(log._file_lock("k"), acquired, release)
+        try:
+
+            async def on_loop() -> list[dict]:
+                return log._read_messages("k")
+
+            started = time.monotonic()
+            assert len(asyncio.run(on_loop())) == 1
+            assert time.monotonic() - started < 1.0, "on-loop fill blocked on the writer"
+        finally:
+            release.set()
+            t.join(5)
+
+    def test_unlocked_fill_publishes_nothing(self, tmp_path: Path) -> None:
+        """An unlocked fill must not leave its parse in the cache.
+
+        It runs exactly while a writer holds the lock, so its parse may predate
+        a rewrite that restores the file's mtime — an entry nothing could ever
+        invalidate. Serving the read is fine; publishing it is the original bug.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        log._invalidate_cache("k")
+
+        acquired, release = threading.Event(), threading.Event()
+        t = self._hold(log._file_lock("k"), acquired, release)
+        try:
+
+            async def on_loop() -> list[dict]:
+                return log._read_messages("k")
+
+            assert len(asyncio.run(on_loop())) == 1, "the unlocked fill must still serve the read"
+            assert log._msg_cache.get("k") is None, (
+                "an unlocked fill published a cache entry; a pre-rewrite parse stored "
+                "under a restored mtime is undetectable and would serve removed messages"
+            )
+        finally:
+            release.set()
+            t.join(5)
+        # Once the writer is gone the next read fills normally, under the lock.
+        assert len(log._read_messages("k")) == 1
+        assert log._msg_cache.get("k") is not None
+
+    def test_off_loop_miss_waits_for_the_writer(self, tmp_path: Path) -> None:
+        """Off the loop there is no watchdog to starve, so the fill waits and
+        the race stays closed."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        log._invalidate_cache("k")
+
+        acquired, release = threading.Event(), threading.Event()
+        entered_fill = threading.Event()
+        held_box: list[bool] = []
+        t = self._hold(log._file_lock("k"), acquired, release)
+
+        def fill() -> None:
+            with log._cache_fill_lock("k") as held:
+                held_box.append(held)
+                entered_fill.set()
+
+        try:
+            waiter = threading.Thread(target=fill, daemon=True)
+            waiter.start()
+            assert not entered_fill.wait(0.3), "off-loop fill did not wait for the writer"
+            release.set()
+            assert entered_fill.wait(5), "off-loop fill never acquired the released lock"
+            waiter.join(5)
+            assert held_box == [True]
+        finally:
+            release.set()
+            t.join(5)
+
+    def test_off_loop_miss_gives_up_rather_than_waiting_unbounded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wedged holder must not hang the reader: the off-loop acquire is
+        capped at the writer's own ceiling and then fills unlocked."""
+        import kiro_crew.history as history_mod
+
+        monkeypatch.setattr(history_mod, "_FLOCK_ACQUIRE_TIMEOUT_S", 0.1)
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        log._invalidate_cache("k")
+
+        acquired, release = threading.Event(), threading.Event()
+        t = self._hold(log._file_lock("k"), acquired, release)
+        try:
+            started = time.monotonic()
+            with log._cache_fill_lock("k") as held:
+                assert held is False, "reader claimed a lock the holder still owns"
+            elapsed = time.monotonic() - started
+            assert elapsed < 3.0, f"off-loop acquire was not bounded (waited {elapsed:.1f}s)"
+            assert len(log._read_messages("k")) == 1
+        finally:
+            release.set()
+            t.join(5)
 
 
 # ── On-loop offload discipline: structurally enforced, not convention-only ────
