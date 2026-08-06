@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, FileDown } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -97,6 +97,20 @@ export default function SessionActionsMenu({
   const poppedOut = !selfPopout && isPoppedOut(slotKey)
   const { open: openTagPopover } = useTagPopover()
 
+  // The export builds the file server-side and streams it back, so it can fail
+  // (missing session, unreadable transcript) after the menu has already closed.
+  // Radix `onSelect` is sync — handing it the bare promise would surface a
+  // failure only as an unhandled rejection, so catch it here. Same treatment
+  // ProjectDetailPage gives the sibling plan-YAML export.
+  const exportMarkdown = React.useCallback(async (key: string) => {
+    try {
+      await api.exportSessionMarkdown(key)
+    } catch (e) {
+      // eslint-disable-next-line no-console -- surface session-export failures for debugging
+      console.error('Failed to export session as Markdown:', e)
+    }
+  }, [])
+
   // Store-derived per-slot state: the canonical live source, matching exactly
   // what the action handlers read at call time (so a label never drifts from
   // its behaviour). `unread` comes from dashboard.unreadSlots — the same source
@@ -192,6 +206,9 @@ export default function SessionActionsMenu({
       // about this tab — the peer gets its own copy under its own key.
       // Self-hiding when no instances are configured.
       <SendToInstanceSubmenu key="send-instance" slotKey={slotKey} variant={variant} />,
+      <Item key="export-md" onSelect={() => { void exportMarkdown(slotKey) }}>
+        <FileDown size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.export_as_markdown')}
+      </Item>,
       // Channel-neutral link state and actions — connected origins are read-only,
       // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
       // dashboard session retains the existing Slack channel picker.

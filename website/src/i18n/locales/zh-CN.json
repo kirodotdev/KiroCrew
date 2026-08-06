@@ -6027,6 +6027,7 @@
       "bring_back_to_main": "移回主窗口",
       "close_session": "关闭会话",
       "copy_link": "复制链接",
+      "export_as_markdown": "导出为 Markdown",
       "focus_popped_out_window": "聚焦弹出窗口",
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",

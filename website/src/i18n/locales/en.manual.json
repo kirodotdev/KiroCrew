@@ -1939,6 +1939,7 @@
       "show": "Show"
     },
     "sessionActionsMenu": {
+      "export_as_markdown": "Export as Markdown",
       "mark_as_read": "Mark as read",
       "mark_as_unread": "Mark as unread",
       "pin": "Pin",

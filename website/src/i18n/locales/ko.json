@@ -6027,6 +6027,7 @@
       "bring_back_to_main": "메인 창으로 되돌리기",
       "close_session": "세션 닫기",
       "copy_link": "링크 복사",
+      "export_as_markdown": "Markdown으로 내보내기",
       "focus_popped_out_window": "분리된 창으로 포커스 이동",
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
