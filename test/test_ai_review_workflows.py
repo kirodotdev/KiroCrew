@@ -263,17 +263,34 @@ class TestPrReadiness:
             assert workflow_name in workflow
         assert 'success|skipped) passed+=("$label")' in workflow
 
-    def test_fork_readiness_omits_unavailable_review_lanes(self) -> None:
+    def test_fork_readiness_reads_ai_reviews_from_check_runs(self) -> None:
+        # A fork head cannot run default-setup CodeQL, but the AI code reviews
+        # DO run on forks via the Stage-2 fork-*-review.yml pipeline, which
+        # posts check-runs under the same names the same-repo lanes use.
+        # Readiness evaluates those from the head SHA's check-runs so a fully
+        # green fork reaches "passed" -- never the old blanket skip or the
+        # maintainer-review dead end.
         workflow = _workflow("pr-readiness.yml")
 
         assert "isCrossRepository" in workflow
         assert '[ "$FORK" = "true" ]' in workflow
+        # CodeQL stays the only ineligible fork lane.
         assert '"CodeQL (fork PR)"' in workflow
-        assert '"GPT 5.6 Review (fork PR)"' in workflow
-        fork_branch = workflow.index('if [ "$FORK" = "true" ]; then')
-        same_repo_branch = workflow.index("else", fork_branch)
-        codeql_spec = workflow.index('"dynamic/github-code-scanning/codeql|CodeQL"')
-        assert same_repo_branch < codeql_spec
+        # AI reviews are now monitored on forks via check-run specs.
+        assert '"checkrun:Opus 5 Review|Opus 5 Review"' in workflow
+        assert '"checkrun:GPT 5.6 Review|GPT 5.6 Review"' in workflow
+        assert '"checkrun:Design Review|Design Review"' in workflow
+        assert '"checkrun:UX Review|UX Review"' in workflow
+        assert "commits/$SHA/check-runs?check_name=$enc" in workflow
+        # The blanket fork skip and the maintainer-review verdict are gone.
+        assert '"GPT 5.6 Review (fork PR)"' not in workflow
+        assert 'state="maintainer_review"' not in workflow
+        assert "AI reviews could not run" not in workflow
+        # Stage-2 fork reviewers re-trigger readiness on completion so the
+        # green verdict actually lands.
+        assert "Fork Opus 5 Review" in workflow
+        assert "Fork GPT 5.6 Review" in workflow
+        assert "github.event.workflow_run.event == 'workflow_run'" in workflow
 
     def test_external_check_polling_counts_each_pass_once(self) -> None:
         workflow = _workflow("pr-readiness.yml")
