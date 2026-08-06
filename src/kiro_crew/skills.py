@@ -602,13 +602,20 @@ class SkillsLoader:
         self._iter_cache = None
         self._fm_cache.clear()
 
-    def _cached_frontmatter(self, path: Path) -> dict[str, str]:
-        """Parse frontmatter with mtime-based caching."""
+    def _cached_frontmatter(self, path: Path, mtime: float | None = None) -> dict[str, str]:
+        """Parse frontmatter with mtime-based caching.
+
+        *mtime* lets a caller that already stat()'d the file reuse that result.
+        ``list_skills()`` needs the size from the same stat, and this path runs
+        on the event loop during context assembly — one syscall per skill, not
+        two.
+        """
         key = str(path)
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return {}
+        if mtime is None:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                return {}
         cached = self._fm_cache.get(key)
         if cached and cached[0] == mtime:
             return cached[1]
@@ -617,10 +624,43 @@ class SkillsLoader:
         return meta
 
     def list_skills(self) -> list[dict]:
-        """Return list of skill metadata dicts with key, name, description, path, dir, always."""
+        """Return per-skill metadata for the dashboard's Skills page.
+
+        Carries the three fields the injection-cost control needs alongside the
+        identity ones: whether the skill opted out of full-body injection, how
+        big its body is, and how many times that body was actually DELIVERED into
+        a prompt. Cost is the product of the last two, and a user deciding
+        whether to opt a skill out cannot weigh it without both.
+
+        ``deliveries`` counts body deliveries, not trigger matches: the ledger
+        records only when a body reaches the prompt, so a false-positive match, a
+        pointer-only skill, and an undelivered match all count zero. Two
+        consequences a caller must not paper over — a skill already opted out
+        stops accruing entirely, so its figure is historical and frozen; and this
+        is therefore a measure of what was SPENT, never of how often the skill
+        was relevant.
+
+        ``deliveries`` is ``None`` when the skill has no ledger entry, which is
+        different from zero: an entry can also age out of the 30-day window.
+
+        ``owned`` says whether Kiro Crew may rewrite the file. A skill reached
+        through ``skills.extra_paths`` is listed but not ours to edit, so the UI
+        must not offer a toggle the endpoint will refuse.
+
+        This runs on the event loop as part of context assembly (the skill
+        index), so it takes exactly ONE stat per skill — the same count as
+        before ``size_bytes`` existed — by feeding that stat's mtime to the
+        frontmatter cache instead of letting it stat again.
+        """
         skills: list[dict] = []
         for name, skill_file in self._iter():
-            meta = self._cached_frontmatter(skill_file)
+            try:
+                st: os.stat_result | None = skill_file.stat()
+            except OSError:
+                st = None
+            meta = self._cached_frontmatter(
+                skill_file, mtime=st.st_mtime if st is not None else None
+            )
             skills.append(
                 {
                     "key": name,
@@ -629,9 +669,48 @@ class SkillsLoader:
                     "path": str(skill_file),
                     "dir": str(skill_file.parent),
                     "always": meta.get("always", "").lower() == "true",
+                    # Mirrors split_triggered: only an explicit `false` opts out,
+                    # so a malformed value reads as injecting, as it behaves.
+                    "inject_on_trigger": (
+                        meta.get("inject_on_trigger", "").strip().lower() != "false"
+                    ),
+                    "size_bytes": st.st_size if st is not None else 0,
+                    "deliveries": self._delivery_count(name),
+                    "owned": self._owned_hint(skill_file),
                 }
             )
         return skills
+
+    def _owned_hint(self, skill_file: Path) -> bool:
+        """Whether *skill_file* sits under the directory Kiro Crew owns.
+
+        Syscall-free on purpose: this runs once per skill inside ``list_skills``,
+        which the event loop calls while assembling the skill index, and
+        ``Path.resolve()`` costs a stat each. It is an ADVISORY hint for the UI —
+        the authoritative check is the resolved one in
+        ``set_inject_on_trigger``, which is the write boundary and runs once per
+        toggle. A path that only differs by a symlink therefore reads as owned
+        here and is still refused there; the failure mode is a toggle that
+        reports an error, never an unowned file being rewritten.
+        """
+        try:
+            return skill_file.is_relative_to(self._dir)
+        except (OSError, ValueError):
+            return False
+
+    def _delivery_count(self, key: str) -> int | None:
+        """Body deliveries recorded for *key*, or ``None`` when untracked.
+
+        Best-effort: the ledger is telemetry, so a missing or unreadable one
+        yields ``None`` rather than failing the whole listing.
+        """
+        if self._usage is None:
+            return None
+        try:
+            hits, _ = self._usage.score(key)
+        except Exception:
+            return None
+        return int(hits) if hits else None
 
     @staticmethod
     def _safe_name(name: str) -> bool:
@@ -881,7 +960,10 @@ class SkillsLoader:
         # Re-emit the lifecycle lines ``_build_auto_skill_content`` does not know
         # about. Dropping ``version`` would make the next update-approval read the
         # skill as v1 and overwrite an existing ``.versions/v1-SKILL.md`` snapshot;
-        # dropping ``pinned`` would silently remove the skill's archival exemption.
+        # dropping ``pinned`` would silently remove the skill's archival exemption;
+        # dropping ``inject_on_trigger`` would turn full-body injection back on for
+        # a skill the user had made pointer-only — a setting undoing itself behind
+        # an unrelated refine.
         _carry: list[str] = []
         _ver = existing_meta.get("version", "")
         try:
@@ -892,6 +974,8 @@ class SkillsLoader:
             _carry.append(f"version: {_vn}")
         if str(existing_meta.get("pinned", "")).strip().lower() in ("true", "1", "yes"):
             _carry.append("pinned: true")
+        if str(existing_meta.get("inject_on_trigger", "")).strip().lower() == "false":
+            _carry.append("inject_on_trigger: false")
         if _carry:
             content = content.replace("\n---\n", "\n" + "\n".join(_carry) + "\n---\n", 1)
         skill_file.write_text(content, encoding="utf-8")
@@ -1011,6 +1095,66 @@ class SkillsLoader:
         atomic_write(skill_file, new_content)
         self._invalidate_iter_cache()
         logger.info("%s auto skill: %s", "Pinned" if pinned else "Unpinned", name)
+        return True
+
+    def set_inject_on_trigger(self, name: str, inject: bool) -> bool:
+        """Opt a skill in or out of full-body injection on a trigger match.
+
+        Edits the ``inject_on_trigger:`` frontmatter line in place, mirroring
+        :meth:`set_pinned`. ``inject=False`` writes the opt-out; ``inject=True``
+        removes the line rather than writing ``true``, because injecting is the
+        default and an absent key is the honest way to say "unchanged".
+
+        Refuses any skill whose file resolves outside this loader's own skills
+        dir. ``_resolve_path`` also reaches ``skills.extra_paths`` and the
+        kiro-cli user/workspace skill dirs — directories Kiro Crew does not own
+        and may not even be able to write. Rewriting a foreign ``SKILL.md``
+        because a dashboard toggle was flipped is a side effect nobody asked
+        for, so ownership is checked before the write, not left to the UI (which
+        does gate on source, but the endpoint is reachable directly).
+
+        Returns False when the skill cannot be resolved, is not ours, or has no
+        frontmatter block to edit — the caller surfaces that as a failed toggle
+        rather than silently reporting success on a no-op.
+        """
+        if not self._safe_name(name):
+            return False
+        skill_file = self._resolve_path(name)
+        if skill_file is None or not skill_file.exists():
+            return False
+        try:
+            owned_root = self._dir.resolve()
+            if not skill_file.resolve().is_relative_to(owned_root):
+                logger.warning("Refusing to edit a skill outside %s: %s", owned_root, skill_file)
+                return False
+        except OSError:
+            return False
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        m = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
+        if not m:
+            return False
+        fm_lines = [
+            ln
+            for ln in m.group(1).split("\n")
+            # Only a TOP-LEVEL key, matched without stripping: an indented
+            # `inject_on_trigger:` belongs to a block scalar (a description that
+            # documents the flag, say), and deleting that line would silently
+            # rewrite the skill's prose while toggling a setting.
+            if not ln.lower().startswith("inject_on_trigger:")
+        ]
+        if not inject:
+            fm_lines.append("inject_on_trigger: false")
+        new_content = "---\n" + "\n".join(fm_lines) + "\n---\n" + m.group(2)
+        # Atomic write (temp + rename), for the same reason set_pinned uses it:
+        # a partial write must never truncate the live SKILL.md.
+        atomic_write(skill_file, new_content)
+        self._invalidate_iter_cache()
+        logger.info(
+            "Skill %s on trigger: %s", "injects fully" if inject else "sends a pointer", name
+        )
         return True
 
     def _archive_root(self) -> Path:
@@ -1660,17 +1804,22 @@ class SkillsLoader:
         created_at: str,
         version: int,
         pinned: bool = False,
+        pointer_only: bool = False,
     ) -> str:
         """Rebuild an update candidate's body as the new live SKILL.md.
 
         Keeps the candidate's description/triggers/source/body (the merged new
         content) but forces ``name`` to the live target, preserves the live
         ``created_at``, and stamps ``version``. Any ``name`` / ``created_at`` /
-        ``version`` / ``pinned`` lines from the candidate are dropped and
-        re-emitted so the live skill's identity + history are authoritative, not
-        the candidate's. ``pinned`` is carried from the LIVE skill: a candidate
-        never sets it, and losing it would drop the target's lifecycle exemption
-        and expose a user-pinned skill to archival.
+        ``version`` / ``pinned`` / ``inject_on_trigger`` lines from the candidate
+        are dropped and re-emitted so the live skill's identity + history are
+        authoritative, not the candidate's. ``pinned`` is carried from the LIVE
+        skill: a candidate never sets it, and losing it would drop the target's
+        lifecycle exemption and expose a user-pinned skill to archival.
+        ``pointer_only`` is carried the same way and for the same reason: a
+        candidate never sets ``inject_on_trigger``, so dropping it would silently
+        re-enable full-body injection on a skill the user had opted out — a
+        setting reverting itself behind an unrelated approval.
         """
         m = re.match(r"^---\n(.*?)\n---\n?(.*)$", candidate_content, re.DOTALL)
         if m:
@@ -1684,7 +1833,7 @@ class SkillsLoader:
             if not ln.strip():
                 continue
             key = ln.split(":", 1)[0].strip() if ":" in ln else ""
-            if key in ("name", "created_at", "version", "pinned"):
+            if key in ("name", "created_at", "version", "pinned", "inject_on_trigger"):
                 continue
             kept.append(ln)
         new_fm = [f"name: {target_name}"]
@@ -1694,6 +1843,8 @@ class SkillsLoader:
         new_fm.append(f"version: {version}")
         if pinned:
             new_fm.append("pinned: true")
+        if pointer_only:
+            new_fm.append("inject_on_trigger: false")
         return "---\n" + "\n".join(new_fm) + "\n---\n\n" + body.strip() + "\n"
 
     def _versions_root(self, target_slug: str) -> Path:
@@ -1768,6 +1919,7 @@ class SkillsLoader:
             version=current_version + 1,
             pinned=str(_live_fm.get("pinned", "")).strip().lower()
             in ("true", "1", "yes"),
+            pointer_only=str(_live_fm.get("inject_on_trigger", "")).strip().lower() == "false",
         )
         # Redact both sides: this feeds the dashboard API, and the candidate is
         # only redacted in place at approve time (so an un-approved draft may
@@ -1944,12 +2096,20 @@ class SkillsLoader:
         live_pinned = str(
             self._cached_frontmatter(live_skill).get("pinned", "")
         ).strip().lower() in ("true", "1", "yes")
+        # Same for the injection opt-out: the candidate never carries it, so
+        # writing it over live without this would silently turn full-body
+        # injection back on for a skill the user had made pointer-only.
+        live_pointer_only = (
+            str(self._cached_frontmatter(live_skill).get("inject_on_trigger", "")).strip().lower()
+            == "false"
+        )
         new_live_content = self._rewrite_update_frontmatter(
             candidate_body,
             target_name=target_name,
             created_at=live_created_at,
             version=new_version,
             pinned=live_pinned,
+            pointer_only=live_pointer_only,
         )
         # Snapshot the current live SKILL.md into .versions/ (point-of-no-return
         # is the live overwrite below; if the snapshot fails, live is untouched).
@@ -2694,7 +2854,17 @@ class SkillsLoader:
 
     @staticmethod
     def _parse_frontmatter(path: Path) -> dict[str, str]:
-        """Parse YAML frontmatter from a markdown file (simple key: value)."""
+        """Parse YAML frontmatter from a markdown file (simple key: value).
+
+        Only a key at column 0 is a field. An indented ``key: value`` belongs to
+        the enclosing block scalar — a description that documents a setting, for
+        instance — and reading it as the setting made the writer and the reader
+        disagree: ``set_inject_on_trigger`` deliberately leaves an indented
+        occurrence alone (deleting it would rewrite the author's prose), so
+        honoring it here meant the opt-in could never take effect. Ignoring
+        indented lines also drops the junk keys a prose line like
+        ``  Steps: do x`` used to invent.
+        """
         content = path.read_text(encoding="utf-8")
         if not content.startswith("---"):
             return {}
@@ -2703,7 +2873,7 @@ class SkillsLoader:
             return {}
         meta: dict[str, str] = {}
         for line in match.group(1).split("\n"):
-            if ":" in line:
+            if ":" in line and not line[:1].isspace():
                 key, value = line.split(":", 1)
                 meta[key.strip()] = value.strip().strip("\"'")
         return meta

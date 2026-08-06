@@ -278,6 +278,7 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     api_prompts,
     api_skill_detail,
     api_skill_file,
+    api_skill_inject_on_trigger,
     api_skill_pending_approve,
     api_skill_pending_detail,
     api_skill_pending_dismiss,

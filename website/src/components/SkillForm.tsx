@@ -10,6 +10,9 @@ export interface SkillFormData {
   tags: string
   always: boolean
   body: string
+  /** Frontmatter keys the form does not model, kept as their VERBATIM source
+   *  lines so a round-trip cannot destroy or retype them. */
+  extra?: Record<string, string>
   /** Raw markdown content (frontmatter + body). Used in raw editing mode. */
   raw?: string
 }
@@ -23,27 +26,70 @@ interface SkillFormProps {
   allowRaw?: boolean
 }
 
-/** Parse YAML frontmatter from raw skill content. Shared by SkillsTab (display) and SkillForm (edit). */
-export function parseFrontmatter(raw: string): { meta: Record<string, string>; body: string } {
-  if (!raw.startsWith('---')) return { meta: {}, body: raw }
+/** Parse YAML frontmatter from raw skill content. Shared by SkillsTab (display) and SkillForm (edit).
+ *
+ *  Two views of the same block, deliberately built by DIFFERENT rules:
+ *
+ *  - `meta` is a flattened SCALAR view, used to read the fields the form models.
+ *    Only an INDENTED line continues a value, because that is what makes a value
+ *    multi-line in YAML. A top-level `# comment` after `always: true` must not
+ *    become part of `always`, or the form reads the flag as unset and drops it.
+ *  - `rawFields` keeps each key's ORIGINAL source lines verbatim, for re-emitting
+ *    a field nobody modelled (see `assembleSkillContent`). Here a field's block is
+ *    everything up to the next top-level key — the inverse of the key test, so no
+ *    continuation shape (indented, blank, indentless `- item`, comment) is missed.
+ *
+ *  A comment attached to a MODELLED key is not preserved: the form owns those five
+ *  fields and re-emits them from its own state, the same reason their original
+ *  spacing is not preserved either. */
+export function parseFrontmatter(raw: string): {
+  meta: Record<string, string>
+  rawFields: Record<string, string>
+  body: string
+} {
+  if (!raw.startsWith('---')) return { meta: {}, rawFields: {}, body: raw }
   const end = raw.indexOf('\n---', 3)
-  if (end === -1) return { meta: {}, body: raw }
+  if (end === -1) return { meta: {}, rawFields: {}, body: raw }
   const yamlBlock = raw.slice(4, end)
   const meta: Record<string, string> = {}
+  const rawFields: Record<string, string> = {}
   let currentKey = ''
+  /* A blank line inside a field belongs to it, but a blank line before the next
+     key (or before the closing `---`) does not. Hold them until more of the same
+     field arrives, so an interior blank survives and a trailing one is not
+     invented. */
+  let pendingBlanks: string[] = []
   for (const line of yamlBlock.split('\n')) {
     const match = line.match(/^(\w[\w-]*):\s*(.*)$/)
     if (match) {
+      pendingBlanks = []
       currentKey = match[1]
       const val = match[2].trim()
       // Handle YAML block scalar indicators (| and >)
       meta[currentKey] = (val === '|' || val === '>') ? '' : val
-    } else if (currentKey && (line.startsWith('  ') || line.startsWith('\t'))) {
-      meta[currentKey] += (meta[currentKey] ? '\n' : '') + line.trim()
+      rawFields[currentKey] = line
+      continue
     }
+    if (!currentKey) continue
+    if (line.trim() === '') {
+      pendingBlanks.push(line)
+      continue
+    }
+    const indented = line.startsWith('  ') || line.startsWith('\t')
+    for (const blank of pendingBlanks) {
+      rawFields[currentKey] += '\n' + blank
+      if (indented) meta[currentKey] += '\n'
+    }
+    pendingBlanks = []
+    rawFields[currentKey] += '\n' + line
+    if (indented) meta[currentKey] += (meta[currentKey] ? '\n' : '') + line.trim()
   }
-  return { meta, body: raw.slice(end + 4).trim() }
+  return { meta, rawFields, body: raw.slice(end + 4).trim() }
 }
+
+/** Frontmatter keys the structured form owns. Everything else is carried
+ *  through untouched — see `extra` on SkillFormData. */
+const MANAGED_KEYS = new Set(['name', 'description', 'always', 'triggers', 'tags'])
 
 /** Assemble YAML frontmatter + body from structured fields */
 export function assembleSkillContent(data: SkillFormData): string {
@@ -63,6 +109,21 @@ export function assembleSkillContent(data: SkillFormData): string {
   if (data.always) lines.push('always: true')
   if (data.triggers) lines.push(`triggers: ${data.triggers}`)
   if (data.tags) lines.push(`tags: [${data.tags}]`)
+  // Carry through every key the form does not model. Without this, saving a
+  // skill from the structured editor destroys frontmatter the runtime reads —
+  // `repo_scope` (the matcher's repo guard) and `inject_on_trigger` (the
+  // full-body opt-out) among them — because the form rebuilds the block from
+  // its own fields rather than editing the original.
+  //
+  // The carried value is the field's ORIGINAL source lines, re-emitted verbatim.
+  // Reserializing from a parsed value cannot be done safely here: the form does
+  // not know a field's YAML type, so a list or nested map would come back as a
+  // `|` block scalar — i.e. a string — and a folded `>` scalar would change
+  // semantics. Verbatim is the only lossless option for a field we do not model.
+  for (const [key, block] of Object.entries(data.extra || {})) {
+    if (MANAGED_KEYS.has(key)) continue
+    for (const line of block.split('\n')) lines.push(line)
+  }
   lines.push('---')
   lines.push('')
   lines.push(data.body || `# ${data.name}\n`)
@@ -75,7 +136,7 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
   const name = slash > 0 ? key.slice(slash + 1) : key
   const category = slash > 0 ? key.slice(0, slash) : ''
 
-  const { meta, body } = parseFrontmatter(raw)
+  const { meta, rawFields, body } = parseFrontmatter(raw)
   if (!Object.keys(meta).length && !raw.startsWith('---')) {
     return { name, category, description: '', triggers: '', tags: '', always: false, body: raw }
   }
@@ -83,6 +144,9 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
   // Clean up tags — strip brackets
   const tagsRaw = meta.tags || ''
   const tags = tagsRaw.replace(/[\[\]]/g, '').trim()
+
+  const extra: Record<string, string> = {}
+  for (const k of Object.keys(meta)) if (!MANAGED_KEYS.has(k)) extra[k] = rawFields[k]
 
   return {
     name: meta.name || name,
@@ -92,6 +156,7 @@ export function parseSkillContent(raw: string, key: string): SkillFormData {
     tags,
     always: meta.always === 'true',
     body,
+    extra,
   }
 }
 

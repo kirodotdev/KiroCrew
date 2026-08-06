@@ -2042,6 +2042,9 @@ async def start_dashboard(
     app.router.add_post("/api/skills/-/pending/{slug}/approve", handlers.api_skill_pending_approve)
     app.router.add_post("/api/skills/-/pending/{slug}/dismiss", handlers.api_skill_pending_dismiss)
     app.router.add_post("/api/skills/-/pin", handlers.api_skill_pin)
+    app.router.add_post(
+        "/api/skills/-/inject-on-trigger", handlers.api_skill_inject_on_trigger
+    )
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)
     app.router.add_get("/api/skills/{name:.+}/-/file", handlers.api_skill_file)
     app.router.add_get("/api/skills/{name:.+}", handlers.api_skill_detail)

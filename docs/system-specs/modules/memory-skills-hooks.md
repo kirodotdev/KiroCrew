@@ -700,6 +700,83 @@ The `false` value carries no new privilege surface: it can only reduce what a
 skill delivers, and foreign-imported skills are refused for declaring `triggers`
 at all (`onboarding_import.py`), so an import cannot reach either path.
 
+**Setting it from the dashboard.** `POST /api/skills/-/inject-on-trigger` (body
+`{name, inject}`) edits that one frontmatter line server-side via
+`SkillsLoader.set_inject_on_trigger()`, mirroring `set_pinned()` — atomic write,
+caches invalidated so the next match sees the change rather than a stale parse.
+`inject: true` REMOVES the key instead of writing `true`, because injecting is the
+default and an absent key is the honest way to say "unchanged". It refuses any
+skill whose file resolves **outside the loader's own skills dir**: `_resolve_path`
+also reaches `skills.extra_paths` and the kiro-cli user/workspace dirs so the
+listing can show those skills, but rewriting a `SKILL.md` Kiro Crew does not own —
+possibly not even writable — is a side effect nobody asked for. Ownership is
+checked before the write rather than left to the UI, which does gate on source but
+does not stand between the endpoint and a direct caller. A skill with no
+frontmatter block returns False
+rather than silently succeeding, so the UI shows a failed toggle instead of a
+no-op it reports as applied. The key it strips before rewriting is matched at
+column 0 only: an indented `inject_on_trigger:` sits inside a block scalar (a
+description that documents the flag, say), and deleting that line would rewrite
+the skill's prose while changing a setting. Every outcome is SEL-audited, rejections included —
+turning injection off changes what the agent is guaranteed to see, so "who made
+this skill advisory, and when" has to be answerable.
+
+`list_skills()` carries `inject_on_trigger`, `size_bytes` and `deliveries` so the
+Skills page can show the cost behind the choice (cost = size × deliveries).
+`deliveries` counts bodies that **reached a prompt**, not trigger matches: the
+ledger records on delivery only, so a false-positive match, a pointer-only skill
+and an undelivered match all count zero. Two consequences a surface must not
+paper over — a skill already opted out **stops accruing**, so its figure is
+historical and frozen (the Skills page says so in the cost line rather than
+showing a number that silently stopped moving), and the field measures what was
+SPENT, never how often the skill was relevant. `deliveries` is `None` when
+untracked, which is NOT zero — an entry can also age out of the 30-day window.
+Consumers must also join against live skill keys: the ledger retains keys for
+skills that have since moved or been removed, and ranking naively by them puts a
+nonexistent skill first.
+
+It also carries `owned` — whether the `SKILL.md` sits under the directory
+Kiro Crew owns. A skill reached through `skills.extra_paths` still reports
+`source: kirocrew`, so source alone cannot gate the toggle; the UI hides the
+control when `owned` is `false` instead of offering one the writer always
+refuses. The listing's check is deliberately syscall-free (a path comparison, no
+`resolve()`), because `list_skills()` also feeds the session-start skill index on
+the event loop; the authoritative resolved check stays at the write boundary in
+`set_inject_on_trigger`. A path differing only by a symlink therefore reads as
+owned in the listing and is still refused on write — the failure mode is a toggle
+that reports an error, never a foreign file being rewritten. For the same reason
+`size_bytes` reuses the stat the frontmatter cache already needed for its mtime,
+so the listing costs the same one stat per skill it did before the field existed.
+
+The dashboard's structured skill editor rebuilds the frontmatter block from its
+own fields, so it must carry every key it does not model. It re-emits those keys'
+**original source lines verbatim** rather than reserializing a parsed value: the
+form does not know a field's YAML type, so any value it invents can change the
+type (a list or nested map becomes a block scalar, a folded `>` becomes literal
+`|`). A field's block is defined as everything from its key line up to the next
+top-level key — the inverse of the key test, not a list of accepted continuation
+shapes, so indented lines, interior blank lines, indentless `- item` entries and
+comments are all covered without enumerating them. That verbatim rule applies to
+PRESERVATION only: the scalar view the form reads its own five fields from keeps
+the narrower "indented lines continue a value" rule, because a top-level comment
+after `always: true` is part of the block but not part of the value — folding it
+in made the flag read as unset and the form dropped the pin. A comment attached to
+one of the five modelled keys is not preserved, for the same reason their original
+spacing is not: the form owns those and re-emits them from its own state. The
+invariant to preserve when touching this code: editing a modelled field leaves
+every unmodelled field byte-identical.
+
+The auto-skill (`auto/*`) write paths rebuild frontmatter from the generator's
+template rather than editing it, so each lifecycle key they must not lose is
+carried forward explicitly from the LIVE skill: `version` (dropping it makes the
+next approval overwrite an existing `.versions/` snapshot), `pinned` (dropping it
+removes the archival exemption), and `inject_on_trigger` (dropping it restores
+full-body injection on a skill the user made pointer-only). This applies to both
+`update_auto_skill` (auto-refine) and `approve_pending_update` — a candidate never
+declares any of the three, so live is authoritative. A new per-skill frontmatter
+setting that the runtime reads must be added to that carry list, or an unrelated
+approval will silently undo it.
+
 Unchanged: `always: true` pinned skills (skipped by the matcher entirely) and the
 explicit `$skillname` token. Set `skills.max_triggered = 0` to stop flagging
 altogether and rely only on the index, `$skillname`, and `skill_search`. The
