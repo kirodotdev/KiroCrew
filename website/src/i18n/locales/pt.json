@@ -6448,6 +6448,12 @@
         "session_color": "Cor da sessão",
         "session_colors": "Cores da sessão"
       },
+      "sessionFlyout": {
+        "new": "Novo",
+        "new_chat": "Novo chat",
+        "recent_sessions": "Sessões recentes",
+        "show_all_sessions": "Mostrar todas as sessões"
+      },
       "sideChat": {
         "ago": "atrás",
         "ask_a_side_question": "Fazer uma pergunta paralela",

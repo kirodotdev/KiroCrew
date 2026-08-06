@@ -6521,6 +6521,12 @@
         "session_color": "Цвет сессии",
         "session_colors": "Цвета сессий"
       },
+      "sessionFlyout": {
+        "new": "Создать",
+        "new_chat": "Новый чат",
+        "recent_sessions": "Недавние сессии",
+        "show_all_sessions": "Показать все сессии"
+      },
       "sideChat": {
         "ago": "назад",
         "ask_a_side_question": "Задать дополнительный вопрос",

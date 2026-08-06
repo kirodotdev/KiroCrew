@@ -6302,6 +6302,12 @@
         "session_color": "会话颜色",
         "session_colors": "会话颜色"
       },
+      "sessionFlyout": {
+        "new": "新建",
+        "new_chat": "新建聊天",
+        "recent_sessions": "最近的会话",
+        "show_all_sessions": "显示所有会话"
+      },
       "sideChat": {
         "ago": "前",
         "ask_a_side_question": "问一个旁支问题",

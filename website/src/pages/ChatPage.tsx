@@ -138,6 +138,9 @@ import {
 import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
+import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
+import { focusComposerAfter } from './chat/composerFocus'
+import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
 import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
@@ -630,6 +633,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const connected = useConnected()
+  // Create-in-flight, so the flyout's New button can go inert exactly like the
+  // sidebar's does instead of accepting a second click.
+  const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
@@ -4628,6 +4634,61 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
   }, [])
   const sidebarOpen = !previewFocused && (isMobile ? mobileSessions : (sidebarPinned || filteredSlots.length === 0))
+
+  // ── Collapsed-sidebar hover flyout ──────────────────────────────────────
+  // Hovering the toggle while collapsed opens a recents list over the chat, so
+  // switching sessions stops being expand → switch → collapse. It is purely an
+  // overlay: it never touches `sidebarPinned`, because `panelReserve` and
+  // `panelFillWidth` below both read `sidebarOpen`, and flipping it to show a
+  // transient popover would re-run the side panel's width maths and visibly
+  // resize the chat every time the pointer rested on a 28px button.
+  const flyoutTriggerRef = useRef<HTMLButtonElement>(null)
+  const flyoutSurfaceRef = useRef<HTMLDivElement>(null)
+  // Touch is a second gate beyond isMobile: a desktop-width touch device has no
+  // hover, so the flyout would only ever appear as a tap artefact.
+  const flyoutEligible = !isMobile && !isTouchDevice() && !previewFocused && !splitMode
+    && embedMode !== 'chat' && embedMode !== 'sessions'
+    && !sidebarOpen && filteredSlots.length > 0
+  const flyout = useHoverIntent({
+    enabled: flyoutEligible,
+    triggerRef: flyoutTriggerRef,
+    surfaceRef: flyoutSurfaceRef,
+  })
+  // Rect the sidebar's clip window should expand FROM, captured at click time
+  // from the live flyout element. Null when the expand came from the button
+  // alone, which keeps the stock button-rect morph for that path.
+  const [expandFrom, setExpandFrom] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const expandSidebar = useCallback((fromFlyout: boolean) => {
+    const surface = flyoutSurfaceRef.current
+    const container = chatContainerRef.current
+    if (fromFlyout && surface && container) {
+      const s = surface.getBoundingClientRect()
+      const c = container.getBoundingClientRect()
+      setExpandFrom({ x: s.left - c.left, y: s.top - c.top, w: s.width, h: s.height })
+    } else {
+      setExpandFrom(null)
+    }
+    flyout.close()
+    window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))
+  }, [flyout])
+  // The rect is only valid for the mount it was captured for. Clearing it on
+  // collapse means a later button-only expand cannot inherit a stale flyout
+  // rect and appear to grow out of nothing.
+  useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
+  const flyoutSwitch = useCallback((key: string) => {
+    dispatch(switchSlot(key))
+    setSplitMode(false)
+    flyout.close()
+  }, [dispatch, flyout])
+  const flyoutNew = useCallback(() => {
+    const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
+    flyout.close()
+    // `focusComposerAfter`, not a bare dispatch + rAF: there is one composer and
+    // it is bound to the ACTIVE slot, so focusing before creation fulfils puts
+    // the caret on the old session and loses whatever is typed. See the module.
+    focusComposerAfter(dispatch(createSlot({ agent: defaultAgent || undefined, mode: effectiveMode })).unwrap())
+  }, [dispatch, defaultAgent, mode, flyout])
+
   useEffect(() => {
     if (filteredSlots.length === 0 && !sidebarPinned) {
       setSidebarPinned(true)
@@ -4680,11 +4741,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           (only the icon flips), so collapsing cannot drag it sideways with
           the reflowing content pane. The collapse/expand motion itself is the
           panel deforming into/out of this button's rect (OverlayDrawer morph
-          mode, morphTarget below). Desktop, non-embed, with sessions only. */}
-      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (
+          mode, morphTarget below). Desktop, non-embed, with sessions only.
+          While collapsed, hovering it opens the recents flyout below; clicking
+          hands that flyout's rect to the drawer so the panel grows out of it. */}
+      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && !previewFocused && filteredSlots.length > 0 && (
         <button
+          ref={flyoutTriggerRef}
           type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
+          onClick={() => expandSidebar(flyout.open)}
+          {...flyout.triggerProps}
+          aria-haspopup={flyoutEligible ? 'menu' : undefined}
+          aria-expanded={flyoutEligible ? flyout.open : undefined}
+          // Geometry mirrored by TOGGLE_RECT (chat/SessionFlyout) — every
+          // surface in this interaction grows out of and back into this rect.
           className="pi-morph absolute top-[9px] left-2 z-[61] w-7 h-7 rounded-md flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none"
           title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
           aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
@@ -4692,6 +4761,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           {sidebarOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
         </button>
       )}
+      <AnimatePresence>
+        {flyoutEligible && flyout.open && (
+          <SessionFlyout
+            key="session-flyout"
+            ref={flyoutSurfaceRef}
+            slots={filteredSlots}
+            activeSlot={activeSlot}
+            unreadSlots={surfaceUnreadSlots}
+            panelWidth={sidebarWidth}
+            // The panel's own height (OverlayDrawer carries pb-2), so the
+            // flyout can never be taller than the thing it grows into.
+            maxHeight={Math.max(0, containerH - 8)}
+            connected={connected}
+            creating={creatingSlot}
+            autoFocus={flyout.openedBy === 'keyboard'}
+            onSwitch={flyoutSwitch}
+            onNew={flyoutNew}
+            onExpand={() => expandSidebar(true)}
+            onDismiss={() => { flyout.close(); flyoutTriggerRef.current?.focus() }}
+            onMouseEnter={flyout.surfaceProps.onMouseEnter}
+            onMouseLeave={flyout.surfaceProps.onMouseLeave}
+            onBlur={flyout.surfaceProps.onBlur}
+          />
+        )}
+      </AnimatePresence>
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
         <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar
@@ -4709,7 +4803,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={{ x: 8, y: 9, size: 28 }} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}

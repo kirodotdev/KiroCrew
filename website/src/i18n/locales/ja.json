@@ -6265,6 +6265,12 @@
         "session_color": "セッションの色",
         "session_colors": "セッションの色"
       },
+      "sessionFlyout": {
+        "new": "新規",
+        "new_chat": "新しいチャット",
+        "recent_sessions": "最近のセッション",
+        "show_all_sessions": "すべてのセッションを表示"
+      },
       "sideChat": {
         "ago": "前",
         "ask_a_side_question": "サイドで質問",

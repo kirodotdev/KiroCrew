@@ -4625,6 +4625,12 @@
         "session_color": "Session color",
         "session_colors": "Session colors"
       },
+      "sessionFlyout": {
+        "new": "New",
+        "new_chat": "New chat",
+        "recent_sessions": "Recent sessions",
+        "show_all_sessions": "Show all sessions"
+      },
       "sideChat": {
         "ago": "ago",
         "ask_a_side_question": "Ask a side question",

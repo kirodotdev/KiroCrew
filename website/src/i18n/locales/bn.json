@@ -6375,6 +6375,12 @@
         "session_color": "সেশনের রঙ",
         "session_colors": "সেশনের রঙসমূহ"
       },
+      "sessionFlyout": {
+        "new": "নতুন",
+        "new_chat": "নতুন চ্যাট",
+        "recent_sessions": "সাম্প্রতিক সেশন",
+        "show_all_sessions": "সব সেশন দেখান"
+      },
       "sideChat": {
         "ago": "আগে",
         "ask_a_side_question": "একটি সাইড প্রশ্ন করুন",

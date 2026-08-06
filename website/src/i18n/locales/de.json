@@ -6375,6 +6375,12 @@
         "session_color": "Sitzungsfarbe",
         "session_colors": "Sitzungsfarben"
       },
+      "sessionFlyout": {
+        "new": "Neu",
+        "new_chat": "Neuer Chat",
+        "recent_sessions": "Kürzliche Sitzungen",
+        "show_all_sessions": "Alle Sitzungen anzeigen"
+      },
       "sideChat": {
         "ago": "her",
         "ask_a_side_question": "Nebenfrage stellen",
