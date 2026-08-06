@@ -2170,6 +2170,8 @@ async def start_dashboard(
     app.router.add_post(
         "/api/skills/-/inject-on-trigger", handlers.api_skill_inject_on_trigger
     )
+    # Skill context budget (read-only cost analysis with alias folding).
+    app.router.add_get("/api/skills/-/budget", handlers.api_skills_budget)
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)
     app.router.add_get("/api/skills/{name:.+}/-/file", handlers.api_skill_file)
     app.router.add_get("/api/skills/{name:.+}", handlers.api_skill_detail)

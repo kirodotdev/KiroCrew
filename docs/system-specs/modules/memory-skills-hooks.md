@@ -806,6 +806,25 @@ line rather than a body — measuring the matcher's false-positive rate is the
 prerequisite, not a change to the ledger.
 
 **CRUD operations** (via `SkillsLoader`):
+
+**Context Budget endpoint.** `GET /api/skills/-/budget` returns the 30-day
+per-skill injection cost with alias folding across renamed/aliased ledger keys.
+Response shape: `{window_days, total_chars, rows: [{key, name, size_bytes,
+deliveries, chars, inject_on_trigger, always, owned, source, idle_days,
+folded_from?}]}`. `deliveries` is `null` when untracked (no ledger entry),
+distinct from `0` (entry exists but zero hits). `chars = size_bytes *
+(deliveries ?? 0)`. `folded_from` lists alias ledger keys whose `SKILL.md`
+resolves (via symlink) to the same real file as the canonical key; their hits are
+summed into `deliveries`. Unresolvable ledger keys (orphaned after relocation)
+are dropped, not guessed. `idle_days` is days since last delivery, `null` when
+untracked. `total_chars` equals the sum of all row `chars`. The fold logic lives
+in a dedicated handler (`skill_budget.py`), NOT in `list_skills()`, because it
+requires per-ledger-key path resolution and `list_skills()` must remain O(skills)
+on the event loop. The endpoint offloads all blocking work to `discovery_executor`
+(same pattern as `GET /api/skills`). The alias map is cached on the ledger's key
+set so repeat calls don't re-resolve.
+
+**CRUD operations** (via `SkillsLoader`):
 - `create_skill(name, content)` — creates `{name}/SKILL.md`, supports nested paths
 - `update_skill(name, content)` — overwrites existing SKILL.md
 - `delete_skill(name)` — removes entire skill directory

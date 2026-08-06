@@ -105,6 +105,14 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Skill context budget",
+        "dashboard/handlers/skill_budget.py",
+        "Skill display names served by `GET /api/skills/-/budget`. An auto-skill's "
+        "frontmatter `name` is written by the agent, so it is LLM-authored text that "
+        "reaches the dashboard verbatim — the same output-boundary reason as the "
+        "session-memory titles below.",
+    ),
+    (
         "Session & task memory panel",
         "dashboard/session_memory.py",
         "Chat titles served by `GET /api/sessions/memory`. Titles are generated from "

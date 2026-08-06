@@ -327,6 +327,11 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_open,
     api_side_turn,
 )
+
+# ── Skill context budget (extracted to handlers/skill_budget.py) ──
+from kiro_crew.dashboard.handlers.skill_budget import (  # noqa: E402, F401
+    api_skills_budget,
+)
 from kiro_crew.dashboard.handlers.sso_login import (  # noqa: E402, F401
     api_sso_login_ws,
 )

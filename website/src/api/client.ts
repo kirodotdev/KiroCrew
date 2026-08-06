@@ -1318,6 +1318,8 @@ export const api = {
    *  `inject: false` reduces the skill to a one-line pointer on a match. */
   setSkillInjectOnTrigger: (name: string, inject: boolean) =>
     post('/api/skills/-/inject-on-trigger', { name, inject }).then(j),
+  /** Context budget: cost data for the skill control plane. */
+  skillsBudget: () => get('/api/skills/-/budget').then(j) as Promise<import('../types').SkillBudgetResponse>,
   /** Multi-provider skill discovery (skills.sh, etc.) */
   discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
     get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../types').DiscoverSkillsResponse>,

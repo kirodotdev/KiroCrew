@@ -348,7 +348,7 @@ export function PageHeader({ title, subtitle, actions }: { title: React.ReactNod
   )
 }
 
-export function Toggle({ checked, onChange, disabled, label }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string }) {
+export function Toggle({ checked, onChange, disabled, label, tone = 'accent' }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string; tone?: 'accent' | 'muted' }) {
   return (
     <div
       role="switch"
@@ -361,7 +361,11 @@ export function Toggle({ checked, onChange, disabled, label }: { checked: boolea
       tabIndex={disabled ? -1 : 0}
       onClick={() => !disabled && onChange(!checked)}
       onKeyDown={e => { if (!disabled && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); onChange(!checked) } }}
-      className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${disabled ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? 'bg-accent' : 'bg-border'}`}
+      // `muted` is for a LIST of switches, where an accent fill on every row
+      // shouts and duplicates a state the row's own grouping already carries.
+      // The knob position still reads the state, so nothing is lost by dropping
+      // the hue. Accent stays the default so a lone switch keeps its emphasis.
+      className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${disabled ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? (tone === 'muted' ? 'bg-border-strong' : 'bg-accent') : 'bg-border'}`}
     >
       <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
     </div>
