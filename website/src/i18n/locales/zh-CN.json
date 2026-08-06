@@ -6407,6 +6407,7 @@
       "needs_approval": "需要审批",
       "new": "新建",
       "new_autopilot_chat": "新建自动驾驶聊天",
+      "new_crew_chat": "新建 Crew Mode 聊天",
       "new_chat": "新建聊天",
       "new_chat_in_folder": "在文件夹中新建聊天",
       "new_chat_session": "新建聊天会话",
@@ -6484,7 +6485,9 @@
       "sort_created_oldest": "创建时间（最早）",
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
-      "clear_named_filter": "清除“{{filter}}”筛选"
+      "clear_named_filter": "清除“{{filter}}”筛选",
+      "crew_mode": "Crew Mode — 多话题并行子会话",
+      "crew": "Crew"
     },
     "devFleetPage": {
       "actions": "操作",

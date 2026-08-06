@@ -4832,6 +4832,7 @@
       "move_folder_to": "Move folder to",
       "needs_approval": "Needs approval",
       "new_autopilot_chat": "New autopilot chat",
+      "new_crew_chat": "New Crew Mode chat",
       "new_chat_in_folder": "New chat in folder",
       "new_chat_in_name": "New chat in {{name}}",
       "new_chat_session": "New chat session",
@@ -4875,7 +4876,9 @@
       "temporary_no_memory_reads_or_writes": "Temporary — no memory reads or writes",
       "untagged": "+ untagged",
       "will_be_moved_to_older_sessions": "will be moved to older sessions.",
-      "within": "Within"
+      "within": "Within",
+      "crew_mode": "Crew Mode — topics run in parallel sub-sessions",
+      "crew": "Crew"
     },
     "devFleetPage": {
       "actions": "Actions",

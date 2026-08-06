@@ -415,7 +415,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pinned": slot.pinned})
 
 
-_VALID_MODES = ("", "orchestrator")
+_VALID_MODES = ("", "orchestrator", "crew")
 
 
 async def api_chat_slot_mode(request: web.Request) -> web.Response:

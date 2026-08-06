@@ -6559,6 +6559,7 @@
       "needs_approval": "Necesita aprobación",
       "new": "Nuevo",
       "new_autopilot_chat": "Nuevo chat con piloto automático",
+      "new_crew_chat": "Nuevo chat de Crew Mode",
       "new_chat": "Nuevo chat",
       "new_chat_in_folder": "Nuevo chat en la carpeta",
       "new_chat_session": "Nueva sesión de chat",
@@ -6644,7 +6645,9 @@
       "sort_created_oldest": "Creación (más antiguas)",
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
-      "clear_named_filter": "Borrar el filtro {{filter}}"
+      "clear_named_filter": "Borrar el filtro {{filter}}",
+      "crew_mode": "Crew Mode — los temas avanzan en subsesiones paralelas",
+      "crew": "Crew"
     },
     "devFleetPage": {
       "actions": "Acciones",

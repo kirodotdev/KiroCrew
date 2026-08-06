@@ -77,6 +77,7 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import CHAT_TURN_TIMEOUT, DATA_WARNING
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
+from kiro_crew.crew_chat import CrewOrchestrator
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
 from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import start_dashboard
@@ -4035,6 +4036,29 @@ class GatewayOrchestrator:
             # Channel, no tab → channel thread + dashboard notification
             # Cron/no parent  → dashboard notification only
 
+            # Crew-mode ownership (RFC orchestrator-chat-sessions): runs
+            # dispatched by the CrewOrchestrator deliver through its
+            # forward/attribution pipeline, never the default injection —
+            # placed after batch accounting so wave bookkeeping stays intact.
+            # isinstance (not truthiness): dashboard_state may be a test double
+            # whose .crew is an auto-created attribute; only a real
+            # CrewOrchestrator owns runs.
+            _crew = getattr(self.dashboard_state, "crew", None) if self.dashboard_state else None
+            if isinstance(_crew, CrewOrchestrator) and _crew.owns(info.id):
+                try:
+                    await _crew.on_subagent_done(info)
+                    return
+                except Exception:
+                    # Do NOT swallow-and-return: fall through to the default
+                    # injection path so the result still reaches the user
+                    # (a crew-store write failure must not silently discard
+                    # the completion — GPT review finding on 76d35e37).
+                    logger.warning(
+                        "crew: completion delivery failed for %s — falling back to default injection",
+                        info.id,
+                        exc_info=True,
+                    )
+
             _slot_name = dashboard_slot_key(parent_key)
             if _slot_name and self.dashboard_state:
                 # Route the result through _run_chat for full streaming, tool
@@ -4709,6 +4733,25 @@ class GatewayOrchestrator:
             completion_keep_chars=self._cfg.agent.completion_keep_chars,
         )
         self.subagent_mgr.start_reaper()
+
+    def _init_crew(self) -> None:
+        """Attach the Crew Mode control plane (engineered pipeline;
+        decision-only agent) to dashboard_state so api_chat can route
+        crew-slot messages to it. MUST run after _init_dashboard() —
+        dashboard_state is None until then (GPT review finding on
+        faf5a127: attaching from _init_subagents silently skipped crew
+        setup in every real gateway boot)."""
+        if self.dashboard_state is None:
+            return
+        try:
+            self.dashboard_state.crew = CrewOrchestrator(
+                state=self.dashboard_state,
+                sessions=self.sessions,
+                subagents=self.subagent_mgr,
+                cfg=self._cfg,
+            )
+        except Exception:
+            logger.warning("CrewOrchestrator init failed — crew mode disabled", exc_info=True)
 
     def _init_task_runner(self) -> None:
         """Initialize the task runner."""
@@ -5685,6 +5728,7 @@ class GatewayOrchestrator:
         self._init_task_runner()
         if not self._no_dashboard:
             await self._init_dashboard()
+            self._init_crew()
             # Record this gateway's own kirocrew launcher, keyed by the port it
             # serves, so a remote token-mint execs THIS install's venv instead of
             # a stale ~/.local/bin/kirocrew that may point at an uninstalled

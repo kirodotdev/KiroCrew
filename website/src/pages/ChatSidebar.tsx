@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import FolderGlyph from '../components/FolderGlyph'
@@ -25,7 +25,7 @@ import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
-import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
+import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
 import FolderConfigModal from '../components/FolderConfigModal'
 import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -1807,6 +1807,15 @@ function ChatSidebar({
     onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
   })
 
+  // Crew Mode: multi-topic chat — the agent runs only in sub-sessions
+  // (topics); the session itself is an engineered routing pipeline.
+  const createCrewMutation = useMutation({
+    mutationFn: () => {
+      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
+    },
+    onSuccess: () => { requestAnimationFrame(() => { if (!isTouchDevice()) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus() }) },
+  })
+
   // Create default chat session mutation
   const createChatMutation = useMutation({
     mutationFn: () => {
@@ -2205,6 +2214,7 @@ function ChatSidebar({
                     {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
                   </>}
               {s.mode === 'orchestrator' && <span className="text-[11px] px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
+              {s.mode === 'crew' && <Badge variant="warn" className="text-[11px] px-1 py-0 rounded font-sans" title={i18nT('pages.chatSidebar.crew_mode')}>{i18nT('pages.chatSidebar.crew')}</Badge>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the folder
                *  chip mid-row. */}
@@ -2744,6 +2754,9 @@ function ChatSidebar({
                 </DropdownMenuItem>
                 <DropdownMenuItem disabled={creatingSlot} onClick={() => { createAutopilotMutation.mutate() }}>
                   <Zap size={14} className="text-accent" /> {i18nT('pages.chatSidebar.new_autopilot_chat')}
+                </DropdownMenuItem>
+                <DropdownMenuItem data-testid="new-crew-chat" onClick={() => { createCrewMutation.mutate() }}>
+                  <Users size={14} className="text-accent" /> {i18nT('pages.chatSidebar.new_crew_chat')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>

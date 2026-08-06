@@ -353,6 +353,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not message:
         return web.json_response({"error": "message is required"}, status=400)
 
+    # ── Crew Mode dispatch (RFC orchestrator-chat-sessions) ─────────
+    # MUST precede the hold-users gate below: crew topics ARE background
+    # sub-agents, so the hold would swallow every message the moment one
+    # topic runs — killing the mode's whole point (parallel ingress). Crew
+    # messages are durable queue entries, not turns; the CrewOrchestrator
+    # acks instantly and routes them to topic sub-sessions.
+    if getattr(slot, "mode", "") == "crew":
+        _crew = getattr(state, "crew", None)
+        if _crew is None:
+            return web.json_response(
+                {"error": "crew mode unavailable", "code": "crew_unavailable"}, status=503
+            )
+        slot.append("user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None)
+        await _crew.ingest(slot, message)
+        return web.json_response({"ok": True, "slot": slot.key, "crew": True})
+
     # Queue a message typed while background sub-agents are still running for
     # this slot. The slot.running queue path above covers the mid-turn case;
     # this covers the idle case (spawn_run is fire-and-forget, so the main slot
@@ -907,12 +923,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             memory_mode = body.get("memory_mode", "persistent")
             if memory_mode not in ("persistent", "incognito", "temporary"):
                 return web.json_response({"error": "invalid memory_mode"}, status=400)
+            _mode = body.get("mode", "")
+            if _mode not in ("", "orchestrator", "crew"):
+                return web.json_response(
+                    {"error": "invalid mode", "code": "invalid_mode"}, status=400
+                )
             slot = state.get_or_create_slot(
                 name,
                 agent=agent,
                 workspace=workspace,
                 model=model,
-                mode=body.get("mode", ""),
+                mode=_mode,
                 memory_mode=memory_mode,
                 ephemeral=body.get("ephemeral"),
                 app=request.get("app", ""),

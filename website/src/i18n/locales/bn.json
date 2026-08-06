@@ -6483,6 +6483,7 @@
       "needs_approval": "অনুমোদন প্রয়োজন",
       "new": "নতুন",
       "new_autopilot_chat": "নতুন অটোপাইলট চ্যাট",
+      "new_crew_chat": "নতুন Crew Mode চ্যাট",
       "new_chat": "নতুন চ্যাট",
       "new_chat_in_folder": "ফোল্ডারে নতুন চ্যাট",
       "new_chat_session": "নতুন চ্যাট সেশন",
@@ -6564,7 +6565,9 @@
       "sort_created_oldest": "তৈরি হয়েছে (সবচেয়ে পুরোনো)",
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
-      "clear_named_filter": "{{filter}} ফিল্টার সাফ করুন"
+      "clear_named_filter": "{{filter}} ফিল্টার সাফ করুন",
+      "crew_mode": "Crew Mode — বিষয়গুলি সমান্তরাল উপ-সেশনে চলে",
+      "crew": "Crew"
     },
     "devFleetPage": {
       "actions": "অ্যাকশন",

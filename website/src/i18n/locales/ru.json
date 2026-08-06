@@ -6635,6 +6635,7 @@
       "needs_approval": "Требует подтверждения",
       "new": "Создать",
       "new_autopilot_chat": "Новый чат с автопилотом",
+      "new_crew_chat": "Новый чат Crew Mode",
       "new_chat": "Новый чат",
       "new_chat_in_folder": "Новый чат в папке",
       "new_chat_session": "Новая сессия чата",
@@ -6724,7 +6725,9 @@
       "sort_created_oldest": "Дата создания (сначала старые)",
       "sort_name_asc": "А → Я",
       "sort_name_desc": "Я → А",
-      "clear_named_filter": "Сбросить фильтр «{{filter}}»"
+      "clear_named_filter": "Сбросить фильтр «{{filter}}»",
+      "crew_mode": "Crew Mode — темы идут в параллельных подсессиях",
+      "crew": "Crew"
     },
     "devFleetPage": {
       "actions": "Действия",
