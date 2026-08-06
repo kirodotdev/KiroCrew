@@ -271,7 +271,7 @@ export default function LabelsPanel({
                         // row's: each one patches the same local label cache, and
                         // two overlapping patches lose one of the new labels.
                         disabled={!canWrite || createLabel.isPending}
-                        aria-label={`Create the ${rec.name} label on GitHub`}
+                        aria-label={i18nT('apps.issueRadar.views.tagging.labelsPanel.create_the_label_on_github', { name: rec.name })}
                         title={canWrite ? i18nT('apps.issueRadar.views.tagging.labelsPanel.create_this_label_on_github') : i18nT('apps.issueRadar.views.tagging.labelsPanel.read_only_repo_needs_triage_push_access')}
                         // Same accent treatment as the queue's Add button: both are
                         // the row's one write action, so they should read alike.

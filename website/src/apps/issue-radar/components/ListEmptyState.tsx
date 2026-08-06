@@ -22,7 +22,9 @@ export default function ListEmptyState({
     <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2.5 text-center px-6">
       <Icon size={26} className="text-muted opacity-50" strokeWidth={1.5} />
       <div className="text-[13px] text-muted">
-        {searching ? `No ${label} match your search.` : `No matching ${label}.`}
+        {searching
+          ? i18nT('apps.issueRadar.components.listEmptyState.no_match_your_search', { label })
+          : i18nT('apps.issueRadar.components.listEmptyState.no_matching', { label })}
       </div>
       {!searching && (
         <div className="text-[11.5px] text-muted opacity-70">

@@ -18,7 +18,7 @@ export function tunnelDisplay(
     case 'connected': {
       const mins = Math.max(0, Math.round((s.uptime || 0) / 60))
       const up = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
-      const tip = s.url ? `${s.url}${s.uptime ? ` · up ${up}` : ''}` : i18nT('components.tunnelStatus.tunnel_connected')
+      const tip = s.url ? `${s.url}${s.uptime ? ` · ${i18nT('components.tunnelStatus.up', { time: up })}` : ''}` : i18nT('components.tunnelStatus.tunnel_connected')
       return { value: i18nT('components.tunnelStatus.connected'), colorClass: 'text-accent', tooltip: tip }
     }
     case 'starting':
@@ -27,7 +27,7 @@ export function tunnelDisplay(
       return {
         value: i18nT('components.tunnelStatus.reconnecting'),
         colorClass: 'text-warn',
-        tooltip: `Reconnect attempt ${s.reconnect_attempt || 0}${s.error ? ` · ${s.error}` : ''}`,
+        tooltip: `${i18nT('components.tunnelStatus.reconnect_attempt', { n: s.reconnect_attempt || 0 })}${s.error ? ` · ${s.error}` : ''}`,
       }
     case 'error':
       return { value: i18nT('components.tunnelStatus.error'), colorClass: 'text-danger', tooltip: s.error || i18nT('components.tunnelStatus.tunnel_error') }

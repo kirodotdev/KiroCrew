@@ -156,7 +156,7 @@ function ChannelsSection() {
                       ? i18nT('pages.settings.notificationsPanel.channel_not_active_app_disabled_setting_retained')
                       : c.protected
                         ? i18nT('pages.settings.notificationsPanel.always_interrupts_cannot_be_muted_or_lowered')
-                        : `Default priority: ${c.default_priority || 'default'}`}
+                        : i18nT('pages.settings.notificationsPanel.default_priority', { priority: c.default_priority || 'default' })}
                   </div>
                 </div>
                 {c.protected ? (
@@ -168,7 +168,7 @@ function ChannelsSection() {
                         value={override ?? PRIORITY_SENTINEL}
                         onValueChange={v => patch(c.channel, { priority: v === PRIORITY_SENTINEL ? null : v })}
                       >
-                        <SelectTrigger aria-label={`Priority for ${c.channel}`}>
+                        <SelectTrigger aria-label={i18nT('pages.settings.notificationsPanel.priority_for', { name: c.channel })}>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -186,7 +186,7 @@ function ChannelsSection() {
                       <Toggle
                         checked={!muted}
                         onChange={on => patch(c.channel, { muted: !on })}
-                        label={`Notifications for ${c.channel}`}
+                        label={i18nT('pages.settings.notificationsPanel.notifications_for', { name: c.channel })}
                       />
                     </div>
                   </>

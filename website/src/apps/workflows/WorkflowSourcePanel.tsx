@@ -94,7 +94,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
       } else if (e.status === 400 && e.body && 'errors' in e.body) {
         setErrors(e.body.errors ?? [e.body.error || i18nT('apps.workflows.workflowSourcePanel.invalid_script')])
       } else {
-        setTopError(`Rerun failed: ${e.status ?? 'error'}`)
+        setTopError(i18nT('apps.workflows.workflowSourcePanel.rerun_failed', { status: e.status ?? 'error' }))
       }
     },
   })
@@ -138,7 +138,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
               readOnly={!editing}
               spellCheck={false}
               className={`font-mono text-[11px] leading-relaxed h-48 p-2 rounded border border-border bg-card resize-y ${editing ? '' : 'opacity-90'}`}
-              aria-label={`workflow source for ${run_id}`}
+              aria-label={i18nT('apps.workflows.workflowSourcePanel.workflow_source_for', { runId: run_id })}
             />
           )}
 

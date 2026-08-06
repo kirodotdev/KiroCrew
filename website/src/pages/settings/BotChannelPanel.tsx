@@ -174,7 +174,7 @@ function StatusBadge({ config }: { config: BotChannelConfigData }) {
 function connectionHint(spec: BotChannelSpec, config: BotChannelConfigData): string {
   if (config.connected) return ''
   if (config.connect_error) {
-    return `${spec.name} channel failed to start (${config.connect_error}). Check the bot token and network access to ${spec.host}, then restart the gateway.`
+    return i18nT('pages.settings.botChannelPanel.channel_failed_to_start', { channel: spec.name, error: config.connect_error, host: spec.host })
   }
   if (config.configured) {
     return i18nT('pages.settings.botChannelPanel.configuration_is_saved_but_the_channel_is_not_ru')
@@ -349,8 +349,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       <SettingsSection title={i18nT('pages.settings.botChannelPanel.required')}>
         <SettingsCard>
           <SettingsToggle
-            label={`Enable ${spec.name}`}
-            description={`Start the ${spec.name} channel at gateway startup (requires a bot token).`}
+            label={i18nT('pages.settings.botChannelPanel.enable', { channel: spec.name })}
+            description={i18nT('pages.settings.botChannelPanel.start_the_channel_at_gateway_startup', { channel: spec.name })}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
@@ -368,12 +368,12 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               onChange={setBotId}
               cleared={botIdClear}
               onClearedChange={setBotIdClear}
-              setupLink={{ href: spec.setupGuide, label: `Where to find the ${spec.secondCredential.label.toLowerCase()}` }}
+              setupLink={{ href: spec.setupGuide, label: i18nT('pages.settings.botChannelPanel.where_to_find_the_credential', { label: spec.secondCredential.label.toLowerCase() }) }}
             />
           )}
           <SecretField
             key={`bot-${formKey}`}
-            label={spec.tokenLabel ?? `${spec.name} bot token`}
+            label={spec.tokenLabel ?? i18nT('pages.settings.botChannelPanel.bot_token', { channel: spec.name })}
             description={spec.tokenDescription}
             placeholder={spec.tokenPlaceholder}
             isSet={data.bot_token_set}

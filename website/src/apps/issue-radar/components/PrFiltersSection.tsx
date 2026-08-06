@@ -111,7 +111,7 @@ export default function PrFiltersSection() {
             label={i18nT('apps.issueRadar.components.prFiltersSection.created_by_member')}
             active={prCreatedByMember}
             disabled={!hasMemberPulls}
-            disabledHint={`No repo members found among these ${terms.changeRequestPlural}`}
+            disabledHint={i18nT('apps.issueRadar.components.prFiltersSection.no_repo_members_found_among_these', { label: terms.changeRequestPlural })}
             onToggle={togglePrCreatedByMember}
           />
         </div>

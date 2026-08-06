@@ -288,7 +288,7 @@ export default function RemoteArtifactDetailPage() {
 
   return (
     <>
-      <PageHeader title={title} subtitle={`Remote artifact · ${provider}`} />
+      <PageHeader title={title} subtitle={i18nT('pages.remoteArtifactDetailPage.remote_artifact_2', { provider })} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <Btn onClick={() => navigate('/artifacts')} className="flex items-center gap-1">
@@ -352,7 +352,7 @@ export default function RemoteArtifactDetailPage() {
                     sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
                     className="w-full border-none bg-card"
                     style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
-                    title={`Remote artifact: ${externalId}`}
+                    title={i18nT('pages.remoteArtifactDetailPage.remote_artifact_3', { name: externalId })}
                   />
                 ) : <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.rendering')}</div>}
               </div>

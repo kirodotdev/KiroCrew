@@ -1,5 +1,7 @@
 /** Output redaction — mirrors backend security.py patterns for frontend display. */
 
+import { i18nT } from '../i18n/t'
+
 // ── Credential patterns (matches redact_credentials in security.py) ──
 const CRED_PATTERNS: RegExp[] = [
   /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
@@ -138,7 +140,7 @@ export function sanitizeExfiltrationUrls(text: string): string {
     if (qmark === -1) continue
     const query = pathAndQuery.slice(qmark + 1)
     if (query.length >= EXFIL_QUERY_MIN_LEN || EXFIL_PATTERNS.test(query)) {
-      out = out.replace(m[0], `[REDACTED: suspicious URL to ${domain}]`)
+      out = out.replace(m[0], i18nT('utils.sanitize.redacted_suspicious_url', { domain }))
     }
   }
   return out

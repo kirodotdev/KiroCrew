@@ -111,7 +111,7 @@ function FollowUpCard({
                 disabled={busy || busyIndex !== null || !projectDir}
                 title={
                   projectDir
-                    ? `Create a git worktree from ${projectDir} and open a new session there`
+                    ? i18nT('components.followUpCard.create_worktree_and_open_session', { path: projectDir })
                     : i18nT('components.followUpCard.this_session_has_no_project_directory_so_there_i')
                 }
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed ${

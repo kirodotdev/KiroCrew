@@ -481,7 +481,7 @@ export default function OnboardingFlow({
   if (step === 1) {
     return (
       <OnboardingChapterShell
-        eyebrow={`Customize · 1 ${i18nT('components.onboardingChapterShell.of')} 2`}
+        eyebrow={i18nT('components.onboardingFlow.customize_step', { n: 1, total: 2 })}
         ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
         panelHeadline={i18nT('components.onboardingFlow.make_it_yours')}
         panelBody={i18nT('components.onboardingFlow.set_your_look_and_tell_kiro_about_you_so_respons')}
@@ -557,7 +557,7 @@ export default function OnboardingFlow({
     }
     return (
       <OnboardingChapterShell
-        eyebrow={`Customize · 2 ${i18nT('components.onboardingChapterShell.of')} 2`}
+        eyebrow={i18nT('components.onboardingFlow.customize_step', { n: 2, total: 2 })}
         ariaLabel={i18nT('components.onboardingFlow.customize_kirocrew')}
         panelHeadline={i18nT('components.onboardingFlow.make_it_yours')}
         panelBody={i18nT('components.onboardingFlow.set_your_look_and_tell_kiro_about_you_so_respons')}

@@ -157,7 +157,7 @@ export default function InstalledAppCard({
               <Btn
                 onClick={() => onAction(app.name, 'update')}
                 disabled={actionLoading === `${app.name}:update`}
-                title={`Update to v${app._newVersion || app.version}`}
+                title={i18nT('components.appstore.installedAppCard.update_to', { version: app._newVersion || app.version })}
                 className="!bg-[var(--info)] !text-white hover:!opacity-80"
               >
                 <ArrowUp size={14} /> {i18nT('components.appstore.installedAppCard.update')}

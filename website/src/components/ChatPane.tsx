@@ -251,7 +251,7 @@ export default function ChatPane({
           {parentKey && (
             <span
               className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
-              title={`Forked from ${parentTitle || parentKey}`}
+              title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
             >
               ↳ {parentTitle || parentKey}
             </span>

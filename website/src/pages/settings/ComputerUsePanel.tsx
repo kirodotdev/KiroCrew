@@ -141,7 +141,7 @@ function PermRow({ label, state, pane }: { label: string; state: string; pane: s
       <span className="flex items-center gap-2">
         <Badge variant={variant}>{permLabel(state)}</Badge>
         {state !== GRANTED && (
-          <Btn onClick={() => openSystemSettings(pane)} aria-label={`Open System Settings for ${label}`}>
+          <Btn onClick={() => openSystemSettings(pane)} aria-label={i18nT('pages.settings.computerUsePanel.open_system_settings_for', { label })}>
             {i18nT('pages.settings.computerUsePanel.open_system_settings')} <ExternalLink className="lucide-inline" />
           </Btn>
         )}
@@ -268,7 +268,7 @@ export function ComputerUsePanel() {
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
-            {cfg.reason || `Computer use is not available on ${cfg.platform}.`}
+            {cfg.reason || i18nT('pages.settings.computerUsePanel.computer_use_not_available', { platform: cfg.platform })}
           </div>
         </SettingsCard>
       </SettingsSection>

@@ -1280,7 +1280,7 @@ export default function DevFleetPage() {
 
   const legacyToggle = legacyAll.length > 0 ? (
     <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)' }} title={i18nT('pages.devFleetPage.worktrees_created_under_a_previous_repository_na')}>
-      {showLegacy ? `Hide ${legacyAll.length} legacy worktrees` : `${legacyAll.length} legacy worktrees hidden \u00b7 Show`}
+      {showLegacy ? i18nT('pages.devFleetPage.hide_legacy_worktrees', { n: legacyAll.length }) : i18nT('pages.devFleetPage.legacy_worktrees_hidden_show', { n: legacyAll.length })}
     </Btn>
   ) : null
   let body: ReactNode
@@ -1306,7 +1306,7 @@ export default function DevFleetPage() {
               <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.remove')}</div>
               {pruneDialog.candidates.map((c) => (
                 <label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
-                  <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={`Select ${c.name}`} />
+                  <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={i18nT('pages.devFleetPage.select', { name: c.name })} />
                   <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{c.name}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{pruneVerdictLabel(c.code)}</span>
                 </label>

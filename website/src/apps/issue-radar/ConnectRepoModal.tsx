@@ -148,7 +148,7 @@ export default function ConnectRepoModal({
               >
                 <RefreshCw size={12} className={flow.pending ? 'animate-spin' : ''} />
                 {flow.progress
-                  ? `Connecting ${flow.progress.done + 1} of ${flow.progress.total}…`
+                  ? i18nT('apps.issueRadar.connectRepoModal.connecting', { done: flow.progress.done + 1, total: flow.progress.total })
                   : count > 1 ? `Connect ${count}` : 'Connect'}
               </button>
             )}

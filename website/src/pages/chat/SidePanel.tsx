@@ -764,7 +764,7 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
           // bar carries breadcrumb (click → open editor), change stats, and the
           // two view controls. Divider to content lives on the bar's border-b.
           <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
-            <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={`Open ${tab.path || ''} in editor`}>
+            <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={i18nT('pages.chat.sidePanel.open_in_editor_2', { path: tab.path || '' })}>
               {/* Bare filename: the tab title carries '- Diff', which would
                   read redundantly next to the Turn Diff badge here. */}
               {(tab.path || '').split('/').pop() || tab.title}

@@ -226,7 +226,7 @@ export function useWebSocket() {
         if (existing.some((n: Notification) => n.approval_id === a.id)) continue
         dispatch(addNotification({
           kind: 'approval',
-          title: `Tool approval: ${a.tool || 'Unknown'}`,
+          title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
           body: `**Source:** ${a.source || 'agent'}\n\n${a.tool_input || ''}`.trim(),
           ts: String(a.ts || Date.now() / 1000),
           approval_id: a.id,
@@ -551,7 +551,7 @@ export function useWebSocket() {
             }
             dispatch(addNotification({
               kind: 'approval',
-              title: `Tool approval: ${data.tool || 'Unknown'}`,
+              title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
               body: `**Source:** ${data.source || 'agent'}\n\n${data.tool_input || ''}\n\n${data.tool_purpose || ''}`.trim(),
               ts: String(data.ts || Date.now() / 1000),
               approval_id: data.id,

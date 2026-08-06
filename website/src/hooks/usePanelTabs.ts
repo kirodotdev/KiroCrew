@@ -485,7 +485,7 @@ export function usePanelTabs(slotKey: string | null = null) {
   }, [upsert])
 
   const openDiff = useCallback((path: string, modified: string, original = '') => {
-    upsert({ id: `diff:${path}`, kind: 'diff', title: `${basename(path)} - Diff`, path, modified, original })
+    upsert({ id: `diff:${path}`, kind: 'diff', title: i18nT('hooks.usePanelTabs.diff', { name: basename(path) }), path, modified, original })
   }, [upsert])
 
   /** Open a directory listing as its own tab. Keyed `folder:${path}` so a

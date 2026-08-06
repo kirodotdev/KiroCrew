@@ -190,7 +190,9 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
     <Modal
       open={open}
       onClose={onClose}
-      title={editing ? `Edit JSON — ${editName}` : i18nT('components.mcpCustomServerModal.add_custom_server')}
+      title={editing
+        ? i18nT('components.mcpCustomServerModal.edit_json', { name: editName })
+        : i18nT('components.mcpCustomServerModal.add_custom_server')}
       maxWidth={640}
     >
       <div className="flex flex-col gap-3 p-1">

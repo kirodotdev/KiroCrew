@@ -433,7 +433,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             <button
               role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none"
               onClick={() => { navigate(`/artifacts/${encodeURIComponent(artifact.existing!.slug)}`); setOpen(false) }}
-              title={`Open artifact ${artifact.existing.slug}`}
+              title={i18nT('components.markdownPanel.open_artifact', { name: artifact.existing.slug })}
             >
               <BookmarkPlus size={14} className="lucide-inline" style={{ color: 'var(--ok)' }} /> {i18nT('components.markdownPanel.in_artifacts')} <Check size={14} className="lucide-inline" />
             </button>

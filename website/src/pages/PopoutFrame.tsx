@@ -32,7 +32,7 @@ export default function PopoutFrame() {
   // distinguishable at the OS level.
   useEffect(() => {
     const label = title && title !== sid ? title : i18nT('pages.popoutFrame.session')
-    document.title = `${label} — Kiro Crew`
+    document.title = i18nT('pages.popoutFrame.window_title', { label })
   }, [sid, title])
 
   return (

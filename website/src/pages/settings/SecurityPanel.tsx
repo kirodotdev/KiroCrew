@@ -335,7 +335,7 @@ function CustomDenyRow({ rule, onToggle, onDelete }: { rule: DeniedUserRule; onT
         type="button"
         className="shrink-0 text-muted hover:text-danger transition-colors bg-transparent border-none cursor-pointer p-1"
         onClick={onDelete}
-        aria-label={`Delete pattern ${rule.pattern}`}
+        aria-label={i18nT('pages.settings.securityPanel.delete_pattern', { name: rule.pattern })}
       >
         <Trash2 size={14} />
       </button>
@@ -466,7 +466,7 @@ function effectiveLabel(row: GovernanceScope): string {
     case 'ruleset':
       return rulesetLabel(d)
     case 'ordinal':
-      return `Floor: ${d.floor ?? '?'}`
+      return i18nT('pages.settings.securityPanel.floor', { n: d.floor ?? '?' })
     case 'capability': {
       // A host-profile pin is ONE surface's posture, so it must not read as
       // install-wide. The shipped host profile disables cron / messaging / spawn
@@ -482,12 +482,14 @@ function effectiveLabel(row: GovernanceScope): string {
       if (inner.length === 0) return i18nT('pages.settings.securityPanel.enabled')
       // Use rulesetLabel (not the allow-count alone) so a deny-mode inner ruleset
       // reads as a block-list, not a misleading "none".
-      return `Enabled · ${inner.map(([k, v]) => `${k}: ${rulesetLabel(v)}`).join('; ')}`
+      return i18nT('pages.settings.securityPanel.enabled_2', {
+        detail: inner.map(([k, v]) => `${k}: ${rulesetLabel(v)}`).join('; '),
+      })
     }
     case 'scopedmap': {
       const members = d.members ? rulesetLabel(d.members) : ''
       const postureN = Object.keys(d.posture ?? {}).length
-      return postureN > 0 ? `${members} · posture pinned` : members
+      return postureN > 0 ? i18nT('pages.settings.securityPanel.posture_pinned', { members }) : members
     }
     default:
       return ''
@@ -1141,9 +1143,7 @@ function DeniedCommandsSection({ draft, onDraftChange }: { draft: string; onDraf
 
   const confirmBody = !confirm ? '' : confirm.kind === 'disable-all'
     ? i18nT('pages.settings.securityPanel.disabling_all_built_in_denies_removes_kirocrew_s')
-    : `Disabling "${confirm.description}" weakens protection against destructive or `
-      + 'credential-exfiltration commands. Some commands may stay blocked by independent '
-      + 'defense-in-depth controls.'
+    : i18nT('pages.settings.securityPanel.disabling_weakens_protection', { name: confirm.description })
 
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.denied_commands')}>
