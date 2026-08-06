@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { FEATURE_REQUEST_PROMPT } from '../prompts/featureRequest'
+import { FEATURE_REQUEST_PROMPT_FALLBACK } from '../prompts/featureRequest'
 
 // The "Request a Feature" flow has two copies of the same instructions: the
-// `feature-request` skill (preferred) and this prompt (self-contained fallback
+// `feature-request` skill (preferred) and the fallback prompt (self-contained
 // when the skill is unavailable). Both read the live label list via
 // `gh label list` rather than baking `enhancement`/`bug` in as the entire label
 // vocabulary, so issues filed through the flow carry the repo's grouping labels
@@ -28,7 +28,7 @@ const CONCRETE_GROUPING_LABEL = /(area|platform)(:\s*|%3A%20)[a-z]/i
 
 describe('feature-request label selection', () => {
   describe.each([
-    ['prompt fallback', FEATURE_REQUEST_PROMPT],
+    ['prompt fallback', FEATURE_REQUEST_PROMPT_FALLBACK],
     ['skill', skill],
   ])('%s', (_name, text) => {
     it('tells the agent to read the live label list', () => {
@@ -62,12 +62,12 @@ describe('feature-request label selection', () => {
   })
 
   it('no longer pins the pre-filled URL to a single label', () => {
-    expect(FEATURE_REQUEST_PROMPT).not.toMatch(/labels=enhancement/)
+    expect(FEATURE_REQUEST_PROMPT_FALLBACK).not.toMatch(/labels=enhancement/)
     expect(skill).not.toMatch(/labels=enhancement/)
   })
 
   it('no longer pins the gh create command to a single label', () => {
-    expect(FEATURE_REQUEST_PROMPT).not.toMatch(/--label enhancement/)
+    expect(FEATURE_REQUEST_PROMPT_FALLBACK).not.toMatch(/--label enhancement/)
     expect(skill).not.toMatch(/--label enhancement/)
   })
 })

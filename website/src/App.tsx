@@ -86,7 +86,7 @@ import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
 import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
-import { FEATURE_REQUEST_PROMPT } from './prompts/featureRequest'
+import { FEATURE_REQUEST_PROMPT_WITH_SKILL, FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useCommandPalette } from './hooks/useCommandPalette'
@@ -1488,10 +1488,18 @@ export default function App() {
   }, [])
 
   const requestFeature = useCallback(async () => {
+    // Resolve skill availability in the dashboard so the agent never needs
+    // to probe the filesystem (which would trigger a tool-approval prompt).
+    let msg = FEATURE_REQUEST_PROMPT_FALLBACK
+    try {
+      const skills: { name: string }[] = await api.skills()
+      if (skills.some(s => s.name === 'feature-request')) {
+        msg = FEATURE_REQUEST_PROMPT_WITH_SKILL
+      }
+    } catch { /* skill list unavailable — use the self-contained fallback */ }
     const result = await dispatch(createSlot(undefined)).unwrap()
     const slot = result.key
     navigate('/chat')
-    const msg = FEATURE_REQUEST_PROMPT
     dispatch(appendMessage({ role: 'user', content: i18nT('app.i_d_like_to_request_a_feature'), cls: '', ts: new Date().toISOString() }))
     dispatch(setSlotRunning(true))
     try {
