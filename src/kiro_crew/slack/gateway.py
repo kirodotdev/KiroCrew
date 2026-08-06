@@ -83,7 +83,10 @@ from kiro_crew.dashboard import start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
-from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard
+from kiro_crew.dashboard.cron_inject import (
+    context_meter_reading,
+    inject_cron_result_to_dashboard,
+)
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
 from kiro_crew.dashboard.handlers.messaging import _rehydrate_slot_from_history
@@ -2235,6 +2238,12 @@ class GatewayOrchestrator:
 
                 job.last_result = result_text
 
+                # Context-meter reading for the dashboard slot, captured NOW:
+                # the finally block below resets this session, so the open
+                # path can never read the provider live. Routed through
+                # broadcast_context_usage by inject_cron_result_to_dashboard.
+                _ctx_reading = context_meter_reading(client)
+
                 # ── Per-turn usage row: attribute background spend. ──
                 # Best-effort; must never fail the cron turn.
                 try:
@@ -2310,7 +2319,10 @@ class GatewayOrchestrator:
                             and not job.hide_in_chat
                             and self.dashboard_state.has_slot(f"cron-{job.id}")
                         ):
-                            inject_cron_result_to_dashboard(self.dashboard_state, job, result_text)
+                            inject_cron_result_to_dashboard(
+                                self.dashboard_state, job, result_text,
+                                context_reading=_ctx_reading,
+                            )
                         return result_text
 
                 if job.silent:
@@ -2329,7 +2341,10 @@ class GatewayOrchestrator:
                         and not job.hide_in_chat
                         and self.dashboard_state.has_slot(f"cron-{job.id}")
                     ):
-                        inject_cron_result_to_dashboard(self.dashboard_state, job, result_text)
+                        inject_cron_result_to_dashboard(
+                            self.dashboard_state, job, result_text,
+                            context_reading=_ctx_reading,
+                        )
                     return result_text
 
                 if self.dashboard_state:
@@ -2356,7 +2371,8 @@ class GatewayOrchestrator:
                             else []
                         )
                         inject_cron_result_to_dashboard(
-                            self.dashboard_state, job, result_text, history=history
+                            self.dashboard_state, job, result_text, history=history,
+                            context_reading=_ctx_reading,
                         )
                     redacted_for_dash, _ = redact_exfiltration_urls(result_text)
                     redacted_for_dash, _ = redact_credentials(redacted_for_dash)
