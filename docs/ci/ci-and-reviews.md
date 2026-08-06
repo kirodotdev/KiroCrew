@@ -54,8 +54,9 @@ Out-of-band lanes that never gate a PR:
   Electron unit suite stops at the `autoUpdater` handoff and never proves a real
   bundle is replaced on disk and relaunches.
 - **Maintenance:** `ship-report.yml` (a scheduled Slack summary),
-  `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir;
-  safe because PR bodies embed commit-SHA-pinned raw URLs that keep resolving),
+  `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir,
+  see [its README](../../temp-screenshots/README.md); safe because PR bodies
+  embed commit-SHA-pinned raw URLs that keep resolving),
   `test-durations.yml` (re-measures `.test_durations` so pytest-split's shards stay
   balanced by recorded runtime, and opens a PR with the update), `issue-triage.yml`
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
@@ -384,6 +385,17 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **Nothing keys off `workflow_run.pull_requests`.** That array is empty whenever the
+  head repository is a fork, the same GitHub behaviour the `fork-*` workflows already
+  work around. The job gate admits every `pull_request` and `dynamic` run and lets the
+  head SHA resolve to a PR via `repos/:repo/commits/:sha/pulls`, and a monitored run is
+  bound back to the PR by `(head_repository.full_name, head_branch)` on top of the
+  `head_sha=` query — a pair that is populated on a fork run, and unique because only
+  one open PR can exist per source repository + branch. Keying either place on the PR
+  number froze a fork PR at pending forever: the gate skipped every re-evaluation, so
+  the verdict was whatever the `pull_request_target` run saw *before* the monitored
+  workflows existed, and the lookup independently reported already-green workflows as
+  `(not started)`.
 
 ## Fork PRs
 

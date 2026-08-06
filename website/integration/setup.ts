@@ -128,6 +128,27 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   })
 }
 
+// jsdom polyfill: window.confirm / window.alert / window.prompt. happy-dom does
+// not implement these dialog primitives (they are `undefined`). Tests that
+// exercise a confirm-gated action spy on them
+// (`vi.spyOn(window, 'confirm').mockReturnValue(true)`). Under vitest 3
+// `vi.spyOn` tolerated an absent property, but vitest 4 THROWS
+// ("can only spy on a function. Received undefined"), so every such test broke
+// on the vitest 3→4 bump. Install spec-shaped no-op defaults (confirm/prompt
+// deny by default, matching a user who dismisses the dialog) so spying works
+// and un-spied calls stay deterministic instead of throwing.
+if (typeof window !== 'undefined') {
+  if (typeof window.confirm !== 'function') {
+    ;(window as unknown as { confirm: (m?: string) => boolean }).confirm = () => false
+  }
+  if (typeof window.alert !== 'function') {
+    ;(window as unknown as { alert: (m?: string) => void }).alert = () => {}
+  }
+  if (typeof window.prompt !== 'function') {
+    ;(window as unknown as { prompt: (m?: string, d?: string) => string | null }).prompt = () => null
+  }
+}
+
 // IntersectionObserver stub. Used by:
 //   - WidgetFrame (lazy-load gate — needs to fire so `visible` flips true
 //     and srcdoc/iframe gets built; otherwise theme/srcdoc tests inspect

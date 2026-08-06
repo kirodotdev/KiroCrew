@@ -696,7 +696,7 @@ export default function WateringHoleScene({ agents, visible = true }: Props) {
       T.textAlign = 'start'
       T.fillStyle = '#5e3a1d'
       T.font = sceneFont('status')
-      T.fillText(`${animalsRef.current.length}/${MAX_ANIMALS} on the savanna`, 6 * S, (H - 4) * S)
+      T.fillText(i18nT('pages.scenes.wateringHoleScene.on_the_savanna', { n: animalsRef.current.length, total: MAX_ANIMALS }), 6 * S, (H - 4) * S)
     }
 
     const stop = runSceneLoop(visibleRef, tickRef, update, draw)

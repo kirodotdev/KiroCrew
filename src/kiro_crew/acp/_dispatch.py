@@ -86,6 +86,45 @@ def set_mode_params(session_id: str, agent: str) -> dict[str, Any]:
     return {"sessionId": session_id, "modeId": agent}
 
 
+def parse_session_modes(resp: dict[str, Any]) -> tuple[list[str], str, bool]:
+    """Extract advertised mode ids, current mode id, and whether the backend
+    advertised a modes list at all, from a ``session/new`` / ``session/load``
+    response.
+
+    kiro-cli returns ``modes: {currentModeId, availableModes: [{id, name,
+    description}, ...]}`` (parallel to the ``models`` payload). Returns
+    ``(ids, current_id, advertised)`` where ``advertised`` is True iff the
+    response carried a ``modes`` object with an ``availableModes`` **list**
+    (even an empty one).
+
+    The ``advertised`` flag is load-bearing: an OMITTED modes list (older
+    kiro-cli / offline fake backend → ``advertised=False``) means "unknown,
+    attempt ``set_mode`` for backward compatibility", whereas an ``availableModes:
+    []`` that is *present but empty* (``advertised=True``, ``ids=[]``) means the
+    backend genuinely offers no modes — the caller must fail closed, not attempt
+    a ``set_mode`` that would fault with ``Mode '<agent>' not found``.
+
+    Item id is read from ``id`` first, then ``modeId`` / ``value`` as fallbacks,
+    mirroring the defensive shape-reading in ``_normalize_models``. Never raises.
+    """
+    modes = resp.get("modes")
+    if not isinstance(modes, dict):
+        return [], "", False
+    current = modes.get("currentModeId")
+    current_id = current if isinstance(current, str) else ""
+    advertised_raw = modes.get("availableModes")
+    if not isinstance(advertised_raw, list):
+        return [], current_id, False
+    ids: list[str] = []
+    for m in advertised_raw:
+        if not isinstance(m, dict):
+            continue
+        mode_id = m.get("id") or m.get("modeId") or m.get("value")
+        if mode_id:
+            ids.append(str(mode_id))
+    return ids, current_id, True
+
+
 def set_model_params(session_id: str, model_id: str) -> dict[str, Any]:
     """Params for ``session/set_model`` (override the model on a session)."""
     return {"sessionId": session_id, "modelId": model_id}

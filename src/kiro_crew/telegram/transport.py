@@ -55,16 +55,22 @@ class TelegramInboundMessage(InboundMessage):
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
 # Telegram's capabilities: edit-based streaming, a 4096-char cap (we chunk at
-# 4000 for headroom), ~8 inline buttons/row, emoji reactions (setMessageReaction,
-# used for steer-ack receipts), and no threads in a bot DM. Single source of
-# truth for the renderer's degradation decisions.
+# 4000 for headroom), inline buttons, emoji reactions (setMessageReaction, used
+# for steer-ack receipts), and threads=True because forum Topics ARE threads
+# and this transport handles them end to end: send_message forwards
+# message_thread_id, receive() populates InboundMessage.thread_id, and
+# forum_gate_outcome authorizes on it. (This was previously declared False —
+# wrongly; declarations must match the code, not the DM-only common case.)
+# max_buttons=8 is Telegram's per-row limit; NOTE the renderer does not yet
+# apply it (see the capability ledger — the field is aspirational).
 TELEGRAM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # setMessageReaction — used for the steer-ack receipt
-    files=False,
+    files_inbound=False,  # photos/stickers are dropped in receive(), matching prior behavior
+    files_outbound=False,
     rich_blocks=False,
-    threads=False,
+    threads=True,
     max_message_chars=TELEGRAM_CHUNK_LIMIT,
     max_buttons=8,
     supports_proactive_send=True,

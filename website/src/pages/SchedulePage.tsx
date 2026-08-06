@@ -78,9 +78,9 @@ const fmtAgo = (ts?: number) => {
   if (!ts) return '—'
   const s = Math.floor((Date.now() / 1000) - ts)
   if (s < 60) return i18nT('pages.schedulePage.just_now')
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
+  if (s < 3600) return i18nT('pages.schedulePage.m_ago', { n: Math.floor(s / 60) })
+  if (s < 86400) return i18nT('pages.schedulePage.h_ago', { n: Math.floor(s / 3600) })
+  return i18nT('pages.schedulePage.d_ago', { n: Math.floor(s / 86400) })
 }
 
 const fmtIn = (ts?: number | null) => {
@@ -383,7 +383,7 @@ export default function SchedulePage() {
                 <td className="px-2.5 py-2 border-b border-border text-center" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
-                    aria-label={`Select ${j.name}`}
+                    aria-label={i18nT('pages.schedulePage.select', { name: j.name })}
                     className="accent-accent cursor-pointer align-middle"
                     checked={selectedIds.has(j.id)}
                     onChange={() => toggleOne(j.id)}
@@ -499,7 +499,7 @@ export default function SchedulePage() {
             <div className="flex gap-2 justify-end">
               <Btn onClick={() => setBatchConfirm(false)} disabled={batchDeleting}>{i18nT('pages.schedulePage.cancel')}</Btn>
               <Btn danger disabled={batchDeleting || !confirmArmed} onClick={runBatchDelete}>
-                {batchDeleting ? i18nT('pages.schedulePage.deleting') : `Delete ${selectedIds.size}`}
+                {batchDeleting ? i18nT('pages.schedulePage.deleting') : i18nT('pages.schedulePage.delete_2', { n: selectedIds.size })}
               </Btn>
             </div>
             {batchError && <p className="text-danger text-[12px] mt-2">{batchError}</p>}
@@ -631,7 +631,7 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
           <div
             role="dialog"
             aria-modal="true"
-            aria-label={`Delete ${job.name}`}
+            aria-label={i18nT('pages.schedulePage.delete_3', { name: job.name })}
             className="bg-bg-elevated rounded-xl border border-border p-6 w-[360px] max-w-[90vw] shadow-xl animate-scale-in"
             onClick={e => e.stopPropagation()}
             onKeyDown={e => e.stopPropagation()}

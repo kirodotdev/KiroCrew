@@ -61,7 +61,7 @@ function ScopeBadge({
   onClick: () => void
 }) {
   const title = disabled
-    ? `${label} — pending uninstall`
+    ? i18nT('pages.overview.mcpTab.pending_uninstall', { label })
     : pendingChange
       ? `${label}: ${active ? 'pending enable' : 'pending disable'} (click to revert)`
       : `${label}: ${active ? 'on' : 'off'} (click to ${active ? 'disable' : 'enable'})`
@@ -423,7 +423,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         disabled={pendingUninstall || s.enabled === false}
                         onClick={() => toggleToolPending(s.name, t, !effectivelyEnabled)}
                         title={hasPending
-                          ? `Pending: ${effectivelyEnabled ? 'enable' : 'disable'} (click to revert)`
+                          ? (effectivelyEnabled ? i18nT('pages.overview.mcpTab.pending_enable_click_to_revert') : i18nT('pages.overview.mcpTab.pending_disable_click_to_revert'))
                           : effectivelyEnabled ? i18nT('pages.overview.mcpTab.click_to_disable_pending_until_apply') : i18nT('pages.overview.mcpTab.click_to_enable_pending_until_apply')}
                       ><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${effectivelyEnabled ? 'bg-ok' : 'bg-muted'}`} />{t}</button>
                     })}</div></motion.div>}</AnimatePresence>
@@ -435,7 +435,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   ) : (
                     <div className="flex gap-1 justify-end">
                       {s.kirocrewManaged && (
-                        <Btn onClick={() => setEditTarget(s.name)} aria-label={`Edit JSON for ${s.name}`} title={i18nT('pages.overview.mcpTab.edit_the_server_s_json_spec')}><Braces size={13} /></Btn>
+                        <Btn onClick={() => setEditTarget(s.name)} aria-label={i18nT('pages.overview.mcpTab.edit_json_for', { name: s.name })} title={i18nT('pages.overview.mcpTab.edit_the_server_s_json_spec')}><Braces size={13} /></Btn>
                       )}
                       <Btn danger onClick={() => stageUninstall(s.name)}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
                     </div>

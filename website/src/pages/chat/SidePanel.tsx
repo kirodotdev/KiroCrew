@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
@@ -19,7 +19,9 @@ import { adoptTab as adoptBottomTerminal } from '../../hooks/useBottomTerminal'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
-import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator
+} from '../../components/ui/dropdown-menu'
 import { safeSetItem } from '../../utils/safeStorage'
 import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
@@ -81,45 +83,83 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   terminal: 'pages.chat.sidePanel.menu_terminal_desc',
 }
 
-/** Views offered by the + menu. `kind` is the PERSISTED tab id (`usePanelTabs`),
- *  so it stays a code constant — only its label and description are localised. */
-const NEW_MENU: { kind: ViewKind | 'terminal'; icon: ReactNode }[] = [
-  { kind: 'changes', icon: <GitPullRequest size={15} /> },
-  { kind: 'issues', icon: <CircleDot size={15} /> },
-  { kind: 'files', icon: <FileText size={15} /> },
-  { kind: 'artifacts', icon: <Component size={15} /> },
-  { kind: 'subagents', icon: <Bot size={15} /> },
-  { kind: 'workflows', icon: <Workflow size={15} /> },
-  { kind: 'logs', icon: <ScrollText size={15} /> },
-  { kind: 'context', icon: <Layers size={15} /> },
-  { kind: 'side', icon: <MessageSquare size={15} /> },
-  { kind: 'browser', icon: <Globe size={15} /> },
-  { kind: 'terminal', icon: <TerminalSquare size={15} /> },
+/** Views offered by the + menu, in the three semantic groups the menu renders
+ *  with a separator between them. `kind` is the PERSISTED tab id
+ *  (`usePanelTabs`), so it stays a code constant — only its label and
+ *  description are localised.
+ *
+ *  Groups, not one flat list, because the eight rows were three unrelated
+ *  kinds of thing in arbitrary order: what this chat produced, surfaces the
+ *  user drives themselves, and diagnostics. They are deliberately UNLABELLED
+ *  (rules only): three group headings would add ~90px of chrome to an
+ *  eight-row menu for hierarchy the grouping already conveys.
+ *
+ *  Every key of `NEW_MENU_LABEL_KEY` must appear exactly once across the
+ *  groups — `sidePanelAddMenu.test.tsx` pins that partition, so adding a view
+ *  without placing it in a group fails rather than silently dropping it. */
+const NEW_MENU_GROUPS: { kind: ViewKind | 'terminal'; icon: ReactNode }[][] = [
+  // Session output — what this chat referenced or produced. (Changes / Files /
+  // Artifacts are auto-pinned and filtered out below; they are listed here so
+  // this table stays the complete catalog of views.)
+  [
+    { kind: 'changes', icon: <GitPullRequest size={15} /> },
+    { kind: 'issues', icon: <CircleDot size={15} /> },
+    { kind: 'files', icon: <FileText size={15} /> },
+    { kind: 'artifacts', icon: <Component size={15} /> },
+    { kind: 'subagents', icon: <Bot size={15} /> },
+    { kind: 'workflows', icon: <Workflow size={15} /> },
+  ],
+  // Interactive workspaces — the surfaces the user types into.
+  [
+    { kind: 'side', icon: <MessageSquare size={15} /> },
+    { kind: 'browser', icon: <Globe size={15} /> },
+    { kind: 'terminal', icon: <TerminalSquare size={15} /> },
+  ],
+  // Diagnostics.
+  [
+    { kind: 'logs', icon: <ScrollText size={15} /> },
+    { kind: 'context', icon: <Layers size={15} /> },
+  ],
 ]
 
 const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side'])
 
+/** Views behind the Developer Mode consent gate (Settings > Developer) — the
+ *  same gate the standalone Developer page uses. Both are raw instrumentation
+ *  of the agent's own execution (the session's tool-call log, and the context
+ *  window's composition) rather than anything the session produced, so neither
+ *  belongs in a non-developer's menu. Gating BOTH empties the diagnostics group
+ *  outright when Developer Mode is off — which is exactly the empty-group case
+ *  `newMenuSections` drops. */
+const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context'])
+
 /** Which `+`-menu entries are offered, given the two gates that hide entries:
- *  Terminal is hidden when the feature is disabled server-side, and Context
- *  breakdown is a developer surface hidden unless Developer Mode is on (Settings
- *  > Developer) — same consent gate the standalone Developer page uses. The
- *  auto-managed pinned views (Changes / Files / Artifacts) are never listed;
- *  they appear on their own when they have content. */
-export function newMenuItems(
+ *  Terminal is hidden when the feature is disabled server-side, and the
+ *  diagnostics views (Logs, Context breakdown) are hidden unless Developer Mode
+ *  is on. The auto-managed pinned views (Changes / Files / Artifacts) are never
+ *  listed; they appear on their own when they have content.
+ *
+ *  Grouped, and **emptied groups are dropped**: with Developer Mode off the
+ *  whole diagnostics group disappears, and Terminal disabled shrinks Workspaces
+ *  to two rows — a group that filtered down to nothing would otherwise render
+ *  as a separator with no rows after it. */
+export function newMenuSections(
   opts: { devMode: boolean; terminalEnabled: boolean },
-): { kind: ViewKind | 'terminal'; icon: ReactNode }[] {
-  return NEW_MENU.filter(item =>
-    (opts.terminalEnabled || item.kind !== 'terminal')
-    && (opts.devMode || item.kind !== 'context')
-    && !(PINNED_VIEWS as string[]).includes(item.kind),
-  )
+): { kind: ViewKind | 'terminal'; icon: ReactNode }[][] {
+  return NEW_MENU_GROUPS
+    .map(group => group.filter(item =>
+      (opts.terminalEnabled || item.kind !== 'terminal')
+      && (opts.devMode || !DEV_ONLY_VIEWS.has(item.kind))
+      && !(PINNED_VIEWS as string[]).includes(item.kind),
+    ))
+    .filter(group => group.length > 0)
 }
 
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
   slot: string
   files?: TouchedFile[]
-  onFileOpen?: (path: string, opts?: { replaceId?: string }) => void
+  onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => void
   /** Open an artifact as a panel tab (the artifact twin of onFileOpen).
    *  Threaded to the Artifacts tab so its rows open here instead of
    *  hard-navigating to the standalone detail page. */
@@ -257,7 +297,7 @@ export default function SidePanel({
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
 }: SidePanelProps) {
-  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned, openFolder } = tabsCtl
   // EVERY app frame, every slot, rendered from one stable-keyed list below so a
   // chat switch cannot change a frame's React key and remount its iframe.
   const allAppTabs = useAllAppTabs()
@@ -275,7 +315,11 @@ export default function SidePanel({
   // never list the auto-managed pinned views (Changes / Files / Artifacts) —
   // those appear on their own when they have content (see the syncPinned
   // reconcile below).
-  const menuItems = newMenuItems({ devMode, terminalEnabled })
+  const menuSections = newMenuSections({ devMode, terminalEnabled })
+  // The empty-state launcher shows the same entries flat: its two-column grid
+  // has nowhere to put a separator, but it must not disagree with the menu
+  // about ORDER, so it reads the groups rather than its own list.
+  const menuItems = menuSections.flat()
   // Files / Artifacts / Changes are ALWAYS present — pinned to the front,
   // non-closable, and never in the + menu — regardless of whether they
   // currently have content.
@@ -313,31 +357,10 @@ export default function SidePanel({
     if (t?.kind !== 'terminal' || !t.sessionId) return
     if (adoptBottomTerminal(t.sessionId, t.cwd)) closeTab(id)
   }, [tabs, closeTab])
-  const [menuOpen, setMenuOpen] = useState(false)
   // Diff view preferences — persisted; 'mc-diff-split' is shared with the
   // file view's git-diff toggle so split/unified is one app-wide preference.
   const [diffLineNumbers, setDiffLineNumbers] = usePersistedBool('mc-diff-linenums', false)
   const [diffSideBySide, setDiffSideBySide] = usePersistedBool('mc-diff-split', true)
-  const menuRef = useRef<HTMLDivElement>(null)
-  // Keyboard operability for the + menu (WAI-ARIA menu pattern): roving focus
-  // across the items on open, ArrowUp/Down + Home/End, Escape/Tab closes and
-  // returns focus to the trigger. Shared hook with StyledSelect/AgentSelector.
-  const menuTriggerRef = useRef<HTMLButtonElement>(null)
-  const menuListRef = useRef<HTMLDivElement>(null)
-  const menuNoInputRef = useRef<HTMLElement>(null)
-  const closeMenuToTrigger = useCallback(() => {
-    setMenuOpen(false)
-    menuTriggerRef.current?.focus()
-  }, [])
-  const { onListKeyDown: onMenuKeyDown } = useListboxKeyboard({
-    open: menuOpen,
-    dropdownRef: menuListRef,
-    inputRef: menuNoInputRef,
-    hasFilterInput: false,
-    filteredCount: menuItems.length,
-    onEnterSingleMatch: () => {},
-    closeToTrigger: closeMenuToTrigger,
-  })
 
   // Resizable width (the actbar grid column is auto-sized, so the panel owns
   // its own width).
@@ -387,13 +410,6 @@ export default function SidePanel({
     },
     onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },
   })
-
-  useEffect(() => {
-    if (!menuOpen) return
-    const onDown = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [menuOpen])
 
   return (
     <div className="shrink-0 min-h-0 mt-0 mb-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
@@ -458,42 +474,42 @@ export default function SidePanel({
             </Reorder.Item>
           ))}
         </Reorder.Group>
-        {/* + menu */}
-        <div className="relative shrink-0" ref={menuRef}>
-          <button
-            ref={menuTriggerRef}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer"
-            onClick={() => setMenuOpen(v => !v)}
-            title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
-            aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-          >
-            <Plus size={15} />
-          </button>
-          {menuOpen && (
-            <div
-              ref={menuListRef}
-              role="menu"
-              onKeyDown={onMenuKeyDown}
-              className="absolute top-9 right-0 z-50 min-w-[200px] py-1.5 rounded-xl bg-bg-elevated border border-border shadow-lg animate-rise"
+        {/* + menu — the shared shadcn/Radix dropdown, so this strip gets the
+            same pill hover, portalled positioning, focus trap/restore, roving
+            arrow-key focus and Escape handling as every other menu in the app
+            (previously hand-rolled with an outside-click listener and
+            useListboxKeyboard). */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="flex items-center justify-center w-7 h-7 shrink-0 rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
+              title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
+              aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
             >
-              {menuItems.map(item => (
-                <button
-                  key={item.kind}
-                  role="menuitem"
-                  data-option
-                  tabIndex={-1}
-                  className="flex items-center gap-2.5 w-full px-3 py-2 text-[13px] text-text hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors bg-transparent border-none cursor-pointer text-left"
-                  onClick={() => { openMenuItem(item.kind); closeMenuToTrigger() }}
-                >
-                  <span className="text-muted shrink-0">{item.icon}</span>
-                  <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+              <Plus size={15} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+            {menuSections.map((section, i) => (
+              // Keyed by the group's first surviving row, not the index: a gate
+              // that empties a whole group changes what index i means, and a
+              // stale index key would let React reuse the wrong group's rows.
+              <Fragment key={section[0].kind}>
+                {i > 0 && <DropdownMenuSeparator />}
+                {section.map(item => (
+                  <DropdownMenuItem
+                    key={item.kind}
+                    className="gap-2.5 py-2"
+                    onSelect={() => openMenuItem(item.kind)}
+                  >
+                    <span className="text-muted shrink-0">{item.icon}</span>
+                    <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
+                  </DropdownMenuItem>
+                ))}
+              </Fragment>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Body — render every doc/terminal tab mounted (hidden when inactive) so
@@ -578,6 +594,7 @@ export default function SidePanel({
                   // tabs via onFileOpen and artifact rows as artifact tabs via
                   // onArtifactOpen.
                   onFileOpen={onFileOpen}
+                  onFolderOpen={(p) => openFolder(p, slot)}
                   onArtifactOpen={onArtifactOpen}
                   onFileRemove={onFileRemove} onFilesClear={onFilesClear}
                   onFileSave={onFileSave} onSubmitComments={onSubmitComments}
@@ -597,9 +614,11 @@ export default function SidePanel({
                 onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
+                onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
+                onFolderOpen={(p) => openFolder(p, slot)}
                 onSubmitComments={onSubmitComments}
                 onTerminalSendToChat={onAddSourceToChat}
                 diffLineNumbers={diffLineNumbers}
@@ -669,16 +688,20 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
   return <div className="h-full w-full overflow-auto"><McpAppFrame payload={payload} /></div>
 }
 
-function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   onClose: () => void
   onContentChange: (c: string) => void
   onDiffModeChange: (diffMode: boolean) => void
+  /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
+  onRevealConsumed: () => void
   /** Folder tabs navigate internally; lift the new cwd back to the tab record
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string) => void
+  /** Open a directory as a folder tab — a file tab's breadcrumb segment click. */
+  onFolderOpen?: (p: string) => void
   onSubmitComments?: (m: string) => void
   onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
@@ -700,6 +723,9 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
         onClose={onClose}
         liveWatch
         onSubmitComments={onSubmitComments}
+        revealLine={tab.revealLine}
+        onRevealConsumed={onRevealConsumed}
+        onOpenFolder={onFolderOpen}
       />
     )
   }
@@ -738,7 +764,7 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
           // bar carries breadcrumb (click → open editor), change stats, and the
           // two view controls. Divider to content lives on the bar's border-b.
           <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
-            <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={`Open ${tab.path || ''} in editor`}>
+            <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={i18nT('pages.chat.sidePanel.open_in_editor_2', { path: tab.path || '' })}>
               {/* Bare filename: the tab title carries '- Diff', which would
                   read redundantly next to the Turn Diff badge here. */}
               {(tab.path || '').split('/').pop() || tab.title}

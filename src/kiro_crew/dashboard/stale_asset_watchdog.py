@@ -101,8 +101,12 @@ async def run_stale_asset_watchdog(
     A failed check is re-confirmed after ``confirm_delay`` seconds before
     shutdown is triggered, so a transient asset gap (e.g. a frontend rebuild
     that deletes and recreates ``static/dist/``) that coincides with a tick
-    cannot kill an otherwise-healthy gateway. A genuine update prune is
-    permanent and still shuts down within one confirmation delay.
+    cannot kill an otherwise-healthy gateway. Presence is re-checked once more
+    once in-flight work has drained, covering a rebuild that outlives the
+    confirmation but finishes while turns are still draining; on an idle
+    gateway there is nothing to drain and that re-check adds no grace. A
+    genuine update prune is permanent and fails every check, so it still shuts
+    down.
 
     Once a vanish is confirmed, in-flight backend work is *drained* before the
     shutdown event is set (see ``_drain_in_flight``): the prune only breaks
@@ -170,11 +174,6 @@ async def run_stale_asset_watchdog(
                 # Someone else shut us down during the confirm window; don't
                 # log a misleading "watchdog fired" CRITICAL.
                 return
-            logger.critical(
-                "Dashboard static assets vanished — an update likely "
-                "pruned the running install. Initiating graceful shutdown "
-                "so a supervisor can restart a fresh gateway."
-            )
             await _drain_in_flight(
                 shutdown_event,
                 count_in_flight,
@@ -185,6 +184,25 @@ async def run_stale_asset_watchdog(
                 # An external SIGTERM arrived during the drain window and has
                 # already begun graceful shutdown — don't double-signal.
                 return
+            # Re-check once more now that in-flight work has drained. This
+            # covers a rebuild that outlives the confirmation but finishes
+            # while turns are still draining; it adds no grace on an idle
+            # gateway, where _drain_in_flight returns immediately. Without it a
+            # drain long enough for the assets to reappear still ends in a
+            # shutdown — the healthy-gateway kill the confirmation exists to
+            # prevent.
+            if assets_present():
+                logger.warning(
+                    "Stale-asset watchdog: assets reappeared while draining "
+                    "in-flight work — likely a slow frontend rebuild; not "
+                    "shutting down."
+                )
+                continue
+            logger.critical(
+                "Dashboard static assets vanished — an update likely "
+                "pruned the running install. Initiating graceful shutdown "
+                "so a supervisor can restart a fresh gateway."
+            )
             shutdown_event.set()
             return
 

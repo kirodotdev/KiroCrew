@@ -98,12 +98,30 @@ def test_audit_log_bucket_has_versioning_enabled():
         assert props.get("VersioningConfiguration", {}).get("Status") == "Enabled", (
             f"{name} must have VersioningConfiguration Status=Enabled"
         )
-    # Versioning must not grow storage unbounded: the log bucket lifecycle must
-    # also expire noncurrent versions.
+    # Retention arithmetic on a versioned bucket must be pinned, not just
+    # "some NoncurrentVersionExpiration exists": a 365-day current-version
+    # expiration inserts a delete marker (the version goes noncurrent), so the
+    # noncurrent rule is a short recovery window (30d, matching OriginBucket) --
+    # NOT another 365d, which would double the effective retention -- and a
+    # dedicated rule must reap the leftover delete markers.
     log_rules = resources["LogBucket"]["Properties"]["LifecycleConfiguration"]["Rules"]
-    assert any("NoncurrentVersionExpiration" in r for r in log_rules), (
-        "LogBucket lifecycle must expire noncurrent versions"
+
+    current = next((r for r in log_rules if r.get("Id") == "expire-logs"), None)
+    assert current and current.get("ExpirationInDays") == 365, (
+        "LogBucket must keep a 365-day current-version expiration window"
     )
+
+    noncurrent = next(
+        (r for r in log_rules if "NoncurrentVersionExpiration" in r), None
+    )
+    assert noncurrent, "LogBucket lifecycle must expire noncurrent versions"
+    assert noncurrent["NoncurrentVersionExpiration"].get("NoncurrentDays") == 30, (
+        "noncurrent recovery window must be 30d (not 365 -- that ~doubles retention)"
+    )
+
+    assert any(
+        r.get("ExpiredObjectDeleteMarker") is True for r in log_rules
+    ), "LogBucket lifecycle must reap expired-object delete markers"
 
 
 def test_policy_covers_engine_bucket_prefix():

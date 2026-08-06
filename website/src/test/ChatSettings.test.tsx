@@ -44,6 +44,29 @@ describe('loadChatConfig', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ showTurnStats: 'no' }))
     expect(loadChatConfig().showTurnStats).toBe(true)
   })
+
+  it('pins the latest prompt by default', () => {
+    expect(loadChatConfig().pinLastPrompt).toBe(true)
+  })
+
+  it('adopts the new default for a stored config that predates the setting', () => {
+    // Configs written before the sticky-banner setting existed carry no
+    // pinLastPrompt key, so the DEFAULTS spread is what upgrades them.
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showTimestamps: false }))
+    const cfg = loadChatConfig()
+    expect(cfg.pinLastPrompt).toBe(true)
+    expect(cfg.showTimestamps).toBe(false)
+  })
+
+  it('respects stored pinLastPrompt=false', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false }))
+    expect(loadChatConfig().pinLastPrompt).toBe(false)
+  })
+
+  it('repairs a non-boolean pinLastPrompt value to the enabled default', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: 'yes' }))
+    expect(loadChatConfig().pinLastPrompt).toBe(true)
+  })
 })
 
 describe('ChatSettings – session restore UI', () => {

@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
+from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     POOL_SIZE_MAX,
@@ -307,6 +308,13 @@ _STATELESS_PREFIXES = (
 # taskkeeper) to load the same MCP servers.
 BACKGROUND_KEY = "_bg"
 
+# Kiro agent the background session runs as. Named once because it is needed in
+# TWO places — the provider factory call AND the ``_Session`` record — and when
+# only the factory got it, ``_Session.agent`` stayed at its "" default, so every
+# consumer reading ``sess.agent`` (e.g. ``runtime_pids``) saw the background
+# session as agent-less.
+BACKGROUND_AGENT = "kirocrew-lite"
+
 # Heartbeat session key — used by HeartbeatService.  Spawned with the full
 # ``kirocrew`` agent so polled tasks can call read-only MCP tools (CR/ticket
 # status, etc.).  Tool approval at runtime is gated by the
@@ -502,6 +510,10 @@ StopOutcome = Literal["soft", "hard", "idle"]
 class _Session:
     provider: LLMProvider
     last_used: float = field(default_factory=time.monotonic)
+    # Wall-clock spawn time, for the uptime column on the session-memory surface.
+    # ``last_used`` is monotonic (correct for idle math, but it has no epoch), so
+    # it cannot answer "how long has this session been alive".
+    created_at: float = field(default_factory=time.time)
     is_new: bool = True
     prompt_count: int = 0
     consecutive_failures: int = 0
@@ -906,7 +918,7 @@ class SessionManager:
         if not self._provider_factory:
             return
         try:
-            provider = self._provider_factory(BACKGROUND_KEY, agent="kirocrew-lite")
+            provider = self._provider_factory(BACKGROUND_KEY, agent=BACKGROUND_AGENT)
             async with self._start_sem:
                 await provider.start()
         except Exception:
@@ -914,7 +926,9 @@ class SessionManager:
             return
         async with self._lock:
             if BACKGROUND_KEY not in self._sessions:
-                sess = _Session(provider=provider, is_new=False)
+                sess = _Session(
+                    provider=provider, is_new=False, agent=BACKGROUND_AGENT
+                )
                 self._sessions[BACKGROUND_KEY] = sess
                 logger.info("Background session created")
             else:
@@ -1818,6 +1832,100 @@ class SessionManager:
         else:
             logger.debug("Pool health: all %d providers healthy", len(healthy))
 
+    def runtime_pids(self) -> list[dict[str, object]]:
+        """Per-session runtime identity: the pid tree root to sample, and whether
+        this session OWNS that runtime.
+
+        Deliberately does no ``/proc`` work — this returns pure metadata so the
+        caller can offload the (syscall-heavy) sampling off the event loop. The pid
+        is the sandbox launcher parent, NOT the kiro-cli that accumulates the RSS;
+        callers must sum the descendant tree (see
+        ``acp.runtime._get_rss_tree_mb``).
+
+        ``owns_runtime`` is False for a multiplexed co-tenant (the shared ``_bg``
+        runtime, and session-sharing subagents): several sessions then report the
+        SAME pid, so a per-pid measurement is that runtime's total, not this
+        session's share. Consumers must label it rather than present it as
+        exclusive.
+        """
+        rows: list[dict[str, object]] = []
+        for key, sess in self._sessions.items():
+            # Two provider shapes hold the runtime at different depths:
+            # AcpProvider delegates to an AcpClient (``_client._runtime``), while
+            # AcpSessionProvider — the unified/task-runner path, session.py:1331 —
+            # stores ``_runtime`` on itself. Falling back to the provider keeps
+            # the latter from silently reporting an unknown pid and no memory.
+            client = getattr(sess.provider, "_client", None)
+            if client is None:
+                client = sess.provider
+            runtime = getattr(client, "_runtime", None)
+            pid = getattr(runtime, "pid", None)
+            rows.append(
+                {
+                    "key": key,
+                    "agent": sess.agent,
+                    "pid": pid if isinstance(pid, int) and pid > 0 else None,
+                    # Absent attribute means a non-ACP provider with no shared
+                    # runtime — exclusive by construction, so default True.
+                    "owns_runtime": bool(getattr(client, "_owns_runtime", True)),
+                    "created_at": sess.created_at,
+                    "prompts": sess.prompt_count,
+                }
+            )
+        self._append_companion_runtime_rows(rows)
+        return rows
+
+    def _append_companion_runtime_rows(self, rows: list[dict[str, object]]) -> None:
+        """Add rows for live runtimes held ONLY as manager attributes.
+
+        ``self._bg_runtime`` (backing ``get_bg_session`` on a kiro backend) and
+        ``self._subagent_runtimes`` (companion runtimes multiplexing a parent
+        session's subagents) are real process trees — real enough that
+        :meth:`_companion_runtime_pids` must shield them from the orphan sweep
+        with ``register_protected_pid`` — but they are NOT ``_sessions`` entries.
+        Iterating ``_sessions`` alone therefore omitted a whole runtime each from
+        the displayed host total, understating it by the 200-400 MB a runtime
+        costs and hiding the process the user would actually want to know about.
+
+        ``owns_runtime`` is True because the row *is* the runtime: no session
+        co-tenant claims its pid, so there is nothing to divide it between.
+        """
+        now_wall = time.time()
+        now_mono = time.monotonic()
+
+        def add(label: str, runtime: object, agent: str) -> None:
+            try:
+                if runtime is None or not runtime.is_alive():  # type: ignore[attr-defined]
+                    return
+                pid = getattr(runtime, "pid", None)
+                if not isinstance(pid, int) or pid <= 0:
+                    return
+                # A runtime records only ``_spawn_monotonic``; monotonic time
+                # cannot be displayed as an age directly, so project it back
+                # onto the wall clock the consumer subtracts from.
+                spawn = getattr(runtime, "_spawn_monotonic", None)
+                created = (
+                    now_wall - (now_mono - spawn)
+                    if isinstance(spawn, (int, float))
+                    else None
+                )
+                rows.append(
+                    {
+                        "key": label,
+                        "agent": agent,
+                        "pid": pid,
+                        "owns_runtime": True,
+                        "created_at": created,
+                        "prompts": None,
+                    }
+                )
+            except Exception:
+                logger.debug("runtime_pids: probe failed for %s", label, exc_info=True)
+
+        add("Background runtime", self._bg_runtime, BACKGROUND_AGENT)
+        for parent_key, companion in list(self._subagent_runtimes.items()):
+            add(f"Subagent runtime ({parent_key})", companion, "")
+
     def context_info(self) -> list[dict[str, object]]:
         """Return context usage for all active sessions."""
         from kiro_crew.providers.acp import AcpProvider  # circular import: providers -> session
@@ -2041,7 +2149,7 @@ class SessionManager:
                         "SessionManager is closing (gateway restart/shutdown in "
                         "progress); refusing to start or resume a turn"
                     )
-                # Skip the live-session branch only while the recycle FALLBACK
+                # Skip the live-session branch only while the failure recycle
                 # is tearing down the EXACT session object still in the map.
                 # In-place compaction — both the kiro-cli and claude paths —
                 # keeps the entry healthy, so concurrent get_or_create must
@@ -2266,8 +2374,30 @@ class SessionManager:
                                 model_registry.to_acp_id(_pool_model) if _pool_model else _pool_model
                             )
                         if _pool_model and _switch_model != _cmp_pool:
-                            await provider.client.set_model(_switch_model)
-                            logger.info("Pool post-claim: switched model to %s", _switch_model)
+                            # This is an INHERITED value (the slot's persisted
+                            # model), not a pick made for this turn, so it gets
+                            # the same withhold treatment as a cold start. Left
+                            # to raise, AcpModelUnavailable would land in the
+                            # except below and kill the claimed provider — the
+                            # identical stale setting would then fail or not
+                            # purely on whether a pooled process happened to
+                            # exist, which is the worst kind of intermittent.
+                            try:
+                                _advertised = advertised_model_ids(provider.available_models())
+                            except Exception:  # pragma: no cover - defensive
+                                _advertised = []
+                            if _advertised and model_is_unusable(_switch_model, _advertised):
+                                logger.warning(
+                                    "Pool post-claim: model %s is not available to this "
+                                    "account; leaving the claimed process on %s",
+                                    _switch_model,
+                                    _pool_model,
+                                )
+                            else:
+                                await provider.client.set_model(_switch_model)
+                                logger.info(
+                                    "Pool post-claim: switched model to %s", _switch_model
+                                )
                 logger.info(
                     "Claimed warm-pool process for %s (agent=%s)", key, agent or self._pool_agent
                 )
@@ -2367,7 +2497,7 @@ class SessionManager:
                 # were starting the provider (race on same key). In-place
                 # compaction (kiro-cli and claude) leaves the existing entry
                 # healthy, so reuse it even when _compacting is set; only an
-                # entry that IS the exact object the recycle FALLBACK is
+                # entry that IS the exact object the failure recycle is
                 # tearing down should fall through to register us — a healthy
                 # replacement under the same key must be reused, never
                 # overwritten. The recycle path also pops by object identity,
@@ -2619,7 +2749,7 @@ class SessionManager:
         key = self._fold_key(key)
         pct = provider.context_usage_pct()
 
-        # Track prompts for background session recycle fallback
+        # Track prompts for background session recycle
         session = self._sessions.get(key)
         if session:
             session.prompt_count += 1
@@ -2703,13 +2833,15 @@ class SessionManager:
         claude SDK session) survives and any queued or agentic work continues
         automatically — the fix for "session stops after auto-compaction".
 
-        kiro-cli only: if the in-place ``/compact`` fails or times out, fall
-        back to the legacy recycle — kill the session and let the next user
-        message re-seed context via build_session_context(). The session_map
-        entry is dropped so we don't false-resume from stale state. A recycle
-        is never forced through a live turn: if the turn semaphore cannot be
-        acquired within the budget, the attempt is skipped and the next
-        turn-end ``check_context_usage`` re-triggers it.
+        kiro-cli only: if the in-place ``/compact`` fails or times out, the
+        session is recycled — killed so the next user message re-seeds context
+        via build_session_context(). The session_map entry is dropped so we
+        don't false-resume from stale state. That recycle happens inside
+        ``_compact_in_place``, under the turn semaphore it already holds, so no
+        queued turn can slip in between the failed compact and the kill. A
+        recycle is never forced through a live turn: if the turn semaphore
+        cannot be acquired within the budget, the attempt is skipped and the
+        next turn-end ``check_context_usage`` re-triggers it.
         """
         try:
             session = self._sessions.get(key)
@@ -2747,72 +2879,65 @@ class SessionManager:
                 await self._fire_compact_callback(key, pct, success=True)
                 return
 
-            # ── kiro-cli: in-place /compact first ──
-            if session is not None:
-                outcome = await self._compact_in_place(key, session, pct)
-                if outcome == "ok":
-                    return
-                if outcome == "busy":
-                    # A turn is still running. NEVER kill a live turn for
-                    # compaction — the old force-recycle here SIGKILLed
-                    # kiro-cli mid-turn, losing all in-flight work. The next
-                    # turn-end check_context_usage re-triggers compaction
-                    # when the semaphore is free. No cooldown / no failure
-                    # callback: this is a deferral, not a failure.
-                    logger.warning(
-                        "Session %s compaction deferred — turn still active after %.0fs",
-                        key,
-                        _COMPACT_TIMEOUT_SECS,
-                    )
-                    return
-                # outcome == "failed" → fall through to the recycle fallback.
-
-            # ── kiro-cli recycle fallback ──
-            # SIGKILLs the provider; drain the in-flight turn via the session
-            # semaphore first so we don't kill mid-turn. Operates strictly on
-            # the *session object captured above*: pop-by-identity means a
-            # fresh session registered by a racing cold-start is never popped
-            # or killed by mistake.
+            # ── kiro-cli: in-place /compact, recycling on failure ──
+            # Every outcome is terminal. _compact_in_place owns the turn
+            # semaphore for the whole critical section — including the failure
+            # recycle — so there is no window here in which a queued turn can
+            # be dispatched into a session that is mid-compaction or mid-kill.
             if session is None:
                 return
-            sem = session.semaphore
-            try:
-                await asyncio.wait_for(sem.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
-            except asyncio.TimeoutError:
+            outcome = await self._compact_in_place(key, session, pct)
+            if outcome == "busy":
+                # A turn is still running. NEVER kill a live turn for
+                # compaction — the old force-recycle here SIGKILLed
+                # kiro-cli mid-turn, losing all in-flight work. The next
+                # turn-end check_context_usage re-triggers compaction
+                # when the semaphore is free. No cooldown / no failure
+                # callback: this is a deferral, not a failure.
                 logger.warning(
-                    "Session %s recycle skipped — turn still active after %.0fs",
+                    "Session %s compaction deferred — turn still active after %.0fs",
                     key,
                     _COMPACT_TIMEOUT_SECS,
                 )
-                return
-            self._recycling[key] = session
-            try:
-                async with self._lock:
-                    popped = None
-                    if self._sessions.get(key) is session:
-                        popped = self._sessions.pop(key, None)
-                if popped is None:
-                    # A racing cold-start already replaced the entry — the map
-                    # now points at a fresh, healthy session. Reap OUR old
-                    # provider (its process would otherwise leak) but leave the
-                    # replacement and its session_map entry untouched.
-                    await session.provider.shutdown()
-                    logger.info(
-                        "Recycled session %s (context overflow; entry already replaced)", key
-                    )
-                else:
-                    self._session_map.delete(key)
-                    await popped.provider.shutdown()
-                    logger.info("Recycled session %s (context overflow)", key)
-                await self._fire_compact_callback(key, pct, success=True)
-            finally:
-                if self._recycling.get(key) is session:
-                    self._recycling.pop(key, None)
-                sem.release()
         except Exception:
-            logger.exception("Session recycle failed for %s", key)
+            logger.exception("Session compaction/recycle failed for %s", key)
         finally:
             self._compacting.discard(key)
+
+    async def _recycle_held(self, key: str, session: "_Session", pct: float) -> None:
+        """Recycle *session* — SIGKILL the provider and drop the map entry.
+
+        The caller MUST already hold ``session.semaphore`` and is responsible
+        for releasing it: this method neither acquires nor releases it, so the
+        recycle runs inside the caller's turn-exclusion window. That is what
+        lets ``_compact_in_place`` recycle without ever dropping the semaphore
+        (see the race documented there).
+
+        Operates strictly on the *session object passed in*: pop-by-identity
+        means a fresh session registered by a racing cold-start is never
+        popped or killed by mistake.
+        """
+        self._recycling[key] = session
+        try:
+            async with self._lock:
+                popped = None
+                if self._sessions.get(key) is session:
+                    popped = self._sessions.pop(key, None)
+            if popped is None:
+                # A racing cold-start already replaced the entry — the map
+                # now points at a fresh, healthy session. Reap OUR old
+                # provider (its process would otherwise leak) but leave the
+                # replacement and its session_map entry untouched.
+                await session.provider.shutdown()
+                logger.info("Recycled session %s (context overflow; entry already replaced)", key)
+            else:
+                self._session_map.delete(key)
+                await popped.provider.shutdown()
+                logger.info("Recycled session %s (context overflow)", key)
+            await self._fire_compact_callback(key, pct, success=True)
+        finally:
+            if self._recycling.get(key) is session:
+                self._recycling.pop(key, None)
 
     async def _compact_in_place(self, key: str, session: "_Session", pct: float) -> str:
         """Attempt a native in-place ``/compact`` on a kiro-cli session.
@@ -2823,18 +2948,33 @@ class SessionManager:
         - ``"busy"``: the turn semaphore could not be acquired within
           ``_COMPACT_TIMEOUT_SECS`` — a turn is still running. Nothing was
           attempted; the caller must NOT recycle (no mid-turn kill).
-        - ``"failed"``: the compact was attempted but failed, timed out, or
-          the provider does not support it (base ``wait_for_compaction``
-          returns ``{"type": "timeout"}``). The caller falls back to recycle.
+        - ``"recycled"``: the compact was attempted and failed (or timed out,
+          or the provider has no native compaction — base
+          ``wait_for_compaction`` returns ``{"type": "timeout"}``), so the
+          session was recycled HERE, before the turn semaphore was released.
+
+        Every outcome is terminal: the caller never recycles.
 
         Holds the session semaphore for the duration so a queued turn waits
         behind the compaction (and then continues on the compacted session)
         instead of interleaving with it.
+
+        The semaphore is held across the failure recycle too, and that is
+        load-bearing. Releasing it first and letting the caller re-acquire
+        leaves a gap a queued turn wins: the turn is then dispatched into a
+        kiro-cli that is still compacting, its late ``completed`` status lands
+        in that turn's stream, and no ``end_turn`` ever follows — the turn
+        hangs holding the semaphore until the 2h prompt timeout, and the
+        recycle that would have rescued it gives up at its own acquire
+        timeout. Observed in production 2026-08-05: a ``/compact`` reported
+        ``completed`` 161s in, 41s after the 120s async wait had already
+        declared timeout.
         """
         try:
             await asyncio.wait_for(session.semaphore.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
         except asyncio.TimeoutError:
             return "busy"
+        started = time.monotonic()
         try:
 
             async def _run() -> None:
@@ -2871,11 +3011,18 @@ class SessionManager:
             await asyncio.wait_for(_run(), timeout=_COMPACT_TIMEOUT_SECS)
         except (Exception, asyncio.TimeoutError):
             logger.warning(
-                "Session %s in-place /compact failed — falling back to recycle",
+                "Session %s in-place /compact failed after %.0fs — recycling "
+                "(semaphore held; async wait budget %.0fs)",
                 key,
+                time.monotonic() - started,
+                _COMPACT_RESULT_WAIT_SECS,
                 exc_info=True,
             )
-            return "failed"
+            # Recycle NOW, still holding the semaphore — see the docstring.
+            # A failure here is logged by the caller's outer handler; the
+            # finally below still releases the semaphore either way.
+            await self._recycle_held(key, session, pct)
+            return "recycled"
         finally:
             session.semaphore.release()
         self._compact_cooldown_until.pop(key, None)
@@ -3625,6 +3772,10 @@ class SessionManager:
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding. Returns True iff present."""
         return self._session_map.clear_mirror_link(key)
+
+    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+        """Clear every session mirroring to an exact location; return cleared keys."""
+        return self._session_map.clear_mirror_links_at(link)
 
     # Backward-compat aliases used by callers not yet migrated
     async def set_channel(self, key: str, channel_id: str) -> None:

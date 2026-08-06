@@ -324,7 +324,9 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
     // Only the non-main row has a "More actions" menu.
     fireEvent.click(screen.getByLabelText('More actions'))
-    const item = await screen.findByText('Make live')
+    // Scoped to the portaled menu: the main row carries its own Make live
+    // control, so a document-wide query is ambiguous.
+    const item = within(await screen.findByRole('menu')).getByText('Make live')
     fireEvent.click(item)
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
     expect(screen.getByText('Make "feature-x" live?')).toBeInTheDocument()
@@ -348,7 +350,7 @@ describe('DevFleetPage', () => {
     fireEvent.click(screen.getByLabelText('More actions'))
     // Menu is open (Rebase is always present) but Make live is omitted on the live row.
     expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
-    expect(screen.queryByText('Make live')).toBeNull()
+    expect(within(await screen.findByRole('menu')).queryByText('Make live')).toBeNull()
   })
 
   // --- pods unavailable on this host (non-Linux / no systemctl) ---
@@ -372,6 +374,34 @@ describe('DevFleetPage', () => {
     })
   }
 
+  // --- serving install differs from the managed checkout ---
+  // The silent-wrong-answer case: Pull+Build fast-forwards the checkout and
+  // reports success while an older install keeps serving, so no other control
+  // on this page reveals that the managed code is not the running code.
+  it('warns when the install serving the dashboard is not the managed checkout', async () => {
+    mockFleet({
+      serving_install_reason: 'this dashboard is served by the install at /Applications/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend-arm64/lib/python3.12/site-packages/kiro_crew, which is not inside the checkout Dev Fleet manages (/Users/dev/kirocrew).',
+      worktrees: [{ name: 'main', is_main: true, running: false, has_dist: true, behind: 0 }],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('serving-install-warning')).toBeInTheDocument())
+    // Surfaced verbatim, both installs named.
+    expect(screen.getByText(/not inside the checkout Dev Fleet manages/)).toBeInTheDocument()
+    expect(screen.getByText(/backend-dist/)).toBeInTheDocument()
+  })
+
+  it('shows no serving-install warning for a matching install', async () => {
+    mockFleet({
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'feature-x', is_main: false, running: false, has_dist: true, behind: 0, path: '/wt/feature-x' },
+      ],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    expect(screen.queryByTestId('serving-install-warning')).toBeNull()
+  })
+
   it('explains WHY pods are unavailable instead of failing silently', async () => {
     mockFleet(FLEET_NO_PODS)
     renderPage()
@@ -389,9 +419,13 @@ describe('DevFleetPage', () => {
     fireEvent.click(screen.getByLabelText('More actions'))
     // Rebase is platform-neutral and stays -> proves the menu really opened.
     expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
-    for (const gone of ['Spin up pod', 'Make live', 'QA + video', 'Stop pod', 'Restart pod']) {
-      expect(screen.queryByText(gone)).toBeNull()
+    const menu = within(await screen.findByRole('menu'))
+    for (const gone of ['Spin up pod', 'QA + video', 'Stop pod', 'Restart pod']) {
+      expect(menu.queryByText(gone)).toBeNull()
     }
+    // Make live is NOT pod-dependent: staging writes only the live-target
+    // pointer, so hiding it here would hide it on the hosts it exists to serve.
+    expect(menu.getByText('Make live')).toBeInTheDocument()
   })
 
   it('keeps Provision available without pods (pod provision never touches systemd)', async () => {
@@ -566,7 +600,7 @@ describe('DevFleetPage', () => {
     expect(menu.parentElement).toBe(document.body)
     // Items render inside the portaled menu and are reachable.
     expect(screen.getByText('Rebase onto main')).toBeInTheDocument()
-    expect(screen.getByText('Make live')).toBeInTheDocument()
+    expect(within(menu).getByText('Make live')).toBeInTheDocument()
   })
 
   it('portaled row-actions items are clickable (opens the Make live dialog)', async () => {
@@ -574,7 +608,7 @@ describe('DevFleetPage', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('More actions'))
-    fireEvent.click(await screen.findByText('Make live'))
+    fireEvent.click(within(await screen.findByRole('menu')).getByText('Make live'))
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
     expect(screen.getByText('Make "feature-x" live?')).toBeInTheDocument()
   })
@@ -987,10 +1021,9 @@ describe('DevFleetPage restart handshake', () => {
 
   it('disables Restart and Pull+Build while a Make Live request is still in flight', async () => {
     // Regression: `restarting` only goes true AFTER the /make-live POST resolves,
-    // but that POST is what writes the systemd drop-in and issues the
-    // daemon-reload. A Restart fired inside that window can tear the gateway down
-    // mid-write, leaving persisted and loaded unit state inconsistent. The global
-    // action predicates must therefore also honour an in-flight cutover.
+    // but that POST is what stages the live target and issues the restart. A
+    // Restart fired inside that window can tear the gateway down mid-cutover.
+    // The global action predicates must therefore also honour an in-flight cutover.
     const FLEET = {
       gateway_service_active: true,
       worktrees: [
@@ -1028,6 +1061,138 @@ describe('DevFleetPage restart handshake', () => {
     } finally {
       releaseMakeLive?.()
     }
+  }, 15000)
+
+  it('keeps a failed restart on the page instead of only in a toast', async () => {
+    // The wedge message is a pair of commands with absolute paths that the
+    // operator has to run. Toasts are pointer-events:none and self-dismiss, so
+    // the one actionable failure this page can produce must also land somewhere
+    // selectable that outlives the 7s window.
+    // The message restart_detached returns when the loaded agent predates the
+    // graceful-restart contract: an instruction the operator has to act on, so it
+    // must survive long enough to be read and copied.
+    const RESTART_ERR = "loaded launchd restart contract is outdated; re-run `kirocrew service install`"
+    const FLEET_LIVE = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: true, path: '/wt/main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_LIVE), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      if (u.includes('/restart-gateway')) return Promise.resolve(new Response(JSON.stringify({ ok: false, error: RESTART_ERR }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+    fireEvent.click(screen.getByLabelText('Restart gateway'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restart' }))
+
+    const banner = await screen.findByTestId('gateway-restart-error')
+    // The remedy survives in full, not truncated or summarised away.
+    expect(banner.textContent).toContain('restart contract is outdated')
+    expect(banner.textContent).toContain('kirocrew service install')
+    // Dismissable, so it does not become permanent furniture.
+    fireEvent.click(within(banner).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('gateway-restart-error')).toBeNull())
+  })
+
+  it('reports a staged-only cutover without entering the restart handshake', async () => {
+    // A host whose gateway Dev Fleet cannot bounce gets ok:true + staged_only:
+    // the pointer is written and the operator finishes the cutover. No
+    // replacement process is coming, so entering the restart overlay would
+    // strand the user on the 60s timeout and bury the command they need.
+    const FLEET = {
+      gateway_service_active: true,
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: false, path: '/wt/main' },
+      ],
+    }
+    let healthPolled = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      if (u.includes('/make-live')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          ok: true, cutover: true, staged_only: true, target: '/wt/main',
+          manual_restart: 'sudo systemctl restart kirocrew',
+          notice: 'main is now the live target. Run `sudo systemctl restart kirocrew` to finish the cutover.',
+        }), { status: 200 }))
+      }
+      if (u.includes('/health')) { healthPolled = true; return Promise.resolve(new Response('{}', { status: 200 })) }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+    fireEvent.click(screen.getByText('Make live').closest('button') as HTMLButtonElement)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i }))
+
+    // The backend-authored notice carries the command, so it is surfaced verbatim.
+    await waitFor(() => expect(screen.getByText(/finish the cutover/i)).toBeInTheDocument())
+    // And the restart overlay never opens: Restart stays available.
+    expect(screen.getByLabelText('Restart gateway')).not.toBeDisabled()
+    expect(healthPolled).toBe(false)
+  }, 15000)
+
+  it('marks a staged worktree restart-pending instead of live', async () => {
+    // The toast that announces a staged cutover is transient; the pending state
+    // is not. Without a persistent marker an operator who dismissed or missed
+    // the toast reads the OLD running image as the new one and draws
+    // conclusions about code that is not running.
+    const FLEET = {
+      gateway_service_active: false,
+      staged_target: '/wt/feature',
+      manual_restart: 'kirocrew restart',
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: true, is_staged: false, path: '/wt/main' },
+        { name: 'feature', is_main: false, running: false, has_dist: true, behind: 0, is_live: false, is_staged: true, path: '/wt/feature' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getAllByText('feature').length).toBeGreaterThan(0))
+
+    // The staged row is flagged, and it is NOT the row wearing the live badge.
+    await waitFor(() => expect(screen.getByText('Restart pending')).toBeInTheDocument())
+    expect(screen.getByText('live')).toBeInTheDocument()
+  }, 15000)
+
+  it('does not promise an automatic restart when the gateway cannot be driven', async () => {
+    // The dialog is the moment of commitment: on a host where Dev Fleet cannot
+    // bounce the service, saying "the gateway restarts and this page reconnects
+    // automatically" is a promise the staged path does not keep.
+    const FLEET = {
+      gateway_service_active: false,
+      manual_restart: 'kirocrew restart',
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, is_live: false, path: '/wt/main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 1024 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+
+    fireEvent.click(screen.getByText('Make live').closest('button') as HTMLButtonElement)
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/will NOT reconnect on its own/i)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/reconnects automatically/i)).toBeNull()
   }, 15000)
 
   it('treats a reachable 404 on the health route as recovery instead of waiting out the timeout', async () => {

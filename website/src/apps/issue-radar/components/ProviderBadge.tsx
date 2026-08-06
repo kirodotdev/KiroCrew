@@ -13,6 +13,7 @@
 
 import GithubLogo from '../../../components/icons/GithubLogo'
 import GitlabLogo from '../../../components/icons/GitlabLogo'
+import { i18nT } from '../../../i18n/t'
 import { type RepoRef } from '../api'
 import { isGitlab, providerTerms } from '../lib/links'
 
@@ -66,7 +67,7 @@ export function ProviderHostTag({ repoRef }: { repoRef?: Pick<RepoRef, 'host'> }
   return (
     <span
       className="flex-shrink-0 px-1.5 py-px rounded border border-border-strong text-[10px] leading-[14px] font-medium text-muted uppercase tracking-[.03em]"
-      title={`Self-managed instance: ${repoRef?.host}`}
+      title={i18nT('apps.issueRadar.components.providerBadge.self_managed_instance', { host: repoRef?.host ?? '' })}
     >
       {repoRef?.host}
     </span>

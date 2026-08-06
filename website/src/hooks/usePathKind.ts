@@ -106,25 +106,36 @@ function resolveKind(path: string): PathKind | Promise<PathKind> {
  * still streaming). `undefined` means "not yet known" and callers MUST treat it
  * as not-actionable: rendering an affordance optimistically is what made a
  * directory look like a missing file in the first place.
+ *
+ * The verdict is keyed to the path it was measured for and re-derived during
+ * render, so a consumer whose `path` CHANGES sees `undefined` (or a cache hit) on
+ * that very render rather than the previous path's answer. Callers now gate an
+ * affordance on `undefined` meaning "still deciding" — `MarkdownRenderer` withholds
+ * a chip until every probe for it has reported — and carrying a stale `file` across
+ * a path change would punch a hole through that barrier, briefly offering to open
+ * a path the text no longer names.
  */
 export function usePathKind(path: string | null): PathKind | undefined {
-  const [kind, setKind] = useState<PathKind | undefined>(() =>
-    path ? cachedKind(path) : undefined,
+  const [entry, setEntry] = useState<{ path: string | null; kind: PathKind | undefined }>(
+    () => ({ path, kind: path ? cachedKind(path) : undefined }),
   )
 
   useEffect(() => {
-    if (!path) { setKind(undefined); return }
+    if (!path) { setEntry({ path, kind: undefined }); return }
     const resolved = resolveKind(path)
-    if (typeof resolved === 'string') { setKind(resolved); return }
+    if (typeof resolved === 'string') { setEntry({ path, kind: resolved }); return }
     let live = true
-    resolved.then(k => { if (live) setKind(k) })
+    resolved.then(k => { if (live) setEntry({ path, kind: k }) })
     // No AbortController: the in-flight promise is shared by every chip for
     // this path, so aborting on one unmount would cancel the others' probe.
     // The `live` flag drops the result for this consumer only.
     return () => { live = false }
   }, [path])
 
-  return kind
+  // State measured for a PREVIOUS path is not an answer about this one. The cache
+  // is consulted synchronously so an already-known path stays instant.
+  if (entry.path !== path) return path ? cachedKind(path) : undefined
+  return entry.kind
 }
 
 /** Test seam — drops all cached and in-flight probes. */

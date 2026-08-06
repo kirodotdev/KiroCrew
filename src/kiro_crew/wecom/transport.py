@@ -46,14 +46,16 @@ from kiro_crew.wecom.client import _REPLY_MAX_CHARS, WeComClient, WeComInbound
 DispatchFn = Callable[["WeComInbound"], Awaitable[None]]
 
 # WeCom AI-bot capabilities: WS streaming (each frame REPLACES the bubble ->
-# edit=True), a generous char cap, no tappable chips (max_buttons=0 -> the
-# renderer drops [OPTIONS:] trailers), and NO proactive send (a reply is bound
-# to the inbound message's req_id / one-shot response_url).
+# edit=True), a generous char cap, no tappable chips (max_buttons=0 records
+# the fact; the renderer's [OPTIONS:] drop is unconditional and does not read
+# it), and NO proactive send (a reply is bound to the inbound message's
+# req_id / one-shot response_url).
 WECOM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=False,
-    files=False,
+    files_inbound=False,
+    files_outbound=False,
     rich_blocks=False,
     threads=False,
     max_message_chars=_REPLY_MAX_CHARS,

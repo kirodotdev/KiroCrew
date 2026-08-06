@@ -59,6 +59,8 @@ from kiro_crew.computer_use.overlay import (
     reset_shared_overlay,
 )
 from kiro_crew.computer_use.types import (
+    CLICK_PULSE_DEPTH,
+    CLICK_PULSE_MS,
     CURSOR_GLYPH_HEIGHT,
     CURSOR_GLYPH_WIDTH,
     FALLBACK_SCREEN_HEIGHT,
@@ -974,6 +976,47 @@ class TestAnimation:
 
         assert _dip_runs(one) == 1
         assert _dip_runs(many) == MAX_CLICK_COUNT
+
+    def test_every_pulse_dips_even_when_the_clock_jumps_the_whole_pulse(
+        self, monkeypatch
+    ):
+        """A stall must not swallow the click.
+
+        The dip IS the click, drawn as ``sin(progress * pi)`` -- zero at BOTH
+        progress 0.0 and 1.0. So if the only samples of a pulse are its two
+        endpoints, alpha reads 1.0 twice and nothing appears on screen. That is
+        not hypothetical: a descheduled thread on a loaded machine (four xdist
+        workers on a 4-vCPU Windows runner is where it was caught) skips the
+        whole 160ms in one frame, and the user gets no click feedback at all.
+
+        Simulate the worst case -- a clock that advances a full pulse duration
+        per reading -- and require every requested pulse to still be visible.
+        """
+        ticks = iter(range(0, 10_000))
+        # Each reading jumps a whole pulse (0.16s), so an uncapped progress
+        # would go straight from 0.0 to >=1.0 with nothing in between.
+        monkeypatch.setattr(
+            proc_mod.time, "monotonic", lambda: next(ticks) * (CLICK_PULSE_MS / 1000.0)
+        )
+
+        runtime = _FakeRuntime()
+        proc_mod.CursorOverlayWindow(runtime).pulse_click(400.0, 400.0, MAX_CLICK_COUNT)
+
+        alphas = runtime.alphas()
+        runs, was_dipped = 0, False
+        for value in alphas:
+            dipped = value < 0.999
+            if dipped and not was_dipped:
+                runs += 1
+            was_dipped = dipped
+
+        assert runs == MAX_CLICK_COUNT, (
+            f"a stalled clock lost {MAX_CLICK_COUNT - runs} of {MAX_CLICK_COUNT} "
+            f"click pulses; alphas={alphas}"
+        )
+        # And the dip must be deep enough to actually read as a click, not a
+        # rounding-error wobble just under the 0.999 threshold.
+        assert min(alphas) <= 1.0 - CLICK_PULSE_DEPTH * 0.7
 
     def test_a_failing_pump_still_yields_the_cpu(self, monkeypatch):
         """A broken run loop must not become a busy spin."""

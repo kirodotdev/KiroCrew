@@ -166,7 +166,7 @@ function TreeRow({
         isSelected ? 'bg-accent-subtle text-accent font-semibold' : 'hover:bg-bg-elevated'
       }`}
       style={indent}
-      aria-label={`Open ${node.path}`}
+      aria-label={i18nT('components.skillDirectoryBrowser.open', { path: node.path })}
       aria-current={isSelected ? 'true' : undefined}
     >
       <span className="w-3 shrink-0" aria-hidden />

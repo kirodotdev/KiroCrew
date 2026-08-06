@@ -72,6 +72,62 @@ async def _patch(client, path, value):
     return await client.patch("/api/config/kirocrew", json={"path": path, "value": value})
 
 
+# ── Per-role models (agent.role_models.*) ─────────────────────────────────
+
+
+class TestRoleModels:
+    @pytest.mark.asyncio
+    async def test_subagent_role_nested_write(self, tmp_config) -> None:
+        # 3-level path must nest, not clobber the whole agent section.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.role_models.subagent", "claude-sonnet-4.6")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["role_models"]["subagent"] == "claude-sonnet-4.6"
+        # Sibling agent keys survive the nested write.
+        assert data["agent"]["approval_mode"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_role_model_auto_allowed(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.role_models.subagent", "auto")
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_role_model_bad_grammar_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.role_models.subagent", "bad; rm -rf /")
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_background_role_triggers_rebuild(self, tmp_config) -> None:
+        # A background-model change must rewrite the lite/heartbeat specs.
+        with patch("kiro_crew.agent.rebuild_agent_config") as rebuild:
+            async with TestClient(TestServer(_make_app())) as c:
+                resp = await _patch(c, "agent.role_models.background", "claude-sonnet-4.6")
+                assert resp.status == 200
+            rebuild.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_role_effort_valid_enum_passes(self, tmp_config) -> None:
+        app = _make_app()
+        app["state"] = SimpleNamespace(
+            subagents=MagicMock(spec=["update_completion_keep"]),
+            sessions=SimpleNamespace(refresh_defaults=AsyncMock()),
+        )
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "agent.role_efforts.subagent", "low")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["role_efforts"]["subagent"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_role_effort_invalid_enum_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.role_efforts.background", "turbo")
+            assert resp.status == 400
+
+
 # ── General ──────────────────────────────────────────────────────────────
 
 

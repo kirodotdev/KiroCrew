@@ -50,7 +50,7 @@ function StatusBadge({ config }: { config: WebexConfigData }) {
 function connectionHint(config: WebexConfigData): string {
   if (config.connected || !config.configured) return ''
   if (config.connect_error) {
-    return `Webex connection failed (${config.connect_error}). Check the bot token and network access to webexapis.com, then restart the gateway.`
+    return i18nT('pages.settings.webexPanel.connection_failed', { error: config.connect_error })
   }
   return i18nT('pages.settings.webexPanel.settings_are_saved_but_the_channel_is_not_runnin')
 }

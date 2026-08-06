@@ -140,7 +140,7 @@ def build_link_dashboard_button() -> dict:
 
 def to_slack_mrkdwn(text: str, *, keep_tables: bool = False) -> str:
     """Convert LLM markdown to Slack mrkdwn format."""
-    text = _strip_ansi(text)
+    text = strip_ansi(text)
 
     if len(text) > SLACK_MAX_TEXT:
         # rfind returns -1 (no newline in window) or the last newline's index —
@@ -253,7 +253,14 @@ def _convert_tables(text: str) -> str:
     return "\n".join(result)
 
 
-def _strip_ansi(text: str) -> str:
+def strip_ansi(text: str) -> str:
+    """Remove SGR colour escapes.
+
+    Public because redaction call sites need it: this strip can *reassemble* a
+    credential that escape sequences had broken up, so a caller that redacts
+    around a conversion has to normalise with the SAME function first, or the
+    secret slips through the regex and is put back together afterwards.
+    """
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 

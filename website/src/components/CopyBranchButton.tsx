@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
+import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 
 /** A branch name rendered as a click-to-copy affordance. Clicking copies the raw
@@ -51,8 +52,8 @@ export default function CopyBranchButton({
       type="button"
       onClick={handleCopy}
       className={`group/branch min-w-0 inline-flex items-center gap-1 truncate rounded px-1 -mx-1 border-none bg-transparent text-inherit hover:bg-bg-hover cursor-pointer ${className}`}
-      aria-label={copied ? `Copied ${label} ${branch}` : `Copy ${label} ${branch}`}
-      title={copied ? 'Copied!' : `Copy ${label}`}
+      aria-label={copied ? i18nT('components.copyBranchButton.copied', { label, branch }) : i18nT('components.copyBranchButton.copy', { label, branch })}
+      title={copied ? i18nT('components.copyBranchButton.copied_2') : i18nT('components.copyBranchButton.copy_2', { label })}
     >
       <span className="truncate">{branch}</span>
       {copied ? (

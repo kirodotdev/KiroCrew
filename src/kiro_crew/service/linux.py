@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service import apparmor
 from kiro_crew.service.common import (
     SERVICE_NAME,
@@ -132,7 +133,10 @@ def render_unit(apparmor_profile: str = "") -> str:
     user = _current_user()
     group = _current_group(user) if user else ""
     home = str(Path.home())
-    exec_start = f"{_sd_quote(bin_path)} gateway"
+    # `--no-open` for the same reason as the launchd plist: a service starts on
+    # boot and on every restart, and auto-opening a browser there is wrong. It is
+    # simply less visible on a headless Linux box than on a desktop.
+    exec_start = f"{_sd_quote(bin_path)} gateway --no-open"
     env_lines = f"Environment={_sd_quote(f'USER={user}')}\n" + "".join(
         f"Environment={_sd_quote(f'{key}={value}')}\n"
         for key, value in service_environment(home).items()
@@ -184,7 +188,7 @@ def render_unit(apparmor_profile: str = "") -> str:
         f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
-        "TimeoutStopSec=20\n"
+        f"TimeoutStopSec={TOTAL_SHUTDOWN_BUDGET_SECS}\n"
         # Pin a high open-file limit rather than inheriting the host's
         # ambient DefaultLimitNOFILE. Stock systemd defaults to 1024 — and
         # the frontend production build (vite/rollup) opens ~1000
@@ -400,6 +404,32 @@ def install_apparmor_profile() -> apparmor.ProfileOutcome:
 def remove_apparmor_profile() -> apparmor.ProfileOutcome:
     """Unload and delete the profile so uninstall leaves the host as it was."""
     return apparmor.uninstall(_sudo_run_checked)
+
+
+def install_launcher_profile(exec_path: str | None = None) -> apparmor.ProfileOutcome:
+    """Attach the userns profile to a directly launched app (AppImage/desktop).
+
+    Same three privileged helpers as the service path — one escalation mechanism
+    for both profiles, and still nothing but ``install`` / ``apparmor_parser`` /
+    ``aa-exec`` running under sudo. No kirocrew or LLM-influenced code does.
+
+    Unlike the service profile this is NOT reached from ``service install``: a
+    direct launch has no unit to hang it off, so the user (or the desktop app,
+    which surfaces the exact command) invokes it explicitly.
+    """
+    return apparmor.install_launcher(
+        _install_file_via_sudo,
+        _sudo_run_checked,
+        _sudo_capture,
+        os.getuid(),
+        os.getgid(),
+        exec_path,
+    )
+
+
+def remove_launcher_profile() -> apparmor.ProfileOutcome:
+    """Unload and delete the launcher profile, leaving the host as it was found."""
+    return apparmor.uninstall_launcher(_sudo_run_checked)
 
 
 def uninstall() -> None:

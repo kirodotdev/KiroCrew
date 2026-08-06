@@ -58,9 +58,9 @@ export function agentStatusLine(agent: SceneAgent): string {
   const detail = agent.detail ? ` · ${agent.detail}` : ''
   switch (agent.kind) {
     case 'cron':
-      return agent.running ? i18nT('hooks.useSceneInteraction.cron_running') : `Cron${detail}`
+      return agent.running ? i18nT('hooks.useSceneInteraction.cron_running') : i18nT('hooks.useSceneInteraction.cron', { detail })
     case 'spawn':
-      return `Subagent${detail}`
+      return i18nT('hooks.useSceneInteraction.subagent', { detail })
     default:
       return (agent.running ? i18nT('hooks.useSceneInteraction.working') : i18nT('hooks.useSceneInteraction.idle')) + detail
   }
@@ -369,7 +369,7 @@ export function useSceneInteraction(
     <div
       ref={popoverRef}
       role="dialog"
-      aria-label={`Recent messages for ${threadView.agent.name}`}
+      aria-label={i18nT('hooks.useSceneInteraction.recent_messages_for', { name: threadView.agent.name })}
       style={{ position: 'absolute', left: (dragPos ?? threadView).x, top: (dragPos ?? threadView).y, width: 272, background: '#15151f', border: '1px solid #555', borderRadius: 6, fontSize: 11, color: '#ccc', zIndex: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.5)', overflow: 'hidden' }}
     >
       <div
@@ -447,7 +447,7 @@ export function useSceneInteraction(
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendToAgent(threadView.agent, draft) } }}
           placeholder={sourceFor(threadView.agent)?.running ? i18nT('hooks.useSceneInteraction.steer_this_agent') : i18nT('hooks.useSceneInteraction.message_this_agent')}
-          aria-label={`Message ${threadView.agent.name}`}
+          aria-label={i18nT('hooks.useSceneInteraction.message', { name: threadView.agent.name })}
           style={{ flex: 1, background: '#0d0d15', border: '1px solid #444', borderRadius: 4, color: '#ddd', fontSize: 11, padding: '4px 7px', outline: 'none' }}
         />
         <button

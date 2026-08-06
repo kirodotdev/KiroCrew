@@ -9,8 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import requires_git
 
+from conftest import requires_git
 from kiro_crew import git_coord
 from kiro_crew.taskrunner import (
     Step,

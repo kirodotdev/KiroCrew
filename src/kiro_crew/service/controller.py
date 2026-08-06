@@ -103,6 +103,56 @@ def service_status() -> int:
     return 2
 
 
+def install_launcher_profile(exec_path: str | None = None) -> int:
+    """Attach the userns AppArmor profile to a directly launched app.
+
+    Linux-only by nature: the whole feature exists for one Ubuntu kernel
+    restriction. On macOS and elsewhere this is a clean no-op with an explanation
+    rather than an error, because the same desktop app ships everywhere and must
+    not present a broken command to users who do not need it.
+    """
+    if current_platform() != Platform.SYSTEMD:
+        print(
+            "ℹ️  The AppArmor sandbox profile is Linux-only — this host does not "
+            "restrict unprivileged user namespaces, so nothing is needed."
+        )
+        return 0
+    outcome = linux.install_launcher_profile(exec_path)
+    if outcome.message:
+        print(f"{'⚠️  ' if not outcome.ok else '✅ '}{outcome.message}")
+    return 0 if outcome.ok else 1
+
+
+def remove_launcher_profile() -> int:
+    """Unload and delete the launcher profile. Idempotent."""
+    if current_platform() != Platform.SYSTEMD:
+        print("ℹ️  Nothing to remove — the AppArmor sandbox profile is Linux-only.")
+        return 0
+    outcome = linux.remove_launcher_profile()
+    print(
+        f"{'⚠️  ' if not outcome.ok else '✅ '}{outcome.message}"
+        if outcome.message
+        else "✅ No AppArmor sandbox profile was installed."
+    )
+    return 0 if outcome.ok else 1
+
+
+def sandbox_profile_status(exec_path: str | None = None) -> int:
+    """Report whether THIS launch is covered by the launcher profile.
+
+    Exit code is the answer, so a script can gate on it: 0 when the sandbox can
+    be built (covered, or a host that never needed the profile), 1 when it cannot.
+    """
+    if current_platform() != Platform.SYSTEMD:
+        print("✅ This platform does not restrict unprivileged user namespaces.")
+        return 0
+    from kiro_crew.service import apparmor
+
+    ok, detail = apparmor.launcher_status(exec_path)
+    print(f"{'✅ ' if ok else '❌ '}{detail}")
+    return 0 if ok else 1
+
+
 def is_service_active() -> bool:
     """Return True if a kirocrew service is installed and currently running."""
     plat = current_platform()

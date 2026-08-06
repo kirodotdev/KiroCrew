@@ -60,7 +60,11 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # add_reaction — used for the steer-ack receipt
-    files=True,
+    # Inbound only: attachments are ingested (discord/attachments.py), but no
+    # upload path exists — file_send reaches Slack alone. The old single
+    # files=True conflated the two directions and over-promised outbound.
+    files_inbound=True,
+    files_outbound=False,
     rich_blocks=False,
     threads=True,
     max_message_chars=DISCORD_CHUNK_LIMIT,

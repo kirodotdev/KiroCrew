@@ -21,7 +21,7 @@ export default function UsageTab() {
     enabled: provider.capabilities.usageBilling,
   })
   const err = !provider.capabilities.usageBilling
-    ? `Usage tracking is not available for ${provider.displayName}.`
+    ? i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })
     : queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
 
   if (err) return (

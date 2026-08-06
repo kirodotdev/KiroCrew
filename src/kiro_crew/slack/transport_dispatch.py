@@ -16,6 +16,7 @@ unaffected (they don't go through events.py Slack dispatch).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -36,6 +37,8 @@ from kiro_crew.slack.handler import (
     _is_slack_restricted,
     _should_auto_approve_spawn,
     _thread_agents,
+    get_dashboard_state,
+    get_orch_cfg,
     is_slack_session_trusted,
     maybe_apply_privacy_modifiers,
     maybe_handle_keyword_command,
@@ -64,6 +67,39 @@ logger = logging.getLogger(__name__)
 #: Mirrors the native path's fallback (``handler.py``: ``_get_default_agent()
 #: or "kirocrew"``) and the many ``agent="kirocrew"`` call sites.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+
+async def _refresh_dashboard_tab(session_key: str) -> None:
+    """Push freshly-written transcript lines into an open dashboard tab.
+
+    The Slack transport persists a turn but owns no dashboard slot, so without
+    this an open tab learned about a Slack turn only when the background
+    reconciler next ran -- up to 30 seconds later, and later still while a turn
+    was in flight. Called after each transcript write so the tab tracks the
+    conversation as it happens.
+
+    Best-effort by design: this is presentation bookkeeping, and a dashboard
+    that is absent (Slack-only gateway) or erroring must never fail the turn.
+    """
+    try:
+        # Kept function-local ON PURPOSE, unlike the handler accessors above:
+        # the gateway supports running Slack-only with no dashboard at all
+        # (``--slack-only``), and the dashboard is already optional at runtime
+        # here (see the None check below). A module-level import would pull the
+        # whole dashboard module graph into the Slack inbound path's import
+        # time and make it a hard dependency of a mode that does not use it.
+        from kiro_crew.dashboard.channel_slots import surface_channel_state
+
+        state = get_dashboard_state()
+        if state is None:
+            return
+        await surface_channel_state(state, getattr(get_orch_cfg(), "dashboard", None))
+    except Exception:
+        logger.debug(
+            "transport_dispatch: dashboard refresh failed session=%s",
+            session_key,
+            exc_info=True,
+        )
 
 
 async def handle_message_transport(
@@ -349,6 +385,56 @@ async def handle_message_transport(
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
 
+        # ── Conversation log: the user's turn, at RECEIPT ──
+        # Recorded BEFORE the turn runs rather than alongside the reply
+        # afterwards. Writing both rows at the end meant the message did not
+        # exist anywhere for the whole duration of the turn, so a dashboard tab
+        # had nothing to show until the reply was already finished -- and both
+        # rows then carried effectively the same timestamp, losing how long the
+        # turn actually took. ``session_key`` is final by this point: the
+        # thread-owner re-resolution and session acquisition above are done, so
+        # this cannot write under a key the turn later abandons.
+        #
+        # Slack-restricted (incognito / temporary) sessions are skipped at BOTH
+        # write points, so a restricted session still persists nothing. Note
+        # this is a skip-at-each-write guarantee, not parity with the old
+        # single write: because Slack events dispatch concurrently, an
+        # `!incognito` that lands mid-turn used to suppress the whole turn
+        # (both rows were still unwritten), and can now only suppress the
+        # reply -- the question is already durable.
+        _logged_user_turn = False
+        if conversation_log and not _is_slack_restricted(session_key):
+            try:
+                # Off the loop deliberately. ``ConversationLog.append`` takes a
+                # cross-process flock, and ON the event loop that primitive
+                # makes a single NON-BLOCKING acquire and raises on any
+                # concurrent holder -- so calling it inline would both write to
+                # disk on the loop and silently drop this row whenever another
+                # writer happens to hold the lock.
+                #
+                # Awaited via to_thread rather than routed through
+                # ``append_off_loop`` because that helper is fire-and-forget:
+                # the tab refresh below must not run until the row is actually
+                # on disk (it reads the file), and a failure here has to be
+                # visible so the post-turn fallback can cover the whole turn.
+                await asyncio.to_thread(
+                    conversation_log.append,
+                    session_key,
+                    "user",
+                    text,
+                    source_thread=session_key,
+                    source_user=user_id,
+                )
+                _logged_user_turn = True
+            except Exception:
+                logger.warning(
+                    "transport_dispatch: user-turn log failed session=%s",
+                    session_key,
+                    exc_info=True,
+                )
+            if _logged_user_turn:
+                await _refresh_dashboard_tab(session_key)
+
         # ── Build message with context ──
         if context_builder:
             # Off-loop: build_message embeds the episodic query (blocking urllib).
@@ -444,17 +530,34 @@ async def handle_message_transport(
                 exc_info=True,
             )
 
-        # ── Conversation log ──
+        # ── Conversation log: the reply ──
+        # The user's row already landed at receipt, so only the reply is added
+        # here. If that receipt write failed we fall back to the combined write
+        # so a turn is never persisted reply-only.
         try:
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
-                    conversation_log,
-                    session_key,
-                    text,
-                    accumulated,
-                    source_thread=session_key,
-                    source_user=user_id,
-                )
+                if _logged_user_turn:
+                    if accumulated:
+                        # Same off-loop reasoning as the receipt write above.
+                        await asyncio.to_thread(
+                            conversation_log.append,
+                            session_key,
+                            "assistant",
+                            accumulated,
+                            source_thread=session_key,
+                            source_user=user_id,
+                        )
+                else:
+                    await asyncio.to_thread(
+                        save_conversation_turn,
+                        conversation_log,
+                        session_key,
+                        text,
+                        accumulated,
+                        source_thread=session_key,
+                        source_user=user_id,
+                    )
+                await _refresh_dashboard_tab(session_key)
         except Exception:
             logger.warning(
                 "transport_dispatch: save_conversation_turn failed session=%s",

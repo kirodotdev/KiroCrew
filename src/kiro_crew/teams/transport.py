@@ -37,14 +37,16 @@ logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 
-# Teams capabilities: no token streaming, no in-place edit, no tappable
-# chips (max_buttons=0 -> renderer drops [OPTIONS:] trailers), proactive send is
-# fine for a conversation we've already seen a service_url for.
+# Teams capabilities: no token streaming, no in-place edit (MVP), no tappable
+# chips (max_buttons=0 records the fact; the renderer's [OPTIONS:] drop is
+# unconditional and does not read it), proactive send is fine for a
+# conversation we've already seen a service_url for.
 TEAMS_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
-    files=False,
+    files_inbound=False,
+    files_outbound=False,
     rich_blocks=False,
     threads=False,
     max_message_chars=TEAMS_MAX_TEXT,

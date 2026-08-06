@@ -188,8 +188,8 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
             <button
               className="px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
               onClick={() => onFileOpen(filePath)}
-              title={`Open ${filePath} in side panel`}
-              aria-label={`Open ${filePath} in side panel`}
+              title={i18nT('components.diffBlock.open_in_side_panel', { path: filePath })}
+              aria-label={i18nT('components.diffBlock.open_in_side_panel', { path: filePath })}
             >
               {i18nT('components.diffBlock.open')}
             </button>

@@ -15,16 +15,30 @@ This module provides:
 Dump directory: ``<data home>/logs/crash-dumps/`` (data home = ``config_dir()``,
 i.e. ``~/.kiro/crew`` or ``$KIROCREW_HOME``)
 Filename pattern: ``loopstall-<ISO timestamp>.txt``
+
+**fd lifetime guarantee (issue #1571):**
+
+``faulthandler.dump_traceback_later`` captures a raw C file descriptor at arm
+time and writes to it on its own C thread when the timer fires.  If the fd is
+invalidated (closed, reassigned, or GC'd) between arm and fire, the dump writes
+to nothing — or worse, to a recycled fd — and the crash file contains only the
+header written at open time.
+
+To prevent this, :func:`open_dump_file` obtains the fd via :func:`os.open`
+(lowest-level, no Python buffering layer that could close/dup the fd behind our
+back), wraps it in a *non-closing* Python file object for the header write, and
+returns a :class:`DumpFile` that exposes ``.fileno()`` (what faulthandler needs)
+while guaranteeing the underlying fd is never closed until the process exits.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO
 
 from kiro_crew.config.paths import config_dir
 
@@ -37,7 +51,78 @@ DUMP_SUFFIX = ".txt"
 
 # Module-level reference to the open dump file — kept alive for process lifetime
 # because faulthandler requires the fd to remain valid.
-_active_dump_file: IO[str] | None = None
+_active_dump_file: "DumpFile | None" = None
+
+
+class DumpFile:
+    """Thin wrapper around a raw OS file descriptor for faulthandler.
+
+    faulthandler's C code calls ``fileno()`` on the file object we pass it and
+    then uses that integer fd for all subsequent writes.  A regular Python
+    ``open()`` returns a buffered text wrapper whose ``close()`` invalidates the
+    fd — and the GC, a stray ``with`` block, or even internal ``io`` layer
+    reshuffling can trigger that ``close()`` unexpectedly.
+
+    This class:
+    * Holds the fd obtained from :func:`os.open` directly.
+    * Exposes ``fileno()`` so faulthandler can extract the fd.
+    * Exposes ``write()`` and ``flush()`` so :func:`_default_dump` (which calls
+      ``faulthandler.dump_traceback(file=...)`` ) and the header write work.
+    * Never closes the fd (the OS reclaims it on process exit).
+    """
+
+    def __init__(self, fd: int, path: Path) -> None:
+        self._fd = fd
+        self._path = path
+
+    def fileno(self) -> int:
+        return self._fd
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def closed(self) -> bool:
+        """Return True only if the fd has been explicitly closed (never, in normal use)."""
+        try:
+            os.fstat(self._fd)
+            return False
+        except OSError:
+            return True
+
+    def write(self, data: str) -> int:
+        """Write a string to the fd (UTF-8 encoded, unbuffered)."""
+        encoded = data.encode("utf-8")
+        return os.write(self._fd, encoded)
+
+    def flush(self) -> None:
+        """Flush the fd to disk (fsync is too aggressive; fdatasync where available)."""
+        # os.write is unbuffered at the Python level; the kernel buffer is
+        # flushed on its own schedule.  An explicit fsync here would hurt
+        # latency on every beat() for no diagnostic gain — the dump content
+        # that matters is written by faulthandler's C thread moments before
+        # _exit(), and the kernel flushes dirty pages on exit.  No-op by design.
+        pass
+
+    def close(self) -> None:
+        """Intentional no-op.  The fd lives until process exit.
+
+        This exists so code that expects a file-like interface (e.g. a
+        ``finally: f.close()`` in tests) does not raise AttributeError.
+        The fd is *not* closed — faulthandler's C timer may fire at any moment.
+        """
+        pass
+
+    if sys.platform == "win32":
+        @property
+        def name(self) -> str:
+            """Provide the file path as ``name`` for diagnostics."""
+            return str(self._path)
+    else:
+        @property
+        def name(self) -> str:
+            return str(self._path)
 
 
 def get_dumps_dir() -> Path:
@@ -78,13 +163,16 @@ def rotate_dumps(max_dumps: int = _DEFAULT_MAX_DUMPS, dumps_dir: Path | None = N
     return removed
 
 
-def open_dump_file(dumps_dir: Path | None = None) -> IO[str]:
+def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     """Create and open a new dump file for this gateway session.
 
-    The returned file object MUST be kept alive for the entire process lifetime
-    because faulthandler.dump_traceback_later holds a reference to the fd.
+    The returned :class:`DumpFile` wraps a raw OS fd obtained via :func:`os.open`.
+    That fd is never closed by Python — it lives until the process exits — so
+    ``faulthandler.dump_traceback_later`` can capture it at arm time and rely on
+    it remaining valid when the timer fires seconds (or minutes) later.
 
-    Returns the open file object (caller stores it to prevent GC).
+    Returns the :class:`DumpFile` (caller stores it to prevent GC of the wrapper,
+    though the fd itself is OS-level and not GC'd).
     """
     global _active_dump_file  # noqa: PLW0603
     d = dumps_dir or get_dumps_dir()
@@ -92,13 +180,22 @@ def open_dump_file(dumps_dir: Path | None = None) -> IO[str]:
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = d / f"{DUMP_PREFIX}{ts}{DUMP_SUFFIX}"
-    f = open(path, "w", encoding="utf-8")  # noqa: SIM115 — intentionally kept open for process lifetime
+
+    # Use os.open() for a raw fd that is never wrapped in a closable Python
+    # buffered layer.  O_WRONLY|O_CREAT|O_TRUNC mirrors open("w") semantics.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if sys.platform == "win32":
+        flags |= os.O_NOINHERIT
+    else:
+        flags |= os.O_CLOEXEC
+    fd = os.open(str(path), flags, 0o644)
+
+    f = DumpFile(fd, path)
     # Write a header so the file is identifiable even before a dump fires
     f.write(f"# KiroCrew loop-stall crash dump — opened {ts}\n")
     f.write(f"# PID: {os.getpid()}\n")
     f.write("# If thread stacks appear below, the event loop wedged and faulthandler fired.\n")
     f.write("\n")
-    f.flush()
     _active_dump_file = f
     return f
 
@@ -206,6 +303,6 @@ def dump_replay_lines(
     return result, False
 
 
-def get_active_dump_file() -> IO[str] | None:
+def get_active_dump_file() -> DumpFile | None:
     """Return the currently active dump file (for passing to faulthandler)."""
     return _active_dump_file

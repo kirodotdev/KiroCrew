@@ -141,6 +141,7 @@ async def watch_credential(
     stop_event: asyncio.Event,
     on_change: OnChange,
     logger: logging.Logger,
+    on_probe_complete: Optional[Callable[[], None]] = None,
 ) -> None:
     """Poll ``cred_path`` and fire ``on_change`` whenever its content
     changes.
@@ -156,6 +157,13 @@ async def watch_credential(
             not on an mtime-only no-op rewrite).
         logger: ``logging.Logger`` used for state-change INFO and
             handler-error WARNING messages.
+        on_probe_complete: Test seam, ``None`` in production. Optional
+            no-arg callable invoked after every probe cycle finishes,
+            including cycles that fire nothing. It lets a caller await
+            "one poll has happened" instead of sleeping a wall-clock
+            guess. The sleep-based tests were flaky on Windows runners,
+            whose coarser timer resolution let a write land outside the
+            intended window (issue #1105).
     """
     baseline_mtime: Optional[float] = None
     baseline_digest: Optional[str] = None
@@ -183,83 +191,117 @@ async def watch_credential(
                 except asyncio.TimeoutError:
                     pass
             first_probe = False
-
-            # Offload the blocking stat + content hash to a worker thread so
-            # the event loop never stalls on credential IO — the file may live
-            # on a network-mounted home directory. The content is hashed every
-            # poll (no mtime cheap-gate) so a coarse-mtime in-place rotation is
-            # never permanently missed — see the module docstring.
             try:
-                mtime, digest = await asyncio.to_thread(_probe_credential, cred_path)
-            except OSError as exc:
-                # stat() or read() failed transiently — log and skip without
-                # advancing the baseline.
-                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a path + exception, never credential bytes
-                logger.warning("credential watcher: probe(%s) failed: %s", cred_path, exc)
-                continue
-            if digest is None:
-                # Genuinely absent (``_probe_credential`` returns None ONLY on
-                # FileNotFoundError; a transient OSError propagated and was caught
-                # above without advancing the baseline).
+
+                # Offload the blocking stat + content hash to a worker thread so
+                # the event loop never stalls on credential IO — the file may live
+                # on a network-mounted home directory. The content is hashed every
+                # poll (no mtime cheap-gate) so a coarse-mtime in-place rotation is
+                # never permanently missed — see the module docstring.
+                try:
+                    mtime, digest = await asyncio.to_thread(_probe_credential, cred_path)
+                except OSError as exc:
+                    # stat() or read() failed transiently — log and skip without
+                    # advancing the baseline.
+                    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a path + exception, never credential bytes
+                    logger.warning("credential watcher: probe(%s) failed: %s", cred_path, exc)
+                    continue
+                if digest is None:
+                    # Genuinely absent (``_probe_credential`` returns None ONLY on
+                    # FileNotFoundError; a transient OSError propagated and was caught
+                    # above without advancing the baseline).
+                    if not baseline_established:
+                        # FIRST observation is absent — record it as the absent
+                        # baseline so a later appearance is treated as a change (not
+                        # silently adopted as a no-fire baseline).
+                        baseline_established = True
+                        logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a path only, never credential bytes
+                            "credential watcher: baseline is ABSENT (no file yet) for %s",
+                            cred_path,
+                        )
+                        continue
+                    if baseline_digest is not None:
+                        # PRESENT -> ABSENT: the credential was deleted/revoked. This
+                        # is a real transition and MUST fire on_change — otherwise
+                        # pooled/pinned backends keep the revoked credential and stay
+                        # authenticated until deadline/restart, defeating revocation.
+                        # Move the baseline to absent so a later re-appearance fires
+                        # again (absent -> present) rather than silently rebaselining.
+                        logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a truncated content hash + path, never credential bytes
+                            "credential watcher: file removed (was digest=%s) for %s "
+                            "— firing (credential revoked)",
+                            baseline_digest[:12],
+                            cred_path,
+                        )
+                        baseline_mtime = None
+                        baseline_digest = None
+                        try:
+                            result = on_change()
+                            if inspect.isawaitable(result):
+                                await result
+                        except Exception:
+                            logger.exception(
+                                "credential watcher: on_change handler failed; continuing"
+                            )
+                    # Already absent (baseline_digest is None) — nothing to compare;
+                    # wait for it to (re)appear.
+                    continue
+
                 if not baseline_established:
-                    # FIRST observation is absent — record it as the absent
-                    # baseline so a later appearance is treated as a change (not
-                    # silently adopted as a no-fire baseline).
+                    # First observation and the file is PRESENT — no-fire baseline.
                     baseline_established = True
-                    logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a path only, never credential bytes
-                        "credential watcher: baseline is ABSENT (no file yet) for %s",
+                    baseline_mtime = mtime
+                    baseline_digest = digest
+                    logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a truncated content hash + path, never credential bytes
+                        "credential watcher: baseline mtime=%.3f digest=%s for %s",
+                        mtime,
+                        digest[:12],
                         cred_path,
                     )
                     continue
-                if baseline_digest is not None:
-                    # PRESENT -> ABSENT: the credential was deleted/revoked. This
-                    # is a real transition and MUST fire on_change — otherwise
-                    # pooled/pinned backends keep the revoked credential and stay
-                    # authenticated until deadline/restart, defeating revocation.
-                    # Move the baseline to absent so a later re-appearance fires
-                    # again (absent -> present) rather than silently rebaselining.
+
+                if baseline_digest is None:
+                    # Baseline was ABSENT and the file has now APPEARED — a real
+                    # "no credential -> credential" transition. Fire on_change so any
+                    # backend prewarmed during the absent window is drained and
+                    # respawned against the now-present credential, then adopt it as
+                    # the new baseline.
                     logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a truncated content hash + path, never credential bytes
-                        "credential watcher: file removed (was digest=%s) for %s "
-                        "— firing (credential revoked)",
-                        baseline_digest[:12],
+                        "credential watcher: file appeared (digest=%s) after absent "
+                        "baseline for %s — firing",
+                        digest[:12],
                         cred_path,
                     )
-                    baseline_mtime = None
-                    baseline_digest = None
+                    baseline_mtime = mtime
+                    baseline_digest = digest
                     try:
                         result = on_change()
                         if inspect.isawaitable(result):
                             await result
                     except Exception:
-                        logger.exception(
-                            "credential watcher: on_change handler failed; continuing"
+                        logger.exception("credential watcher: on_change handler failed; continuing")
+                    continue
+
+                if digest == baseline_digest:
+                    # mtime moved but the bytes are identical — a no-op rewrite
+                    # by a credential refresh daemon. Advance the mtime gate so we
+                    # do not re-hash next poll, but do NOT fire on_change.
+                    if mtime != baseline_mtime:
+                        logger.debug(
+                            "credential watcher: mtime moved %.3f -> %.3f, content "
+                            "unchanged (digest=%s); not firing for %s",
+                            baseline_mtime,
+                            mtime,
+                            digest[:12],
+                            cred_path,
                         )
-                # Already absent (baseline_digest is None) — nothing to compare;
-                # wait for it to (re)appear.
-                continue
+                    baseline_mtime = mtime
+                    continue
 
-            if not baseline_established:
-                # First observation and the file is PRESENT — no-fire baseline.
-                baseline_established = True
-                baseline_mtime = mtime
-                baseline_digest = digest
-                logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a truncated content hash + path, never credential bytes
-                    "credential watcher: baseline mtime=%.3f digest=%s for %s",
-                    mtime,
-                    digest[:12],
-                    cred_path,
-                )
-                continue
-
-            if baseline_digest is None:
-                # Baseline was ABSENT and the file has now APPEARED — a real
-                # "no credential -> credential" transition. Fire on_change so any
-                # backend prewarmed during the absent window is drained and
-                # respawned against the now-present credential, then adopt it as
-                # the new baseline.
-                logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs a truncated content hash + path, never credential bytes
-                    "credential watcher: file appeared (digest=%s) after absent "
-                    "baseline for %s — firing",
+                # Real content change — credential rotation.
+                logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs truncated content hashes + path, never credential bytes
+                    "credential watcher: content changed digest %s -> %s for %s",
+                    baseline_digest[:12],
                     digest[:12],
                     cred_path,
                 )
@@ -271,38 +313,12 @@ async def watch_credential(
                         await result
                 except Exception:
                     logger.exception("credential watcher: on_change handler failed; continuing")
-                continue
-
-            if digest == baseline_digest:
-                # mtime moved but the bytes are identical — a no-op rewrite
-                # by a credential refresh daemon. Advance the mtime gate so we
-                # do not re-hash next poll, but do NOT fire on_change.
-                if mtime != baseline_mtime:
-                    logger.debug(
-                        "credential watcher: mtime moved %.3f -> %.3f, content "
-                        "unchanged (digest=%s); not firing for %s",
-                        baseline_mtime,
-                        mtime,
-                        digest[:12],
-                        cred_path,
-                    )
-                baseline_mtime = mtime
-                continue
-
-            # Real content change — credential rotation.
-            logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs truncated content hashes + path, never credential bytes
-                "credential watcher: content changed digest %s -> %s for %s",
-                baseline_digest[:12],
-                digest[:12],
-                cred_path,
-            )
-            baseline_mtime = mtime
-            baseline_digest = digest
-            try:
-                result = on_change()
-                if inspect.isawaitable(result):
-                    await result
-            except Exception:
-                logger.exception("credential watcher: on_change handler failed; continuing")
+            finally:
+                # Fire on EVERY path out of the body, including the six
+                # ``continue`` branches. A caller that awaits this seam to
+                # mean "one poll has happened" would deadlock if a branch
+                # skipped the notify.
+                if on_probe_complete is not None:
+                    on_probe_complete()
     except asyncio.CancelledError:
         pass

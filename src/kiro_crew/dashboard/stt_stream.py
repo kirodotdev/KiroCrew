@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 # Browser AudioWorklet downsamples to 16 kHz Int16 PCM mono.
 STREAM_SAMPLE_RATE_HZ = 16000
+# Providers with a live streaming implementation behind this endpoint. `transcribe`
+# streams from AWS; `apple` streams on-device via SpeechAnalyzer (macOS 26+). The
+# other providers (`whisper`, `mlx`) are whole-file CLIs with no partial-result
+# channel, so they stay on the batch POST /api/stt/transcribe path.
+_STREAMING_PROVIDERS = ("transcribe", "apple")
 # Cap per-WebSocket-frame size (128 KiB) — small enough to reject obvious
 # abuse, large enough for any reasonable 16 kHz PCM chunk cadence.
 _MAX_WS_MSG_SIZE = 128 * 1024
@@ -55,10 +60,12 @@ _active_sessions = 0
 # ── Semantic endpointing (stt.endpointing, default off) ──
 # On each stable Transcribe `final`, a fast background model judges whether the
 # user has finished a complete request; a COMPLETE verdict emits an `endpoint`
-# frame so the frontend can auto-submit. Pinned to the cheap Haiku-class model
-# (parity with title/tip generation). Debounced so mid-utterance finals don't
-# each fire a model call, and single-flight so at most one bg call runs at once.
-_ENDPOINT_MODEL = "claude-haiku-4.5"
+# frame so the frontend can auto-submit. "auto" inherits the session's governed
+# default (run_bg_oneliner skips the override for auto) — a hardcoded model id
+# 400s on accounts/partitions that do not serve it.
+# Debounced so mid-utterance finals don't each fire a model call, and
+# single-flight so at most one bg call runs at once.
+_ENDPOINT_MODEL = "auto"
 _ENDPOINT_DEBOUNCE_SECS = 0.35
 _ENDPOINT_TIMEOUT_SECS = 5.0
 _ENDPOINT_PROMPT = (
@@ -311,6 +318,215 @@ def _make_handler(ws: web.WebSocketResponse, endpointer: "_Endpointer | None" = 
     return Handler
 
 
+async def _run_apple_session(
+    ws: web.WebSocketResponse,
+    cfg: "KiroCrewConfig",
+    request: web.Request,
+    caller: str,
+) -> None:
+    """Drive a live on-device dictation session over an already-prepared WebSocket.
+
+    Emits exactly the same event shapes as the AWS path — ``ready`` / ``partial`` /
+    ``final`` — so the frontend needs no branch. Redaction is applied to partials as
+    well as finals: a partial is flashed into the browser DOM, which makes it an
+    external surface even though the next partial replaces it.
+
+    No billing deadline here (nothing is metered) but the duration cap still applies:
+    an abandoned session holds a helper process and a recognition session open.
+    """
+    from kiro_crew import apple_speech
+
+    endpointer: "_Endpointer | None" = None
+    if cfg.stt.endpointing:
+        _state = request.app.get("state")
+        _sessions = getattr(_state, "sessions", None)
+        if _sessions is not None:
+            endpointer = _Endpointer(ws, _sessions)
+
+    session = apple_speech.StreamingSession(
+        locale=cfg.stt.language_code or "en-US",
+        sample_rate=STREAM_SAMPLE_RATE_HZ,
+    )
+    problem = await session.start()
+    if problem:
+        try:
+            await ws.send_json({"type": "error", "message": problem})
+        except Exception:
+            pass
+        await _close_and_end_audit(ws, caller, outcome="error")
+        if endpointer is not None:
+            await endpointer.aclose()
+        return
+
+    async def relay() -> None:
+        """Forward helper events to the client until the helper's stream ends."""
+        async for event in session.events():
+            kind = event.get("type")
+            if kind == "error":
+                # A fatal helper error must NOT be swallowed: the helper stops
+                # producing after one, so dropping it leaves the client watching a
+                # live socket that will never transcribe again, with no signal and
+                # no way to tell that from a quiet microphone.
+                #
+                # Claim the cause BEFORE any awaiting work — the same discipline as
+                # the deadline task below — so the `finally` audits this as `error`
+                # instead of a clean stop, and so a deadline firing concurrently
+                # cannot overwrite the true first cause. Closing is what ends the
+                # read loop; the close in `_close_and_end_audit` is idempotent, so
+                # the single audit still comes from the one owner, the `finally`.
+                msg_text = str(event.get("message", "speech helper failed"))
+                _claim_fatal("error")
+                if not ws.closed:
+                    try:
+                        await ws.send_json({"type": "error", "message": msg_text})
+                    except Exception:
+                        pass
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                return
+            if kind not in ("partial", "final"):
+                continue
+            # Both redactions, in the same order as the AWS handler: a partial is
+            # flashed into the browser DOM, so it is an external surface even though
+            # the next partial replaces it and nothing is persisted.
+            redacted, _ = redact_exfiltration_urls(str(event.get("text", "")))
+            redacted, _ = redact_credentials(redacted)
+            # Strip edge whitespace: Apple's finals carry a leading space (" Then
+            # tell me..."), and the frontend re-joins accumulated finals with a
+            # space of its own, so passing it through yields double spaces.
+            redacted = redacted.strip()
+            if not redacted:
+                continue
+            if endpointer is not None:
+                # Note BEFORE the awaited send, matching the AWS handler: a live
+                # partial means the user is still speaking, and doing this after
+                # `await send_json` would let a slow send delay invalidation.
+                if kind == "partial":
+                    endpointer.note_partial(redacted)
+                else:
+                    endpointer.note_final(redacted)
+            try:
+                await ws.send_json({"type": kind, "text": redacted})
+            except Exception:
+                return
+
+    relay_task = asyncio.create_task(relay())
+
+    # Enforce the duration cap with a dedicated task, NOT an in-loop check. The
+    # AWS path below documents the same reason: `async for msg in ws` only yields
+    # on client data, and aiohttp answers heartbeat ping/pong internally — so a
+    # client that stops sending audio while the socket stays alive (a throttled
+    # background tab, a muted input, a client bug) would never evaluate a
+    # message-driven deadline. It would hold the StreamTranscribe helper, an OS
+    # speech-recognition session, and one of `_MAX_CONCURRENT_SESSIONS` slots
+    # indefinitely; three such sockets make dictation 503 until a gateway restart.
+    # The FIRST fatal cause wins. Both teardown paths (the duration cap and a fatal
+    # helper error) can fire, and each ends the read loop by closing the socket — so
+    # without a single claim the second one to run would relabel the first one's
+    # outcome in the audit trail. Claimed before any awaiting work, so it cannot be
+    # missed; `None` means the session ended normally.
+    fatal_outcome: str | None = None
+
+    def _claim_fatal(kind: str) -> None:
+        nonlocal fatal_outcome
+        if fatal_outcome is None:
+            fatal_outcome = kind
+
+    async def _enforce_deadline() -> None:
+        await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
+        # Only the first claimant sends: otherwise the cap and a concurrent helper
+        # error each emit a frame in the window before the other's close lands, and
+        # the client sees two contradictory errors for one failure.
+        if fatal_outcome is not None:
+            return
+        _claim_fatal("timeout")
+        if not ws.closed:
+            try:
+                await ws.send_json({"type": "error", "message": "max stream duration exceeded"})
+            except Exception:
+                pass
+            # Same defensive shape as the AWS path: ws.close() can raise on a
+            # broken transport, and an unhandled exception here would surface as
+            # "Task exception was never retrieved".
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    deadline_task = asyncio.create_task(_enforce_deadline())
+    outcome = "ok"
+    try:
+        await ws.send_json({"type": "ready"})
+        async for msg in ws:
+            if msg.type == WSMsgType.BINARY:
+                if not await session.feed(msg.data):
+                    # The helper died mid-dictation. Breaking alone would audit this
+                    # as a clean stop and leave the client believing it is still
+                    # recording, with everything it says from here silently dropped —
+                    # the same failure mode as swallowing an `error` event, reached
+                    # through the write side instead of the read side.
+                    logger.warning("apple streaming helper stopped accepting audio")
+                    _claim_fatal("error")
+                    if not ws.closed:
+                        try:
+                            await ws.send_json(
+                                {"type": "error", "message": "speech helper stopped"}
+                            )
+                        except Exception:
+                            pass
+                    break
+            elif msg.type == WSMsgType.TEXT:
+                if len(msg.data) > _MAX_TEXT_FRAME_BYTES:
+                    logger.warning(
+                        "Oversized text frame (%d bytes) on /api/ws/stt — closing",
+                        len(msg.data),
+                    )
+                    break
+                try:
+                    ctrl = json.loads(msg.data)
+                except ValueError:
+                    continue
+                if isinstance(ctrl, dict) and ctrl.get("type") == "stop":
+                    break
+            elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                break
+    except Exception:
+        logger.exception("apple streaming STT session failed")
+        outcome = "error"
+    finally:
+        # An EXPLICIT claim, not `deadline_task.done()`. Inferring from task state
+        # is racy here: the cap's own `ws.close()` is what ends the read loop, so
+        # the `finally` runs while that task is still awaiting the close and
+        # `done()` is still False — the teardown would be audited as a clean stop.
+        # The claim is made before any awaiting work, so it cannot be missed.
+        timed_out = fatal_outcome == "timeout"
+        # Cancel first among the cleanup steps: it is the one thing that can still
+        # touch the socket, and leaving it live past cleanup would close a socket
+        # the next request may already own.
+        deadline_task.cancel()
+        if timed_out:
+            logger.info("apple streaming STT session hit the %ds cap", _MAX_STREAM_DURATION_SECS)
+        # Closing stdin is the helper's cue to finalize, so the trailing finals
+        # arrive AFTER this — hence finish() before waiting on the relay.
+        try:
+            await session.finish()
+        except Exception:
+            logger.warning("apple streaming helper did not finish cleanly", exc_info=True)
+        try:
+            await asyncio.wait_for(asyncio.shield(relay_task), timeout=3)
+        except (asyncio.TimeoutError, Exception):
+            relay_task.cancel()
+        await session.close()
+        if endpointer is not None:
+            await endpointer.aclose()
+        # A claimed fatal cause outranks the local `outcome`: the read loop can exit
+        # cleanly (the cap/relay closed the socket under it) and would otherwise be
+        # recorded as "ok" for a session that in fact died.
+        await _close_and_end_audit(ws, caller, outcome=fatal_outcome or outcome)
+
+
 async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
     """GET /api/ws/stt — streaming speech-to-text.
 
@@ -323,7 +539,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
 
     cfg = KiroCrewConfig.load()
-    if not cfg.stt.enabled or cfg.stt.provider != "transcribe" or not cfg.stt.streaming:
+    if not cfg.stt.enabled or cfg.stt.provider not in _STREAMING_PROVIDERS or not cfg.stt.streaming:
         _emit_guard_audit(request.remote or "unknown", outcome="unavailable")
         raise web.HTTPServiceUnavailable(text="streaming STT not enabled")
 
@@ -356,6 +572,15 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
+        if cfg.stt.provider == "apple":
+            # On-device path: same client protocol (binary PCM in, partial/final JSON
+            # out) and the same endpointer, so the frontend cannot tell them apart.
+            # Kept as its own function rather than threaded through the Transcribe
+            # setup below, which is entirely AWS-specific (credentials, region,
+            # billing deadline).
+            await _run_apple_session(ws, cfg, request, caller)
+            return ws
+
         if TranscribeStreamingClient is None:
             # amazon-transcribe not installed at gateway startup. Module-top
             # import fell back to None so the gateway could boot; surface a
@@ -377,7 +602,9 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             # stt_stream_end audit emits — audit trail then shows an
             # unmatched stt_stream_start. Mirrors the start_stream path.
             logger.exception("Failed to create Transcribe client")
-            await ws.send_json({"type": "error", "message": "failed to create transcription client"})
+            await ws.send_json(
+                {"type": "error", "message": "failed to create transcription client"}
+            )
             await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
@@ -409,9 +636,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
             if not ws.closed:
                 try:
-                    await ws.send_json(
-                        {"type": "error", "message": "max stream duration exceeded"}
-                    )
+                    await ws.send_json({"type": "error", "message": "max stream duration exceeded"})
                 except Exception:
                     pass
                 # Must match defensive style of send_json above: ws.close()

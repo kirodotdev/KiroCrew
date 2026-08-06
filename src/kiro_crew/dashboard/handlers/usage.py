@@ -6,6 +6,7 @@ import asyncio
 import getpass
 import json
 import logging
+import math
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -19,6 +20,7 @@ from kiro_crew.acp.types import TurnUsage
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.context_blocks import USER_LABEL
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.messaging.link import telemetry_channel_of
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +118,12 @@ def _shards_in_window(days: int) -> list[Path]:
     return paths
 
 
-_CONTEXT_TOP_SESSIONS = 8
+# A payload backstop, not a top-N: the panel lists sessions for the user to
+# browse, sort and group, so cutting it to the "hottest" few hid most of them
+# behind a number they could not reach. Measured over a 7d window this is 260
+# sessions across all categories, which ships comfortably; the cap only exists
+# so an account with thousands does not send all of them on every poll.
+_CONTEXT_TOP_SESSIONS = 500
 # Fingerprint + TTL cache, same contract as _TOKEN_CACHE: the Telemetry panel
 # polls every 5s, and the shards are append-only, so (name, mtime, size) over
 # the window invalidates exactly when a turn lands.
@@ -131,6 +138,98 @@ _CONTEXT_CACHE: dict[str, Any] | None = None
 _CONTEXT_CACHE_KEY: tuple[Any, ...] | None = None
 _CONTEXT_CACHE_TS: float = 0.0
 _CONTEXT_CACHE_TTL = 30.0
+
+_COST_CACHE: dict[str, Any] | None = None
+_COST_CACHE_KEY: tuple[Any, ...] | None = None
+_COST_CACHE_TS: float = 0.0
+_COST_CACHE_TTL = 30.0
+# A payload backstop, not a display choice: the panel polls every few seconds,
+# so an account with thousands of sessions should not ship all of them on every
+# refetch. The shown/total pair travels with the list either way, so truncation
+# is stated rather than implied.
+_COST_TOP_CONVOS = 500
+#: Keys that are not a session at all, and so are not rows.
+#:
+#: A subagent is a FRAGMENT of another session's turn, not a session with its own
+#: lifecycle — nobody starts one, resumes one, or goes to look at one. It also
+#: cannot be attributed: a `subagent:*` usage row carries no field pointing back
+#: at the session that spawned it, so it cannot even be nested under its parent.
+#: Ranking 218 of them beside 34 real sessions buried the list in work the user
+#: never held.
+#:
+#: These rows are dropped at the point the row is READ, so their credits leave
+#: the window total, the deltas and every breakdown together. That is deliberate:
+#: filtering at the grouping step instead would leave the money in the total with
+#: no row that could explain it, and no two views would agree. The consequence is
+#: that these totals are the totals of the sessions the panel LISTS, not of the
+#: account — stated in `docs/system-specs/modules/metrics.md` and pinned by
+#: `test_a_subagent_is_not_a_session_and_reaches_no_figure`.
+_NON_SESSION_CHANNELS = frozenset({"subagent"})
+
+# Channels that ARE sessions but run without a person on the other end.
+#
+# A cron tick, the heartbeat and the task runner each have their own lifecycle —
+# something scheduled them and they live and die on their own — so they are
+# sessions, and they belong in a list keyed by session. They collapse to one `bg`
+# category so they read as background work rather than as conversations.
+#
+# `other` and `unknown` are deliberately NOT here. `telemetry_channel_of` returns
+# `other` for a key shape it does not recognise and `unknown` for an absent slot,
+# so folding them in would bury every new surface under background — which is the
+# precise failure this set is a DENYLIST to avoid. Membership is "background by
+# nature", not "not recognised": an unclassified session stays visible under its
+# own category, where it can be reported and fixed.
+_BACKGROUND_CHANNELS = frozenset(
+    {
+        "cron",
+        "heartbeat",
+        "taskrunner",
+        "workflow_pool",
+        "background",
+        "secretary",
+    }
+)
+
+#: The one category that can be opened from the dashboard. Kept separate from
+#: the category list because "is a session" and "has a route" are different
+#: questions — a Telegram thread is a first-class session with nowhere for a
+#: dashboard link to go, which is exactly the bug the old "titled -> link it"
+#: rule shipped.
+NAVIGABLE_CATEGORY = "dashboard"
+
+
+def is_session_slot(slot: str) -> bool:
+    """Whether *slot* is a session in its own right, and so earns a row."""
+    return bool(slot) and telemetry_channel_of(slot) not in _NON_SESSION_CHANNELS
+
+
+def session_category(slot: str) -> str:
+    """Classify *slot* into the session taxonomy the panel groups by.
+
+    Returns ``bg`` for a session that runs unattended, otherwise the transport it
+    came from (``dashboard``, ``telegram``, ``slack``, …). Built on
+    :func:`telemetry_channel_of` rather than matching key shapes here: that is
+    the one place that knows every session-key form, so a surface it learns
+    about is classified consistently for metrics and for this panel.
+
+    A DENYLIST decides what is background, deliberately. If a new transport is
+    added and ``_BACKGROUND_CHANNELS`` is not updated, the session shows up under
+    its own new category — visible, reportable, fixable — whereas an allowlist of
+    "real" transports would silently file it as background and bury it.
+    """
+    channel = telemetry_channel_of(slot) if slot else "unknown"
+    return "bg" if channel in _BACKGROUND_CHANNELS else channel
+
+
+# Below this, a per-turn growth slope is noise rather than a trend.
+_COST_MIN_GROWTH_TURNS = 6
+# Occupancy at which the runtime compacts, so the projection has a real target.
+_COMPACTION_PCT = 90.0
+# A turn-to-turn occupancy fall this large is a compaction, not measurement
+# jitter, and so ends the segment a growth slope may be fitted on. Occupancy
+# does drift down by a fraction of a point between turns (what counts toward
+# `context_used` varies), which is why the threshold is not simply "any fall".
+_COMPACTION_DROP_PCT = 1.0
 
 
 def context_occupancy(days: int = 14) -> dict[str, Any]:
@@ -194,13 +293,19 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                         continue
                     if ts_epoch < cutoff:
                         continue
+                    slot = str(obj.get("slot") or "unknown")
+                    # Before the percentile sample, not after: the spread and the
+                    # session list have to describe the same population, or the
+                    # p90 on the card disagrees with every row beneath it.
+                    if not is_session_slot(slot):
+                        continue
                     p = (used / window) * 100.0
                     pcts.append(p)
-                    slot = str(obj.get("slot") or "unknown")
                     cur = per_session.get(slot)
                     if cur is None:
                         cur = {
                             "slot": slot,
+                            "category": session_category(slot),
                             "turns": 0,
                             "peak_pct": 0.0,
                             "used": 0,
@@ -354,6 +459,282 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
         ),
         "window_days": days,
     }
+
+
+def cost_breakdown(days: int = 7) -> dict[str, Any]:
+    """Aggregate per-turn spend from the token row store into a cost view.
+
+    Answers "what did the last *days* cost, compared with the *days* before it,
+    and what drove the difference". ``credits`` is the only billing dimension the
+    acp provider populates -- input/output/cache/cost come back hard zero -- so
+    it is the unit here, with ``context_used`` as the second real signal.
+
+    Three deliberate shapes:
+
+    * **Every** model is reported, never a top-N slice. A truncated list hides a
+      model switch, which on real data moved the bill far more than usage volume
+      did, and a single-user store is small enough to render complete.
+    * ``channel`` is derived from the session key, NOT read from the row's
+      ``surface`` field. Each persist site passes a hardcoded surface, so every
+      turn routed through the dashboard chat runner is stamped ``dashboard``
+      whatever transport the human used -- the field cannot separate a Telegram
+      turn from a browser one, and the key can.
+    * Context bands are absolute token counts rather than occupancy ratios:
+      spend tracks how many tokens get re-sent, and window sizes differ per
+      model, so a ratio would average incomparable populations.
+    """
+    now = time.time()
+    cutoff = now - (days * 86400)
+    prior_cutoff = now - (2 * days * 86400)
+
+    shard_paths = _shards_in_window(2 * days)
+    try:
+        cache_key: tuple[Any, ...] | None = (
+            days,
+            tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
+        )
+    except OSError:
+        cache_key = None
+    if (
+        cache_key is not None
+        and _COST_CACHE_KEY == cache_key
+        and _COST_CACHE is not None
+        and (now - _COST_CACHE_TS) < _COST_CACHE_TTL
+    ):
+        return _COST_CACHE
+
+    def _blank() -> dict[str, Any]:
+        return {"credits": 0.0, "turns": 0}
+
+    cur_tot, prev_tot = _blank(), _blank()
+    by_model: dict[str, dict[str, Any]] = {}
+    by_channel: dict[str, dict[str, Any]] = {}
+    prev_model: dict[str, float] = {}
+    prev_channel: dict[str, float] = {}
+    bands: dict[int, list[float]] = {}
+    convos: dict[str, dict[str, Any]] = {}
+    by_category: dict[str, dict[str, Any]] = {}
+    prev_category: dict[str, float] = {}
+    priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
+
+    for shard_path in shard_paths:
+        try:
+            with shard_path.open() as fh:
+                for line in fh:
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                        continue
+                    ts_raw = str(obj.get("ts") or "")
+                    try:
+                        ts_str = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                        ts_epoch = datetime.fromisoformat(ts_str).timestamp()
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                    if ts_epoch < prior_cutoff:
+                        continue
+
+                    credits = float(obj.get("credits") or 0.0)
+                    # Shards written before the persist-side guard can already
+                    # hold `NaN` / `Infinity` — `json.loads` accepts those bare
+                    # tokens even though they are not valid JSON. Letting one
+                    # through would poison every total it touches and make
+                    # `web.json_response` emit a body no browser can parse, so
+                    # the row is dropped rather than counted as free.
+                    if not math.isfinite(credits):
+                        continue
+                    model = str(obj.get("model") or "unknown")
+                    slot = str(obj.get("slot") or "")
+
+                    # Dropped here, before ANY accumulator sees it, so every
+                    # figure on the page is computed over one population. A
+                    # subagent is a fragment of another session's turn rather
+                    # than a session, and it carries no field pointing back at
+                    # the session that spawned it, so it can be neither listed
+                    # nor attributed. Filtering at the grouping step instead
+                    # would leave it in the totals and force a reconciling
+                    # footnote for money with no row.
+                    if slot and not is_session_slot(slot):
+                        continue
+
+                    if ts_epoch < cutoff:
+                        prev_tot["credits"] += credits
+                        prev_tot["turns"] = int(prev_tot["turns"]) + 1
+                        prev_model[model] = prev_model.get(model, 0.0) + credits
+                        ch = telemetry_channel_of(slot or None)
+                        prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
+                        cat = session_category(slot)
+                        prev_category[cat] = prev_category.get(cat, 0.0) + credits
+                        continue
+
+                    cur_tot["credits"] += credits
+                    cur_tot["turns"] = int(cur_tot["turns"]) + 1
+                    if credits > float(priciest["credits"]):
+                        priciest = {"credits": credits, "slot": slot, "ts": ts_raw}
+
+                    for bucket, name in ((by_model, model),
+                                         (by_channel, telemetry_channel_of(slot or None)),
+                                         (by_category, session_category(slot))):
+                        e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
+                        e["credits"] = float(e["credits"]) + credits
+                        e["turns"] = int(e["turns"]) + 1
+
+                    used = _coerce_int(obj.get("context_used"))
+                    if used > 0 and credits > 0:
+                        bands.setdefault(min(used // 200_000, 5), []).append(credits)
+
+                    if slot:
+                        c = convos.setdefault(
+                            slot,
+                            {"slot": slot, "credits": 0.0, "turns": 0, "peak_pct": 0.0,
+                             "first_ts": ts_epoch, "last_ts": ts_epoch, "_occ": []},
+                        )
+                        c["credits"] = float(c["credits"]) + credits
+                        c["turns"] = int(c["turns"]) + 1
+                        c["first_ts"] = min(float(c["first_ts"]), ts_epoch)
+                        c["last_ts"] = max(float(c["last_ts"]), ts_epoch)
+                        window = _coerce_int(obj.get("context_window"))
+                        if used > 0 and window > 0:
+                            pct = used / window * 100.0
+                            c["peak_pct"] = max(float(c["peak_pct"]), pct)
+                            c["_occ"].append((ts_epoch, pct))
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    def _store(result: dict[str, Any]) -> dict[str, Any]:
+        global _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS
+        if cache_key is not None:
+            _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS = result, cache_key, now
+        return result
+
+    def _per_turn(e: dict[str, Any]) -> float:
+        t = int(e["turns"])
+        return round(float(e["credits"]) / t, 1) if t else 0.0
+
+    total = float(cur_tot["credits"])
+
+    def _rank(bucket: dict[str, dict[str, Any]], deltas: dict[str, float] | None
+              ) -> list[dict[str, Any]]:
+        out = []
+        for e in sorted(bucket.values(), key=lambda x: -float(x["credits"])):
+            row = {
+                "name": e["name"],
+                "credits": round(float(e["credits"]), 1),
+                "turns": int(e["turns"]),
+                "per_turn": _per_turn(e),
+                "share_pct": round(float(e["credits"]) / total * 100, 1) if total else 0.0,
+            }
+            if deltas is not None:
+                was = deltas.get(str(e["name"]), 0.0)
+                # A model with no prior spend has no percentage to report; the
+                # frontend renders that as "new" rather than a fake infinity.
+                row["delta_pct"] = (
+                    round((float(e["credits"]) - was) / was * 100, 0) if was > 0 else None
+                )
+            out.append(row)
+        return out
+
+    band_rows = []
+    for idx in sorted(bands):
+        vals = bands[idx]
+        lo = idx * 200_000
+        band_rows.append(
+            {
+                "label": f"{lo // 1000}k–{(lo + 200_000) // 1000}k" if idx < 5 else "1M+",
+                "turns": len(vals),
+                "mean_credits": round(sum(vals) / len(vals), 1),
+            }
+        )
+
+    convo_rows = []
+    for c in sorted(convos.values(), key=lambda x: -float(x["credits"]))[:_COST_TOP_CONVOS]:
+        occ = sorted(c.pop("_occ"))
+        growth: float | None = None
+        to_90: int | None = None
+        # Fit the slope only on the stretch since the last compaction, never
+        # across the whole window. Occupancy is sawtooth, not monotonic: a
+        # compaction drops it back to near-empty, and 7 of the 8 top-spending
+        # conversations measured carry between one and four such drops. A secant
+        # from the first turn to the last therefore spans discontinuities and is
+        # dragged down by every reset, which understates the live growth rate by
+        # ~47x on real data (one 104-turn conversation projected 795 turns of
+        # headroom while its current segment was climbing at 4%/turn, i.e. ~17
+        # turns from compaction). Erring toward "plenty of room left" is the
+        # damaging direction for a figure whose whole purpose is a warning.
+        seg = occ
+        for i in range(1, len(occ)):
+            if occ[i][1] < occ[i - 1][1] - _COMPACTION_DROP_PCT:
+                seg = occ[i:]
+        # A slope needs enough points in the CURRENT segment, not merely enough
+        # turns in the window: a long conversation freshly past a compaction
+        # knows nothing about its new trajectory yet, and withholding is the
+        # honest answer rather than projecting from two or three points.
+        if len(seg) >= _COST_MIN_GROWTH_TURNS:
+            rate = (seg[-1][1] - seg[0][1]) / (len(seg) - 1)
+            if rate > 0:
+                growth = round(rate, 2)
+                remaining = _COMPACTION_PCT - seg[-1][1]
+                to_90 = int(remaining / rate) if remaining > 0 else 0
+        convo_rows.append(
+            {
+                "slot": c["slot"],
+                # The session taxonomy the panel groups by: `bg` for machine
+                # work, otherwise the transport it came from. The frontend needs
+                # it for two things — the category chip, and linkability, since
+                # only a dashboard session has a route to open. Deriving either
+                # from the key shape in the frontend would put a second,
+                # drifting copy of session-key knowledge there.
+                "category": session_category(c["slot"]),
+                # The unollapsed label underneath the category, so a `bg` row
+                # still says whether it was a subagent, a cron or the heartbeat
+                # instead of becoming an anonymous lump.
+                "channel": telemetry_channel_of(c["slot"]),
+                "credits": round(float(c["credits"]), 1),
+                "turns": int(c["turns"]),
+                "peak_pct": round(float(c["peak_pct"]), 1),
+                "span_days": round((float(c["last_ts"]) - float(c["first_ts"])) / 86400, 1),
+                # A closed conversation has no stored title, so the frontend
+                # labels it by start date -- eight rows all reading "untitled"
+                # cannot be told apart, which defeats the ranking.
+                "first_ts": round(float(c["first_ts"]), 3),
+                "growth_pct_per_turn": growth,
+                "turns_to_compaction": to_90,
+            }
+        )
+
+    prev_credits = float(prev_tot["credits"])
+    return _store(
+        {
+            "window_days": days,
+            "credits": round(total, 1),
+            "turns": int(cur_tot["turns"]),
+            "per_turn": _per_turn(cur_tot),
+            "prior_credits": round(prev_credits, 1),
+            "prior_turns": int(prev_tot["turns"]),
+            "prior_per_turn": _per_turn(prev_tot),
+            "delta_pct": (
+                round((total - prev_credits) / prev_credits * 100, 0)
+                if prev_credits > 0
+                else None
+            ),
+            "priciest": {
+                "credits": round(float(priciest["credits"]), 1),
+                "slot": priciest["slot"],
+                "ts": priciest["ts"],
+            },
+            "by_model": _rank(by_model, prev_model),
+            "by_channel": _rank(by_channel, prev_channel),
+            "by_category": _rank(by_category, prev_category),
+            "context_bands": band_rows,
+            "conversations": convo_rows,
+            "conversation_count": len(convos),
+            # The one category with a route. Sent rather than duplicated in
+            # the frontend so a change here cannot leave a dead link there.
+            "navigable_category": NAVIGABLE_CATEGORY,
+        }
+    )
 
 
 def read_context_tokens(source: object) -> tuple[int, int]:
@@ -534,7 +915,8 @@ def _build_token_record(
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
-    # credits is float-coerced so a non-numeric value can't break JSON serialization.
+    # credits is float-coerced so a non-numeric value can't break json.dumps;
+    # non-finite floats are caught once for every field in _write_token_record.
     _u = getattr(event, "usage", None)
     u = _u if isinstance(_u, TurnUsage) else event
     try:
@@ -574,6 +956,23 @@ def _build_token_record(
     }
 
 
+def _finite_only(record: dict[str, Any]) -> dict[str, Any]:
+    """Replace non-finite floats with 0.0 so the row stays valid JSON.
+
+    ``json.dumps`` writes NaN and the infinities as the bare tokens ``NaN`` /
+    ``Infinity`` / ``-Infinity``. Those are not valid JSON, but ``json.loads``
+    accepts them, so a single such row travels silently from the store into a
+    ``web.json_response`` body that no browser will parse — taking every panel
+    reading the row store down rather than losing one turn's numbers. Provider
+    floats (``cost_usd``, ``credits``) reach the record unvalidated, and a float
+    is exactly what a bad one looks like, so the check cannot be a type check.
+    """
+    return {
+        k: (0.0 if isinstance(v, float) and not math.isfinite(v) else v)
+        for k, v in record.items()
+    }
+
+
 def _write_token_record(record: dict[str, Any], now: datetime) -> None:
     """Append a prebuilt token record to today's shard (blocking I/O)."""
     shard_path = _shard_path_for(now)
@@ -581,8 +980,35 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
     # mkdir only when missing — the dir is created once per day, not per turn.
     if not parent.exists():
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # allow_nan=False turns a non-finite value into a raised ValueError instead
+    # of an invalid-JSON row. Sanitizing only on that failure keeps the hot path
+    # free of a per-turn scan of every field.
+    try:
+        line = json.dumps(record, allow_nan=False)
+    except ValueError:
+        # Name the fields before sanitizing. Without this the fallback rewrites
+        # a provider's measurement to 0.0 and the turn is persisted as free,
+        # with nothing on record that it happened. Field NAMES only: the values
+        # are the corrupt measurement and the rest of the record is per-turn
+        # telemetry, neither of which belongs in a log line.
+        #
+        # Re-raise when nothing non-finite is present: allow_nan=False is not
+        # the only way json.dumps raises ValueError, and sanitizing cannot fix
+        # the others. Swallowing them here would emit a warning naming no field
+        # and blame corruption that did not occur.
+        non_finite = sorted(
+            k for k, v in record.items() if isinstance(v, float) and not math.isfinite(v)
+        )
+        if not non_finite:
+            raise
+        logger.warning(
+            "token usage: replaced non-finite value(s) with 0.0 before persisting; "
+            "fields=%s",
+            ",".join(non_finite),
+        )
+        line = json.dumps(_finite_only(record), allow_nan=False)
     with open(shard_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
+        f.write(line + "\n")
 
 
 def persist_token_record(

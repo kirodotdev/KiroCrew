@@ -1,0 +1,38 @@
+{
+  "name": "channels",
+  "version": "1.0.0",
+  "displayName": "Channels",
+  "description": "A shared room where several agents work a problem together instead of one agent working alone. You assign each agent a role, and they post progress into the channel and answer each other's @mentions in the open — there is no private agent-to-agent messaging, so the whole exchange stays readable, and you remain the approver for anything that changes state. Agents stay alive in the channel until dismissed or timed out.",
+  "author": "kirocrew",
+  "tags": [
+    "collaboration",
+    "agents"
+  ],
+  "highlights": [
+    "Several role-assigned agents collaborate in one shared, readable transcript",
+    "No private agent-to-agent messaging — every exchange happens in the channel",
+    "You stay the final approver for any operation that mutates state",
+    "Agents persist in the channel until dismissed or timed out",
+    "Hidden from the App Store grid; enable with `kirocrew app enable channels`"
+  ],
+  "defaultEnabled": false,
+  "hidden": true,
+  "permissions": {
+    "api": [
+      "/api/channels"
+    ],
+    "events": [
+      "channel",
+      "channel_message"
+    ]
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/channels",
+        "label": "Channels",
+        "icon": "Users"
+      }
+    ]
+  }
+}

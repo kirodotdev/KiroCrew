@@ -27,6 +27,16 @@
 // trailing `[ \t]*` — that keeps the group unambiguous and ReDoS-safe (mirrors the
 // backend OPTIONS_RE_LINE). The real tic contains no whitespace, so nothing is lost.
 //
+// The closing-bracket class (ASCII `]` plus the fullwidth / CJK lookalikes
+// `】` U+3011, `］` U+FF3D, `〕` U+3015) mirrors the backend's `MARKER_CLOSERS`. The prompt only ever specifies ASCII `]`, but a
+// model intermittently substitutes a lookalike, and a single wrong codepoint
+// breaks the end anchor — the marker then leaks into the message as literal text
+// and the turn silently loses its pills. Labels are unaffected, so accepting the
+// lookalike costs nothing. ReDoS profile is unchanged from the previous literal
+// `\]`: the class shares no character with the trailing `[ \t]*`, and the
+// tempered body already admitted `]` via `[^[\n]`.
+//
 // Only use with String#matchAll and String#replace (which don't carry the global
 // regex `lastIndex` hazard); do NOT call `.exec`/`.test` on this shared const.
-export const OPTION_MARKER_RE = /\[OPTION(S)?:((?:[^[\n]|\[(?!OPTIONS?:))*)\](?:\([^\s()]*\))?[ \t]*$/gim
+export const OPTION_MARKER_RE =
+  /\[OPTION(S)?:((?:[^[\n]|\[(?!OPTIONS?:))*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[ \t]*$/gim

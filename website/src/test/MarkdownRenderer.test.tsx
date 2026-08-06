@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act, waitFor } from '@testing-library/react'
-import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate } from '../components/MarkdownRenderer'
+import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLineRef } from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { api } from '../api/client'
 
@@ -224,6 +224,78 @@ describe('isPathCandidate — path chip pre-filter', () => {
 })
 
 /**
+ * The `file:line` split. Agents cite code the way compilers do, and treating the
+ * whole token as a filename is what made those chips inert: the probe asked the
+ * backend about a path ending in `:447`, which never exists.
+ */
+describe('splitLineRef — file:line references', () => {
+  it('splits a trailing line number off the path', () => {
+    expect(splitLineRef('/Users/me/src/_dispatch.py:447'))
+      .toEqual({ path: '/Users/me/src/_dispatch.py', line: 447 })
+  })
+
+  it('consumes a column but reports only the line', () => {
+    // The reveal is line-granular; claiming a column we then ignore would be a
+    // worse contract than not offering one.
+    expect(splitLineRef('src/main.ts:12:34')).toEqual({ path: 'src/main.ts', line: 12 })
+  })
+
+  it('leaves a path with no line reference untouched', () => {
+    expect(splitLineRef('/home/user/a.md')).toEqual({ path: '/home/user/a.md' })
+    expect(splitLineRef('src/main.py')).toEqual({ path: 'src/main.py' })
+  })
+
+  it('does not mistake a timestamp or an extension for a line', () => {
+    // The suffix must be digits at the very end, so `.md` and `T05:46.md` are safe.
+    expect(splitLineRef('/home/user/reports/2026-05-17T05:46.md'))
+      .toEqual({ path: '/home/user/reports/2026-05-17T05:46.md' })
+  })
+
+  it('treats :0 as part of the name, not a line', () => {
+    // Editors number from 1. Clamping :0 up to 1 would jump somewhere the text
+    // never named.
+    expect(splitLineRef('a/b.ts:0')).toEqual({ path: 'a/b.ts:0' })
+  })
+
+  it('ignores a digit run too long to be a line number', () => {
+    expect(splitLineRef('a/b.ts:12345678')).toEqual({ path: 'a/b.ts:12345678' })
+  })
+
+  it('splits an inclusive line RANGE', () => {
+    expect(splitLineRef('/Users/me/notes/blue-angels-seattle-2026.md:10-16'))
+      .toEqual({ path: '/Users/me/notes/blue-angels-seattle-2026.md', line: 10, endLine: 16 })
+  })
+
+  it('collapses a reversed or degenerate range to its start', () => {
+    // Guessing which end the author meant would be worse than honouring the
+    // number they put first, so `16-10` and `10-10` are read as line 10 / 16.
+    expect(splitLineRef('a/b.ts:16-10')).toEqual({ path: 'a/b.ts', line: 16 })
+    expect(splitLineRef('a/b.ts:10-10')).toEqual({ path: 'a/b.ts', line: 10 })
+    expect(splitLineRef('a/b.ts:10-0')).toEqual({ path: 'a/b.ts', line: 10 })
+  })
+
+  it('does not read a hyphenated filename as a range', () => {
+    // The suffix must be `:digits-digits` at the very end; a hyphen inside the
+    // NAME is untouched, which is the common case for dated notes.
+    expect(splitLineRef('/x/blue-angels-seattle-2026.md'))
+      .toEqual({ path: '/x/blue-angels-seattle-2026.md' })
+    expect(splitLineRef('/x/report-2026-05-17.md:8'))
+      .toEqual({ path: '/x/report-2026-05-17.md', line: 8 })
+  })
+
+  it('still admits a range citation through the pre-filter', () => {
+    expect(isPathCandidate(splitLineRef('docs/notes.md:10-16').path)).toBe(true)
+  })
+
+  it('makes a relative file:line reference a candidate — it was not before', () => {
+    // As one token the extension test fails (it ends in digits, not `.py`), so
+    // candidacy has to be decided on the split path.
+    expect(isPathCandidate('src/main.py:447')).toBe(false)
+    expect(isPathCandidate(splitLineRef('src/main.py:447').path)).toBe(true)
+  })
+})
+
+/**
  * Stage 2: the stat gate. A candidate is inert until the backend confirms what
  * it is, and a directory gets a folder affordance rather than the file viewer's
  * "not found" placeholder.
@@ -415,6 +487,269 @@ describe('MarkdownRenderer path chips — activation routing', () => {
     expect(chip.tabIndex).toBe(0)
     fireEvent.keyDown(chip, { key: 'Enter' })
     expect(onFileOpen).toHaveBeenCalledWith('/home/user/a.md')
+  })
+})
+
+/**
+ * `file:line` chips. Before this, the whole token was probed, so a citation
+ * ending in `:447` always resolved `missing` and rendered as dead text — the
+ * exact chips an agent produces most often when pointing at code.
+ */
+describe('MarkdownRenderer path chips — file:line references', () => {
+  const realFetch = globalThis.fetch
+
+  /** Path-aware stub: answers `file` only for the paths listed, 404 otherwise.
+   *  Needed here because the whole point is that ONE of two candidate spellings
+   *  resolves and the other does not. */
+  function stubPaths(known: string[]) {
+    globalThis.fetch = vi.fn((url: unknown) => {
+      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+      const hit = known.includes(asked)
+      return Promise.resolve({
+        ok: hit,
+        status: hit ? 200 : 404,
+        headers: new Headers(hit ? { 'X-Path-Kind': 'file' } : {}),
+      } as Response)
+    }) as unknown as typeof fetch
+  }
+
+  const chipOf = (container: HTMLElement) => waitFor(() => {
+    const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+    expect(c).not.toBeNull()
+    return c!
+  })
+
+  beforeEach(() => { __resetPathKindCache() })
+  afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
+
+  it('probes the path without the line, and opens it at that line', async () => {
+    stubPaths(['/Users/me/src/_dispatch.py'])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/Users/me/src/_dispatch.py:447`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await chipOf(container)
+    // The resolved path is the stripped one; the visible text keeps the citation.
+    expect(chip.dataset.path).toBe('/Users/me/src/_dispatch.py')
+    expect(chip.dataset.pathLine).toBe('447')
+    expect(chip.textContent).toContain(':447')
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith('/Users/me/src/_dispatch.py', { line: 447 })
+  })
+
+  it('opens a RANGE citation and carries both ends', async () => {
+    // The shape a note-taker writes when pointing at a passage rather than a
+    // single statement: `…/blue-angels-seattle-2026.md:10-16`.
+    stubPaths(['/Users/me/notes/blue-angels-seattle-2026.md'])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer
+        content={'`/Users/me/notes/blue-angels-seattle-2026.md:10-16`'}
+        onFileOpen={onFileOpen}
+      />,
+    )
+    const chip = await chipOf(container)
+    expect(chip.dataset.path).toBe('/Users/me/notes/blue-angels-seattle-2026.md')
+    // The location suffix must not be breakable: wrapped as `…md:10-` / `16` a
+    // range reads as a citation ending at line 10. The path stays breakable.
+    const nowrap = chip.querySelector('.whitespace-nowrap')
+    expect(nowrap?.textContent).toBe(':10-16')
+    expect(chip.textContent).toContain('/Users/me/notes/blue-angels-seattle-2026.md:10-16')
+    expect(chip.dataset.pathLine).toBe('10')
+    expect(chip.dataset.pathEndLine).toBe('16')
+    // The visible text keeps the citation verbatim.
+    expect(chip.textContent).toContain(':10-16')
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith(
+      '/Users/me/notes/blue-angels-seattle-2026.md', { line: 10, endLine: 16 },
+    )
+  })
+
+  it('sends no endLine for a single-line citation', async () => {
+    stubPaths(['/x/a.py'])
+    const onFileOpen = vi.fn()
+    const { container } = render(<MarkdownRenderer content={'`/x/a.py:5`'} onFileOpen={onFileOpen} />)
+    fireEvent.click(await chipOf(container))
+    expect(onFileOpen).toHaveBeenCalledWith('/x/a.py', { line: 5 })
+  })
+
+  it('admits a relative citation that the old pre-filter rejected', async () => {
+    stubPaths(['src/main.py'])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`src/main.py:12`'} onFileOpen={onFileOpen} />,
+    )
+    fireEvent.click(await chipOf(container))
+    expect(onFileOpen).toHaveBeenCalledWith('src/main.py', { line: 12 })
+  })
+
+  it('applies literal precedence to a RELATIVE citation too', async () => {
+    // The pre-filter cannot see the literal form of a relative citation:
+    // `src/report.py:12` fails the extension test as one token, because the suffix
+    // hides the `.py`. Testing the raw text directly therefore left relative
+    // citations — the majority form — with one probe and NO sibling precedence, so
+    // this opened `src/report.py` even though `src/report.py:12` also exists.
+    globalThis.fetch = vi.fn((url: unknown) => {
+      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+      const known = asked === 'src/report.py' || asked === 'src/report.py:12'
+      return Promise.resolve({
+        ok: known,
+        status: known ? 200 : 404,
+        headers: new Headers(known ? { 'X-Path-Kind': 'file' } : {}),
+      } as Response)
+    }) as unknown as typeof fetch
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`src/report.py:12`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await chipOf(container)
+    expect(chip.dataset.path).toBe('src/report.py:12')
+    expect(chip.dataset.pathLine).toBeUndefined()
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith('src/report.py:12')
+  })
+
+  it('charges the second probe only where there are two spellings to compare', async () => {
+    // The extra request buys unambiguous precedence, so it must not be spent on a
+    // chip that carries no line reference.
+    stubPaths(['/a/b.md'])
+    const { container } = render(<MarkdownRenderer content={'`/a/b.md`'} />)
+    await chipOf(container)
+    const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls
+    expect(calls).toHaveLength(1)
+  })
+
+  it('picks the per-extension glyph from the stripped path', async () => {
+    // With `:447` still attached, extension detection saw no extension at all.
+    stubPaths(['/Users/me/src/_dispatch.py'])
+    const { container } = render(<MarkdownRenderer content={'`/Users/me/src/_dispatch.py:447`'} />)
+    expect((await chipOf(container)).querySelector('svg')).not.toBeNull()
+  })
+
+  it('falls back to the unsplit text when the split path does not exist', async () => {
+    // A file may genuinely be named `notes:12`. Splitting is syntactic, so the
+    // miss has to be recoverable rather than final.
+    stubPaths(['/home/user/notes:12'])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/home/user/notes:12`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await chipOf(container)
+    expect(chip.dataset.path).toBe('/home/user/notes:12')
+    expect(chip.dataset.pathLine).toBeUndefined()
+    fireEvent.click(chip)
+    // One argument, not (path, undefined): a chip with no line must be
+    // indistinguishable from every other caller of the file opener.
+    expect(onFileOpen).toHaveBeenCalledWith('/home/user/notes:12')
+  })
+
+  it('prefers the literal path when BOTH spellings exist', async () => {
+    // The reported wrong-file case exactly: `/tmp/report` is a FILE and
+    // `/tmp/report:12` is a real DIRECTORY. Resolving the split path first opened
+    // `/tmp/report` at line 12 — in an editor, so a later save would write to a
+    // file the reader never named. The literal text they clicked has to win, and
+    // here that means the folder route, not the file route.
+    globalThis.fetch = vi.fn((url: unknown) => {
+      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+      if (asked === '/tmp/report') {
+        return Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response)
+      }
+      if (asked === '/tmp/report:12') {
+        return Promise.resolve({ ok: false, status: 404, headers: new Headers({ 'X-Path-Kind': 'dir' }) } as Response)
+      }
+      return Promise.resolve({ ok: false, status: 404, headers: new Headers() } as Response)
+    }) as unknown as typeof fetch
+    const onFileOpen = vi.fn()
+    const onFolderOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/tmp/report:12`'} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="dir"]') as HTMLElement | null
+      expect(c).not.toBeNull()
+      return c!
+    })
+    expect(chip.dataset.path).toBe('/tmp/report:12')
+    expect(chip.dataset.pathLine).toBeUndefined()
+    fireEvent.click(chip)
+    expect(onFolderOpen).toHaveBeenCalledWith('/tmp/report:12')
+    // The wrong-file outcome this guards against.
+    expect(onFileOpen).not.toHaveBeenCalled()
+  })
+
+  it('stays inert until every probe in flight has reported', async () => {
+    // Both probes are concurrent, and the split one can land first. Rendering the
+    // affordance on that verdict alone leaves a window where a click opens the
+    // split path even though the literal name exists.
+    let releaseRaw: (() => void) | undefined
+    globalThis.fetch = vi.fn((url: unknown) => {
+      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+      if (asked === '/tmp/report') {
+        return Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response)
+      }
+      // Hold the literal-path verdict open so the split one lands first.
+      return new Promise<Response>(res => {
+        releaseRaw = () => res({ ok: false, status: 404, headers: new Headers() } as Response)
+      })
+    }) as unknown as typeof fetch
+    const { container } = render(<MarkdownRenderer content={'`/tmp/report:12`'} />)
+    // The split path has resolved as a file by now, but the chip must not offer
+    // itself while the literal path is unknown.
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
+    expect(container.querySelector('code[data-path-kind]')).toBeNull()
+    await act(async () => { releaseRaw?.(); await Promise.resolve() })
+    const chip = await chipOf(container)
+    expect(chip.dataset.path).toBe('/tmp/report')
+    expect(chip.dataset.pathLine).toBe('12')
+  })
+
+  it('drops the line when the target turns out to be a directory', async () => {
+    // Only the split path exists, and it is a directory. `/Users/me/ws:12` is not
+    // a real name here, so the literal probe misses and the split path is used.
+    globalThis.fetch = vi.fn((url: unknown) => {
+      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+      const isDir = asked === '/Users/me/ws'
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: new Headers(isDir ? { 'X-Path-Kind': 'dir' } : {}),
+      } as Response)
+    }) as unknown as typeof fetch
+    const onFolderOpen = vi.fn()
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/Users/me/ws:12`'} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="dir"]')
+      expect(c).not.toBeNull()
+      return c!
+    })
+    fireEvent.click(chip)
+    // A directory has no line, so the folder route takes the path alone.
+    expect(onFolderOpen).toHaveBeenCalledWith('/Users/me/ws')
+    expect(onFileOpen).not.toHaveBeenCalled()
+  })
+
+  it('shift-click still reveals the file itself, without the line', async () => {
+    stubPaths(['/Users/me/src/_dispatch.py'])
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`/Users/me/src/_dispatch.py:447`'} onFileOpen={onFileOpen} />,
+    )
+    fireEvent.click(await chipOf(container), { shiftKey: true })
+    // Finder/Explorer selects a file; it has no notion of a line.
+    expect(reveal).toHaveBeenCalledWith('/Users/me/src/_dispatch.py')
+    expect(onFileOpen).not.toHaveBeenCalled()
+  })
+
+  it('leaves a bare line reference inert — no file is named', async () => {
+    stubPaths([])
+    const { container } = render(<MarkdownRenderer content={'same file `:493`'} />)
+    await Promise.resolve()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(container.querySelector('code[data-path-kind]')).toBeNull()
   })
 })
 

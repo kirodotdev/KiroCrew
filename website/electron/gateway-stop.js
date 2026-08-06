@@ -19,7 +19,14 @@ const path = require("path");
 // classifyPortOwner (which may only ever authorise an eviction of one).
 // Keep it in one place: a drift between the two would let one of them
 // mis-target a stranger's process.
-const KIROCREW_PROC_RE = /kiro_crew|kirocrew/i;
+// Match a Kiro Crew PROCESS from a command line, not a mere path substring.
+// Two shapes only: the `kirocrew`/`kirocrew-backend` executable as a command
+// token (optionally `.exe`, ending at whitespace/quote/EOL — so a
+// `/Users/kirocrew/…` or `C:\Users\kirocrew\other.exe` user directory does NOT
+// match), or the `-m kiro_crew` python-module invocation. Anything else (an ssh
+// forward, an unrelated app under a `kirocrew` home dir) is foreign.
+const KIROCREW_PROC_RE =
+  /(?:^|[\s"'/\\])kirocrew(?:-backend)?(?:\.exe)?(?=$|[\s"'])|-m\s+kiro_crew(?=$|[\s"'.])/i;
 
 // A gateway whose parent is init (PID 1) is owned by the OS service manager —
 // a launchd LaunchAgent on macOS, a systemd unit on Linux — not by this app.
@@ -43,21 +50,31 @@ const INIT_PPID = 1;
 function postShutdown({
   backendUrl,
   kirocrewHome,
+  secrets,
   httpMod = http,
   fsMod = fs,
   pathMod = path,
   timeoutMs = 5000,
 }) {
-  return new Promise((resolve) => {
-    let secret = "";
+  // A migration can leave more than one `.local_secret` on disk (canonical +
+  // legacy), and the running gateway is authenticated by whichever one it
+  // actually loaded. Try every candidate and let a 200 pick the live one: a
+  // stale/wrong secret returning 403 must NOT short-circuit the clean-flush
+  // path into a hard SIGTERM that skips session/memory/cron persistence.
+  let secretList = Array.isArray(secrets) ? secrets : [];
+  if (!secretList.length) {
     try {
-      secret = fsMod.readFileSync(pathMod.join(kirocrewHome, ".local_secret"), "utf8").trim();
-    } catch {
-      return resolve(false);
-    }
-    if (!secret) return resolve(false);
-    let u;
-    try { u = new URL(`${backendUrl}/api/shutdown`); } catch { return resolve(false); }
+      const s = fsMod.readFileSync(pathMod.join(kirocrewHome, ".local_secret"), "utf8");
+      secretList = [s];
+    } catch { /* none readable */ }
+  }
+  secretList = [...new Set(secretList.map((s) => (s || "").trim()).filter(Boolean))];
+  if (!secretList.length) return Promise.resolve(false);
+
+  let u;
+  try { u = new URL(`${backendUrl}/api/shutdown`); } catch { return Promise.resolve(false); }
+
+  const attempt = (secret) => new Promise((resolve) => {
     const req = httpMod.request(
       {
         hostname: u.hostname,
@@ -73,6 +90,13 @@ function postShutdown({
     req.on("timeout", () => { req.destroy(); resolve(false); });
     req.end();
   });
+
+  return (async () => {
+    for (const secret of secretList) {
+      if (await attempt(secret)) return true;
+    }
+    return false;
+  })();
 }
 
 /**
@@ -92,6 +116,7 @@ async function stopGatewayGracefully(
   {
     backendUrl,
     kirocrewHome,
+    secrets,
     timeoutMs = 15000,
     postShutdownFn = postShutdown,
     httpMod,
@@ -114,7 +139,7 @@ async function stopGatewayGracefully(
     const hardTimer = setTimeout(done, timeoutMs + 3000);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
     // Prefer the clean endpoint; signal-nudge only if it didn't take.
-    postShutdownFn({ backendUrl, kirocrewHome, httpMod, fsMod, pathMod }).then((ok) => {
+    postShutdownFn({ backendUrl, kirocrewHome, secrets, httpMod, fsMod, pathMod }).then((ok) => {
       if (!ok && proc.exitCode === null) { try { proc.kill("SIGTERM"); } catch {} }
     });
   });

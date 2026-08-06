@@ -22,9 +22,9 @@ concern              systemd                                     launchd
 ===================  ==========================================  ==================================================
 manageable           ``systemctl --user cat <unit>`` rc == 0      ``launchctl print gui/<uid>/<label>`` rc == 0
 start identity       ``ExecMainStartTimestampMonotonic``          the job's PID (launchd exposes no monotonic stamp)
-detached restart     ``systemd-run --user --collect systemctl     ``launchctl kickstart -k`` (launchd performs the
-                     --user restart <unit>``                      kill+respawn itself, so nothing is left for our
-                                                                  dying process to run)
+detached restart     ``systemd-run --user --collect systemctl     ``launchctl stop <label>`` returns immediately;
+                     --user restart <unit>``                      ``KeepAlive`` respawns after graceful SIGTERM,
+                                                                  with ``ExitTimeOut`` as the SIGKILL ceiling
 stage a new target   a drop-in overriding ExecStart,             atomically rewrite the ``live-gateway`` launcher
                      WorkingDirectory and PATH, then             script the agent's ProgramArguments executes
                      ``daemon-reload``
@@ -38,9 +38,9 @@ definition and never re-reads the file). ``bootout`` kills us, so the
 ``bootstrap`` half would never run: the gateway would stop and never come back.
 
 So the plist never changes. It points permanently at a generated launcher script
-and staging is an atomic rewrite of that script plus a ``kickstart -k``, which
-launchd executes on our behalf. Nothing is left for a dying process to do, and
-rollback restores the previous script text.
+and staging is an atomic rewrite of that script plus ``launchctl stop``.
+launchd owns the stop and respawn; rollback restores the previous script if the
+restart request is rejected.
 
 The launcher is a script rather than a symlink to the binary because a cutover
 must also move the working directory and put the target checkout's venv first on
@@ -53,8 +53,9 @@ The consequence is that make-live on macOS requires an agent installed WITH
 that indirection (``kirocrew service install`` from a build that has it).
 An older, directly-pointed agent is reported as ``agent_not_indirected`` — the
 launchd analogue of systemd's ``no_user_unit``: installed, but not controllable
-this way, and actionable rather than a silent false success. A loaded agent whose
-launcher has been deleted is reported as ``live_program_missing``.
+this way, and actionable rather than a silent false success. An indirected agent
+with the legacy restart contract reports ``agent_restart_contract_outdated``. A
+loaded agent whose launcher has been deleted is reported as ``live_program_missing``.
 """
 
 from __future__ import annotations
@@ -70,7 +71,9 @@ from typing import Awaitable, Callable, Protocol
 from kiro_crew.service.common import launchd_live_program
 from kiro_crew.service.macos import (
     PLIST_PATH,
+    loaded_restart_contract_current,
     render_live_program,
+    restart_contract_current,
     write_live_program,
 )
 
@@ -100,6 +103,9 @@ Which = Callable[[str], "str | None"]
 #   agent_not_indirected   the agent is loaded but its ProgramArguments does not
 #               (launchd)  go through the live-gateway symlink, so staging would
 #                          be a silent no-op. Remedy: `kirocrew service install`
+#   agent_restart_contract_outdated
+#               (launchd)  the plist lacks KeepAlive=true or the expected
+#                          ExitTimeOut value for detached graceful restart
 STATUS_OK = "ok"
 
 
@@ -328,11 +334,9 @@ class SystemdBackend:
 class LaunchdBackend:
     """``launchctl`` backend for the per-user gateway LaunchAgent.
 
-    Uses the modern ``print`` / ``kickstart`` verbs (the same dialect
-    :mod:`kiro_crew.pod.launchd` uses) rather than the legacy
-    ``load``/``unload`` pair: legacy ``unload`` + ``load`` cannot restart the
-    gateway from inside the gateway, because the ``unload`` half kills the
-    process that would have run the ``load``.
+    Uses ``print`` for state and launchd's non-blocking ``stop`` transaction for
+    restart. ``unload`` + ``load`` is unsafe because unload can terminate the
+    process that would issue load.
     """
 
     kind = "launchd"
@@ -405,6 +409,11 @@ class LaunchdBackend:
         # repair rather than reporting a healthy service.
         if not self.live_program().exists():
             return "live_program_missing"
+        if (
+            not restart_contract_current(self.plist_path())
+            or not loaded_restart_contract_current(_out)
+        ):
+            return "agent_restart_contract_outdated"
         return "ok"
 
     async def active(self) -> bool:
@@ -442,16 +451,24 @@ class LaunchdBackend:
         return None if rc != 0 else self._parse_pid(out)
 
     async def restart_detached(self) -> tuple[bool, str]:
-        """``kickstart -k`` — launchd performs the kill and the respawn itself.
-
-        This is what makes it safe to call from the process being killed: unlike
-        ``unload`` + ``load``, there is no second command left for us to run
-        after we are gone.
-        """
+        """Schedule a bounded graceful restart through launchd."""
+        if not restart_contract_current(self.plist_path()):
+            return False, (
+                "launchd agent restart contract is outdated; re-run "
+                "`kirocrew service install`"
+            )
+        rc, printed = await self._print()
+        if rc != 0:
+            return False, "launchd agent is not loaded"
+        if not loaded_restart_contract_current(printed):
+            return False, (
+                "loaded launchd restart contract is outdated; re-run "
+                "`kirocrew service install`"
+            )
         rc, _out, stderr = await self._run(
-            ["launchctl", "kickstart", "-k", self.target()], timeout=10
+            ["launchctl", "stop", self._label()], timeout=10
         )
-        return (rc == 0, "" if rc == 0 else (stderr.strip()[:200] or "kickstart failed"))
+        return (rc == 0, "" if rc == 0 else (stderr.strip()[:200] or "launchctl stop failed"))
 
     # -- staging --
     def plan(self, worktree: Path, kcbin: Path) -> dict:

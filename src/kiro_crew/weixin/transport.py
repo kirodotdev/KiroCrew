@@ -50,17 +50,19 @@ logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
-# iLink renders Markdown natively; DM-only; no threads. ``files`` is False
-# because this transport has NO media path: send_message carries text only, and
-# inbound media (image/voice/file/video) is not decrypted or cached (see the
-# module docstring). Flip it to True in the same change that lands the media
-# support -- declaring a capability the transport cannot perform makes the
-# contract lie to every future capability-aware caller.
+# iLink renders Markdown natively; DM-only; no threads. Both file directions
+# are False because this transport has NO media path: send_message carries text
+# only (files_outbound=False), and inbound media (image/voice/file/video) is
+# not decrypted or cached (files_inbound=False; see the module docstring).
+# Flip each in the same change that lands that direction's media support --
+# declaring a capability the transport cannot perform makes the contract lie
+# to every future capability-aware caller.
 WEIXIN_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
-    files=False,
+    files_inbound=False,
+    files_outbound=False,
     rich_blocks=False,
     threads=False,
     max_message_chars=WEIXIN_CHUNK_LIMIT,
@@ -116,7 +118,7 @@ class WeixinTransport(MessagingTransport):
     ) -> str:
         ctx_token = self._ctx.get(self._account_id, conversation_id)
         last = ""
-        for i, part in enumerate(_chunk(content)):
+        for i, part in enumerate(_chunk(content, WEIXIN_CAPABILITIES.max_message_chars)):
             if i:
                 await asyncio.sleep(0.3)  # avoid iLink rate-limit drops
             client_id = uuid.uuid4().hex

@@ -16,7 +16,7 @@ import { useRowDisclosure } from './rowDisclosure'
  * text means history-restored rows written by any gateway version render as a
  * card too.
  */
-export type RecoveryKind = 'refusal' | 'stalled' | 'tool_stall' | 'posttoken' | 'empty'
+export type RecoveryKind = 'refusal' | 'stalled' | 'tool_stall' | 'posttoken' | 'empty' | 'manual'
 
 /**
  * WIRE VALUES, never rendered — do not translate. These are matched with
@@ -32,6 +32,10 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['tool_stall', '[Tool stall — automatic recovery]'],
   ['posttoken', '[Interrupted turn — automatic recovery]'],
   ['empty', '[Empty response — automatic recovery]'],
+  // The only USER-initiated entry in this family. Kept here because the row is
+  // the same shape (an `inject` continuation the model reads), but its copy must
+  // not claim an automatic recovery — a person pressed Continue.
+  ['manual', '[Continue — requested by the user]'],
 ]
 
 /** `Blocked by security policy: <pattern>` — the deny pattern that fired. */
@@ -104,6 +108,16 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
     }
   }
 
+  if (kind === 'manual') {
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.continued_by_you'),
+      detail: i18nT('pages.chat.recoveryCard.resuming_the_interrupted_turn'),
+      chip: '',
+      body,
+    }
+  }
+
   // Refusal: count the blocked-item bullets and collect the distinct deny
   // patterns. A turn can refuse several calls, and they need not share a cause.
   const blocked = body.split('\n').filter(line => BULLET_RE.test(line)).length
@@ -148,7 +162,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
   // backend error or an empty generation is infrastructure noise the gateway
   // handles on its own — a neutral retry glyph, so a routine hiccup does not
   // read as urgently as a deny-pattern block.
-  const routine = kind === 'posttoken' || kind === 'empty'
+  const routine = kind === 'posttoken' || kind === 'empty' || kind === 'manual'
   const Icon = routine ? RotateCcw : TriangleAlert
 
   return (

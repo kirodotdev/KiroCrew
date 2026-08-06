@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.env import find_node_tool, node_augmented_path
 
 
 def _say(msg: str) -> None:
@@ -77,14 +78,48 @@ def has_dist(checkout: Path) -> bool:
     return dist_dir(checkout).is_dir()
 
 
-def _run(cmd: list[str], cwd: Path) -> int:
+def _run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> int:
     """Run a provisioning step, streaming its output to STDERR (so a concurrent
     ``pod up --json`` keeps a clean stdout). Returns the exit code."""
     _say(f"  $ {' '.join(cmd)}  (cwd={cwd})")
     # Redirect the child's stdout to our stderr so its chatter never lands on our
     # stdout; its own stderr passes through to stderr too.
-    cp = subprocess.run(cmd, cwd=str(cwd), stdout=sys.stderr)
+    cp = subprocess.run(cmd, cwd=str(cwd), stdout=sys.stderr, env=env)
     return cp.returncode
+
+
+def _npm_env() -> dict[str, str]:
+    """Environment for an npm step, with the node toolchain on ``PATH``.
+
+    Resolving the ``npm`` executable is not enough: npm spawns its own
+    run-scripts (``tsc``, ``vite``) whose shebang is ``#!/usr/bin/env node``, so
+    ``node`` must be findable by NAME inside the child too.
+    """
+    env = dict(os.environ)
+    env["PATH"] = node_augmented_path(env.get("PATH", ""))
+    return env
+
+
+def _npm_bin() -> str | None:
+    """Absolute path to ``npm``, or ``None`` with an actionable message emitted.
+
+    ``pod provision`` runs from whatever spawned it. A login shell has the user's
+    version manager active, but the Dev Fleet backend pins ``PATH`` to system bin
+    dirs, and a systemd/launchd gateway inherits no version manager at all --
+    so a bare ``["npm", ...]`` raised ``FileNotFoundError`` as an unhandled
+    traceback. Resolve explicitly and fail with a remedy instead.
+    """
+    npm = find_node_tool("npm")
+    if npm:
+        return npm
+    _say(
+        "FATAL: npm not found. Kiro Crew looks for a Node toolchain in "
+        "<data-home>/node-bin-dir (written by ensure-node.sh), then in "
+        "mise / asdf / nvm / fnm / volta install dirs, then on PATH.\n"
+        "  Fix: run `bash ensure-node.sh` in the main checkout to install "
+        "Node, or set KIROCREW_NODE_BIN_DIR=/abs/path/to/node/bin."
+    )
+    return None
 
 
 def ensure_venv(checkout: Path) -> bool:
@@ -144,15 +179,19 @@ def ensure_node_modules(website: Path) -> bool:
     re-provisioning stays fast. Returns True when deps are ready."""
     if _has_node_modules(website):
         return True
+    npm = _npm_bin()
+    if npm is None:
+        return False
+    env = _npm_env()
     _say("[provision] installing website npm deps (node_modules missing)…")
-    if _run(["npm", "ci"], website) == 0:
+    if _run([npm, "ci"], website, env) == 0:
         return True
     _say(
         "[provision] `npm ci` failed (lockfile drift?) — falling back to "
         "`npm install --no-package-lock` (non-mutating: won't rewrite the "
         "tracked package-lock.json)"
     )
-    return _run(["npm", "install", "--no-package-lock"], website) == 0
+    return _run([npm, "install", "--no-package-lock"], website, env) == 0
 
 
 def build_dist(checkout: Path) -> bool:
@@ -174,7 +213,10 @@ def build_dist(checkout: Path) -> bool:
     if not ensure_node_modules(website):
         _say("FATAL: failed to install website npm deps")
         return False
-    if _run(["npm", "run", "build"], website) != 0:
+    npm = _npm_bin()
+    if npm is None:
+        return False
+    if _run([npm, "run", "build"], website, _npm_env()) != 0:
         _say("FATAL: npm run build failed")
         return False
     src_dist = website / "dist"

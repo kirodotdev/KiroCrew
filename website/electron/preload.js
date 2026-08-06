@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // preference, not the resolved mode: pinning themeSource to dark/light also
   // pins `prefers-color-scheme`, which is what Auto resolves through.
   setThemeMode: (pref) => ipcRenderer.send("theme-mode-changed", String(pref || "")),
+  // Report the RESOLVED dark/light mode ("dark" | "light") so main.js can sync
+  // the Windows titleBarOverlay colors. Separate from setThemeMode because that
+  // carries the preference (system/dark/light) while this carries the outcome.
+  setTitleBarOverlayTheme: (mode) => ipcRenderer.send("titlebar-overlay-theme", String(mode || "")),
   // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   // App-menu navigation: main.js sends an in-app path ("/settings",

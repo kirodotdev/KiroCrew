@@ -4,7 +4,15 @@ A slot is "stalled" when the UI would show it as working but the underlying agen
 already failed silently. Detected patterns:
 
 * ``subagent_timeout``  — ``Injected timeout error for subagent ... into slot KEY``
-* ``prompt_stuck``      — ``ACP error in slot KEY: ... 'Prompt already in progress'``
+* ``prompt_stuck``      — ``ACP error in slot KEY: [AcpPromptBusy] ...``, or the
+  legacy shape ``ACP error in slot KEY: ... 'Prompt already in progress'``
+
+Two ``prompt_stuck`` patterns exist on purpose. The current one keys off the
+exception class that ``chat_runner`` logs, which is the structural
+classification and cannot drift when user-facing wording changes; the legacy one
+keys off the raw backend text and is retained so log tails written by earlier
+gateways (before the message was formatted) still resolve. Either match is the
+same signal.
 
 Note: ``Session KEY has dead provider — removing stale entry`` is NOT a stall signal.
 It's emitted during healthy self-cleanup: the session manager detected a dead provider
@@ -29,6 +37,10 @@ _LOG_TAIL_BYTES = 256 * 1024  # scan last 256 KB of gateway.log — cheap
 
 _PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
     ("subagent_timeout", re.compile(r"Injected timeout error for subagent \S+ into slot (\S+)")),
+    # Current shape: chat_runner logs the exception class, so this matches the
+    # structural verdict rather than any wording the formatter produces.
+    ("prompt_stuck", re.compile(r"ACP error in slot (\S+): \[AcpPromptBusy\]")),
+    # Legacy shape: raw backend text, for log tails written by earlier gateways.
     ("prompt_stuck", re.compile(r"ACP error in slot (\S+):.*Prompt already in progress")),
 ]
 

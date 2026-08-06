@@ -9,6 +9,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from './ErrorNotice'
 /** A row from `GET /api/skills` — only the fields this editor needs. */
 export interface CatalogSkill {
   key: string
@@ -123,8 +124,8 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
               {skill?.name || key}
               <button
                 className="text-muted hover:text-danger-fg hover:bg-danger rounded-full px-0.5 transition-colors disabled:opacity-40"
-                title={`Remove ${skill?.name || key}`}
-                aria-label={`Remove skill ${skill?.name || key}`}
+                title={i18nT('components.agentSkillsEditor.remove', { name: skill?.name || key })}
+                aria-label={i18nT('components.agentSkillsEditor.remove_skill', { name: skill?.name || key })}
                 disabled={save.isPending}
                 onClick={() => remove(key)}
               >
@@ -137,7 +138,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
           <span
             key={uri}
             className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-muted"
-            title={`${uri} — edit the agent config file to change this mapping`}
+            title={i18nT('components.agentSkillsEditor.edit_agent_config_to_change_mapping', { path: uri })}
           >
             <Lock className="lucide-inline" />
             {uri}
@@ -212,7 +213,9 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
           {i18nT('components.agentSkillsEditor.no_skills_mapped_this_agent_uses_the_default_beh')}
         </div>
       )}
-      {error && <div className="text-[12px] text-danger mt-1.5">{error}</div>}
+      {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+      <ErrorNotice message={error} className="mt-1.5" />
     </div>
   )
 }

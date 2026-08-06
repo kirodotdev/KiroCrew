@@ -66,8 +66,10 @@ describe('AboutPanel channel switcher', () => {
     // the control to its dropdown mode -- where the overlay is trapped beneath
     // the Platform row by .card-glow's `> * { z-index: 1 }`. collapse={false}
     // keeps both lanes rendered side by side, one click away.
-    const stable = screen.getByRole('button', { name: /stable/i })
-    const insider = screen.getByRole('button', { name: /insider/i })
+    // Anchored names: the disclosure link in the same row is a <button> whose
+    // label names BOTH channels, so an unanchored /stable/i matches it too.
+    const stable = screen.getByRole('button', { name: /^Stable$/ })
+    const insider = screen.getByRole('button', { name: /^Insider$/ })
     expect(switcher.contains(stable)).toBe(true)
     expect(switcher.contains(insider)).toBe(true)
     fireEvent.click(insider)
@@ -83,7 +85,7 @@ describe('AboutPanel channel switcher', () => {
     await screen.findByTestId('channel-switcher')
     // Re-pick the CURRENT lane -- onChange fires but the handler must not call
     // setChannel for a no-op selection.
-    fireEvent.click(screen.getByRole('button', { name: /stable/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Stable$/ }))
     await new Promise(r => setTimeout(r, 20))
     expect(setChannel).not.toHaveBeenCalled()
   })

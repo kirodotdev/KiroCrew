@@ -24,7 +24,7 @@ export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
         </div>
         {/* User-uploaded media: no caption track exists to associate. */}
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <audio controls preload="metadata" className="w-full h-8" src={url} aria-label={`Audio: ${file.filename}`} />
+        <audio controls preload="metadata" className="w-full h-8" src={url} aria-label={i18nT('components.fileCard.audio', { name: file.filename })} />
       </div>
     )
   }
@@ -39,7 +39,7 @@ export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
         </div>
         {/* User-uploaded media: no caption track exists to associate. */}
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video controls preload="metadata" className="w-full max-h-[300px] rounded" src={url} aria-label={`Video: ${file.filename}`} />
+        <video controls preload="metadata" className="w-full max-h-[300px] rounded" src={url} aria-label={i18nT('components.fileCard.video', { name: file.filename })} />
       </div>
     )
   }

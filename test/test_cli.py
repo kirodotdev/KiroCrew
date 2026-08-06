@@ -1042,6 +1042,50 @@ class TestCronCli:
             assert ns.agent is None
 
 
+class TestPortEnvValidatedAtEntry:
+    """`main()` rejects an unusable KIROCREW_PORT before any subcommand runs.
+
+    Type alone is not enough. 70000 parses as an int, so a type-only check let
+    `KIROCREW_PORT=70000 kirocrew service install` bake an unbindable port into
+    a service definition and report success -- leaving a gateway that dies on
+    every start, with the failure surfacing far from its cause.
+
+    Rejecting here rather than in the consumer keeps ONE policy for every entry
+    point. It must reject rather than silently drop: dropping would install the
+    DEFAULT port while the operator believes they set theirs.
+    """
+
+    def test_out_of_range_port_exits_before_dispatch(self, monkeypatch, capsys):
+        import sys
+
+        for bad in ("70000", "0", "-1"):
+            monkeypatch.setenv("KIROCREW_PORT", bad)
+            dispatched = []
+            with patch.object(sys, "argv", ["kirocrew", "cron", "list"]), patch(
+                "kiro_crew.cli._cron", lambda _ns: dispatched.append(True)
+            ):
+                from kiro_crew.cli import main
+
+                with pytest.raises(SystemExit) as exc:
+                    main()
+            assert exc.value.code == 1, bad
+            assert not dispatched, f"{bad} reached the subcommand"
+            assert "1-65535" in capsys.readouterr().err
+
+    def test_in_range_port_is_accepted(self, monkeypatch):
+        import sys
+
+        monkeypatch.setenv("KIROCREW_PORT", "5477")
+        dispatched = []
+        with patch.object(sys, "argv", ["kirocrew", "cron", "list"]), patch(
+            "kiro_crew.cli._cron", lambda _ns: dispatched.append(True)
+        ):
+            from kiro_crew.cli import main
+
+            main()
+        assert dispatched == [True]
+
+
 class TestSandboxActiveMarkerCleared:
     """cli.main() must drop an INHERITED KIROCREW_SANDBOX_ACTIVE marker.
 
@@ -1785,6 +1829,70 @@ class TestStop:
                 _stop(5476)
             assert exc.value.code == 1
         assert "No Kiro Crew gateway" in capsys.readouterr().out
+
+    def _tool_absent(self, unpinned_at):
+        # The lookup tool reads as unavailable; ``unpinned_at`` is where PATH
+        # finds it anyway (None when it is genuinely not installed).
+        return (
+            patch(
+                "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
+                return_value=False,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.listening_pid_tool", return_value="lsof"),
+            patch(
+                "kiro_crew.cli_server.platform_compat.tool_outside_trusted_dirs",
+                return_value=unpinned_at,
+            ),
+        )
+
+    def test_a_tool_outside_the_pin_is_not_reported_as_missing(self, capsys):
+        """A host that keeps binaries elsewhere has the tool; the pin declined it.
+
+        NixOS and Homebrew/conda prefixes are the real population here. Telling
+        that operator to install an ``lsof`` they already have sends them in
+        circles, so name the path and say the pin is deliberate.
+        """
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        available, tool, unpinned = self._tool_absent("/run/current-system/sw/bin/lsof")
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([]),
+            available,
+            tool,
+            unpinned,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "/run/current-system/sw/bin/lsof" in out, "must name where the tool actually is"
+        assert "Install lsof" not in out
+        # The audit log has to separate the two causes, not just the outcome.
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=lsof_outside_trusted_dirs" in resources
+
+    def test_a_genuinely_missing_tool_still_says_to_install_it(self, capsys):
+        """Nothing on PATH means the install advice is the correct advice."""
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        available, tool, unpinned = self._tool_absent(None)
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([]),
+            available,
+            tool,
+            unpinned,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Install lsof and retry." in out
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=lsof_not_found" in resources
 
     def test_no_kirocrew_process(self, capsys):
         # A listener exists but its cmdline isn't a kirocrew gateway → refuse to kill.

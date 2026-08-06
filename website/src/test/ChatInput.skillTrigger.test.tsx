@@ -17,6 +17,9 @@ const SKILLS = [
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  // vitest 4's restoreAllMocks no longer clears standalone vi.fn() call history
+  // (mockApi.skills), so clear it explicitly or calls leak across tests.
+  vi.clearAllMocks()
   localStorage.clear()
   mockApi.skills.mockResolvedValue(SKILLS)
 })

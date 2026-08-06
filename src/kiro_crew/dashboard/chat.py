@@ -31,7 +31,6 @@ from kiro_crew.config.loader import (  # noqa: F401
     resolve_agent_bindings,
 )
 from kiro_crew.dashboard.chat_folders import (  # noqa: F401
-    _generate_folder_icon,
     api_chat_folder_create,
     api_chat_folder_delete,
     api_chat_folder_update,
@@ -49,6 +48,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_approve,
     api_chat_slot_color,
     api_chat_slot_context,
+    api_chat_slot_continue,
     api_chat_slot_create,
     api_chat_slot_delete,
     api_chat_slot_detail,

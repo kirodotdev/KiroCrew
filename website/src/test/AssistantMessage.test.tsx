@@ -244,6 +244,30 @@ describe('parseOptions', () => {
     expect(options).toEqual([])
   })
 
+  // A model intermittently substitutes a fullwidth / CJK lookalike for the ASCII
+  // `]`. One wrong codepoint used to break the end anchor, so the marker leaked
+  // into the message as literal text and the turn lost its pills. Mirrors the
+  // backend's MARKER_CLOSERS.
+  it.each([
+    ['\u3011', 'U+3011 】'],
+    ['\uFF3D', 'U+FF3D ］'],
+    ['\u3015', 'U+3015 〕'],
+  ])('accepts %s (%s) as a closing bracket', (close) => {
+    const { options, multi, text } = parseOptions(`Pick one [OPTIONS: Alpha|Beta${close}`)
+    expect(options).toEqual(['Alpha', 'Beta'])
+    expect(multi).toBe(true)
+    expect(text).toBe('Pick one')
+  })
+
+  it('does not treat unrelated CJK closing punctuation as a bracket', () => {
+    // U+300D 」 and U+3009 〉 are not square-bracket lookalikes — widening the
+    // class must not have swept in every CJK closing glyph.
+    for (const ch of ['\u300D', '\u3009']) {
+      const { options } = parseOptions(`Pick [OPTIONS: A|B${ch}`)
+      expect(options).toEqual([])
+    }
+  })
+
   it('flags isPlan when both plan header and stage marker present', () => {
     const content = '📋 Plan for: foo\n\nStage 1: do thing\n[OPTION: approved|rejected]'
     const { isPlan } = parseOptions(content)

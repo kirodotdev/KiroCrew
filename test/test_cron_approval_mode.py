@@ -319,7 +319,7 @@ class TestSubagentInheritsPolicy:
         captured = {}
         mock_client = MagicMock()
 
-        async def fake_get_or_create(key, agent=None, approval_policy=""):
+        async def fake_get_or_create(key, agent=None, approval_policy="", **_kwargs):
             captured["approval_policy"] = approval_policy
             return mock_client, True, False
 
@@ -369,7 +369,7 @@ class TestSubagentInheritsPolicy:
         mock_client.approve_tool = AsyncMock()
         mock_client.reject_tool = AsyncMock()
 
-        async def fake_get_or_create(key, agent=None, approval_policy=""):
+        async def fake_get_or_create(key, agent=None, approval_policy="", **_kwargs):
             return mock_client, True, False
 
         sessions.get_or_create = fake_get_or_create
@@ -774,3 +774,61 @@ class TestNoCronsFlag:
                 main()
                 mock_gw.assert_called_once()
                 assert mock_gw.call_args[1]["no_crons"] is True
+
+
+class TestSubagentRoleModelForcesDedicatedPath:
+    """A configured per-role sub-agent model/effort must force the dedicated
+    (non-shared) session path, because the parent's shared runtime was spawned
+    with the parent's model and cannot switch model per session. Otherwise the
+    override would silently no-op on the default (session-sharing) path."""
+
+    def _run(self, *, role_models=None, role_efforts=None):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = MagicMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.get_approval_policy = MagicMock(return_value="")
+        sessions.get_agent = MagicMock(return_value="")
+        ctx_builder = MagicMock()
+        ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        ctx_builder.hooks.auto_approve_subagent_tools = False
+
+        captured: dict = {}
+        mock_client = MagicMock()
+
+        async def fake_get_or_create(key, agent=None, approval_policy="", **kwargs):
+            captured.update(kwargs)
+            return mock_client, True, False
+
+        sessions.get_or_create = fake_get_or_create
+
+        async def fake_stream(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        mock_client.stream = fake_stream
+
+        cfg = KiroCrewConfig(
+            agent=AgentConfig(role_models=role_models or {}, role_efforts=role_efforts or {})
+        )
+        runner = SubagentManager(sessions=sessions, ctx_builder=ctx_builder)
+        shared = AsyncMock(
+            side_effect=AssertionError("shared path taken despite a per-role override")
+        )
+        info = SubagentInfo(id="sub1", task="test", parent_session_key="parent-key")
+        with patch.object(runner, "_create_shared_session", shared), patch.object(
+            runner, "_should_use_session_sharing", return_value=True
+        ), patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+            asyncio.run(runner._run_inner(info, "subagent:sub1"))
+        return captured, shared
+
+    def test_pinned_model_forces_dedicated_and_applies(self) -> None:
+        captured, shared = self._run(role_models={"subagent": "claude-sonnet-4.6"})
+        shared.assert_not_called()
+        assert captured.get("model") == "claude-sonnet-4.6"
+
+    def test_pinned_effort_forces_dedicated_and_applies(self) -> None:
+        captured, shared = self._run(role_efforts={"subagent": "low"})
+        shared.assert_not_called()
+        assert captured.get("reasoning_effort_override") == "low"

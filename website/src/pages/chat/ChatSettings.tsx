@@ -48,7 +48,7 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 export type StreamMode = 'immediate' | 'smooth'
 
 const LS_KEY = 'mc-chat-config'
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, defaultAutopilot: false, pinLastPrompt: false }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, defaultAutopilot: false, pinLastPrompt: true }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -80,7 +80,7 @@ export function loadChatConfig(): ChatConfig {
     if (!VALID_STREAM_MODES.has(cfg.streamMode)) cfg.streamMode = 'smooth'
     if (typeof cfg.showContextPct !== 'boolean') cfg.showContextPct = false
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
-    if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = false
+    if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
     return cfg
   }
   catch { return { ...DEFAULTS } }
@@ -102,6 +102,7 @@ export interface DashboardConfig {
   tail_fork_enabled: boolean
   link_previews: boolean
   mcp_app_panel: boolean
+  folder_suggestions_enabled: boolean
 }
 
 export default function ChatSettings({ config, onChange }: { config: ChatConfig; onChange: (c: ChatConfig) => void }) {
@@ -109,7 +110,7 @@ export default function ChatSettings({ config, onChange }: { config: ChatConfig;
   const btnRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
-  const { data: dashCfg = { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false, mcp_app_panel: false } } = useQuery<DashboardConfig>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig() })
+  const { data: dashCfg = { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false, mcp_app_panel: false, folder_suggestions_enabled: true } } = useQuery<DashboardConfig>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig() })
   const dashMut = useMutation({
     mutationFn: (next: DashboardConfig) => api.updateDashboardConfig(next),
     onMutate: async (next) => {
@@ -178,7 +179,7 @@ export default function ChatSettings({ config, onChange }: { config: ChatConfig;
           <div className="flex items-center justify-between">
             <div className="flex flex-col gap-0.5">
               <span className="text-[13px] text-text">{i18nT('pages.chat.chatSettings.send_shortcut')}</span>
-              <span className="text-[11px] text-muted">{config.sendOnEnter === 'enter' ? i18nT('pages.chat.chatSettings.shift_enter_for_newline') : config.sendOnEnter === 'ctrl-enter' ? i18nT('pages.chat.chatSettings.enter_for_newline') : `${navigator.platform?.includes('Mac') ? '⌘' : 'Ctrl'}+Enter for newline`}</span>
+              <span className="text-[11px] text-muted">{config.sendOnEnter === 'enter' ? i18nT('pages.chat.chatSettings.shift_enter_for_newline') : config.sendOnEnter === 'ctrl-enter' ? i18nT('pages.chat.chatSettings.enter_for_newline') : i18nT('pages.chat.chatSettings.enter_for_newline_2', { mod: navigator.platform?.includes('Mac') ? '⌘' : 'Ctrl' })}</span>
             </div>
             <select className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none cursor-pointer" value={config.sendOnEnter} onChange={e => set('sendOnEnter', e.target.value as SendMode)}>
               <option value="enter">{i18nT('pages.chat.chatSettings.enter_sends')}</option>

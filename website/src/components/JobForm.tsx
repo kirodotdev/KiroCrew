@@ -10,6 +10,7 @@ import { SaveCreateLabel, CRON_SEL, expandDow } from '../utils/cronUtils'
 
 import { i18nT } from '../i18n/t'
 import { fmtWeekday } from '../i18n/format'
+import ErrorNotice from './ErrorNotice'
 export const TIMEZONES = ['America/Los_Angeles','America/Phoenix','America/Denver','America/Chicago','America/New_York','America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo','Australia/Sydney','Pacific/Auckland','UTC']
 /** Monday-first weekday labels. A function, not a module-level array: a const
  *  array of translated strings would freeze at the boot language. The index
@@ -319,7 +320,9 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
         )}
       </>)}
 
-      {error && <div className="text-danger text-[13px]">{error}</div>}
+      {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+      <ErrorNotice message={error} />
     </div>
   )
 }

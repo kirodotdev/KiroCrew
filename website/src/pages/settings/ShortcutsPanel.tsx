@@ -73,7 +73,7 @@ export function ShortcutsPanel() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.settings.shortcutsPanel.enable_shortcuts')}
-          description={`Turn keyboard shortcuts on or off globally — ${IS_MAC ? '⌥' : 'Alt'} + K (this reference) always works`}
+          description={i18nT('pages.settings.shortcutsPanel.turn_keyboard_shortcuts_on_or_off_globally', { mod: IS_MAC ? '⌥' : 'Alt' })}
           checked={enabled}
           onChange={toggle}
         />

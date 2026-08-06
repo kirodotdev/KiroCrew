@@ -729,20 +729,43 @@ def _sanitize_free_text_role(raw: str) -> str:
     [USER PROFILE] block — every other value is a slug the UI picks — so it is
     the only one that could carry newlines and bracket markers shaped like the
     block delimiters the model is taught to trust. Whitespace (including
-    newlines and tabs) is collapsed to single spaces, C0/C1 control characters
-    and square brackets are dropped, and the result is length-capped. A value
-    that sanitizes to nothing is treated as unset rather than rendered empty.
+    newlines and tabs) is collapsed to single spaces, every character outside
+    :func:`_is_allowed_role_char` is dropped, and the result is length-capped. A
+    value that sanitizes to nothing is treated as unset rather than rendered
+    empty.
     """
     if not raw:
         return ""
-    cleaned = "".join(" " if ch.isspace() else "" if _is_unsafe_role_char(ch) else ch for ch in raw)
+    cleaned = "".join(ch if not ch.isspace() and _is_allowed_role_char(ch) else " " for ch in raw)
     cleaned = " ".join(cleaned.split())
     return cleaned[:_ROLE_OTHER_MAX_LEN].strip()
 
 
-def _is_unsafe_role_char(ch: str) -> bool:
-    """True for characters that must never reach the prompt from free text."""
-    return ch in "[]" or unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs")
+#: Punctuation a job title legitimately needs. ``#`` earns its place from real
+#: titles ("C# Developer"), as ``+`` does for "C++". Deliberately excludes ``:`` —
+#: ``LABEL:`` is the shape the protocol markers themselves use — and every
+#: bracket form.
+_ROLE_PUNCT_ALLOWED = "-'.,/&()+_#"
+
+
+def _is_allowed_role_char(ch: str) -> bool:
+    """True for the only characters free text may contribute to the prompt.
+
+    An ALLOWLIST, per BSC1 Input Validation: a denylist of known-bad characters
+    is always incomplete, and this one was. The previous version dropped ASCII
+    ``[`` and ``]`` but passed every Unicode lookalike — ``】`` U+3011, ``］``
+    U+FF3D, ``〕`` U+3015 and others — each of which renders as a bracket and so
+    could still impersonate a ``[BLOCK]`` delimiter in the assembled prompt.
+    Inverting the test closes that whole tail instead of three codepoints.
+
+    Letters and combining marks are admitted by Unicode category rather than an
+    ASCII range, so a non-Latin job title survives; the product ships ten UI
+    locales and a Latin-only filter would silently blank those users' input.
+    """
+    if ch in _ROLE_PUNCT_ALLOWED:
+        return True
+    category = unicodedata.category(ch)
+    return category.startswith("L") or category.startswith("M") or category == "Nd"
 
 
 def _role_description(cfg: "KiroCrewConfig") -> str:
@@ -2192,16 +2215,41 @@ class ContextBuilder:
                 "the same folder are likely about the same work.\n\n"
             )
 
-        # Triggered skills (on-demand, any message) — skip for custom agents
+        # Triggered skills (on-demand, any message) — skip for custom agents.
+        # A match injects the skill's full body by DEFAULT, unchanged. A skill
+        # that declares itself an offer rather than a mandate opts out with
+        # `inject_on_trigger: false` and contributes a pointer line instead:
+        # word-overlap matching pulls in large unrelated skills often enough
+        # that body price per match is the largest single block of assembled
+        # context, and ACP replays native history so a body already sent earlier
+        # in the conversation is still in the window.
         if not is_custom and not minimal_context:
             triggered = self.skills.get_triggered_skills(text)
             if triggered:
-                logger.info("Triggered skills: %s", ", ".join(triggered))
-            for name in triggered:
-                content = self.skills.load_skill(name)
-                if content:
-                    stripped = self.skills.strip_frontmatter(content)
-                    parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
+                enforced, pointer_only = self.skills.split_triggered(triggered)
+                # Log the split, not just the match: a pointed-at skill the
+                # agent declines to read leaves no other trace, so without this
+                # "the skill stopped being followed" is indistinguishable from
+                # "the skill never matched".
+                logger.info(
+                    "Triggered skills: %s (bodies=%s pointers=%s)",
+                    ", ".join(triggered),
+                    ", ".join(enforced) or "-",
+                    ", ".join(pointer_only) or "-",
+                )
+                for name in enforced:
+                    content = self.skills.load_skill(name)
+                    if content:
+                        stripped = self.skills.strip_frontmatter(content)
+                        parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
+                        # Record use only when the body is actually delivered --
+                        # a trigger match that never reaches the prompt (false
+                        # positive, pointer-only, or undelivered) must not earn
+                        # ranking weight in the lazy-load hotness ledger.
+                        self.skills._record_use(name)
+                hint = self.skills.trigger_hint(pointer_only)
+                if hint:
+                    parts.append(hint)
 
         # Hook-injected context — apply to all agents
         if hook_result.action == HOOK_INJECT_CONTEXT:

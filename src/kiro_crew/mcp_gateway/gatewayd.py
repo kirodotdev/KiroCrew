@@ -74,7 +74,7 @@ from kiro_crew.mcp_gateway.rewriter import (
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.metrics.provider import get_recorder
-from kiro_crew.sandbox import prewarm_backend
+from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import SecurityEventLog
 from kiro_crew.session_pid_sig import read_session_pid_txt
 
@@ -1827,7 +1827,14 @@ async def _handle_connection(
             # new gateway and run the ensure_backend pre-flight. Absent on an
             # old gateway, so the new stub skips the pre-flight (no 25s skew
             # penalty) and falls back to the legacy lazy-spawn path.
-            "capabilities": ["ensure_backend"],
+            #
+            # ``bridge_ping`` gates the stub's bridge-phase liveness monitor the
+            # same way. It must be negotiated rather than assumed: a daemon that
+            # outlived a package upgrade has no ``{"type": "ping"}`` handler, so
+            # the frame would fall through to the forward path and no pong would
+            # ever return — turning any call slower than the grace window into a
+            # forced degrade of a perfectly healthy pooled session.
+            "capabilities": ["ensure_backend", "bridge_ping"],
         },
     )
     logger.info(
@@ -1960,6 +1967,17 @@ async def _handle_connection(
                     caller.session_key,
                     caller.session_type,
                 )
+                continue
+
+            # Bridge-phase liveness ping: the stub sends ``{"type": "ping"}``
+            # while it has outstanding requests to verify the gateway is still
+            # responsive. Reply with ``{"type": "pong"}`` — never forwarded
+            # to the backend.
+            if msg.get("type") == "ping":
+                try:
+                    await _write_json_line(writer, {"type": "pong"})
+                except (OSError, ConnectionError):
+                    return
                 continue
 
             # B1 pre-flight: the stub sends ``ensure_backend``
@@ -2614,20 +2632,63 @@ def _zombie_diagnostic_path() -> Path:
 
 
 def _count_open_fds() -> int:
-    """Return the number of open file descriptors for this process.
+    """Return the number of open file descriptors (or handles on Windows).
 
     FD exhaustion is one of the four hypothesised zombie causes; tracking
     the count per snapshot lets us confirm or eliminate that path without
     deploying a separate tracer.
+
+    Platform implementations:
+    - Linux: ``/proc/self/fd``
+    - macOS/BSD: ``/dev/fd``
+    - Windows: ``GetProcessHandleCount`` via ctypes (handle count, not
+      fd count — the field documents this as platform-dependent)
+
+    Returns ``-1`` when the platform cannot provide the value.
     """
+    # Linux — preferred, most precise.
     try:
         return len(os.listdir("/proc/self/fd"))
     except OSError:
-        return -1
+        pass
+
+    # macOS / BSD — /dev/fd is a per-process virtual directory.
+    try:
+        return len(os.listdir("/dev/fd"))
+    except OSError:
+        pass
+
+    # Windows — count kernel handles for the current process.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+            handle_count = wintypes.DWORD()
+            current_process = kernel32.GetCurrentProcess()
+            if kernel32.GetProcessHandleCount(current_process, ctypes.byref(handle_count)):
+                return handle_count.value
+        except (OSError, AttributeError, ValueError):
+            pass
+
+    return -1
 
 
 def _read_rss_kb() -> int:
-    """Return RSS in kilobytes from ``/proc/self/status`` or ``-1``."""
+    """Return current RSS in kilobytes, or ``-1`` if unavailable.
+
+    Platform implementations:
+    - Linux: ``/proc/self/status`` VmRSS field (already in KB).
+    - macOS: ``resource.getrusage`` (``ru_maxrss`` is in bytes on macOS).
+    - Other POSIX: ``resource.getrusage`` (``ru_maxrss`` is in KB on Linux,
+      but this branch only runs on non-Linux where it is bytes; if neither
+      applies we fall through to ``-1``).
+    - Windows: ``GetProcessMemoryInfo`` via ctypes (WorkingSetSize in bytes).
+
+    Returns ``-1`` when the platform cannot provide the value.
+    """
+    # Linux — parse VmRSS from /proc/self/status (current RSS, not peak).
     try:
         with open("/proc/self/status", "r", encoding="ascii") as fh:
             for line in fh:
@@ -2635,6 +2696,54 @@ def _read_rss_kb() -> int:
                     return int(line.split()[1])
     except (OSError, ValueError, IndexError):
         pass
+
+    # macOS / other POSIX — resource.getrusage gives ru_maxrss.
+    # On macOS ru_maxrss is in bytes; on other BSDs it is in KB.
+    if sys.platform != "win32":
+        try:
+            import resource
+
+            ru = resource.getrusage(resource.RUSAGE_SELF)
+            maxrss = ru.ru_maxrss
+            if maxrss > 0:
+                if sys.platform == "darwin":
+                    return maxrss // 1024  # bytes → KB
+                return maxrss  # already in KB on most other POSIX
+        except (OSError, ValueError, AttributeError, ImportError):
+            pass
+
+    # Windows — GetProcessMemoryInfo returns WorkingSetSize in bytes.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+
+            SIZE_T = ctypes.c_size_t
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", SIZE_T),
+                    ("WorkingSetSize", SIZE_T),
+                    ("QuotaPeakPagedPoolUsage", SIZE_T),
+                    ("QuotaPagedPoolUsage", SIZE_T),
+                    ("QuotaPeakNonPagedPoolUsage", SIZE_T),
+                    ("QuotaNonPagedPoolUsage", SIZE_T),
+                    ("PagefileUsage", SIZE_T),
+                    ("PeakPagefileUsage", SIZE_T),
+                ]
+
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+            pmc = PROCESS_MEMORY_COUNTERS()
+            pmc.cb = ctypes.sizeof(pmc)
+            handle = kernel32.GetCurrentProcess()
+            if psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+                return pmc.WorkingSetSize // 1024  # bytes → KB
+        except (OSError, AttributeError, ValueError):
+            pass
+
     return -1
 
 
@@ -2687,6 +2796,7 @@ def _snapshot_state(
     return {
         "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "ts_epoch": time.time(),
+        "pid": os.getpid(),
         "is_serving": is_serving,
         "task_count": task_count,
         "fd_count": _count_open_fds(),
@@ -2868,8 +2978,14 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
 
     hb_task = asyncio.create_task(_heartbeat(), name="mcp-gateway-heartbeat")
 
-    # Prewarm sandbox probe cache so backends spawned on-loop never hit cold path
-    prewarm_backend()
+    # Fill the sandbox probe cache BEFORE any backend is spawned on-loop. See the
+    # matching site in slack/gateway.py: the wait is what makes the guarantee
+    # hold, since a fire-and-forget prewarm leaves the first spawn racing the
+    # warm thread and reading a cold-cache transient as "no sandbox backend".
+    try:
+        await asyncio.to_thread(warm_backend)
+    except RuntimeError:
+        logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:

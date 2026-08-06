@@ -1,16 +1,33 @@
-"""Cross-platform Kiro CLI prerequisite detection, install, and login.
+"""Cross-platform Kiro CLI readiness detection.
 
 The public KiroCrew provider is KiroACP-only, so a healthy, authenticated
-``kiro-cli`` is a hard runtime prerequisite.  This module owns the fixed,
-operator-triggered setup operations used by the dashboard:
+``kiro-cli`` is a hard runtime prerequisite. This module's job is to answer one
+question about the gateway host: **is there a Kiro CLI that runs, and is it
+signed in?** It answers that by running the CLI's own read-only probes
+(``--version``, then ``whoami``) inside the OS sandbox.
 
-* discover and validate an installed Kiro CLI;
-* download the official HTTPS installer and execute it without a shell string;
-* start Kiro's device-flow login and surface its HTTPS sign-in URL.
+**It performs no setup of its own.** Both setup steps belong to Kiro CLI and are
+taken by the user:
 
+* obtaining the CLI — from Kiro's official setup page
+  (:data:`OFFICIAL_INSTALL_DOCS_URL`);
+* signing in — ``kiro-cli login`` (:data:`KIRO_CLI_LOGIN_COMMAND`), run by the
+  user wherever they already use the CLI.
+
+Kiro Crew neither installs nor authenticates on the user's behalf, so there is no
+installer download, no installer execution, and no device-flow spawn. The
+reasons are the same in both cases: the vendor's own tooling does it better and
+stays correct as it changes, owning it here meant owning a large privileged
+surface (a remote shell script executed unsandboxed; a credential-writing child
+process), and every copy of that logic on this side was one more thing to drift
+out of date — the installer's pinned digest silently broke setup on any upstream
+change.
+
+What remains is detection, and detection alone: every subprocess this module
+spawns is one of the two read-only probes above, sandboxed, with a fixed argv.
 No command, argument, URL, or filesystem target is accepted from an HTTP
-request.  The dashboard handlers expose only ``status``, ``install``, and
-``login`` verbs.
+request, and the dashboard exposes only a ``status`` read plus the agent-spec
+repair write (which touches Kiro Crew's own files, never the CLI).
 """
 
 from __future__ import annotations
@@ -18,12 +35,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import hmac
-import json
 import logging
-import ntpath
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -32,15 +45,13 @@ import tempfile
 import time
 import urllib.request
 from collections.abc import Awaitable, Callable, MutableMapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
-
-import aiohttp
 
 from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.kiro_cli import (
@@ -56,46 +67,58 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
-OFFICIAL_INSTALL_URL = "https://cli.kiro.dev/install"
-OFFICIAL_WINDOWS_INSTALL_URL = "https://cli.kiro.dev/install.ps1"
-OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/docs/cli/installation/"
+OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
+# The exact command the user runs to sign in. A CODE CONSTANT, never a catalog
+# value: a translated command cannot be typed or executed (see
+# website/docs/i18n-catalog.md — "A literal token the user must type must never be
+# a catalog value"). Served in the status payload so the UI has one source of
+# truth for it rather than hardcoding a second copy that can drift.
+KIRO_CLI_LOGIN_COMMAND = "kiro-cli login"
+# Compatibility shim, not live state. Nothing performs an operation any more, but a
+# dashboard loaded BEFORE this change reads ``status.operation.status``
+# unconditionally in its refetch-interval callback — the optional chain there
+# guards ``status``, not ``operation`` — and that callback runs for every user, not
+# only the first-run gate. A tab left open across a gateway upgrade would therefore
+# throw on its next poll and drop to the root error screen. Serving a permanently
+# idle object keeps those tabs working; it can be deleted once no shipped client
+# reads the field.
+_LEGACY_IDLE_OPERATION: dict[str, str] = {
+    "kind": "",
+    "status": "idle",
+    "message": "",
+    "detail": "",
+    "url": "",
+    "error": "",
+}
 
-_MAX_INSTALLER_BYTES = 5 * 1024 * 1024
-_MAX_INSTALLER_REDIRECTS = 3
-_INSTALLER_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+def legacy_idle_operation() -> dict[str, str]:
+    """Return a fresh idle ``operation`` for the pre-upgrade-client shim."""
+
+    return dict(_LEGACY_IDLE_OPERATION)
+
+
 _MAX_CAPTURED_OUTPUT = 64 * 1024
 _MAX_VISIBLE_DETAIL = 4_000
-_DOWNLOAD_TIMEOUT_SECS = 60
-_INSTALL_TIMEOUT_SECS = 5 * 60
-_LOGIN_TIMEOUT_SECS = 10 * 60
 _PROBE_TIMEOUT_SECS = 10
 _PROBE_CACHE_SECS = 2.0
+# Floor between HOST probes driven by the status endpoint, however many callers
+# ask. The first-run gate polls with ``refresh=1`` every 5s while it blocks the
+# dashboard (it has to: readiness is latched at boot, so a latch read can never
+# see the CLI the user just installed). Each browser tab polls independently and
+# they cannot coordinate, so without a floor N open tabs mean N times the probes,
+# each of them two ``kiro-cli`` spawns. Collapsing them costs a user-driven Check
+# again nothing observable: the worst case is an answer a few seconds old, which
+# is indistinguishable from a fresh one at human speed.
+_FORCED_PROBE_FLOOR_SECS = 4.0
 # Yield before the boot-time readiness probe so its kiro-cli spawn does not
 # contend with the concurrent app-backend spawns on the boot-critical path.
 _WARM_UP_DELAY_SECS = 3.0
 _TERMINATION_GRACE_SECS = 2.0
 _WINDOWS_DESCENDANT_POLL_SECS = 0.05
-_HTTPS_URL_RE = re.compile(r"https://[^\s<>\"']+")
-_UNSAFE_LOGIN_URL_RE = re.compile(r"[\\\x00-\x1f\x7f]")
-# kiro-cli renders an animated TTY progress bar ("▰▰▱▱ Logging in… | Press ^C to
-# cancel") whose repaints arrive as hundreds of carriage-return-separated frames.
-# It is noise in a dashboard <pre>: stored verbatim, the sign-in card fills with a
-# wall of block glyphs. Strip ANSI control sequences, turn each progress-glyph run
-# into a line break (a frame boundary — some builds repaint without a CR), treat
-# CR as a line break too, and collapse consecutive identical lines.
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-_PROGRESS_GLYPH_RE = re.compile(r"[▰▱]+")
-_TRUSTED_LOGIN_HOSTS = frozenset({"app.kiro.dev", "view.awsapps.com"})
-_TRUSTED_INSTALLER_HOSTS = frozenset({"cli.kiro.dev"})
-_INSTALLER_SHA256 = {
-    "posix": "91a21bfa05cd7b58601cb83e0f1f187a9d0084726e5b824d4a4cf60306250908",
-    "win32": "2af3e4bb56f4fcce9244fe2f395805a5cf383ce683774664bcb444417eae1d3e",
-}
-_POSIX_INSTALLER_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 _KIRO_AUTH_SANDBOX_MODE = "standard"
 _UNVERIFIED_SANDBOX_MODE = "strict"
 _SETUP_COMPLETE_FILENAME = ".kiro_cli_setup_complete"
-_BINARY_TRUST_FILENAME = ".kiro_cli_binary_trust.json"
 _PROCESS_GROUP_SUPERVISOR = str(Path(__file__).with_name("_process_group_supervisor.py"))
 _PROCESS_GROUP_SUPERVISOR_ERROR = "Kiro process-group supervisor is unavailable"
 try:
@@ -103,7 +126,6 @@ try:
 except OSError:
     _PROCESS_GROUP_SUPERVISOR_CODE = ""
 _AUTH_STAGING_RELATIVE = Path(".kiro") / "crew-auth-staging"
-_BINARY_TRUST_VERSION = 1
 # Marker the offline E2E harness sets on the gateway it spawns. It grants NO
 # privilege: the packaged fake ACP backend is launched by the ordinary in-place
 # path like any other runnable executable. It is kept purely as a "this gateway
@@ -149,41 +171,6 @@ _AUTH_SQLITE_TIMEOUT_SECS = 5.0
 # readiness result into execution of replacement bytes.
 _OPERATOR_OVERRIDE_ATTESTATIONS: dict[str, str] = {}
 
-_SAFE_ENV_KEYS = frozenset(
-    {
-        "APPDATA",
-        "DBUS_SESSION_BUS_ADDRESS",
-        "DISPLAY",
-        "HOME",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "LANG",
-        "LC_ALL",
-        "LOCALAPPDATA",
-        "LOGNAME",
-        "NO_PROXY",
-        "PATH",
-        "ProgramFiles",
-        "PROGRAMFILES",
-        "SSL_CERT_DIR",
-        "SSL_CERT_FILE",
-        "SystemRoot",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "USER",
-        "USERPROFILE",
-        "WAYLAND_DISPLAY",
-        "WINDIR",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_RUNTIME_DIR",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-    }
-)
 _PROBE_ENV_KEYS = frozenset(
     {
         "APPDATA",
@@ -243,11 +230,15 @@ class PrerequisiteStatus:
     installed: bool = False
     authenticated: bool = False
     ready: bool = False
-    can_auto_install: bool = False
-    can_login: bool = False
+    # Something on the host needs an owner-driven repair before ``ready`` can go
+    # true. Only the agent-spec overlay sets it — a missing CLI is NOT a repair
+    # (the user installs it from OFFICIAL_INSTALL_DOCS_URL, which Kiro Crew has no
+    # action for), so a false value here says nothing about ``installed``.
     repair_required: bool = False
     initial_setup_complete: bool = False
     docs_url: str = OFFICIAL_INSTALL_DOCS_URL
+    # What the user runs to sign in. Kiro Crew never runs it for them.
+    login_command: str = KIRO_CLI_LOGIN_COMMAND
     # A Kiro CLI binary that is present and executable but could not be VERIFIED
     # (verification runs the binary inside the sandbox) is a categorically
     # different condition from a missing binary, and a failed sandbox build
@@ -262,18 +253,17 @@ class PrerequisiteStatus:
     # Technical probe reason, e.g. "unshare(CLONE_NEWNS) failed with errno 1
     # (EPERM)". Names the failing step, so it is shown verbatim, untranslated.
     sandbox_detail: str = ""
-
-
-@dataclass
-class OperationStatus:
-    """Dashboard-visible state for the current/most-recent setup operation."""
-
-    kind: str = ""
-    status: str = "idle"
-    message: str = ""
-    detail: str = ""
-    url: str = ""
-    error: str = ""
+    # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
+    # requires these on disk, not merely a viable binary and a good ``whoami``:
+    # without them kiro-cli answers every ``session/set_mode`` with
+    # "Mode '<name>' not found", so an install missing one cannot run a single
+    # turn. Filenames rather than a bool so the surface can name what is missing.
+    missing_agent_specs: list[str] = field(default_factory=list)
+    # Exception text from the repair attempt the Refresh / Check again button
+    # makes when specs are missing. Empty when no repair was attempted or it
+    # succeeded. Shown verbatim, untranslated: it names the failing install step,
+    # which is the one thing a support conversation actually needs.
+    agent_spec_repair_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -305,12 +295,7 @@ class TrustedAcpExecutableSnapshot:
     launch_path: str
 
 
-class PrerequisiteBusyError(RuntimeError):
-    """Raised when a second setup mutation is requested while one is active."""
-
-
 ProcessRunner = Callable[..., Awaitable[ProcessResult]]
-InstallerDownloader = Callable[[str], Awaitable[bytes]]
 AuditWriter = Callable[..., Awaitable[None]]
 
 
@@ -335,39 +320,6 @@ def _sanitize_detail(text: str) -> str:
     safe, _ = redact_exfiltration_urls(str(text or ""))
     safe, _ = redact_credentials(safe)
     return safe[-_MAX_VISIBLE_DETAIL:]
-
-
-def _strip_progress_noise(text: str) -> str:
-    """Drop ANSI control sequences and animated progress glyphs."""
-
-    cleaned = _ANSI_ESCAPE_RE.sub("", str(text or ""))
-    # Each progress-glyph run starts a repaint, so it doubles as a frame
-    # boundary; a repaint is also usually delimited by a carriage return. Treat
-    # both as line breaks so consecutive identical repaints collapse below --
-    # and do it BEFORE _append_capped, which strips carriage returns and would
-    # otherwise fuse every frame into one unsplittable line.
-    cleaned = _PROGRESS_GLYPH_RE.sub("\n", cleaned)
-    return cleaned.replace("\r", "\n")
-
-
-def _dedupe_repeated_lines(text: str) -> str:
-    """Collapse consecutive identical lines to one occurrence."""
-
-    output: list[str] = []
-    for line in str(text or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if output and output[-1] == stripped:
-            continue
-        output.append(stripped)
-    result = "\n".join(output)
-    # ``splitlines`` drops the final terminator, but this runs over the whole
-    # accumulated detail on every stream read -- without it the next chunk fuses
-    # onto the last stored line (device code, installer progress, URL fallback).
-    if result and str(text or "").endswith(("\n", "\r")):
-        result += "\n"
-    return result
 
 
 def _canonical_candidate(path: str) -> str:
@@ -426,32 +378,6 @@ def _register_operator_override_attestation(path: str, digest: str | None) -> No
     # First observation wins for the lifetime of this process. Reconstructing a
     # service after the file changes must not silently bless the new bytes.
     _OPERATOR_OVERRIDE_ATTESTATIONS.setdefault(key, digest)
-
-
-def _recorded_trust_digest(trust_path: Path, canonical: str) -> str | None:
-    """Return the pinned sha256 recorded for *canonical*, or ``None``.
-
-    Single reader for the ``.kiro_cli_binary_trust.json`` attestation: parse the
-    file, require the current schema version and an exact path match, and return
-    the recorded 64-char digest. Callers that must prove the on-disk bytes still
-    match re-hash the candidate and ``hmac.compare_digest`` against this value;
-    callers that only need the recorded pin use it directly.
-    """
-
-    try:
-        payload = json.loads(trust_path.read_text(encoding="utf-8"))
-    except (OSError, TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    expected = str(payload.get("sha256", ""))
-    if (
-        payload.get("version") != _BINARY_TRUST_VERSION
-        or os.path.normcase(str(payload.get("path", ""))) != os.path.normcase(canonical)
-        or len(expected) != 64
-    ):
-        return None
-    return expected
 
 
 def _acp_executable_is_runnable(
@@ -828,82 +754,6 @@ def _prepare_auth_workspace(
         raise
 
 
-def extract_secure_login_url(text: str) -> str:
-    """Return the first official HTTPS URL in Kiro's device-flow output."""
-
-    for match in _HTTPS_URL_RE.findall(str(text or "")):
-        candidate = match.rstrip("),.;")
-        if _UNSAFE_LOGIN_URL_RE.search(candidate):
-            continue
-        parsed = urlparse(candidate)
-        hostname = (parsed.hostname or "").lower()
-        try:
-            port = parsed.port
-        except ValueError:
-            continue
-        if (
-            parsed.scheme == "https"
-            and port in (None, 443)
-            and hostname in _TRUSTED_LOGIN_HOSTS
-            and parsed.username is None
-            and parsed.password is None
-            and (
-                hostname == "app.kiro.dev"
-                or parsed.path == "/start"
-                or parsed.path.startswith("/start/")
-            )
-        ):
-            return candidate
-    return ""
-
-
-def _interactive_repair_required(
-    platform_name: str,
-    candidates: list[str],
-    home: Path,
-) -> bool:
-    """Whether the official installer would block on an unreadable /dev/tty prompt."""
-
-    if platform_name == "darwin":
-        app = Path("/Applications/Kiro CLI.app")
-        target = os.path.normcase("/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli")
-        try:
-            app_exists = app.is_dir()
-        except OSError:
-            app_exists = False
-        return app_exists or any(
-            os.path.normcase(os.path.normpath(item)) == target for item in candidates
-        )
-    if platform_name.startswith("linux"):
-        installed = home / ".local" / "bin" / "kiro-cli"
-        target = os.path.normcase(str(installed))
-        try:
-            target_exists = installed.is_file()
-        except OSError:
-            target_exists = False
-        return target_exists or any(
-            os.path.normcase(os.path.normpath(item)) == target for item in candidates
-        )
-    return False
-
-
-def _official_install_target(
-    platform_name: str,
-    home: Path,
-    environ: MutableMapping[str, str],
-) -> str:
-    """Return the exact executable target produced by the official installer."""
-
-    if platform_name == "win32":
-        program_files = (
-            environ.get("ProgramFiles") or environ.get("PROGRAMFILES") or r"C:\Program Files"
-        )
-        return str(Path(program_files) / "Kiro-Cli" / "kiro-cli.exe")
-    if platform_name == "darwin":
-        return "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
-    return str(home / ".local" / "bin" / "kiro-cli")
-
-
 def _existing_binary_digest(path: str) -> str | None:
     try:
         return _binary_sha256(path)
@@ -933,66 +783,6 @@ def register_process_start_override_attestation(
     return canonical, _OPERATOR_OVERRIDE_ATTESTATIONS.get(key)
 
 
-def _powershell_path(environ: MutableMapping[str, str]) -> str:
-    system_root = environ.get("SystemRoot") or environ.get("WINDIR") or r"C:\Windows"
-    return str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-
-
-def official_installer_command(
-    platform_name: str,
-    environ: MutableMapping[str, str],
-) -> tuple[str, list[str]] | None:
-    """Return the fixed interpreter command used for validated installer bytes."""
-
-    if platform_name == "win32":
-        powershell = _powershell_path(environ)
-        if not platform_compat.is_executable_file(powershell):
-            return None
-        return (
-            powershell,
-            [
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "-",
-            ],
-        )
-    if platform_name == "darwin" or platform_name.startswith("linux"):
-        bash = next(
-            (
-                item
-                for item in ("/bin/bash", "/usr/bin/bash")
-                if platform_compat.is_executable_file(item)
-            ),
-            "",
-        )
-        if not bash:
-            return None
-        return bash, ["-s"]
-    return None
-
-
-def validate_installer_script(platform_name: str, content: bytes) -> bool:
-    """Require the release-pinned digest and expected script type."""
-
-    if not content or len(content) > _MAX_INSTALLER_BYTES:
-        return False
-    digest_key = "win32" if platform_name == "win32" else "posix"
-    digest = hashlib.sha256(content).hexdigest()
-    if not hmac.compare_digest(digest, _INSTALLER_SHA256[digest_key]):
-        return False
-    prefix = content[:512].decode("utf-8", "replace")
-    if platform_name == "win32":
-        return (
-            prefix.startswith("# Kiro CLI Installation Script for Windows")
-            and '$ErrorActionPreference = "Stop"' in prefix
-        )
-    return prefix.startswith("#!/bin/bash") and "Kiro CLI Installation Script" in prefix
-
-
 def _allowlisted_env(
     environ: MutableMapping[str, str],
     allowed: frozenset[str],
@@ -1002,11 +792,10 @@ def _allowlisted_env(
     Windows environment names are case-INSENSITIVE and CPython upper-cases every
     key, so ``os.environ.items()`` yields ``SYSTEMROOT`` — never the
     ``SystemRoot`` spelling Microsoft documents and these allowlists write. A
-    literal membership test therefore dropped exactly the variable it was
+    literal membership test therefore drops exactly the variables it was
     extended to carry, and the failure is silent at the boundary and fatal in the
-    child: ``powershell.exe`` without ``SystemRoot`` cannot load the CLR
-    ("Loading managed Windows PowerShell failed with error 8009001d"), so the
-    Install Kiro CLI button could never succeed.
+    child: a Windows process launched without ``SystemRoot`` cannot load system
+    DLLs, so probe and sign-in spawns die with an unrelated-looking error.
 
     Folding on Windows only, rather than upper-casing the lists, keeps POSIX
     exact: ``PATH`` and ``Path`` are genuinely different variables there, and a
@@ -1020,14 +809,6 @@ def _allowlisted_env(
     return {key: value for key, value in environ.items() if key.upper() in folded}
 
 
-def _child_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
-    result = _allowlisted_env(environ, _SAFE_ENV_KEYS)
-    result["PATH"] = search_path
-    result["NO_COLOR"] = "1"
-    result["TERM"] = "dumb"
-    return result
-
-
 def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str, str]:
     """Build a non-interactive probe environment without proxy or desktop IPC."""
 
@@ -1036,89 +817,6 @@ def _probe_env(environ: MutableMapping[str, str], search_path: str) -> dict[str,
     result["NO_COLOR"] = "1"
     result["TERM"] = "dumb"
     return result
-
-
-def _trusted_installer_path(
-    platform_name: str,
-    environ: MutableMapping[str, str],
-) -> str:
-    """Return a system-only PATH for the unsandboxed official installer."""
-
-    if platform_name != "win32":
-        return _POSIX_INSTALLER_PATH
-    system_root = environ.get("SystemRoot") or environ.get("WINDIR") or r"C:\Windows"
-    return ";".join(
-        [
-            ntpath.join(system_root, "System32"),
-            system_root,
-            ntpath.join(system_root, "System32", "Wbem"),
-            ntpath.join(system_root, "System32", "WindowsPowerShell", "v1.0"),
-        ]
-    )
-
-
-def _proxy_bypassed(hostname: str, no_proxy: str) -> bool:
-    """Return whether a simple NO_PROXY list excludes *hostname*."""
-
-    host = hostname.lower().rstrip(".")
-    for raw in no_proxy.split(","):
-        item = raw.strip().lower()
-        if not item:
-            continue
-        if item == "*":
-            return True
-        if item.startswith("[") and "]" in item:
-            item = item[1 : item.index("]")]
-        elif item.count(":") == 1:
-            item = item.split(":", 1)[0]
-        item = item.lstrip(".").rstrip(".")
-        if item and (host == item or host.endswith(f".{item}")):
-            return True
-    return False
-
-
-def _installer_proxy(
-    url: str,
-    environ: MutableMapping[str, str],
-) -> str | None:
-    """Return an explicitly configured HTTP(S) proxy without reading .netrc."""
-
-    parsed_target = urlparse(url)
-    hostname = parsed_target.hostname or ""
-    no_proxy = environ.get("NO_PROXY") or environ.get("no_proxy") or ""
-    if hostname and _proxy_bypassed(hostname, no_proxy):
-        return None
-    raw = (
-        environ.get("HTTPS_PROXY")
-        or environ.get("https_proxy")
-        or environ.get("HTTP_PROXY")
-        or environ.get("http_proxy")
-        or ""
-    ).strip()
-    if not raw:
-        return None
-    parsed_proxy = urlparse(raw)
-    if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.hostname:
-        return None
-    return raw
-
-
-def _trusted_installer_url(url: str) -> bool:
-    parsed = urlparse(str(url))
-    try:
-        port = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme == "https"
-        and (parsed.hostname or "").lower().rstrip(".") in _TRUSTED_INSTALLER_HOSTS
-        and port in (None, 443)
-        and parsed.username is None
-        and parsed.password is None
-        and parsed.path in {"/install", "/install.ps1"}
-        and not parsed.query
-        and not parsed.fragment
-    )
 
 
 async def _terminate_process(
@@ -1344,14 +1042,16 @@ async def _run_process(
     *,
     env: dict[str, str],
     timeout_secs: float,
-    on_output: Callable[[str], None] | None = None,
-    sandboxed: bool = True,
     sandbox_mode: str = _UNVERIFIED_SANDBOX_MODE,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
-    stdin_data: bytes | None = None,
 ) -> ProcessResult:
-    """Run one fixed argv with bounded output and optional OS isolation."""
+    """Run one fixed argv with bounded output, always inside the OS sandbox.
+
+    There is no opt-out: every spawn this module makes is a probe or a Kiro auth
+    call, and all of them are sandboxed. Nothing here may run a child
+    unsandboxed.
+    """
 
     if platform_compat.IS_POSIX and not _PROCESS_GROUP_SUPERVISOR_CODE:
         return ProcessResult(ok=False, error=_PROCESS_GROUP_SUPERVISOR_ERROR)
@@ -1364,7 +1064,7 @@ async def _run_process(
     try:
         spawn_argv = [command, *args]
         spawn_env = env
-        if sandboxed and not platform_compat.IS_WINDOWS:
+        if not platform_compat.IS_WINDOWS:
             # An absolute system `env` entrypoint prevents the generic sandbox
             # layer from mistaking an unverified candidate named `kiro-cli` for
             # the trusted provider spawn that may delegate to Kiro's internal
@@ -1407,7 +1107,7 @@ async def _run_process(
             ]
         proc = await asyncio.create_subprocess_exec(
             *spawn_argv,
-            stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=spawn_env,
@@ -1466,35 +1166,21 @@ async def _run_process(
             chunk = await stream.read(4096)
             if not chunk:
                 return
-            text = chunk.decode("utf-8", "replace")
-            output = _append_capped(output, text)
-            if on_output is not None:
-                on_output(text)
+            output = _append_capped(output, chunk.decode("utf-8", "replace"))
 
     stdout_task = asyncio.create_task(_capture(proc.stdout))
     stderr_task = asyncio.create_task(_capture(proc.stderr))
-
-    async def _feed_stdin() -> None:
-        if stdin_data is None or proc.stdin is None:
-            return
-        proc.stdin.write(stdin_data)
-        await proc.stdin.drain()
-        proc.stdin.close()
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            await proc.stdin.wait_closed()
-
-    stdin_task = asyncio.create_task(_feed_stdin())
-    operation_tasks = (stdout_task, stderr_task, stdin_task)
+    operation_tasks = (stdout_task, stderr_task)
     wait_task = asyncio.create_task(proc.wait())
     cleanup_tasks = (*operation_tasks, wait_task)
 
     async def _wait_for_completion() -> None:
         completion_tasks: list[Awaitable[Any]] = list(cleanup_tasks)
         if descendant_task is not None:
-            # A Windows bootstrap executable may exit after launching the real
-            # installer as a child.  Keep the retained-tree tracker in the
-            # success condition so a zero exit cannot release live descendant
-            # handles and report setup complete while installation is ongoing.
+            # A Windows launcher may exit after re-spawning its real work as a
+            # child. Keep the retained-tree tracker in the success condition so a
+            # zero exit cannot release live descendant handles while the child is
+            # still running.
             # Shield the tracker from the operation timeout: the timeout path
             # still needs its latest retained handles while terminating the tree.
             completion_tasks.append(asyncio.shield(descendant_task))
@@ -1562,49 +1248,6 @@ async def _run_process(
     )
 
 
-async def _download_installer(
-    url: str,
-    environ: MutableMapping[str, str],
-) -> bytes:
-    """Download official installer bytes without a user-writable staging path."""
-
-    if not _trusted_installer_url(url):
-        raise RuntimeError("installer URL left the trusted Kiro host")
-
-    timeout = aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SECS)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        current_url = url
-        for redirects_followed in range(_MAX_INSTALLER_REDIRECTS + 1):
-            async with session.get(
-                current_url,
-                allow_redirects=False,
-                proxy=_installer_proxy(current_url, environ),
-            ) as response:
-                if response.status in _INSTALLER_REDIRECT_STATUSES:
-                    if redirects_followed >= _MAX_INSTALLER_REDIRECTS:
-                        raise RuntimeError("installer download exceeded the redirect limit")
-                    location = response.headers.get("Location", "")
-                    redirect_url = urljoin(str(response.url), location)
-                    if not location or not _trusted_installer_url(redirect_url):
-                        raise RuntimeError("installer redirect left the trusted Kiro host")
-                    current_url = redirect_url
-                    continue
-                if not _trusted_installer_url(str(response.url)):
-                    raise RuntimeError("installer redirect left the trusted Kiro host")
-                if response.status != 200:
-                    raise RuntimeError(f"installer download returned HTTP {response.status}")
-                length = response.content_length
-                if length is not None and (length <= 0 or length > _MAX_INSTALLER_BYTES):
-                    raise RuntimeError("installer response has an invalid size")
-                content = bytearray()
-                async for chunk in response.content.iter_chunked(64 * 1024):
-                    content.extend(chunk)
-                    if len(content) > _MAX_INSTALLER_BYTES:
-                        raise RuntimeError("installer response exceeded the size limit")
-                return bytes(content)
-    raise RuntimeError("installer download exceeded the redirect limit")
-
-
 async def _write_audit(
     *,
     action: str,
@@ -1634,16 +1277,16 @@ def _probe_filesystem_state(
     platform_name: str,
     home: Path,
     environ: MutableMapping[str, str],
-) -> tuple[dict[str, str], dict[str, str], list[str], tuple[str, list[str]] | None, bool]:
+) -> tuple[dict[str, str], list[str]]:
     """Collect path/candidate state on a worker thread."""
 
     separator = ";" if platform_name == "win32" else os.pathsep
     # Setup discovery matches ACP resolution on every OS: a runnable Kiro CLI is
     # recognized wherever it lives (PATH, Scripts, override, package-manager
-    # dir), since trust is "the CLI runs". Windows is no longer restricted to
-    # the Program Files tree — a winget/scoop/user install that ACP would launch
-    # must also be recognized by setup, or the two disagree and the user is sent
-    # to a redundant reinstall.
+    # dir), since trust is "the CLI runs". Windows is not restricted to the
+    # Program Files tree — a winget/scoop/user install that ACP would launch must
+    # also be recognized by setup, or the two disagree and a user who already has
+    # the CLI is sent back to Kiro's setup page.
     search_path = separator.join(
         known_kiro_cli_dirs(
             platform_name,
@@ -1652,7 +1295,6 @@ def _probe_filesystem_state(
             include_inherited_path=True,
         )
     )
-    child_environment = _child_env(environ, search_path)
     probe_environment = _probe_env(environ, search_path)
     candidates = find_kiro_cli_candidates(
         platform_name,
@@ -1660,9 +1302,7 @@ def _probe_filesystem_state(
         environ,
         include_inherited_path=True,
     )
-    installer_plan = official_installer_command(platform_name, environ)
-    repair_hint = _interactive_repair_required(platform_name, candidates, home)
-    return child_environment, probe_environment, candidates, installer_plan, repair_hint
+    return probe_environment, candidates
 
 
 def _established_installation(data_home: Path) -> bool:
@@ -1695,7 +1335,6 @@ class KiroPrerequisiteService:
         home: Path | None = None,
         data_home: Path | None = None,
         process_runner: ProcessRunner | None = None,
-        downloader: InstallerDownloader | None = None,
         audit_writer: AuditWriter | None = None,
         clock: Callable[[], float] | None = None,
         assume_ready: bool = False,
@@ -1717,7 +1356,6 @@ class KiroPrerequisiteService:
             self._data_home = config_dir()
         self._auth_staging_parent = _ensure_auth_staging_parent(self._home)
         self._setup_marker = self._data_home / _SETUP_COMPLETE_FILENAME
-        self._binary_trust_path = self._data_home / _BINARY_TRUST_FILENAME
         (
             self._initial_override_path,
             self._initial_override_sha256,
@@ -1749,22 +1387,8 @@ class KiroPrerequisiteService:
         self._hidden_probe_dirs = tuple(
             dict.fromkeys((*self._crew_hidden_dirs, *(str(path) for path in auth_store_dirs)))
         )
-        self._child_environment: dict[str, str] = {}
         self._probe_environment: dict[str, str] = {}
-        self._installer_environment = _child_env(
-            self._environ,
-            _trusted_installer_path(self._platform, self._environ),
-        )
         self._run = process_runner or _run_process
-        self._download: InstallerDownloader
-        if downloader is None:
-
-            async def download(url: str) -> bytes:
-                return await _download_installer(url, self._environ)
-
-            self._download = download
-        else:
-            self._download = downloader
         self._audit = audit_writer or _write_audit
         self._clock = clock or time.monotonic
         self._assume_ready = assume_ready
@@ -1778,7 +1402,6 @@ class KiroPrerequisiteService:
                 installed=True,
                 authenticated=True,
                 ready=True,
-                can_login=True,
                 initial_setup_complete=True,
             )
             if assume_ready
@@ -1787,20 +1410,20 @@ class KiroPrerequisiteService:
                 initial_setup_complete=self._initial_setup_complete,
             )
         )
-        self._operation = OperationStatus()
-        self._task: asyncio.Task[None] | None = None
         self._warm_up_task: asyncio.Task[None] | None = None
         # Injectable so tests need not sleep out the real boot-contention delay.
         self._warm_up_delay = warm_up_delay
         self._probe_lock = asyncio.Lock()
+        # Serializes spec repair. `operation_running` does NOT cover it: that
+        # tracks `_task`, which only install/login set, so two concurrent owner
+        # repair POSTs would both pass it. Without this lock the second rebuild
+        # runs over the spec the first just wrote -- the exact
+        # rebuild-over-an-existing-file case the main-spec gate exists to avoid,
+        # which can drop a concurrent api_mcp_toggle write.
+        self._repair_lock = asyncio.Lock()
         self._last_probe_at = 0.0
         self._has_probed = False
         self._viable_binary = ""
-        self._installer_plan: tuple[str, list[str]] | None = None
-
-    @property
-    def operation_running(self) -> bool:
-        return self._task is not None and not self._task.done()
 
     @property
     def initial_setup_complete(self) -> bool:
@@ -1817,9 +1440,138 @@ class KiroPrerequisiteService:
         return self._initial_setup_complete
 
     def _snapshot_dict(self) -> dict[str, Any]:
-        result = asdict(self._status)
-        result["operation"] = asdict(self._operation)
+        result: dict[str, Any] = asdict(self._status)
+        # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
+        result["operation"] = legacy_idle_operation()
         return result
+
+    @staticmethod
+    def _missing_agent_specs() -> list[str]:
+        """The required agent specs absent from the agents dir (blocking call)."""
+        from kiro_crew.agent import missing_required_agent_specs  # circular import
+
+        return missing_required_agent_specs()
+
+    async def _agent_spec_overlay(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Fold agent-spec presence into a snapshot, narrowing ``ready``.
+
+        Applied on EVERY read, not only on a forced probe. That is affordable
+        because it is two ``stat`` calls rather than the probe's two sandboxed
+        ``kiro-cli`` spawns, so it does not violate the boot-and-explicit-action
+        rule the subprocess probe follows (see :meth:`snapshot`). Off-loop anyway,
+        matching this package's discipline of never doing filesystem work inline
+        on the event loop.
+
+        Only ever NARROWS: a missing spec turns ``ready`` off and
+        ``repair_required`` on; a present spec grants nothing the probe did not
+        already grant.
+
+        Deliberately scoped to the dashboard-facing snapshot and NOT to
+        :meth:`session_ready`. That predicate gates poll-driven spawn sites, and
+        turn-starting paths intentionally do not block on it — they let the turn
+        carry the failure, which now arrives as an actionable missing-spec message
+        from ``acp/runtime.py`` instead of a raw JSON-RPC dict. Narrowing it here
+        would re-introduce the stale-latch lockout that design removed.
+        """
+
+        if self._assume_ready:
+            # ``assume_ready`` is the deliberate host-reality bypass (test mode,
+            # fixtures, offline E2E). Those homes have no managed specs on disk, so
+            # applying the overlay there would report a repair-required gate for
+            # every such gateway.
+            return result
+        try:
+            missing = await asyncio.to_thread(self._missing_agent_specs)
+        except Exception:
+            # Unreadable agents dir: report nothing rather than inventing a
+            # missing spec and blocking a working install behind a repair card.
+            logger.debug("Could not check Kiro Crew agent specs", exc_info=True)
+            return result
+        result["missing_agent_specs"] = list(missing)
+        if missing:
+            result["ready"] = False
+            result["repair_required"] = True
+        return result
+
+    async def _repair_agent_specs(self) -> str:
+        """Rewrite the managed agent specs. Returns the failure text, or ``""``.
+
+        Reached ONLY from the ``POST /api/kiro-prerequisite/repair-specs`` handler,
+        never from ``snapshot()``. That placement is load-bearing, not stylistic:
+        the status route is an ``add_get``, and both dashboard barriers are
+        method-scoped — ``csrf_middleware`` skips ``check_origin`` for
+        ``{GET, HEAD, OPTIONS}`` and ``sel_audit_middleware`` logs only
+        ``{POST, PUT, DELETE, PATCH}``. A write hung off the GET would therefore
+        be cross-site triggerable (a ``SameSite=Lax`` cookie rides a top-level
+        cross-site GET) and would leave no SEL record, while every sibling
+        operation in this service — including the read-only probes — audits.
+
+        Only rebuilds when the MAIN spec is absent, which keeps it out of a
+        lost-update class: ``rebuild_agent_config`` regenerates the whole file and
+        re-merges ``mcpServers`` under ``bridges._mcp_lock``, but NOT the
+        ``tools``/``allowedTools`` half ``api_mcp_toggle`` writes separately — so
+        rebuilding over an existing spec can drop a concurrent toggle's edit. With
+        no file on disk there is nothing to lose (the toggle path itself bails
+        with "Cannot read agent config, skipping sync").
+
+        Failure is returned rather than raised: the caller reports it in the
+        payload, which is the entire point — the boot path's swallowed exception is
+        what made the original install undiagnosable. Sanitized like every other
+        dashboard-facing string in this module, because the rebuild's call graph
+        merges ``mcpServers[*].env``.
+        """
+
+        def _rebuild() -> None:
+            from kiro_crew.agent import rebuild_agent_config  # circular import
+
+            rebuild_agent_config()
+
+        try:
+            await asyncio.to_thread(_rebuild)
+        except Exception as exc:
+            logger.error("Agent spec repair from the readiness gate failed", exc_info=True)
+            return _sanitize_detail(f"{type(exc).__name__}: {exc}")
+        logger.info("Agent specs repaired from the readiness gate")
+        return ""
+
+    async def repair_agent_specs(self, caller: str = "") -> dict[str, Any]:
+        """Repair the managed agent specs, then return the post-repair snapshot.
+
+        The Check again button's repair arm, behind a POST so the write is
+        origin-checked and audited (see :meth:`_repair_agent_specs`). Re-reporting
+        alone could never help the install this exists to fix: the probe's two
+        inputs (binary, ``whoami``) are both already true in that state.
+
+        Returns a snapshot with ``agent_spec_repair_error`` set — empty on success.
+        A no-op rebuild is reported as a failure rather than a success: the write
+        can decline silently (``_decline_shared_agent_home`` returns early without
+        raising), and reporting that as ``""`` would leave the gate showing a
+        button that changes nothing on every press.
+        """
+
+        del caller  # the SEL record is written by the route's audit middleware
+        # The missing-spec check and the rebuild must be ONE critical section. Read
+        # outside the lock they are a TOCTOU: two concurrent repairs both observe
+        # the spec missing, both rebuild, and the second one regenerates the file
+        # the first just wrote. Re-reading inside the lock makes the loser a no-op.
+        async with self._repair_lock:
+            before = await self._agent_spec_overlay(self._snapshot_dict())
+            missing_before = before.get("missing_agent_specs") or []
+            if AGENT_FILENAME not in missing_before:
+                # Nothing to repair, only an auxiliary spec is missing (which the
+                # main-spec gate deliberately excludes), or a concurrent repair
+                # already wrote it. Report, do not write.
+                before["agent_spec_repair_error"] = ""
+                return before
+            error = await self._repair_agent_specs()
+            result = await self._agent_spec_overlay(self._snapshot_dict())
+            if not error and (result.get("missing_agent_specs") or []):
+                error = (
+                    "The rebuild reported success but the specs are still missing. "
+                    "Run `kirocrew setup --agent-only --clean` on the gateway host."
+                )
+            result["agent_spec_repair_error"] = error
+            return result
 
     def warm_up(self) -> asyncio.Task[None] | None:
         """Resolve readiness in the background shortly after gateway start.
@@ -1854,22 +1606,56 @@ class KiroPrerequisiteService:
         self._warm_up_task = asyncio.create_task(_warm())
         return self._warm_up_task
 
-    async def snapshot(self, *, force: bool = False) -> dict[str, Any]:
+    async def snapshot(
+        self,
+        *,
+        force: bool = False,
+        coalesce: bool = False,
+    ) -> dict[str, Any]:
         """Return the latched status, probing only on an explicit ``force``.
 
         Probing is boot-and-explicit-action only (see :meth:`session_ready`), so
-        the polled status endpoint reads latched state and spawns nothing. The
-        dashboard's Refresh button and the install/login operations pass
-        ``force=True``; that is the supported way to re-probe on demand.
+        an ordinary poll reads latched state and spawns nothing. ``force=True``
+        (the gate's Check again, and its blocking-state auto-poll) is the
+        supported way to re-probe on demand.
+
+        ``coalesce=True`` additionally floors the probe at
+        :data:`_FORCED_PROBE_FLOOR_SECS`. It is for the MACHINE-driven force — the
+        blocking gate's auto-poll, which every open tab runs independently — so N
+        tabs collapse onto one probe per interval instead of multiplying the
+        spawns. A human-driven force (Check again) passes ``coalesce=False`` and
+        always probes: a button that silently returns a cached answer is a button
+        that looks broken. The floor is likewise NOT applied in
+        :meth:`verified_ready`, whose callers act irreversibly and carry their own
+        freshness bound.
         """
 
-        if force and not self.operation_running:
-            await self._probe(force=True)
-        elif not self._has_probed and not self.operation_running:
+        if force and coalesce and self._clock() - self._last_probe_at < _FORCED_PROBE_FLOOR_SECS:
+            force = False
+        if force:
+            # ``force=not coalesce`` is what actually coalesces a BURST. The floor
+            # above is read outside ``_probe_lock``, so several tabs polling in the
+            # same instant all see the same stale ``_last_probe_at``, all pass it,
+            # and would each run a full probe in turn behind the lock — N tabs, N
+            # probes, exactly what the floor exists to prevent. Handing the machine
+            # poll ``force=False`` lets ``_probe``'s own cache recheck, which runs
+            # INSIDE the lock after the winner refreshed the timestamp, drop the
+            # queued callers. A human Check again keeps ``force=True`` and still
+            # bypasses that cache, so the button never returns a stale answer.
+            await self._probe(force=not coalesce)
+        elif not self._has_probed:
             # Nothing has resolved yet (warm-up still pending or it failed).
             # One probe here is the boot probe, just arriving late.
             await self._probe()
-        return self._snapshot_dict()
+        result = await self._agent_spec_overlay(self._snapshot_dict())
+
+        # The repair arm deliberately does NOT live here. This is an ``add_get``
+        # route, and both dashboard barriers are method-scoped (csrf_middleware
+        # skips check_origin for GET; sel_audit_middleware logs only
+        # POST/PUT/DELETE/PATCH), so a write reached from a status read would be
+        # cross-site triggerable and unaudited. It is a POST route instead:
+        # ``repair_agent_specs`` / ``POST /api/kiro-prerequisite/repair-specs``.
+        return result
 
     def mark_signed_out(self) -> None:
         """Latch readiness to signed-out after an observed ACP auth failure.
@@ -1885,7 +1671,7 @@ class KiroPrerequisiteService:
         this defers to it rather than racing its outcome.
         """
 
-        if self._assume_ready or self.operation_running:
+        if self._assume_ready:
             return
         if not self._status.ready and not self._status.authenticated:
             return
@@ -1912,7 +1698,7 @@ class KiroPrerequisiteService:
         current value rather than racing it.
         """
 
-        if self._assume_ready or self.operation_running:
+        if self._assume_ready:
             return bool(self._status.ready)
         if not self._has_probed or self._clock() - self._last_probe_at >= max_age_secs:
             try:
@@ -1952,7 +1738,6 @@ class KiroPrerequisiteService:
                     installed=True,
                     authenticated=True,
                     ready=True,
-                    can_login=True,
                     initial_setup_complete=True,
                 )
                 self._last_probe_at = self._clock()
@@ -1963,11 +1748,8 @@ class KiroPrerequisiteService:
                 return self._status
             self._viable_binary = ""
             (
-                self._child_environment,
                 self._probe_environment,
                 candidates,
-                self._installer_plan,
-                repair_hint,
             ) = await asyncio.to_thread(
                 _probe_filesystem_state,
                 self._platform,
@@ -1996,7 +1778,6 @@ class KiroPrerequisiteService:
                     self._viable_binary = executable
                     break
 
-            repair_required = not self._viable_binary and repair_hint
             if not self._viable_binary:
                 # Was the probe refused BY THE SANDBOX, as opposed to failing for
                 # any other reason? Verification runs the candidate inside the
@@ -2037,11 +1818,6 @@ class KiroPrerequisiteService:
                         # path, so we cannot claim either way.
                         authenticated=False,
                         ready=False,
-                        # Reinstalling and signing in both fix nothing here, so
-                        # offer neither — a button that cannot help is the
-                        # dead-end this change exists to remove.
-                        can_auto_install=False,
-                        can_login=False,
                         repair_required=False,
                         initial_setup_complete=self._initial_setup_complete,
                         sandbox_unavailable=True,
@@ -2053,8 +1829,6 @@ class KiroPrerequisiteService:
                     return self._status
                 self._status = PrerequisiteStatus(
                     platform=_platform_label(self._platform),
-                    can_auto_install=self._installer_plan is not None and not repair_required,
-                    repair_required=repair_required,
                     initial_setup_complete=self._initial_setup_complete,
                 )
                 self._last_probe_at = self._clock()
@@ -2083,8 +1857,6 @@ class KiroPrerequisiteService:
                 installed=True,
                 authenticated=whoami.ok,
                 ready=whoami.ok,
-                can_auto_install=self._installer_plan is not None,
-                can_login=True,
                 repair_required=False,
                 initial_setup_complete=self._initial_setup_complete,
             )
@@ -2112,7 +1884,6 @@ class KiroPrerequisiteService:
                 args,
                 env=self._probe_environment,
                 timeout_secs=_PROBE_TIMEOUT_SECS,
-                sandboxed=True,
                 sandbox_mode=_UNVERIFIED_SANDBOX_MODE,
                 extra_hidden_dirs=self._hidden_probe_dirs,
             )
@@ -2139,23 +1910,6 @@ class KiroPrerequisiteService:
         )
         return result
 
-    def _attest_candidate(self, executable: str) -> None:
-        """Pin the exact binary produced by the validated official installer."""
-
-        canonical = _canonical_candidate(executable)
-        payload = {
-            "version": _BINARY_TRUST_VERSION,
-            "path": canonical,
-            "sha256": _binary_sha256(canonical),
-        }
-        atomic_write(
-            self._binary_trust_path,
-            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-            fsync=True,
-            mode=0o600,
-        )
-        platform_compat.restrict_to_owner(str(self._binary_trust_path))
-
     async def _run_auth_command(
         self,
         executable: str,
@@ -2163,7 +1917,6 @@ class KiroPrerequisiteService:
         *,
         base_env: dict[str, str],
         timeout_secs: float,
-        on_output: Callable[[str], None] | None = None,
         isolate_home: bool = True,
     ) -> ProcessResult:
         """Run one Kiro auth command against a sandboxed, trusted executable.
@@ -2206,8 +1959,6 @@ class KiroPrerequisiteService:
                 args,
                 env=base_env,
                 timeout_secs=timeout_secs,
-                on_output=on_output,
-                sandboxed=True,
                 sandbox_mode=_KIRO_AUTH_SANDBOX_MODE,
                 extra_hidden_dirs=self._crew_hidden_dirs,
             )
@@ -2229,8 +1980,6 @@ class KiroPrerequisiteService:
                 args,
                 env=workspace.env,
                 timeout_secs=timeout_secs,
-                on_output=on_output,
-                sandboxed=True,
                 sandbox_mode=_KIRO_AUTH_SANDBOX_MODE,
                 extra_hidden_dirs=self._hidden_probe_dirs,
                 extra_visible_dirs=(str(workspace.root),),
@@ -2301,39 +2050,6 @@ class KiroPrerequisiteService:
         platform_compat.restrict_to_owner(str(self._setup_marker))
         self._initial_setup_complete = True
 
-    def _start(self, kind: str, caller: str) -> dict[str, Any]:
-        if self.operation_running:
-            raise PrerequisiteBusyError("Another Kiro setup step is already running.")
-        self._operation = OperationStatus(
-            kind=kind,
-            status="running",
-            message="Preparing Kiro CLI setup…",
-        )
-        target = self._install(caller) if kind == "install" else self._login(caller)
-        self._task = asyncio.create_task(target)
-        self._task.add_done_callback(self._operation_done)
-        return self._snapshot_dict()
-
-    def start_install(self, caller: str = "") -> dict[str, Any]:
-        return self._start("install", caller)
-
-    def start_login(self, caller: str = "") -> dict[str, Any]:
-        return self._start("login", caller)
-
-    def _operation_done(self, task: asyncio.Task[None]) -> None:
-        if task is not self._task:
-            return
-        if task.cancelled():
-            self._operation.status = "failed"
-            self._operation.error = "Kiro setup was cancelled."
-            return
-        try:
-            task.result()
-        except Exception:
-            logger.exception("Kiro prerequisite operation failed unexpectedly")
-            self._operation.status = "failed"
-            self._operation.error = "Kiro setup failed unexpectedly."
-
     async def _set_terminal_audit(
         self,
         action: str,
@@ -2352,211 +2068,9 @@ class KiroPrerequisiteService:
         except Exception:
             logger.warning("Could not write terminal Kiro setup audit event", exc_info=True)
 
-    async def _install(self, caller: str) -> None:
-        try:
-            await self._audit(
-                action="install",
-                outcome="invoked",
-                caller=caller,
-                critical=True,
-            )
-            current = await self._probe(force=True)
-            if current.installed and current.can_login:
-                self._operation = OperationStatus(
-                    kind="install",
-                    status="succeeded",
-                    message="Kiro CLI is already installed.",
-                )
-                await self._set_terminal_audit("install", "completed", caller)
-                return
-            if not current.can_auto_install:
-                error = (
-                    "Replace the existing Kiro CLI using the official installation guide."
-                    if current.repair_required
-                    else f"Automatic Kiro CLI installation is unavailable on {current.platform}."
-                )
-                self._operation = OperationStatus(
-                    kind="install",
-                    status="failed",
-                    message="Kiro CLI needs manual installation.",
-                    error=error,
-                )
-                await self._set_terminal_audit("install", "denied", caller, error)
-                return
-            expected_target = _canonical_candidate(
-                _official_install_target(self._platform, self._home, self._environ)
-            )
-            previous_target_digest = await asyncio.to_thread(
-                _existing_binary_digest,
-                expected_target,
-            )
-
-            install_url = (
-                OFFICIAL_WINDOWS_INSTALL_URL if self._platform == "win32" else OFFICIAL_INSTALL_URL
-            )
-            self._operation.message = "Downloading the official Kiro CLI installer…"
-            content = await self._download(install_url)
-            if not validate_installer_script(self._platform, content):
-                raise RuntimeError("the official installer response failed validation")
-
-            plan = self._installer_plan
-            if plan is None:
-                raise RuntimeError("the platform installer command is unavailable")
-            self._operation.message = "Installing Kiro CLI…"
-            result = await self._run(
-                plan[0],
-                plan[1],
-                env=self._installer_environment,
-                timeout_secs=_INSTALL_TIMEOUT_SECS,
-                on_output=self._capture_operation_output,
-                sandboxed=False,
-                stdin_data=content,
-            )
-            if not result.ok:
-                reason = (
-                    "Kiro CLI installation timed out."
-                    if result.timed_out
-                    else ("Kiro CLI installation did not complete.")
-                )
-                raise RuntimeError(reason)
-            next_status = await self._probe(force=True)
-            if not next_status.installed:
-                raise RuntimeError("installation finished, but Kiro CLI was not found")
-            if not self._viable_binary:
-                raise RuntimeError("installation finished without a usable Kiro CLI")
-            installed_target = _canonical_candidate(self._viable_binary)
-            if os.path.normcase(installed_target) != os.path.normcase(expected_target):
-                raise RuntimeError(
-                    "the installed Kiro CLI is shadowed by another executable; "
-                    "remove the shadowing executable and retry"
-                )
-            installed_target_digest = await asyncio.to_thread(
-                _existing_binary_digest,
-                expected_target,
-            )
-            if installed_target_digest is None:
-                raise RuntimeError("the official Kiro CLI install target is not a regular file")
-            if previous_target_digest is not None and hmac.compare_digest(
-                previous_target_digest,
-                installed_target_digest,
-            ):
-                raise RuntimeError(
-                    "the installer did not replace the existing Kiro CLI; "
-                    "remove it and retry from Kiro Crew"
-                )
-            await asyncio.to_thread(self._attest_candidate, expected_target)
-            next_status = await self._probe(force=True)
-            if not next_status.can_login:
-                raise RuntimeError("installed Kiro CLI could not be verified for sign-in")
-            self._operation = OperationStatus(
-                kind="install",
-                status="succeeded",
-                message="Kiro CLI is installed.",
-            )
-            await self._set_terminal_audit("install", "completed", caller)
-        except asyncio.CancelledError:
-            await self._set_terminal_audit("install", "failed", caller, "cancelled")
-            raise
-        except Exception as exc:
-            safe_error = _sanitize_detail(str(exc))
-            self._operation.status = "failed"
-            self._operation.message = "Kiro CLI installation failed."
-            self._operation.error = safe_error
-            await self._set_terminal_audit("install", "failed", caller, safe_error)
-
-    def _capture_operation_output(self, chunk: str) -> None:
-        # Read the login URL out of the RAW chunk first: the detector is strict
-        # about host and path, and noise filtering must never be able to hide a
-        # legitimate sign-in URL from the user.
-        url = extract_secure_login_url(chunk)
-        detail = _dedupe_repeated_lines(
-            _append_capped(self._operation.detail, _strip_progress_noise(chunk))
-        )
-        self._operation.detail = _sanitize_detail(detail)
-        if self._operation.kind == "login":
-            # One stream read can split a URL across two chunks, so keep the
-            # accumulated-text fallback: the filter only inserts line breaks at
-            # frame boundaries, which a sign-in URL never contains.
-            url = url or extract_secure_login_url(detail)
-            if url:
-                self._operation.url = url
-                self._operation.message = "Open the sign-in page and enter the code shown below."
-
-    async def _login(self, caller: str) -> None:
-        try:
-            await self._audit(
-                action="login",
-                outcome="invoked",
-                caller=caller,
-                critical=True,
-            )
-            current = await self._probe(force=True)
-            if not current.installed or not self._viable_binary:
-                error = (
-                    "Kiro CLI could not start. Reinstall it before signing in."
-                    if current.repair_required
-                    else "Install Kiro CLI before signing in."
-                )
-                self._operation = OperationStatus(
-                    kind="login",
-                    status="failed",
-                    message="Kiro sign-in cannot start.",
-                    error=error,
-                )
-                await self._set_terminal_audit("login", "denied", caller, error)
-                return
-            if current.authenticated:
-                self._operation = OperationStatus(
-                    kind="login",
-                    status="succeeded",
-                    message="Kiro sign-in is already complete.",
-                )
-                await self._set_terminal_audit("login", "completed", caller)
-                return
-
-            self._operation.message = "Starting Kiro sign-in…"
-            # kiro-cli owns the whole device flow: it runs against the real home
-            # and writes its own credential store, exactly as it does from a
-            # terminal. KiroCrew stages no credentials and copies none back.
-            result = await self._run_auth_command(
-                self._viable_binary,
-                ["login", "--use-device-flow"],
-                base_env=self._child_environment,
-                timeout_secs=_LOGIN_TIMEOUT_SECS,
-                on_output=self._capture_operation_output,
-                isolate_home=False,
-            )
-            next_status = await self._probe(force=True)
-            if next_status.authenticated:
-                self._operation = OperationStatus(
-                    kind="login",
-                    status="succeeded",
-                    message="Kiro sign-in is complete.",
-                )
-                await self._set_terminal_audit("login", "completed", caller)
-                return
-            error = (
-                "Kiro sign-in timed out. Start it again to receive a new code."
-                if result.timed_out
-                else "Kiro sign-in did not complete. Try again."
-            )
-            self._operation.status = "failed"
-            self._operation.message = "Kiro sign-in is incomplete."
-            self._operation.error = error
-            await self._set_terminal_audit("login", "failed", caller, error)
-        except asyncio.CancelledError:
-            await self._set_terminal_audit("login", "failed", caller, "cancelled")
-            raise
-        except Exception as exc:
-            safe_error = _sanitize_detail(str(exc))
-            self._operation.status = "failed"
-            self._operation.message = "Kiro sign-in failed."
-            self._operation.error = safe_error
-            await self._set_terminal_audit("login", "failed", caller, safe_error)
-
     async def close(self) -> None:
         tasks: list[asyncio.Task[Any]] = []
-        for task in (self._task, self._warm_up_task):
+        for task in (self._warm_up_task,):
             if task is not None and not task.done() and task not in tasks:
                 task.cancel()
                 tasks.append(task)

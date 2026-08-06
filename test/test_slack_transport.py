@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.messaging.transport import InboundMessage, MessagingTransport
+from kiro_crew.slack.format import SLACK_MSG_LIMIT
 from kiro_crew.slack.transport import SlackTransport
 
 
@@ -48,7 +49,7 @@ class TestContract:
     def test_capabilities_reflect_slack(self):
         cap = _t().capabilities
         assert cap.streaming and cap.rich_blocks and cap.threads and cap.reactions
-        assert cap.max_message_chars == 40000
+        assert cap.max_message_chars == SLACK_MSG_LIMIT
 
     def test_client_is_exposed(self):
         c = FakeClient()

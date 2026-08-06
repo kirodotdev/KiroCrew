@@ -86,7 +86,31 @@ CHAT_TURN_TIMEOUT = 7200.0
 # unambiguous and avoids a polynomial-ReDoS (``py/polynomial-redos``) backtracking
 # path over ``[OPTIONS:`` + a long whitespace run. The real tic (``(OPTIONS)``, a
 # bare ``(url)``) contains no whitespace or nested parens, so nothing is lost.
-OPTIONS_RE_LINE = re.compile(r"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*)\](?:\([^\s()]*\))?[ \t]*$", re.MULTILINE)
+#: Closing brackets accepted on a protocol marker. ASCII ``]`` is the only form
+#: the prompt ever specifies, but a model intermittently substitutes a fullwidth
+#: or CJK lookalike — U+3011 ``】`` is the observed one; U+FF3D ``］`` and U+3015
+#: ``〕`` are the same class of slip. A single wrong codepoint otherwise breaks
+#: the end anchor, so the whole marker leaks into the visible message as literal
+#: text and the turn silently loses its follow-up pills. Label content is
+#: unaffected either way, so accepting the lookalike costs nothing.
+#:
+#: ONE definition, shared by both regexes below. Deliberately NOT used by
+#: :func:`split_trailing_protocol_suffix`'s unfinished-marker check, which stays
+#: ASCII-only on purpose -- see the comment there. That asymmetry is the point:
+#: completeness is decided by the trailer regex, not by whether some closer
+#: character happens to appear in the tail.
+#:
+#: ReDoS profile is unchanged from the previous literal ``\]``. The class shares
+#: no character with the trailing ``[ \t]*`` / ``\s*``, and the tempered body
+#: already admitted ``]`` via ``[^[\n]``, so adding these three codepoints
+#: introduces no new ambiguity.
+MARKER_CLOSERS = "]\u3011\uff3d\u3015"
+_MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
+
+OPTIONS_RE_LINE = re.compile(
+    rf"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*){_MARKER_CLOSE_CLASS}(?:\([^\s()]*\))?[ \t]*$",
+    re.MULTILINE,
+)
 
 # TRAILER (``re.DOTALL``, ``\Z`` anchor) — for the Discord/Telegram/WeCom
 # renderers, which match the marker only at the very END of the message and
@@ -95,7 +119,10 @@ OPTIONS_RE_LINE = re.compile(r"\[OPTIONS:((?:[^[\n]|\[(?!OPTIONS:))*)\](?:\([^\s
 # the same optional markdown-link close as LINE (same ``[^\s()]`` inner class, so it
 # shares no character with the trailing ``\s*`` — ReDoS-safe) so the grammar stays
 # identical.
-OPTIONS_RE_TRAILER = re.compile(r"\[OPTIONS:((?:[^[]|\[(?!OPTIONS:))*)\](?:\([^\s()]*\))?\s*\Z", re.DOTALL)
+OPTIONS_RE_TRAILER = re.compile(
+    rf"\[OPTIONS:((?:[^[]|\[(?!OPTIONS:))*){_MARKER_CLOSE_CLASS}(?:\([^\s()]*\))?\s*\Z",
+    re.DOTALL,
+)
 
 
 def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
@@ -110,6 +137,16 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     """
     suffix_start = len(text)
     idx = max(text.rfind("[STEERING"), text.rfind("[OPTIONS"))
+    # DELIBERATELY ASCII-ONLY -- do not widen this to ``MARKER_CLOSERS``.
+    # This asks "is the tail an UNFINISHED marker?", and mere PRESENCE of a
+    # closer is not completeness: a closer sitting inside a still-streaming
+    # label (``[OPTIONS: Use 】 the bracket``) would read as finished, the
+    # fragment would not be detached, and a length rotation could split the
+    # marker so raw fragments render and the pills are lost. Completeness is
+    # decided by ``OPTIONS_RE_TRAILER`` on the next line, which DOES accept the
+    # lookalikes -- so a complete lookalike-closed block is still pulled into
+    # the suffix. Widening here buys nothing (both paths already yield the same
+    # split for a complete tail) and reintroduces that bug.
     if idx != -1 and "]" not in text[idx:]:
         suffix_start = idx
 

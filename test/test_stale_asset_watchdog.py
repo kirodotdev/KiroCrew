@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -36,8 +37,8 @@ async def test_watchdog_shuts_down_when_assets_vanish():
         )
 
     assert shutdown.is_set()
-    # startup check + periodic tick + confirmation re-check
-    assert call_count == 3
+    # startup check + periodic tick + confirmation re-check + post-drain re-check
+    assert call_count == 4
 
 
 @pytest.mark.asyncio
@@ -353,3 +354,68 @@ def test_token_probe_silent_on_network_error():
         _probe_dashboard_health(7777)
 
     assert stderr_capture.getvalue() == ""
+
+
+@pytest.mark.asyncio
+async def test_watchdog_survives_asset_gap_that_heals_while_draining(caplog):
+    """A rebuild that heals while in-flight turns drain must NOT shut down.
+
+    The gap outlives the confirmation, so only the post-drain re-check can save
+    the gateway. ``count_in_flight`` reports real pending work here so the drain
+    actually spans the gap — with ``None`` the drain returns immediately and
+    this path proves nothing.
+    """
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    caplog.set_level(logging.CRITICAL, logger="kiro_crew.dashboard.stale_asset_watchdog")
+
+    shutdown = asyncio.Event()
+    checks = 0
+    assets = True
+    pending = 2
+
+    def _mock_assets_present() -> bool:
+        nonlocal checks
+        checks += 1
+        # startup sees assets; the tick and the confirmation both miss them
+        # (rebuild still running); anything later sees them restored.
+        if checks == 2 or checks == 3:
+            return False
+        if checks >= 5:
+            asyncio.get_running_loop().call_soon(shutdown.set)
+        return assets
+
+    def _count_in_flight() -> int:
+        # Each poll retires one turn; the rebuild completes as the last one
+        # does, so the post-drain re-check is the first check to see assets.
+        nonlocal pending, assets
+        pending = max(0, pending - 1)
+        if pending == 0:
+            assets = True
+        return pending
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.05,
+                confirm_delay=0.01,
+                count_in_flight=_count_in_flight,
+                drain_timeout=5.0,
+                drain_poll=0.01,
+            ),
+            timeout=5.0,
+        )
+
+    assert pending == 0, "the drain must have actually run"
+    # Reaching a 5th check proves the watchdog resumed its loop instead of
+    # firing: shutdown came from the test, not the watchdog.
+    assert checks >= 5
+    # A run that heals must not have announced a shutdown it then abandoned:
+    # the CRITICAL belongs after the post-drain re-check, not before the drain.
+    assert not [r for r in caplog.records if r.levelno >= logging.CRITICAL], (
+        "healed run logged a misleading graceful-shutdown CRITICAL"
+    )

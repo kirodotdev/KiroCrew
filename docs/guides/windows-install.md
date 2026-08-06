@@ -111,6 +111,15 @@ compile and git paths, need an explicit opt-in in `%USERPROFILE%\.kiro\crew\conf
 { "agent": { "sandbox_allow_unsandboxed_exec": true } }
 ```
 
+**`kirocrew setup` now offers this for you.** Because Windows has no OS-level
+sandbox backend, the wizard detects that and asks once — stating that agent
+subprocesses will be able to read your home directory, including `.aws` and
+`.ssh`, with no OS confinement. It defaults to **no** and writes the key only if
+you answer yes, so the choice stays yours; the JSON above remains the manual
+equivalent if you skipped the prompt or run setup non-interactively. Answering no
+(or pressing Enter) leaves the fail-closed posture in place, and the wizard tells
+you how to opt in later.
+
 Setting it means agent subprocesses run with your own user privileges, which is the
 same posture as running the tool yourself in a shell. Config is read live, so no
 gateway restart is needed. Without it, the affected paths answer a clear 422 naming

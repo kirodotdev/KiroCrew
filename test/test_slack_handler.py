@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from conftest import MockSlackClient
 
+from conftest import MockSlackClient
 from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import AutoReplyHook, HookManager, HooksConfig
 from kiro_crew.providers.base import LLMEvent

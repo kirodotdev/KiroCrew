@@ -46,6 +46,7 @@ import { Btn } from './ui'
 
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from './ErrorNotice'
 const CHECK_POLL_BASE_MS = 10_000
 const CHECK_POLL_MAX_MS = 60_000
 // Strip-wide status poll. Steady state is paced by the TTL the server reports
@@ -177,7 +178,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
     return {
       tone: 'danger',
       title: i18nT('components.pullRequestPanel.merge_conflicts'),
-      detail: `This branch has conflicts with ${base} and cannot be merged until they are resolved.`,
+      detail: i18nT('components.pullRequestPanel.merge_conflicts_detail', { base }),
       handoff: [
         ...handoffHeader('Merge conflict'),
         `Resolve the conflicts with ${base}. If the branch is shared with other contributors, prefer merging ${base} into the branch; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
@@ -190,7 +191,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
     return {
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.rebase_required'),
-      detail: `This project requires the branch to be rebased onto ${base} before merging; a merge commit will not unblock it.`,
+      detail: i18nT('components.pullRequestPanel.rebase_required_detail', { base }),
       handoff: [
         ...handoffHeader('Rebase required'),
         `This project requires a rebase (merge commits will not unblock the MR). If the branch is shared with other contributors, coordinate with them before rewriting history; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
@@ -201,7 +202,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
     return {
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.branch_is_behind'),
-      detail: `This branch is out of date with ${base} and must be updated before merging.`,
+      detail: i18nT('components.pullRequestPanel.branch_is_behind_detail', { base }),
       handoff: [
         ...handoffHeader('Out-of-date branch'),
         `Update the branch without rewriting history: merge ${base} into the branch (or use the provider's update-branch option) and push normally. Only rebase if the repository requires a linear history, and never force-push a shared branch without checking with its other contributors.`,
@@ -707,7 +708,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
             : i18nT('components.pullRequestPanel.this_authorizes_the_merge_when_the_pipeline_succ')}
         </span>
       )}
-      {error && <span role="alert" className="text-[11px] text-danger">{error}</span>}
+      <ErrorNotice message={error} variant="inline" askAgent />
     </div>
   )
 }

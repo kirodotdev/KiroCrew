@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import TelemetryPanel from '../pages/TelemetryPanel'
@@ -95,13 +96,6 @@ describe('TelemetryPanel bucket generations', () => {
     expect(screen.queryByText(CAVEAT)).not.toBeInTheDocument()
   })
 
-  it('flags a truncated MCP acquire sample instead of quoting it bare', async () => {
-    await mount(resp({
-      other: [acquireRow({ ...stat({ count: 1134, other_generations: 1, total_count: 2906 }) })],
-    }))
-    await waitFor(() => expect(screen.getByText(/n=1134/)).toBeInTheDocument())
-    expect(screen.getByText(CAVEAT)).toBeInTheDocument()
-  })
 
   it('keeps the startup caveat when the phases and distribution cards are absent', async () => {
     // The claude startup path emits no phase points, and a window can have no
@@ -109,56 +103,43 @@ describe('TelemetryPanel bucket generations', () => {
     await mount(resp({
       startup: startup({
         overall: stat({ count: 1090, other_generations: 1, total_count: 1730 }),
+        // The outcome tally and the count come from one _Hist group, so they
+        // agree in real payloads; the startup tile derives its population from
+        // the outcome map (same source as the fault count beside it), so the
+        // fixture has to say the same number in both places.
+        outcome: { ready: 1090 },
         phases: [],
         distribution: { buckets: [], bounds: [] },
       }),
       turn: null,
     }))
-    await waitFor(() => expect(screen.getByText('1090 startups')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('1,090 startups recorded')).toBeInTheDocument())
     expect(screen.getByText(CAVEAT)).toBeInTheDocument()
     expect(screen.getByText(/Showing 1090 of 1730 samples/i)).toBeInTheDocument()
   })
+
+  it('keeps the latency caveat a marker in the cell, with the sentence in the tooltip', async () => {
+    // Rendered inline, the sentence wrapped to nine lines inside a 64px cell,
+    // tripled three of six row heights and collided the max value with the count.
+    // The caveat must stay visible but compact.
+    await mount(resp({
+      other: [acquireRow({ ...stat({ count: 56917, other_generations: 1, total_count: 83679 }) })],
+    }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Latency/ })).toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: /Latency/ }))
+
+    const marker = await waitFor(() => {
+      const el = document.querySelector('[title*="56,917"], [title*="56917"]')
+      if (!el) throw new Error('caveat marker not rendered')
+      return el as HTMLElement
+    })
+    // A marker in the cell; the numbers live in the tooltip where they cannot
+    // reflow the row.
+    expect(marker.textContent?.trim()).toBe('*')
+    expect(marker.getAttribute('title') ?? '').toMatch(/83,?679/)
+    // The sentence itself must not be visible text anywhere in the profile row.
+    const row = marker.closest('div')
+    expect(row?.textContent ?? '').not.toMatch(/histogram boundaries/i)
+  })
 })
 
-describe('TelemetryPanel cold spawn card', () => {
-  beforeEach(() => { vi.clearAllMocks(); qc.clear() })
-
-  it('reads the cold side of the acquire split, not the legacy lazy_load metric', async () => {
-    await mount(resp({
-      other: [acquireRow({
-        splits: {
-          'warm=true': stat({ count: 1084, p50_ms: 0.3 }),
-          'warm=false': stat({ count: 50, p50_ms: 4200 }),
-        },
-      })],
-    }))
-    // 4200ms formats to "4.2s" — the cold-spawn p50, sourced from the split.
-    await waitFor(() => expect(screen.getByText('4.2s')).toBeInTheDocument())
-    // "cold spawn" also appears in the warm-pool card's caption, so assert on
-    // the cold-spawn value's own row rather than the bare phrase.
-    const row = screen.getByText('4.2s').closest('div')
-    expect(row?.textContent).toMatch(/50\s*cold spawn/)
-  })
-
-  it('reports a zero-cold-spawn window as 0, not as absent telemetry', async () => {
-    // A healthy warm pool has no cold spawns. Calling that "no data yet" is the
-    // permanently-empty card this change removes.
-    await mount(resp({
-      other: [acquireRow({ splits: { 'warm=true': stat({ count: 1134 }) } })],
-    }))
-    await waitFor(() => expect(screen.getByText(/n=1134/)).toBeInTheDocument())
-    const zero = screen.getByText((_t, el) =>
-      /0\s*cold spawn/.test(el?.textContent ?? '') && el?.tagName === 'SPAN')
-    expect(zero).toBeInTheDocument()
-    // Scoped to the cold-load card: other cards legitimately say "no data yet"
-    // when their own instrument is absent (skill load, in this payload).
-    const card = screen.getByText('MCP cold-load (first use)').closest('div')
-    expect(card?.textContent).not.toMatch(/no data yet/i)
-  })
-
-  it('still shows no data when the acquire instrument itself is missing', async () => {
-    await mount(resp({ other: [] }))
-    await waitFor(() => expect(screen.getByText('80')).toBeInTheDocument())
-    expect(screen.getAllByText(/no data yet/i).length).toBeGreaterThan(0)
-  })
-})

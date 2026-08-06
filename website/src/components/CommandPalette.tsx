@@ -463,7 +463,7 @@ export default function CommandPalette({
       {query.trim()
         ? 'No matches'
         : scopeLabel
-          ? `No ${scopeLabel.toLowerCase()}`
+          ? i18nT('components.commandPalette.no_scope', { scope: scopeLabel.toLowerCase() })
           : 'No recent sessions'}
     </div>
   )
@@ -517,7 +517,7 @@ export default function CommandPalette({
                 setQuery(v)
               }
             }}
-            placeholder={scopeLabel ? `Search ${scopeLabel.toLowerCase()}…` : 'Search for anything'}
+            placeholder={scopeLabel ? i18nT('components.commandPalette.search_scope', { scope: scopeLabel.toLowerCase() }) : i18nT('components.commandPalette.search_for_anything')}
             aria-label={i18nT('components.commandPalette.search_everywhere')}
             className="flex-1 bg-transparent border-none outline-none text-[14px] text-text placeholder:text-muted"
           />

@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import sys
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -543,16 +542,46 @@ def _resilient_cred_unlink(cred: Path) -> None:
             time.sleep(0.01)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
+class _ProbeBarrier:
+    """Counts ``watch_credential`` probe cycles so a test can await "N polls
+    have completed" instead of sleeping a wall-clock guess.
+
+    Sleeping was the root of the Windows flake in issue #1105. A test slept
+    50ms hoping the baseline probe had run, then wrote the rotation. On a runner
+    with ~15.6ms timer granularity and slower file IO the write could land
+    BEFORE the baseline probe, so the baseline captured the rotated bytes and no
+    change was ever detected.
+
+    Pass an instance as ``on_probe_complete``. The watcher invokes it once per
+    cycle, on every branch.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._bumped = asyncio.Event()
+
+    def __call__(self) -> None:
+        self.count += 1
+        self._bumped.set()
+
+    async def wait_for(self, n: int, timeout: float = 5.0) -> None:
+        """Return once at least ``n`` probe cycles have completed.
+
+        Clear-then-wait is safe because ``__call__`` is synchronous and runs on
+        this same loop, so it cannot interleave between the count check and the
+        ``wait()``. The post-clear re-check is belt and braces.
+        """
+
+        async def _spin() -> None:
+            while self.count < n:
+                self._bumped.clear()
+                if self.count >= n:
+                    return
+                await self._bumped.wait()
+
+        await asyncio.wait_for(_spin(), timeout)
+
+
 @pytest.mark.asyncio
 async def test_credwatch_first_observation_is_baseline_no_fire(tmp_path: Path) -> None:
     """The first observation of the credential file establishes the baseline
@@ -563,27 +592,25 @@ async def test_credwatch_first_observation_is_baseline_no_fire(tmp_path: Path) -
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.1)  # several polls on the unchanged baseline
+    await barrier.wait_for(3)  # 3 polls: baseline + 2 unchanged confirms no fire
     stop.set()
     await task
 
     assert fired == []
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_baseline_established_immediately(tmp_path: Path) -> None:
     """The baseline is captured on the FIRST probe (at startup), not one full
@@ -597,33 +624,31 @@ async def test_credwatch_baseline_established_immediately(tmp_path: Path) -> Non
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     # interval 0.1s: immediate probe at t≈0 sets baseline=v1; v2 written at
     # t≈0.05 (after baseline, before the next poll); poll at t≈0.1 detects the
     # change and fires. A wait-first loop would first probe at t≈0.1, see v2,
     # and make it the baseline → no fire.
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.1, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.1,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # baseline (v1) captured by the immediate probe
+    await barrier.wait_for(1)  # baseline (v1) captured by the immediate probe
     _atomic_cred_write(cred, b"secret-v2-rotated")
-    await asyncio.sleep(0.25)  # let the next poll(s) detect the rotation
+    await barrier.wait_for(barrier.count + 2)  # 2 more polls to detect the rotation
     stop.set()
     await task
 
     assert fired == [True]  # rotation within the first interval was detected
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_no_fire_on_byte_identical_rewrite(tmp_path: Path) -> None:
     """An mtime bump with byte-identical content (a no-op rewrite by a
@@ -634,11 +659,19 @@ async def test_credwatch_no_fire_on_byte_identical_rewrite(tmp_path: Path) -> No
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # let the baseline establish
+    await barrier.wait_for(1)  # baseline established
     # Simulate a no-op refresh (byte-identical content, moved mtime) by touching
     # ONLY the mtime — do NOT physically rewrite. The watcher's identity is
     # (mtime, content-hash), so re-writing the SAME bytes is indistinguishable
@@ -653,23 +686,13 @@ async def test_credwatch_no_fire_on_byte_identical_rewrite(tmp_path: Path) -> No
 
     st = cred.stat()
     os.utime(cred, (st.st_atime, st.st_mtime + 10.0))
-    await asyncio.sleep(0.1)
+    await barrier.wait_for(barrier.count + 2)  # 2 more polls confirm no fire
     stop.set()
     await task
 
     assert fired == []
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_fires_on_content_change(tmp_path: Path) -> None:
     """A real content change past the baseline fires on_change (async
@@ -680,12 +703,22 @@ async def test_credwatch_fires_on_content_change(tmp_path: Path) -> None:
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired = asyncio.Event()
+    barrier = _ProbeBarrier()
 
     async def _on_change() -> None:
         fired.set()
 
-    task = asyncio.create_task(credwatch.watch_credential(cred, 0.01, stop, _on_change, logger))
-    await asyncio.sleep(0.05)  # let the baseline establish
+    task = asyncio.create_task(
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            _on_change,
+            logger,
+            on_probe_complete=barrier,
+        )
+    )
+    await barrier.wait_for(1)  # baseline established
     import os
 
     cred.write_bytes(b"secret-v2")
@@ -696,16 +729,6 @@ async def test_credwatch_fires_on_content_change(tmp_path: Path) -> None:
     await task
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_fires_on_content_change_with_unchanged_mtime(tmp_path: Path) -> None:
     """A rotation that rewrites the file in-place with NEW content but leaves
@@ -720,12 +743,22 @@ async def test_credwatch_fires_on_content_change_with_unchanged_mtime(tmp_path: 
     baseline_mtime = cred.stat().st_mtime
     stop = asyncio.Event()
     fired = asyncio.Event()
+    barrier = _ProbeBarrier()
 
     async def _on_change() -> None:
         fired.set()
 
-    task = asyncio.create_task(credwatch.watch_credential(cred, 0.01, stop, _on_change, logger))
-    await asyncio.sleep(0.05)  # let the baseline establish
+    task = asyncio.create_task(
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            _on_change,
+            logger,
+            on_probe_complete=barrier,
+        )
+    )
+    await barrier.wait_for(1)  # baseline established
 
     # Rewrite with new content, then FORCE mtime back to the baseline value —
     # simulating a coarse-mtime filesystem where the rotation shares a tick.
@@ -737,16 +770,6 @@ async def test_credwatch_fires_on_content_change_with_unchanged_mtime(tmp_path: 
     await task
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_absent_then_appearing_fires(tmp_path: Path) -> None:
     """When the file is ABSENT at the first probe, its later appearance is a
@@ -758,29 +781,27 @@ async def test_credwatch_absent_then_appearing_fires(tmp_path: Path) -> None:
     cred = tmp_path / "cred"  # does not exist yet
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # polls against the missing file (absent baseline)
+    await barrier.wait_for(1)  # absent baseline captured
     _atomic_cred_write(cred, b"secret-v1")  # appearance after an absent baseline → fires
-    await asyncio.sleep(0.1)
+    await barrier.wait_for(barrier.count + 2)  # 2 polls: detect appearance + confirm
     stop.set()
     await task
 
     assert fired == [True]
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_never_appearing_file_never_fires(tmp_path: Path) -> None:
     """A file that stays ABSENT for the watcher's whole life never fires — the
@@ -790,27 +811,25 @@ async def test_credwatch_never_appearing_file_never_fires(tmp_path: Path) -> Non
     cred = tmp_path / "cred"  # never created
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.1)  # many polls, file never appears
+    await barrier.wait_for(3)  # 3 polls on absent file: confirms no spurious fire
     stop.set()
     await task
 
     assert fired == []
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_present_then_deleted_fires_revocation(tmp_path: Path) -> None:
     """Deleting a PRESENT credential (present -> absent) is a revocation and
@@ -822,13 +841,21 @@ async def test_credwatch_present_then_deleted_fires_revocation(tmp_path: Path) -
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # present baseline captured
+    await barrier.wait_for(1)  # present baseline captured
     _resilient_cred_unlink(cred)  # revocation
-    await asyncio.sleep(0.1)  # several absent polls
+    await barrier.wait_for(barrier.count + 3)  # 3 absent polls: detect + confirm no re-fire
     stop.set()
     await task
 
@@ -836,16 +863,6 @@ async def test_credwatch_present_then_deleted_fires_revocation(tmp_path: Path) -
     assert fired == [True]
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_delete_then_reappear_fires_twice(tmp_path: Path) -> None:
     """present -> absent -> present: the delete fires (revocation) AND the later
@@ -857,15 +874,23 @@ async def test_credwatch_delete_then_reappear_fires_twice(tmp_path: Path) -> Non
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
 
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # present baseline
+    await barrier.wait_for(1)  # present baseline
     _resilient_cred_unlink(cred)  # -> absent (fire #1: revocation)
-    await asyncio.sleep(0.05)
+    await barrier.wait_for(barrier.count + 2)  # 2 polls: detect deletion + stabilize
     _atomic_cred_write(cred, b"secret-v2")  # -> present (fire #2: new credential)
-    await asyncio.sleep(0.1)
+    await barrier.wait_for(barrier.count + 2)  # 2 polls: detect reappearance + confirm
     stop.set()
     await task
 
@@ -879,16 +904,6 @@ async def test_credwatch_delete_then_reappear_fires_twice(tmp_path: Path) -> Non
 # fix (the _atomic_cred_write / _resilient_cred_unlink helpers surviving it).
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_nonatomic_appearance_double_fires_but_atomic_single(
     tmp_path: Path,
@@ -904,13 +919,21 @@ async def test_credwatch_nonatomic_appearance_double_fires_but_atomic_single(
     cred = tmp_path / "cred"
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # absent baseline
+    await barrier.wait_for(1)  # absent baseline
     with nonatomic_write(cred, b"secret-v1"):
-        await asyncio.sleep(0.05)  # poller observes the EMPTY truncate window
-    await asyncio.sleep(0.05)  # poller observes the full payload
+        await barrier.wait_for(barrier.count + 1)  # poller observes the EMPTY truncate window
+    await barrier.wait_for(barrier.count + 1)  # poller observes the full payload
     stop.set()
     await task
     assert fired == [True, True]  # empty→fire, then full→fire: the spurious extra
@@ -919,27 +942,25 @@ async def test_credwatch_nonatomic_appearance_double_fires_but_atomic_single(
     cred2 = tmp_path / "cred2"
     stop2 = asyncio.Event()
     fired2: list[bool] = []
+    barrier2 = _ProbeBarrier()
     task2 = asyncio.create_task(
-        credwatch.watch_credential(cred2, 0.01, stop2, lambda: fired2.append(True), logger)
+        credwatch.watch_credential(
+            cred2,
+            0.01,
+            stop2,
+            lambda: fired2.append(True),
+            logger,
+            on_probe_complete=barrier2,
+        )
     )
-    await asyncio.sleep(0.05)  # absent baseline
+    await barrier2.wait_for(1)  # absent baseline
     _atomic_cred_write(cred2, b"secret-v1")
-    await asyncio.sleep(0.1)
+    await barrier2.wait_for(barrier2.count + 2)  # 2 polls: detect appearance + confirm
     stop2.set()
     await task2
     assert fired2 == [True]
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Timing-flaky on Windows CI: these sequence a 0.1s credential poller with "
-        "50-250ms asyncio.sleep windows, and the runners' coarse timer resolution "
-        "and slower file IO push the write outside the intended window "
-        "(intermittent `fired == []`). The watcher logic itself is "
-        "platform-independent and stays covered on POSIX. See issue #1105."
-    ),
-)
 @pytest.mark.asyncio
 async def test_credwatch_resilient_unlink_survives_sharing_violation(
     tmp_path: Path,
@@ -963,14 +984,22 @@ async def test_credwatch_resilient_unlink_survives_sharing_violation(
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired: list[bool] = []
+    barrier = _ProbeBarrier()
     task = asyncio.create_task(
-        credwatch.watch_credential(cred, 0.01, stop, lambda: fired.append(True), logger)
+        credwatch.watch_credential(
+            cred,
+            0.01,
+            stop,
+            lambda: fired.append(True),
+            logger,
+            on_probe_complete=barrier,
+        )
     )
-    await asyncio.sleep(0.05)  # present baseline
+    await barrier.wait_for(1)  # present baseline
     with unlink_sharing_violation(match="cred", times=1):
         _resilient_cred_unlink(cred)  # first delete faults, retry lands
     assert not cred.exists()
-    await asyncio.sleep(0.1)  # several absent polls
+    await barrier.wait_for(barrier.count + 3)  # 3 absent polls: detect + confirm no re-fire
     stop.set()
     await task
     assert fired == [True]  # exactly one revocation fire, no spurious extras

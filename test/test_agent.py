@@ -3567,3 +3567,66 @@ class TestRefreshDynamicFieldsSyncsConfigModel:
         with patch("kiro_crew.agent._mc_config_path", return_value=mc):
             _refresh_dynamic_fields(config)
         assert config["model"] == "claude-sonnet-4.6"
+
+
+# ── ensure_agent_materialized (self-heal for kiro-cli "Mode not found") ──
+
+
+def test_ensure_agent_materialized_noop_for_non_managed_agent(tmp_path, monkeypatch):
+    """A non-managed (app/custom) agent can't be regenerated here → returns
+    False and never touches rebuild_agent_config."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    rebuild = unittest.mock.MagicMock()
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    assert agent_mod.ensure_agent_materialized("some-app-agent") is False
+    rebuild.assert_not_called()
+
+
+def test_ensure_agent_materialized_present_is_noop(tmp_path, monkeypatch):
+    """Managed default already on disk → True, no regeneration."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+    rebuild = unittest.mock.MagicMock()
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_not_called()
+
+
+def test_ensure_agent_materialized_regenerates_when_missing(tmp_path, monkeypatch):
+    """Managed default missing → rebuild_agent_config is invoked and the file
+    is materialized (the reporter's fresh-checkout case)."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+
+    def _fake_rebuild(*_a, **_k):
+        path = tmp_path / agent_mod.AGENT_FILENAME
+        path.write_text("{}", encoding="utf-8")
+        return path
+
+    rebuild = unittest.mock.MagicMock(side_effect=_fake_rebuild)
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_called_once()
+
+
+def test_ensure_agent_materialized_swallows_errors(tmp_path, monkeypatch):
+    """Best-effort: a rebuild failure never propagates (it sits on the spawn
+    hot path) — returns False instead."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    rebuild = unittest.mock.MagicMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is False

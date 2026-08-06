@@ -66,9 +66,54 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.auto-add-documents",
+    "label": "Auto-Add Documents",
+    "description": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. It reads them with its own tools under your approval — Kiro Crew fetches nothing itself. Added documents appear in one “Auto-added” source you can remove in a click.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.auto-add-saved-artifacts",
+    "label": "Auto-Add Saved Artifacts",
+    "description": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.auto-ingest-limit-per-scan",
+    "label": "Auto-Ingest Limit Per Scan",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.auto-register-project-documents",
+    "label": "Auto-Register Project Documents",
+    "description": "Register the documents of each project you work in, so its design docs, specs and READMEs become searchable without adding the folder by hand. Documents only — never source code, agent instructions or generated files.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.background-effort",
+    "label": "Background Effort",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.background-model",
+    "label": "Background Model",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -157,6 +202,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "How file diff chips appear below assistant messages",
     "tab": "chat",
     "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.folder-suggestions",
+    "label": "Folder suggestions",
+    "description": "Offer to file a new session into a matching folder once it has a title.",
+    "tab": "chat",
+    "type": "toggle",
     "occurrence": 1
   },
   {
@@ -284,6 +337,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.subagent-effort",
+    "label": "Subagent Effort",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.subagent-model",
+    "label": "Subagent Model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.tail-only-fork",
     "label": "Tail-only Fork",
     "description": "Fork keeps only the messages after the chosen point instead of those up to it.",
@@ -380,11 +447,27 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.font",
+    "label": "Font",
+    "description": "Font for the built-in terminal. Enter a monospace font installed on your computer — use a Nerd Font to render Powerline and prompt-theme glyphs.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
     "id": "display.font-family",
     "label": "Font Family",
     "description": "UI font family for the dashboard",
     "tab": "display",
     "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
+    "id": "display.font-size",
+    "label": "Font size",
+    "description": "Text size in the built-in terminal, measured in pixels.",
+    "tab": "display",
+    "type": "stepper",
     "occurrence": 1
   },
   {
@@ -484,7 +567,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.auto-submit-when-i-finish-speaking",
     "label": "Auto-submit when I finish speaking",
-    "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming (Transcribe) only.",
+    "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1
@@ -594,7 +677,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.provider",
     "label": "Provider",
-    "description": "Whisper and MLX run locally; Transcribe calls AWS",
+    "description": "Whisper, MLX and Apple Speech run locally; Transcribe calls AWS",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -626,7 +709,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "voice.streaming",
     "label": "Streaming",
-    "description": "Stream live partial transcripts into the input box as you speak (Transcribe only)",
+    "description": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
     "tab": "voice",
     "type": "toggle",
     "occurrence": 1

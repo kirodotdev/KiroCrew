@@ -139,7 +139,7 @@ export default function SkillsTab() {
         role="button"
         tabIndex={0}
         aria-current={isSel ? 'true' : undefined}
-        aria-label={`Select ${displayName(s)}`}
+        aria-label={i18nT('pages.overview.skillsTab.select', { name: displayName(s) })}
         onClick={() => selectSkill(s)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSkill(s) } }}
         className={`flex flex-col gap-0.5 px-3 py-2.5 rounded-md cursor-pointer mb-1 transition-colors ${
@@ -156,7 +156,7 @@ export default function SkillsTab() {
         </div>
         <div className="text-[11px] text-muted font-mono truncate">{s.key}</div>
         {s.loaded_by_agents && s.loaded_by_agents.length > 0 && (
-          <div className="text-[10px] text-muted/70 truncate" title={`Loaded by: ${s.loaded_by_agents.join(', ')}`}>
+          <div className="text-[10px] text-muted/70 truncate" title={i18nT('pages.overview.skillsTab.loaded_by_2', { agents: s.loaded_by_agents.join(', ') })}>
             {i18nT('pages.overview.skillsTab.loaded_by')} {i18nT('pages.overview.skillsTab.agent', { count: s.loaded_by_agents.length })}
           </div>
         )}
@@ -210,7 +210,7 @@ export default function SkillsTab() {
             {localSkills.map(renderRow)}
             {packageSkills.length > 0 && (
               <div className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={`Skills from ${provider.labels.pluginRegistryName} — read-only`}>
+                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
                   {provider.labels.pluginRegistryName.toUpperCase()}
                 </div>
                 {packageSkills.map(renderRow)}
@@ -249,7 +249,7 @@ export default function SkillsTab() {
                   {selectedSkill.source === 'kirocrew' && (
                     <div className="flex gap-2 shrink-0">
                       <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>{i18nT('pages.overview.skillsTab.edit')}</Btn>
-                      <Btn danger onClick={() => { if (confirm(`Delete "${selectedSkill.key}"?`)) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
+                      <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.delete_confirm', { name: selectedSkill.key }))) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
                     </div>
                   )}
                 </div>
@@ -343,7 +343,7 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
           </div>
           <div className="text-[12px] text-muted truncate">
             {isUpdate && p.target
-              ? `Adds new requirements to ${p.target} — ${p.description}`
+              ? i18nT('pages.overview.skillsTab.adds_new_requirements_to', { target: p.target, description: p.description })
               : p.description}
           </div>
         </div>
@@ -353,7 +353,7 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
             replace the newer approved content — the backend refuses both, so keep
             the button disabled and let the expanded panel explain. */}
         <Btn primary disabled={!open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
-        <Btn danger onClick={() => { if (confirm(`Dismiss "${p.name}"?`)) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
+        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {open && detail && (
         <div className="mt-2 space-y-2">
@@ -366,7 +366,7 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
             <>
               <div className="text-[11px] font-semibold text-muted">
                 {i18nT('pages.overview.skillsTab.proposed_change')}{detail.from_version != null && detail.to_version != null
-                  ? ` (v${detail.from_version} → v${detail.to_version})`
+                  ? ` ${i18nT('pages.overview.skillsTab.version_range', { from: detail.from_version, to: detail.to_version })}`
                   : ''}
               </div>
               <DiffBlock code={detail.diff} complete />

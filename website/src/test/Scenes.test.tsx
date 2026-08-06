@@ -149,10 +149,9 @@ describe('UnderwaterLabScene', () => {
 })
 
 // MissionControlScene uses useDispatch + useNavigate, so we need providers
-import { Provider } from 'react-redux'
-import { MemoryRouter } from 'react-router-dom'
-import { configureStore } from '@reduxjs/toolkit'
-import chatReducer from '../store/chatSlice'
+// (Provider/MemoryRouter/configureStore/chatReducer are already imported at the
+// top of the file; Vite 8's oxc parser rejects re-importing them here as
+// duplicate declarations, whereas Vite 5's esbuild tolerated it.)
 import MissionControlScene from '../pages/scenes/mission-control/MissionControlScene'
 
 function renderMC(props: { agents: AgentSource[]; visible?: boolean }) {

@@ -18,13 +18,8 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.messaging.link import is_channel_session_key
-from kiro_crew.providers.base import (
-    EVENT_COMPLETE,
-    EVENT_PERMISSION_REQUEST,
-    EVENT_TEXT_CHUNK,
-    EVENT_TOOL_CALL,
-)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
@@ -71,7 +66,7 @@ _CONTRADICTION_PROMPT = (
     "Respond with exactly one word: CONTRADICTORY, COMPLEMENTARY, or UNRELATED."
 )
 
-_CONTRADICTION_MODEL = "claude-haiku-4.5"
+_CONTRADICTION_MODEL = "auto"  # inherit the governed default; a hardcoded id 400s where unavailable
 # Per-candidate cap on the background contradiction verdict. The sweep runs
 # fire-and-forget after the lesson is already persisted, so this bounds a hung
 # model call rather than gating the write path.
@@ -92,54 +87,13 @@ async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
     ``_CONTRADICTION_TIMEOUT``. Returns the first upper-cased token of the
     model's reply (e.g. ``"CONTRADICTORY"``), or ``""`` on empty output.
     """
-    session = await state.sessions.get_bg_session()
-    text = ""
-    try:
-        # Contradiction check is a trivial binary classification — run on the
-        # cheapest model. Best-effort: fall through on the session's default
-        # model if the backend can't switch.
-        _set_model = getattr(session, "set_model", None)
-        if _set_model is not None:
-            try:
-                await _set_model(_CONTRADICTION_MODEL)
-            except Exception:
-                pass
-
-        async def _stream() -> None:
-            nonlocal text
-            async for event in session.prompt(prompt):
-                if event.kind == EVENT_TEXT_CHUNK:
-                    text += event.text
-                elif event.kind == EVENT_TOOL_CALL:
-                    # A tool-free classification should never dispatch a tool,
-                    # but an auto-approved tool arrives here WITHOUT a preceding
-                    # permission request (nothing to reject). Audit it so no
-                    # invocation escapes the SEL log (every tool invocation emits
-                    # a SEL event).
-                    _sel().log_tool_invocation(
-                        session_key="_bg",
-                        tool_name=getattr(event, "title", "unknown"),
-                        outcome="allowed",
-                        source="contradiction_check",
-                    )
-                elif event.kind == EVENT_PERMISSION_REQUEST:
-                    # The classification is tool-free; deny any tool the model
-                    # tries to call. Audit the denial (every permission decision
-                    # emits a SEL event) before rejecting, mirroring the
-                    # suggestions bg path.
-                    _sel().log_tool_invocation(
-                        session_key="_bg",
-                        tool_name=getattr(event, "title", "unknown"),
-                        outcome="denied",
-                        source="contradiction_check",
-                    )
-                    await session.reject_tool(event.request_id)
-                elif event.kind == EVENT_COMPLETE:
-                    break
-
-        await asyncio.wait_for(_stream(), timeout=_CONTRADICTION_TIMEOUT)
-    finally:
-        await session.destroy()
+    text = await run_bg_oneliner(
+        state.sessions,
+        prompt,
+        model=_CONTRADICTION_MODEL,
+        sel_source="contradiction_check",
+        timeout=_CONTRADICTION_TIMEOUT,
+    )
     stripped = text.strip()
     return stripped.upper().split()[0] if stripped else ""
 

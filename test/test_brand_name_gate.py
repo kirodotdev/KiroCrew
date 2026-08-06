@@ -172,13 +172,27 @@ class TestUrlBoundary:
         # step that slices the line or rescans its prefix is quadratic here, and a
         # ratio assertion catches that where a wall-clock budget loose enough for a
         # loaded runner would not.
-        def timed(count: int) -> tuple[float, int]:
-            began = time.monotonic()
-            found = len(_hits("!KiroCrew" * count, path="big.md"))
-            return time.monotonic() - began, found
+        #
+        # Each size is measured as the MIN of N repetitions (the first call also
+        # warms up caches). min() is the standard noise-robust estimator: scheduler
+        # preemptions only ever ADD time, so the minimum converges on the true cost
+        # while a genuinely quadratic _hits still blows past the bound on every
+        # repetition. Single-shot timing flaked twice on Windows CI at ~60ms base
+        # durations where one GC pause skewed the ratio past 3.0.
+        _REPS = 3
 
-        base, base_found = timed(20_000)
-        doubled, doubled_found = timed(40_000)
+        def best_of(count: int) -> tuple[float, int]:
+            line = "!KiroCrew" * count
+            times: list[float] = []
+            found = 0
+            for _ in range(_REPS):
+                began = time.monotonic()
+                found = len(_hits(line, path="big.md"))
+                times.append(time.monotonic() - began)
+            return min(times), found
+
+        base, base_found = best_of(20_000)
+        doubled, doubled_found = best_of(40_000)
         assert (base_found, doubled_found) == (20_000, 40_000)
         assert doubled / base < 3.0, f"doubling the input cost {doubled / base:.1f}x, want ~2x"
 

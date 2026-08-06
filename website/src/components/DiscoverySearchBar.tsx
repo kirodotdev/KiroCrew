@@ -44,11 +44,11 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
             aria-expanded={hasResults}
             aria-controls={`${idPrefix}-results-list`}
             aria-activedescendant={activeDescendant ? `${idPrefix}-opt-${activeDescendant}` : undefined}
-            aria-label={`Search ${subject}`}
+            aria-label={i18nT('components.discoverySearchBar.search', { subject })}
             value={query}
             onChange={e => onQueryChange(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={`Search ${subject} across providers...`}
+            placeholder={i18nT('components.discoverySearchBar.search_across_providers', { subject })}
             className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             autoFocus
           />
@@ -63,7 +63,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
           )}
         </div>
         <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
-          <span>{providers.length > 0 ? `Searching: ${providers.join(', ')}` : '\u00A0'}</span>
+          <span>{providers.length > 0 ? i18nT('components.discoverySearchBar.searching_2', { name: providers.join(', ') }) : '\u00A0'}</span>
           {debouncedQuery.length >= 2 && !isLoading && (
             <span>{i18nT('components.discoverySearchBar.result', { count: resultCount })}</span>
           )}

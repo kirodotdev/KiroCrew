@@ -15,6 +15,8 @@
  */
 import { memo, lazy, Suspense, useMemo } from 'react'
 import DOMPurify from 'dompurify'
+import type { Monaco } from '@monaco-editor/react'
+import type { editor } from 'monaco-editor'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, SvgViewer, ExcalidrawViewer } from './FileRenderers'
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
@@ -57,7 +59,7 @@ let themesRegistered = false
 
 /** Monaco-based code editor for editable text content. */
 export function CodeEditor({
-  content, lang, lineNums, wordWrap, autocomplete, onChange, flush,
+  content, lang, lineNums, wordWrap, autocomplete, onChange, flush, onEditorMount,
 }: {
   content: string
   lang: string
@@ -68,6 +70,16 @@ export function CodeEditor({
   /** Drop the rounded border box — the host surface (e.g. a side-panel tab
    *  body) provides the frame, so content runs edge-to-edge. */
   flush?: boolean
+  /**
+   * The editor instance and the monaco namespace, once mounted.
+   *
+   * The one escape hatch out of this component, so a host can reveal or
+   * decorate a line without owning the editor's configuration. Monaco is
+   * lazy-loaded, so this is also the readiness signal: there is no earlier
+   * point at which a caller could reach a model. Mirrors how
+   * `PapyrusEditor` reaches the same instance.
+   */
+  onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: Monaco) => void
 }) {
   const dark = useIsDark()
   const monoFont = useMemo(
@@ -82,6 +94,7 @@ export function CodeEditor({
           language={monacoLang(lang)}
           value={content}
           onChange={v => onChange(v ?? '')}
+          onMount={onEditorMount}
           beforeMount={(monaco) => {
             if (!themesRegistered) {
               monaco.editor.defineTheme('kirocrew-dark', kirocrewDark)
@@ -134,7 +147,7 @@ export const ContentRenderer = memo(function ContentRenderer({
   isRichType, fileType, filePath, content, editing,
   lang, lineNums, wordWrap, autocomplete, onChange,
   previewRef, displayContent, isMarkdown, highlightedHtml,
-  gutterReadRef, markdownClassName, previewStyle, flush,
+  gutterReadRef, markdownClassName, previewStyle, flush, onEditorMount,
 }: {
   isRichType: boolean
   fileType: string
@@ -157,6 +170,9 @@ export const ContentRenderer = memo(function ContentRenderer({
   /** Drop the rounded border boxes around the editor / code views — used when
    *  the host surface (side-panel tab body) already frames the content. */
   flush?: boolean
+  /** Forwarded to `CodeEditor` — only fires on the `editing` (Monaco) branch,
+   *  which is why a host that needs a line reveal forces source mode. */
+  onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: Monaco) => void
 }) {
   const inner = (
     <>
@@ -177,6 +193,7 @@ export const ContentRenderer = memo(function ContentRenderer({
           autocomplete={autocomplete}
           onChange={onChange}
           flush={flush}
+          onEditorMount={onEditorMount}
         />
       )}
       {!isRichType && !editing && isMarkdown && (

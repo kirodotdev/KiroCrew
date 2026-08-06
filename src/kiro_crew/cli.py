@@ -65,6 +65,7 @@ from kiro_crew.platform import (
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.seed import seed_cmd
 from kiro_crew.sel import sel
+from kiro_crew.service.live_target import maybe_reexec
 from kiro_crew.session import SessionManager
 from kiro_crew.skills import SkillsLoader
 
@@ -716,14 +717,26 @@ def main() -> None:
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
 
     # Validate KIROCREW_PORT early — fail fast before anything else loads.
+    # Range as well as type: an in-range check that lives only in the binder
+    # would let `KIROCREW_PORT=70000 kirocrew service install` bake an
+    # unbindable port into a service definition and report success, leaving a
+    # gateway that dies on every start. Rejecting here keeps ONE policy for
+    # every entry point rather than a second one per consumer.
     _raw_port = os.environ.get("KIROCREW_PORT")
     if _raw_port is not None:
         try:
-            int(_raw_port)
+            _port_val = int(_raw_port)
         except ValueError:
             print(
                 f"❌ KIROCREW_PORT={_raw_port!r} is not a valid integer.\n"
                 f"   Unset it or provide a numeric port (e.g. KIROCREW_PORT=6777).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not 1 <= _port_val <= 65535:
+            print(
+                f"❌ KIROCREW_PORT={_raw_port!r} is outside the valid port range 1-65535.\n"
+                f"   Unset it or provide a bindable port (e.g. KIROCREW_PORT=6777).",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -791,7 +804,12 @@ Examples:
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
 
     # doctor
-    sub.add_parser("doctor", help="Verify Kiro Crew setup")
+    _doctor_parser = sub.add_parser("doctor", help="Verify Kiro Crew setup")
+    _doctor_parser.add_argument(
+        "--bundle",
+        action="store_true",
+        help="Collect logs + crash reports into a redacted diagnostics zip",
+    )
 
     # gateway
     gw_parser = sub.add_parser("gateway", help="Start the Kiro Crew server (dashboard + Slack)")
@@ -1273,6 +1291,51 @@ Examples:
     svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
+
+    # sandbox — the AppArmor grant a DIRECT launch needs. `service install`
+    # already installs a named profile that systemd applies to its unit, but a
+    # double-clicked AppImage has no unit: nothing transitions it into a profile,
+    # so the agent sandbox fails closed on every spawn. These subcommands attach
+    # the same single `userns` grant to the app's own executable path, which the
+    # kernel applies at exec time without any privileged transition.
+    sbx_parser = sub.add_parser(
+        "sandbox",
+        help="Manage the AppArmor profile the agent sandbox needs (Linux/Ubuntu)",
+        epilog="""
+Examples:
+  kirocrew sandbox status                      # is THIS launch covered?
+  kirocrew sandbox install-profile             # attach to $APPIMAGE (sudo)
+  kirocrew sandbox install-profile --path P    # attach to an explicit executable
+  kirocrew sandbox remove-profile              # unload and delete it (sudo)
+
+Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
+(Ubuntu 23.10+ and derivatives). Everywhere else these are no-ops.
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sbx_sub = sbx_parser.add_subparsers(dest="sandbox_action")
+    sbx_install = sbx_sub.add_parser(
+        "install-profile",
+        help="Attach the userns AppArmor profile to this app (sudo on Linux)",
+    )
+    sbx_install.add_argument(
+        "--path",
+        default=None,
+        help=(
+            "Executable to attach the profile to. Defaults to $APPIMAGE. Refused "
+            "for world-writable locations (/tmp and friends) and for shared "
+            "interpreters such as /usr/bin/python3, which would over-grant."
+        ),
+    )
+    sbx_status = sbx_sub.add_parser(
+        "status", help="Report whether this launch is covered by the profile"
+    )
+    sbx_status.add_argument(
+        "--path", default=None, help="Executable to check instead of $APPIMAGE"
+    )
+    sbx_sub.add_parser(
+        "remove-profile", help="Unload and remove the profile (sudo on Linux)"
+    )
 
     # cloud — provision + run KiroCrew on the user's own AWS EC2 (bring-your-own
     # AWS; credentials resolved by the aws CLI, never stored by KiroCrew).
@@ -1766,6 +1829,17 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
         register_process_start_override_attestation()
 
+    # The live target (Dev Fleet "Make live") is a pointer file, not an edit to
+    # this process's service definition — so it is resolved HERE, by the process
+    # itself. This must stay the FIRST thing the gateway does after argv is
+    # known: the gateway lock is not held yet and no socket is bound, so exec'ing
+    # away leaves nothing half-done. It returns (and we boot the installed build)
+    # whenever there is no usable target, so a bad pointer can never leave the
+    # host with no gateway. Gateway only: a plain CLI invocation must keep running
+    # the install the user typed, not a worktree someone made live.
+    if args.command == "gateway":
+        maybe_reexec(sys.argv[1:])
+
     # ``gateway --seed <fixture>`` populates $KIROCREW_HOME from a hand-authored
     # fixture BEFORE the gateway starts — lets a dev spin up a pre-populated
     # server in one command. We run the seed here (post parse_args, but BEFORE
@@ -1956,7 +2030,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             clean=getattr(args, "clean", False),
         )
     elif args.command == "doctor":
-        _doctor(platform_boot_error=_platform_boot_error)
+        _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))
     elif args.command == "manifest":
         _manifest(
             alias=getattr(args, "alias", None),
@@ -2022,6 +2096,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _restart(args.port)
     elif args.command == "service":
         sys.exit(_service_cmd(args))
+    elif args.command == "sandbox":
+        sys.exit(_sandbox_cmd(args))
     elif args.command == "cloud":
         sys.exit(handle_cloud(args))
     elif args.command == "logs":
@@ -2097,6 +2173,7 @@ from kiro_crew.cli_server import (  # noqa: E402
     _logs_cmd,
     _restart,
     _run_task,
+    _sandbox_cmd,
     _service_cmd,
     _status,
     _stop,

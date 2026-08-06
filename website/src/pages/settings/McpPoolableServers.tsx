@@ -6,6 +6,7 @@ import { Toggle } from '../../components/ui'
 import { api, type McpPoolableServer } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean }
 
 /**
@@ -58,7 +59,7 @@ export function McpPoolableServers() {
       qc.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
       qc.invalidateQueries({ queryKey: ['mcpGatewayMetrics'] })
     } catch {
-      setError(`Could not update ${srv.name}. Try again.`)
+      setError(i18nT('pages.settings.mcpPoolableServers.could_not_update_try_again', { name: srv.name }))
     } finally {
       // Clear only this server's flag — concurrent toggles each track their own.
       setPending(s => { const s2 = new Set(s); s2.delete(srv.name); return s2 })
@@ -115,7 +116,7 @@ export function McpPoolableServers() {
                       checked={srv.poolable}
                       onChange={next => toggle(srv, next)}
                       disabled={locked || rowPending}
-                      label={`Pool ${srv.name}`}
+                      label={i18nT('pages.settings.mcpPoolableServers.pool', { name: srv.name })}
                     />
                   </div>
                 </div>
@@ -124,7 +125,7 @@ export function McpPoolableServers() {
           </div>
         )}
 
-        {error && <div className="text-[12px] text-danger mt-2">{error}</div>}
+        <ErrorNotice message={error} className="mt-2" askAgent />
       </SettingsCard>
     </SettingsSection>
   )

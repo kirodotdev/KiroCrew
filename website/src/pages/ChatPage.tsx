@@ -17,10 +17,12 @@ import {
   appendMessage, resumeFromHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
+  selectContinuable,
+  selectTurnInterrupted,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
-  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem,
+  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
   mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
@@ -59,6 +61,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 // applier); re-exported here for this page's historical importers.
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
+import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -79,6 +82,8 @@ import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
 import FollowUpCard from '../components/FollowUpCard'
+import FolderSuggestionCard from './chat/FolderSuggestionCard'
+import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import type { FollowupItem } from '../store/chatSlice'
 
@@ -112,7 +117,7 @@ import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug } from '../utils/shareUrl'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
@@ -159,6 +164,7 @@ import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
 import RecoveryCard, { parseRecoveryMessage } from './chat/RecoveryCard'
+import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
@@ -478,13 +484,13 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
         const fullPath = tok && mentionMap.get(tok)
         if (fullPath) {
           return (
-            <Clickable key={`${keyBase}-f${i}`} className={chipCls} title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
+            <Clickable key={`${keyBase}-f${i}`} className={chipCls} title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{tok}</Clickable>
           )
         }
         return <span key={`${keyBase}-p${i}`}>{part}</span>
       })}
       {cardPaths.map((p, i) => (
-        <Clickable key={`${keyBase}-uc${i}`} className={chipCls} title={p} onClick={() => onFileOpen(p)} aria-label={`Open file ${p}`}>@{labels.get(p) || p}</Clickable>
+        <Clickable key={`${keyBase}-uc${i}`} className={chipCls} title={p} onClick={() => onFileOpen(p)} aria-label={i18nT('pages.chatPage.open_file', { path: p })}>@{labels.get(p) || p}</Clickable>
       ))}
     </span>
   )
@@ -500,7 +506,7 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
       className="flex items-center gap-2.5 max-w-full bg-card border border-border rounded-lg px-3 py-2 text-sm no-underline text-text hover:border-accent transition-colors cursor-pointer animate-scale-in"
       title={fullPath}
       onClick={() => onFileOpen(fullPath)}
-      aria-label={`Open file ${fullPath}`}
+      aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}
     >
       <Paperclip size={15} className="shrink-0 text-muted" />
       <span className="font-medium truncate">{label}</span>
@@ -577,7 +583,7 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
         if (fullPath) {
           return (
             <Clickable key={`${keyBase}-f${i}`} className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
-              title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={`Open file ${fullPath}`}>@{tok}</Clickable>
+              title={fullPath} onClick={() => onFileOpen(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{tok}</Clickable>
           )
         }
         return part ? <span key={`${keyBase}-p${i}`}>{part}</span> : null
@@ -593,6 +599,7 @@ const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
+  const moveSlotToFolder = useMoveSlotToFolder()
   const navigate = useNavigate()
   const navigationType = useNavigationType()
   const location = useLocation()
@@ -732,6 +739,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   const pendingQuestion = useAppSelector(s => pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot))
   const pendingFollowup = useAppSelector(s => (s.chat.activeSlot ? s.chat.followups?.[s.chat.activeSlot] : undefined))
+  const folderSuggestion = useAppSelector(s => (s.chat.activeSlot ? s.chat.folderSuggestions?.[s.chat.activeSlot] : undefined))
   const followupTsBySlot = useAppSelector(s => s.chat.followups) ?? EMPTY_FOLLOWUPS
   // The ambient tip yields to functional surfaces that own the above-composer band
   const tipSuppressed = useAppSelector(s =>
@@ -744,6 +752,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
     // another session must not suppress tips here.
     (!!s.chat.activeSlot && !!s.chat.followups?.[s.chat.activeSlot]) ||
+    // The folder-suggestion card takes the same slot inside the composer box the
+    // tip does, and it can land on the FIRST turn — exactly when a tip is most
+    // likely to be offered. It is actionable and one-shot where the tip is
+    // ambient and re-offered, so the tip yields. Slot-keyed like the follow-up
+    // card, so a card parked in another session must not suppress tips here.
+    (!!s.chat.activeSlot && !!s.chat.folderSuggestions?.[s.chat.activeSlot]) ||
     // Active subagents render the progress bar in the same above-composer
     // zone the floating tip occupies — the tip always yields: never crowd
     // the queue/subagent surfaces.
@@ -1050,6 +1064,47 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const t = setTimeout(() => setPrefillHint(false), 10000)
     return () => clearTimeout(t)
   }, [prefillHint])
+
+  // Drain the error hand-off channel ("Ask the agent" on an error surface).
+  // sessionStorage rather than Redux because the root ErrorBoundary's button has
+  // to work after a hard reload, when the store it would have dispatched to is
+  // gone. Feeding pendingInput keeps a single downstream prefill path.
+  //
+  // Two triggers: on mount (arriving from another route, or a full reload) and on
+  // the subscription (an error surface inside chat hands off with no route
+  // change, so nothing remounts).
+  useEffect(() => {
+    if (embedded) return
+    // Wait for a slot before consuming. The channel is SINGLE-USE, and on the
+    // hard-nav path (the root ErrorBoundary reloads the page) this effect runs
+    // with activeSlot still null: the pending-input consumer then cannot persist
+    // the prompt as a draft, and the slot-restore that follows overwrites the
+    // composer — losing the prompt for good. The 60s hand-off TTL covers the wait,
+    // and this effect re-runs once the slot appears.
+    if (!activeSlot) return
+    const drain = () => {
+      const prompt = consumeChatHandoff()
+      if (!prompt) return
+      // APPEND when the composer already holds unsent text — same hazard, and
+      // same helper, as `followupAddToSession` below: the pending-input consumer
+      // replaces the draft AND persists it, so a plain set would silently
+      // destroy whatever the user was mid-way through typing. This is reachable
+      // precisely because the subscription fires with no route change, while
+      // error surfaces INSIDE chat (a failed PR action, a message that failed to
+      // render) hand off from under a composer in use.
+      // Merge against the text that actually belongs to `activeSlot`. On the
+      // hard-nav path the composer may not have adopted this slot's stored draft
+      // yet — `composerSlotRef` lags `activeSlot` — and merging against an empty
+      // composer would make the pending-input consumer persist the prompt OVER
+      // the stored draft. When they agree, the live composer value is the truth.
+      const base = composerSlotRef.current === activeSlot
+        ? inputRef.current
+        : drafts.current[activeSlot] ?? ''
+      dispatch(setPendingInput(mergeIntoDraft(base, prompt)))
+    }
+    drain()
+    return subscribeChatHandoff(drain)
+  }, [dispatch, embedded, activeSlot])
 
   // Consume pendingInput from Redux (e.g. from "Chat" button on Projects page)
   useEffect(() => {
@@ -1980,7 +2035,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The `ok` flag gates whether the file is recorded in history — 404s and
   // other HTTP failures show a placeholder in the panel but should NOT
   // pollute the history list with files that don't exist on disk.
-  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string }) => {
+  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => {
     // One editor per path: if this file is already open INLINE in the Files tab,
     // route back to that inline editor (focus the Files view) instead of
     // spawning a competing document tab — two live editors for one on-disk file
@@ -2267,7 +2322,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setUploadError('')
     if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
     const big = files.find(f => f.size > 50 * 1024 * 1024)
-    if (big) { setUploadError(`File too large: ${big.name} (max 50 MB)`); return }
+    if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     setUploading(true)
     try {
       const res = await api.uploadFiles(files)
@@ -2698,7 +2753,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         initialSidRef.current = null
         pendingSidRef.current = false
         popInFlightRef.current = false
-        setSidError(`Session "${urlSlot}" not found`)
+        setSidError(i18nT('pages.chatPage.session_not_found', { name: urlSlot }))
       }
     }, 5000)
     return () => clearTimeout(timer)
@@ -3067,7 +3122,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             const newerIds = new Set(newer.map(i => i.id))
             knowledgeFetchRef.current.inject([...knowledgeBlock.items.filter(i => !newerIds.has(i.id)), ...newer])
           }
-          dispatch(appendMessage({ role: 'error', content: `Could not start a new session: ${createFailReason(e)}. Your message was restored — send it again to retry.`, cls: '' }))
+          dispatch(appendMessage({ role: 'error', content: i18nT('pages.chatPage.could_not_start_session_message_restored', { error: createFailReason(e) }), cls: '' }))
         }
         // Announce the failure wherever the in-chat bubble could not. Two shapes:
         //  - No origin slot at all: nothing durable can hold the text (a draft under
@@ -3105,7 +3160,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               kind: 'agent',
               priority: 'critical',
               title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-              body: `${createFailReason(e)}. Your message is queued and will be sent when a session is ready — but it is held in this tab only, so if you navigate away or reload you will need to retype it.`,
+              body: i18nT('pages.chatPage.message_queued_until_session_ready', { error: createFailReason(e) }),
             }))
           }
         } else if (!onScreen) {
@@ -3122,7 +3177,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             kind: 'agent',
             priority: 'critical',
             title: i18nT('pages.chatPage.could_not_start_a_new_session'),
-            body: `${createFailReason(e)}. Your message is saved as a draft in the session you sent it from.${lostContext}`,
+            body: i18nT('pages.chatPage.message_saved_as_draft', { error: createFailReason(e), extra: lostContext }),
             slot: uiSlot,
           }))
         }
@@ -3347,16 +3402,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     // APPEND when the composer already holds unsent text: the pending-input path
     // replaces the draft and persists it, so a plain set would silently destroy
-    // whatever the user was mid-way through typing.
-    // `inputRef` is the live composer value; a blank line separates the two
-    // because a handoff prompt is multi-line prose, not a word to concatenate.
-    const draft = inputRef.current ?? ''
-    dispatch(setPendingInput(draft.trim() ? `${draft.replace(/\s+$/, '')}\n\n${item.prompt}` : item.prompt))
+    // whatever the user was mid-way through typing. `inputRef` is the live
+    // composer value; `mergeIntoDraft` is shared with the error → agent hand-off
+    // drain so the two paths cannot drift.
+    dispatch(setPendingInput(mergeIntoDraft(inputRef.current, item.prompt)))
     // Clear by the RENDERED card's ts, as the worktree action does: a newer card
     // for this slot can land between render and click, and an unqualified clear
     // would delete suggestions the user never saw.
     dispatch(clearFollowupCard({ slot: activeSlot, ts: followupTsRef.current[activeSlot]?.ts }))
   }, [dispatch, activeSlot])
+
+  // Folder suggestion: accepting reuses the ONE move path every other surface
+  // (row menu, drag-to-folder, new-chat-in-folder) already funnels through, so
+  // the optimistic update and its guarded rollback are inherited rather than
+  // re-implemented here. Both answers clear the card by the ts it rendered with,
+  // for the same reason the follow-up actions do.
+  const folderSuggestionAccept = useCallback(() => {
+    if (!activeSlot || !folderSuggestion) return
+    moveSlotToFolder(activeSlot, folderSuggestion.folderId)
+    dispatch(clearFolderSuggestion({ slot: activeSlot, ts: folderSuggestion.ts }))
+  }, [activeSlot, folderSuggestion, moveSlotToFolder, dispatch])
+
+  const folderSuggestionDecline = useCallback(() => {
+    if (!activeSlot || !folderSuggestion) return
+    // Nothing to tell the backend: it already spent its one offer for this slot,
+    // so declining is purely "take the card away".
+    dispatch(clearFolderSuggestion({ slot: activeSlot, ts: folderSuggestion.ts }))
+  }, [activeSlot, folderSuggestion, dispatch])
 
   // Fallback branch name when the agent did not supply one: slugify the title
   // under FOLLOWUP_BRANCH_RE's grammar (the server re-validates, so a slug that
@@ -3767,6 +3839,57 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setRegenerating(false)
     })
   }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch])
+
+  // ---- Continue the thread ---------------------------------------------------
+  // A turn can end without the assistant handing the floor back: the connection
+  // dropped, the gateway restarted during an app update, the app was force-quit,
+  // or the runner's own recovery ladder gave up. Some of those leave evidence (an
+  // unanswered user row, a trailing error card) and some leave none at all — a
+  // force-quit runs no cleanup, so its transcript is indistinguishable from a
+  // clean finish. Continue is therefore offered on any idle slot with a
+  // conversation, and `interrupted` only decides how the button describes itself.
+  //
+  // The two COMPOSE at the ErrorCard; neither alone is right. `continuable` is the
+  // availability half (running, stopping, pending turn, autopilot, subagents,
+  // queue) and `interrupted` is the placement half — `i === lastErrorIdx` means
+  // "newest error row", never "the transcript ends badly", so on
+  // `[user, error, user, assistant]` availability alone would put a Continue
+  // button on a superseded failure card that acts on a LATER request. Dropping
+  // `continuable` instead is the mirror-image bug: `selectTurnInterrupted` carries
+  // none of the busy checks, so a card would offer a Continue that `handleContinue`
+  // early-returns on — a dead control in the one place recovery is promised.
+  const continuable = useAppSelector(selectContinuable)
+  const interrupted = useAppSelector(selectTurnInterrupted)
+  const [continuing, setContinuing] = useState(false)
+  useEffect(() => { setContinuing(false) }, [activeSlot])
+  // The turn taking over is the success signal; clear the spinner then.
+  useEffect(() => { if (continuing && slotRunning) setContinuing(false) }, [continuing, slotRunning])
+  // Backstop: a request that neither starts a turn nor rejects must not strand
+  // the button in a disabled state. Mirrors the regenerate safety timeout.
+  useEffect(() => {
+    if (!continuing) return
+    const t = setTimeout(() => { setContinuing(false) }, 30_000)
+    return () => clearTimeout(t)
+  }, [continuing])
+  const handleContinue = useCallback(() => {
+    if (!activeSlot || continuing || !continuable) return
+    setContinuing(true)
+    // No optimistic transcript mutation: the backend appends the continuation as
+    // an `inject` row and the WS `slots` update flips `running`, so the UI
+    // converges from the server. Nothing to roll back on failure.
+    api.continueSlot(activeSlot).catch((e: unknown) => {
+      // eslint-disable-next-line no-console -- surface continue failures for debugging
+      console.warn('continue failed', e)
+      setContinuing(false)
+    })
+  }, [activeSlot, continuing, continuable])
+  // Index of the newest error row. Only that one gets the action: an error
+  // further up the transcript belongs to a turn that has already been
+  // superseded, and offering to "continue" it would resume the wrong thing.
+  const lastErrorIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'error') return i
+    return -1
+  }, [messages])
 
   const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
@@ -4350,7 +4473,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const recovery = parseRecoveryMessage(m.content)
       if (recovery) return <RecoveryCard key={key} parsed={recovery} disclosureKey={key} />
     }
-    if (m.role === 'error') return <div key={key} className="bg-danger-subtle text-danger text-[13px] px-3 py-2 rounded-md border border-danger/15 self-center animate-scale-in">{m.content}</div>
+    if (m.role === 'error') return (
+      <ErrorCard
+        key={key}
+        content={m.content}
+        onContinue={continuable && interrupted && i === lastErrorIdx ? handleContinue : undefined}
+        continuing={continuing}
+      />
+    )
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null
     if (m.role === 'mcp_oauth') {
@@ -5100,8 +5230,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                    thinking/output; queue and question card keep priority via
                    tipSuppressed). */
                 <AnimatePresence>
-                  {activeTip && (
-                    <div className="pb-1.5">
+                  {folderSuggestion && activeSlot ? (
+                    <div className="pb-1.5" key="folder-suggestion">
+                      <FolderSuggestionCard
+                        folderName={folderSuggestion.folderName}
+                        breadcrumb={folderSuggestion.breadcrumb}
+                        onAccept={folderSuggestionAccept}
+                        onDecline={folderSuggestionDecline}
+                      />
+                    </div>
+                  ) : activeTip && (
+                    <div className="pb-1.5" key="tip">
                       <TipCard tip={activeTip} onDismiss={dismissTip} />
                     </div>
                   )}
@@ -5170,6 +5309,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
+              continuable={continuable}
+              continueIsRecovery={interrupted}
+              onContinue={handleContinue}
+              continuing={continuing}
               onStop={() => {
                 const slot = activeSlot
                 if (!slot) return
