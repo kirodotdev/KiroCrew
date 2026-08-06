@@ -1621,7 +1621,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Triggered",
-      "help": "Maximum number of skills to load per message (≥1).",
+      "help": "Maximum number of skills a single message may flag as relevant (≥0). Each match injects that skill's full content, unless the skill sets inject_on_trigger: false in its frontmatter, in which case it contributes a one-line pointer naming it and its path and the agent reads the file if the skill applies. Set to 0 to stop flagging entirely and rely only on the Available Skills index, $skillname, and skill_search.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
