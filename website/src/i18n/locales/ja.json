@@ -4227,7 +4227,6 @@
       "default_agent": "デフォルトエージェント",
       "default_agent_hint": "ここで作成された新しいチャット用に事前に選択されます。",
       "enter_to_submit": "入力して送信",
-      "folder_preview": "フォルダーの開閉状態をプレビュー",
       "folder_settings": "フォルダー設定",
       "inherit_named": "継承（{{agent}}）",
       "inherited_dir": "親フォルダーのディレクトリを継承するには空のままにします。",

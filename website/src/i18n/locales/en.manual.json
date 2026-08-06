@@ -1127,7 +1127,6 @@
       "default_agent": "Default agent",
       "default_agent_hint": "Pre-selected for new chats created here.",
       "enter_to_submit": "Enter to submit",
-      "folder_preview": "Preview open/closed state",
       "folder_settings": "Folder settings",
       "inherit_named": "Inherit ({{agent}})",
       "inherited_dir": "Leave empty to inherit the nearest parent folder’s directory.",

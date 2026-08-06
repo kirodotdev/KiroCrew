@@ -4124,7 +4124,6 @@
       "default_agent": "默认智能体",
       "default_agent_hint": "在此处新建会话时预先选中。",
       "enter_to_submit": "按回车提交",
-      "folder_preview": "预览打开/关闭状态",
       "folder_settings": "文件夹设置",
       "inherit_named": "继承（{{agent}}）",
       "inherited_dir": "留空则继承最近上级文件夹的目录。",

@@ -1823,7 +1823,7 @@ function ChatSidebar({
           onClick={() => toggleCollapse(folder.id)}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(folder.id) } }}
         >
-          <FolderGlyph color={folder.color} size={15} open={!folder.collapsed} />
+          <FolderGlyph color={folder.color} size={11} open={!folder.collapsed} />
           {editingId === folder.id && editScope === columnId ? (
             /* Inline rename input — board-view parity with renderFolderHeader.
              *  Without this branch the ⋯-menu "Rename" set editingId but no
@@ -2381,14 +2381,17 @@ function ChatSidebar({
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
         className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        // 9px left pad + 19px glyph + 7px gap lands the folder NAME on the
-        // 35px text x of the sessions INSIDE it (the 19px indent step guide).
-        // The glyph box outdents 7px left of sibling session text
-        // (Finder-style: bigger icons hang left, text stays on the guide).
-        style={{ paddingLeft: '9px' }}>
+        // 16px left pad puts the folder GLYPH on the same x as the text of the
+        // session rows at the folder's OWN level (both `px-4`), so a folder and
+        // its siblings start the same column. The 5px glyph→name gap is chosen
+        // (not cosmetic) so glyph 14px + 5px == the 19px indent step of the
+        // nested body, which lands the folder NAME on the text x of the sessions
+        // INSIDE it. Both guides hold at once; changing either breaks one.
+        // Measured: glyph == sibling session text, name == child session text.
+        style={{ paddingLeft: '16px' }}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <FolderGlyph color={folder.color} size={17} open={!folder.collapsed} />
+            <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
@@ -2398,11 +2401,11 @@ function ChatSidebar({
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
-              className="flex items-center gap-[7px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
               onClick={() => toggleCollapse(folder.id)}>
-              <FolderGlyph color={folder.color} size={17} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
+              <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}

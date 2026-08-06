@@ -4258,7 +4258,6 @@
       "default_agent": "ডিফল্ট এজেন্ট",
       "default_agent_hint": "এখানে তৈরি নতুন চ্যাটের জন্য আগেই নির্বাচিত।",
       "enter_to_submit": "জমা দিতে Enter",
-      "folder_preview": "খোলা/বন্ধ অবস্থার প্রিভিউ",
       "folder_settings": "ফোল্ডার সেটিংস",
       "inherit_named": "ইনহেরিট করুন ({{agent}})",
       "inherited_dir": "নিকটতম প্যারেন্ট ফোল্ডারের ডিরেক্টরি নিতে খালি রাখুন।",

@@ -4230,7 +4230,6 @@
       "default_agent": "Agent par défaut",
       "default_agent_hint": "Présélectionné pour les nouvelles conversations créées ici.",
       "enter_to_submit": "Entrée pour valider",
-      "folder_preview": "Aperçu de l'état ouvert/fermé",
       "folder_settings": "Paramètres du dossier",
       "inherit_named": "Hériter ({{agent}})",
       "inherited_dir": "Laissez vide pour hériter du répertoire du dossier parent le plus proche.",

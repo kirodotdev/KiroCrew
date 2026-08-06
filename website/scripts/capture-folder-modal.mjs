@@ -88,10 +88,14 @@ async function main() {
   await page.fill('[data-testid="folder-config-name"]', 'Ledger')
   await shotModal(`${PREFIX}-02-create-nested-inherited-dir`)
 
-  // ── 03: same modal with the emoji panel revealed ──
-  await page.click('[data-testid="folder-config-icon"]')
+  // ── 03: same modal with a palette color picked ──
+  // (There is no emoji panel to reveal: folders carry a color, not an icon.)
+  // Adjacent sibling, not `~`: the palette renders 12 sibling buttons after the
+  // "no color" cell, so `~ button` matches all of them and only survives on
+  // page.click's non-strict first-match. `+ button` is exactly the first swatch.
+  await page.click('[data-testid="folder-config-color-reset"] + button')
   await page.waitForTimeout(200)
-  await shotModal(`${PREFIX}-03-create-emoji-panel`)
+  await shotModal(`${PREFIX}-03-create-color-picked`)
   await closeModal()
 
   // ── 04: edit an existing folder via ⋯ → Folder settings ──

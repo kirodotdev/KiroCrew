@@ -4177,7 +4177,6 @@
       "default_agent": "Standard-Agent",
       "default_agent_hint": "Für neue Chats, die hier erstellt werden, vorausgewählt.",
       "enter_to_submit": "Eingabetaste zum Bestätigen",
-      "folder_preview": "Vorschau: geöffnet/geschlossen umschalten",
       "folder_settings": "Ordnereinstellungen",
       "inherit_named": "Übernehmen ({{agent}})",
       "inherited_dir": "Leer lassen, um das Verzeichnis des nächsten übergeordneten Ordners zu übernehmen.",

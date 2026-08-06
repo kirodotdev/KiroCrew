@@ -4311,7 +4311,6 @@
       "default_agent": "Agente predefinito",
       "default_agent_hint": "Preselezionato per le nuove chat create qui.",
       "enter_to_submit": "Invio per confermare",
-      "folder_preview": "Anteprima dello stato aperto/chiuso",
       "folder_settings": "Impostazioni della cartella",
       "inherit_named": "Eredita ({{agent}})",
       "inherited_dir": "Lascia vuoto per ereditare la directory della cartella superiore più vicina.",

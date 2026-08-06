@@ -4311,7 +4311,6 @@
       "default_agent": "Agente padrão",
       "default_agent_hint": "Pré-selecionado para novas conversas criadas aqui.",
       "enter_to_submit": "Enter para enviar",
-      "folder_preview": "Prévia do estado aberto/fechado",
       "folder_settings": "Configurações da pasta",
       "inherit_named": "Herdar ({{agent}})",
       "inherited_dir": "Deixe vazio para herdar o diretório da pasta superior mais próxima.",
