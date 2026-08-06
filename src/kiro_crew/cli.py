@@ -2174,7 +2174,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
-        asyncio.run(_chat(args.message, args.model, agent=getattr(args, "agent", None)))
+        _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
@@ -2347,7 +2347,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
 
 from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
-from kiro_crew.cli_chat import _chat  # noqa: E402
+from kiro_crew.cli_chat import _run_chat  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
 from kiro_crew.cli_commands import (  # noqa: E402

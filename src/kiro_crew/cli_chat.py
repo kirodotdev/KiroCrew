@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import gc
 import logging
 import os
@@ -110,17 +111,28 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider: LLMProvider = build_provider_factory(cfg)(
         "cli_chat", agent=agent_name, channel_id=channel_id
     )
-    await provider.start()
+    try:
+        await provider.start()
 
-    if message:
-        await _send_and_print(provider, message)
-    else:
-        await _interactive(provider, cfg)
+        if message:
+            await _send_and_print(provider, message)
+        else:
+            await _interactive(provider, cfg)
+    finally:
+        try:
+            await provider.shutdown()
+        finally:
+            # Force GC so subprocess transports are collected while the loop is
+            # still open, avoiding "Event loop is closed" noise on exit.
+            gc.collect()
 
-    await provider.shutdown()
-    # Force GC so subprocess transports are collected while the loop is
-    # still open, avoiding "Event loop is closed" noise on exit.
-    gc.collect()
+
+def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
+    """Run chat at the sync CLI boundary and render SIGINT as a clean exit."""
+    try:
+        asyncio.run(_chat(message, model, agent=agent))
+    except KeyboardInterrupt:
+        print("\nBye! 👻")
 
 
 async def _send_and_print(provider: LLMProvider, message: str) -> None:

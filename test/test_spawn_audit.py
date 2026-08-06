@@ -557,6 +557,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
         "cli.py::main",
+        "cli_chat.py::_run_chat",
         "cli_chat.py::_tui",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), here used only to drive the now-async
