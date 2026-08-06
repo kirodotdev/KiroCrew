@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
@@ -20,7 +20,7 @@ import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/useP
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator
 } from '../../components/ui/dropdown-menu'
 import { safeSetItem } from '../../utils/safeStorage'
 import { useAppSelector } from '../../store'
@@ -83,20 +83,43 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   terminal: 'pages.chat.sidePanel.menu_terminal_desc',
 }
 
-/** Views offered by the + menu. `kind` is the PERSISTED tab id (`usePanelTabs`),
- *  so it stays a code constant — only its label and description are localised. */
-const NEW_MENU: { kind: ViewKind | 'terminal'; icon: ReactNode }[] = [
-  { kind: 'changes', icon: <GitPullRequest size={15} /> },
-  { kind: 'issues', icon: <CircleDot size={15} /> },
-  { kind: 'files', icon: <FileText size={15} /> },
-  { kind: 'artifacts', icon: <Component size={15} /> },
-  { kind: 'subagents', icon: <Bot size={15} /> },
-  { kind: 'workflows', icon: <Workflow size={15} /> },
-  { kind: 'logs', icon: <ScrollText size={15} /> },
-  { kind: 'context', icon: <Layers size={15} /> },
-  { kind: 'side', icon: <MessageSquare size={15} /> },
-  { kind: 'browser', icon: <Globe size={15} /> },
-  { kind: 'terminal', icon: <TerminalSquare size={15} /> },
+/** Views offered by the + menu, in the three semantic groups the menu renders
+ *  with a separator between them. `kind` is the PERSISTED tab id
+ *  (`usePanelTabs`), so it stays a code constant — only its label and
+ *  description are localised.
+ *
+ *  Groups, not one flat list, because the eight rows were three unrelated
+ *  kinds of thing in arbitrary order: what this chat produced, surfaces the
+ *  user drives themselves, and diagnostics. They are deliberately UNLABELLED
+ *  (rules only): three group headings would add ~90px of chrome to an
+ *  eight-row menu for hierarchy the grouping already conveys.
+ *
+ *  Every key of `NEW_MENU_LABEL_KEY` must appear exactly once across the
+ *  groups — `sidePanelAddMenu.test.tsx` pins that partition, so adding a view
+ *  without placing it in a group fails rather than silently dropping it. */
+const NEW_MENU_GROUPS: { kind: ViewKind | 'terminal'; icon: ReactNode }[][] = [
+  // Session output — what this chat referenced or produced. (Changes / Files /
+  // Artifacts are auto-pinned and filtered out below; they are listed here so
+  // this table stays the complete catalog of views.)
+  [
+    { kind: 'changes', icon: <GitPullRequest size={15} /> },
+    { kind: 'issues', icon: <CircleDot size={15} /> },
+    { kind: 'files', icon: <FileText size={15} /> },
+    { kind: 'artifacts', icon: <Component size={15} /> },
+    { kind: 'subagents', icon: <Bot size={15} /> },
+    { kind: 'workflows', icon: <Workflow size={15} /> },
+  ],
+  // Interactive workspaces — the surfaces the user types into.
+  [
+    { kind: 'side', icon: <MessageSquare size={15} /> },
+    { kind: 'browser', icon: <Globe size={15} /> },
+    { kind: 'terminal', icon: <TerminalSquare size={15} /> },
+  ],
+  // Diagnostics.
+  [
+    { kind: 'logs', icon: <ScrollText size={15} /> },
+    { kind: 'context', icon: <Layers size={15} /> },
+  ],
 ]
 
 const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side'])
@@ -106,15 +129,22 @@ const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 
  *  breakdown is a developer surface hidden unless Developer Mode is on (Settings
  *  > Developer) — same consent gate the standalone Developer page uses. The
  *  auto-managed pinned views (Changes / Files / Artifacts) are never listed;
- *  they appear on their own when they have content. */
-export function newMenuItems(
+ *  they appear on their own when they have content.
+ *
+ *  Grouped, and **emptied groups are dropped**: Diagnostics shrinks to one row
+ *  with Developer Mode off and Workspaces to two with Terminal disabled, and a
+ *  group that filtered down to nothing would otherwise render as a separator
+ *  with no rows after it. */
+export function newMenuSections(
   opts: { devMode: boolean; terminalEnabled: boolean },
-): { kind: ViewKind | 'terminal'; icon: ReactNode }[] {
-  return NEW_MENU.filter(item =>
-    (opts.terminalEnabled || item.kind !== 'terminal')
-    && (opts.devMode || item.kind !== 'context')
-    && !(PINNED_VIEWS as string[]).includes(item.kind),
-  )
+): { kind: ViewKind | 'terminal'; icon: ReactNode }[][] {
+  return NEW_MENU_GROUPS
+    .map(group => group.filter(item =>
+      (opts.terminalEnabled || item.kind !== 'terminal')
+      && (opts.devMode || item.kind !== 'context')
+      && !(PINNED_VIEWS as string[]).includes(item.kind),
+    ))
+    .filter(group => group.length > 0)
 }
 
 interface SidePanelProps {
@@ -277,7 +307,11 @@ export default function SidePanel({
   // never list the auto-managed pinned views (Changes / Files / Artifacts) —
   // those appear on their own when they have content (see the syncPinned
   // reconcile below).
-  const menuItems = newMenuItems({ devMode, terminalEnabled })
+  const menuSections = newMenuSections({ devMode, terminalEnabled })
+  // The empty-state launcher shows the same entries flat: its two-column grid
+  // has nowhere to put a separator, but it must not disagree with the menu
+  // about ORDER, so it reads the groups rather than its own list.
+  const menuItems = menuSections.flat()
   // Files / Artifacts / Changes are ALWAYS present — pinned to the front,
   // non-closable, and never in the + menu — regardless of whether they
   // currently have content.
@@ -448,15 +482,23 @@ export default function SidePanel({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
-            {menuItems.map(item => (
-              <DropdownMenuItem
-                key={item.kind}
-                className="gap-2.5 py-2"
-                onSelect={() => openMenuItem(item.kind)}
-              >
-                <span className="text-muted shrink-0">{item.icon}</span>
-                <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
-              </DropdownMenuItem>
+            {menuSections.map((section, i) => (
+              // Keyed by the group's first surviving row, not the index: a gate
+              // that empties a whole group changes what index i means, and a
+              // stale index key would let React reuse the wrong group's rows.
+              <Fragment key={section[0].kind}>
+                {i > 0 && <DropdownMenuSeparator />}
+                {section.map(item => (
+                  <DropdownMenuItem
+                    key={item.kind}
+                    className="gap-2.5 py-2"
+                    onSelect={() => openMenuItem(item.kind)}
+                  >
+                    <span className="text-muted shrink-0">{item.icon}</span>
+                    <span className="flex-1">{i18nT(NEW_MENU_LABEL_KEY[item.kind])}</span>
+                  </DropdownMenuItem>
+                ))}
+              </Fragment>
             ))}
           </DropdownMenuContent>
         </DropdownMenu>

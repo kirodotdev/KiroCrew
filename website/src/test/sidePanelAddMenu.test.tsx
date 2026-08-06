@@ -38,7 +38,7 @@ vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
 
-import SidePanel from '../pages/chat/SidePanel'
+import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs } from '../hooks/usePanelTabs'
 
 function Harness() {
@@ -98,5 +98,65 @@ describe('side panel + menu (shadcn dropdown)', () => {
     openMenu()
     act(() => { fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }) })
     expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('renders one separator between the groups and none at the edges', () => {
+    renderPanel()
+    openMenu()
+    const menu = screen.getByRole('menu')
+    const kids = Array.from(menu.children)
+    const seps = kids.filter(el => el.getAttribute('role') === 'separator')
+    // Terminal is disabled and Developer Mode off in this harness, so the
+    // Diagnostics group is Logs alone and Workspaces is Side + Browser: three
+    // surviving groups, two rules.
+    expect(seps).toHaveLength(2)
+    expect(kids[0].getAttribute('role')).toBe('menuitem')
+    expect(kids[kids.length - 1].getAttribute('role')).toBe('menuitem')
+    // Rules separate groups, so no two are adjacent.
+    const roles = kids.map(el => el.getAttribute('role'))
+    expect(roles.join(' ')).not.toContain('separator separator')
+  })
+})
+
+describe('newMenuSections', () => {
+  const kinds = (o: { devMode: boolean; terminalEnabled: boolean }) =>
+    newMenuSections(o).map(g => g.map(i => i.kind))
+
+  it('partitions every catalogued view exactly once', () => {
+    // Both gates open, so nothing is filtered but the auto-pinned views. Any
+    // view added to NEW_MENU_LABEL_KEY without being placed in a group — or
+    // placed in two — fails here instead of quietly vanishing from the menu.
+    const flat = kinds({ devMode: true, terminalEnabled: true }).flat()
+    const pinned = ['changes', 'files', 'artifacts']
+    const catalogued = Object.keys(NEW_MENU_LABEL_KEY).filter(k => !pinned.includes(k))
+    expect([...flat].sort()).toEqual([...catalogued].sort())
+    expect(new Set(flat).size).toBe(flat.length)
+  })
+
+  it('groups by session output, workspaces, then diagnostics', () => {
+    expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
+      ['issues', 'subagents', 'workflows'],
+      ['side', 'browser', 'terminal'],
+      ['logs', 'context'],
+    ])
+  })
+
+  it('drops a group the gates emptied instead of leaving a stray separator', () => {
+    // Neither gate can currently empty a whole group (Workspaces keeps Side +
+    // Browser, Diagnostics keeps Logs), so the invariant is asserted directly:
+    // no returned group is ever empty, under any gate combination.
+    for (const devMode of [false, true]) {
+      for (const terminalEnabled of [false, true]) {
+        for (const group of newMenuSections({ devMode, terminalEnabled })) {
+          expect(group.length).toBeGreaterThan(0)
+        }
+      }
+    }
+    // And the gated rows really are the ones that go.
+    expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
+      ['issues', 'subagents', 'workflows'],
+      ['side', 'browser'],
+      ['logs'],
+    ])
   })
 })

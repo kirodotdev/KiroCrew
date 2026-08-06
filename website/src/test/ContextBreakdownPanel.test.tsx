@@ -215,12 +215,12 @@ describe('placement: a per-session tab, not a global page', () => {
   })
 
   it('is hidden from the + menu unless Developer Mode is on', async () => {
-    const { newMenuItems } = await import('../pages/chat/SidePanel')
+    const { newMenuSections } = await import('../pages/chat/SidePanel')
     const kinds = (o: { devMode: boolean; terminalEnabled: boolean }) =>
-      newMenuItems(o).map(i => i.kind)
+      newMenuSections(o).flat().map(i => i.kind)
     // Dev mode off: Context breakdown is not offered — it is a developer surface.
     expect(kinds({ devMode: false, terminalEnabled: true })).not.toContain('context')
-    // Dev mode on: it appears (right after Logs, before Side).
+    // Dev mode on: it appears (right after Logs, closing the diagnostics group).
     const on = kinds({ devMode: true, terminalEnabled: true })
     expect(on).toContain('context')
     expect(on.indexOf('context')).toBe(on.indexOf('logs') + 1)
