@@ -45,7 +45,7 @@ export const STATUSES = ['active', 'archived']
 // Status the list view opens on. This is the default view, NOT user narrowing,
 // so the onboarding empty state treats this value as "no filter applied".
 export const DEFAULT_STATUS_FILTER = 'active'
-export const SUPPORTED_FORMATS = 'Markdown, Plain text, Code files (.py, .ts, .java, .go, .rs, etc.), HTML, JSON, YAML, CSV, DOCX'
+export const SUPPORTED_FORMATS = 'Markdown, Plain text, Code files (.py, .ts, .java, .go, .rs, etc.), HTML, JSON, YAML, CSV, DOCX, Org Mode (.org)'
 
 /**
  * Onboarding copy for the Knowledge Library help dialog and empty state.
