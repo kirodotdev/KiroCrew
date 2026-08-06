@@ -86,10 +86,25 @@ Inline within a `Card`, built from the shared primitives:
 - `Input` for text fields.
 - `SendBtn` for the primary action (accent-colored).
 - `Btn` for secondary actions, `Btn danger` for destructive ones.
-- `Checkbox` and `Select` from `ui.tsx` for the native controls.
-- A hand-styled `select` uses
-  `bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring`.
-- `AgentSelector` for agent dropdowns (portal-based, ARIA-wired).
+- `Checkbox` from `ui.tsx` for a boolean box.
+- **Dropdowns: never a native `<select>`.** Its popup is drawn by the OS, so it
+  ignores every theme token, cannot be styled per row, and looks nothing like
+  the rest of the app. Pick by list length and purpose:
+  - `SettingsSelect` (`components/settings.tsx`) on a Settings page — label +
+    description + dropdown as one field. The choke point for that surface.
+  - `SimpleSelect` (`components/SimpleSelect.tsx`) anywhere else, up to roughly
+    fifteen options. Radix Select under the hood; takes `options` /
+    `optionLabels` / `value` / `onChange(value)`, and `action` for a trailing
+    "+ New…" row.
+  - `SearchableSelect` (`components/SearchableSelect.tsx`) past that, or any
+    list a user would want to filter (timezones, file lists). Radix Popover plus
+    a filter box.
+  - `DropdownMenu` (`components/ui/dropdown-menu.tsx`) for a menu of *commands*
+    rather than a bound value.
+  - `AgentSelector` for agent dropdowns specifically (portal-based, ARIA-wired).
+
+  These render a `<button>`, not a `<select>`, so an external
+  `<label htmlFor>` does **not** name them — pass `aria-label`.
 - `Toggle` for a boolean switch. It carries `role="switch"`, `aria-checked` and
   `aria-disabled` itself, so do not re-add them.
 
@@ -118,8 +133,11 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 
 - Wrap a page in `<div className="p-6 max-w-[960px] mx-auto">`. Use
   `PageHeader` + the `px-6 pb-8` container.
-- Use a raw `<input>` / `<select>` / `<button>`. Use `Input`, `Select`,
-  `Checkbox`, `Btn`, `SendBtn`, `SearchInput`.
+- Use a raw `<input>` / `<button>`. Use `Input`, `Btn`, `SendBtn`,
+  `SearchInput`, `Checkbox`.
+- Use a native `<select>`. There is no styled wrapper for one any more — see
+  §Forms for which dropdown component to reach for. Enforced by
+  `no-restricted-syntax` in `eslint.config.js`.
 - Use raw status text. Use `Badge` or `SourceBadge`.
 - Use `text-xs`. Use `text-[13px]`.
 - Add a new CSS `@keyframes`. Use Framer Motion, or an existing utility.

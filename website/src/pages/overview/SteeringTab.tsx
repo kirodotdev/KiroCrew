@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import { Card, Btn, SearchInput, EmptyState } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
+import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import type { SteeringFile, SteeringList } from '../../types'
 
@@ -196,19 +197,34 @@ export default function SteeringTab() {
             onChange={e => setNewName(e.target.value)}
           />
         </label>
+        {/* The control IS nested here — label-has-for only recognises native
+            form elements, so its nesting check false-positives on the trigger
+            <button> SearchableSelect renders. Same disable as SchedulePage's
+            render-timezone label, for the same component family. */}
+        {/* eslint-disable-next-line jsx-a11y/label-has-for */}
         <label className="flex flex-col gap-1" htmlFor="steering-new-scope">
           <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.scope')}</span>
-          <select
+          {/* SearchableSelect, not SimpleSelect: the workspace row is a REAL option
+              that is conditionally unselectable, and only per-option `disabled`
+              keeps it visible — so "workspace scope exists, you just have no
+              project set" survives instead of the row vanishing. The label keeps
+              both channels: `id`/htmlFor so clicking "Scope" focuses the trigger,
+              and an explicit aria-label so the name does not depend on how a
+              <label> is resolved for the <button> the trigger renders as. */}
+          <SearchableSelect
             id="steering-new-scope"
-            className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-[13px] outline-none focus-ring"
+            aria-label={i18nT('pages.overview.steeringTab.scope')}
+            options={[
+              {
+                value: 'workspace',
+                label: i18nT('pages.overview.steeringTab.workspace_this_project_only') + (hasProject ? '' : ' (no project set)'),
+                disabled: !hasProject,
+              },
+              { value: 'user', label: i18nT('pages.overview.steeringTab.global_every_project') },
+            ]}
             value={newSource}
-            onChange={e => setNewSource(e.target.value as 'user' | 'workspace')}
-          >
-            <option value="workspace" disabled={!hasProject}>
-              {i18nT('pages.overview.steeringTab.workspace_this_project_only')}{hasProject ? '' : ' (no project set)'}
-            </option>
-            <option value="user">{i18nT('pages.overview.steeringTab.global_every_project')}</option>
-          </select>
+            onChange={v => setNewSource(v as 'user' | 'workspace')}
+          />
         </label>
         <label className="flex flex-col gap-1" htmlFor="steering-new-body">
           <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.content')}</span>

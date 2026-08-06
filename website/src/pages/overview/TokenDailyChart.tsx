@@ -1,5 +1,6 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { formatCost } from '../../utils/formatCost'
+import SimpleSelect from '../../components/SimpleSelect'
 
 import { i18nT } from '../../i18n/t'
 export type TokenBucket = {
@@ -82,20 +83,19 @@ function FilterSelect({
   onChange: (v: string) => void
   options: string[]
 }) {
-  const selectId = useId()
+  // The trigger is a <button>, not a <select>, so an external <label htmlFor>
+  // no longer associates — the visible label text becomes the aria-label.
   return (
-    <label htmlFor={selectId} className="flex items-center gap-2 text-[12px] text-muted">
+    <div className="flex items-center gap-2 text-[12px] text-muted">
       <span>{label}</span>
-      <select
-        id={selectId}
+      <SimpleSelect
+        aria-label={label}
+        options={[ALL, ...options]}
+        optionLabels={[i18nT('pages.overview.tokenDailyChart.all'), ...options]}
         value={value}
-        onChange={e => onChange(e.target.value)}
-        className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-text text-[12px] font-body outline-none cursor-pointer transition-colors focus-ring"
-      >
-        <option value={ALL}>{i18nT('pages.overview.tokenDailyChart.all')}</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
-      </select>
-    </label>
+        onChange={onChange}
+      />
+    </div>
   )
 }
 

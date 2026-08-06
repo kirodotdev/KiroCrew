@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { useProvider } from '../providers'
 import { Card, CardTitle, PageHeader, StatCard, Btn, SendBtn, Input, Badge, SearchInput, EmptyState } from '../components/ui'
 import InfoTip from '../components/InfoTip'
+import SimpleSelect from '../components/SimpleSelect'
 import { esc } from '../api/helpers'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
@@ -27,8 +28,6 @@ interface HookTestResult {
 }
 
 const EVENTS = ['AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
-
-const sel = 'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
 
 const EVENT_STYLE: Record<string, string> = {
   AgentSpawn: 'bg-accent/15 text-accent border-accent/30',
@@ -68,9 +67,17 @@ function HookForm({ hook, onSave, onCancel }: {
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
           <Input placeholder={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
-          <select className={`${sel} font-mono ${EVENT_STYLE[event] ? 'border-accent/40' : ''}`} value={event} onChange={e => setEvent(e.target.value)}>
-            {EVENTS.map(e => <option key={e} value={e}>{e}</option>)}
-          </select>
+          <SimpleSelect
+            options={EVENTS}
+            value={event}
+            onChange={setEvent}
+            // A hook stored with an event this picker no longer offers (legacy
+            // or hand-edited config) matches no row. A native <select> silently
+            // displayed the FIRST option while state held the stale value; show
+            // the stored value instead.
+            triggerFallback={event}
+            aria-label={i18nT('pages.hooksPage.event')}
+          />
         </div>
         <div>
           <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />

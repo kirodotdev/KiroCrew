@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders } from './helpers'
@@ -34,6 +34,13 @@ const mkArtifact = (slug: string, overrides: Partial<Artifact> = {}): Artifact =
   updated_at: '2026-05-21T22:00:00.000000+00:00',
   ...overrides,
 })
+
+/**
+ * The filter-bar dropdowns. `SimpleSelect` wraps a Radix Select, so each is a
+ * <button role="combobox"> whose rows exist only while the popup is open.
+ */
+const kindTrigger = () => screen.getByRole('combobox', { name: 'Filter by kind' })
+const tagTrigger = () => screen.getByRole('combobox', { name: 'Filter by tag' })
 
 describe('ArtifactsPage', () => {
   beforeEach(() => {
@@ -202,14 +209,33 @@ describe('ArtifactsPage', () => {
     const fetcher = vi.fn().mockResolvedValue({ artifacts: [] })
     vi.mocked(api).artifacts = fetcher
     renderWithProviders(<ArtifactsPage />)
-    // Wait for loading state to clear and the kind dropdown to mount.
+    // Wait for loading state to clear and the kind dropdown to mount. SimpleSelect
+    // renders a <button role="combobox">, so the current selection is text on the
+    // trigger rather than a form value, and the rows mount only once it is open.
     await waitFor(() =>
-      expect(screen.getByDisplayValue(/all kinds/i)).toBeInTheDocument(),
+      expect(kindTrigger()).toHaveTextContent(/all kinds/i),
     )
-    const kindSelect = screen.getByDisplayValue(/all kinds/i) as HTMLSelectElement
-    await userEvent.selectOptions(kindSelect, 'markdown')
+    fireEvent.click(kindTrigger())
+    fireEvent.click(await screen.findByRole('option', { name: 'kind: markdown' }))
     await waitFor(() => {
       expect(fetcher).toHaveBeenLastCalledWith({ tag: undefined, kind: 'markdown' })
+    })
+  })
+
+  it('refetches with tag filter when tag dropdown changes', async () => {
+    // The tag rows are built from a separate unfiltered query, so this also covers
+    // the dynamic half of the dropdown: an "all tags" row on the empty string plus
+    // one row per tag in the library.
+    const fetcher = vi.fn().mockResolvedValue({
+      artifacts: [mkArtifact('cr-queue', { tags: ['ops'] })],
+    })
+    vi.mocked(api).artifacts = fetcher
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(tagTrigger()).toHaveTextContent(/all tags/i))
+    fireEvent.click(tagTrigger())
+    fireEvent.click(await screen.findByRole('option', { name: 'tag: ops' }))
+    await waitFor(() => {
+      expect(fetcher).toHaveBeenLastCalledWith({ tag: 'ops', kind: undefined })
     })
   })
 

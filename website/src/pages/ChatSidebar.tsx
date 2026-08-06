@@ -26,6 +26,7 @@ import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
+import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -3013,16 +3014,19 @@ function ChatSidebar({
                                   aria-label={i18nT('pages.chatSidebar.custom_recency_amount')}
                                   className="w-12 shrink-0 px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text text-[12px]"
                                 />
-                                <select
+                                <SimpleSelect
                                   value={recentUnitDraft}
-                                  onChange={e => changeRecentUnit(e.target.value as RecentUnit)}
+                                  onChange={v => changeRecentUnit(v as RecentUnit)}
+                                  className="px-1.5 py-0.5 text-[12px] rounded"
+                                  options={['minutes', 'hours', 'days']}
+                                  optionLabels={[i18nT('pages.chatSidebar.min'), i18nT('pages.chatSidebar.hours'), i18nT('pages.chatSidebar.days')]}
                                   aria-label={i18nT('pages.chatSidebar.custom_recency_unit')}
-                                  className="flex-1 min-w-0 px-1.5 py-0.5 rounded border border-border bg-bg-elevated text-text text-[12px] cursor-pointer"
-                                >
-                                  <option value="minutes">{i18nT('pages.chatSidebar.min')}</option>
-                                  <option value="hours">{i18nT('pages.chatSidebar.hours')}</option>
-                                  <option value="days">{i18nT('pages.chatSidebar.days')}</option>
-                                </select>
+                                  // Was `flex-1 min-w-0` on the old <select>; the
+                                  // trigger's chrome is fixed inside ui/select.tsx,
+                                  // but the flex sizing has to survive on the
+                                  // wrapper div that replaces it as the flex item.
+                                  style={{ flex: '1 1 0%', minWidth: 0 }}
+                                />
                               </div>
                             </div>
                           </div>

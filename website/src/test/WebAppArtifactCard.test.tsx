@@ -248,8 +248,11 @@ describe('WebAppArtifactCard', () => {
 
     const select = await screen.findByLabelText('AWS profile to deploy with')
     // Default preselected; the other registered profile is offered.
-    expect(select).toHaveDisplayValue('profile: my-deploy (default)')
-    fireEvent.change(select, { target: { value: 'my-sandbox' } })
+    // `SimpleSelect` wraps a Radix Select, so a `change` event on the trigger
+    // does nothing — open it, then click the option.
+    expect(select).toHaveTextContent('profile: my-deploy (default)')
+    fireEvent.click(select)
+    fireEvent.click(await screen.findByRole('option', { name: 'profile: my-sandbox' }))
     fireEvent.click(screen.getByRole('button', { name: /^Deploy$/i }))
     const launch = (window as unknown as { __mc_chat_launch?: { message: string } }).__mc_chat_launch
     expect(launch!.message).toContain('Use the AWS profile "my-sandbox".')

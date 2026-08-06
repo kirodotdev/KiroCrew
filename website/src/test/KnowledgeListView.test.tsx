@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -39,32 +39,40 @@ function item(id: string, sourceId: string, title: string) {
 }
 
 let itemCalls: string[] = []
+// Knobs the filter-dropdown tests below vary. Defaults reproduce the original
+// fixture exactly, so the source-first tests are unaffected by their presence.
+let namespacesFixture: { name: string; count: number }[] = []
+let flatTotal = 1
+
+function defaultApi(path: string) {
+  const p = String(path)
+  if (p.startsWith('/items')) {
+    itemCalls.push(p)
+    const sid = new URLSearchParams(p.split('?')[1]).get('source_id')
+    if (sid) {
+      const total = COUNTS[sid as keyof typeof COUNTS] ?? 0
+      return Promise.resolve({ items: [item(`${sid}-a`, sid, `${sid} item A`)], total })
+    }
+    // Flat search branch
+    return Promise.resolve({ items: [item('f1', 's1', 'search hit')], total: flatTotal })
+  }
+  if (p.startsWith('/source-counts')) {
+    return Promise.resolve({ counts: COUNTS, total: 953 })
+  }
+  if (p === '/sources') return Promise.resolve(SOURCES)
+  if (p === '/stats') return Promise.resolve({ items: 953, entities: 0, relations: 0, sources: 3 })
+  if (p === '/namespaces') return Promise.resolve(namespacesFixture)
+  if (p === '/config') return Promise.resolve({ enabled: true, supported_formats: ['.md'] })
+  return Promise.resolve([])
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
   qc.clear()
   itemCalls = []
-  mockKnowledgeApi.mockImplementation((path: string) => {
-    const p = String(path)
-    if (p.startsWith('/items')) {
-      itemCalls.push(p)
-      const sid = new URLSearchParams(p.split('?')[1]).get('source_id')
-      if (sid) {
-        const total = COUNTS[sid as keyof typeof COUNTS] ?? 0
-        return Promise.resolve({ items: [item(`${sid}-a`, sid, `${sid} item A`)], total })
-      }
-      // Flat search branch
-      return Promise.resolve({ items: [item('f1', 's1', 'search hit')], total: 1 })
-    }
-    if (p.startsWith('/source-counts')) {
-      return Promise.resolve({ counts: COUNTS, total: 953 })
-    }
-    if (p === '/sources') return Promise.resolve(SOURCES)
-    if (p === '/stats') return Promise.resolve({ items: 953, entities: 0, relations: 0, sources: 3 })
-    if (p === '/namespaces') return Promise.resolve([])
-    if (p === '/config') return Promise.resolve({ enabled: true, supported_formats: ['.md'] })
-    return Promise.resolve([])
-  })
+  namespacesFixture = []
+  flatTotal = 1
+  mockKnowledgeApi.mockImplementation((path: string) => defaultApi(path))
 })
 
 describe('Knowledge List View — source-first rows', () => {
@@ -206,5 +214,98 @@ describe('Knowledge List View — source-first rows', () => {
       expect(itemCalls.some(c => c.includes('q=hit') && !c.includes('source_id='))).toBe(true)
     })
     expect(await screen.findByText('search hit')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The three filter dropdowns were native `<select>`s until they moved to
+ * `SimpleSelect` (Radix). Radix renders a `<button role="combobox">` and mounts
+ * the options only while the popup is open, so a `change` event on the trigger
+ * does nothing — open it, then click the option.
+ */
+describe('Knowledge List View — filter dropdowns', () => {
+  const filterTrigger = (name: string) => screen.getByRole('combobox', { name })
+
+  async function pick(filter: string, option: string | RegExp) {
+    fireEvent.click(filterTrigger(filter))
+    fireEvent.click(await screen.findByRole('option', { name: option }))
+  }
+
+  /** Newest request for a path prefix, so an assertion cannot read a stale call. */
+  const lastCall = (prefix: string) =>
+    String(mockKnowledgeApi.mock.calls.filter(c => String(c[0]).startsWith(prefix)).pop()?.[0] ?? '')
+
+  it('mounts its options only once the popup is open', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await screen.findByText('PersonalKnowledgeBase')
+    // A native select keeps every <option> in the DOM from first paint; the
+    // theme-drawn popup has none until the trigger is pressed.
+    expect(screen.queryByRole('option', { name: 'runbook' })).not.toBeInTheDocument()
+    fireEvent.click(filterTrigger('Filter by type'))
+    expect(await screen.findByRole('option', { name: 'runbook' })).toBeInTheDocument()
+    // Underscored values stay humanised in the visible label.
+    expect(screen.getByRole('option', { name: 'meeting notes' })).toBeInTheDocument()
+  })
+
+  it('shows each filter default in its trigger', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await screen.findByText('PersonalKnowledgeBase')
+    // The empty-string "all" rows: reachable as real options, and rendered in
+    // the trigger rather than falling through to a placeholder dash.
+    expect(filterTrigger('Filter by type')).toHaveTextContent('All types')
+    expect(filterTrigger('Filter by namespace')).toHaveTextContent('All namespaces')
+    // statusFilter starts at DEFAULT_STATUS_FILTER, not at the "all" row. The
+    // trigger shows the CATALOG label, not the raw `active` enum — the value is
+    // visible copy now that the popup is theme-drawn rather than OS-drawn.
+    expect(filterTrigger('Filter by status')).toHaveTextContent('Active')
+  })
+
+  it('narrows the query by type and rewinds to page 1', async () => {
+    flatTotal = 60 // 60 hits at limit=20 in search mode -> a 3-page flat pager
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    // The top-level pager exists only in flat search mode.
+    await userEvent.type(await screen.findByPlaceholderText(/Search knowledge/i), 'hit{Enter}')
+    fireEvent.click(await screen.findByRole('button', { name: /Next/ }))
+    expect(await screen.findByText('Page 2 of 3')).toBeInTheDocument()
+
+    await pick('Filter by type', 'runbook')
+
+    // Both effects of the old onChange survive the bare-value signature: the
+    // filter is applied AND the pager is rewound, so the user is not left on a
+    // page that the narrowed result set may no longer have.
+    expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
+    expect(filterTrigger('Filter by type')).toHaveTextContent('runbook')
+    await waitFor(() => {
+      const last = lastCall('/items')
+      expect(last).toContain('type=runbook')
+      expect(last).toContain('page=1')
+    })
+  })
+
+  it('drops the status scope when the "All statuses" row is chosen', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await screen.findByText('PersonalKnowledgeBase')
+    await waitFor(() => expect(lastCall('/source-counts')).toContain('status=active'))
+
+    await pick('Filter by status', 'All statuses')
+
+    // '' rides through SimpleSelect's internal sentinel and comes back out as
+    // '', which the request builder reads as "no status param at all".
+    expect(filterTrigger('Filter by status')).toHaveTextContent('All statuses')
+    await waitFor(() => expect(lastCall('/source-counts')).not.toContain('status='))
+  })
+
+  it('offers every namespace with its item count and filters by the bare name', async () => {
+    namespacesFixture = [{ name: 'default', count: 41 }, { name: 'work', count: 7 }]
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await screen.findByText('PersonalKnowledgeBase')
+
+    fireEvent.click(filterTrigger('Filter by namespace'))
+    expect(await screen.findByRole('option', { name: 'work (7)' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'default (41)' })).toBeInTheDocument()
+    // The count is label-only: the value sent upstream is the namespace name.
+    fireEvent.click(screen.getByRole('option', { name: 'work (7)' }))
+    await waitFor(() => expect(lastCall('/source-counts')).toContain('namespace=work'))
+    expect(filterTrigger('Filter by namespace')).toHaveTextContent('work (7)')
   })
 })

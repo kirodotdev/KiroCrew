@@ -10,6 +10,7 @@ import { ScanSearch, GitPullRequest, ExternalLink, Circle, Settings, Brain, Plus
 
 import { SendBtn } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import SimpleSelect from '../../components/SimpleSelect'
 
 import { i18nT } from '../../i18n/t'
 const API = '/api/apps/code-review-sage'
@@ -45,6 +46,16 @@ interface LearningsResp { namespace: string; patterns: Pattern[]; candidate: Pat
 function changeLabel(id: string): string {
   const m = id.match(/^GH-(.+)-(.+)-(\d+)$/)
   return m ? `${m[1]}/${m[2]} #${m[3]}` : id
+}
+
+/**
+ * Keep an out-of-list current value selectable (same helper shape as
+ * KiroCrewAgentsPage). `SimpleSelect` shows its fallback row when `value`
+ * matches no option, so a persisted setting the backend no longer advertises
+ * would otherwise read as "Default" — appending it keeps it visible.
+ */
+function withCurrent(opts: string[], cur: string): string[] {
+  return !cur || opts.includes(cur) ? opts : [...opts, cur]
 }
 
 /**
@@ -387,32 +398,50 @@ export default function CodeReviewSagePage() {
           <summary className="cursor-pointer text-[13px] flex items-center gap-1.5">
             <Settings size={13} /> {i18nT('apps.codeReviewSage.codeReviewSagePage.configuration')}
           </summary>
+          {/* Each row is a `<span>`, not a `<label>`: SimpleSelect renders a
+              button, which a label cannot be associated with. The visible
+              text's own catalog key is reused as the trigger's aria-label, so
+              the control keeps the same accessible name it had as a select. */}
           <div className="flex gap-[18px] mt-3 flex-wrap">
-            <label className="text-xs text-muted">
-              {i18nT('apps.codeReviewSage.codeReviewSagePage.model_2')}{' '}
-              <select value={s?.model ?? ''} onChange={e => saveMut.mutate({ model: e.target.value || null })}
-                className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
-                <option value="">{i18nT('apps.codeReviewSage.codeReviewSagePage.default_agent_config')}</option>
-                {settings.models.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </label>
-            <label className="text-xs text-muted">
-              {i18nT('apps.codeReviewSage.codeReviewSagePage.effort_2')}{' '}
-              <select value={s?.effort ?? ''} onChange={e => saveMut.mutate({ effort: e.target.value })}
-                className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
-                <option value="">{i18nT('apps.codeReviewSage.codeReviewSagePage.default_model_provider')}</option>
-                {settings.efforts.map(ef => <option key={ef} value={ef}>{ef}</option>)}
-              </select>
-            </label>
-            <label className="text-xs text-muted" title={i18nT('apps.codeReviewSage.codeReviewSagePage.max_prs_reviewed_at_once_on_the_shared_runtime')}>
-              {i18nT('apps.codeReviewSage.codeReviewSagePage.concurrency_2')}{' '}
-              <select value={s?.max_concurrent ?? 5}
-                onChange={e => saveMut.mutate({ max_concurrent: Number(e.target.value) })}
-                className="text-xs px-2 py-1 rounded-md bg-bg text-text border border-border">
-                {Array.from({ length: settings.max_concurrent_max ?? 30 }, (_, i) => i + 1)
-                  .map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </label>
+            <span className="text-xs text-muted flex items-center gap-1.5">
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.model_2')}
+              {/* A model pinned by an older build can fall out of the backend's
+                  known-model allowlist. Keep the current value in the list so it
+                  still shows, rather than silently reading as "Default". */}
+              <SimpleSelect
+                options={withCurrent(settings.models, s?.model ?? '')}
+                value={s?.model ?? ''}
+                onChange={v => saveMut.mutate({ model: v || null })}
+                clearLabel={i18nT('apps.codeReviewSage.codeReviewSagePage.default_agent_config')}
+                aria-label={i18nT('apps.codeReviewSage.codeReviewSagePage.model_2')}
+                style={{ minWidth: 180 }}
+              />
+            </span>
+            <span className="text-xs text-muted flex items-center gap-1.5">
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.effort_2')}
+              <SimpleSelect
+                options={settings.efforts}
+                value={s?.effort ?? ''}
+                onChange={effort => saveMut.mutate({ effort })}
+                clearLabel={i18nT('apps.codeReviewSage.codeReviewSagePage.default_model_provider')}
+                aria-label={i18nT('apps.codeReviewSage.codeReviewSagePage.effort_2')}
+                style={{ minWidth: 140 }}
+              />
+            </span>
+            <span className="text-xs text-muted flex items-center gap-1.5"
+              title={i18nT('apps.codeReviewSage.codeReviewSagePage.max_prs_reviewed_at_once_on_the_shared_runtime')}>
+              {i18nT('apps.codeReviewSage.codeReviewSagePage.concurrency_2')}
+              {/* Numeric setting through a string-only component: the 1..ceiling
+                  range is stringified in and parsed back out on change. The
+                  backend clamps both ends, so the stored value is always in range. */}
+              <SimpleSelect
+                options={Array.from({ length: settings.max_concurrent_max ?? 30 }, (_, i) => String(i + 1))}
+                value={String(s?.max_concurrent ?? 5)}
+                onChange={v => saveMut.mutate({ max_concurrent: Number(v) })}
+                aria-label={i18nT('apps.codeReviewSage.codeReviewSagePage.concurrency_2')}
+                style={{ minWidth: 80 }}
+              />
+            </span>
           </div>
         </details>
       )}

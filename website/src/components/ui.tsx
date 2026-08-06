@@ -603,7 +603,7 @@ export function Slider({
   )
 }
 
-/** Shared styled <select> — use instead of raw <select> in pages (page-layout-pattern). */
+/** Bare themed checkbox. Pairs with a caller-supplied label. */
 export const Checkbox = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ style, ...rest }, ref) => (
     <input
@@ -616,20 +616,11 @@ export const Checkbox = React.forwardRef<HTMLInputElement, React.InputHTMLAttrib
 )
 Checkbox.displayName = 'Checkbox'
 
-export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement>>(
-  ({ className, style, children, ...rest }, ref) => (
-    <select
-      ref={ref}
-      className={className}
-      style={{
-        background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-        padding: '9px 8px', fontSize: 12.5, color: 'var(--text)', outline: 'none',
-        cursor: 'pointer', flexShrink: 0, ...style,
-      }}
-      {...rest}
-    >
-      {children}
-    </select>
-  )
-)
-Select.displayName = 'Select'
+/* There is deliberately no `Select` here any more.
+ *
+ * This module used to export one, and it wrapped a native `<select>`: the closed
+ * trigger picked up the theme, but the OPEN popup was drawn by the OS, so it
+ * ignored every theme token and could not be styled per row. Dropdowns now go
+ * through `ui/select.tsx` (Radix) via `SimpleSelect` / `SettingsSelect`, or
+ * `SearchableSelect` when the list is long enough to need a filter box.
+ * See website/docs/page-layout.md. */

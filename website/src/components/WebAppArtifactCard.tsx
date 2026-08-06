@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
+import SimpleSelect from '../components/SimpleSelect'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import type { Artifact, WebAppMetadata } from '../types'
 
@@ -358,6 +359,8 @@ export default function WebAppArtifactCard({
   })
   const registeredProfiles = profilesResp?.profiles ?? []
   const defaultProfile = profilesResp?.default ?? ''
+  // Derived once so the picker's value array and label array stay in lockstep.
+  const pickableProfiles = registeredProfiles.filter((p) => p.name !== defaultProfile)
   // Local-first preview: the app's local copy (like html/widget artifacts)
   // beats iframing the remote deployment — no dependency on remote frame
   // headers, CDN propagation, or the deployment even existing.
@@ -429,19 +432,17 @@ export default function WebAppArtifactCard({
           </p>
           <div className="flex items-center gap-2 flex-wrap">
             {registeredProfiles.length > 0 && (
-              <select
+              <SimpleSelect
                 value={deployProfile}
-                onChange={(e) => setDeployProfile(e.target.value)}
+                onChange={setDeployProfile}
+                // '' is a REAL choice here ("deploy with the registry default"),
+                // not a placeholder header — `clearLabel` is SimpleSelect's
+                // channel for a selectable empty row.
+                clearLabel={defaultProfile ? `profile: ${defaultProfile} (default)` : 'profile: default'}
+                options={pickableProfiles.map((p) => p.name)}
+                optionLabels={pickableProfiles.map((p) => `${i18nT('components.webAppArtifactCard.profile_2')} ${p.name}`)}
                 aria-label={i18nT('components.webAppArtifactCard.aws_profile_to_deploy_with')}
-                className="px-2 py-1.5 rounded-md text-[12px] bg-bg-elevated border border-border text-text cursor-pointer"
-              >
-                <option value="">
-                  {defaultProfile ? `profile: ${defaultProfile} (default)` : 'profile: default'}
-                </option>
-                {registeredProfiles.filter((p) => p.name !== defaultProfile).map((p) => (
-                  <option key={p.name} value={p.name}>{i18nT('components.webAppArtifactCard.profile_2')} {p.name}</option>
-                ))}
-              </select>
+              />
             )}
             <button
               type="button"

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { InstancesPanel } from '../pages/settings/InstancesPanel'
@@ -114,5 +114,25 @@ describe('InstancesPanel', () => {
     await u.clear(portInput)
     await u.type(portInput, '7800')
     expect(screen.queryByText(/already used by another remote crew/i)).not.toBeInTheDocument()
+  })
+
+  it('switching the connection method to AWS SSM swaps in the SSM fields', async () => {
+    // Regression guard for the native-<select> → SimpleSelect migration. The
+    // picker is a Radix Select: a `change` event on the trigger does nothing —
+    // open it, then click the option. Swapping the form's fields is the
+    // observable consequence of the state move.
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
+    renderWithProviders(<InstancesPanel />)
+
+    const trigger = await screen.findByRole('combobox', { name: 'Connection method' })
+    expect(trigger).toHaveTextContent('SSH tunnel')
+    expect(screen.getByLabelText('SSH host / alias')).toBeInTheDocument()
+
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name: 'AWS SSM Session Manager' }))
+
+    expect(trigger).toHaveTextContent('AWS SSM Session Manager')
+    expect(screen.getByLabelText('SSM target (instance id)')).toBeInTheDocument()
+    expect(screen.queryByLabelText('SSH host / alias')).not.toBeInTheDocument()
   })
 })

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import JobForm, { parseJobDefaults, buildBody } from '../components/JobForm'
 import type { CronJob } from '../types'
 
-vi.mock('../api/client', () => ({ api: { saveCron: vi.fn(), createCron: vi.fn() } }))
+vi.mock('../api/client', () => ({ api: { saveCron: vi.fn(), createCron: vi.fn(), updateCron: vi.fn() } }))
 
 function makeJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -73,14 +73,45 @@ describe('JobForm timezone initialization', () => {
 describe('JobForm timezone render', () => {
   const agents = [{ name: 'gpu-dev', description: '' }]
 
-  it('initializes tz dropdown from job.timezone', () => {
+  /**
+   * The zone picker is a `SimpleSelect` (Radix Select) now, so there is no
+   * `<select>` to read a display value from and no `.options` to enumerate —
+   * the trigger is a button showing the current zone, and the options only
+   * exist in the DOM while the popup is open.
+   *
+   * Located by accessible name, which the site gained with its `aria-label`.
+   * Name-based rather than text-based on purpose: an open popup's rows carry
+   * the same zone text, so a text query would be ambiguous mid-interaction.
+   */
+  const tzTrigger = () => screen.getByRole('combobox', { name: 'Timezone' })
+
+  it('initializes tz dropdown from job.timezone', async () => {
     renderWithProviders(
       <JobForm job={makeJob({ timezone: 'Africa/Nairobi' })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
     )
-    const select = screen.getByDisplayValue('Africa/Nairobi')
-    expect(select).toBeInTheDocument()
+    const trigger = tzTrigger()
+    expect(trigger).toHaveTextContent('Africa/Nairobi')
     // Verify non-default TZ is prepended as first option
-    const options = Array.from((select as HTMLSelectElement).options)
-    expect(options[0].value).toBe('Africa/Nairobi')
+    fireEvent.click(trigger)
+    const options = await screen.findAllByRole('option')
+    expect(options[0]).toHaveTextContent('Africa/Nairobi')
+  })
+
+  it('saves the raw IANA id even though the label hides the underscore', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.updateCron).mockResolvedValue({})
+    renderWithProviders(
+      <JobForm job={makeJob({ timezone: 'Africa/Nairobi' })} agents={agents} defaultAgent="gpu-dev" onSaved={() => {}} />,
+    )
+    fireEvent.click(tzTrigger())
+    // Labels drop the underscore for display; the VALUE behind the row must
+    // stay the IANA id. Pins the options/optionLabels pairing — a values-vs-
+    // labels mix-up would send "America/New York", which the backend rejects.
+    fireEvent.click(await screen.findByRole('option', { name: 'America/New York' }))
+    expect(tzTrigger()).toHaveTextContent('America/New York')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.updateCron).toHaveBeenCalled())
+    expect(vi.mocked(api.updateCron).mock.calls[0][1]).toMatchObject({ timezone: 'America/New_York' })
   })
 })

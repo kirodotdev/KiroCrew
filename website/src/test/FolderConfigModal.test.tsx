@@ -34,15 +34,50 @@ function open(props: Partial<React.ComponentProps<typeof FolderConfigModal>> = {
   return { onSubmit, onClose, ...utils }
 }
 
+/* The agent picker is a Radix Select (SimpleSelect), not a native <select>, so
+ * it is addressed by its accessible name — the `aria-label` that carries the
+ * "Default agent" heading's key, since a <button> cannot be reached by an
+ * external <label htmlFor>. Its options live in a portal that only exists while
+ * the popup is open, so any assertion about them has to open it first.
+ *
+ * NOTE ON THE HARNESS: a Radix Select nested in a Radix Dialog cannot be driven
+ * in jsdom (Radix's flushSync inside Testing Library's act() throws "Should not
+ * already be working"), which is why CrewEditorSelect.test.tsx and
+ * WorkspaceModal.test.tsx stub SimpleSelect out. That does NOT apply here:
+ * `Modal` is hand-rolled (createPortal + framer-motion), so there is no Radix
+ * layer above the select and the real component is driven directly. Keep it
+ * that way — a stub here would stop testing the shipped dropdown. */
+function agentTrigger() {
+  return screen.getByRole('combobox', { name: 'Default agent' })
+}
+
+/** Open the agent popup and return its option labels in render order. */
+async function openAgents(): Promise<string[]> {
+  fireEvent.click(agentTrigger())
+  // findAllByRole, not findByRole: the latter throws on more than one match, and
+  // every case here has at least the inherit/None row plus an agent.
+  const opts = await screen.findAllByRole('option')
+  return opts.map(o => o.textContent ?? '')
+}
+
+/** Pick an agent by its visible label, then wait for the popup to unmount —
+ *  Radix marks the rest of the page inert while it is up, so a later click on
+ *  Submit would be swallowed. */
+async function pickAgent(label: string | RegExp) {
+  fireEvent.click(agentTrigger())
+  fireEvent.click(await screen.findByRole('option', { name: label }))
+  await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+}
+
 describe('FolderConfigModal', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('offers no parent-folder input — the destination is fixed by the entry point', () => {
     open({ parentId: '' })
-    // A <select> for the parent would let the user contradict where they clicked.
-    // The only select in the modal is the agent picker.
+    // A picker for the parent would let the user contradict where they clicked.
+    // The only dropdown in the modal is the agent picker.
     expect(screen.getAllByRole('combobox')).toHaveLength(1)
-    expect(screen.getByTestId('folder-config-agent')).toBeTruthy()
+    expect(agentTrigger()).toBeTruthy()
   })
 
   it('restates the destination as a read-only breadcrumb', () => {
@@ -111,25 +146,54 @@ describe('FolderConfigModal', () => {
 
 
 
-  it('keeps an uninstalled agent selectable so Save cannot wipe it', () => {
+  it('keeps an uninstalled agent selectable so Save cannot wipe it', async () => {
     // Found by looking at the built UI: a folder set to an agent that is not in
-    // installedAgents had no matching <option>, so the select displayed "None"
+    // installedAgents had no matching option, so the picker displayed "None"
     // and Save wrote default_agent:'' — silently destroying the folder's config.
     // Happens in production whenever an agent is uninstalled or renamed.
     const f = folder('f1', { name: 'Payments', default_agent: 'retired-agent' })
     const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
-    const sel = screen.getByTestId('folder-config-agent') as HTMLSelectElement
-    expect(sel.value).toBe('retired-agent')
-    expect(screen.getByRole('option', { name: /retired-agent.*not installed/i })).toBeTruthy()
+    expect(agentTrigger()).toHaveTextContent(/retired-agent.*not installed/i)
+    // ...and it is a real row in the popup, flagged, so the user can see why it
+    // is not running. Ordered right after the inherit/None row, where its
+    // <option> used to sit.
+    expect(await openAgents()).toEqual(['None', 'retired-agent (not installed)', 'kirocrew', 'kirocrew-dev'])
+    // Escape dismisses the popup alone; the modal beneath must survive it.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
     fireEvent.click(screen.getByTestId('folder-config-submit'))
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'retired-agent' }))
   })
 
-  it('does not flag an installed agent as uninstalled', () => {
+  it('does not flag an installed agent as uninstalled', async () => {
     const f = folder('f1', { name: 'Payments', default_agent: 'kirocrew-dev' })
     open({ mode: 'edit', folder: f, folders: [f] })
-    expect((screen.getByTestId('folder-config-agent') as HTMLSelectElement).value).toBe('kirocrew-dev')
+    expect(agentTrigger()).toHaveTextContent('kirocrew-dev')
+    // Open the popup before the negative assertion: the rows only exist while
+    // it is up, so asserting the absence of the flag on a closed picker would
+    // pass vacuously.
+    expect(await openAgents()).toEqual(['None', 'kirocrew', 'kirocrew-dev'])
     expect(screen.queryByText(/not installed/i)).toBeNull()
+  })
+
+  it('clearing the agent back to inherit submits an empty string', async () => {
+    // SimpleSelect routes '' through an internal sentinel because Radix reserves
+    // '' for "no selection". '' is a real instruction here — it restores the
+    // fall-back to the global default — so it has to survive the round trip
+    // rather than arriving as the sentinel or as undefined.
+    const f = folder('f1', { name: 'Payments', default_agent: 'kirocrew-dev' })
+    const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f], globalDefaultAgent: 'kirocrew' })
+    // With a global default the top row names it, so the user can see what
+    // "inherit" actually resolves to.
+    expect(await openAgents()).toEqual(['Inherit (kirocrew)', 'kirocrew', 'kirocrew-dev'])
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+    await pickAgent('Inherit (kirocrew)')
+    expect(agentTrigger()).toHaveTextContent('Inherit (kirocrew)')
+    fireEvent.click(screen.getByTestId('folder-config-submit'))
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      defaultAgent: '', touched: ['defaultAgent'],
+    }))
   })
 
   it('labels the inherited directory as inherited, not as a value', () => {
@@ -349,7 +413,7 @@ describe('FolderConfigModal', () => {
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
       fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/new' } })
-      fireEvent.change(screen.getByTestId('folder-config-agent'), { target: { value: 'kirocrew-dev' } })
+      await pickAgent('kirocrew-dev')
       fireEvent.click(screen.getByTestId('folder-config-submit'))
       await waitFor(() => expect(onSubmit).toHaveBeenCalled())
       const t = onSubmit.mock.calls[0][0].touched
@@ -366,7 +430,10 @@ describe('FolderConfigModal', () => {
     // the runtime truth instead of silencing the rule.
     open()
     expect(screen.getByLabelText(/^Name$/)).toBe(screen.getByTestId('folder-config-name'))
-    expect(screen.getByLabelText(/Default agent/)).toBe(screen.getByTestId('folder-config-agent'))
+    // The agent picker renders a <button>, so its name comes from an aria-label
+    // carrying the same "Default agent" key its visible heading uses — an
+    // external <label htmlFor> would dangle.
+    expect(screen.getByLabelText(/Default agent/)).toBe(agentTrigger())
   })
 
   it('does not submit while an IME composition is in flight', () => {
@@ -424,7 +491,7 @@ describe('FolderConfigModal', () => {
       open({ mode: 'edit', folder: existing, folders: [existing], parentId: undefined })
       expect((screen.getByTestId('folder-config-name') as HTMLInputElement).value).toBe('Payments')
       expect((screen.getByTestId('folder-config-project-dir') as HTMLInputElement).value).toBe('/repo/pay')
-      expect((screen.getByTestId('folder-config-agent') as HTMLSelectElement).value).toBe('kirocrew-dev')
+      expect(agentTrigger()).toHaveTextContent('kirocrew-dev')
     })
 
     it('reset clears the color back to default', () => {

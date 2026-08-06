@@ -10,6 +10,7 @@ import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, Measurin
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
 import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
+import SimpleSelect from '../components/SimpleSelect'
 import RemoteArtifactCard from '../components/RemoteArtifactCard'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
@@ -45,9 +46,6 @@ function readThemeVars(): Record<string, string> {
   }
   return out
 }
-
-const sel =
-  'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
 
 const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp'] as const
 
@@ -1845,21 +1843,30 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
             />
-            <select className={sel} value={kindFilter} aria-label={i18nT('pages.artifactsPage.filter_by_kind')} onChange={(e) => setKindFilter(e.target.value)}>
-              {KIND_OPTIONS.map((k) => (
-                <option key={k} value={k}>
-                  {k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')}
-                </option>
-              ))}
-            </select>
-            <select className={sel} value={tagFilter} aria-label={i18nT('pages.artifactsPage.filter_by_tag')} onChange={(e) => setTagFilter(e.target.value)}>
-              <option value="">{i18nT('pages.artifactsPage.all_tags')}</option>
-              {allTags.map((t) => (
-                <option key={t} value={t}>
-                  {i18nT('pages.artifactsPage.tag')} {t}
-                </option>
-              ))}
-            </select>
+            {/* The "all" row of each filter is the empty string, the value both
+                filters initialise to. SimpleSelect routes '' through an internal
+                sentinel, so it stays a selectable option as long as '' is present
+                in `options` — which is why it leads each array and takes its
+                visible label from the matching `optionLabels` slot. */}
+            <SimpleSelect
+              options={[...KIND_OPTIONS]}
+              optionLabels={KIND_OPTIONS.map((k) => (k ? `kind: ${k}` : i18nT('pages.artifactsPage.all_kinds')))}
+              value={kindFilter}
+              aria-label={i18nT('pages.artifactsPage.filter_by_kind')}
+              onChange={setKindFilter}
+            />
+            {/* The popup is exactly this trigger's width, so a trigger sized to
+                its own placeholder would clip the user-defined tag names it
+                lists. Floor the TRIGGER, not the panel — that keeps the two in
+                lockstep while leaving the rows readable. */}
+            <SimpleSelect
+              style={{ minWidth: 180 }}
+              options={['', ...allTags]}
+              optionLabels={[i18nT('pages.artifactsPage.all_tags'), ...allTags.map((t) => `${i18nT('pages.artifactsPage.tag')} ${t}`)]}
+              value={tagFilter}
+              aria-label={i18nT('pages.artifactsPage.filter_by_tag')}
+              onChange={setTagFilter}
+            />
             <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
               <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
             </Btn>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { filterDay, TokenDailyChart } from '../pages/overview/TokenDailyChart'
 
 const ALL = '__all__'
@@ -80,9 +80,26 @@ describe('TokenDailyChart cascading filters', () => {
     claude_code: ['opus'],
   }
 
-  function getSelects() {
-    // Provider + Model are the only two selects in the chart.
-    return screen.getAllByRole('combobox') as HTMLSelectElement[]
+  // The filters are SimpleSelect (Radix) triggers, not native <select>: located
+  // by accessible name (aria-label), never by index. A `change` event on the
+  // trigger does nothing — open it, then click the option.
+  const providerTrigger = () => screen.getByRole('combobox', { name: 'Provider' })
+  const modelTrigger = () => screen.getByRole('combobox', { name: 'Model' })
+
+  /** Open a trigger and read the option labels, then close without selecting. */
+  async function readOptions(trigger: HTMLElement) {
+    fireEvent.click(trigger)
+    await screen.findByRole('option', { name: 'All' })
+    const labels = screen.getAllByRole('option').map(o => o.textContent)
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('option', { name: 'All' })).toBeNull())
+    return labels
+  }
+
+  /** Open a trigger and pick the option with this exact label. */
+  async function pick(trigger: HTMLElement, name: string) {
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name }))
   }
 
   it('renders both provider and model dropdowns', () => {
@@ -97,12 +114,12 @@ describe('TokenDailyChart cascading filters', () => {
 
     expect(screen.getByText('Provider')).toBeInTheDocument()
     expect(screen.getByText('Model')).toBeInTheDocument()
-    const [providerSel, modelSel] = getSelects()
-    expect(providerSel.value).toBe(ALL)
-    expect(modelSel.value).toBe(ALL)
+    // ALL is the sentinel value; the trigger renders its label.
+    expect(providerTrigger()).toHaveTextContent('All')
+    expect(modelTrigger()).toHaveTextContent('All')
   })
 
-  it('lists all global model options when provider is ALL', () => {
+  it('lists all global model options when provider is ALL', async () => {
     render(
       <TokenDailyChart
         history={history}
@@ -112,15 +129,11 @@ describe('TokenDailyChart cascading filters', () => {
       />
     )
 
-    const [, modelSel] = getSelects()
-    const modelOptionValues = within(modelSel)
-      .getAllByRole('option')
-      .map(o => (o as HTMLOptionElement).value)
     // ALL + global models
-    expect(modelOptionValues).toEqual([ALL, 'claude-sonnet-4', 'opus'])
+    expect(await readOptions(modelTrigger())).toEqual(['All', 'claude-sonnet-4', 'opus'])
   })
 
-  it('cascades model dropdown to only models valid for the selected provider', () => {
+  it('cascades model dropdown to only models valid for the selected provider', async () => {
     render(
       <TokenDailyChart
         history={history}
@@ -130,18 +143,15 @@ describe('TokenDailyChart cascading filters', () => {
       />
     )
 
-    const [providerSel, modelSel] = getSelects()
-    fireEvent.change(providerSel, { target: { value: 'opencode' } })
+    await pick(providerTrigger(), 'opencode')
 
-    const modelOptionValues = within(modelSel)
-      .getAllByRole('option')
-      .map(o => (o as HTMLOptionElement).value)
+    const modelOptionLabels = await readOptions(modelTrigger())
     // opencode only ever paired with claude-sonnet-4 → opus must NOT appear.
-    expect(modelOptionValues).toEqual([ALL, 'claude-sonnet-4'])
-    expect(modelOptionValues).not.toContain('opus')
+    expect(modelOptionLabels).toEqual(['All', 'claude-sonnet-4'])
+    expect(modelOptionLabels).not.toContain('opus')
   })
 
-  it('resets model selection when it becomes invalid for the new provider', () => {
+  it('resets model selection when it becomes invalid for the new provider', async () => {
     render(
       <TokenDailyChart
         history={history}
@@ -151,19 +161,18 @@ describe('TokenDailyChart cascading filters', () => {
       />
     )
 
-    const [providerSel, modelSel] = getSelects()
     // Start with claude_code + opus (valid pair).
-    fireEvent.change(providerSel, { target: { value: 'claude_code' } })
-    fireEvent.change(modelSel, { target: { value: 'opus' } })
-    expect(modelSel.value).toBe('opus')
+    await pick(providerTrigger(), 'claude_code')
+    await pick(modelTrigger(), 'opus')
+    await waitFor(() => expect(modelTrigger()).toHaveTextContent('opus'))
 
     // Switch provider to opencode — opus is no longer valid.
-    fireEvent.change(providerSel, { target: { value: 'opencode' } })
+    await pick(providerTrigger(), 'opencode')
 
-    expect(modelSel.value).toBe(ALL)
+    await waitFor(() => expect(modelTrigger()).toHaveTextContent('All'))
   })
 
-  it('falls back to global model list when providerModels is missing', () => {
+  it('falls back to global model list when providerModels is missing', async () => {
     render(
       <TokenDailyChart
         history={history}
@@ -172,13 +181,9 @@ describe('TokenDailyChart cascading filters', () => {
       />
     )
 
-    const [providerSel, modelSel] = getSelects()
-    fireEvent.change(providerSel, { target: { value: 'opencode' } })
+    await pick(providerTrigger(), 'opencode')
 
-    const modelOptionValues = within(modelSel)
-      .getAllByRole('option')
-      .map(o => (o as HTMLOptionElement).value)
     // No cascade data → keep the global model list (back-compat).
-    expect(modelOptionValues).toEqual([ALL, 'claude-sonnet-4', 'opus'])
+    expect(await readOptions(modelTrigger())).toEqual(['All', 'claude-sonnet-4', 'opus'])
   })
 })

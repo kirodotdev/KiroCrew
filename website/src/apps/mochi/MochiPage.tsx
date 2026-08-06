@@ -110,6 +110,7 @@ import { i18nT } from '../../i18n/t'
 import { PRODUCT_NAME } from './src/shared/config'
 import { fmtNumber, fmtPercent } from '../../i18n/format'
 import Clickable from '../../components/Clickable'
+import SimpleSelect from '../../components/SimpleSelect'
 
 /**
  * The app's own name, as shown in the page header.
@@ -661,24 +662,31 @@ function AddWatchForm({
           className="rounded-md border border-border bg-transparent px-2 py-1.5 text-sm w-32"
         />
       </label>
-      <label className="flex flex-col gap-1">
+      <div className="flex flex-col gap-1">
+        {/* A <div>, not a <label>: the control below renders a button, which a
+            <label> cannot associate with — the accessible name rides on
+            aria-label instead. Matches JobForm's sibling fields. */}
         <span className="text-[10px] text-muted">{i18nT('apps.mochi.mochiPage.field_category')}</span>
-      <select
-        value={kind}
-        onChange={(e) => setKind(e.target.value)}
-        className="rounded-md border border-border bg-transparent px-2 py-1.5 text-sm"
-      >
-        {kinds.map((k) => (
-          <option key={k} value={k}>
-            {/* Only the seed kinds have catalog entries; a category the user
-                typed themselves is their own word and falls through verbatim,
-                which is what watchKindLabel's fallback does. */}
-            {watchKindLabel(k)}
-          </option>
-        ))}
-        <option value="__new__">{i18nT('apps.mochi.mochiPage.new_category')}</option>
-      </select>
-      </label>
+        {/* "New category…" is an ACTION, not a value: SimpleSelect's `action` row fires
+            onSelect instead of onChange, so `__new__` never has to masquerade as a
+            selectable category. It does still name the creating state, which is why the
+            trigger falls back to that same label while the extra field is open.
+            Only the seed kinds have catalog entries; a category the user typed themselves
+            is their own word and falls through verbatim, which is watchKindLabel's
+            fallback — including for a just-created one the server has not echoed yet. */}
+        <SimpleSelect
+          options={kinds}
+          optionLabels={kinds.map((k) => watchKindLabel(k))}
+          value={kind}
+          onChange={setKind}
+          action={{
+            label: i18nT('apps.mochi.mochiPage.new_category'),
+            onSelect: () => setKind('__new__'),
+          }}
+          triggerFallback={creating ? i18nT('apps.mochi.mochiPage.new_category') : watchKindLabel(kind)}
+          aria-label={i18nT('apps.mochi.mochiPage.field_category')}
+        />
+      </div>
       {creating && (
         <label className="flex flex-col gap-1">
           <span className="text-[10px] text-muted">{i18nT('apps.mochi.mochiPage.category_name')}</span>

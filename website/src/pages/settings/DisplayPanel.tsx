@@ -6,6 +6,8 @@ import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
 import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput } from '../../components/settings'
+import SimpleSelect from '../../components/SimpleSelect'
+import { Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
 import Clickable from '../../components/Clickable'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -271,20 +273,32 @@ export function DisplayPanel() {
           <div className="flex flex-col gap-1.5 pt-2">
             <span className="text-[12px] text-muted font-medium uppercase tracking-[.04em]">{i18nT('pages.settings.displayPanel.install_theme')}</span>
             <div className="flex items-center gap-2">
-              <select aria-label={i18nT('pages.settings.displayPanel.theme_source')} value={installType}
-                onChange={e => setInstallType(e.target.value as 'github' | 'local')}
-                className="text-[13px] px-2 py-1.5 rounded-md bg-bg border border-border text-text cursor-pointer">
-                <option value="github">{i18nT('pages.settings.displayPanel.github')}</option>
-                <option value="local">{i18nT('pages.settings.displayPanel.local_folder')}</option>
-              </select>
-              <input aria-label={i18nT('pages.settings.displayPanel.theme_source_location')} value={installValue}
+              {/* minWidth floors the trigger so the row does not reflow when the
+                  value flips to the wider "Local folder" — the native select it
+                  replaced sized itself to its widest option, and the location
+                  input beside it is `flex-1`, so an auto-width trigger would
+                  resize the input on every change. */}
+              <SimpleSelect
+                options={['github', 'local']}
+                optionLabels={[i18nT('pages.settings.displayPanel.github'), i18nT('pages.settings.displayPanel.local_folder')]}
+                value={installType}
+                onChange={v => setInstallType(v as 'github' | 'local')}
+                aria-label={i18nT('pages.settings.displayPanel.theme_source')}
+                style={{ minWidth: 140 }}
+              />
+              {/* The shared `Input`, not a hand-styled one: it carries the same
+                  `px-3 py-2 text-sm bg-bg-elevated` recipe as the dropdown
+                  trigger beside it, so the row's three controls line up. The
+                  raw input this replaces ran `px-2.5 py-1.5 text-[13px] bg-bg`
+                  and sat visibly shorter and darker than the picker. */}
+              <Input aria-label={i18nT('pages.settings.displayPanel.theme_source_location')} value={installValue}
                 onChange={e => setInstallValue(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleInstall() }}
                 placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
-                className="flex-1 min-w-0 text-[13px] px-2.5 py-1.5 rounded-md bg-bg border border-border text-text" />
+                className="min-w-0" />
               <button onClick={handleInstall} disabled={installBusy || !installValue.trim()}
                 aria-live="polite"
-                className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
+                className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
                 {installBusy && <StatusSpinner />}
                 {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
               </button>

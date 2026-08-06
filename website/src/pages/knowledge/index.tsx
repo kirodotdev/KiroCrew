@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy } from 'lucide-react'
 import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
 import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING } from './helpers'
 import DetailView from './DetailView'
@@ -11,6 +12,21 @@ import { ItemCard } from './ItemCard'
 import { SourceGroup, NO_SOURCE } from './SourceGroup'
 import { EmbeddingStatus } from './EmbeddingStatus'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
+
+/**
+ * Visible label per knowledge status. FULL literal keys, resolved at render —
+ * not `pages.knowledge.index.status_${s}`: an assembled key is invisible to the
+ * key-reference gate, so it cannot be verified to exist and would render its own
+ * dotted name to the user if it did not. Module-level `i18nT` is likewise out —
+ * it would freeze at the boot language.
+ *
+ * The status needs catalog copy at all because the closed dropdown trigger
+ * DISPLAYS the selected value; the old native `<select>` hid it from view.
+ */
+const STATUS_LABEL_KEY = {
+  active: 'pages.knowledge.index.status_active',
+  archived: 'pages.knowledge.index.status_archived',
+} as const
 
 import { i18nT } from '../../i18n/t'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
@@ -452,21 +468,34 @@ export default function KnowledgePage() {
           <EntityAutocomplete query={searchInput} onSelect={handleEntitySelect} />
         )}
       </div>
-      <select value={typeFilter} aria-label={i18nT('pages.knowledge.index.filter_by_type')} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
-        className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-        <option value="">{i18nT('pages.knowledge.index.all_types')}</option>
-        {ITEM_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
-      </select>
-      <select value={statusFilter} aria-label={i18nT('pages.knowledge.index.filter_by_status')} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-        className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-        <option value="">{i18nT('pages.knowledge.index.all_statuses')}</option>
-        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-      </select>
-      <select value={namespaceFilter} aria-label={i18nT('pages.knowledge.index.filter_by_namespace')} onChange={e => { setNamespaceFilter(e.target.value); setPage(1) }}
-        className="bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-[13px] text-text outline-none">
-        <option value="">{i18nT('pages.knowledge.index.all_namespaces')}</option>
-        {namespaces.map(ns => <option key={ns.name} value={ns.name}>{ns.name} ({ns.count})</option>)}
-      </select>
+      {/* The "all" row of each filter is the empty string, the same value the
+          state initialises to for type and namespace. SimpleSelect routes ''
+          through an internal sentinel, so it stays a selectable option as long
+          as '' is present in `options` — which is why it leads each array and
+          takes its visible label from the matching `optionLabels` slot. */}
+      <SimpleSelect
+        options={['', ...ITEM_TYPES]}
+        optionLabels={[i18nT('pages.knowledge.index.all_types'), ...ITEM_TYPES.map(t => t.replace(/_/g, ' '))]}
+        value={typeFilter}
+        onChange={v => { setTypeFilter(v); setPage(1) }}
+        aria-label={i18nT('pages.knowledge.index.filter_by_type')}
+      />
+      <SimpleSelect
+        options={['', ...STATUSES]}
+        optionLabels={[i18nT('pages.knowledge.index.all_statuses'), ...STATUSES.map(s => i18nT(STATUS_LABEL_KEY[s as keyof typeof STATUS_LABEL_KEY]))]}        value={statusFilter}
+        onChange={v => { setStatusFilter(v); setPage(1) }}
+        aria-label={i18nT('pages.knowledge.index.filter_by_status')}
+      />
+      {/* Floor the TRIGGER: the popup matches its width, and namespace names are
+          user data, so a placeholder-sized trigger would clip them. */}
+      <SimpleSelect
+        style={{ minWidth: 180 }}
+        options={['', ...namespaces.map(ns => ns.name)]}
+        optionLabels={[i18nT('pages.knowledge.index.all_namespaces'), ...namespaces.map(ns => `${ns.name} (${ns.count})`)]}
+        value={namespaceFilter}
+        onChange={v => { setNamespaceFilter(v); setPage(1) }}
+        aria-label={i18nT('pages.knowledge.index.filter_by_namespace')}
+      />
     </div>
   )
 

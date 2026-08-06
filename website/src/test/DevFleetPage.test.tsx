@@ -166,11 +166,19 @@ describe('DevFleetPage', () => {
     })
     renderPage()
     await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
-    const select = screen.getByLabelText('Sort worktrees') as HTMLSelectElement
-    expect(select).toBeInTheDocument()
-    expect(select.tagName.toLowerCase()).toBe('select')
-    const options = Array.from(select.querySelectorAll('option'))
-    expect(options.map(o => o.value)).toEqual(['status', 'recent', 'name', 'behind'])
+    // `SimpleSelect` wraps a Radix Select, so there is no `<select>` to read
+    // `.options` off and a `change` event on the trigger does nothing — open the
+    // popup, then enumerate the rendered options.
+    const trigger = screen.getByRole('combobox', { name: 'Sort worktrees' })
+    expect(trigger).toHaveTextContent('Sort: status')
+    fireEvent.click(trigger)
+    const options = await screen.findAllByRole('option')
+    expect(options.map(o => o.textContent)).toEqual([
+      'Sort: status', 'Sort: recent', 'Sort: name', 'Sort: behind',
+    ])
+    // And picking one actually re-sorts: 'behind' puts feature-x (behind 3) first.
+    fireEvent.click(screen.getByRole('option', { name: 'Sort: behind' }))
+    await waitFor(() => expect(trigger).toHaveTextContent('Sort: behind'))
   })
 
   it('shows build-pending chip when fleet.build_pending is true', async () => {

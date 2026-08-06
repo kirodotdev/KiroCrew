@@ -1,4 +1,4 @@
-/** Shared cron job actions (run, open-in-chat) used by CronTab and SchedulePage */
+/** Shared cron job actions (run, open-in-chat) used by SchedulePage */
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'

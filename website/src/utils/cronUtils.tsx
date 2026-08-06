@@ -1,28 +1,9 @@
-/** Shared cron formatting utilities used by CronTab and SchedulePage */
+/** Shared cron formatting utilities used by SchedulePage and JobForm */
 import { Save, Plus } from 'lucide-react'
 import { fmtDateTime, fmtWeekday } from '../i18n/format'
 import type { CronJob } from '../types'
 import { i18nT } from '../i18n/t'
 
-export const PY_TO_CRON = [1, 2, 3, 4, 5, 6, 0]
-export const CRON_SEL = 'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
-
-/**
- * Monday-first weekday labels for the day pickers.
- *
- * A FUNCTION, not a const array, and that is the whole point: a module-level
- * array of translated strings freezes at the boot language (the same defect
- * `moduleLevel.test.ts` guards for `i18nT`). Callers keep doing
- * `dayLabels().map((d, i) => …)`, so the INDEX contract every caller relies on —
- * index 0 is Monday, and `PY_TO_CRON[i]` maps it to a cron day number — is
- * unchanged. Only the rendered label is now localized.
- *
- * English output is byte-identical to the array it replaces: CLDR's `en` short
- * weekdays are exactly `Mon`…`Sun`.
- */
-export function dayLabels(): string[] {
-  return [1, 2, 3, 4, 5, 6, 7].map((iso) => fmtWeekday(iso))
-}
 export const TH_CLS = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
 export const TD_CLS = 'px-2.5 py-2 border-b border-border text-sm'
 

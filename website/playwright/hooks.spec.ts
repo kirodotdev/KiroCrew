@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { pickFromDropdown } from './helpers/dropdown'
 
 test.describe('Hooks Page E2E Tests', () => {
   test.beforeEach(async ({ page }) => {
@@ -197,8 +198,7 @@ test.describe('Hooks Page E2E Tests', () => {
     await expect(page.getByPlaceholder(/hook name/i)).toBeVisible({ timeout: 3000 })
 
     // Find and change event select
-    const eventSelect = page.locator('select').first()
-    await eventSelect.selectOption('PreToolUse')
+    await pickFromDropdown(page, 'Event', 'PreToolUse')
 
     // Matcher placeholder should change to tool filter placeholder
     await expect(page.getByPlaceholder(/tool filter.*fs_write/i)).toBeVisible({ timeout: 2000 })

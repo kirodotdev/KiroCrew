@@ -6,6 +6,7 @@ import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import type { GeneralAnchor } from '../../lib/types'
 import { Toggle } from '../../../../components/ui'
+import SimpleSelect from '../../../../components/SimpleSelect'
 import {
   DETAIL_POLL_CHOICES_MS, LIST_POLL_CHOICES_MS, STALE_TIME_CHOICES_MS,
 } from '../../lib/format'
@@ -162,16 +163,17 @@ function IntervalRow({ label, hint, value, choices, onChange }: {
         <div className="text-[13px] font-medium">{label}</div>
         <div className="text-[12px] text-muted mt-0.5">{hint}</div>
       </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+      {/* `choices` are milliseconds and SimpleSelect is string-only, so they round-trip
+          through String/Number. `flex-shrink-0` was the only non-chrome class on the old
+          select — it survives as a wrapper style, since that div is now the flex item. */}
+      <SimpleSelect
+        options={choices.map(ms => String(ms))}
+        optionLabels={choices.map(ms => intervalLabel(ms))}
+        value={String(value)}
+        onChange={v => onChange(Number(v))}
         aria-label={label}
-        className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring flex-shrink-0"
-      >
-        {choices.map((ms) => (
-          <option key={ms} value={ms}>{intervalLabel(ms)}</option>
-        ))}
-      </select>
+        style={{ flexShrink: 0 }}
+      />
     </div>
   )
 }

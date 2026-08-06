@@ -37,7 +37,7 @@ import pluralKeys from './pluralKeys.json'
  * raise it. A rise means a new key was added and nothing uses it — usually a typo at
  * the call site, or copy that was deleted without its key.
  */
-const BASELINE = 24
+const BASELINE = 22
 
 const SRC = join(__dirname, '..')
 const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/

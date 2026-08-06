@@ -5,7 +5,8 @@
 import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Card, CardTitle, Btn, Checkbox, StatCard, EmptyState, ContentSkeleton, PageHeader, SearchInput, Badge, Select } from '../components/ui'
+import { Card, CardTitle, Btn, Checkbox, StatCard, EmptyState, ContentSkeleton, PageHeader, SearchInput, Badge } from '../components/ui'
+import SimpleSelect from '../components/SimpleSelect'
 import InfoTip from '../components/InfoTip'
 import Modal from '../components/Modal'
 import Clickable from '../components/Clickable'
@@ -1504,16 +1505,21 @@ export default function DevFleetPage() {
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
                 </div>
                 <span style={{ fontSize: 11.5, color: 'var(--muted)', flexShrink: 0 }}>{ql ? others.length + ' / ' : ''}{wts.length} {i18nT('pages.devFleetPage.rows')}</span>
-                <Select
+                <SimpleSelect
+                  options={['status', 'recent', 'name', 'behind']}
+                  optionLabels={[
+                    i18nT('pages.devFleetPage.sort_status'),
+                    i18nT('pages.devFleetPage.sort_recent'),
+                    i18nT('pages.devFleetPage.sort_name'),
+                    i18nT('pages.devFleetPage.sort_behind'),
+                  ]}
                   value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
+                  onChange={setSortBy}
                   aria-label={i18nT('pages.devFleetPage.sort_worktrees')}
-                >
-                  <option value="status">{i18nT('pages.devFleetPage.sort_status')}</option>
-                  <option value="recent">{i18nT('pages.devFleetPage.sort_recent')}</option>
-                  <option value="name">{i18nT('pages.devFleetPage.sort_name')}</option>
-                  <option value="behind">{i18nT('pages.devFleetPage.sort_behind')}</option>
-                </Select>
+                  // The retired `Select` carried `flexShrink: 0` in its base
+                  // style; keep the toolbar behaving the same way.
+                  style={{ flexShrink: 0 }}
+                />
                 <Btn danger onClick={pruneShipped} disabled={!!busy['__prune']}>{iconLabel(<Trash2 size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.prune_merged'))}</Btn>
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>

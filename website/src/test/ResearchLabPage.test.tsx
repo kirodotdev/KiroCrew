@@ -9,7 +9,7 @@
  *   - Setup wizard: steps, sub-questions, validation pass/fail, submit
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -283,6 +283,11 @@ describe('ResearchLabPage', () => {
     // Step 1 — limits + definition of done
     await user.type(screen.getByPlaceholderText(/AI code review/i), 'Build passes')
     await user.click(screen.getByRole('checkbox'))  // run unattended (skip questions)
+    // The idle picker is a themed Radix select, not a native one: a `change` on the
+    // trigger does nothing — open it, then click the option. Asserted in the payload
+    // below because the control is string-only and the API field is a NUMBER.
+    fireEvent.click(screen.getByRole('combobox', { name: 'Idle between cycles' }))
+    fireEvent.click(await screen.findByRole('option', { name: '30s' }))
     await user.click(screen.getByRole('button', { name: /Next/i }))
     // Step 2 — review triggers validate()
     await waitFor(() => expect(screen.getByText(/All checks passed/i)).toBeInTheDocument())
@@ -291,7 +296,7 @@ describe('ResearchLabPage', () => {
 
     await user.click(screen.getByRole('button', { name: /Start Campaign/i }))
     await waitFor(() => expect(vi.mocked(api.researchCreate)).toHaveBeenCalled())
-    expect(vi.mocked(api.researchCreate).mock.calls[0][0]).toMatchObject({ success_criteria: 'Build passes', auto_approve: true })
+    expect(vi.mocked(api.researchCreate).mock.calls[0][0]).toMatchObject({ success_criteria: 'Build passes', auto_approve: true, idle_secs: 30 })
     await waitFor(() =>
       expect(vi.mocked(api.researchAction)).toHaveBeenCalledWith('cccc3333', 'start'),
     )

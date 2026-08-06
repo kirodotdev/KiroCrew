@@ -119,6 +119,64 @@ describe('SteeringTab', () => {
     await waitFor(() => expect(mockApi.createSteering).toHaveBeenCalledWith('g.md', expect.any(String), 'user'))
   })
 
+  // ---- Scope dropdown (migrated off a native <select> with a disabled option) ----
+
+  it('keeps the id its visible "Scope" label points at, and is named by it', async () => {
+    renderTab()
+    await waitFor(() => expect(screen.getByText('New Steering File')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('New Steering File'))
+    // The htmlFor/id pair survived the migration (SearchableSelect takes an id),
+    // so clicking the visible "Scope" text still reaches the trigger.
+    expect(screen.getByRole('button', { name: 'Scope' })).toHaveAttribute('id', 'steering-new-scope')
+  })
+
+  it('offers the workspace scope but refuses to select it when no project is set', async () => {
+    mockApi.steeringFiles.mockResolvedValue({ ...FILES, project: '' })
+    renderTab()
+    await waitFor(() => expect(screen.getByText('New Steering File')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('New Steering File'))
+
+    const trigger = screen.getByRole('button', { name: 'Scope' })
+    fireEvent.click(trigger)
+    // Named, not bare: the file list on the page behind the dialog is a listbox too.
+    await screen.findByRole('listbox', { name: 'Scope' })
+
+    // Still LISTED — the point of a per-option disabled over dropping the row is
+    // that "workspace scope exists, you just have no project set" stays visible.
+    const workspace = screen.getByRole('option', { name: /Workspace/ })
+    // `aria-disabled`, NOT the `disabled` attribute: a disabled button cannot take
+    // focus, which would strand ArrowDown in the filter box and make the rows
+    // below this one keyboard-unreachable. The row stays focusable and announced
+    // as disabled, and the commit path refuses it.
+    expect(workspace).toHaveAttribute('aria-disabled', 'true')
+    expect(workspace).not.toBeDisabled()
+    expect(workspace).toHaveTextContent('(no project set)')
+
+    fireEvent.click(workspace)
+    expect(trigger).toHaveTextContent(/Global/)
+
+    fireEvent.change(screen.getByPlaceholderText('api-standards.md'), { target: { value: 'g.md' } })
+    fireEvent.click(screen.getByText('Create'))
+    await waitFor(() => expect(mockApi.createSteering).toHaveBeenCalledWith('g.md', expect.any(String), 'user'))
+  })
+
+  it('commits a scope change through the dropdown', async () => {
+    renderTab()
+    await waitFor(() => expect(screen.getByText('New Steering File')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('New Steering File'))
+
+    const trigger = screen.getByRole('button', { name: 'Scope' })
+    expect(trigger).toHaveTextContent(/Workspace/)
+    fireEvent.click(trigger)
+    await screen.findByRole('listbox', { name: 'Scope' })
+    fireEvent.click(screen.getByRole('option', { name: /Global/ }))
+    await waitFor(() => expect(trigger).toHaveTextContent(/Global/))
+
+    fireEvent.change(screen.getByPlaceholderText('api-standards.md'), { target: { value: 'new.md' } })
+    fireEvent.click(screen.getByText('Create'))
+    await waitFor(() => expect(mockApi.createSteering).toHaveBeenCalledWith('new.md', expect.any(String), 'user'))
+  })
+
   it('surfaces mutation errors inline', async () => {
     mockApi.deleteSteering.mockRejectedValue(new Error('restricted session cannot modify steering files'))
     vi.spyOn(window, 'confirm').mockReturnValue(true)

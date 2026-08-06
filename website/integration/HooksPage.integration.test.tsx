@@ -362,11 +362,15 @@ describe('HooksPage Integration Tests', () => {
   })
 
   it('changes event type and updates matcher placeholder', async () => {
-    const user = await openNewHookForm()
+    await openNewHookForm()
 
-    // Change event to PreToolUse
-    const eventSelect = screen.getByDisplayValue('UserPromptSubmit')
-    await user.selectOptions(eventSelect, 'PreToolUse')
+    // The event picker is a SimpleSelect (Radix Select) now, so there is no
+    // native select to `selectOptions` — open the trigger, then click the row.
+    // fireEvent rather than userEvent: Radix commits discrete events through
+    // flushSync, which userEvent's act() wrapper turns into "Should not already
+    // be working."
+    fireEvent.click(screen.getByRole('combobox', { name: 'Event' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'PreToolUse' }))
 
     // Matcher placeholder should change to tool filter placeholder
     await waitFor(() => {

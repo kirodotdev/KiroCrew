@@ -193,7 +193,10 @@ describe('ArtifactDetailPage anchored comments', () => {
     // would produce an instruction the agent can never satisfy.
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '1' } })
+    // The version picker is a Radix Select (SimpleSelect), so a `change` event on
+    // the trigger does nothing — open it, then click the row.
+    fireEvent.click(screen.getByRole('combobox', { name: /Version/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'v1' }))
     await waitFor(() => expect(screen.getByTitle(/revert to v1/i)).toBeInTheDocument())
     selectInBody('beta')
     expect(screen.queryByLabelText('Add a comment')).toBeNull()
