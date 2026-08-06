@@ -904,8 +904,11 @@ always matches and the suppression would never fire (a real bug caught by
 `TestDefaultHomeDetection`).
 
 `kirocrew telemetry status | disable | enable` — `status` prints the exact
-payload and never materializes an id (`install_id(create=False)`); `disable`
-persists to `config.json` so the choice survives a new shell.
+payload and never materializes an id (`install_id(create=False)`). Its numbered,
+choose-one opt-out list leads with `kirocrew telemetry disable` because that choice
+persists to `config.json` and survives a new shell. Each method is a separate visual
+block: the environment override groups separately labelled macOS/Linux, PowerShell,
+and Command Prompt syntax, followed by the equivalent config key.
 
 `beacon.is_env_opted_out()` is the public probe for "the env var pins this off".
 It exists so the dashboard can distinguish *off because the stored flag is false*
