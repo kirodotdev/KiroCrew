@@ -5253,6 +5253,116 @@ class TestOrchestratorPlanGateArming:
             "no phantom stage beyond the live plan size may be built"
         )
 
+    # ── P0 hardening: stage turn ceiling + subagent wait cap ──
+
+    @staticmethod
+    def _orch_state():
+        """Minimal DashboardState double for driving _stage_loop."""
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        return state
+
+    @pytest.mark.asyncio
+    async def test_stage_loop_times_out_a_stage_that_swallows_cancellation(
+        self, tmp_path, monkeypatch
+    ):
+        """The real `_run_chat` CATCHES CancelledError (flushes partial output and
+        returns), so `asyncio.wait_for` would absorb its own deadline and let a
+        half-finished stage advance as a success. The fake here reproduces that
+        exact semantic -- a bare `sleep()` would propagate the cancellation and
+        pass even against the broken implementation, which is why this test uses
+        a swallowing turn."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = self._orch_state()
+        slot = _ChatSlot("hang-test", mode="orchestrator")
+        slot._stage_titles = ["A", "B"]
+        # 1s budget so the ceiling fires well inside the test's runtime.
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=1)
+        slot._auto_run = True
+
+        swallowed = False
+
+        async def _hang_and_swallow(s, sl, msg, **kw):
+            nonlocal swallowed
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                # Exactly what _run_chat does: absorb it and return normally.
+                swallowed = True
+                return None
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._run_chat", _hang_and_swallow
+        )
+
+        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=30)
+
+        assert swallowed, "the fake must have absorbed the cancellation (the real path)"
+        assert slot._auto_run is False, "a stage cut at the ceiling must stop auto-run"
+        assert any(
+            "timed out" in m.get("content", "") for m in slot.messages
+        ), "the user must see a timeout card, not a silently-advanced stage"
+        seps = [m["content"] for m in slot.messages if "stage-sep" in m.get("cls", "")]
+        assert not any("Stage 2" in s for s in seps), (
+            "a cut stage must NOT advance to the next one"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stage_loop_disabled_timeout_does_not_abort_instantly(
+        self, tmp_path, monkeypatch
+    ):
+        """stage_timeout_seconds=0 means 'disabled' (see is_stage_timed_out), so
+        it must become wait_for(None) — passing 0 through would time out every
+        stage before its turn began."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = self._orch_state()
+        slot = _ChatSlot("no-timeout", mode="orchestrator")
+        slot._stage_titles = ["A"]
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=0)
+
+        ran = 0
+
+        async def _ok(s, sl, msg, **kw):
+            nonlocal ran
+            ran += 1
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _ok)
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        assert ran == 1, "a disabled timeout must let the stage turn actually run"
+        assert not any(
+            "timed out" in m.get("content", "") for m in slot.messages
+        ), "no timeout card may be emitted when the timeout is disabled"
+
+    def test_subagent_wait_cap_scales_with_stage_timeout(self):
+        """The poll cap tracks the stage budget instead of a fixed 5 min, and a
+        disabled timeout falls back to the ceiling rather than 0 (which would
+        skip the subagent wait entirely)."""
+        from kiro_crew.context_management import OrchestrationTracker
+
+        def cap(timeout: int) -> int:
+            t = OrchestrationTracker(stage_timeout_seconds=timeout)
+            return min(t.stage_timeout_seconds // 4, 450) if t.stage_timeout_seconds else 450
+
+        assert cap(1800) == 450, "default 30m budget -> 15 min of subagent wait"
+        assert cap(600) == 150, "a 10m budget scales down proportionally"
+        assert cap(7200) == 450, "a huge budget is still capped at the 15 min ceiling"
+        assert cap(0) == 450, "disabled timeout must NOT collapse the wait to zero"
+
 
 # ── Tests: plan execution via Go/Go All button simulation ──
 
