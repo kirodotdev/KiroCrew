@@ -352,6 +352,18 @@ interface ChatState {
   // gated on the active slot's own key, so a retained card can never surface
   // under the wrong session.
   followups: Record<string, { items: FollowupItem[]; ts: number }>
+  // Post-titling "file this in <folder>?" offer, keyed by slot for the same
+  // reason `followups` is: a card must never be evicted by, or surface under,
+  // another session.
+  //
+  // Every string here is the user's own stored folder data — the backend model
+  // call returns an INDEX into a folder list, never text — so nothing rendered
+  // from this is model-generated (see chat_folder_suggest.py).
+  //
+  // Ephemeral like `followups`: frontend-only, dropped by a reload. The backend
+  // offers at most one card per slot for the lifetime of that slot, so a
+  // dismissed or lost card is never re-offered.
+  folderSuggestions: Record<string, { folderId: string; folderName: string; breadcrumb: string; ts: number }>
   // Slot with a locally-started turn awaiting server confirmation. While set,
   // the slots-sync ignores a server running=false for it (the snapshot may
   // predate the send). Cleared on server confirmation or turn end.
@@ -399,6 +411,7 @@ const initialState: ChatState = {
   slotHistory: [],
   pendingQuestions: {},
   followups: {},
+  folderSuggestions: {},
   stopPressedAt: {},
   pendingTurnSlot: null,
 }
@@ -1283,6 +1296,28 @@ const chatSlice = createSlice({
       const items = card.items.filter((_, i) => i !== index)
       if (items.length) state.followups[slot] = { ...card, items }
       else delete state.followups[slot]
+    },
+    setFolderSuggestion(state, action: PayloadAction<{ slot: string; folderId: string; folderName: string; breadcrumb: string; ts?: number }>) {
+      const { slot, folderId, folderName, breadcrumb, ts } = action.payload
+      if (!slot || !folderId || !folderName) return
+      if (isUnsafeKey(slot)) return  // never index a state map with __proto__/constructor/prototype
+      // Defensive: a partial preloaded slice (tests, older persisted state) can
+      // arrive without this key.
+      if (!state.folderSuggestions) state.folderSuggestions = {}
+      state.folderSuggestions[slot] = { folderId, folderName, breadcrumb, ts: ts ?? Date.now() / 1000 }
+    },
+    // Both answers land here — accepting the move and declining it clear the same
+    // way, because the backend keeps no state to resolve and offers at most one
+    // card per slot either way. `ts` guards the async case the way
+    // `clearFollowupCard` does: the accept path clears after its move request is
+    // dispatched, so a card that arrived meanwhile must survive.
+    clearFolderSuggestion(state, action: PayloadAction<{ slot: string; ts?: number }>) {
+      const { slot, ts } = action.payload
+      if (isUnsafeKey(slot)) return
+      const card = state.folderSuggestions?.[slot]
+      if (!card) return
+      if (ts != null && card.ts !== ts) return
+      delete state.folderSuggestions[slot]
     },
     sseContextUsage(state, action: PayloadAction<{ slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }>) {
       const { slot, pct, used_tokens, window_tokens, reset } = action.payload
@@ -2252,6 +2287,7 @@ const chatSlice = createSlice({
           // Follow-up cards are per slot and can hold multi-KB prompts, so a
           // deleted session's card must not outlive it.
           state.followups,
+          state.folderSuggestions,
         ].filter(Boolean)
         const cached = new Set(maps.flatMap(m => Object.keys(m)))
         for (const key of cached) {
@@ -2513,6 +2549,7 @@ const chatSlice = createSlice({
         delete state.slotSide[action.payload]
         delete state.slotSideClosed[action.payload]
         if (state.followups) delete state.followups[action.payload]
+        if (state.folderSuggestions) delete state.folderSuggestions[action.payload]
         evictMcpApps(state, action.payload)
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload)
         if (state.activeSlot === action.payload) {
@@ -2570,7 +2607,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

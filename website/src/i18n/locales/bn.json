@@ -5112,6 +5112,12 @@
       "download_zip": "zip ডাউনলোড করুন",
       "open_github_issue": "GitHub-এ issue খুলুন",
       "prefill_hint": "issue খুললে বিবরণ আগেই বসে যায় — এরপর zip টেনে সেখানে দিন।"
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "ফোল্ডার প্রস্তাব",
+      "move_to_folder_question": "এই সেশনটি {{folder}}-এ সরানো হবে?",
+      "no_thanks": "এখন নয়",
+      "yes_move_it": "সরান"
     }
   },
   "hooks": {
@@ -8274,7 +8280,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "আর্টিফ্যাক্ট হিসেবে সংরক্ষিত নথিগুলো ভাণ্ডারে প্রতিবিম্বিত করুন, সম্পাদনার সঙ্গে সমন্বিত রাখুন এবং আর্টিফ্যাক্ট মুছলে সেগুলোও সরিয়ে দিন।",
         "failed_to_save_knowledge_setting": "জ্ঞান সেটিং সংরক্ষণ ব্যর্থ হয়েছে",
         "auto_ingest_limit_per_scan": "প্রতি স্ক্যানে স্বয়ংক্রিয় গ্রহণের সীমা",
-        "how_much_an_automatically_registered_source_may_i": "স্বয়ংক্রিয়ভাবে নিবন্ধিত একটি উৎস একবারে কতটা নিতে পারে। নথির প্রতিটি অংশের জন্য একটি নিষ্কাশন কল খরচ হয়, তাই এটিই খরচ বেঁধে রাখে; নতুন নথি আগে আসে, বাকিগুলো পরের ধাপে। 0 দিলে কোনো সীমা থাকে না। ডিফল্ট {{count}}।"
+        "how_much_an_automatically_registered_source_may_i": "স্বয়ংক্রিয়ভাবে নিবন্ধিত একটি উৎস একবারে কতটা নিতে পারে। নথির প্রতিটি অংশের জন্য একটি নিষ্কাশন কল খরচ হয়, তাই এটিই খরচ বেঁধে রাখে; নতুন নথি আগে আসে, বাকিগুলো পরের ধাপে। 0 দিলে কোনো সীমা থাকে না। ডিফল্ট {{count}}।",
+        "folder_suggestions": "ফোল্ডার প্রস্তাব",
+        "offer_to_file_a_new_session_into_a_matching_fold": "নতুন সেশনের শিরোনাম তৈরি হলে সেটি মিলে যাওয়া ফোল্ডারে রাখার প্রস্তাব দিন।"
       },
       "computerUsePanel": {
         "accessibility": "অ্যাক্সেসিবিলিটি",

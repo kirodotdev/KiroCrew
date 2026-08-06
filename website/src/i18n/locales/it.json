@@ -5172,6 +5172,12 @@
       "download_zip": "Scarica lo zip",
       "open_github_issue": "Apri una issue su GitHub",
       "prefill_hint": "Aprendo la issue i dettagli vengono precompilati — poi trascinaci lo zip."
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "Suggerimento cartella",
+      "move_to_folder_question": "Spostare questa sessione in {{folder}}?",
+      "no_thanks": "Non ora",
+      "yes_move_it": "Sposta"
     }
   },
   "hooks": {
@@ -8361,7 +8367,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "Rispecchia nella libreria i documenti che salvi come artefatti, li mantiene sincronizzati mentre li modifichi e li rimuove quando elimini l’artefatto.",
         "failed_to_save_knowledge_setting": "Impossibile salvare l’impostazione delle conoscenze",
         "auto_ingest_limit_per_scan": "Limite di acquisizione automatica per scansione",
-        "how_much_an_automatically_registered_source_may_i": "Quanto una fonte registrata automaticamente può acquisire in un solo passaggio. Ogni parte di un documento costa una chiamata di estrazione, quindi è questo a limitare il costo; i documenti più recenti entrano per primi e il resto arriva nei passaggi successivi. 0 rimuove il limite. Predefinito: {{count}}."
+        "how_much_an_automatically_registered_source_may_i": "Quanto una fonte registrata automaticamente può acquisire in un solo passaggio. Ogni parte di un documento costa una chiamata di estrazione, quindi è questo a limitare il costo; i documenti più recenti entrano per primi e il resto arriva nei passaggi successivi. 0 rimuove il limite. Predefinito: {{count}}.",
+        "folder_suggestions": "Suggerimenti cartelle",
+        "offer_to_file_a_new_session_into_a_matching_fold": "Proponi di archiviare una nuova sessione in una cartella pertinente appena ha un titolo."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

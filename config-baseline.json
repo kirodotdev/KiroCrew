@@ -3925,6 +3925,7 @@
         "user_role_other": "",
         "user_technical_level": "",
         "tips_enabled": true,
+        "folder_suggestions_enabled": true,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
         "tips_recency_decay": 0.6,
@@ -4376,6 +4377,20 @@
       "tags": [],
       "label": "Tips Enabled",
       "help": "Show feature tip cards while the agent is thinking.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "dashboard.folder_suggestions_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Folder Suggestions Enabled",
+      "help": "Offer to file a newly-titled, unfiled chat session into a matching folder.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

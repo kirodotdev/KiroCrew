@@ -5112,6 +5112,12 @@
       "download_zip": "zip डाउनलोड करें",
       "open_github_issue": "GitHub पर issue खोलें",
       "prefill_hint": "issue खोलने पर विवरण पहले से भर जाते हैं — फिर zip को उसमें खींचकर डालें।"
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "फ़ोल्डर सुझाव",
+      "move_to_folder_question": "इस सत्र को {{folder}} में ले जाएँ?",
+      "no_thanks": "अभी नहीं",
+      "yes_move_it": "ले जाएँ"
     }
   },
   "hooks": {
@@ -8274,7 +8280,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "आर्टिफ़ैक्ट के रूप में सहेजे गए दस्तावेज़ पुस्तकालय में प्रतिबिंबित होते हैं, संपादन के साथ समकालिक रहते हैं, और आर्टिफ़ैक्ट हटाने पर हट जाते हैं।",
         "failed_to_save_knowledge_setting": "ज्ञान सेटिंग सहेजने में विफल",
         "auto_ingest_limit_per_scan": "प्रति स्कैन स्वतः-ग्रहण सीमा",
-        "how_much_an_automatically_registered_source_may_i": "स्वतः पंजीकृत स्रोत एक बार में कितना ले सकता है। दस्तावेज़ के प्रत्येक हिस्से पर एक निष्कर्षण कॉल खर्च होती है, इसलिए यही लागत को सीमित करता है; नवीनतम दस्तावेज़ पहले आते हैं और बाकी बाद के चक्रों में। 0 का अर्थ कोई सीमा नहीं। डिफ़ॉल्ट {{count}}।"
+        "how_much_an_automatically_registered_source_may_i": "स्वतः पंजीकृत स्रोत एक बार में कितना ले सकता है। दस्तावेज़ के प्रत्येक हिस्से पर एक निष्कर्षण कॉल खर्च होती है, इसलिए यही लागत को सीमित करता है; नवीनतम दस्तावेज़ पहले आते हैं और बाकी बाद के चक्रों में। 0 का अर्थ कोई सीमा नहीं। डिफ़ॉल्ट {{count}}।",
+        "folder_suggestions": "फ़ोल्डर सुझाव",
+        "offer_to_file_a_new_session_into_a_matching_fold": "नया सत्र शीर्षक पा जाने पर उसे मिलते-जुलते फ़ोल्डर में रखने का सुझाव दें।"
       },
       "computerUsePanel": {
         "accessibility": "सुलभता",

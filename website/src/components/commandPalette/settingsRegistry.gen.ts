@@ -205,6 +205,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.folder-suggestions",
+    "label": "Folder suggestions",
+    "description": "Offer to file a new session into a matching folder once it has a title.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.follow-up-bar-layout",
     "label": "Follow-Up Bar Layout",
     "description": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row.",

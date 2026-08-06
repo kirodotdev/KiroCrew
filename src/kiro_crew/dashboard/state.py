@@ -820,6 +820,7 @@ class _ChatSlot:
         "_slack_thread_ts",
         "folder_id",
         "_folder_changed",
+        "_folder_suggested",
         "pinned",
         "tags",
         "_pending_subagent_failures",
@@ -974,6 +975,11 @@ class _ChatSlot:
         self._slack_thread_ts: str = ""
         self.folder_id: str = ""  # project folder assignment
         self._folder_changed: bool = False  # re-inject [FOLDER] breadcrumb next turn after move
+        # One-shot claim for the post-titling folder suggestion (see
+        # chat_folder_suggest.maybe_suggest_folder). In-memory only: a restored
+        # slot is already titled, so the suggestion hook never re-fires for it
+        # and a reset flag cannot produce a second card.
+        self._folder_suggested: bool = False
         self.pinned: bool = False  # pinned to top of sidebar
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         self._pending_subagent_failures: list[str] = []

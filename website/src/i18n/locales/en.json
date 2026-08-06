@@ -3962,6 +3962,12 @@
       "select": "Select",
       "workspace_name": "Workspace name",
       "workspace_name_2": "workspace-name"
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "Folder suggestion",
+      "move_to_folder_question": "Move this session to {{folder}}?",
+      "no_thanks": "Not now",
+      "yes_move_it": "Move it"
     }
   },
   "hooks": {
@@ -6018,7 +6024,9 @@
         "auto_add_saved_artifacts": "Auto-Add Saved Artifacts",
         "mirror_documents_you_save_as_artifacts_into_the_l": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
         "auto_ingest_limit_per_scan": "Auto-Ingest Limit Per Scan",
-        "how_much_an_automatically_registered_source_may_i": "How much an automatically-registered source may take in one pass. Each piece of a document costs one extraction call, so this is what bounds the cost; newest documents land first and the rest follow on later passes. 0 removes the bound. Default {{count}}."
+        "how_much_an_automatically_registered_source_may_i": "How much an automatically-registered source may take in one pass. Each piece of a document costs one extraction call, so this is what bounds the cost; newest documents land first and the rest follow on later passes. 0 removes the bound. Default {{count}}.",
+        "folder_suggestions": "Folder suggestions",
+        "offer_to_file_a_new_session_into_a_matching_fold": "Offer to file a new session into a matching folder once it has a title."
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",

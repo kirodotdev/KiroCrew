@@ -5172,6 +5172,12 @@
       "download_zip": "Télécharger le zip",
       "open_github_issue": "Ouvrir un ticket GitHub",
       "prefill_hint": "L’ouverture du ticket pré-remplit les détails — glissez-y ensuite le zip."
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "Suggestion de dossier",
+      "move_to_folder_question": "Déplacer cette session vers {{folder}} ?",
+      "no_thanks": "Pas maintenant",
+      "yes_move_it": "Déplacer"
     }
   },
   "hooks": {
@@ -8361,7 +8367,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "Reflète dans la bibliothèque les documents que vous enregistrez comme artéfacts, les tient à jour au fil de vos modifications et les retire quand vous supprimez l’artéfact.",
         "failed_to_save_knowledge_setting": "Échec de l’enregistrement du paramètre de connaissances",
         "auto_ingest_limit_per_scan": "Limite d’ingestion automatique par analyse",
-        "how_much_an_automatically_registered_source_may_i": "Ce qu’une source enregistrée automatiquement peut absorber en une passe. Chaque fragment de document coûte un appel d’extraction : c’est donc ce qui borne le coût. Les documents les plus récents arrivent d’abord, le reste suit lors des passes suivantes. 0 supprime la limite. Valeur par défaut : {{count}}."
+        "how_much_an_automatically_registered_source_may_i": "Ce qu’une source enregistrée automatiquement peut absorber en une passe. Chaque fragment de document coûte un appel d’extraction : c’est donc ce qui borne le coût. Les documents les plus récents arrivent d’abord, le reste suit lors des passes suivantes. 0 supprime la limite. Valeur par défaut : {{count}}.",
+        "folder_suggestions": "Suggestions de dossier",
+        "offer_to_file_a_new_session_into_a_matching_fold": "Proposer de classer une nouvelle session dans un dossier correspondant dès qu'elle a un titre."
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

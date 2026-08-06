@@ -2075,6 +2075,13 @@ class DashboardConfig:
             "Show feature tip cards while the agent is thinking.",
         ),
     )
+    folder_suggestions_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Folder Suggestions Enabled",
+            "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
     tips_cadence_hours: float = field(
         default=6.0,
         metadata=_meta(
@@ -4869,6 +4876,9 @@ class KiroCrewConfig:
                 user_role_other=str(dashboard_data.get("user_role_other", "")),
                 user_technical_level=str(dashboard_data.get("user_technical_level", "")),
                 tips_enabled=bool(dashboard_data.get("tips_enabled", True)),
+                folder_suggestions_enabled=bool(
+                    dashboard_data.get("folder_suggestions_enabled", True)
+                ),
                 tips_cadence_hours=_safe_float(
                     dashboard_data.get("tips_cadence_hours", 6.0), 6.0, lo=0.0
                 ),

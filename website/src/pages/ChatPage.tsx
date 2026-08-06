@@ -22,7 +22,7 @@ import {
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   setActiveSlot, truncateAfterIndex, replaceMessages,
-  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem,
+  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
   mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
@@ -82,6 +82,8 @@ import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
 import FollowUpCard from '../components/FollowUpCard'
+import FolderSuggestionCard from './chat/FolderSuggestionCard'
+import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import type { FollowupItem } from '../store/chatSlice'
 
@@ -597,6 +599,7 @@ const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
+  const moveSlotToFolder = useMoveSlotToFolder()
   const navigate = useNavigate()
   const navigationType = useNavigationType()
   const location = useLocation()
@@ -736,6 +739,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   const pendingQuestion = useAppSelector(s => pendingQuestionFor(s.chat.pendingQuestions, s.chat.activeSlot))
   const pendingFollowup = useAppSelector(s => (s.chat.activeSlot ? s.chat.followups?.[s.chat.activeSlot] : undefined))
+  const folderSuggestion = useAppSelector(s => (s.chat.activeSlot ? s.chat.folderSuggestions?.[s.chat.activeSlot] : undefined))
   const followupTsBySlot = useAppSelector(s => s.chat.followups) ?? EMPTY_FOLLOWUPS
   // The ambient tip yields to functional surfaces that own the above-composer band
   const tipSuppressed = useAppSelector(s =>
@@ -748,6 +752,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // slot-keyed, so read only the ACTIVE slot's entry — a card parked in
     // another session must not suppress tips here.
     (!!s.chat.activeSlot && !!s.chat.followups?.[s.chat.activeSlot]) ||
+    // The folder-suggestion card takes the same slot inside the composer box the
+    // tip does, and it can land on the FIRST turn — exactly when a tip is most
+    // likely to be offered. It is actionable and one-shot where the tip is
+    // ambient and re-offered, so the tip yields. Slot-keyed like the follow-up
+    // card, so a card parked in another session must not suppress tips here.
+    (!!s.chat.activeSlot && !!s.chat.folderSuggestions?.[s.chat.activeSlot]) ||
     // Active subagents render the progress bar in the same above-composer
     // zone the floating tip occupies — the tip always yields: never crowd
     // the queue/subagent surfaces.
@@ -3402,6 +3412,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch(clearFollowupCard({ slot: activeSlot, ts: followupTsRef.current[activeSlot]?.ts }))
   }, [dispatch, activeSlot])
 
+  // Folder suggestion: accepting reuses the ONE move path every other surface
+  // (row menu, drag-to-folder, new-chat-in-folder) already funnels through, so
+  // the optimistic update and its guarded rollback are inherited rather than
+  // re-implemented here. Both answers clear the card by the ts it rendered with,
+  // for the same reason the follow-up actions do.
+  const folderSuggestionAccept = useCallback(() => {
+    if (!activeSlot || !folderSuggestion) return
+    moveSlotToFolder(activeSlot, folderSuggestion.folderId)
+    dispatch(clearFolderSuggestion({ slot: activeSlot, ts: folderSuggestion.ts }))
+  }, [activeSlot, folderSuggestion, moveSlotToFolder, dispatch])
+
+  const folderSuggestionDecline = useCallback(() => {
+    if (!activeSlot || !folderSuggestion) return
+    // Nothing to tell the backend: it already spent its one offer for this slot,
+    // so declining is purely "take the card away".
+    dispatch(clearFolderSuggestion({ slot: activeSlot, ts: folderSuggestion.ts }))
+  }, [activeSlot, folderSuggestion, dispatch])
+
   // Fallback branch name when the agent did not supply one: slugify the title
   // under FOLLOWUP_BRANCH_RE's grammar (the server re-validates, so a slug that
   // degenerates to empty is replaced rather than sent and rejected).
@@ -5202,8 +5230,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                    thinking/output; queue and question card keep priority via
                    tipSuppressed). */
                 <AnimatePresence>
-                  {activeTip && (
-                    <div className="pb-1.5">
+                  {folderSuggestion && activeSlot ? (
+                    <div className="pb-1.5" key="folder-suggestion">
+                      <FolderSuggestionCard
+                        folderName={folderSuggestion.folderName}
+                        breadcrumb={folderSuggestion.breadcrumb}
+                        onAccept={folderSuggestionAccept}
+                        onDecline={folderSuggestionDecline}
+                      />
+                    </div>
+                  ) : activeTip && (
+                    <div className="pb-1.5" key="tip">
                       <TipCard tip={activeTip} onDismiss={dismissTip} />
                     </div>
                   )}

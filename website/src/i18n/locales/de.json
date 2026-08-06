@@ -5112,6 +5112,12 @@
       "download_zip": "ZIP herunterladen",
       "open_github_issue": "GitHub-Issue öffnen",
       "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein."
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "Ordnervorschlag",
+      "move_to_folder_question": "Diese Sitzung nach {{folder}} verschieben?",
+      "no_thanks": "Nicht jetzt",
+      "yes_move_it": "Verschieben"
     }
   },
   "hooks": {
@@ -8274,7 +8280,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "Spiegelt Dokumente, die du als Artefakte speicherst, in die Bibliothek, hält sie beim Bearbeiten aktuell und entfernt sie, wenn du das Artefakt löschst.",
         "failed_to_save_knowledge_setting": "Wissenseinstellung konnte nicht gespeichert werden",
         "auto_ingest_limit_per_scan": "Auto-Aufnahmegrenze pro Durchlauf",
-        "how_much_an_automatically_registered_source_may_i": "Wie viel eine automatisch registrierte Quelle in einem Durchlauf aufnehmen darf. Jeder Teil eines Dokuments kostet einen Extraktionsaufruf – das begrenzt also die Kosten. Die neuesten Dokumente kommen zuerst, der Rest folgt in späteren Durchläufen. 0 hebt die Grenze auf. Standard: {{count}}."
+        "how_much_an_automatically_registered_source_may_i": "Wie viel eine automatisch registrierte Quelle in einem Durchlauf aufnehmen darf. Jeder Teil eines Dokuments kostet einen Extraktionsaufruf – das begrenzt also die Kosten. Die neuesten Dokumente kommen zuerst, der Rest folgt in späteren Durchläufen. 0 hebt die Grenze auf. Standard: {{count}}.",
+        "folder_suggestions": "Ordnervorschläge",
+        "offer_to_file_a_new_session_into_a_matching_fold": "Anbieten, eine neue Sitzung in einen passenden Ordner einzuordnen, sobald sie einen Titel hat."
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context import ui_language_tag
 from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
+from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
 )
@@ -804,6 +805,23 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         slot._title_retry_pending = False
         if retry_pending and not slot._titled and not cancelled:
             await _maybe_auto_title(state, slot)
+        # Now that the slot has a settled title, offer a folder for it if it is
+        # unfiled. Deliberately here and not at the two title-push sites: this
+        # runs for the LLM title AND the definitive truncated fallback, and only
+        # once a title is locked in (a fallback that will still be retried leaves
+        # ``_titled`` False, so no card is offered on a name about to change).
+        #
+        # Awaited rather than spawned. This function is already a background task
+        # (chat_runner/chat_handlers create it), the title has been pushed by the
+        # time we get here, so the wait costs the user nothing — and it keeps the
+        # suggestion from becoming an unreferenced task the loop may drop.
+        if slot._titled and not cancelled:
+            try:
+                await maybe_suggest_folder(state, slot)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — never let a suggestion break titling
+                logger.debug("Folder suggestion failed for slot %s", slot.key, exc_info=True)
 
 
 async def api_chat_slot_generate_title(request: web.Request) -> web.Response:

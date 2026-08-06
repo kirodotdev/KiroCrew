@@ -5052,6 +5052,12 @@
       "download_zip": "下载 zip",
       "open_github_issue": "新建 GitHub issue",
       "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。"
+    },
+    "folderSuggestionCard": {
+      "folder_suggestion": "文件夹建议",
+      "move_to_folder_question": "将此会话移动到 {{folder}}？",
+      "no_thanks": "暂不",
+      "yes_move_it": "移动"
     }
   },
   "hooks": {
@@ -8187,7 +8193,9 @@
         "mirror_documents_you_save_as_artifacts_into_the_l": "把你保存为工件的文档同步到知识库，随编辑保持同步，并在你删除工件时一并移除。",
         "failed_to_save_knowledge_setting": "保存知识库设置失败",
         "auto_ingest_limit_per_scan": "每次扫描的自动摄取上限",
-        "how_much_an_automatically_registered_source_may_i": "自动注册的来源在一次扫描中最多可摄取多少内容。文档的每个片段都要消耗一次抽取调用，因此这是控制成本的关键；最新的文档优先入库，其余的在后续扫描中陆续处理。设为 0 表示不限制。默认 {{count}}。"
+        "how_much_an_automatically_registered_source_may_i": "自动注册的来源在一次扫描中最多可摄取多少内容。文档的每个片段都要消耗一次抽取调用，因此这是控制成本的关键；最新的文档优先入库，其余的在后续扫描中陆续处理。设为 0 表示不限制。默认 {{count}}。",
+        "folder_suggestions": "文件夹建议",
+        "offer_to_file_a_new_session_into_a_matching_fold": "新会话生成标题后，提示将其归入匹配的文件夹。"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",
