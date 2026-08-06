@@ -141,6 +141,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "webex",
         "wecom",
         "weixin",
+        "feishu",
         "teams",
         "dashboard",
         "tunnel",
@@ -3579,6 +3580,62 @@ class WeComConfig:
             self.soft_threshold_pct = self.hard_threshold_pct
 
 
+@dataclass
+class FeishuConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Feishu (Lark/飞书) channel. Requires FEISHU_APP_ID and "
+            "FEISHU_APP_SECRET environment variables to be set.",
+            tags=["feishu"],
+        ),
+    )
+    allowed_open_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Open IDs",
+            "Feishu open_ids allowed to DM the bot (deny-by-default: empty list "
+            "authorises nobody). Find your open_id via the Feishu developer console.",
+            tags=["feishu"],
+        ),
+    )
+    allow_group: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Group Chat",
+            "Serve messages from group chats whose chat_id is in allowed_group_ids. "
+            "The bot must be @-mentioned in a group to receive the message.",
+            tags=["feishu"],
+        ),
+    )
+    allowed_group_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Group IDs",
+            "Feishu group chat_ids allowed to drive a turn (requires allow_group=true).",
+            tags=["feishu"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a conversation's context passes this, prompt the user to /compact "
+            "or /new instead of auto-compacting.",
+            tags=["feishu"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this so the window never overflows.",
+            tags=["feishu"],
+        ),
+    )
+
+
 def _coerce_int_ids(raw: object) -> list[int]:
     """Coerce a config value to a clean ``list[int]``, dropping anything invalid.
 
@@ -4144,6 +4201,14 @@ class KiroCrewConfig:
         default_factory=WeixinConfig,
         metadata=_meta(
             "WeChat", "Weixin (iLink personal WeChat) integration settings.", tags=["weixin"]
+        ),
+    )
+    feishu: FeishuConfig = field(
+        default_factory=FeishuConfig,
+        metadata=_meta(
+            "Feishu",
+            "Feishu (Lark/飞书) channel configuration.",
+            tags=["feishu"],
         ),
     )
     discord: DiscordConfig = field(
