@@ -3,9 +3,15 @@
 Every core or app metric flows through this facade so KiroCrew's namespace and
 privacy guardrails (``validate_name`` / ``validate_attrs`` / ``redact`` from
 ``kiro_crew.metrics.schema``) run *before* the value reaches an OTEL instrument.
-That makes it structurally impossible for a call site to emit an out-of-namespace
-metric or to leak a secret / PII into an attribute (security event logging:
-never log secrets or user PII).
+Namespace validation is exhaustive: ``validate_name`` rejects anything outside
+the caller's namespace, so an out-of-namespace metric cannot be emitted.
+
+Attribute redaction is defence in depth, not a guarantee. ``redact`` matches
+known credential shapes and falls back to a Shannon-entropy heuristic whose
+reach is bounded (see ``schema.py``), so a call site remains responsible for
+passing only the declared low-cardinality constants the CARDINALITY note in
+``schema.py`` requires. Do not treat this facade as a licence to hand it raw
+values (security event logging: never log secrets or user PII).
 
 Design:
   * OTEL instrument objects are created once per metric name and cached under a

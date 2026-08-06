@@ -83,7 +83,18 @@ def _is_high_entropy(value: str) -> bool:
             for pat in _HIGH_ENTROPY_PATTERNS:
                 if pat.search(decoded):
                     return True
-    # Shannon entropy heuristic for strings > 16 chars.
+    # Shannon entropy backstop, for values no pattern above matched.
+    #
+    # Reach: entropy over a string's own character frequencies is bounded by
+    # log2(distinct characters), so the 4.5 threshold below is only attainable
+    # once a value has at least 23 distinct characters — the length guard lets
+    # shorter values in, but they can never cross it. It is also unattainable
+    # for any alphabet of fewer than 23 symbols at any length -- hex has 16, so
+    # only the 40-or-more pattern above covers it, and shorter hex is
+    # deliberately left visible to keep trace ids and UUIDs readable. Keep that
+    # in mind before treating this as a general secret detector: it is a
+    # last-resort net under the patterns, not a replacement for passing the
+    # declared low-cardinality values the CARDINALITY note requires.
     if len(value) >= 16:
         freq: dict[str, int] = {}
         for ch in value:
