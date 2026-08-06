@@ -194,6 +194,7 @@ from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
 from kiro_crew.weixin.gateway import maybe_start_weixin
+from kiro_crew.feishu.gateway import maybe_start_feishu
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -206,6 +207,7 @@ if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
     from kiro_crew.weixin.client import WeixinClient
+    from kiro_crew.feishu.client import LarkClient
 
 
 async def _persist_turn_row(
@@ -854,6 +856,13 @@ class GatewayOrchestrator:
         self._wecom_bot_id = creds.get(CRED_WECOM_BOT_ID, "")
         self._wecom_secret = creds.get(CRED_WECOM_SECRET, "")
         self._wecom_enabled = bool(cfg.wecom.enabled and self._wecom_bot_id and self._wecom_secret)
+        self._feishu_app_id = os.environ.get("FEISHU_APP_ID", "")
+        self._feishu_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+        self._feishu_enabled = bool(cfg.feishu.enabled and self._feishu_app_id and self._feishu_app_secret)
+        self._feishu_allowed_open_ids: list[str] = list(cfg.feishu.allowed_open_ids)
+        self._feishu_allow_group: bool = bool(cfg.feishu.allow_group)
+        self._feishu_allowed_group_ids: list[str] = list(cfg.feishu.allowed_group_ids)
+        self._feishu_client: "LarkClient | None" = None
         # Telegram — the TELEGRAM_BOT_TOKEN credential (env/.env) overrides
         # cfg.telegram.bot_token; all other settings come from the typed
         # cfg.telegram dataclass (no ad-hoc config.json re-parse).
@@ -5259,6 +5268,8 @@ class GatewayOrchestrator:
             cleanup_tasks.append(asyncio.wait_for(self._socket_client.close(), timeout=1.0))
         if self._wecom_client:
             cleanup_tasks.append(asyncio.wait_for(self._wecom_client.close(), timeout=2.0))
+        if self._feishu_client:
+            cleanup_tasks.append(asyncio.wait_for(self._feishu_client.close(), timeout=2.0))
         if self._telegram_client:
             cleanup_tasks.append(asyncio.wait_for(self._telegram_client.close(), timeout=2.0))
         if self._weixin_client:
@@ -6007,7 +6018,7 @@ class GatewayOrchestrator:
         # profile-file I/O), but ONLY for config-enabled transports — a disabled
         # transport never starts, so skip it to avoid a deny-SEL for a channel
         # that would no-op anyway. Members not evaluated stay not-permitted.
-        members = ("wecom", "telegram", "discord", "webex", "teams", "weixin")
+        members = ("wecom", "telegram", "discord", "webex", "teams", "weixin", "feishu")
         enabled = {m: bool(getattr(self, f"_{m}_enabled", False)) for m in members}
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
@@ -6035,6 +6046,9 @@ class GatewayOrchestrator:
         # enabled + credentialed. Distinct member from "wecom" (enterprise).
         if permitted["weixin"]:
             self._weixin_client = await maybe_start_weixin(self)
+        # Feishu (Lark/飞书) channel — guarded no-op unless enabled + credentialed.
+        if permitted["feishu"]:
+            self._feishu_client = await maybe_start_feishu(self)
 
 
 async def run_gateway(
