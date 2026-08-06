@@ -1,5 +1,6 @@
 """Unit tests for the V2 file-centric learning system (stage -> candidate ->
 AI-merge consolidate -> learned-patterns.md)."""
+import hashlib
 import shutil
 import tempfile
 import unittest
@@ -101,6 +102,53 @@ class TestConsolidate(unittest.TestCase):
         log = store.data_dir(self.root) / "learnings" / "consolidations.jsonl"
         self.assertTrue(log.exists())
         self.assertIn("consolidated", log.read_text(encoding="utf-8"))
+
+
+class TestPatternId(unittest.TestCase):
+    """`pattern_id` is a content-derived identifier, not a security digest.
+
+    It must stay deterministic and content-addressed, and it must not reach for a
+    broken hash: SHA-1 here made a scanner read an identifier as a cryptographic
+    use and report a high-severity alert on every PR touching this file.
+    """
+
+    def test_is_deterministic_and_content_addressed(self):
+        a = L.pattern_id("Reset guard flags on all paths", "common")
+        self.assertEqual(a, L.pattern_id("Reset guard flags on all paths", "common"))
+        # Normalisation is part of the contract: case and surrounding whitespace
+        # must not produce a second id for the same pattern.
+        self.assertEqual(a, L.pattern_id("  reset GUARD flags on all paths  ", "common"))
+        # Title and scope are both part of the identity.
+        self.assertNotEqual(a, L.pattern_id("Reset guard flags on all paths", "repo"))
+        self.assertNotEqual(a, L.pattern_id("Something else entirely", "common"))
+
+    def test_is_a_16_char_hex_handle(self):
+        pid = L.pattern_id("Reset guard flags on all paths", "common")
+        self.assertEqual(len(pid), 16)
+        self.assertTrue(all(c in "0123456789abcdef" for c in pid), pid)
+
+    def test_does_not_use_a_broken_hash(self):
+        """Pin the digest away from SHA-1/MD5 so the scanner finding cannot return."""
+        payload = "reset guard flags on all paths|common".encode()
+        self.assertEqual(L.pattern_id("Reset guard flags on all paths", "common"),
+                         hashlib.sha256(payload).hexdigest()[:16])
+        for broken in ("sha1", "md5"):
+            self.assertNotEqual(
+                L.pattern_id("Reset guard flags on all paths", "common"),
+                hashlib.new(broken, payload).hexdigest()[:16],
+                f"pattern_id must not be a truncated {broken} digest")
+
+    def test_parsed_patterns_get_ids_recomputed(self):
+        """Ids are derived on parse, never read back from the file.
+
+        This is what makes changing the digest safe without a migration.
+        """
+        p = _pattern("Reset guard flags on all paths", repo=None,
+                     added_at="2026-06-11T00:00:00Z")
+        parsed = L.parse_patterns(L.render_pattern(p))[0]
+        self.assertEqual(parsed["id"], L.pattern_id(p["title"], p["scope"]))
+        # The rendered markdown carries no id of its own to go stale.
+        self.assertNotIn(parsed["id"], L.render_pattern(p))
 
 
 class TestSeed(unittest.TestCase):

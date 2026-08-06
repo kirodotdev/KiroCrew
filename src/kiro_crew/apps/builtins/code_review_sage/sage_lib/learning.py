@@ -150,7 +150,23 @@ def get_active_namespaces(root: Path | None = None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def pattern_id(title: str, scope: str) -> str:
-    return hashlib.sha1(f"{title.strip().lower()}|{scope}".encode()).hexdigest()[:16]
+    """A stable, content-derived handle for a learned pattern.
+
+    SHA-256 rather than SHA-1: the digest is only an identifier for deduplicating
+    patterns by content, never a security control, but SHA-1 makes that
+    indistinguishable to a scanner from a real cryptographic use (CodeQL's
+    `py/weak-sensitive-data-hashing` flags it as high severity on every PR that
+    touches this file). Using a modern digest states the intent in the code
+    instead of in a suppression comment.
+
+    Truncated to the same 16 hex characters as before, so the collision profile
+    is unchanged. Safe to change without a migration: ids are never persisted --
+    ``render_pattern`` writes only title/scope/impact/added_at/guidance, and every
+    id is recomputed from ``title|scope`` when patterns are parsed, so nothing on
+    disk refers to an id produced by the old algorithm.
+    """
+    payload = f"{title.strip().lower()}|{scope}".encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def render_pattern(p: dict) -> str:

@@ -32,6 +32,33 @@ from kiro_crew.service.common import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _contain_live_program(monkeypatch, tmp_path):
+    """Keep the launcher write/unlink inside tmp_path for every test here.
+
+    ``macos.LIVE_PROGRAM`` is derived from ``Path.home()`` -- not KIROCREW_HOME --
+    so an unredirected ``install()`` writes a real launcher into the invoking
+    user's home and ``uninstall()`` unlinks it there. Four tests reached it that
+    way: both install paths and both uninstall paths. Two consequences, one of
+    them destructive:
+
+    * the path is process-global rather than tmp_path-scoped, so under ``-n auto``
+      concurrent workers race its atomic rename. On POSIX replacing an open target
+      is permitted, on Windows it is not, which surfaced as ``WinError 5`` on the
+      Windows shard;
+    * ``uninstall()`` calls ``LIVE_PROGRAM.unlink()``, so running this suite on a
+      machine with the service actually installed deleted the real launcher.
+
+    Autouse and module-wide rather than four separate redirects, so a new test
+    that calls install/uninstall is contained by default. Tests that assert on a
+    specific launcher path still ``monkeypatch.setattr`` it themselves; that runs
+    after this fixture and wins.
+    """
+    from kiro_crew.service import macos as svc_macos
+
+    monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "live-gateway")
+
+
 class TestPlatformDetection:
     def test_linux_with_systemctl_returns_systemd(self):
         with patch("kiro_crew.service.common.sys") as mock_sys, patch(
