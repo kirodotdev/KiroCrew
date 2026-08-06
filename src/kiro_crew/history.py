@@ -869,6 +869,28 @@ class ConversationLog:
         #: staleness (an append bumps the file mtime, so the entry is
         #: recomputed on the next call). Own ``_LRUCache`` → own internal lock.
         self._recent_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
+        #: Bounded, mtime-keyed LRU of ``(mtime, doc_chars, casefolded_blob)``
+        #: per session, consumed only by :meth:`search_sessions`.
+        #:
+        #: Folding is the dominant cost of a search: the substring count itself
+        #: is cheap, but ``str.casefold`` over a whole corpus is not, and it
+        #: holds the GIL for its full duration — so re-folding per query stalls
+        #: the event loop even when the search runs in a worker thread. The
+        #: corpus does not change between the keystrokes of one search, so the
+        #: fold is memoized here and each query pays only the count.
+        #:
+        #: Sized to cover the ENTIRE scan window, never ``cache_max``. A search
+        #: walks ``_SEARCH_SCAN_WINDOW`` sessions in the same order every query,
+        #: so an LRU smaller than that window is evicted exactly one step ahead
+        #: of its next read: the hit rate collapses to zero rather than
+        #: degrading, and the memoization silently stops working for the users
+        #: with the most sessions — the ones it exists for. ``max`` rather than a
+        #: bare constant so a caller shrinking ``cache_max`` cannot reintroduce
+        #: that cliff; this cache holds derived strings, which are far smaller
+        #: than the parsed transcripts ``cache_max`` is tuned for.
+        self._folded_cache: _LRUCache[tuple[float, int, str]] = _LRUCache(
+            max(cache_max, _SEARCH_SCAN_WINDOW)
+        )
         #: tab_id → [session keys] chain index. ``None`` means "stale, rebuild
         #: on next chained read"; a dict is an authoritative snapshot. Rebuilt
         #: lazily by _rebuild_tab_id_index, invalidated by
@@ -1726,61 +1748,214 @@ class ConversationLog:
         if not query or limit <= 0 or not self._dir.exists():
             return []
         needle = query.casefold()
-        scored: list[tuple[float, int, dict]] = []  # (score, -rank, meta)
+        # (score, -rank, meta, needs_snippet)
+        scored: list[tuple[float, int, dict, bool]] = []
         for rank, meta in enumerate(self.list_sessions()[:_SEARCH_SCAN_WINDOW]):
-            content_hits = 0
-            doc_chars = 0
-            texts: list[str] = []
-            # Pull parsed messages from the mtime-keyed cache (_read_messages)
-            # rather than re-opening + re-parsing the file here. The snippet
-            # path (search_chat_history) already reads each matched key via the
-            # same cache, so this collapses the prior two-parses-per-query into
-            # one. Content semantics are unchanged: only string ``content``
-            # fields are counted, in file order, so the \x00-join hit count and
-            # the doc_chars length normalizer stay identical to the previous
-            # inline scan. _read_messages is OSError-safe and returns [] for a
-            # missing/unreadable file, so it also subsumes the old try/except.
-            for obj in self._read_messages(meta["key"]):
-                raw = obj.get("content") if isinstance(obj, dict) else None
-                text = raw if isinstance(raw, str) else ""
-                if text:
-                    doc_chars += len(text)
-                    texts.append(text)
-            # Casefold + count once per file instead of per line: a 200-line
-            # session produces one temporary casefolded string instead of 200,
-            # bounding GC pressure under rapid-fire search keystrokes.  The
-            # ``\x00`` separator can't appear in user queries, so cross-line
-            # false matches are impossible.
-            if texts:
-                content_hits = "\x00".join(texts).casefold().count(needle)
+            doc_chars, folded = self._folded_content(meta["key"])
+            content_hits = folded.count(needle) if folded else 0
             title_hits = (meta.get("title") or "").casefold().count(needle)
             if not title_hits and not content_hits:
                 continue
             length_norm = math.sqrt(1 + doc_chars / 1024)
             score = title_hits * _TITLE_BOOST + content_hits / length_norm
-            # Match-centered content snippet (why the session surfaced when the
-            # title doesn't contain the query). Best-effort, display-only.
-            snippet = ""
-            if content_hits and texts:
-                joined = " ".join(texts)
-                # casefold() to match the hit detection above — .lower() misses
-                # matches casefold finds (ß→ss, İ), yielding an empty snippet
-                # despite content_hits > 0. casefold can shift offsets slightly
-                # (length changes); acceptable for a display-only best-effort
-                # window.
-                pos = joined.casefold().find(query.casefold())
-                if pos >= 0:
-                    start = max(0, pos - 40)
-                    end = min(len(joined), pos + len(query) + 100)
-                    frag = " ".join(joined[start:end].split())
-                    snippet = (
-                        ("…" if start > 0 else "") + frag + ("…" if end < len(joined) else "")
-                    )[:200]
-            out_meta = {**meta, "snippet": snippet} if snippet else meta
             # Negate rank so a smaller (newer) rank wins ties after score desc sort.
-            scored.append((score, -rank, out_meta))
+            scored.append((score, -rank, meta, content_hits > 0))
         scored.sort(reverse=True)
-        return [meta for _, _, meta in scored[:limit]]
+
+        # Snippets are attached AFTER the sort+slice, so the cost is proportional
+        # to the rows actually returned rather than to every session that
+        # matched. A snippet cannot come from the folded cache (it needs the
+        # original text, so offsets line up), so building one per match put a
+        # full re-read back on the hot path — dominating the query once the fold
+        # itself was memoized.
+        out: list[dict] = []
+        for _score, _rank, meta, needs_snippet in scored[:limit]:
+            snippet = self._content_snippet(meta["key"], query) if needs_snippet else ""
+            out.append({**meta, "snippet": snippet} if snippet else meta)
+        return out
+
+    def _folded_content(self, key: str) -> tuple[int, str]:
+        """Return ``(doc_chars, casefolded_content)`` for *key*, memoized by mtime.
+
+        ``doc_chars`` counts the ORIGINAL (unfolded) characters, because it
+        feeds the length normalizer in :meth:`search_sessions` and folding can
+        change a string's length (``ß`` -> ``ss``).
+
+        The folded blob joins the messages' string ``content`` fields in file
+        order with ``\\x00``. That separator cannot appear in a user query, so
+        it prevents a match spanning two messages while still allowing one
+        ``count`` call over the whole session instead of one per message.
+
+        Returns ``(0, "")`` for a missing/unreadable file or a session with no
+        textual content. A read failure is deliberately NOT cached — see below.
+        """
+        path = self._path(key)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._folded_cache.pop(key, None)
+            return (0, "")
+        cached = self._folded_cache.get(key)
+        if cached and cached[0] == mtime:
+            return (cached[1], cached[2])
+        # Cold: serialize against this key's writers for the whole
+        # stat -> read -> store sequence.
+        #
+        # The mtime guard cannot protect this window, because the housekeeping
+        # rewrites deliberately RESTORE the pre-write mtime (``_restore_mtime``,
+        # so compaction does not reorder ``list_sessions``). A fold that started
+        # before such a rewrite and stored after its ``_invalidate_cache`` would
+        # sit in the cache holding pre-rewrite text under a mtime the file still
+        # has — undetectable, so the newly saved messages would be missing from
+        # every later search for the life of the process.
+        #
+        # ``_file_lock`` is the same in-process RLock every writer takes first in
+        # ``_locked``, so holding it here orders this fold against append /
+        # rewrite / metadata edits for this key. It is acquired ONLY on the miss
+        # path: a warm search never contends, and two threads racing the same
+        # cold key fold once (the re-check below).
+        with self._file_lock(key):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                self._folded_cache.pop(key, None)
+                return (0, "")
+            cached = self._folded_cache.get(key)
+            if cached and cached[0] == mtime:
+                return (cached[1], cached[2])
+            built = self._build_folded(key)
+            if built is None:
+                # The read failed rather than finding no content. Caching that
+                # would be keyed by an mtime the file still has, so a session
+                # made transiently unopenable (fd exhaustion, or a Windows
+                # indexer / AV holding a just-written file — the same window
+                # ``_METADATA_READ_ATTEMPTS`` exists for) would stay
+                # unsearchable until something wrote to it again. Fail open:
+                # report empty for this query and retry on the next one.
+                return (0, "")
+            self._folded_cache[key] = (mtime, built[0], built[1])
+            return built
+
+    def _build_folded(self, key: str) -> tuple[int, str] | None:
+        """Parse *key* and fold its content — the cache-miss half of
+        :meth:`_folded_content`.
+
+        Returns ``None`` when the file could not be read, which the caller must
+        distinguish from ``(0, "")`` (a session with no textual content): the
+        former must not be cached.
+
+        Reads the file via :meth:`_iter_message_texts` rather than going through
+        :meth:`_read_messages`, for two reasons.
+
+        Memory: that method memoizes the PARSED message dicts, and a search
+        touches every session in the scan window, so routing the fold through it
+        pins the whole corpus's parsed form in gateway RSS as a side effect of
+        searching. On a 136 MB / 125-session corpus that is ~330 MB of parsed
+        dicts versus ~37 MB for the folded strings this actually needs.
+
+        Correctness: ``_msg_cache`` is filled by callers that do not hold this
+        key's write lock, so an entry can be a pre-rewrite parse stored under a
+        restored (unchanged) mtime. Folding from it would launder that staleness
+        into the search cache, which the caller's lock cannot prevent. Reading
+        the file makes the fold a function of the file alone.
+
+        The caller holds ``_file_lock``, which orders this read against writers
+        in THIS process. A writer in another process holds only the cross-process
+        flock, so it can still interleave — but the caller stats BEFORE this read,
+        so such a write leaves the cached mtime older than the file's and the next
+        access re-folds. That case is self-healing, unlike the preserved-mtime
+        rewrite the lock exists for.
+
+        Separated from :meth:`_folded_content` so the memoization is observable:
+        a caller (or a test) can count how often the expensive fold actually
+        runs, independent of how many queries were served.
+        """
+        texts: list[str] = []
+        try:
+            texts = list(self._iter_message_texts(key))
+        except OSError:
+            return None
+        if not texts:
+            return (0, "")
+        return (sum(len(t) for t in texts), "\x00".join(texts).casefold())
+
+    def _iter_message_texts(self, key: str) -> Iterator[str]:
+        """Yield each message's non-empty string ``content`` from *key*'s file.
+
+        One definition of "what counts as searchable text in a session file",
+        shared by the fold and the snippet so their skip rules cannot drift apart
+        as the on-disk format evolves. Yields in file order; skips blank lines,
+        unparseable lines, non-object lines, and the metadata header.
+
+        A generator rather than a list so a caller can stop early — closing it
+        closes the file — which is what lets :meth:`_content_snippet` read only as
+        far as its first match. Propagates ``OSError``: callers distinguish "could
+        not read" from "no text", and that distinction is load-bearing (a read
+        failure must not be cached).
+        """
+        with open(self._path(key), encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(data, dict) or data.get("_type") == "metadata":
+                    continue
+                content = data.get("content")
+                if isinstance(content, str) and content:
+                    yield content
+
+    #: Characters of context kept before / after a snippet's match.
+    _SNIPPET_LEAD = 40
+    _SNIPPET_TRAIL = 100
+    #: Hard cap on a returned snippet.
+    _SNIPPET_MAX = 200
+
+    def _content_snippet(self, key: str, query: str) -> str:
+        """Return a match-centered window of *key*'s content around *query*.
+
+        Streams the file and stops at the FIRST matching message, so a query that
+        hits early reads only as far as the hit — rather than parsing the whole
+        transcript, which on the largest sessions dominated the query. Sharing
+        :meth:`_iter_message_texts` with the fold (instead of reading the file
+        directly) also keeps search from pinning a parsed transcript in
+        ``_msg_cache`` for every row it returns, and keeps the two halves of a
+        query agreeing on what counts as searchable text.
+
+        The window is confined to the matching message, which keeps a snippet from
+        reading as one sentence when it actually spans two — consistent with
+        :meth:`_folded_content`, where the ``\\x00`` join stops a match from
+        bridging messages in the first place.
+
+        Display-only and best effort: ``casefold`` is used for the search so it
+        agrees with the hit detection in :meth:`search_sessions` (``.lower()``
+        misses matches ``casefold`` finds, e.g. ``ß`` / ``İ``, which would yield
+        an empty snippet despite a nonzero hit count), but folding can change a
+        string's length, so the window may be off by a character or two.
+
+        Returns ``''`` when the query is not locatable in any single message, or
+        when the file cannot be read (display-only — never raises at the caller).
+        """
+        needle = query.casefold()
+        if not needle:
+            return ""
+        try:
+            for text in self._iter_message_texts(key):
+                pos = text.casefold().find(needle)
+                if pos < 0:
+                    continue
+                start = max(0, pos - self._SNIPPET_LEAD)
+                end = min(len(text), pos + len(query) + self._SNIPPET_TRAIL)
+                frag = " ".join(text[start:end].split())
+                prefix = "…" if start > 0 else ""
+                suffix = "…" if end < len(text) else ""
+                return (prefix + frag + suffix)[: self._SNIPPET_MAX]
+        except OSError:
+            return ""
+        return ""
 
     def recent_from_source(
         self, source_prefix: str, exclude_key: str = "", max_messages: int = 20
@@ -2307,6 +2482,10 @@ class ConversationLog:
         """Invalidate caches for a key after a write operation."""
         self._msg_cache.pop(key, None)
         self._meta_cache.pop(key, None)
+        # The folded search blob is derived from the messages, so it goes stale
+        # exactly when they do. Its own mtime guard is not enough here: the
+        # housekeeping rewrites below restore the pre-write mtime.
+        self._folded_cache.pop(key, None)
         # Also drop any memoized recent() windows for this key. Necessary
         # because housekeeping rewrites (mark_consolidated/update_metadata/
         # rewrite_session/rotation) restore the pre-write mtime via

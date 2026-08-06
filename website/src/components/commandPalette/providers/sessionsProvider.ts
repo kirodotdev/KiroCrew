@@ -49,6 +49,17 @@ const PROVIDER_LABEL_KEY = 'nav.sessions'
 const SESSIONS_STALE_MS = 30_000
 
 /**
+ * Shortest query the backend will actually search. Mirrors `SEARCH_MIN_CHARS`
+ * in `history.py`, where `/api/sessions/search` returns an empty list below the
+ * threshold. Enforced here too so a one-character query costs no round trip at
+ * all — behavior-preserving, because the response was already always empty.
+ *
+ * An EMPTY query is exempt: it is the recents/quick-switcher listing, not a
+ * search, and the endpoint answers it.
+ */
+const SESSIONS_MIN_QUERY_CHARS = 2
+
+/**
  * One session as returned by `/api/sessions/search`. `api.sessionsSearch` is
  * loosely typed at the client layer, so we pin the fields the provider reads.
  */
@@ -119,6 +130,7 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
     icon: sessionIcon(),
     async search(query: string): Promise<Result[]> {
       const q = query.trim()
+      if (q.length > 0 && q.length < SESSIONS_MIN_QUERY_CHARS) return []
       // Folders resolve in parallel with the search; a folders failure only
       // costs the chips, never the results.
       const [data, folders] = await Promise.all([

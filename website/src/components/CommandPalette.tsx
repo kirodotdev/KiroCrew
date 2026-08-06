@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
-import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, X, Pin, MessageSquare, Clock, Plus } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -22,6 +21,7 @@ import { usePromptsProvider } from './commandPalette/providers/promptsProvider'
 import { useArtifactsProvider } from './commandPalette/providers/artifactsProvider'
 import { useRecentsProvider } from './commandPalette/providers/recentsProvider'
 import { useSettingsProvider } from './commandPalette/providers/settingsProvider'
+import { Highlighted } from './commandPalette/Highlighted'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -88,35 +88,19 @@ export interface CommandPaletteProps {
 /** Stable no-op so `useActionsProvider` always gets a defined callback. */
 const NOOP = () => {}
 
+/**
+ * Idle gap before a typed query is dispatched to the providers. Sized against
+ * the cost of a dispatch, not typing feel: one debounced value fans out to
+ * every registered provider (see {@link useAllAggregator}), and Sessions +
+ * Artifacts both content-search server-side.
+ */
+export const SEARCH_DEBOUNCE_MS = 250
+
 /** Composer-style sigil scopes: typing a leading sigil instantly scopes the
  * palette, mirroring the chat composer's `$skill` / `/command` muscle memory.
  * `@` is mapped to Artifacts here (the palette's `@` destination). Value =
  * provider (tab) id. */
 const SIGIL_SCOPE: Record<string, string> = { $: 'skills', '@': 'artifacts', '/': 'actions' }
-
-/**
- * Render `text` with the characters at `indices` emphasised. Each character is
- * its own span/strong node keyed by position — safe (no HTML string building)
- * and good enough for short titles.
- */
-function Highlighted({ text, indices }: { text: string; indices: number[] }): ReactNode {
-  if (indices.length === 0) return text
-  const hit = new Set(indices)
-  const nodes: ReactNode[] = []
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    nodes.push(
-      hit.has(i) ? (
-        <strong key={i} className="text-text-strong font-semibold">
-          {ch}
-        </strong>
-      ) : (
-        <span key={i}>{ch}</span>
-      ),
-    )
-  }
-  return <>{nodes}</>
-}
 
 export default function CommandPalette({
   open,
@@ -373,12 +357,17 @@ export default function CommandPalette({
 
   // Debounce the query into debouncedQuery (empty resets immediately so the
   // recents/quick-switcher shows without lag on open or clear).
+  //
+  // 250ms rather than a tighter window because each debounced value is a fresh
+  // React Query key, and the All tab fans that out to every provider — two of
+  // which content-search server-side. A 150ms window turned typing one word
+  // into five or six full corpus scans that the user never saw the results of.
   useEffect(() => {
     if (query === '') {
       setDebouncedQuery('')
       return
     }
-    const t = setTimeout(() => setDebouncedQuery(query), 150)
+    const t = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [query])
 
