@@ -1825,3 +1825,97 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
     # Archives contain LLM output; redact credentials and exfiltration URLs before serving.
     redacted = await asyncio.to_thread(lambda: redact(raw))
     return web.Response(text=redacted, content_type="application/x-ndjson")
+
+
+_EXPORT_ROLE_HEADERS = {
+    "user": "**You:**",
+    "assistant": "**Assistant:**",
+    "system": "**System:**",
+    "tool": "**Tool:**",
+}
+
+
+def _export_filename(key: str) -> str:
+    """Turn a session key into a filename-safe ``Content-Disposition`` value.
+
+    Session keys are caller-supplied and contain ``:`` in every real case
+    (``dashboard:chat-…``). An encoded CR/LF in one would make aiohttp reject the
+    header value outright and turn the export into a 500, and path characters
+    would leak a directory hint into the saved name. Same allowlist +
+    dot-collapse as ``api_taskrunner_export_plan``, so a traversal-looking ".."
+    cannot survive the single '.' the allowlist permits.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", key)
+    safe = re.sub(r"\.{2,}", "_", safe).strip("._-")
+    return f"session-{safe}.md" if safe else "session.md"
+
+
+async def api_session_export(request: web.Request) -> web.Response:
+    """GET /api/sessions/{key}/export — export session messages as Markdown."""
+    state: DashboardState = request.app["state"]
+    key = request.match_info["key"]
+    fmt = request.query.get("format", "markdown")
+
+    if fmt != "markdown":
+        return web.json_response(
+            {"error": f"unsupported format: {fmt}", "code": "unsupported_format"}, status=400
+        )
+
+    log = state.conversation_log
+    if not log:
+        return web.json_response(
+            {"error": "no conversation log", "code": "no_conversation_log"}, status=400
+        )
+
+    def _build() -> str | None:
+        # read_messages_chained, not read_messages: a long session spans several
+        # tab_id sibling files, and the plain read would export only the last
+        # segment while this endpoint promises the full conversation.
+        messages = log.read_messages_chained(key)
+        if not messages:
+            return None
+
+        title = "Session Export"
+        try:
+            metadata = log.get_metadata(key)
+        except Exception:
+            logger.debug("export: metadata unreadable for session %s", key, exc_info=True)
+        else:
+            if metadata and metadata.get("title"):
+                title = str(metadata["title"])
+
+        lines: list[str] = [f"# {title}\n"]
+        for msg in messages:
+            role = str(msg.get("role", "unknown"))
+            # Newer turns store content as a list of blocks; interpolating that
+            # raw would dump a Python repr into the document.
+            content = log._content_text(msg.get("content", ""))
+            ts = msg.get("ts", "")
+
+            lines.append(f"## {_EXPORT_ROLE_HEADERS.get(role, f'**{role.capitalize()}:**')}")
+            lines.append(f"*{ts}*\n" if ts else "")
+            lines.append(f"{content}\n")
+            lines.append("---\n")
+
+        # Same redaction floor as api_session_archive_read: this is the one
+        # artifact built to be downloaded and pasted into a wiki or ticket, so a
+        # credential or exfiltration URL that leaked into a turn must not ride
+        # out in it.
+        return redact("\n".join(lines))
+
+    # One hop to a worker thread for the whole build. Every step blocks:
+    # read_messages_chained reads and JSON-parses each tab_id sibling file (and
+    # rebuilds a glob-backed index when stale), get_metadata reads the
+    # transcript's first line, and redact() regex-scans the whole document.
+    md_content = await asyncio.to_thread(_build)
+    if md_content is None:
+        return web.json_response(
+            {"error": "session not found or empty", "code": "session_not_found"}, status=404
+        )
+
+    return web.Response(
+        text=md_content,
+        content_type="text/markdown",
+        charset="utf-8",  # explicit — mitigates MIME/charset sniffing on the download
+        headers={"Content-Disposition": f'attachment; filename="{_export_filename(key)}"'},
+    )

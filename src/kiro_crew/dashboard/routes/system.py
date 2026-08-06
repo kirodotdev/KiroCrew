@@ -68,6 +68,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/sessions/summarize", handlers.api_sessions_summarize)
     app.router.add_get("/api/sessions/{key}", handlers.api_session_detail)
     app.router.add_delete("/api/sessions/{key}", handlers.api_session_delete)
+    app.router.add_get("/api/sessions/{key}/export", handlers.api_session_export)
     app.router.add_get("/api/logs", handlers.api_logs)
     app.router.add_get("/api/logs/level", handlers.api_log_level_get)
     app.router.add_post("/api/logs/level", handlers.api_log_level)
