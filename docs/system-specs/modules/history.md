@@ -170,6 +170,57 @@ no longer destroy older turns.
   patiently to a bounded deadline. The same discipline applies to every other
   session-JSONL writer: `clear_closed` (resume un-flags `closed` under `_locked`,
   offloaded via `asyncio.to_thread`) and all `history.py` mutators hold `_locked`.
+- **Turn persistence is offloaded through ONE choke point**
+  (`save_conversation_turn_off_loop`, `llm_helpers.py`): `save_conversation_turn`
+  makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
+  AND takes `_locked`'s single non-blocking acquire — dropping the durable copy
+  exactly when another writer is active. Every async caller (the Slack handler,
+  gateway, and transport dispatch) awaits the choke point rather than restating
+  the offload, and `test_persist_off_loop.py` is an AST build gate that fails if
+  any `async def` body calls `save_conversation_turn` directly. Unlike
+  `append_off_loop`, the choke point **awaits** the write: its callers go on to
+  refresh a dashboard tab or hand the session to consolidation, both of which read
+  the transcript back.
+- **A turn is an atomic PAIR, and offloading is what makes that need saying.**
+  `append` locks per ROW, so two concurrent turn-writes for one session can land
+  as `user_A, user_B, assistant_A, assistant_B` — turns that no longer pair up,
+  and which no ordering pass can repair because every row's `ts` is individually
+  correct. On the event loop this was impossible: a synchronous
+  `save_conversation_turn` never yields between its two appends, so the
+  single-threaded loop made the pair atomic *by accident*. Moving the write to a
+  worker thread removes exactly that accidental guarantee. So
+  `ConversationLog.atomic_appends(key)` is the required companion to the offload,
+  not an optional extra: **any caller that offloads MULTIPLE appends for one
+  session must hold it around the whole group.** `_locked` is reentrant for the
+  same key on the same thread, so the per-row locks inside `append` reuse the
+  held lock. Enter it off the loop only — it takes the same fail-fast-on-loop
+  acquire path as `append`.
+- **Row ordering has two writers with different floor sources.** Both
+  `ConversationLog.append` and `_ChatSlot.append` stamp each row strictly after
+  its predecessor via `monotonic_transcript_ts`, so a `ts` sort reproduces write
+  order even on a host whose clock cannot separate two writes (Windows ticks in
+  ~15.6 ms steps). They learn about that predecessor differently, and the
+  asymmetry is deliberate:
+  - `ConversationLog.append` reads the authoritative on-disk tail (`_last_row_ts`)
+    under the cross-process flock, so it sees every committed row.
+  - `_ChatSlot.append` runs on the event loop, where a `stat` plus a tail read per
+    append would violate the no-blocking-call-on-event-loop rule. It floors on
+    `latest_transcript_ts(window_tail, slot._disk_tail_ts)` — both in-process
+    reads. `_disk_tail_ts` is refreshed at the save boundary, inside the `_locked`
+    section where the foreign lines are already parsed, so it costs nothing.
+
+  The window is NOT a superset of the file: a genuinely foreign on-disk row is
+  preserved without being folded into `slot.messages`, so without the cached tail
+  the slot's next row could TIE it. A foreign row arriving *between* two saves is
+  still invisible until the next one — the reachable shape (a subagent/cron append
+  observed at the following flush) is closed, the general case is not, and that
+  bound is intentional rather than an oversight. The floor is monotone by
+  construction: `latest_transcript_ts` only ever selects a *later* candidate, so it
+  can move a row forward but never backward. It **skips** candidates it cannot
+  parse, because `transcript_sort_key` deliberately buckets unparseable values
+  AFTER every real instant (right for display order, backwards for a floor) — one
+  corrupt row would otherwise win the comparison, be discarded by the stamper as
+  unparseable, and switch the ordering guarantee off for that session.
 - **On-loop offload discipline is enforced, not convention-only**: the offload
   invariant above was previously guaranteed only by convention — a future
   contributor calling a raw mutator (`append` / `update_metadata` / `set_title`

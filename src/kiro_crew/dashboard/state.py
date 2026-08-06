@@ -28,7 +28,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
-from kiro_crew.history import monotonic_transcript_ts
+from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -861,6 +861,7 @@ class _ChatSlot:
         "_channel_window_mtime",
         "_disk_older_count",
         "_disk_window_len",
+        "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_pending_rewrite",
         "_file_changes",
@@ -1078,7 +1079,18 @@ class _ChatSlot:
         # watermark is what makes the #8 trim credit safe. It is NOT a fragile
         # "what to append" counter — saves always re-serialize the WHOLE window.
         self._disk_window_len: int = 0
-        # Cached frozen-prefix bytes for the append-safe save model.
+        # The newest ``ts`` seen on disk at the last save, INCLUDING rows this
+        # slot never observed. A subagent, cron, or CLI appending to a session a
+        # live tab also has open writes rows that ``_save_slot_to_history``
+        # preserves as "foreign" without ever folding them into ``messages`` --
+        # so the window is not a superset of the file, and flooring the next
+        # append on the window tail alone can tie a foreign row's timestamp.
+        # Cached rather than read per append: consulting the file here would put
+        # a stat plus a bounded read on the event loop, which AUTOSDE's
+        # no-blocking-call-on-event-loop rule forbids. Refreshed at the save
+        # boundary, where the lock is already held and the foreign lines are
+        # already parsed.
+        self._disk_tail_ts: str | None = None        # Cached frozen-prefix bytes for the append-safe save model.
         # The session file is FROZEN-PREFIX (the first _disk_older_count on-disk
         # message lines, OLDER than the in-memory window) + a fresh re-serialize
         # of the whole window. The prefix is never rewritten, so a restart that
@@ -1219,6 +1231,20 @@ class _ChatSlot:
             "current": current,
         }
 
+    def note_disk_tail(self, *candidates: str | None) -> None:
+        """Record the newest ``ts`` known to be ON DISK for this session.
+
+        The save boundary is the only place a slot can learn about a row it never
+        observed (see ``_disk_tail_ts``), so it calls this with whatever it just
+        wrote -- foreign rows included. Keeping the update here rather than
+        assigning the attribute from the persistence module means the **monotone**
+        rule lives with the field it guards: the floor may only ever move FORWARD.
+        A save that moved it backwards would re-open the same-``ts`` tie the floor
+        exists to prevent, and unparseable candidates are skipped rather than
+        ranked (``latest_transcript_ts``), so one corrupt row cannot capture it.
+        """
+        self._disk_tail_ts = latest_transcript_ts(self._disk_tail_ts, *candidates)
+
     def append(
         self,
         role: str,
@@ -1240,9 +1266,19 @@ class _ChatSlot:
             # the clock does not tick between two appends. An explicit *ts*
             # (a row replayed from a channel transcript) is preserved verbatim
             # -- rewriting it would reorder the replay it came from.
+            #
+            # The floor is the later of the window tail and the last on-disk tail
+            # this slot was told about, because the window is NOT a superset of
+            # the file: a row written by another process is preserved as a
+            # foreign line without entering ``messages``, so flooring on the
+            # window alone leaves it un-ordered-against. Both candidates are
+            # in-process reads -- no file I/O on the event loop.
             "ts": ts
             or monotonic_transcript_ts(
-                self.messages[-1].get("ts") if self.messages else None,
+                latest_transcript_ts(
+                    self.messages[-1].get("ts") if self.messages else None,
+                    self._disk_tail_ts,
+                ),
                 datetime.now(timezone.utc),
             ),
         }

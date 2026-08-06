@@ -708,6 +708,49 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
     return content
 
 
+def latest_transcript_ts(*candidates: str | None) -> str | None:
+    """The latest of several candidate predecessor timestamps, or ``None``.
+
+    A writer can have more than one row to order itself against, and the two
+    writers of a session transcript learn about predecessors differently:
+    :meth:`ConversationLog.append` reads the authoritative file tail under the
+    cross-process flock, while the dashboard's ``_ChatSlot.append`` runs on the
+    event loop and may only consult in-process state (a ``stat`` plus a file read
+    per append is what ``AUTOSDE.yaml``'s ``no-blocking-call-on-event-loop`` rule
+    forbids). The slot therefore floors on the later of its in-memory window tail
+    and the last on-disk tail it was told about at the previous save.
+
+    Comparison goes through :func:`transcript_sort_key`, never string ordering:
+    rows carry two stored formats (aware and naive isoformat), so ``"a" > "b"``
+    on the raw strings compares different domains and can pick the earlier row.
+
+    An UNPARSEABLE candidate is skipped rather than ranked. ``transcript_sort_key``
+    deliberately buckets a value it cannot parse *after* every real instant, so
+    that a corrupt line displays at the end of a transcript rather than in the
+    middle of the conversation. That is right for sorting and wrong for a floor:
+    ranked, one malformed ``ts`` would win here, and
+    :func:`monotonic_transcript_ts` ignores a previous value it cannot parse — so
+    a single corrupt row on disk would silently switch the whole ordering
+    guarantee off and let the next row tie its predecessor again.
+
+    ``None`` and empty candidates are ignored too, so a caller can pass a value it
+    does not have yet without branching. Returns ``None`` when nothing usable was
+    supplied — which correctly means "no floor", not "floor of zero".
+    """
+    best: str | None = None
+    best_key: tuple[int, float] | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        key = transcript_sort_key(candidate)
+        if key[0] != 0:
+            # Unparseable: see the docstring. Not a usable floor.
+            continue
+        if best_key is None or key > best_key:
+            best, best_key = candidate, key
+    return best
+
+
 #: Default upper bound on the number of distinct session keys held in the
 #: in-memory transcript / metadata caches.  The previous implementation used
 #: plain ``dict`` caches that grew one entry per session key touched and never
@@ -1075,6 +1118,34 @@ class ConversationLog:
                     # executor load). The deferred release re-checks depth and
                     # its own fd under the guard, so a reuse cancels it.
                     self._schedule_flock_release(key, lock_key, state[0])
+
+    @contextlib.contextmanager
+    def atomic_appends(self, key: str) -> Iterator[None]:
+        """Group several appends to one session into ONE indivisible write.
+
+        :meth:`append` locks per ROW, so two callers each writing a
+        user+assistant PAIR can interleave into ``user_A, user_B, assistant_A,
+        assistant_B`` -- a transcript whose turns no longer pair up, and which no
+        timestamp ordering can repair because every row's ``ts`` is correct.
+
+        The hazard is specific to concurrent writers. A caller running ON the
+        event loop could not hit it: ``save_conversation_turn`` never awaits
+        between its two appends, so the single-threaded loop made the pair
+        effectively atomic. It appears exactly when a caller does the right thing
+        and moves the write OFF the loop, because two worker threads then run
+        those pairs concurrently. So this is the companion any multi-append
+        caller needs alongside the offload, not an optional extra.
+
+        ``_locked`` is reentrant for the same key on the same thread, so the
+        per-row locks inside ``append`` reuse the lock held here rather than
+        deadlocking on it.
+
+        Enter this OFF the event loop. It takes the same acquire path as
+        ``append``, which fails fast with :class:`HistoryLockTimeout` on a
+        running loop rather than blocking it.
+        """
+        with self._locked(key):
+            yield
 
     def _schedule_flock_release(self, key: str, lock_key: str, fd: int) -> None:
         """Release+close *fd* off the loop iff the entry is still idle.

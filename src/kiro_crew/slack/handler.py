@@ -67,7 +67,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes,
     validate_file_path,
 )
-from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn
+from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn_off_loop
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
@@ -2402,7 +2402,9 @@ async def maybe_handle_keyword_command(
         if spawn_reply:
             await slack.post_message(channel, spawn_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                # Offloaded via the shared choke point -- see
+                # save_conversation_turn_off_loop for why every async caller must.
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -2419,7 +2421,7 @@ async def maybe_handle_keyword_command(
         if run_reply:
             await slack.post_message(channel, run_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -2436,7 +2438,7 @@ async def maybe_handle_keyword_command(
         if cron_reply:
             await slack.post_message(channel, cron_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -2616,7 +2618,7 @@ async def handle_message(
         if hook_result.action == HOOK_REPLY:
             await slack.post_message(channel, hook_result.text, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -3599,7 +3601,7 @@ async def handle_message(
             except Exception:
                 logger.debug("Failed to delete thinking placeholder", exc_info=True)
         if conversation_log and not _is_slack_restricted(session_key):
-            save_conversation_turn(
+            await save_conversation_turn_off_loop(
                 conversation_log,
                 session_key,
                 text,
@@ -3700,7 +3702,7 @@ async def handle_message(
         logger.info("Review mode: ephemeral draft sent to %s in %s", user_id, channel)
         # Persist conversation (draft counts as a turn)
         if conversation_log and not _is_slack_restricted(session_key):
-            save_conversation_turn(
+            await save_conversation_turn_off_loop(
                 conversation_log,
                 session_key,
                 text,
@@ -3857,7 +3859,9 @@ async def handle_message(
     # ── Persist conversation history ──
     _skip_writes = _is_slack_restricted(session_key)
     if conversation_log and not _skip_writes:
-        save_conversation_turn(
+        # The per-turn hot path: two appends every turn, so this is where the
+        # ~12ms of loop time was paid most often.
+        await save_conversation_turn_off_loop(
             conversation_log,
             session_key,
             text,

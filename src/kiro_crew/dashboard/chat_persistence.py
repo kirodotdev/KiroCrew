@@ -29,6 +29,7 @@ from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
     _archive_lines,
     carry_provenance,
+    latest_transcript_ts,
     transcript_sort_key,
     update_metadata_off_loop,
 )
@@ -985,6 +986,30 @@ def _build_message_entry(m: dict) -> dict | None:
 _TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
 
 
+def _foreign_tail_ts(foreign_lines: list[str]) -> str | None:
+    """The newest parseable ``ts`` among *foreign_lines*, or ``None``.
+
+    Named and single-sourced so "how a slot learns the disk tail" is one thing a
+    reader can find, rather than a loop inlined in the save. Sits beside
+    :func:`_interleave_foreign_lines` because they consume the same input: those
+    lines are on-disk rows this slot never observed, which is exactly why they are
+    the rows its ordering floor would otherwise miss.
+
+    Malformed lines are skipped rather than propagated -- a corrupt row must not
+    become the floor (``latest_transcript_ts`` refuses unparseable candidates for
+    the same reason).
+    """
+    tail: str | None = None
+    for line in foreign_lines:
+        try:
+            row_ts = json.loads(line).get("ts")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(row_ts, str):
+            tail = latest_transcript_ts(tail, row_ts)
+    return tail
+
+
 def _interleave_foreign_lines(
     window_entries: list[dict],
     window_lines: list[str],
@@ -1515,6 +1540,21 @@ def _save_slot_to_history(
                     )
             payload = meta_str + frozen_prefix + "".join(
                 _interleave_foreign_lines(window_entries, window_lines, foreign_lines)
+            )
+
+            # Refresh the slot's ordering floor from what is actually going to
+            # disk, foreign rows included. This is the only place the slot can
+            # learn about a row it never observed: the lock is already held and
+            # the foreign lines are already in hand, whereas reading the tail per
+            # append would put file I/O on the event loop. It does not make the
+            # slot fully symmetric with ConversationLog.append -- a foreign row
+            # arriving BETWEEN two saves stays invisible until the next one -- but
+            # it closes the reachable shape, where a subagent/cron append is
+            # observed at the next flush. The monotone rule itself lives on the
+            # slot (note_disk_tail), so this cannot move the floor backwards.
+            slot.note_disk_tail(
+                _foreign_tail_ts(foreign_lines),
+                window_entries[-1].get("ts") if window_entries else None,
             )
 
             # Rewrite paths (rewind/regenerate/fork) intentionally TRUNCATE the

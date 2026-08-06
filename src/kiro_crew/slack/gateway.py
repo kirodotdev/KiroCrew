@@ -133,7 +133,7 @@ from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
     provider_last_turn_usage,
-    save_conversation_turn,
+    save_conversation_turn_off_loop,
     stream_and_collect,
 )
 from kiro_crew.mcp_gateway import is_gateway_supported
@@ -2947,7 +2947,7 @@ class GatewayOrchestrator:
                 safe_nudge, _ = redact_credentials(safe_nudge)
                 safe_response, _ = redact_exfiltration_urls(response or "")
                 safe_response, _ = redact_credentials(safe_response)
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     self.conv_log,
                     key,
                     safe_nudge,
@@ -4317,7 +4317,7 @@ class GatewayOrchestrator:
                                 safe_announce, _ = redact_credentials(safe_announce)
                                 safe_response, _ = redact_exfiltration_urls(response or "")
                                 safe_response, _ = redact_credentials(safe_response)
-                                save_conversation_turn(
+                                await save_conversation_turn_off_loop(
                                     self.conv_log,
                                     parent_key,
                                     safe_announce,
