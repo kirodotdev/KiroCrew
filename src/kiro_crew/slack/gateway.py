@@ -189,16 +189,17 @@ from kiro_crew.subagent import (
     resolve_max_subagents,
 )
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.feishu.gateway import maybe_start_feishu
 from kiro_crew.teams.gateway import maybe_start_teams
 from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
 from kiro_crew.weixin.gateway import maybe_start_weixin
-from kiro_crew.feishu.gateway import maybe_start_feishu
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.discord.client import DiscordClient
+    from kiro_crew.feishu.client import LarkClient
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.subagent_scale import SubagentEventCoalescer
     from kiro_crew.task_models import Task
@@ -207,7 +208,6 @@ if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
     from kiro_crew.weixin.client import WeixinClient
-    from kiro_crew.feishu.client import LarkClient
 
 
 async def _persist_turn_row(
