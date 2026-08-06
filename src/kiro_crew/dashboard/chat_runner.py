@@ -1007,6 +1007,30 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
     }
 
 
+def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
+    """Build the live dashboard payload for a tool invocation.
+
+    ``is_shell`` is intentionally an explicit capability signal rather than a
+    frontend guess based on the tool title. Shell commands usually have no
+    trustworthy total, so the dashboard can render an indeterminate status
+    today while future tools can add a real progress mode without changing the
+    tool-card data flow.
+    """
+    title, _ = redact_exfiltration_urls(event.title)
+    title, _ = redact_credentials(title)
+    kind, _ = redact_exfiltration_urls(event.tool_kind)
+    kind, _ = redact_credentials(kind)
+    return {
+        "slot": "",  # Filled by the caller because it belongs to the session.
+        "tool": title,
+        "kind": kind,
+        "is_shell": event.is_shell,
+        "tool_call_id": _redact_tool_field(event.tool_call_id),
+        "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
+        "input_preview": _redact_tool_field(event.tool_input),
+    }
+
+
 # Known redirect forms where & is NOT a command separator:
 # N>&M (e.g. 2>&1), &> file, &>> file, >&N
 _REDIRECT_PLACEHOLDER = "\x00REDIR\x00"
@@ -3435,10 +3459,8 @@ async def _run_chat(
                 in_tool_group = True
                 _turn_emitted = True  # tool side effect — transient retry now unsafe
                 # Broadcast for real-time visibility and persist
-                _title, _ = redact_exfiltration_urls(event.title)
-                _title, _ = redact_credentials(_title)
-                _kind, _ = redact_exfiltration_urls(event.tool_kind)
-                _kind, _ = redact_credentials(_kind)
+                _tool_payload = _tool_call_ws_payload(event)
+                _tool_payload["slot"] = slot.key
                 # Snapshot file BEFORE write tools execute. Accumulates per-turn,
                 # flushed to assistant message meta in _flush_file_changes on turn end.
                 # Prefer the in-band diff_old_text from the ACP content block
@@ -3455,16 +3477,9 @@ async def _run_chat(
                     slot._file_changes.append(_file_snapshot)
                 state.broadcast_ws(
                     "tool_call",
-                    {
-                        "slot": slot.key,
-                        "tool": _title,
-                        "kind": _kind,
-                        "tool_call_id": _redact_tool_field(event.tool_call_id),
-                        "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
-                        "input_preview": _redact_tool_field(event.tool_input),
-                    },
+                    _tool_payload,
                 )
-                slot.append("tool", f"🔧 {_title}", "msg msg-tool", meta=_tool_meta(event))
+                slot.append("tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_meta(event))
                 sel().log_tool_invocation(
                     session_key=session_key,
                     agent=slot.agent or "kirocrew",
@@ -3551,7 +3566,7 @@ async def _run_chat(
                             )
                         _mirror_task_counter += 1
                         _mirror_active_task = f"tool_{_mirror_task_counter}"
-                        _task_title = event.tool_purpose or _title
+                        _task_title = event.tool_purpose or event.title
                         _task_title, _ = redact_exfiltration_urls(_task_title)
                         _task_title, _ = redact_credentials(_task_title)
                         _task_title = _task_title[:75]
@@ -3610,6 +3625,10 @@ async def _run_chat(
                             "kind": _kind_upd,
                             "tool_call_id": _tcid_upd,
                             "input_preview": _input_upd,
+                            # The update is the event that supplies the real
+                            # shell title/input, so it must carry the same
+                            # capability signal as the initial tool_call.
+                            "is_shell": event.is_shell,
                             "is_update": True,
                         },
                     )

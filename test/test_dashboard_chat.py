@@ -21,6 +21,7 @@ from chat_test_helpers import (
 )
 
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
     _MAX_SOURCE_LINKS_PER_SLOT,
@@ -28,6 +29,31 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
 )
 from kiro_crew.history import ConversationLog
+
+
+def test_tool_call_ws_payload_preserves_shell_capability_signal():
+    """The dashboard receives an explicit shell signal for indeterminate UX.
+
+    Keep this contract at the backend boundary so a future percentage-based
+    progress mode can extend the payload without making the frontend infer
+    tool type from a display title.
+    """
+    event = MagicMock(
+        title="bash",
+        tool_kind="execute",
+        tool_call_id="tc-shell",
+        tool_purpose="Run a command",
+        tool_input="echo hello",
+        is_shell=True,
+    )
+
+    payload = _tool_call_ws_payload(event)
+
+    assert payload["tool"] == "bash"
+    assert payload["kind"] == "execute"
+    assert payload["is_shell"] is True
+    assert payload["tool_call_id"] == "tc-shell"
+
 
 # ── Slot unit tests ──
 

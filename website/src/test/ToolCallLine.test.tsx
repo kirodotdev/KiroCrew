@@ -69,6 +69,19 @@ describe('ToolCallLine simplifiedToolNames', () => {
 })
 
 describe('ToolCallLine inline expansion', () => {
+  it('shows an indeterminate activity status for a running shell tool', () => {
+    const store = createTestStore({
+      chat: {
+        messages: [toolMsg()],
+        toolLog: [{ type: 'tool', text: 'echo hello', tool_call_id: 'tc_1', is_shell: true, ts: 1 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={toolMsg()} running />, { store })
+    expect(screen.getByText(/Running ·/)).toBeTruthy()
+    expect(screen.getByLabelText('Show details for tool: Running: echo hello')).toBeTruthy()
+  })
+
   it('starts collapsed and expands on click, defaulting to Output section', () => {
     const store = createTestStore({
       chat: {

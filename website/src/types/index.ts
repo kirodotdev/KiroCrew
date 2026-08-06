@@ -568,6 +568,8 @@ export interface ToolActivity {
   approval_type?: string // 'chat' or 'spawn'
   tool_call_id?: string  // for matching tool results
   rejected?: boolean     // true when approval was rejected
+  kind?: string          // ACP tool kind; execute is the legacy shell signal
+  is_shell?: boolean     // shell tools can expose an indeterminate live status
 }
 
 /** Parsed content block produced by the block assembler. */
