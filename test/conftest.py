@@ -987,3 +987,38 @@ def short_sock_dir(tmp_path):
         yield pathlib.Path(path)
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_release_feed_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the update check's network seam unreachable for the whole suite.
+
+    ``handlers.updates._do_update_check`` now has a second branch: any install
+    that is NOT a git checkout is compared against the release-channel feed on the
+    CDN. Two ordinary things reach it without a test asking to — ``/api/status``
+    fires ``_do_update_check`` as a background task once
+    ``_UPDATE_CHECK_INTERVAL`` has elapsed (and ``_last_update_check`` starts at
+    ``0.0``, so the first call always qualifies), and any direct call in a test
+    env with no ``KIROCREW_PROJECT_DIR`` takes the feed branch by definition.
+
+    Without this fixture the suite would make real HTTPS requests to
+    ``updates.crew.kiro.dev`` — slow, flaky, offline-hostile, and CI traffic
+    nobody asked for. Tests that WANT a feed response stub this same seam, which
+    overrides the fixture for that test.
+
+    The refusal is an ``AssertionError`` because that is the loudest signal
+    available, but note ``_do_update_check``'s outer ``except Exception`` net will
+    convert it into ``error="unknown"`` rather than failing the test — so this is
+    a NETWORK guard first and a diagnostic second. A test that means to exercise
+    the feed branch must stub the seam and assert on the result.
+    """
+
+    async def _refuse(url: str) -> tuple[int, bytes]:
+        raise AssertionError(
+            f"test reached the real release feed ({url}) — stub "
+            "kiro_crew.dashboard.handlers.updates._fetch_feed_bytes instead"
+        )
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.updates._fetch_feed_bytes", _refuse, raising=True
+    )

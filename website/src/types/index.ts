@@ -7,6 +7,17 @@ export interface StatusData {
   subagents: number
   lessons: number
   update_available?: boolean
+  /**
+   * Can this install replace its own code? Only a git checkout can — a wheel
+   * install (the `cli.sh` managed venv) upgrades by re-running the installer, so
+   * `POST /api/update` would 409. Shipped with the availability flag so the UI
+   * can pick the right affordance without first running a check.
+   */
+  update_self_updatable?: boolean
+  /** Did a check ever reach a verdict? Distinguishes "current" from "never checked". */
+  update_checked?: boolean
+  /** Upgrade command for an install that cannot replace itself ("" when it can). */
+  update_command?: string
   update_progress?: { step: string; detail: string } | null
   version?: string
   branch?: string

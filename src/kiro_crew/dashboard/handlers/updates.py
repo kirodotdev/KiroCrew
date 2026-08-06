@@ -12,14 +12,17 @@ import sys
 import time
 from pathlib import Path
 
+import aiohttp
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
+from kiro_crew.beacon import distribution
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
+    config_dir,
     config_path,
     read_config_for_update,
     write_config_atomically,
@@ -39,10 +42,88 @@ _SSE_INTERVAL_SECS = 5
 
 # ── Update ──
 
-# Cached update check result
-_update_info: dict[str, object] = {"available": False, "changes": "", "checked": False}
+# Cached update check result.
+#
+# ``checked`` is LOAD-BEARING, not decoration: the dashboard renders "you're on
+# the latest version" only when a real comparison completed. Before this was
+# enforced, a check that never ran (every wheel install — see
+# ``_do_update_check``) left this dict at its initial ``available: False`` and the
+# UI reported an out-of-date install as up to date.
+_update_info: dict[str, object] = {
+    "available": False,
+    "changes": "",
+    "remote_version": "",
+    "checked": False,
+    "install_kind": "",
+    "self_updatable": False,
+    "channel": "",
+    "update_command": "",
+    "error": "",
+}
 _UPDATE_CHECK_INTERVAL = 43200  # 12 hours
 _last_update_check: float = 0.0
+
+#: True while a check is running. ``/api/status`` fires ``_do_update_check`` as a
+#: background task on EVERY poll until the interval clock is stamped, and the clock
+#: is only stamped when a check FINISHES. While the check was git-only and
+#: instantaneous for most installs, overlapping calls were invisible; the feed
+#: branch holds a network session for up to ``_FEED_TIMEOUT_SECS``, so a burst of
+#: dashboard polls would open a burst of concurrent CDN fetches. First caller wins,
+#: the rest no-op.
+_check_in_flight = False
+
+#: Release channels the installer publishes. Anything else in the channel file (a
+#: hand-edit, junk, a lane this build predates) falls back to ``stable``.
+_RELEASE_CHANNELS = ("stable", "insider", "nightly")
+
+#: ``schema`` every CLI artifact manifest carries. A payload without it is not a
+#: manifest and must not be read as one.
+_CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
+
+#: Same ceiling ``cli.sh`` applies with ``curl --max-filesize`` when it fetches
+#: the very same document. Enforced against RECEIVED bytes, not Content-Length.
+_FEED_MAX_BYTES = 65536
+_FEED_TIMEOUT_SECS = 15
+
+_VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
+_PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
+
+# Error codes for ``_update_info["error"]``. The dashboard maps these to
+# localized copy, so they are a contract: add, never silently repurpose.
+_ERR_FEED_UNREACHABLE = "feed_unreachable"
+_ERR_FEED_MALFORMED = "feed_malformed"
+_ERR_GIT_FETCH_FAILED = "git_fetch_failed"
+_ERR_GIT_READ_FAILED = "git_read_failed"
+_ERR_VERSION_UNPARSEABLE = "version_unparseable"
+_ERR_MANAGED_BY_APP = "managed_by_app"
+_ERR_MANAGED_BY_IMAGE = "managed_by_image"
+_ERR_UNKNOWN = "unknown"
+
+#: Distributions whose code is replaced by something OTHER than this gateway,
+#: mapped to the reason they report instead of a verdict.
+#:
+#: The desktop bundles embed this very backend (``packaging/build-desktop.sh``
+#: ships a PBS interpreter tree inside the .app / AppImage), so they DO run this
+#: code — and they must not answer with it. Their update surface is the Electron
+#: updater, which has its own feed (``latest-mac.yml`` / ``latest-linux.yml``),
+#: its own version stream and its own consent UI. Reading the CLI feed here would
+#: compare against the WRONG stream and then recommend an installer that does not
+#: apply to a DMG. It would also be user-visible: the Settings nav dot is
+#: ``status.update_available || desktopUpdateAvailable`` (``App.tsx``), so a
+#: false positive lights a badge whose destination says "you're on the latest
+#: version" — the desktop About branch, which is the only one rendered there.
+#:
+#: A container is likewise replaced by pulling a new image, never in place.
+#:
+#: Windows needs no entry: there is no Windows-native gateway. ``install.ps1``
+#: makes the Windows machine a thin client for a gateway running on EC2 Linux, so
+#: the backend answering this call is a Linux install that identifies itself
+#: correctly on its own.
+_EXTERNALLY_MANAGED = {
+    "dmg": _ERR_MANAGED_BY_APP,
+    "appimage": _ERR_MANAGED_BY_APP,
+    "docker": _ERR_MANAGED_BY_IMAGE,
+}
 
 
 def get_update_info() -> dict[str, object]:
@@ -51,7 +132,12 @@ def get_update_info() -> dict[str, object]:
 
 
 async def api_update_check(request: web.Request) -> web.Response:
-    """GET /api/update/check — check if git remote has new commits."""
+    """GET /api/update/check — is a newer build available for this install?
+
+    Two install layouts, two sources of truth (see ``_do_update_check``): a git
+    checkout is compared against its remote, and a wheel install against the
+    release channel feed it was installed from.
+    """
     await _do_update_check()
     cfg = KiroCrewConfig.load()
     return web.json_response(
@@ -66,159 +152,523 @@ async def api_update_check(request: web.Request) -> web.Response:
     )
 
 
-def _version_tuple(v: str) -> tuple[int, ...]:
-    """Parse version string to tuple for safe numeric comparison."""
+#: Pre-release spellings PEP 440 normalizes, mapped to their sort rank.
+_PRE_RANKS = {
+    "a": 1,
+    "alpha": 1,
+    "b": 2,
+    "beta": 2,
+    "c": 3,
+    "rc": 3,
+    "pre": 3,
+    "preview": 3,
+}
+
+_PEP440_RE = re.compile(
+    r"""^\s*v?
+    (?P<release>[0-9]+(?:\.[0-9]+)*)
+    (?:[-_.]?(?P<pre_l>a|b|c|rc|alpha|beta|pre|preview)[-_.]?(?P<pre_n>[0-9]+)?)?
+    (?:[-_.]?(?P<post>post|r|rev)[-_.]?(?P<post_n>[0-9]+)?)?
+    (?:[-_.]?(?P<dev>dev)[-_.]?(?P<dev_n>[0-9]+)?)?
+    \s*$""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_FIRST_INT_RE = re.compile(r"[0-9]+")
+
+
+def _version_key(value: str) -> tuple[tuple[int, ...], int, int, int, int] | None:
+    """Comparable ordering key for a version string, or ``None`` if unparseable.
+
+    Returning ``None`` rather than a low-sorting sentinel is the whole point.
+    The predecessor of this function coerced anything it could not parse to
+    ``(0,)``, which made ``0.1.2rc3`` and ``0.1.3rc2`` compare EQUAL and reported
+    "no update available" for every prerelease-to-prerelease step. A caller that
+    cannot compare must say so, not answer "up to date".
+
+    The key is ``(release, stage, stage_ordinal, dev_absent, dev_ordinal)`` and
+    reproduces PEP 440's ordering::
+
+        X.Y.Z.devN  <  X.Y.ZaN  <  X.Y.ZbN  <  X.Y.ZrcN.devM
+                    <  X.Y.ZrcN  <  X.Y.Z   <  X.Y.Z.postN
+
+    ``dev_absent`` is what places ``rc1.dev3`` below ``rc1``: a dev release of a
+    prerelease precedes that prerelease, so it must sort first WITHIN the same
+    ``(stage, stage_ordinal)`` pair.
+
+    Release tuples are NOT padded here — comparing keys of different arity is the
+    caller's job (:func:`_is_newer`), because padding depends on both sides.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = _PEP440_RE.match(text)
+    suffix_ordinal: int | None = None
+    if match is None:
+        # Semver-ish stamps from the desktop lane: ``0.3.0-insider.2``,
+        # ``0.3.0-nightly.20260728t184500``. Treat ANY unrecognised suffix as a
+        # prerelease of its release core, so it sorts below the bare release —
+        # the same direction PEP 440 orders rc against final. Guessing "newer"
+        # here would offer a downgrade as an update.
+        core, sep, rest = text.partition("-")
+        if not sep:
+            core, sep, rest = text.partition("+")
+        if not sep:
+            return None
+        match = _PEP440_RE.match(core)
+        if match is None:
+            return None
+        found = _FIRST_INT_RE.search(rest)
+        suffix_ordinal = int(found.group()) if found else 0
+
     try:
-        return tuple(int(x) for x in v.split("."))
-    except (ValueError, AttributeError):
-        return (0,)
+        release = tuple(int(chunk) for chunk in match.group("release").split("."))
+    except ValueError:  # pragma: no cover - the regex already bounds this
+        return None
+
+    pre_l = match.group("pre_l")
+    has_post = bool(match.group("post"))
+    has_dev = bool(match.group("dev"))
+
+    if suffix_ordinal is not None:
+        stage, ordinal = 3, suffix_ordinal
+    elif pre_l:
+        stage, ordinal = _PRE_RANKS[pre_l.lower()], int(match.group("pre_n") or 0)
+    elif has_post:
+        stage, ordinal = 5, int(match.group("post_n") or 0)
+    elif has_dev:
+        # A dev release of the release itself (X.Y.Z.devN) precedes every
+        # prerelease of X.Y.Z, so it gets the lowest stage.
+        stage, ordinal = 0, int(match.group("dev_n") or 0)
+    else:
+        stage, ordinal = 4, 0
+
+    dev_of_pre = has_dev and (pre_l is not None or suffix_ordinal is not None)
+    dev_absent = 0 if dev_of_pre else 1
+    dev_ordinal = int(match.group("dev_n") or 0) if dev_of_pre else 0
+    return (release, stage, ordinal, dev_absent, dev_ordinal)
+
+
+def _is_newer(remote: str, local: str) -> bool | None:
+    """Is *remote* strictly newer than *local*? ``None`` when either is unparseable.
+
+    ``None`` propagates to ``error: version_unparseable`` instead of collapsing
+    into ``available: False``: an unreadable version is a failed check, not a
+    verdict.
+    """
+    remote_key = _version_key(remote)
+    local_key = _version_key(local)
+    if remote_key is None or local_key is None:
+        return None
+    # Zero-pad the release cores so 0.1 and 0.1.0 compare EQUAL rather than
+    # letting the shorter tuple sort first, then fall through to the stage keys.
+    r_rel, l_rel = remote_key[0], local_key[0]
+    width = max(len(r_rel), len(l_rel))
+    r_pad = r_rel + (0,) * (width - len(r_rel))
+    l_pad = l_rel + (0,) * (width - len(l_rel))
+    if r_pad != l_pad:
+        return r_pad > l_pad
+    return remote_key[1:] > local_key[1:]
+
+
+def _cdn_bases() -> tuple[str, str]:
+    """``(feed base, artifact base)`` — mirrors ``cli.sh``'s two URL classes.
+
+    The feed host serves mutable pointers (``latest-cli.json``); the artifact host
+    serves bytes. ``KIROCREW_CDN_BASE`` overrides BOTH, exactly as the installer's
+    ``--cdn`` does, so a test or an alternate CDN moves the check and the install
+    it recommends together instead of splitting them across hosts.
+    """
+    override = (os.environ.get("KIROCREW_CDN_BASE") or "").strip().rstrip("/")
+    if override:
+        return override, override
+    return "https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"
+
+
+def _release_channel() -> str:
+    """The release channel this install follows, from ``$KIROCREW_HOME/channel``.
+
+    ``cli.sh`` WRITES this file on every install and never reads it back, which is
+    also why :func:`_wheel_update_command` always spells ``--channel``: a bare
+    re-run of the installer defaults to ``stable`` and would silently move an
+    insider install onto the stable lane.
+    """
+    try:
+        raw = (config_dir() / "channel").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "stable"
+    channel = raw.strip().lower()
+    return channel if channel in _RELEASE_CHANNELS else "stable"
+
+
+def _wheel_update_command(channel: str, artifact_base: str) -> str:
+    """The exact command that upgrades a wheel install on *channel*.
+
+    Composed LOCALLY from an already-validated channel name. Never assembled from
+    a feed field — see :func:`_check_release_feed` on why the manifest is treated
+    as untrusted display metadata.
+
+    ``--proto '=https'`` is not decoration: this string is copied into a shell and
+    pipes an installer into ``sh``, and ``artifact_base`` is overridable via
+    ``KIROCREW_CDN_BASE``. Without the restriction, an ``http://`` override would
+    hand the user a command that fetches a script in plaintext and executes it, so
+    an on-path attacker could swap the installer. curl refuses any other scheme,
+    which is also exactly what ``cli.sh`` does for every fetch it makes itself.
+    """
+    return f"curl -fsSL --proto '=https' {artifact_base}/cli.sh | sh -s -- --channel {channel}"
+
+
+def _set_update_info(**fields: object) -> None:
+    """Replace the cached result wholesale so no key survives from a prior run.
+
+    Mutating selected keys would let a previous success leak into a later failure
+    (a stale ``remote_version`` beside a fresh ``error``), which is exactly the
+    class of half-truth this module is being fixed for.
+    """
+    _update_info.clear()
+    _update_info.update(
+        {
+            "available": False,
+            "changes": "",
+            "remote_version": "",
+            "checked": False,
+            "install_kind": "",
+            "self_updatable": False,
+            "channel": "",
+            "update_command": "",
+            "error": "",
+        }
+    )
+    _update_info.update(fields)
 
 
 async def _do_update_check() -> None:
-    """Run git fetch and compare HEAD with remote."""
-    global _last_update_check
+    """Refresh ``_update_info``: is a newer build available for THIS install?
+
+    Three install layouts, three answers:
+
+    * **git checkout** — ``KIROCREW_PROJECT_DIR`` with a ``.git``. Fetch the
+      remote and compare its ``src/kiro_crew/__init__.py`` ``__version__``. This
+      is also the only layout ``POST /api/update`` can act on.
+    * **externally managed** — a desktop bundle or a container
+      (:data:`_EXTERNALLY_MANAGED`). This gateway is NOT the update surface, so
+      it reports which surface is instead of guessing a verdict.
+    * **everything else** — the ``cli.sh`` managed venv, a cloud/EC2 source
+      install. Compare against the release channel feed the installer pulled
+      from. This layout used to return early and leave the cache at its initial
+      ``available: False``, so the dashboard told an out-of-date install it was
+      up to date.
+
+    The layout is decided by :func:`beacon.distribution`, which reads the value
+    stamped into the package tree at packaging time. It is matched by EXCLUSION
+    (desktop and container are named; everything else is feed-checkable) on
+    purpose: wheels published before the stamp existed carry no ``_build_info``
+    and so report the ``source`` default, and an ``== "wheel"`` allowlist would
+    silently exclude every already-released CLI install — precisely the
+    population this check is being fixed for.
+
+    Every exit path writes the cache, failures included: a check that could not
+    run records an ``error`` code and leaves ``checked`` False, so no caller can
+    mistake a non-answer for a verdict.
+    """
+    global _last_update_check, _check_in_flight
+
+    if _check_in_flight:
+        return
+    _check_in_flight = True
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-    if not proj:
-        return
-    # Skip when the project dir isn't a git checkout — e.g. a cloud/EC2 install
-    # that received its source as a tarball. Without this the update poller
-    # spams "git fetch failed: not a git repository" every cycle. exists() (not
-    # isdir): in linked worktrees/submodules .git is a file, but git works.
-    if not os.path.exists(os.path.join(proj, ".git")):
-        return
+    # exists() not isdir(): in linked worktrees and submodules ``.git`` is a FILE
+    # holding a ``gitdir:`` pointer, and git works fine there.
+    is_git = bool(proj) and os.path.exists(os.path.join(proj, ".git"))
+    dist = "git" if is_git else distribution()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "fetch",
-            "--quiet",
-            cwd=proj,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, fetch_err = await asyncio.wait_for(proc.communicate(), timeout=30)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.communicate()
-            logger.warning("git fetch timed out")
-            return
-        if proc.returncode != 0:
-            logger.warning(
-                "git fetch failed (rc=%s): %s",
-                proc.returncode,
-                (fetch_err or b"").decode(errors="replace").strip(),
+        if is_git:
+            await _check_git_checkout(proj)
+        elif dist in _EXTERNALLY_MANAGED:
+            _set_update_info(
+                install_kind=dist,
+                self_updatable=False,
+                error=_EXTERNALLY_MANAGED[dist],
             )
-            return
-
-        local = await asyncio.create_subprocess_exec(
-            "git",
-            "rev-parse",
-            "HEAD",
-            cwd=proj,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            local_out, _ = await asyncio.wait_for(local.communicate(), timeout=10)
-        except asyncio.TimeoutError:
-            try:
-                local.kill()
-            except ProcessLookupError:
-                pass
-            await local.communicate()
-            return
-        remote = await asyncio.create_subprocess_exec(
-            "git",
-            "rev-parse",
-            "@{u}",
-            cwd=proj,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            remote_out, _ = await asyncio.wait_for(remote.communicate(), timeout=10)
-        except asyncio.TimeoutError:
-            try:
-                remote.kill()
-            except ProcessLookupError:
-                pass
-            await remote.communicate()
-            return
-
-        local_sha = local_out.decode(errors="replace").strip()
-        remote_sha = remote_out.decode(errors="replace").strip()
-
-        # Check version: compare remote (or on-disk if already pulled) vs running
-        available = False
-        remote_version = ""
-        target_sha = remote_sha if local_sha != remote_sha else local_sha
-        if local_sha and remote_sha:
-            show = await asyncio.create_subprocess_exec(
-                "git",
-                "show",
-                f"{target_sha}:src/kiro_crew/__init__.py",
-                cwd=proj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            try:
-                show_out, _ = await asyncio.wait_for(show.communicate(), timeout=10)
-            except asyncio.TimeoutError:
-                try:
-                    show.kill()
-                except ProcessLookupError:
-                    pass
-                await show.communicate()
-                return
-            m = re.search(r'__version__\s*=\s*"(.+?)"', show_out.decode(errors="replace"))
-            if m:
-                remote_version = m.group(1)
-            available = (
-                _version_tuple(remote_version) > _version_tuple(_local_version)
-                if remote_version
-                else False
-            )
-
-        changes = ""
-        if available:
-            diff_base = f"v{_local_version}" if local_sha == remote_sha else local_sha
-            diff = await asyncio.create_subprocess_exec(
-                "git",
-                "diff",
-                f"{diff_base}..{target_sha}",
-                "--",
-                "CHANGELOG.md",
-                cwd=proj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            try:
-                diff_out, _ = await asyncio.wait_for(diff.communicate(), timeout=10)
-            except asyncio.TimeoutError:
-                try:
-                    diff.kill()
-                except ProcessLookupError:
-                    pass
-                await diff.communicate()
-                return
-            # Extract added lines from changelog diff
-            lines: list[str] = []
-            for line in diff_out.decode(errors="replace").splitlines():
-                if line.startswith("+") and not line.startswith("+++"):
-                    lines.append(line[1:])
-            changes = "\n".join(lines).strip()
-
-        _update_info["available"] = available
-        _update_info["changes"] = changes
-        _update_info["remote_version"] = remote_version
-        _update_info["checked"] = True
-        _last_update_check = time.time()
+        else:
+            await _check_release_feed(dist)
     except Exception:
         logger.debug("Update check failed", exc_info=True)
+        _set_update_info(
+            install_kind=dist,
+            self_updatable=is_git,
+            error=_ERR_UNKNOWN,
+        )
+    finally:
+        _check_in_flight = False
+        # Stamped even on failure, so an offline host or a broken feed cannot turn
+        # the 12-hourly background poll into a hot retry loop. The dashboard's
+        # manual button calls this function directly and is never rate-limited.
+        _last_update_check = time.time()
+
+
+async def _check_git_checkout(proj: str) -> None:
+    """Compare a git checkout in *proj* against its tracked remote."""
+    base: dict[str, object] = {"install_kind": "git", "self_updatable": True}
+
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "fetch",
+        "--quiet",
+        cwd=proj,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, fetch_err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.communicate()
+        logger.warning("git fetch timed out")
+        _set_update_info(**base, error=_ERR_GIT_FETCH_FAILED)
+        return
+    if proc.returncode != 0:
+        logger.warning(
+            "git fetch failed (rc=%s): %s",
+            proc.returncode,
+            (fetch_err or b"").decode(errors="replace").strip(),
+        )
+        _set_update_info(**base, error=_ERR_GIT_FETCH_FAILED)
+        return
+
+    local = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-parse",
+        "HEAD",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        local_out, _ = await asyncio.wait_for(local.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            local.kill()
+        except ProcessLookupError:
+            pass
+        await local.communicate()
+        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        return
+    remote = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-parse",
+        "@{u}",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        remote_out, _ = await asyncio.wait_for(remote.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            remote.kill()
+        except ProcessLookupError:
+            pass
+        await remote.communicate()
+        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        return
+
+    local_sha = local_out.decode(errors="replace").strip()
+    remote_sha = remote_out.decode(errors="replace").strip()
+    if not local_sha or not remote_sha:
+        # No upstream (detached HEAD, untracked branch) or an unreadable HEAD.
+        # There is nothing to compare against, which is a failed check and not
+        # "you are on the latest version".
+        logger.warning("Could not resolve HEAD and/or upstream in %s", proj)
+        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        return
+
+    # Compare the remote's version (or the on-disk one when already pulled).
+    target_sha = remote_sha if local_sha != remote_sha else local_sha
+    show = await asyncio.create_subprocess_exec(
+        "git",
+        "show",
+        f"{target_sha}:src/kiro_crew/__init__.py",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        show_out, _ = await asyncio.wait_for(show.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            show.kill()
+        except ProcessLookupError:
+            pass
+        await show.communicate()
+        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        return
+    match = re.search(r'__version__\s*=\s*"(.+?)"', show_out.decode(errors="replace"))
+    if not match:
+        logger.warning("Could not read __version__ at %s", target_sha)
+        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        return
+    remote_version = match.group(1)
+    available = _is_newer(remote_version, _local_version)
+    if available is None:
+        logger.warning(
+            "Cannot compare local version %s against remote %s",
+            _local_version,
+            remote_version,
+        )
+        _set_update_info(**base, remote_version=remote_version, error=_ERR_VERSION_UNPARSEABLE)
+        return
+
+    changes = ""
+    if available:
+        diff_base = f"v{_local_version}" if local_sha == remote_sha else local_sha
+        diff = await asyncio.create_subprocess_exec(
+            "git",
+            "diff",
+            f"{diff_base}..{target_sha}",
+            "--",
+            "CHANGELOG.md",
+            cwd=proj,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            diff_out, _ = await asyncio.wait_for(diff.communicate(), timeout=10)
+        except asyncio.TimeoutError:
+            try:
+                diff.kill()
+            except ProcessLookupError:
+                pass
+            await diff.communicate()
+            # The version comparison already succeeded — report the update and
+            # simply omit the changelog rather than discarding a good verdict.
+            diff_out = b""
+        # Extract added lines from the changelog diff.
+        lines: list[str] = []
+        for line in diff_out.decode(errors="replace").splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                lines.append(line[1:])
+        changes = "\n".join(lines).strip()
+
+    _set_update_info(
+        **base,
+        available=available,
+        changes=changes,
+        remote_version=remote_version,
+        checked=True,
+    )
+
+
+async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
+    """GET *url*, returning ``(status, body)`` with the body read BOUNDED.
+
+    Split out as the single network seam of the update check so tests stub this
+    one function instead of the aiohttp machinery — see the autouse guard in
+    ``test/conftest.py`` that makes it impossible for the suite to reach the
+    real CDN.
+    """
+    timeout = aiohttp.ClientTimeout(total=_FEED_TIMEOUT_SECS)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as resp:
+            # +1 byte so an oversized body is DETECTED rather than silently
+            # truncated into a parse error. Mirrors the installer's
+            # --max-filesize on this very document, and is enforced against
+            # RECEIVED bytes rather than a Content-Length claim.
+            return resp.status, await resp.content.read(_FEED_MAX_BYTES + 1)
+
+
+async def _check_release_feed(install_kind: str) -> None:
+    """Compare a feed-checkable install against the release channel it came from.
+
+    *install_kind* is reported verbatim rather than hardcoded to ``"wheel"``: an
+    unstamped pre-``_build_info`` wheel reports ``source``, and flattening the two
+    would put a value on the wire that the install cannot back up.
+
+    **Security posture — the manifest is UNTRUSTED display metadata.** This
+    function deliberately does not verify its RSA signature: that check lives in
+    ``cli.sh``, which pins the key offline and is the only thing that installs
+    bytes. So nothing actionable is taken from the payload — ``wheel_url``,
+    ``sha256`` and ``signature`` are read by nobody here, and the recommended
+    command is composed locally from the already-validated channel name. A
+    tampered feed can therefore nag the user or hide an update; it cannot
+    redirect an install. Verifying the signature in Python becomes necessary only
+    if the gateway itself ever installs, which it does not.
+    """
+    channel = _release_channel()
+    feed_base, artifact_base = _cdn_bases()
+    base: dict[str, object] = {
+        "install_kind": install_kind,
+        "self_updatable": False,
+        "channel": channel,
+        "update_command": _wheel_update_command(channel, artifact_base),
+    }
+    url = f"{feed_base}/feed/{channel}/latest-cli.json"
+
+    try:
+        status, raw = await _fetch_feed_bytes(url)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+        logger.debug("Release feed fetch failed: %s", url, exc_info=True)
+        _set_update_info(**base, error=_ERR_FEED_UNREACHABLE)
+        return
+    if status != 200:
+        logger.warning("Release feed %s returned HTTP %s", url, status)
+        _set_update_info(**base, error=_ERR_FEED_UNREACHABLE)
+        return
+
+    if len(raw) > _FEED_MAX_BYTES:
+        logger.warning("Release feed %s exceeded %d bytes", url, _FEED_MAX_BYTES)
+        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        return
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        logger.warning("Release feed %s is not valid JSON", url)
+        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        return
+    if not isinstance(manifest, dict):
+        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        return
+    # The channel assertion is what stops a mis-wired or swapped feed from
+    # advertising another lane's build to this install.
+    if manifest.get("schema") != _CLI_MANIFEST_SCHEMA or manifest.get("channel") != channel:
+        logger.warning("Release feed %s is not a %s for %s", url, _CLI_MANIFEST_SCHEMA, channel)
+        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        return
+    remote_version = manifest.get("version")
+    if not isinstance(remote_version, str) or not _VERSION_RE.match(remote_version):
+        logger.warning("Release feed %s carries no usable version", url)
+        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        return
+
+    available = _is_newer(remote_version, _local_version)
+    if available is None:
+        logger.warning(
+            "Cannot compare local version %s against feed version %s",
+            _local_version,
+            remote_version,
+        )
+        _set_update_info(**base, remote_version=remote_version, error=_ERR_VERSION_UNPARSEABLE)
+        return
+
+    extra: dict[str, object] = {}
+    pub_date = manifest.get("pub_date")
+    if isinstance(pub_date, str) and _PUB_DATE_RE.match(pub_date):
+        extra["remote_pub_date"] = pub_date
+    # No ``changes``: the manifest carries no changelog, and the CHANGELOG.md
+    # bundled into the wheel describes the version already INSTALLED, not the new
+    # one. The dashboard's "view full changelog" disclosure covers the gap
+    # rather than this function inventing a diff it cannot see.
+    _set_update_info(
+        **base,
+        available=available,
+        remote_version=remote_version,
+        checked=True,
+        **extra,
+    )
 
 
 async def api_update_auto(request: web.Request) -> web.Response:

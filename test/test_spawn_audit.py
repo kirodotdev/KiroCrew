@@ -366,7 +366,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers/terminal.py::_proc_cwd",
         "dashboard/handlers/terminal.py::api_terminal_ws",
         "dashboard/handlers/updates.py::_apply",
-        "dashboard/handlers/updates.py::_do_update_check",
+        # The update check's git side: fixed `git fetch` / `rev-parse` / `show` /
+        # `diff` list-argv (no shell=True) run in KIROCREW_PROJECT_DIR, an operator
+        # environment value, never agent input. Read-only version comparison —
+        # nothing here writes to the tree.
+        "dashboard/handlers/updates.py::_check_git_checkout",
         "dashboard/handlers/updates.py::_venv_pip_install",
         "dashboard/handlers/updates.py::api_update_apply",
         "dashboard/handlers_system.py::_collect_system_metrics",

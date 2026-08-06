@@ -394,7 +394,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     _QueueLogHandler,
     _RingLogHandler,
     _update_info,
-    _version_tuple,
+    _version_key,
     api_changelog,
     api_log_level,
     api_log_level_get,

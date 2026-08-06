@@ -5272,12 +5272,16 @@ class GatewayOrchestrator:
             # under the enterprise ceiling and an operator opting out must not
             # hold a fleet on a build the policy forbids.
             #
-            # Checked BEFORE the `available` branch: that flag comes from
-            # `_do_update_check`'s `_version_tuple`, which returns (0,) for any
-            # pre-release — so a `1.4.0-nightly.<stamp>` remote reads as "nothing
-            # available" and a 1.3.0 host would never satisfy a 1.4.0 floor.
-            # `_auto_apply_update` still applies the source pin and its own
-            # no-new-commits early return, so this cannot bypass the ceiling or loop.
+            # Checked BEFORE the `available` branch, and deliberately independent
+            # of it: the mandate is about whether THIS host satisfies the floor,
+            # not about whether a newer build was advertised. `_auto_apply_update`
+            # still applies the source pin and its own no-new-commits early
+            # return, so this cannot bypass the ceiling or loop.
+            #
+            # Not gated on `self_updatable`: a policy floor is an enterprise
+            # ceiling, and this branch has always attempted the git apply on every
+            # layout. Teaching it the wheel path (which needs the installer, not a
+            # git reset) is a separate change from making the CHECK honest.
             if update_required(_running_version):
                 logger.warning(
                     "Version compliance: running %s is below the policy minimum %s — "
@@ -5293,11 +5297,29 @@ class GatewayOrchestrator:
                 from kiro_crew.config import KiroCrewConfig
 
                 cfg = KiroCrewConfig.load()
-                if cfg.auto_update:
+                # `_auto_apply_update` replaces code with git fetch + reset, so it
+                # can only serve a GIT CHECKOUT. A wheel install replaces itself by
+                # re-running the installer, which this process must not do
+                # unattended — so notify instead. Without this guard, the wheel
+                # path in `_do_update_check` (which can now report `available`)
+                # would drive a git reset in a tree that has no `.git`.
+                if cfg.auto_update and _update_info.get("self_updatable"):
                     logger.info("Auto-update enabled — applying update")
                     await self._auto_apply_update()
-                elif self.dashboard_state:
-                    self.dashboard_state.push_refresh("update_available")
+                else:
+                    if cfg.auto_update:
+                        logger.warning(
+                            "Auto-update is on, but this install (%s) updates by "
+                            "re-running the installer, not by git — notifying instead",
+                            _update_info.get("install_kind") or "unknown",
+                        )
+                    if self.dashboard_state:
+                        self.dashboard_state.push_refresh("update_available")
+            elif _update_info.get("error"):
+                # A check that could not run is NOT "already on latest" — saying so
+                # is the exact false reassurance the honest-`checked` contract in
+                # `handlers/updates.py` exists to prevent.
+                logger.info("Update check did not complete (%s)", _update_info.get("error"))
             else:
                 print("👻 Already on latest version")
         except Exception:

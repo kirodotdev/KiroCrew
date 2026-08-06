@@ -8,25 +8,52 @@ from kiro_crew.dashboard.handlers import updates
 
 
 class TestUpdateCheckGitGuard:
-    def test_skips_when_no_dot_git(self, monkeypatch, tmp_path):
-        # A tarball-shipped cloud install has no .git — the check must return
-        # early without ever invoking git (no "not a git repository" spam).
+    """A non-git project dir must never invoke git — it takes the feed path instead.
+
+    The guard itself is unchanged (no "not a git repository" spam from the poller);
+    what changed is where control goes afterwards. A tarball/wheel install used to
+    return early and leave the cache reporting "up to date"; it now compares against
+    its release-channel feed, so these tests stub that seam and assert git stayed
+    out of it.
+    """
+
+    @staticmethod
+    def _stub_feed(monkeypatch):
+        async def _fake(url: str):
+            return 200, b'{"schema": "nope"}'
+
+        monkeypatch.setattr(updates, "_fetch_feed_bytes", _fake)
+
+    @staticmethod
+    def _assert_took_the_feed_path():
+        # Asserted by BEHAVIOUR, not by the stamp value: `install_kind` echoes
+        # `beacon.distribution()`, which is `source` in a checkout and `wheel` in an
+        # installed artifact. `feed_malformed` proves the feed branch ran.
+        info = updates.get_update_info()
+        assert info["error"] == "feed_malformed"
+        assert info["install_kind"] in ("wheel", "source")
+
+    def test_skips_git_when_no_dot_git(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        self._stub_feed(monkeypatch)
 
         def _boom(*a, **k):  # pragma: no cover - must not be called
             raise AssertionError("git must not run without a .git dir")
 
         monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _boom)
-        asyncio.run(updates._do_update_check())  # returns cleanly, no git call
+        asyncio.run(updates._do_update_check())
+        self._assert_took_the_feed_path()
 
-    def test_skips_when_no_project_dir(self, monkeypatch):
+    def test_skips_git_when_no_project_dir(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        self._stub_feed(monkeypatch)
 
         def _boom(*a, **k):  # pragma: no cover
             raise AssertionError("git must not run without a project dir")
 
         monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _boom)
         asyncio.run(updates._do_update_check())
+        self._assert_took_the_feed_path()
 
     def test_apply_rejects_non_git_checkout(self, monkeypatch, tmp_path):
         # POST /api/update on a tarball install must 409 with a clear

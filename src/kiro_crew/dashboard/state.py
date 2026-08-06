@@ -2073,6 +2073,9 @@ class DashboardState:
         cron_jobs: int | None = None,
         lessons: int | None = None,
         update_available: bool = False,
+        update_self_updatable: bool = False,
+        update_checked: bool = False,
+        update_command: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -2086,6 +2089,22 @@ class DashboardState:
             "lessons": lessons if lessons is not None else self._count_lessons(),
             "subagents": self.subagents.count if self.subagents else 0,
             "update_available": update_available,
+            # Can THIS install replace its own code? Only a git checkout can
+            # (``POST /api/update`` is git fetch + reset). Shipped alongside the
+            # availability flag so the dashboard can offer an Update button that
+            # will actually work, instead of one that 409s on a wheel install —
+            # it must not have to run a fresh check just to learn the layout.
+            "update_self_updatable": update_self_updatable,
+            # Did a check ever reach a verdict? Without this the UI cannot tell
+            # "checked and current" from "never checked", and painting a green
+            # "Up to date" pill next to a red "couldn't check" line is the exact
+            # half-truth the update-check contract exists to prevent.
+            "update_checked": update_checked,
+            # The upgrade command for an install that cannot replace itself, so the
+            # 12-hourly BACKGROUND check can light the nav badge and still land the
+            # user on something actionable. Deriving it only from a manual check
+            # left the badge pointing at an Update button that 409s.
+            "update_command": update_command,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

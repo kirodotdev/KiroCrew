@@ -160,11 +160,23 @@ async def api_status(request: web.Request) -> web.Response:
     )
     from kiro_crew.dashboard.handlers import updates as _updates_mod
 
-    # Auto-recheck every 12h in background
+    # Auto-recheck every 12h in background. Tracked in ``_background_tasks`` (this
+    # module's own documented pattern) rather than left as a bare create_task: the
+    # check now performs network I/O with a multi-second timeout, so an untracked
+    # task can be garbage-collected mid-flight or still be pending when the loop
+    # closes. ``_do_update_check`` is additionally single-flight, because the
+    # interval clock is only stamped once a check finishes.
     if time.time() - _updates_mod._last_update_check > _UPDATE_CHECK_INTERVAL:
-        asyncio.create_task(_do_update_check())
+        _bg = asyncio.create_task(_do_update_check())
+        state._background_tasks.add(_bg)
+        _bg.add_done_callback(state._background_tasks.discard)
 
-    data = state.status_snapshot(update_available=bool(_update_info.get("available")))
+    data = state.status_snapshot(
+        update_available=bool(_update_info.get("available")),
+        update_self_updatable=bool(_update_info.get("self_updatable")),
+        update_checked=bool(_update_info.get("checked")),
+        update_command=str(_update_info.get("update_command") or ""),
+    )
     static_info = _get_static_system_info()
     if state._owner_hash is not None:
         owner_hash = state._owner_hash
