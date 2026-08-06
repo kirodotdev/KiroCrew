@@ -3915,6 +3915,9 @@
       "released": "{{label}}から切断されました",
       "tooltip": "このセッションは{{label}}と双方向です。返信はそこに配信され、そこから送信されたメッセージはここに到着します。"
     },
+    "infoTip": {
+      "more_information": "詳細情報"
+    },
     "inlineCommentOverlay": {
       "comment_other": "{{count}}件のコメント",
       "comment_unread_other": "{{count}}件のコメント · 未読",
@@ -5930,7 +5933,7 @@
       "agent_capabilities": "エージェント機能",
       "connections_description": "公式サービスを接続してカスタム MCP サーバーを管理",
       "connections_label": "接続",
-      "crews_description": "チャットするクルー、それぞれが独自のワークスペースとメモリを備えている",
+      "crews_description": "チャットするクルー、それぞれが独自のワークスペースを備えている",
       "crews_label": "クルー",
       "hooks_description": "プロンプト、ツール呼び出し、セッション開始/停止などのエージェントイベントで自動的に実行されるシェルコマンド",
       "hooks_label": "フック",
@@ -7045,6 +7048,8 @@
       "additional_stores_coming_with_memory_v2": "現在はデフォルトストアのみが利用可能です — より多くのメモリストアのサポートは近日予定です。",
       "agents": "クルー",
       "also_used_by_these_crews": "{{crews}}でも使用されています。ストアを共有するクルーは相互にファイルとメモリを読むことができます。",
+      "bindings_preview_info": "プレビュー。クルーごとに分離されたメモリはまだ開発中です。クルーには自分のワークスペースフォルダーがありますが、意味記憶、過去の会話の想起、グローバルなレッスンはすべてのクルーに届くため、ここを変えてもクルーが記憶する内容はまだ分離されません。",
+      "bindings_preview_notice": "プレビュー。各クルーはすでに自分のワークスペースフォルダーを読み書きしていますが、記憶している内容はまだ分離されていません。意味記憶、過去の会話の想起、グローバルなレッスンはすべてのクルーに届きます。クルーごとに分離されたメモリは近日予定です。",
       "cancel": "キャンセル",
       "chat_with_this_crew": "このクルーとチャット",
       "copy_from_optional": "コピー元（オプション）",
@@ -7076,7 +7081,7 @@
       "inherited": "継承済み",
       "inherited_from_the_agent_template": "ベースとなるテンプレートから取得されます。",
       "isolated_memory_and_files_for_this_crew": "このクルーが読み書きするフォルダー。切り替えると新しいチャットは新しいフォルダーから開始され、古いものは保持されます。",
-      "manage_agent_workspace_memory_store_bindings": "異なるジョブのための個別のアシスタント。各クルーは独自のファイルを保持し、独自の会話のみを記憶します。",
+      "manage_agent_workspace_memory_store_bindings": "異なるジョブのための個別のアシスタント。各クルーは独自のファイルを保持します。",
       "memory_store": "メモリストア",
       "model": "モデル",
       "name": "名前",
@@ -7106,7 +7111,7 @@
       "view_cards_tooltip": "各クルーが使用するものを示す広々としたカード",
       "view_list": "リスト",
       "view_list_tooltip": "コンパクトな表、クルーごとに1行",
-      "which_store_its_lessons_and_history_are_written": "このクルーのレッスンと履歴が保存される場所。切り替えるとクルーはブランクメモリから開始され、古いものは保持されます。",
+      "which_store_its_lessons_and_history_are_written": "このクルーがどのメモリストアに紐づいているか。紐づけは記録されますが、それによってクルーが自分専用のメモリを持つようにはまだなりません。",
       "workspace": "ワークスペース",
       "workspace_2": "ワークスペース",
       "workspace_name_is_required": "ワークスペース名は必須です",

@@ -4007,6 +4007,9 @@
       "released": "Dissociée de {{label}}",
       "tooltip": "Cette session est liée à {{label}} dans les deux sens : les réponses y sont transmises et les messages envoyés là-bas arrivent ici."
     },
+    "infoTip": {
+      "more_information": "Plus d’informations"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Ouvrir le fil de commentaires",
       "comment_many": "{{count}} commentaires",
@@ -6058,7 +6061,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "Les Crews avec lesquelles vous discutez, chacune avec son propre espace de travail et sa mémoire",
+      "crews_description": "Les Crews avec lesquelles vous discutez, chacune avec son propre espace de travail",
       "templates_label": "Modèles d'agent",
       "templates_description": "Configurations et paquets d'agent installés",
       "connections_label": "Connexions",
@@ -7165,6 +7168,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "Un identifiant unique pour cet espace de travail. Les agents référencent les espaces de travail par leur nom.",
       "agents": "Crews",
       "also_used_by_these_crews": "Aussi utilisé par {{crews}}. Les crews qui partagent un stockage peuvent lire les fichiers et la mémoire des autres.",
+      "bindings_preview_info": "Aperçu. La mémoire isolée par crew est encore en construction. Un crew a son propre dossier, mais la mémoire sémantique, le rappel des conversations passées et les leçons globales atteignent tous les crews, donc changer ceci ne sépare pas ce dont un crew se souvient.",
+      "bindings_preview_notice": "Aperçu. Chaque crew lit et écrit déjà son propre dossier, mais ce dont il se souvient n’est pas encore séparé : la mémoire sémantique, le rappel des conversations passées et les leçons globales atteignent tous les crews. Une mémoire isolée par crew arrive bientôt.",
       "cancel": "Annuler",
       "chat_with_this_crew": "Discuter avec ce crew",
       "copy_from_optional": "Copier depuis (facultatif)",
@@ -7196,7 +7201,7 @@
       "inherited": "Hérité",
       "inherited_from_the_agent_template": "repris du modèle sur lequel il est basé.",
       "isolated_memory_and_files_for_this_crew": "Le dossier que ce crew lit et écrit. Si tu le changes, les nouveaux chats repartent de zéro dans le nouveau dossier ; l’ancien est conservé.",
-      "manage_agent_workspace_memory_store_bindings": "Des assistants distincts pour des tâches distinctes. Chaque crew garde ses propres fichiers et ne se souvient que de ses propres conversations.",
+      "manage_agent_workspace_memory_store_bindings": "Des assistants distincts pour des tâches distinctes. Chaque crew garde ses propres fichiers.",
       "memory_store": "Magasin de mémoire",
       "model": "Modèle",
       "name": "Nom",
@@ -7222,7 +7227,7 @@
       "view_list": "Liste",
       "view_list_tooltip": "Tableau compact, une ligne par équipe",
       "additional_stores_coming_with_memory_v2": "Seul le magasin par défaut est disponible pour l’instant ; la prise en charge d’autres magasins de mémoire arrive bientôt.",
-      "which_store_its_lessons_and_history_are_written": "Là où les leçons et l’historique de ce crew sont enregistrés. Si tu le changes, le crew repart d’une mémoire vide ; l’ancienne est conservée.",
+      "which_store_its_lessons_and_history_are_written": "À quel magasin de mémoire ce crew est rattaché. Le rattachement est enregistré, mais il ne donne pas encore au crew une mémoire qui lui soit propre.",
       "workspace": "espace de travail",
       "workspace_2": "Espace de travail",
       "workspace_name_is_required": "Le nom de l’espace de travail est obligatoire",
@@ -8442,7 +8447,6 @@
         "copied": "Copié",
         "update_check_managed_by_app": "Cette version se met à jour via l'application, pas via la passerelle.",
         "update_check_managed_by_image": "Ce conteneur se met à jour en récupérant une image plus récente.",
-        "update_to_version": "Mettre à jour vers la v{{version}}",
         "not_checked_yet": "Pas encore vérifié",
         "notify_when_an_update_is_available": "Me prévenir quand une mise à jour est disponible",
         "auto_update_notify_only_on_this_install": "Cette installation ne peut pas appliquer les mises à jour elle-même ; elle se contente de prévenir."

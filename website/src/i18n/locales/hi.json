@@ -3954,6 +3954,9 @@
       "released": "{{label}} से अलग किया गया",
       "tooltip": "यह सेशन {{label}} के साथ दो-तरफ़ा जुड़ा है: जवाब वहाँ पहुँचते हैं और वहाँ भेजे गए संदेश यहाँ आते हैं।"
     },
+    "infoTip": {
+      "more_information": "अधिक जानकारी"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "कमेंट थ्रेड खोलें",
       "comment_one": "{{count}} टिप्पणी",
@@ -5988,7 +5991,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "जिन Crews से तुम चैट करते हो, हर एक का अपना वर्कस्पेस और मेमोरी होती है",
+      "crews_description": "जिन Crews से तुम चैट करते हो, हर एक का अपना वर्कस्पेस होता है",
       "templates_label": "एजेंट टेम्प्लेट",
       "templates_description": "इंस्टॉल किए गए एजेंट कॉन्फ़िगरेशन और पैकेज",
       "connections_label": "कनेक्शन",
@@ -7084,6 +7087,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "इस वर्कस्पेस के लिए एक अनूठा पहचानकर्ता। एजेंट वर्कस्पेस को नाम से संदर्भित करते हैं।",
       "agents": "Crews",
       "also_used_by_these_crews": "{{crews}} भी इसे इस्तेमाल करते हैं। एक ही स्टोर साझा करने वाले Crew एक-दूसरे की फ़ाइलें और मेमोरी पढ़ सकते हैं।",
+      "bindings_preview_info": "प्रीव्यू। हर Crew के लिए अलग मेमोरी अभी बन रही है। Crew का अपना वर्कस्पेस फ़ोल्डर होता है, लेकिन सिमैंटिक मेमोरी, पिछली बातचीत की पुनःप्राप्ति, और ग्लोबल सीख हर Crew तक पहुँचती हैं, इसलिए इसे बदलने पर Crew की याद अलग नहीं होती।",
+      "bindings_preview_notice": "प्रीव्यू। हर Crew अपने वर्कस्पेस फ़ोल्डर को पढ़ता और लिखता है, लेकिन वह जो याद रखता है वह अभी अलग नहीं है: सिमैंटिक मेमोरी, पिछली बातचीत की पुनःप्राप्ति, और ग्लोबल सीख हर Crew तक पहुँचती हैं। हर Crew के लिए अलग मेमोरी जल्द आ रही है।",
       "cancel": "रद्द करें",
       "chat_with_this_crew": "इस Crew से चैट करें",
       "copy_from_optional": "यहाँ से कॉपी करें (वैकल्पिक)",
@@ -7115,7 +7120,7 @@
       "inherited": "विरासत में मिला",
       "inherited_from_the_agent_template": "जिस टेम्पलेट पर यह बना है, उससे लिया गया।",
       "isolated_memory_and_files_for_this_crew": "वह फ़ोल्डर जिसे यह Crew पढ़ता और लिखता है। इसे बदलने पर नई चैट नए फ़ोल्डर में नए सिरे से शुरू होंगी; पुराना फ़ोल्डर बना रहता है।",
-      "manage_agent_workspace_memory_store_bindings": "अलग-अलग कामों के लिए अलग-अलग सहायक। हर Crew की अपनी फ़ाइलें होती हैं और उसे सिर्फ़ अपनी ही बातचीत याद रहती है।",
+      "manage_agent_workspace_memory_store_bindings": "अलग-अलग कामों के लिए अलग-अलग सहायक। हर Crew की अपनी फ़ाइलें होती हैं।",
       "memory_store": "मेमोरी स्टोर",
       "model": "मॉडल",
       "name": "नाम",
@@ -7141,7 +7146,7 @@
       "view_list": "सूची",
       "view_list_tooltip": "संक्षिप्त तालिका, प्रति क्रू एक पंक्ति",
       "additional_stores_coming_with_memory_v2": "अभी केवल डिफ़ॉल्ट स्टोर उपलब्ध है — और मेमोरी स्टोर के लिए समर्थन जल्द आ रहा है।",
-      "which_store_its_lessons_and_history_are_written": "इस Crew की सीख और इतिहास कहाँ सहेजे जाते हैं। इसे बदलने पर Crew खाली मेमोरी से शुरू करता है; पुरानी मेमोरी बनी रहती है।",
+      "which_store_its_lessons_and_history_are_written": "यह Crew किस मेमोरी स्टोर से जुड़ा है। जुड़ाव दर्ज होता है, लेकिन इससे Crew को अभी अपनी अलग मेमोरी नहीं मिलती।",
       "workspace": "वर्कस्पेस",
       "workspace_2": "वर्कस्पेस",
       "workspace_name_is_required": "वर्कस्पेस का नाम ज़रूरी है",
@@ -8320,7 +8325,7 @@
         "update_error_server": "अपडेट सर्वर ने त्रुटि लौटाई।",
         "update_error_server_status": "अपडेट सर्वर ने त्रुटि लौटाई (HTTP {{status}})।",
         "update_error_unknown": "कुछ गड़बड़ हो गई। अपडेट दोबारा जाँचकर देखें।",
-        "update_to_version": "v{{version}} पर अपडेट करो",
+        "update_to_version": "v{{version}} पर अपडेट करें",
         "updates": "अपडेट",
         "updating": "अपडेट हो रहा है…",
         "updating_gateway_restarting": "अपडेट हो रहा है — गेटवे पुनः आरंभ हो रहा है…",
@@ -8355,7 +8360,6 @@
         "copied": "कॉपी किया गया",
         "update_check_managed_by_app": "यह बिल्ड ऐप के ज़रिए अपडेट होता है, गेटवे के ज़रिए नहीं।",
         "update_check_managed_by_image": "यह कंटेनर नई इमेज खींचकर अपडेट होता है।",
-        "update_to_version": "v{{version}} पर अपडेट करें",
         "not_checked_yet": "अभी जाँचा नहीं गया",
         "notify_when_an_update_is_available": "अपडेट उपलब्ध होने पर सूचित करें",
         "auto_update_notify_only_on_this_install": "यह इंस्टॉल स्वयं अपडेट लागू नहीं कर सकता, इसलिए यह केवल सूचित करता है।"

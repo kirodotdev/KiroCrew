@@ -1666,7 +1666,7 @@
   "pages": {
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "Crews you chat with, each with its own workspace and memory",
+      "crews_description": "Crews you chat with, each with its own workspace",
       "templates_label": "Agent Templates",
       "templates_description": "Installed agent configurations and packages",
       "connections_label": "Connections",
@@ -2810,7 +2810,6 @@
         "copied": "Copied",
         "update_check_managed_by_app": "This build updates through the app, not the gateway.",
         "update_check_managed_by_image": "This container updates by pulling a newer image.",
-        "update_to_version": "Update to v{{version}}",
         "not_checked_yet": "Not checked yet",
         "notify_when_an_update_is_available": "Notify when an update is available",
         "auto_update_notify_only_on_this_install": "This install cannot apply updates itself, so it only notifies."

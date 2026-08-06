@@ -4007,6 +4007,9 @@
       "released": "Desvinculada de {{label}}",
       "tooltip": "Esta sessão tem conexão bidirecional com {{label}}: as respostas são entregues lá, e as mensagens enviadas lá chegam aqui."
     },
+    "infoTip": {
+      "more_information": "Mais informações"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Abrir tópico de comentários",
       "comment_many": "{{count}} comentários",
@@ -6058,7 +6061,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "Crews com quem você conversa, cada uma com seu próprio espaço de trabalho e memória",
+      "crews_description": "Crews com quem você conversa, cada uma com seu próprio espaço de trabalho",
       "templates_label": "Modelos de agente",
       "templates_description": "Configurações e pacotes de agente instalados",
       "connections_label": "Conexões",
@@ -7165,6 +7168,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "Um identificador único para este workspace. Agentes referenciam workspaces pelo nome.",
       "agents": "Crews",
       "also_used_by_these_crews": "Também usado por {{crews}}. Crews que compartilham um armazenamento podem ler os arquivos e a memória uns dos outros.",
+      "bindings_preview_info": "Prévia. A memória isolada por crew ainda está sendo construída. Um crew tem a própria pasta, mas a memória semântica, a recuperação de conversas anteriores e as lições globais chegam a todos os crews, então trocar isto não separa o que um crew lembra.",
+      "bindings_preview_notice": "Prévia. Cada crew já lê e grava a própria pasta, mas o que ele lembra ainda não está separado: a memória semântica, a recuperação de conversas anteriores e as lições globais chegam a todos os crews. A memória isolada por crew está a caminho.",
       "cancel": "Cancelar",
       "chat_with_this_crew": "Conversar com este crew",
       "copy_from_optional": "Copiar de (opcional)",
@@ -7196,7 +7201,7 @@
       "inherited": "Herdado",
       "inherited_from_the_agent_template": "herdado do modelo em que ele se baseia.",
       "isolated_memory_and_files_for_this_crew": "A pasta que este crew lê e grava. Se você trocar, os novos chats começam do zero na pasta nova; a antiga é mantida.",
-      "manage_agent_workspace_memory_store_bindings": "Assistentes separados para trabalhos separados. Cada crew guarda os próprios arquivos e só lembra das próprias conversas.",
+      "manage_agent_workspace_memory_store_bindings": "Assistentes separados para trabalhos separados. Cada crew guarda os próprios arquivos.",
       "memory_store": "Armazenamento de memória",
       "model": "Modelo",
       "name": "Nome",
@@ -7222,7 +7227,7 @@
       "view_list": "Lista",
       "view_list_tooltip": "Tabela compacta, uma linha por equipe",
       "additional_stores_coming_with_memory_v2": "Por enquanto, apenas o armazenamento padrão está disponível; o suporte a mais armazenamentos de memória chega em breve.",
-      "which_store_its_lessons_and_history_are_written": "Onde as lições e o histórico deste crew são salvos. Se você trocar, o crew começa com a memória em branco; a antiga é mantida.",
+      "which_store_its_lessons_and_history_are_written": "A qual armazenamento de memória este crew está vinculado. O vínculo é registrado, mas ainda não dá ao crew uma memória própria.",
       "workspace": "espaço de trabalho",
       "workspace_2": "Espaço de trabalho",
       "workspace_name_is_required": "O nome do workspace é obrigatório",
@@ -8442,7 +8447,6 @@
         "copied": "Copiado",
         "update_check_managed_by_app": "Esta versão é atualizada pelo próprio aplicativo, não pelo gateway.",
         "update_check_managed_by_image": "Este contêiner é atualizado baixando uma imagem mais recente.",
-        "update_to_version": "Atualizar para a v{{version}}",
         "not_checked_yet": "Ainda não verificado",
         "notify_when_an_update_is_available": "Avisar quando houver uma atualização disponível",
         "auto_update_notify_only_on_this_install": "Esta instalação não pode aplicar atualizações sozinha, apenas avisa."

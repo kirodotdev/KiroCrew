@@ -3954,6 +3954,9 @@
       "released": "{{label}} থেকে বিচ্ছিন্ন করা হয়েছে",
       "tooltip": "এই সেশনটি {{label}}-এর সঙ্গে দ্বিমুখীভাবে সংযুক্ত: উত্তর সেখানে পৌঁছায়, আর সেখানে পাঠানো বার্তা এখানে আসে।"
     },
+    "infoTip": {
+      "more_information": "আরও তথ্য"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "কমেন্ট থ্রেড খুলুন",
       "comment_one": "{{count}}টি মন্তব্য",
@@ -5988,7 +5991,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "যে Crews-এর সাথে আপনি চ্যাট করেন, প্রতিটির নিজস্ব ওয়ার্কস্পেস এবং মেমরি রয়েছে",
+      "crews_description": "যে Crews-এর সাথে আপনি চ্যাট করেন, প্রতিটির নিজস্ব ওয়ার্কস্পেস রয়েছে",
       "templates_label": "এজেন্ট টেমপ্লেট",
       "templates_description": "ইনস্টল করা এজেন্ট কনফিগারেশন এবং প্যাকেজ",
       "connections_label": "সংযোগ",
@@ -7084,6 +7087,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",
       "agents": "Crews",
       "also_used_by_these_crews": "{{crews}}-ও এটি ব্যবহার করে। একই স্টোর ভাগ করা Crew একে অন্যের ফাইল ও মেমরি পড়তে পারে।",
+      "bindings_preview_info": "প্রিভিউ। প্রতি Crew-এর জন্য আলাদা মেমরি এখনও তৈরি হচ্ছে। Crew-এর নিজের ওয়ার্কস্পেস ফোল্ডার আছে, কিন্তু সিমান্টিক মেমরি, আগের কথাবার্তার স্মরণ এবং গ্লোবাল শিক্ষা প্রতিটি Crew-তেই পৌঁছায়, তাই এটি বদলালেও Crew যা মনে রাখে তা আলাদা হয় না।",
+      "bindings_preview_notice": "প্রিভিউ। প্রতিটি Crew নিজের ওয়ার্কস্পেস ফোল্ডার পড়ে ও লেখে, কিন্তু সে যা মনে রাখে তা এখনও আলাদা নয়: সিমান্টিক মেমরি, আগের কথাবার্তার স্মরণ এবং গ্লোবাল শিক্ষা প্রতিটি Crew-তেই পৌঁছায়। প্রতি Crew-এর জন্য আলাদা মেমরি শীঘ্রই আসছে।",
       "cancel": "বাতিল",
       "chat_with_this_crew": "এই Crew-এর সঙ্গে চ্যাট করুন",
       "copy_from_optional": "কোথা থেকে কপি করবেন (ঐচ্ছিক)",
@@ -7115,7 +7120,7 @@
       "inherited": "ইনহেরিট করা",
       "inherited_from_the_agent_template": "যে টেমপ্লেটের উপর এটি তৈরি, সেখান থেকে নেওয়া।",
       "isolated_memory_and_files_for_this_crew": "এই Crew যে ফোল্ডার পড়ে ও লেখে। বদলালে নতুন চ্যাট নতুন ফোল্ডারে একেবারে গোড়া থেকে শুরু হয়; পুরোনো ফোল্ডার রাখা হয়।",
-      "manage_agent_workspace_memory_store_bindings": "আলাদা কাজের জন্য আলাদা সহকারী। প্রতিটি Crew নিজের ফাইল রাখে আর কেবল নিজের কথাবার্তাই মনে রাখে।",
+      "manage_agent_workspace_memory_store_bindings": "আলাদা কাজের জন্য আলাদা সহকারী। প্রতিটি Crew নিজের ফাইল রাখে।",
       "memory_store": "মেমরি স্টোর",
       "model": "মডেল",
       "name": "নাম",
@@ -7141,7 +7146,7 @@
       "view_list": "তালিকা",
       "view_list_tooltip": "সংক্ষিপ্ত টেবিল, প্রতি ক্রু একটি সারি",
       "additional_stores_coming_with_memory_v2": "এখন কেবল ডিফল্ট স্টোর উপলব্ধ — আরও মেমরি স্টোরের সমর্থন শীঘ্রই আসছে।",
-      "which_store_its_lessons_and_history_are_written": "এই Crew-এর শিক্ষা ও ইতিহাস কোথায় জমা হয়। বদলালে Crew খালি মেমরি থেকে শুরু করে; পুরোনো মেমরি রাখা হয়।",
+      "which_store_its_lessons_and_history_are_written": "এই Crew কোন মেমরি স্টোরের সাথে যুক্ত। যুক্তিটি নথিভুক্ত হয়, কিন্তু এতে Crew এখনও নিজের আলাদা মেমরি পায় না।",
       "workspace": "ওয়ার্কস্পেস",
       "workspace_2": "ওয়ার্কস্পেস",
       "workspace_name_is_required": "ওয়ার্কস্পেসের নাম দেওয়া বাধ্যতামূলক",
@@ -8320,7 +8325,7 @@
         "update_error_server": "আপডেট সার্ভার একটি ত্রুটি ফেরত দিয়েছে।",
         "update_error_server_status": "আপডেট সার্ভার একটি ত্রুটি ফেরত দিয়েছে (HTTP {{status}})।",
         "update_error_unknown": "কিছু একটা ভুল হয়েছে। আবার আপডেট খুঁজে দেখুন।",
-        "update_to_version": "v{{version}}-এ আপডেট করো",
+        "update_to_version": "v{{version}}-এ আপডেট করুন",
         "updates": "আপডেট",
         "updating": "আপডেট হচ্ছে…",
         "updating_gateway_restarting": "আপডেট হচ্ছে — গেটওয়ে রিস্টার্ট হচ্ছে…",
@@ -8355,7 +8360,6 @@
         "copied": "কপি করা হয়েছে",
         "update_check_managed_by_app": "এই বিল্ডটি অ্যাপের মাধ্যমে আপডেট হয়, গেটওয়ের মাধ্যমে নয়।",
         "update_check_managed_by_image": "এই কনটেইনারটি নতুন ইমেজ টেনে আপডেট হয়।",
-        "update_to_version": "v{{version}}-এ আপডেট করুন",
         "not_checked_yet": "এখনও পরীক্ষা করা হয়নি",
         "notify_when_an_update_is_available": "আপডেট পাওয়া গেলে জানাও",
         "auto_update_notify_only_on_this_install": "এই ইনস্টলটি নিজে আপডেট প্রয়োগ করতে পারে না, তাই শুধু জানায়।"

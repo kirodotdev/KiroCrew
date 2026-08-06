@@ -4007,6 +4007,9 @@
       "released": "Desvinculada de {{label}}",
       "tooltip": "Esta sesión tiene conexión bidireccional con {{label}}: las respuestas se entregan allí y los mensajes enviados allí llegan aquí."
     },
+    "infoTip": {
+      "more_information": "Más información"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Abrir el hilo de comentarios",
       "comment_many": "{{count}} comentarios",
@@ -6058,7 +6061,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "Crews con las que chateas, cada una con su propio espacio de trabajo y memoria",
+      "crews_description": "Crews con las que chateas, cada una con su propio espacio de trabajo",
       "templates_label": "Plantillas de agente",
       "templates_description": "Configuraciones y paquetes de agente instalados",
       "connections_label": "Conexiones",
@@ -7165,6 +7168,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "Un identificador único para este espacio de trabajo. Los agentes hacen referencia a los espacios de trabajo por su nombre.",
       "agents": "Crews",
       "also_used_by_these_crews": "También lo usan {{crews}}. Los crews que comparten un almacén pueden leer los archivos y la memoria de los demás.",
+      "bindings_preview_info": "Vista previa. La memoria aislada por crew aún se está construyendo. Un crew tiene su propia carpeta, pero la memoria semántica, el recuerdo de conversaciones anteriores y las lecciones globales llegan a todos los crews, así que cambiar esto no separa lo que un crew recuerda.",
+      "bindings_preview_notice": "Vista previa. Cada crew ya lee y escribe su propia carpeta, pero lo que recuerda todavía no está separado: la memoria semántica, el recuerdo de conversaciones anteriores y las lecciones globales llegan a todos los crews. La memoria aislada por crew está en camino.",
       "cancel": "Cancelar",
       "chat_with_this_crew": "Chatear con este crew",
       "copy_from_optional": "Copiar desde (opcional)",
@@ -7196,7 +7201,7 @@
       "inherited": "Heredado",
       "inherited_from_the_agent_template": "tomado de la plantilla en la que se basa.",
       "isolated_memory_and_files_for_this_crew": "La carpeta que este crew lee y escribe. Si la cambias, los chats nuevos empiezan de cero en la carpeta nueva; la anterior se conserva.",
-      "manage_agent_workspace_memory_store_bindings": "Asistentes distintos para trabajos distintos. Cada crew guarda sus propios archivos y solo recuerda sus propias conversaciones.",
+      "manage_agent_workspace_memory_store_bindings": "Asistentes distintos para trabajos distintos. Cada crew guarda sus propios archivos.",
       "memory_store": "Almacén de memoria",
       "model": "Modelo",
       "name": "Nombre",
@@ -7222,7 +7227,7 @@
       "view_list": "Lista",
       "view_list_tooltip": "Tabla compacta, una fila por equipo",
       "additional_stores_coming_with_memory_v2": "Por ahora solo está disponible el almacén predeterminado; pronto habrá más almacenes de memoria.",
-      "which_store_its_lessons_and_history_are_written": "Dónde se guardan las lecciones y el historial de este crew. Si lo cambias, el crew empieza con la memoria en blanco; la anterior se conserva.",
+      "which_store_its_lessons_and_history_are_written": "A qué almacén de memoria está vinculado este crew. El vínculo se guarda, pero todavía no le da al crew una memoria propia.",
       "workspace": "espacio de trabajo",
       "workspace_2": "Espacio de trabajo",
       "workspace_name_is_required": "El nombre del espacio de trabajo es obligatorio",
@@ -8407,7 +8412,7 @@
         "update_error_server": "El servidor de actualizaciones devolvió un error.",
         "update_error_server_status": "El servidor de actualizaciones devolvió un error (HTTP {{status}}).",
         "update_error_unknown": "Algo ha ido mal. Vuelve a buscar actualizaciones.",
-        "update_to_version": "Actualizar a v{{version}}",
+        "update_to_version": "Actualizar a la v{{version}}",
         "updates": "Actualizaciones",
         "updating": "Actualizando…",
         "updating_gateway_restarting": "Actualizando — reiniciando el gateway…",
@@ -8442,7 +8447,6 @@
         "copied": "Copiado",
         "update_check_managed_by_app": "Esta versión se actualiza a través de la aplicación, no de la puerta de enlace.",
         "update_check_managed_by_image": "Este contenedor se actualiza descargando una imagen más reciente.",
-        "update_to_version": "Actualizar a la v{{version}}",
         "not_checked_yet": "Sin comprobar todavía",
         "notify_when_an_update_is_available": "Avisar cuando haya una actualización disponible",
         "auto_update_notify_only_on_this_install": "Esta instalación no puede aplicar actualizaciones por sí misma, solo avisa."

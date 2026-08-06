@@ -3901,6 +3901,9 @@
       "released": "已解除与 {{label}} 的关联",
       "tooltip": "此会话与 {{label}} 双向连接：回复会发送到那里，那里发送的消息也会到达此处。"
     },
+    "infoTip": {
+      "more_information": "更多信息"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "打开评论话题",
       "comment_other": "{{count}} 条评论",
@@ -5918,7 +5921,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "你与之聊天的 Crew，每个都有自己的工作区和记忆",
+      "crews_description": "你与之聊天的 Crew，每个都有自己的工作区",
       "templates_label": "Agent 模板",
       "templates_description": "已安装的 agent 配置和包",
       "connections_label": "连接",
@@ -7003,6 +7006,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "此工作区的唯一标识符。代理通过名称引用工作区。",
       "agents": "Crew",
       "also_used_by_these_crews": "{{crews}} 也在用。共用一个存储的 Crew 可以互相读取对方的文件和记忆。",
+      "bindings_preview_info": "预览。每个 Crew 独立的记忆还在开发中。Crew 有自己的工作区文件夹，但语义记忆、过往对话回溯以及全局经验都会进入每个 Crew，所以改这里还不能分开它记住的内容。",
+      "bindings_preview_notice": "预览。每个 Crew 已经读写自己的工作区文件夹，但它记住的内容还没有分开：语义记忆、过往对话回溯以及全局经验都会进入每个 Crew。每个 Crew 独立的记忆即将推出。",
       "cancel": "取消",
       "chat_with_this_crew": "与此 Crew 聊天",
       "copy_from_optional": "复制来源（可选）",
@@ -7034,7 +7039,7 @@
       "inherited": "继承",
       "inherited_from_the_agent_template": "来自它所基于的模板。",
       "isolated_memory_and_files_for_this_crew": "这个 Crew 读写的文件夹。换成别的以后，新对话会在新文件夹里从头开始；旧文件夹会保留。",
-      "manage_agent_workspace_memory_store_bindings": "不同的工作交给不同助手。每个 Crew 有自己的文件，也只记得自己的对话。",
+      "manage_agent_workspace_memory_store_bindings": "不同的工作交给不同助手。每个 Crew 有自己的文件。",
       "memory_store": "记忆存储",
       "model": "模型",
       "name": "名称",
@@ -7060,7 +7065,7 @@
       "view_list": "列表",
       "view_list_tooltip": "紧凑表格，每个小队一行",
       "additional_stores_coming_with_memory_v2": "目前仅提供默认存储，更多记忆存储即将推出。",
-      "which_store_its_lessons_and_history_are_written": "这个 Crew 的经验和历史保存在哪里。换成别的以后，它会从空白记忆开始；旧记忆会保留。",
+      "which_store_its_lessons_and_history_are_written": "这个 Crew 绑定到哪个记忆存储。绑定会记录下来，但还不会让它有自己的记忆。",
       "workspace": "工作区",
       "workspace_2": "工作区",
       "workspace_name_is_required": "工作区名称为必填项",
@@ -8268,7 +8273,6 @@
         "copied": "已复制",
         "update_check_managed_by_app": "此版本通过应用自身更新，不经由网关。",
         "update_check_managed_by_image": "此容器通过拉取更新的镜像来升级。",
-        "update_to_version": "更新到 v{{version}}",
         "not_checked_yet": "尚未检查",
         "notify_when_an_update_is_available": "有可用更新时通知我",
         "auto_update_notify_only_on_this_install": "此安装方式无法自行应用更新，因此仅作通知。"

@@ -3185,6 +3185,9 @@
       "suggested_follow_up_one": "Suggested follow-up",
       "suggested_follow_up_other": "Suggested follow-ups"
     },
+    "infoTip": {
+      "more_information": "More information"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Open comment thread"
     },
@@ -5001,6 +5004,8 @@
       "triggers_placeholder": "e.g. incidents, prod outages, pager escalations",
       "agents": "Crews",
       "also_used_by_these_crews": "Also used by {{crews}}. Crews that share a store can read each other’s files and memory.",
+      "bindings_preview_info": "Preview. Isolated memory per crew is still being built. A crew has its own workspace folder, but semantic memory, recall of past conversations, and global lessons reach every crew, so changing this does not separate what a crew remembers yet.",
+      "bindings_preview_notice": "Preview. A crew already reads and writes its own workspace folder, but what it remembers is not separated yet: semantic memory, recall of past conversations, and global lessons reach every crew. Isolated memory per crew is on the way.",
       "cancel": "Cancel",
       "chat_with_this_crew": "Chat with this crew",
       "copy_from_optional": "Copy from (optional)",
@@ -5026,7 +5031,7 @@
       "inherited": "Inherited",
       "inherited_from_the_agent_template": "taken from the template it is based on.",
       "isolated_memory_and_files_for_this_crew": "The folder this crew reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
-      "manage_agent_workspace_memory_store_bindings": "Separate assistants for separate jobs. Each crew keeps its own files and remembers only its own conversations.",
+      "manage_agent_workspace_memory_store_bindings": "Separate assistants for separate jobs. Each crew keeps its own files.",
       "memory_store": "Memory Store",
       "model": "Model",
       "name": "Name",
@@ -5050,7 +5055,7 @@
       "view_list": "List",
       "view_list_tooltip": "Compact table, one row per crew",
       "additional_stores_coming_with_memory_v2": "Only the default store is available today — support for more memory stores is coming soon.",
-      "which_store_its_lessons_and_history_are_written": "Where this crew’s lessons and history are saved. Switch it and the crew starts from a blank memory; the old one is kept.",
+      "which_store_its_lessons_and_history_are_written": "Which memory store this crew is bound to. The binding is recorded, but it does not give the crew a memory of its own yet.",
       "workspace": "workspace",
       "workspace_2": "Workspace",
       "yes_delete_it": "Yes, delete it"

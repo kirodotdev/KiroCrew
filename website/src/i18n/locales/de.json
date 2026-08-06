@@ -3954,6 +3954,9 @@
       "released": "Von {{label}} gelöst",
       "tooltip": "Diese Sitzung ist bidirektional mit {{label}} verbunden: Antworten werden dorthin geliefert, und dort gesendete Nachrichten kommen hier an."
     },
+    "infoTip": {
+      "more_information": "Weitere Informationen"
+    },
     "inlineCommentOverlay": {
       "open_comment_thread": "Kommentar-Thread öffnen",
       "comment_one": "{{count}} Kommentar",
@@ -5988,7 +5991,7 @@
     },
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "Crews, mit denen du chattest – jede mit eigenem Arbeitsbereich und Speicher",
+      "crews_description": "Crews, mit denen du chattest – jede mit eigenem Arbeitsbereich",
       "templates_label": "Agent-Vorlagen",
       "templates_description": "Installierte Agent-Konfigurationen und -Pakete",
       "connections_label": "Verbindungen",
@@ -7084,6 +7087,8 @@
       "a_unique_identifier_for_this_workspace_agents_re": "Eine eindeutige Kennung für diesen Workspace. Agenten verweisen über den Namen auf Workspaces.",
       "agents": "Crews",
       "also_used_by_these_crews": "Wird auch von {{crews}} verwendet. Crews mit gemeinsamem Speicher können die Dateien und die Erinnerung der anderen lesen.",
+      "bindings_preview_info": "Vorschau. Eine eigene Erinnerung pro Crew wird noch gebaut. Eine Crew hat ihren eigenen Ordner, aber semantisches Gedächtnis, der Rückgriff auf frühere Gespräche und globale Lektionen erreichen jede Crew, deshalb trennt eine Änderung hier nicht, woran sich eine Crew erinnert.",
+      "bindings_preview_notice": "Vorschau. Jede Crew liest und schreibt schon ihren eigenen Ordner, aber was sie sich merkt, ist noch nicht getrennt: semantisches Gedächtnis, der Rückgriff auf frühere Gespräche und globale Lektionen erreichen jede Crew. Eine eigene Erinnerung pro Crew folgt bald.",
       "cancel": "Abbrechen",
       "chat_with_this_crew": "Mit dieser Crew chatten",
       "copy_from_optional": "Kopieren von (optional)",
@@ -7115,7 +7120,7 @@
       "inherited": "Geerbt",
       "inherited_from_the_agent_template": "aus der Vorlage übernommen, auf der sie basiert.",
       "isolated_memory_and_files_for_this_crew": "Der Ordner, aus dem diese Crew liest und in den sie schreibt. Wenn du ihn wechselst, starten neue Chats im neuen Ordner von vorn; der alte bleibt erhalten.",
-      "manage_agent_workspace_memory_store_bindings": "Getrennte Assistenten für getrennte Aufgaben. Jede Crew behält ihre eigenen Dateien und erinnert sich nur an ihre eigenen Gespräche.",
+      "manage_agent_workspace_memory_store_bindings": "Getrennte Assistenten für getrennte Aufgaben. Jede Crew behält ihre eigenen Dateien.",
       "memory_store": "Erinnerungsspeicher",
       "model": "Modell",
       "name": "Name",
@@ -7141,7 +7146,7 @@
       "view_list": "Liste",
       "view_list_tooltip": "Kompakte Tabelle, eine Zeile pro Crew",
       "additional_stores_coming_with_memory_v2": "Derzeit ist nur der Standardspeicher verfügbar – Unterstützung für weitere Speicher folgt bald.",
-      "which_store_its_lessons_and_history_are_written": "Wo die Lektionen und der Verlauf dieser Crew gespeichert werden. Wenn du das wechselst, startet die Crew mit leerer Erinnerung; die alte bleibt erhalten.",
+      "which_store_its_lessons_and_history_are_written": "An welchen Speicher diese Crew gebunden ist. Die Bindung wird gespeichert, gibt der Crew aber noch keine eigene Erinnerung.",
       "workspace": "Workspace",
       "workspace_2": "Workspace",
       "workspace_name_is_required": "Workspace-Name ist erforderlich",
@@ -8355,7 +8360,6 @@
         "copied": "Kopiert",
         "update_check_managed_by_app": "Dieser Build wird über die App aktualisiert, nicht über das Gateway.",
         "update_check_managed_by_image": "Dieser Container wird durch ein neueres Image aktualisiert.",
-        "update_to_version": "Auf v{{version}} aktualisieren",
         "not_checked_yet": "Noch nicht geprüft",
         "notify_when_an_update_is_available": "Benachrichtigen, wenn eine Aktualisierung verfügbar ist",
         "auto_update_notify_only_on_this_install": "Diese Installation kann Aktualisierungen nicht selbst anwenden und benachrichtigt nur."
