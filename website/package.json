@@ -32,6 +32,8 @@
     "i18n:pseudo": "node scripts/gen-pseudolocale.mjs",
     "i18n:render": "node scripts/check-i18n-render.mjs --build",
     "i18n:check": "node scripts/i18n-check.mjs",
+    "verify:path-chips": "node scripts/capture-path-chips.mjs",
+    "verify:reveal-fade": "node scripts/probe-reveal-fade.mjs",
     "pretest": "npm run jscpd"
   },
   "files": [

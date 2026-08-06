@@ -15,6 +15,7 @@
  *
  * Scene + theme come from the query string: ?scene=chips&theme=dark
  */
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // MarkdownPanel's overflow menu reaches for useNavigate (open-as-artifact), so
@@ -43,6 +44,7 @@ const DIRS = new Set(['/Users/diwm/.kiro/crew/workspace/KiroCrew', '/Users/diwm/
 const FILES = new Set([
   '/Users/diwm/.kiro/crew/workspace/KiroCrew/README.md',
   '/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py',
+  '/Users/diwm/.kiro/crew/workspace/blue-angels-seattle-2026.md',
 ])
 
 const realFetch = globalThis.fetch.bind(globalThis)
@@ -108,6 +110,7 @@ const CITED = [
   '- same file `:493` — no file is named here, so it stays plain text',
   '- `/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py:504:12` — line and column',
   '- gone: `/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/missing.py:12`',
+  '- a passage, not a statement: `/Users/diwm/.kiro/crew/workspace/blue-angels-seattle-2026.md:10-16`',
 ].join('\n')
 
 /**
@@ -115,13 +118,46 @@ const CITED = [
  * the first screen — otherwise the screenshot could not tell a working scroll
  * from no scroll at all. Line 447 is labelled so the evidence is self-checking.
  */
+const MD_SOURCE = Array.from({ length: 60 }, (_, i) => {
+  const n = i + 1
+  if (n === 10) return '## Saturday — the range starts here (line 10)'
+  if (n > 10 && n < 16) return `- schedule item on line ${n}`
+  if (n === 16) return 'and the range ends here (line 16).'
+  return `filler line ${n}`
+}).join('\n')
+
 const PY_SOURCE = Array.from({ length: 700 }, (_, i) => {
   const n = i + 1
   if (n === 447) return '    return _redact(purpose)  # <-- line 447, the cited guard'
   return `    step_${n} = compute(${n})`
 }).join('\n')
 
+/** Range reveal, with a control that bumps the nonce so a REPEAT reveal can be
+ *  driven — probe-reveal-fade.mjs uses it to prove the highlight relights. */
+function RangeScene() {
+  const [nonce, setNonce] = useState(1)
+  return (
+    <div data-capture-root style={{ width: 720, height: 420 }} className="bg-bg">
+      <button
+        data-testid="reveal-again"
+        onClick={() => setNonce(n => n + 1)}
+        style={{ position: 'absolute', left: -9999, top: -9999 }}
+      >reveal again</button>
+      <MarkdownPanel
+        embedded
+        filePath="/Users/diwm/.kiro/crew/workspace/blue-angels-seattle-2026.md"
+        content={MD_SOURCE}
+        onContentChange={() => {}}
+        onSave={async () => {}}
+        onClose={() => {}}
+        revealLine={{ line: 10, endLine: 16, nonce }}
+      />
+    </div>
+  )
+}
+
 function Scene() {
+  if (scene === 'range') return <RangeScene />
   if (scene === 'reveal') {
     // The other half of the feature: the panel a `file.py:447` chip opens must
     // land ON 447 and flash it. Mounted with the REAL panel and a real Monaco so

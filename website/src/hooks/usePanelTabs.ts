@@ -39,8 +39,9 @@ export interface PanelTab {
    *  tab so leaving and returning to a chat does not re-enable auto-diff. */
   diffMode?: boolean
   /**
-   * A source line the panel should scroll to and flash, set when the tab is
-   * opened from a `file.py:447` reference.
+   * A source line — or line RANGE — the panel should scroll to and flash, set
+   * when the tab is opened from a `file.py:447` or `file.md:10-16` reference.
+   * `endLine` is absent for a single-line citation.
    *
    * The `nonce` is what makes a repeat request act: re-clicking the same chip
    * produces the same `line`, which as a bare number would be `===` to the
@@ -50,7 +51,7 @@ export interface PanelTab {
    * would re-fire the jump on every page reload, days later, at a line number
    * the file may have long since outgrown.
    */
-  revealLine?: { line: number; nonce: number }
+  revealLine?: { line: number; endLine?: number; nonce: number }
   artifactSlug?: string
   artifactKind?: Artifact['kind']
   // ── MCP App fields ──
@@ -471,7 +472,7 @@ export function usePanelTabs(slotKey: string | null = null) {
     })
   }, [update])
 
-  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number }) => {
+  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number }) => {
     // `revealLine` is always present in the object, `undefined` when absent:
     // `upsert` merges onto an existing tab with a spread, which only overwrites
     // keys the incoming object HAS. Omitting it would leave a previous chip's
@@ -479,7 +480,7 @@ export function usePanelTabs(slotKey: string | null = null) {
     // a line the user did not ask for.
     upsert({
       id: `file:${path}`, kind: 'file', title: basename(path), path, content, slot,
-      revealLine: opts?.line != null ? { line: opts.line, nonce: nextRevealNonce() } : undefined,
+      revealLine: opts?.line != null ? { line: opts.line, endLine: opts.endLine, nonce: nextRevealNonce() } : undefined,
     }, opts?.replaceId)
   }, [upsert])
 

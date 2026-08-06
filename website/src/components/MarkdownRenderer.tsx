@@ -99,7 +99,7 @@ export function isPathCandidate(s: string): boolean {
  * Capped at 7 digits so a long digit run (a hash fragment, an id) is not read as
  * a line number, and so the captured value always parses to a safe integer.
  */
-const LINE_REF_RE = /:(\d{1,7})(?::\d{1,7})?$/
+const LINE_REF_RE = /:(\d{1,7})(?:-(\d{1,7})|:\d{1,7})?$/
 
 /**
  * Split a `file:line` / `file:line:col` reference into its path and line.
@@ -111,16 +111,18 @@ const LINE_REF_RE = /:(\d{1,7})(?::\d{1,7})?$/
  * text. Splitting first lets the probe ask about the file and the click carry
  * the line.
  *
- * Only the LINE is returned; a column is matched so it can be consumed, but
- * discarded — the reveal is line-granular, and pretending to a column we then
- * ignore would be a worse contract than not offering one.
+ * Three shapes are accepted: a single line (`:447`), a line and column
+ * (`:447:12`), and a RANGE (`:10-16`). The column is matched so it can be
+ * consumed but is discarded — the reveal is line-granular, and pretending to a
+ * column we then ignore would be a worse contract than not offering one. A
+ * range, by contrast, IS honoured: the whole span is revealed and highlighted.
  *
  * Purely syntactic and therefore ambiguous: a file whose name genuinely ends in
  * `:12` splits into a path that does not exist. Callers resolve that by probing
  * the split path first and falling back to the unsplit text (see `InlineCode`),
  * rather than by guessing here.
  */
-export function splitLineRef(s: string): { path: string; line?: number } {
+export function splitLineRef(s: string): { path: string; line?: number; endLine?: number } {
   const m = LINE_REF_RE.exec(s)
   if (!m) return { path: s }
   const line = Number(m[1])
@@ -128,7 +130,14 @@ export function splitLineRef(s: string): { path: string; line?: number } {
   // part of the name rather than clamping it to 1 and jumping somewhere the
   // text never named.
   if (!line) return { path: s }
-  return { path: s.slice(0, m.index), line }
+  const path = s.slice(0, m.index)
+  const end = m[2] ? Number(m[2]) : undefined
+  // A reversed or degenerate range (`:16-10`, `:10-0`, `:10-10`) carries no more
+  // information than its start, so it collapses to a single line rather than
+  // being silently swapped — guessing which end the author meant would be worse
+  // than honouring the number they put first.
+  if (end == null || end <= line) return { path, line }
+  return { path, line, endLine: end }
 }
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
@@ -408,7 +417,7 @@ const PathProbeCtx = createContext<boolean>(true)
  * the ~30 MarkdownRenderer call sites pass neither, and those fall back to the
  * OS file manager.
  */
-type PathActions = { onFileOpen?: (path: string, opts?: { line?: number }) => void; onFolderOpen?: (path: string) => void }
+type PathActions = { onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void }
 const PathActionCtx = createContext<PathActions>({})
 
 /**
@@ -422,7 +431,7 @@ const PathActionCtx = createContext<PathActions>({})
  * `revealPath` selects a file in Finder/Explorer, which has no notion of a line,
  * and a directory does not have one either.
  */
-function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions, line?: number): void {
+function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions, line?: number, endLine?: number): void {
   if (reveal) { api.revealPath(path); return }
   if (kind === 'dir') {
     // No folder handler wired: fall back to the OS file manager rather than
@@ -436,7 +445,7 @@ function activatePath(path: string, kind: PathKind, reveal: boolean, actions: Pa
   // `undefined`: the handler is also the app's general-purpose file opener, and
   // an omitted argument keeps a chip click indistinguishable from every other
   // caller of it.
-  if (line != null) actions.onFileOpen(path, { line })
+  if (line != null) actions.onFileOpen(path, endLine != null ? { line, endLine } : { line })
   else actions.onFileOpen(path)
 }
 
@@ -467,7 +476,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   // decided on the split path too: `src/main.py:447` fails the extension test as
   // one token (it ends in digits, not `.py`), so testing the raw text would keep
   // rejecting exactly the citations this is meant to admit.
-  const { path: stripped, line } = splitLineRef(raw)
+  const { path: stripped, line, endLine } = splitLineRef(raw)
   const strippedCandidate = probeEnabled && isPathCandidate(stripped)
   // Colons are legal in POSIX filenames, so `report:12` may name a real file or
   // directory. Both spellings are therefore probed CONCURRENTLY — not the split
@@ -492,6 +501,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const rawWins = rawKind === 'file' || rawKind === 'dir'
   const kind = rawWins ? rawKind : strippedKind
   const targetLine = rawWins ? undefined : line
+  const targetEndLine = rawWins ? undefined : endLine
   // Withhold the affordance until EVERY probe in flight has reported. Rendering it
   // on the split path's verdict alone would leave a window in which a click opened
   // the split path even though the literal name exists — the same wrong-file
@@ -531,7 +541,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const act = (e: { shiftKey: boolean; preventDefault: () => void; stopPropagation: () => void }) => {
     e.preventDefault()
     e.stopPropagation()
-    activatePath(path, kind, e.shiftKey, actions, targetLine)
+    activatePath(path, kind, e.shiftKey, actions, targetLine, targetEndLine)
   }
   return (
     <code
@@ -544,6 +554,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
       data-path={path}
       data-path-kind={kind}
       data-path-line={targetLine}
+      data-path-end-line={targetEndLine}
       // The resolved path leads the tooltip, not just the instruction. A native
       // tooltip paints in the browser's own layer, above page content, and any
       // element overlaying the chip must be pointer-events-none to let the click
@@ -559,7 +570,13 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
         : i18nT('components.markdownRenderer.click_to_open_shift_click_to_reveal_in_finder')}`}
     >
       <Glyph size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
-      {children}
+      {targetLine != null && raw.length > stripped.length
+        // Keep the location suffix atomic. A range is the case that actually
+        // misleads: broken across lines, `…2026.md:10-` / `16` reads as a citation
+        // ending at line 10 until the eye reaches the next line. The path itself
+        // stays breakable, since that is what lets a long citation wrap at all.
+        ? <>{stripped}<span className="whitespace-nowrap">{raw.slice(stripped.length)}</span></>
+        : children}
     </code>
   )
 }
@@ -1560,7 +1577,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
   const blocks = useBlockAssembler(content, streaming)
 
   /** Chip activation lives on the chip itself (see InlineCode); this handler is

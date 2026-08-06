@@ -28,6 +28,12 @@ import type { IDisposable } from 'monaco-editor'
 export interface RevealTarget {
   /** 1-based, as every editor and compiler counts. */
   line: number
+  /**
+   * Last line of an inclusive range (`file.md:10-16`), or absent for a single
+   * line. Always greater than `line` — `splitLineRef` collapses a reversed or
+   * degenerate range to its start rather than passing one through.
+   */
+  endLine?: number
   nonce: number
 }
 
@@ -36,13 +42,41 @@ const LINE_CLASS = 'mc-line-reveal'
 const GUTTER_CLASS = 'mc-line-reveal-gutter'
 
 /**
- * How long the flash stays lit, in ms. Matches `flashCommentRow`'s 2800 so the
- * two "here is what you clicked" signals in this panel read as one idea.
+ * How long the highlight stays fully lit before it starts fading, in ms.
  *
  * Transient on purpose: a permanent band would be misread as a selection or a
  * diagnostic once the reader moves on.
  */
-export const REVEAL_FLASH_MS = 2800
+export const REVEAL_HOLD_MS = 1800
+
+/**
+ * How long the highlight takes to fade to transparent, in ms.
+ *
+ * The fade is a CSS animation on the decoration class, NOT a `transition`. A
+ * transition cannot run here: clearing the decoration removes Monaco's DOM
+ * element outright, and a removed element does not animate — which is why the
+ * highlight used to vanish in one frame despite the class carrying
+ * `transition: background-color`. So the class animates itself to transparent on
+ * a delay, and the JS below only clears the (already invisible) decoration after
+ * the animation has finished.
+ *
+ * Framer Motion is the house animation system, but it cannot reach a Monaco
+ * decoration: those are editor-owned DOM nodes, not React elements, so there is
+ * no component whose presence `AnimatePresence` could keep alive. A keyframe in
+ * `index.css` is the only mechanism available, and the `use-framer-motion` rule
+ * scopes itself to TSX sources accordingly.
+ */
+export const REVEAL_FADE_MS = 1000
+
+/**
+ * Total lifetime of the highlight, in ms. Held at `flashCommentRow`'s 2800 so
+ * the two "here is what you clicked" signals in this panel read as one idea.
+ *
+ * Both halves are published to CSS as custom properties on the editor container
+ * (see `reveal`), so these constants are the single source of truth and the
+ * stylesheet cannot drift from them.
+ */
+export const REVEAL_FLASH_MS = REVEAL_HOLD_MS + REVEAL_FADE_MS
 
 /**
  * Wire an editor up to `target`.
@@ -69,8 +103,11 @@ export function useLineReveal(
   const timerRef = useRef<number | undefined>(undefined)
   /** Line still being settled — re-centred on every layout change until the
    *  flash clears. See `onEditorMount`. */
-  const pendingRef = useRef<number | undefined>(undefined)
+  const pendingRef = useRef<{ start: number; end: number } | undefined>(undefined)
   const layoutSubRef = useRef<IDisposable | undefined>(undefined)
+  /** Flips every reveal so consecutive reveals never request the same animation
+   *  name — see the comment beside its use in `reveal`. */
+  const flipRef = useRef(false)
   // Both read by onEditorMount, which is registered once and would otherwise
   // close over the values from the render that mounted the editor.
   const targetRef = useRef(target)
@@ -78,18 +115,48 @@ export function useLineReveal(
   const consumedRef = useRef(onConsumed)
   consumedRef.current = onConsumed
 
-  const reveal = useCallback((line: number): boolean => {
+  const reveal = useCallback((line: number, endLine?: number): boolean => {
     const ed = edRef.current, monaco = monacoRef.current
     if (!ed || !monaco) return false
     const model = ed.getModel()
     if (!model) return false
     // Clamp rather than bail: a cited line can sit past the end of the file the
     // panel actually loaded (the file changed since the message, or it was read
-    // truncated). Landing on the last line beats doing nothing silently.
-    const lineNumber = Math.max(1, Math.min(line, model.getLineCount()))
-    ed.revealLineInCenter(lineNumber)
-    ed.setPosition({ lineNumber, column: 1 })
-    // Mark the line as still-settling. On a first open the editor is mounted
+    // truncated). Landing on the last line beats doing nothing silently. A range
+    // clamps at both ends, and collapses to one line when the whole span is EOF.
+    const lastLine = model.getLineCount()
+    const start = Math.max(1, Math.min(line, lastLine))
+    const end = endLine != null ? Math.max(start, Math.min(endLine, lastLine)) : start
+    if (end > start) {
+      // Fit the whole span on screen where it can, instead of centring the first
+      // line and leaving the rest of the citation below the fold.
+      ed.revealLinesInCenter(start, end)
+    } else {
+      ed.revealLineInCenter(start)
+    }
+    ed.setPosition({ lineNumber: start, column: 1 })
+    // Publish the fade timings so index.css animates on the same numbers this
+    // module schedules its clear against: the stylesheet cannot drift from the
+    // constants, and the decoration is only removed once already invisible.
+    const container = ed.getContainerDomNode?.()
+    if (container) {
+      container.style.setProperty('--mc-line-reveal-hold', `${REVEAL_HOLD_MS}ms`)
+      container.style.setProperty('--mc-line-reveal-fade', `${REVEAL_FADE_MS}ms`)
+      // Alternate the animation NAME so a repeat reveal actually restarts the fade.
+      // Monaco builds whole-line decorations from an HTML string and
+      // `ViewOverlayLine.renderLine` short-circuits on `_renderedContent === result`,
+      // so clearing and re-adding an identical decoration in one synchronous block
+      // leaves the very same DOM node in place — keeping its original animation
+      // start time, which `forwards` has already pinned to transparent. Re-clicking
+      // the same chip inside the flash window would then scroll but paint nothing,
+      // which is precisely the case the nonce exists for. Changing the computed
+      // `animation-name` cancels and restarts the animation even on a reused node.
+      flipRef.current = !flipRef.current
+      const suffix = flipRef.current ? '-b' : ''
+      container.style.setProperty('--mc-line-reveal-anim', `mc-line-reveal-out${suffix}`)
+      container.style.setProperty('--mc-line-reveal-gutter-anim', `mc-line-reveal-gutter-out${suffix}`)
+    }
+    // Mark the span as still-settling. On a first open the editor is mounted
     // before its container has been laid out, so "center" is computed against a
     // zero-height viewport and the line lands flush against the TOP edge —
     // losing exactly the preceding context a reader wants from a citation.
@@ -99,19 +166,19 @@ export function useLineReveal(
     // not close the gap. Cleared by the first layout with a real height — see
     // `onEditorMount` — with the flash timeout as the backstop for an editor
     // that never gets one.
-    pendingRef.current = lineNumber
+    pendingRef.current = { start, end }
     // Deliberately NOT ed.focus(): the click came from the transcript, so
     // pulling focus into the editor would move the caret out of the chat input
     // mid-conversation.
     clearTimeout(timerRef.current)
     decoRef.current?.clear()
     decoRef.current = ed.createDecorationsCollection([{
-      range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+      range: new monaco.Range(start, 1, end, 1),
       options: { isWholeLine: true, className: LINE_CLASS, linesDecorationsClassName: GUTTER_CLASS },
     }])
     timerRef.current = window.setTimeout(() => {
       decoRef.current?.clear()
-      // The line has stopped being "the thing you just clicked", so stop
+      // The span has stopped being "the thing you just clicked", so stop
       // re-centring it — a later panel resize must not yank the reader back.
       pendingRef.current = undefined
     }, REVEAL_FLASH_MS)
@@ -127,22 +194,23 @@ export function useLineReveal(
     // ResizeObserver supplies the real one a beat later.
     layoutSubRef.current?.dispose()
     layoutSubRef.current = ed.onDidLayoutChange(() => {
-      const line = pendingRef.current
-      if (line == null) return
+      const span = pendingRef.current
+      if (span == null) return
       // This correction exists ONLY for the mount-time zero-height case, so it
       // retires the moment the editor has a real viewport: that layout change is
       // the one that centres correctly, and anything after it is an ordinary
       // resize. Without this, dragging the panel divider inside the flash window
       // would yank a reader who had already scrolled away to read around the line.
       if (ed.getLayoutInfo().height > 0) pendingRef.current = undefined
-      ed.revealLineInCenter(line)
+      if (span.end > span.start) ed.revealLinesInCenter(span.start, span.end)
+      else ed.revealLineInCenter(span.start)
     })
     const pending = targetRef.current
-    if (pending && reveal(pending.line)) consumedRef.current?.()
+    if (pending && reveal(pending.line, pending.endLine)) consumedRef.current?.()
   }, [reveal])
 
   useEffect(() => {
-    if (target && reveal(target.line)) onConsumed?.()
+    if (target && reveal(target.line, target.endLine)) onConsumed?.()
     // `onConsumed` is deliberately not a dependency: it is read fresh through
     // consumedRef, and including it would re-run the reveal on every parent
     // re-render that produced a new callback identity.

@@ -32,7 +32,7 @@ export interface ChatMessageListProps {
   running: boolean
   contentWidth?: string
   onApprove?: (approvalId: string, decision: string) => void
-  onFileOpen?: (path: string, opts?: { line?: number }) => void
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** Optional host-injected renderer for tool messages (role 'tool'/'tool_call'/
    *  'tool_result'). Lets a Redux-connected host (e.g. the dashboard's split-view
    *  ChatPane) render the full slot-aware ToolCallLine while this component stays

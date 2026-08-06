@@ -2025,7 +2025,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The `ok` flag gates whether the file is recorded in history — 404s and
   // other HTTP failures show a placeholder in the panel but should NOT
   // pollute the history list with files that don't exist on disk.
-  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number }) => {
+  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => {
     // One editor per path: if this file is already open INLINE in the Files tab,
     // route back to that inline editor (focus the Files view) instead of
     // spawning a competing document tab — two live editors for one on-disk file

@@ -121,7 +121,7 @@ interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
   slot: string
   files?: TouchedFile[]
-  onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number }) => void
+  onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => void
   /** Open an artifact as a panel tab (the artifact twin of onFileOpen).
    *  Threaded to the Artifacts tab so its rows open here instead of
    *  hard-navigating to the standalone detail page. */
