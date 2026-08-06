@@ -805,6 +805,107 @@ class TestMCPRegistration:
             "mcpServers", {}
         )
 
+    def _register_stdio(self, tmp_path, app_env, monkeypatch, servers: dict) -> dict:
+        """Install an app declaring *servers* and return the config as written."""
+        import kiro_crew.apps.backend as backend_mod
+        import kiro_crew.apps.bridges as bmod
+
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9000)
+        src = _make_app_source(tmp_path, mcpServers=servers)
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        _register_mcp_servers("test-app", manifest)
+        return json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
+
+    def test_a_bare_python_command_is_resolved_before_it_is_written(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # kiro-cli spawns this entry, so a bare name is a PATH lookup on whatever
+        # host it runs on. The same app's backend already refuses to do that.
+        written = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"tools": {"command": "python3", "args": ["-m", "pkg.mcp"]}},
+        )
+        entry = written["test-app:tools"]
+        assert entry["command"] != "python3", "a bare interpreter name reached the config"
+        assert Path(entry["command"]).is_absolute()
+        assert entry["args"] == ["-m", "pkg.mcp"], "args must survive untouched"
+
+    def test_only_the_command_is_touched(self, tmp_path, app_env, monkeypatch):
+        # The documented local-server properties are command/args/env/disabled/
+        # autoApprove/disabledTools. Adding a key outside that set would put an
+        # unknown property in front of an external parser, so the rewrite changes
+        # the value of one documented field and introduces nothing.
+        declared = {
+            "command": "python3",
+            "args": ["server.py"],
+            "env": {"APP_MODE": "stdio"},
+            "disabled": False,
+        }
+        written = self._register_stdio(tmp_path, app_env, monkeypatch, {"tools": dict(declared)})
+        entry = written["test-app:tools"]
+        assert set(entry) == set(declared), f"key set changed: {sorted(entry)}"
+        assert {k: v for k, v in entry.items() if k != "command"} == {
+            k: v for k, v in declared.items() if k != "command"
+        }
+
+    def test_the_app_venv_interpreter_is_preferred_over_the_gateways(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.bridges as bmod
+        from kiro_crew.apps import python_runtime as pr
+        from kiro_crew.apps.manager import app_dir
+
+        monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
+        self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"tools": {"command": "python3", "args": []}},
+        )
+        # install_app copies the source tree, so the venv is planted afterwards
+        # and picked up by a re-registration — which is also the real sequence:
+        # dependencies are installed after the app lands.
+        venv = app_dir("test-app") / ".venv" / "bin" / "python3"
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        venv.write_text("", encoding="utf-8")
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        _register_mcp_servers("test-app", manifest)
+
+        written = json.loads(bmod._mcp_json_path().read_text(encoding="utf-8"))["mcpServers"]
+        assert written["test-app:tools"]["command"] == str(venv)
+
+    def test_an_absolute_interpreter_is_left_exactly_as_declared(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # The author resolved it themselves; overriding that is not ours to do.
+        written = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"tools": {"command": "/usr/local/bin/python3.13", "args": []}},
+        )
+        assert written["test-app:tools"]["command"] == "/usr/local/bin/python3.13"
+
+    def test_a_non_python_command_is_left_alone(self, tmp_path, app_env, monkeypatch):
+        written = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"tools": {"command": "node", "args": ["server.js"]}},
+        )
+        assert written["test-app:tools"]["command"] == "node"
+
+    def test_an_http_server_gains_no_command(self, tmp_path, app_env, monkeypatch):
+        # An HTTP server is reached over its url; there is no command to resolve,
+        # and inventing one would send kiro-cli spawning a local process for a
+        # remote server.
+        written = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"api": {"url": "http://127.0.0.1:8000/mcp"}},
+        )
+        assert "command" not in written["test-app:api"]
+
     def test_stdio_mcp_server_always_registered_no_backend(self, tmp_path, app_env, monkeypatch):
         # A command/stdio MCP server (no url) has no port to be dead — it must always be
         # registered regardless of backend liveness (only HTTP url servers are gated).

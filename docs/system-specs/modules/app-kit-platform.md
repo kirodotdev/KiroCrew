@@ -77,6 +77,21 @@ that never installed it, and a dead HTTP entry there broke EVERY kiro session, n
 just the app's. KiroCrew sessions read only the agent config (`includeMcpJson` is
 pinned False in `agent.py`), so the narrower target is also sufficient.
 
+**A bare interpreter name is resolved before it is written.** kiro-cli spawns a
+stdio entry's `command`, so `python` / `python3` would be a `PATH` lookup on
+whatever host the session runs on — which need not hold an interpreter under that
+name, and where it does need not hold one new enough for the app's venv. Either
+way the server never starts, and a stdio MCP server that never starts is
+indistinguishable from an app that provides no tools. `_pin_app_python_command`
+substitutes `python_runtime.resolve_app_python` (the app's `.venv` interpreter,
+else the gateway's own), which is the policy the app's backend already applies to
+its own spawns — one module so the two spawn sites cannot drift again. The match
+is literal, like the host-CLI pin beside it: an absolute path, a versioned name,
+and any non-Python command are the author's explicit choice and are written as
+declared. Only the value of `command` changes; no key is added, because the entry
+is parsed by kiro-cli and its documented local-server properties are `command`,
+`args`, `env`, `disabled`, `autoApprove` and `disabledTools`.
+
 **Migration is finished at boot, not at disable.** `reconcile_enabled_app_resources`
 scrubs the app's entries out of the legacy shared file for every ENABLED app on
 every gateway start. Scrubbing only on deregister meant an already-enabled app
