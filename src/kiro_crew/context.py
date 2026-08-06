@@ -140,6 +140,15 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[\s*END\s*OF\s*SESSION\s*CONTEXT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*CRITICAL\s*RULES\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*CURRENT\s*USER\s*REQUEST\s*[-]{1,2}", re.IGNORECASE),
+    # Post-compaction skills re-injection boundary. Unlike the ``[SESSION
+    # CONTEXT …]`` OPEN marker (omitted above because forging it only opens a
+    # "background, do not act on this" block), forging THIS open marker is an
+    # escalation: it presents attacker-chosen text as the platform-supplied
+    # skills index — a catalog of capability names and on-disk paths the model
+    # is told to read. Head-anchored with the required hyphen separator, per
+    # the variable-tail convention above.
+    re.compile(r"\[\s*REINJECTED\s*AFTER\s*COMPACTION\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*REINJECTED\s*\]", re.IGNORECASE),
 )
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 
@@ -1268,6 +1277,24 @@ def build_session_replay(
     return replay.translate(_MULTIBYTE_TABLE)
 
 
+def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, list[str]]:
+    """Whether to inject skills for *agent*, plus the glob restriction to apply.
+
+    THE single source of truth for the agent-scoping rule, shared by the
+    session-start injection and the post-compaction re-injection. Mapped agents
+    (a ``skill://`` resource in their agent JSON) are Claude-Code-only, since
+    kiro loads those natively; an unmapped agent gets skills only when it is the
+    default one.
+
+    Deliberately one function rather than the same expression written twice: a
+    hand-copied second gate is exactly what let the re-injection path ship
+    without scoping, handing a mapped agent the catalog its mapping excludes.
+    """
+    globs = agent_skill_globs(agent) if agent else []
+    is_custom = bool(agent) and agent != "kirocrew"
+    return (is_cc if globs else not is_custom), globs
+
+
 class ContextBuilder:
     """Builds context for injection into ACP prompts.
 
@@ -1831,9 +1858,9 @@ class ContextBuilder:
         # on-demand skills (plus always:true pinned) and leave the tail to
         # skill_search, keeping the block bounded instead of dumping every
         # skill's summary. The slice below is a defensive backstop only.
-        skill_globs = agent_skill_globs(agent) if agent else []
         # Mapped: CC only (kiro loads them natively). Unmapped: kirocrew only.
-        inject_skills = is_cc if skill_globs else not is_custom
+        # Shared with the post-compaction re-injection in build_message.
+        inject_skills, skill_globs = _skills_injection_plan(agent, is_cc=is_cc)
         if inject_skills:
             # ON: usage-ranked top-K bounded by the skills section cap.
             # OFF (budget=None): legacy full skills dump, unchanged behavior.
@@ -1960,6 +1987,7 @@ class ContextBuilder:
         model_window: int | None = None,
         user_text_range: tuple[int, int] | None = None,
         user_span_out: list[int] | None = None,
+        needs_reinjection: bool = False,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -2093,6 +2121,40 @@ class ContextBuilder:
                 "authoritative for this turn, even if the session originated on "
                 "another interface.\n\n"
             )
+
+        # Post-compaction re-injection: the skills index was lost when the
+        # session-start context was compacted. Re-inject it so the model can
+        # still discover skills by name/$token/skill_search.
+        #
+        # Gate and glob restriction come from the SAME helper the session-start
+        # path uses, so a mapped agent cannot receive the catalog its `skill://`
+        # mapping excludes and an unmapped custom agent cannot receive a block
+        # its session-start context never contained.
+        if not is_new_session and needs_reinjection:
+            _inject, _globs = _skills_injection_plan(agent, is_cc=is_cc)
+            if _inject:
+                _cfg = KiroCrewConfig.load()
+                lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
+                caps = _resolve_caps(model_window)
+                skills_ctx = self.skills.get_context(
+                    budget=caps.skills if lazy_skills else None,
+                    only=_globs or None,
+                )
+                if skills_ctx:
+                    if lazy_skills and len(skills_ctx) > caps.skills:
+                        skills_ctx = skills_ctx[: caps.skills] + "\n...[skills truncated]\n"
+                    # Scrub the PAYLOAD, keep the trusted wrapper outside it —
+                    # the same split the session-start path uses for this exact
+                    # content. A pinned (`always: true`) skill has its full body
+                    # emitted verbatim, and skills install from the public
+                    # registry, so a body carrying a forged `[END REINJECTED]` +
+                    # `[CURRENT USER REQUEST …]` pair would otherwise break out
+                    # of this block and read as an authoritative user request.
+                    parts.append(
+                        "[REINJECTED AFTER COMPACTION — skills index for discovery]\n"
+                        + _neutralize_structural_markers(skills_ctx)
+                        + "\n[END REINJECTED]\n\n"
+                    )
 
         # Channel history — inject on every message for group channel context
         ch_ctx: str | None = None

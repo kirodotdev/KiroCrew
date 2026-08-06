@@ -3892,6 +3892,88 @@ class TestRuntimeWiring:
         assert len(build_message_calls) == 1
         assert build_message_calls[0]["kwargs"].get("memory_store") == "oncall-mem"
 
+    @pytest.mark.asyncio
+    async def test_run_chat_forwards_and_clears_the_reinjection_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """A compaction flags the session; the NEXT _run_chat must forward
+        needs_reinjection=True to build_message and clear the flag so the turn
+        after that does not re-inject again.
+
+        Regression guard: without this wiring the flag is set by the compact
+        callback and read by nobody, so the whole feature is dead code.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        build_message_calls: list[dict] = []
+
+        def mock_build_message(self_ctx, text, is_new, session_key=None, **kwargs):
+            build_message_calls.append({"text": text, "kwargs": kwargs})
+            return text, MagicMock(action=None, text="")
+
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        monkeypatch.setattr(
+            ctx_builder, "build_message", lambda *a, **kw: mock_build_message(ctx_builder, *a, **kw)
+        )
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        slot = state.get_or_create_slot("reinject-test")
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=AsyncIterator([]))
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
+        state.sessions.get_pid = MagicMock(return_value=None)
+
+        # Stand in for the real SessionManager flag store, including the
+        # mark/consume round-trip so the empty-response re-queue path is
+        # exercised the way production behaves.
+        flag = {"set": True}
+
+        def _consume(key):
+            was = flag["set"]
+            flag["set"] = False
+            return was
+
+        def _mark(key):
+            flag["set"] = True
+
+        state.sessions.consume_needs_reinjection = MagicMock(side_effect=_consume)
+        state.sessions.mark_needs_reinjection = MagicMock(side_effect=_mark)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "first turn after compaction")
+
+        # The stream is empty, so this turn does not land. The flag must be put
+        # BACK -- asserting on the mark call directly, because asserting that some
+        # build carried True is tautological (the first assertion already pins it,
+        # and the re-queue is drained by an outer worker, not an inner loop).
+        assert build_message_calls, "build_message must have been called"
+        assert (
+            build_message_calls[0]["kwargs"].get("needs_reinjection") is True
+        ), "the turn right after a compaction must re-inject the skills index"
+        assert state.sessions.mark_needs_reinjection.called, (
+            "a turn that consumed the flag but did not land must restore it, "
+            "or the skills index is lost for the rest of the session"
+        )
+        assert flag["set"] is True, "the flag must be back on after a non-landing turn"
+
+        # Once a turn genuinely lands, the flag is gone and later turns are clean.
+        flag["set"] = False
+        build_message_calls.clear()
+        await _run_chat(state, slot, "a later turn")
+        assert build_message_calls, "build_message must have been called again"
+        assert all(
+            c["kwargs"].get("needs_reinjection") is False for c in build_message_calls
+        ), "the flag must be one-shot, not sticky for every later turn"
+
 
 class TestRunChatToolBoundarySegments:
     """Test that _run_chat inserts whitespace across tool call boundaries."""
@@ -9192,6 +9274,107 @@ class TestStopReasonCancelled:
 
         state.sessions.record_success.assert_not_called()
         state.sessions.record_failure.assert_not_called()
+
+    @staticmethod
+    def _wire_reinjection(state, tmp_path, monkeypatch):
+        """Give the state a context builder so the consume site actually runs.
+
+        The class's default harness sets `context_builder = None`, which skips
+        the leg that consumes the flag -- with no consume there is nothing to
+        restore, so a test without this would pass vacuously.
+        """
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        monkeypatch.setattr(
+            ctx_builder,
+            "build_message",
+            lambda text, *a, **kw: (text, MagicMock(action=None, text="")),
+        )
+        state.context_builder = ctx_builder
+        state.sessions.consume_needs_reinjection = MagicMock(return_value=True)
+        state.sessions.mark_needs_reinjection = MagicMock()
+        return state
+
+    @pytest.mark.asyncio
+    async def test_cancelled_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
+        """A graceful cancel discards the prompt, so the one-shot
+        post-compaction re-injection flag must be put back.
+
+        Regression guard for the path a narrower fix missed: restoring only on
+        the empty-response re-queue left a soft-stop losing the skills index for
+        the rest of the session.
+        """
+        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        self._wire_reinjection(state, tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        await _run_chat(state, slot, "hello")
+
+        state.sessions.consume_needs_reinjection.assert_called()
+        state.sessions.mark_needs_reinjection.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exception_mid_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
+        """An exception between the consume and the success check must not
+        swallow the flag either -- the restore lives in the `finally`, so every
+        non-landing exit is covered, not only the ones that reach the end."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        self._wire_reinjection(state, tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+
+        client = MagicMock()
+
+        def _boom(_msg):
+            raise RuntimeError("provider exploded mid-turn")
+
+        client.stream = _boom
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_failure = AsyncMock()
+
+        await _run_chat(state, slot, "hello")
+
+        state.sessions.mark_needs_reinjection.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_landed_turn_does_not_restore_the_reinjection_flag(self, tmp_path, monkeypatch):
+        """The complement: a turn that lands must leave the flag cleared,
+        otherwise the index is re-paid on every subsequent turn."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="a real answer"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        self._wire_reinjection(state, tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_success = MagicMock()
+
+        await _run_chat(state, slot, "hello")
+
+        state.sessions.mark_needs_reinjection.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_skips_consolidation(self, tmp_path, monkeypatch):
