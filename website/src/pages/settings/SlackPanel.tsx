@@ -9,7 +9,7 @@ import { api, type SlackConfigData, type SlackConfigSave } from '../../api/clien
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
-const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/slack-setup.md'
+const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
 
 type Draft = {
   owner_id: string
