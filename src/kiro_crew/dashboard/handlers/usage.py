@@ -870,6 +870,26 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
     try:
         line = json.dumps(record, allow_nan=False)
     except ValueError:
+        # Name the fields before sanitizing. Without this the fallback rewrites
+        # a provider's measurement to 0.0 and the turn is persisted as free,
+        # with nothing on record that it happened. Field NAMES only: the values
+        # are the corrupt measurement and the rest of the record is per-turn
+        # telemetry, neither of which belongs in a log line.
+        #
+        # Re-raise when nothing non-finite is present: allow_nan=False is not
+        # the only way json.dumps raises ValueError, and sanitizing cannot fix
+        # the others. Swallowing them here would emit a warning naming no field
+        # and blame corruption that did not occur.
+        non_finite = sorted(
+            k for k, v in record.items() if isinstance(v, float) and not math.isfinite(v)
+        )
+        if not non_finite:
+            raise
+        logger.warning(
+            "token usage: replaced non-finite value(s) with 0.0 before persisting; "
+            "fields=%s",
+            ",".join(non_finite),
+        )
         line = json.dumps(_finite_only(record), allow_nan=False)
     with open(shard_path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
