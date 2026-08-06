@@ -1,11 +1,31 @@
-import { Fragment, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, X, Zap } from 'lucide-react'
 import type { ChatTag } from '../types'
 import { api } from '../api/client'
-import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 
 import { i18nT } from '../i18n/t'
+import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
+
+function ColorSwatches({ value, onPick, label }: { value?: string; onPick: (color: string) => void; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap pl-7 pt-1" role="radiogroup" aria-label={label}>
+      {FOLDER_COLOR_PALETTE.map(({ value: color, label: colorLabel }) => (
+        <button
+          key={color}
+          type="button"
+          role="radio"
+          aria-checked={value === color}
+          aria-label={colorLabel()}
+          title={colorLabel()}
+          className={`w-4 h-4 rounded-full border cursor-pointer transition-transform hover:scale-110 ${value === color ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border'}`}
+          style={{ background: color }}
+          onClick={() => onPick(color)}
+        />
+      ))}
+    </div>
+  )
+}
 export interface TagManagerListProps {
   /**
    * Governs the leading swatch:
@@ -37,10 +57,10 @@ export interface TagManagerListProps {
  * tag-delete-<id>) match the board's selectors.
  */
 export default function TagManagerList({ mode, selectedIds = [], onToggleTag, createTestId = 'tag-create' }: TagManagerListProps) {
+  const [openColorId, setOpenColorId] = useState<string | null>(null)
+  const [newColor, setNewColor] = useState<string | undefined>(undefined)
   const queryClient = useQueryClient()
   const { data: tags = [] } = useQuery<ChatTag[]>({ queryKey: ['chat-tags'], queryFn: () => api.chatTags() })
-  /** Tag id whose inline colour palette is expanded (manage mode only). */
-  const [openColorId, setOpenColorId] = useState<string | null>(null)
 
   const createTagMutation = useMutation({
     mutationFn: ({ name, color, status }: { name: string; color?: string; status?: boolean }) => api.createChatTag(name, color, status),
@@ -68,8 +88,8 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           const on = mode === 'column-filter' && selectedIds.includes(t.id)
           const nextIds = on ? selectedIds.filter(x => x !== t.id) : [...selectedIds, t.id]
           return (
-            <Fragment key={t.id}>
-            <div data-testid={`tag-row-${t.id}`} className={`group/tag flex items-center gap-1.5 px-1.5 py-1 rounded transition-all ${on ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`}>
+            <div key={t.id} data-testid={`tag-row-${t.id}`} className={`group/tag px-1.5 py-1 rounded transition-all ${on ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`}>
+              <div className="flex items-center gap-1.5">
               {mode === 'column-filter' ? (
                 /* Filter toggle — the colour swatch is the click target. role=checkbox
                  *  (not menuitemcheckbox) because the row lives in a form popover, not a
@@ -82,16 +102,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                   {on && <span className="absolute inset-0 flex items-center justify-center" style={{ color: t.color === '#ffffff' ? '#000' : '#fff' }}><Check size={10} /></span>}
                 </button>
               ) : (
-                /* Manage mode — the swatch is a button that expands an inline
-                 *  colour palette row beneath the tag (backend PATCH already
-                 *  supports recolor; this is its first UI surface). */
-                <button type="button" data-testid={`tag-color-${t.id}`}
-                  aria-expanded={openColorId === t.id}
-                  aria-label={i18nT('components.tagManagerList.change_color', { name: t.name })}
-                  title={i18nT('components.tagManagerList.change_color', { name: t.name })}
-                  className="w-4 h-4 rounded-sm border border-border shrink-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  style={{ background: t.color }}
-                  onClick={() => setOpenColorId(cur => (cur === t.id ? null : t.id))} />
+                <button type="button" data-testid={`tag-color-${t.id}`} aria-label={i18nT('components.tagManagerList.change_color_for', { name: t.name })} title={i18nT('components.tagManagerList.change_color_for', { name: t.name })} className="w-4 h-4 rounded-full border border-border shrink-0 cursor-pointer hover:scale-110 transition-transform" style={{ background: t.color }} onClick={() => setOpenColorId(openColorId === t.id ? null : t.id)} />
               )}
               {/* Inline rename */}
               {/* key={t.name} remounts the uncontrolled input when the canonical
@@ -137,47 +148,9 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 onClick={() => { if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id) }}>
                 <X size={11} />
               </button>
-            </div>
-            {/* Inline colour palette — expanded by the manage-mode swatch. Reuses
-              *  the folder palette so tags and folders speak one visual language.
-              *  Picking a colour PATCHes the tag and returns focus to the swatch
-              *  (the palette unmounts, so focus would otherwise fall to <body>). */}
-            {mode === 'manage' && openColorId === t.id && (
-              <div
-                role="group"
-                data-testid={`tag-palette-${t.id}`}
-                aria-label={i18nT('components.tagManagerList.change_color', { name: t.name })}
-                className="flex items-center gap-1 flex-wrap pl-7 pr-1.5 pb-1"
-                onKeyDown={e => {
-                  if (e.key !== 'Escape') return
-                  e.stopPropagation()
-                  setOpenColorId(null)
-                  document.querySelector<HTMLElement>(`[data-testid="tag-color-${t.id}"]`)?.focus()
-                }}
-              >
-                {FOLDER_COLOR_PALETTE.map(({ value, label }) => {
-                  const colorName = label()
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      data-testid={`tag-color-${t.id}-${value.slice(1)}`}
-                      title={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
-                      aria-label={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
-                      aria-pressed={t.color === value}
-                      className={`w-4 h-4 rounded-full cursor-pointer border transition-transform hover:scale-110 outline-none focus-visible:ring-2 focus-visible:ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
-                      style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
-                      onClick={() => {
-                        updateTagMutation.mutate({ id: t.id, body: { color: value } })
-                        setOpenColorId(null)
-                        document.querySelector<HTMLElement>(`[data-testid="tag-color-${t.id}"]`)?.focus()
-                      }}
-                    />
-                  )
-                })}
               </div>
-            )}
-            </Fragment>
+              {mode === 'manage' && openColorId === t.id && <ColorSwatches value={t.color} label={i18nT('components.tagManagerList.choose_color_for', { name: t.name })} onPick={color => { updateTagMutation.mutate({ id: t.id, body: { color } }); setOpenColorId(null) }} />}
+            </div>
           )
         })}
       </div>
@@ -194,13 +167,15 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               const el = e.currentTarget as HTMLInputElement
               const v = el.value.trim()
               if (!v) return
-              createTagMutation.mutate({ name: v })
+              createTagMutation.mutate({ name: v, color: newColor })
               el.value = ''
+              setNewColor(undefined)
             }
           }}
           onClick={e => e.stopPropagation()}
         />
       </div>
+      <ColorSwatches value={newColor} label={i18nT('components.tagManagerList.choose_color_for_new_tag')} onPick={setNewColor} />
     </>
   )
 }

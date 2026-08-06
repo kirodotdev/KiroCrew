@@ -11,7 +11,7 @@
  * the tag picker is reachable from the list-view row menu too.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -112,6 +112,23 @@ describe('TagManagerList — shared CRUD (both modes)', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(api.createChatTag).toHaveBeenCalledWith('Gamma', undefined, undefined))
     expect(input.value).toBe('')
+  })
+
+  it('changes an existing tag color from the palette', async () => {
+    renderList({ mode: 'manage' })
+    const row = await screen.findByTestId('tag-row-t1')
+    fireEvent.click(within(row).getByTestId('tag-color-t1'))
+    fireEvent.click(within(row).getByRole('radio', { name: 'Red' }))
+    await waitFor(() => expect(api.updateChatTag).toHaveBeenCalledWith('t1', { color: '#ef4444' }))
+  })
+
+  it('uses the selected palette color when creating a tag', async () => {
+    renderList({ mode: 'manage' })
+    fireEvent.click(screen.getByRole('radio', { name: 'Blue' }))
+    const input = await screen.findByTestId('tag-create') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Colored' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.createChatTag).toHaveBeenCalledWith('Colored', '#3b82f6', undefined))
   })
 })
 
