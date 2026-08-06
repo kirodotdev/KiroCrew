@@ -289,6 +289,70 @@ def _get_owner_hash(state: DashboardState) -> str:
     return h
 
 
+def _parse_vm_stat(vm_stat_output: str) -> tuple[int, dict[str, int]]:
+    """Parse `vm_stat` output into ``(page_size, {stat_name: pages})``.
+
+    Page size defaults to 16 KiB (Apple Silicon) if the header is absent.
+    """
+    page_size = 16384
+    counts: dict[str, int] = {}
+    for line in vm_stat_output.splitlines():
+        if "page size of" in line:
+            with contextlib.suppress(ValueError, IndexError):
+                page_size = int(line.split()[-2])
+            continue
+        key, sep, val = line.partition(":")
+        if not sep:
+            continue
+        val = val.strip().rstrip(".")
+        if val.isdigit():
+            counts[key.strip()] = int(val)
+    return page_size, counts
+
+
+def _macos_memory_gb(total_bytes: int, vm_stat_output: str) -> tuple[float, float]:
+    """Return ``(used_gb, free_gb)`` matching macOS Activity Monitor's numbers.
+
+    Activity Monitor's "Memory Used" is ``App Memory + Wired + Compressed``:
+
+        App Memory = anonymous pages - purgeable pages   (dirty app allocations)
+        Wired      = wired-down pages                     (kernel/non-pageable)
+        Compressed = pages occupied by the compressor
+
+    Everything else — free pages plus the reclaimable file-backed cache
+    ("Cached Files") — is reported as free/available, so ``used + free`` equals
+    total.
+
+    The previous implementation counted *every* inactive page as free and
+    ignored compressed memory entirely, which under-reported "used" by several
+    GB versus Activity Monitor and `memory_pressure` (e.g. it showed 28 GB used
+    where Activity Monitor reported ~33 GB on a 48 GB machine). "Pages inactive"
+    includes dirty anonymous pages that are genuinely in use, not just
+    reclaimable cache, so it must not be treated as free.
+    """
+    page_size, counts = _parse_vm_stat(vm_stat_output)
+
+    anonymous = counts.get("Anonymous pages", 0)
+    purgeable = counts.get("Pages purgeable", 0)
+    wired = counts.get("Pages wired down", 0)
+    compressed = counts.get("Pages occupied by compressor", 0)
+
+    if anonymous:
+        app_pages = max(0, anonymous - purgeable)
+    else:
+        # Legacy vm_stat without the "Anonymous pages" line: fall back to the
+        # active-page count as an approximation of app memory.
+        app_pages = counts.get("Pages active", 0)
+
+    used_bytes = (app_pages + wired + compressed) * page_size
+    # Never exceed physical memory (guards against a parse/field mismatch).
+    used_bytes = max(0, min(used_bytes, total_bytes))
+
+    used_gb = round(used_bytes / (1024**3), 1)
+    free_gb = round((total_bytes - used_bytes) / (1024**3), 1)
+    return used_gb, free_gb
+
+
 def _collect_system_metrics() -> dict[str, object]:
     """Collect system metrics synchronously (runs in thread pool).
 
@@ -310,21 +374,9 @@ def _collect_system_metrics() -> dict[str, object]:
             total_bytes = int(out)
             data["mem_total_gb"] = round(total_bytes / (1024**3), 1)
             vm = subprocess.check_output([_VM_STAT], timeout=2).decode()
-            page_size = 16384
-            for line in vm.splitlines():
-                if "page size of" in line:
-                    page_size = int(line.split()[-2])
-                    break
-            free_pages = 0
-            for line in vm.splitlines():
-                if "Pages free" in line:
-                    free_pages = int(line.split()[-1].rstrip("."))
-                elif "Pages inactive" in line:
-                    free_pages += int(line.split()[-1].rstrip("."))
-            mem_free: float = round(free_pages * page_size / (1024**3), 1)
-            mem_total: float = round(total_bytes / (1024**3), 1)
+            mem_used, mem_free = _macos_memory_gb(total_bytes, vm)
+            data["mem_used_gb"] = mem_used
             data["mem_free_gb"] = mem_free
-            data["mem_used_gb"] = round(mem_total - mem_free, 1)
         elif sys.platform == "win32":
             mem = platform_compat.system_memory()
             if mem:
