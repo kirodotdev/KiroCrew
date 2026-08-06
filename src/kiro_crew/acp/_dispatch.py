@@ -17,6 +17,7 @@ import difflib
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -254,19 +255,50 @@ def select_tool_title(title: object, raw_input: object) -> str | None:
     return None
 
 
+def is_tool_purpose_key(key: object) -> bool:
+    """True when ``key`` names the reserved tool-purpose argument.
+
+    Matched by SHAPE rather than by an allowlist of literals: any *reserved*
+    (dunder-prefixed) argument whose name ends in ``purpose`` once separators
+    and case are normalized away. The declared spelling is
+    ``__tool_use_purpose``, but the argument reaches us as whatever the model
+    actually emitted, and models paraphrase the name — ``__purpose``,
+    ``__thinking_purpose`` and ``__woohoo_purpose`` all occur in real
+    transcripts. An exact allowlist silently drops every one of them.
+
+    The ``__`` prefix is load-bearing: it keeps a *functional* argument that
+    happens to be called ``purpose`` (a tool legitimately taking a purpose
+    string) out of the match, because only dunder names are reserved. A tool
+    declaring its own dunder ``…purpose`` argument would be read as the purpose
+    line, which is the desired reading anyway — and harmless either way, since
+    this only picks the label and never rewrites the arguments sent to the tool.
+    """
+    if not isinstance(key, str) or not key.startswith("__"):
+        return False
+    return re.sub(r"[^a-z0-9]", "", key.lower()).endswith("purpose")
+
+
 def extract_tool_purpose(raw_input: object) -> str:
     """Pull the agent-authored purpose line out of a tool call's raw params.
 
-    Accepts every spelling in ``TOOL_PURPOSE_KEYS`` because kiro-cli echoes the
-    reserved argument back inconsistently (snake_case as declared in the tool
-    schema, camelCase on some calls). Reading only one literal drops the purpose
-    for the other half of the calls, which shows up as the dashboard's concise
+    The canonical spellings in ``TOOL_PURPOSE_KEYS`` are preferred (kiro-cli
+    echoes the reserved argument back as either the declared snake_case name or
+    a camelCased variant), then any other key matching
+    ``is_tool_purpose_key()``. Reading a fixed set of literals drops the purpose
+    for every paraphrased spelling, which shows up as the dashboard's concise
     tool pill falling back to the literal command line.
+
+    Off-canonical keys are scanned in sorted order so the choice is
+    deterministic when a call somehow carries more than one.
     """
     if not isinstance(raw_input, dict):
         return ""
     for key in TOOL_PURPOSE_KEYS:
         value = raw_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    for key in sorted(k for k in raw_input if is_tool_purpose_key(k)):
+        value = raw_input[key]
         if isinstance(value, str) and value.strip():
             return value
     return ""

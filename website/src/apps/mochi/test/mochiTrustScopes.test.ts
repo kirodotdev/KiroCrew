@@ -93,6 +93,17 @@ describe('permissionApprovalFromFrame carries the scope fields', () => {
     expect(req?.purpose).toBe('Walk around the screen')
   })
 
+  it('extracts the purpose under a model-paraphrased key spelling', () => {
+    const req = permissionApprovalFromFrame(
+      frame({
+        request_id: 'r1',
+        tool_title: 'T',
+        tool_input: JSON.stringify({ __purpose: 'Walk around the screen', action: 'move' }),
+      }),
+    )
+    expect(req?.purpose).toBe('Walk around the screen')
+  })
+
   it('has no purpose when the arguments are not JSON', () => {
     const req = permissionApprovalFromFrame(
       frame({ request_id: 'r1', tool_title: 'T', tool_input: 'rm -rf build' }),

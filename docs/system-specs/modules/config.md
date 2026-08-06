@@ -864,12 +864,22 @@ has nothing to go on and mirrors the language the user typed in — an inferred
 signal that flips mid-session the moment the user pastes an English stack trace,
 and one that persists, since purposes are stored in session history.
 
-Reading it back off the wire accepts **both** spellings — kiro-cli echoes the
-reserved arg in `rawInput` as either `__tool_use_purpose` or `__toolUsePurpose`
-depending on the call. `acp/_dispatch.py::extract_tool_purpose` (keys in
-`acp/types.py::TOOL_PURPOSE_KEYS`) is the single reader for both transports;
-matching one literal drops the purpose for the other half of the calls, and the
-concise pill silently falls back to the raw command line.
+Reading it back off the wire matches by **shape**, not by a list of literals.
+kiro-cli injects the `__tool_use_purpose` property into every tool schema it
+exposes, and echoes it back in `rawInput` as either that name or a camelCased
+`__toolUsePurpose` — but nothing validates the key, and the model paraphrases
+it: `__purpose`, `__thinking_purpose` and `__woohoo_purpose` all appear in real
+transcripts. `acp/_dispatch.py::extract_tool_purpose` prefers the canonical
+spellings in `acp/types.py::TOOL_PURPOSE_KEYS`, then accepts any *reserved*
+(dunder-prefixed) key whose name ends in `purpose`
+(`_dispatch.py::is_tool_purpose_key`), scanned in sorted order so the reading is
+deterministic. It is the single reader for both transports; matching literals
+drops the purpose for every paraphrased spelling, and the concise pill silently
+falls back to the raw command line while the unrecognized key leaks into the
+arguments view as if it were a real parameter. The dunder prefix is what keeps a
+tool's own functional `purpose` argument out of the match.
+`website/src/utils/toolPurpose.ts` is the frontend mirror, used by the
+pending-approval preview and the Mochi approval bubble.
 
 Three properties are load-bearing:
 

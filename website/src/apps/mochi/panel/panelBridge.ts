@@ -22,6 +22,7 @@ import {
   type WatchStatus,
 } from '../api'
 import { approvalRoute } from './approvalActions'
+import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import type { NotificationPayload, PetMood, PetState } from '../src/shared/types'
 import type { PackManifest, PackMeta } from '../src/shared/appearanceTypes'
 
@@ -365,22 +366,19 @@ export function isRenderableChatRole(role: unknown): boolean {
 /**
  * The agent's own one-line statement of WHY it is calling the tool.
  *
- * Every tool call carries `__tool_use_purpose` in its arguments, so this is the
- * one field that describes the intent WITHOUT echoing the command — which is
- * what the pet's bubble wants: "needs your approval for <purpose>" stays
- * readable at bubble size and leaks no argument values onto the desktop.
+ * Every tool call carries a reserved purpose argument (see
+ * `utils/toolPurpose`), so this is the one field that describes the intent
+ * WITHOUT echoing the command — which is what the pet's bubble wants: "needs
+ * your approval for <purpose>" stays readable at bubble size and leaks no
+ * argument values onto the desktop.
  */
 function purposeFromToolInput(toolInput: string): string | undefined {
   try {
-    const parsed = JSON.parse(toolInput)
-    if (parsed !== null && typeof parsed === 'object') {
-      const p = (parsed as Record<string, unknown>).__tool_use_purpose
-      if (typeof p === 'string' && p.trim() !== '') return p.trim()
-    }
+    return purposeFromToolArgs(JSON.parse(toolInput)) || undefined
   } catch {
     // Not JSON (a bare shell string) — there is no declared purpose to read.
+    return undefined
   }
-  return undefined
 }
 
 export function permissionApprovalFromFrame(

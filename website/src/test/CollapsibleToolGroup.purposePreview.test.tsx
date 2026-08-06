@@ -1,9 +1,11 @@
 /**
  * The pending-approval row previews what the tool is about to do. When the
  * permission meta carries no `tool_input`, the last resort is the
- * agent-authored purpose line — and kiro-cli echoes that reserved argument
- * under EITHER spelling (`__tool_use_purpose` / `__toolUsePurpose`), so
- * matching one literal left the preview blank for half the calls.
+ * agent-authored purpose line — and that reserved argument reaches us under
+ * whatever name the model emitted (the declared `__tool_use_purpose`, its
+ * camelCased echo, or a paraphrase like `__purpose`), so matching literals left
+ * the preview blank for whole sessions at a time. Read by shape instead; see
+ * `utils/toolPurpose`.
  */
 import { describe, it, expect } from 'vitest'
 import { renderWithProviders } from './helpers'
@@ -28,6 +30,11 @@ describe('CollapsibleToolGroup purpose preview', () => {
 
   it('previews the purpose under the camelCase spelling', () => {
     expect(preview({ __toolUsePurpose: 'Check the harness render errors' }))
+      .toContain('Check the harness render errors')
+  })
+
+  it('previews the purpose under a model-paraphrased spelling', () => {
+    expect(preview({ __purpose: 'Check the harness render errors' }))
       .toContain('Check the harness render errors')
   })
 

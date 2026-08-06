@@ -141,10 +141,13 @@ KNOWN_SESSION_UPDATES = frozenset(
 # Reserved tool argument carrying the agent's own one-line reason for a call.
 # It is what the dashboard's concise tool label ("simplified tool names") shows
 # instead of the literal invocation, so a missed key silently degrades every
-# pill back to raw command text. BOTH spellings occur on the wire: our tool
-# schemas declare the snake_case key, but kiro-cli echoes some tool calls back
-# in ``rawInput`` with it camelCased — read via
-# ``_dispatch.extract_tool_purpose()``, never by indexing one literal.
+# pill back to raw command text. These are the CANONICAL spellings — our tool
+# schemas declare the snake_case name and kiro-cli echoes some calls back in
+# ``rawInput`` with it camelCased — but they are not the only ones on the wire:
+# models paraphrase the name (``__purpose``, ``__thinking_purpose``, …). Read
+# via ``_dispatch.extract_tool_purpose()``, which prefers these two and then
+# falls back to ``_dispatch.is_tool_purpose_key()`` shape matching; never index
+# one literal.
 TOOL_PURPOSE_KEYS: tuple[str, ...] = ("__tool_use_purpose", "__toolUsePurpose")
 
 # ── ACP Permission Outcomes ──

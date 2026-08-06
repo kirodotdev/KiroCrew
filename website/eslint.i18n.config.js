@@ -717,6 +717,31 @@ export default [
     },
   },
 
+  // PROTOCOL KEY NAMES ONLY, same category as `wireValues.ts` above: this module's
+  // entire contents are the two spellings of kiro-cli's reserved tool-purpose
+  // ARGUMENT NAME (`__tool_use_purpose` and the camelCased echo) plus the regex that
+  // recognizes paraphrases of it. Each is compared by value against a key that
+  // arrives on the wire, so translating one silently stops matching and the tool
+  // pill falls back to raw command text in that locale — the exact defect the module
+  // exists to fix.
+  //
+  // The module has no path to user-visible copy of its own: it reads a string OUT of
+  // a payload and returns it verbatim. That returned string is model-authored prose,
+  // not interface copy, and is guarded at RENDER time against the active UI language
+  // by `utils/toolLabel.ts` instead.
+  //
+  // Scoped to this one file for the reason the three exemptions above are: a shape
+  // rule cannot express "reserved argument names, but only in this module". The
+  // dunder prefix looks like a self-anchoring shape, but admitting literals by it
+  // would also release every `__proto__` / `__dirname` guard string elsewhere in the
+  // tree from the gate.
+  {
+    files: ['src/utils/toolPurpose.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // A GLSL-ONLY module: two shader programs (`VERT`, `FRAG`) as template literals,
   // plus CSS custom-property token names and Tailwind classes. The component
   // renders exactly one `<canvas aria-hidden="true">` and no text node, so it has

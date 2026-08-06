@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, memo, type ReactNode } from 'react'
 import { CheckCircle, Handshake, Ban, Wrench, AlertTriangle } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
+import { purposeFromToolArgs } from '../../utils/toolPurpose'
 import { ToolInputText } from '../../components/ToolInputText'
 import { useRowDisclosure } from './rowDisclosure'
 
@@ -24,12 +25,6 @@ interface CollapsibleToolGroupProps {
   activityOpen?: boolean
 }
 
-/** Reserved tool argument holding the agent-authored purpose line. kiro-cli
- *  echoes it back under EITHER spelling, so both are read — matching only the
- *  snake_case one leaves the preview blank for the camelCase half of calls.
- *  Mirrors `TOOL_PURPOSE_KEYS` in `acp/types.py`. Protocol keys, not UI copy. */
-const PURPOSE_META_KEYS = ['__tool_use_purpose', '__toolUsePurpose'] as const
-
 /** Extract a human-readable command preview from permission meta. */
 function extractPreview(meta?: Record<string, unknown>): string {
   if (!meta) return ''
@@ -43,11 +38,9 @@ function extractPreview(meta?: Record<string, unknown>): string {
     // unreadable line with escaped \n / \t sequences.
     return JSON.stringify(ti, null, 2)
   }
-  for (const key of PURPOSE_META_KEYS) {
-    const purpose = meta[key]
-    if (typeof purpose === 'string' && purpose.trim()) return purpose
-  }
-  return ''
+  // Last resort: the agent-authored purpose line, read by shape so a
+  // paraphrased key spelling still previews (see utils/toolPurpose).
+  return purposeFromToolArgs(meta)
 }
 
 /** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
