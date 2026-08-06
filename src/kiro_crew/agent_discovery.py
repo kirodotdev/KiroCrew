@@ -481,13 +481,31 @@ def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
         elif a.package and not existing.package:
             seen[a.name] = a
         elif a.package and existing.package:
-            logger.warning(
-                "Duplicate agent name '%s' from packages '%s' and '%s'; keeping '%s'",
-                a.name,
-                existing.package,
-                a.package,
-                existing.package,
-            )
+            if a.package == existing.package:
+                # Package managers publish a locally-built package as BOTH
+                # "{package}-{name}.json" AND "local-{package}-{name}.json";
+                # stripping the "local-" prefix above makes the twin files
+                # collide on the same (name, package). That is the EXPECTED
+                # on-disk shape for every locally published package — warning
+                # on it produced a self-contradictory "from packages 'X' and
+                # 'X'" line per agent per scan (dozens per startup), drowning
+                # real signals. Keep the first-seen file (unchanged first-wins
+                # policy; sort order decides which twin that is) and note the
+                # twin at debug.
+                logger.debug(
+                    "Agent '%s': keeping '%s' over same-package twin '%s'",
+                    a.name,
+                    existing.filename,
+                    a.filename,
+                )
+            else:
+                logger.warning(
+                    "Duplicate agent name '%s' from packages '%s' and '%s'; keeping '%s'",
+                    a.name,
+                    existing.package,
+                    a.package,
+                    existing.package,
+                )
     result = list(seen.values())
     _LIST_AGENTS_CACHE[cache_key] = (signature, result)
     return _with_edition_agents(result)
