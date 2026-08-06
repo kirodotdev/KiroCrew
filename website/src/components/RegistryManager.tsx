@@ -18,6 +18,7 @@ import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
+import ErrorNotice from './ErrorNotice'
 type Registry = { name: string; repo: string; branch: string }
 
 // Shell metacharacters / whitespace that must never appear in a repo value.
@@ -104,7 +105,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       // a failed refetch keeps serving the prior (stale) listing rather than
       // dropping the registry's apps, so the user must know it didn't sync.
       if (res?.ok === false && res.failed && res.failed.length > 0) {
-        setError(`Could not refresh: ${res.failed.join(', ')} — still showing the last-synced apps for these.`)
+        setError(i18nT('components.registryManager.could_not_refresh_still_showing_last_synced', { names: res.failed.join(', ') }))
       } else {
         setError('')
       }
@@ -125,7 +126,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       return
     }
     if (registries.some(r => r.repo === repo)) {
-      setError(`Registry "${repo}" already exists`)
+      setError(i18nT('components.registryManager.registry_already_exists', { repo }))
       return
     }
     // Keep the form open and populated until the mutation actually succeeds:
@@ -158,14 +159,9 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <InfoTip text={i18nT('components.registryManager.org_owned_app_catalogs_hosted_in_git_repositorie')} />
       </CardTitle>
 
-      {error && (
-        <div className="mb-3 bg-danger/10 border border-danger/20 rounded-lg p-2.5 flex items-center gap-2 animate-rise">
-          <span className="text-danger text-[13px] flex-1">{error}</span>
-          <Clickable className="text-danger/60 hover:text-danger" onClick={() => setError('')} aria-label={i18nT('components.registryManager.dismiss_error')}>
-            <X size={14} />
-          </Clickable>
-        </div>
-      )}
+      {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+      <ErrorNotice message={error} onDismiss={() => setError('')} className="mb-3 animate-rise" />
 
       {trustNotice.length > 0 && (
         <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-2.5 flex items-start gap-2 animate-rise">
@@ -208,21 +204,21 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               <Clickable
                 className="text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
                 onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
-                aria-label={`Open ${reg.repo} repository`}
+                aria-label={i18nT('components.registryManager.open_repository', { repo: reg.repo })}
               >
                 <ExternalLink size={14} />
               </Clickable>
               <Clickable
                 className={`text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => refreshMutation.mutate(reg.repo)}
-                aria-label={`Refresh ${reg.name} registry`}
+                aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.name })}
               >
                 <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
               </Clickable>
               <Clickable
                 className={`text-muted hover:text-danger transition-colors opacity-0 group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => handleRemove(reg.repo)}
-                aria-label={`Remove ${reg.name} registry`}
+                aria-label={i18nT('components.registryManager.remove_registry', { name: reg.name })}
               >
                 <Trash2 size={14} />
               </Clickable>

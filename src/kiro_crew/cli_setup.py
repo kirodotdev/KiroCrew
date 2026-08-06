@@ -34,11 +34,14 @@ from kiro_crew.config.loader import (
     CRED_SLACK_BOT_TOKEN,
     _default_workspace_base,
     _workspace_dir_file,
+    config_local_path,
     config_path,
     env_path,
     write_config_atomically,
 )
 from kiro_crew.constants import DATA_WARNING
+from kiro_crew.sandbox import unavailable_kind
+from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
 
 
@@ -314,6 +317,11 @@ def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = 
     except Exception as exc:
         print(f"  ⚠️  Conductor skill generation failed: {exc}")
 
+    # 2d. Offer the unconfined-exec opt-in on a host with no sandbox backend.
+    #     Runs BEFORE the agent-only early return: the servers this unblocks are
+    #     the ones install_agent() just wrote, so `--agent-only` needs it too.
+    _setup_sandbox_consent()
+
     if agent_only:
         print("\n👻 Done! Try: kirocrew gateway")
         return
@@ -585,6 +593,165 @@ def _setup_slash_command() -> None:
     cfg.setdefault("slack", {})["command"] = raw
     write_config_atomically(cfg_file, cfg)
     print(f"  ✅ Slash command: /{raw}\n")
+
+
+def _setup_sandbox_consent() -> None:
+    """Offer the unconfined-exec opt-in when this host has NO sandbox backend.
+
+    Fail-closed is the shipped posture: with no backend ``wrap_argv`` refuses
+    every agent subprocess, so a fresh install on such a host — any Windows host,
+    or a Linux kernel that refuses user namespaces — has no working MCP tooling
+    until an operator declares the opt-in. Leaving them to discover that from a
+    probe error is a bad first run, but defaulting the opt-in ON by platform
+    would delete a deny-by-default authorization and put nothing in its place:
+    an agent-selected repo's ``include.path`` reaches ``~/.aws/credentials``, and
+    a crafted ``.tex`` typesets a secret into a PDF.
+
+    So the wizard ASKS, and writes the key only on an explicit yes. That keeps
+    the decision operator-declared exactly as
+    ``docs/system-specs/modules/security.md`` requires while making it
+    discoverable instead of hidden behind a spawn failure.
+
+    Only a genuine ``"no_backend"`` classification reaches the prompt.
+    ``detect_backend() == "none"`` alone is not sufficient: it also covers a
+    momentary fork/resource failure, which self-heals on the next spawn and must
+    never buy a permanent bypass, and a foreign outer sandbox, where this host's
+    sandbox works and the remedy hands isolation back to Kiro Crew rather than
+    disabling it. The prompt is also skipped when stdin/stdout are not both a
+    terminal, because an unseen question is a hang rather than consent.
+
+    Silent no-op when a backend exists (the Linux/macOS norm) or when the key is
+    already declared in either state, in ``config.json`` OR the
+    ``config.local.json`` overlay that deep-merges over it — the overlay wins at
+    load time, so ignoring it would let this step prompt a user who already
+    decided and then report a grant the effective config contradicts. Declining —
+    including a non-interactive EOF, which :func:`_input_or_skip` reports as
+    ``None`` — leaves the config untouched, so the effective default stays
+    fail-closed.
+    """
+    try:
+        kind = unavailable_kind()
+    except Exception as exc:  # pragma: no cover — defensive
+        print(f"  ⚠️  Could not probe for a sandbox backend: {exc}")
+        return
+    if kind == "transient":
+        # A momentary fork/resource failure is NOT grounds for a permanent
+        # bypass: it is not cached, the next spawn re-probes, and the sandbox
+        # layer's own guidance says explicitly not to disable the sandbox for it.
+        print("── Sandbox ──\n")
+        print("  The sandbox probe failed for what looks like a TRANSIENT reason")
+        print("  (momentary resource pressure). It re-probes automatically, so no")
+        print("  opt-in is offered. Retry the operation instead.\n")
+        return
+    if kind != "no_backend":
+        # "" (a backend exists — the Linux/macOS norm) or "foreign_sandbox",
+        # where this host's sandbox works and the remedy hands isolation back to
+        # Kiro Crew rather than disabling it. Neither warrants this opt-in.
+        return
+    # A prompt nobody can see is a hang, not consent: `kirocrew update` runs
+    # setup with its output captured while stdin is still inherited, so an
+    # invisible question would block until that path's timeout aborts the update.
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("  ⚠️  No sandbox backend on this host, so agent subprocesses are")
+        print("     refused. Run `kirocrew setup` from a terminal to decide, or set")
+        print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
+        return
+
+    def _declared(path: Path) -> bool:
+        """Whether *path* explicitly sets the key, in either state."""
+        if not path.exists():
+            return False
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        agent = doc.get("agent") if isinstance(doc, dict) else None
+        return isinstance(agent, dict) and "sandbox_allow_unsandboxed_exec" in agent
+
+    cfg_file = config_path()
+    cfg: dict = {}
+    if cfg_file.exists():
+        try:
+            loaded = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"  ⚠️  Could not read {cfg_file}: {exc}")
+            return
+        # A top-level non-object (`[]`, `"x"`, `null`) is not something this step
+        # may repair: writing our own object over it would destroy whatever the
+        # operator meant, and `.get()` on it raises. Report and leave it alone —
+        # the effective default stays fail-closed either way.
+        if not isinstance(loaded, dict):
+            print(f"  ⚠️  {cfg_file} does not contain a JSON object; skipping.\n")
+            return
+        cfg = loaded
+    if _declared(cfg_file) or _declared(config_local_path()):
+        return
+
+    print("── Sandbox ──\n")
+    print("  This host offers no OS-level sandbox backend (Linux user namespaces")
+    print("  or macOS sandbox-exec), so Kiro Crew currently REFUSES to run agent")
+    print("  subprocesses at all — MCP servers, Dev Fleet and the Papyrus")
+    print("  compiler will report a sandbox error until you decide.")
+    print()
+    print("  Allowing them to run unconfined means an agent-driven subprocess can")
+    print("  read your home directory, including ~/.aws and ~/.ssh, with no OS")
+    print("  confinement. Kiro Crew still scrubs credential environment variables,")
+    print("  but it cannot stop a hostile repo or document from reading files.")
+    print()
+    answer = _input_or_skip("  Allow unsandboxed execution? [y/N]: ")
+    if not answer or answer.lower() not in ("y", "yes"):
+        print("  ⏭  Left fail-closed — MCP tooling stays disabled on this host.")
+        print("     To opt in later, set agent.sandbox_allow_unsandboxed_exec=true")
+        print(f"     in {cfg_file}\n")
+        return
+
+    if not isinstance(cfg.get("agent"), dict):
+        if "agent" in cfg:
+            print("  ⚠️  'agent' section is not an object; leaving config untouched.\n")
+            return
+        cfg["agent"] = {}
+
+    # Audit-or-deny, BEFORE the write: this persists an execution permission, so
+    # it belongs in the tamper-evident log next to the ``denied`` event
+    # ``wrap_argv`` emits when it refuses a spawn — otherwise the refusals are
+    # recorded and the grant that silences them is not. ``critical=True`` makes
+    # SEL write synchronously and re-raise on a filesystem failure, and the grant
+    # is refused rather than persisted unaudited. Audit-then-write is the safe
+    # ordering: a failure between the two leaves a record without a grant, never
+    # a grant without a record. The documented manual ``config.json`` edit remains
+    # available; it is outside this wizard's control and is not a bypass this
+    # step introduces.
+    try:
+        sel().log_tool_invocation(
+            session_key="setup",
+            agent="system",
+            source="cli_setup._setup_sandbox_consent",
+            tool_name="sandbox_allow_unsandboxed_exec",
+            tool_kind="config",
+            outcome="allowed",
+            resources=str(cfg_file),
+            metadata={"reason": "operator_consent_at_setup", "probe_kind": kind},
+            critical=True,
+        )
+    except Exception as exc:
+        print(f"  ⚠️  Could not record the security audit event: {exc}")
+        print("     Refusing to grant unsandboxed execution unaudited —")
+        print("     left fail-closed. Fix the audit log, then re-run setup.\n")
+        return
+
+    cfg["agent"]["sandbox_allow_unsandboxed_exec"] = True
+    try:
+        write_config_atomically(cfg_file, cfg)
+    except OSError as exc:
+        # A locked or read-only config (common on Windows when another process
+        # holds it) must not abort the whole wizard after the user has already
+        # answered. Report it and continue: nothing was granted, so the host
+        # stays fail-closed.
+        print(f"  ⚠️  Could not write {cfg_file}: {exc}")
+        print("     Nothing was granted — the host stays fail-closed. Set")
+        print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
+        return
+    print("  ✅ Recorded: agent.sandbox_allow_unsandboxed_exec = true\n")
 
 
 def _setup_timezone() -> None:

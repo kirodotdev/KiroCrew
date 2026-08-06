@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
-import { renderWithProviders } from '../../test/helpers'
+import { useLocation } from 'react-router-dom'
+import { renderWithProviders, createTestStore } from '../../test/helpers'
 import type { DeniedCommandsData } from '../../api/client'
 
 /* ── api client mock ───────────────────────────────────────────────────────
@@ -72,7 +73,7 @@ function snapshot(overrides: Partial<DeniedCommandsData> = {}): DeniedCommandsDa
  * assertions below (mirrors what a user does to reach an individual rule). */
 async function renderPanel(data: DeniedCommandsData = snapshot()) {
   ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(data)
-  const utils = renderWithProviders(<SecurityPanel />)
+  const utils = renderWithProviders(<SecurityPanel />, { route: '/?section=rules' })
   // Wait for the async query to hydrate the category accordion, then expand all.
   const expandAll = await screen.findByRole('button', { name: 'Expand all' })
   fireEvent.click(expandAll)
@@ -174,6 +175,7 @@ describe('SecurityPanel — denied commands', () => {
     ;(api.deleteUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
   })
 
   it('toggling a built-in OFF opens the confirm modal and only mutates after ack', async () => {
@@ -298,35 +300,6 @@ describe('SecurityPanel — denied commands', () => {
     expect(screen.queryByLabelText(`Delete pattern ${TOGGLE_DESC}`)).not.toBeInTheDocument()
   })
 
-  it('the denied-commands posture pill shows enabled built-ins, not the shipped rule total', async () => {
-    // The posture registry reports the SHIPPED built-in table (137); the pill must
-    // show what is actually enforced after opt-outs + policy pins. Counted from
-    // `dc.builtins` (1 of the 2 fixture rules disabled → 1), NOT `effective_count`,
-    // which also includes user_added and would overshoot the denominator.
-    await renderPanel(
-      snapshot({
-        builtins: snapshot().builtins.map((b, i) => (i === 0 ? { ...b, enabled: false } : b)),
-        effective_count: 129,
-      }),
-    )
-    expect(await screen.findByText('1 built-in rules')).toBeInTheDocument()
-    expect(screen.queryByText('137 built-in rules')).not.toBeInTheDocument()
-    expect(screen.queryByText('129 built-in rules')).not.toBeInTheDocument()
-  })
-
-  it('status rows reserve the external-link slot so every badge shares one right edge', async () => {
-    // The hover-only ExternalLink slot is reserved on every row, linked or not,
-    // so all badges share one right edge; rendering it only on rows with an
-    // href would push those badges left of the unlinked rows' badges.
-    await renderPanel()
-
-    // 'Standard' (Process Sandbox) is linked; 'Interactive' (Tool Approval) is not.
-    for (const text of ['Standard', 'Interactive']) {
-      const trailing = screen.getByText(text).parentElement
-      expect(trailing?.children).toHaveLength(2)
-    }
-  })
-
   it('chevron reveals the built-in pattern text', async () => {
     await renderPanel()
 
@@ -342,11 +315,12 @@ describe('SecurityPanel — governance policy viewer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
   })
 
   it('shows the standalone "no enterprise policy" state when has_policy is false', async () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     expect(await screen.findByText('No enterprise policy in effect')).toBeInTheDocument()
     expect(
@@ -358,7 +332,7 @@ describe('SecurityPanel — governance policy viewer', () => {
 
   it('renders governed + ungoverned rows with effective state and source', async () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govGoverned())
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     // Policy + profile badges.
     expect(await screen.findByText('Policy v1')).toBeInTheDocument()
@@ -388,7 +362,7 @@ describe('SecurityPanel — governance policy viewer', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
       govNoPolicy({ unavailable: true }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     expect(await screen.findByText(/Governance status is temporarily unavailable/)).toBeInTheDocument()
   })
@@ -412,7 +386,7 @@ describe('SecurityPanel — governance policy viewer', () => {
         ],
       }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     expect(await screen.findByText('Disabled for the host surface')).toBeInTheDocument()
     // The unqualified claim must be gone, not merely supplemented.
@@ -435,7 +409,7 @@ describe('SecurityPanel — governance policy viewer', () => {
         ],
       }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     expect(await screen.findByText('Disabled by policy')).toBeInTheDocument()
     expect(screen.queryByText('Disabled for the host surface')).not.toBeInTheDocument()
@@ -445,7 +419,7 @@ describe('SecurityPanel — governance policy viewer', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
       govGoverned({ other_bound_surfaces: ['cron', 'subagent'] }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     // Joined via `fmtList` (Intl.ListFormat), not a hardcoded ', ' — zh joins
     // with 、 and no spaces, so a literal separator would render wrong there.
@@ -456,7 +430,7 @@ describe('SecurityPanel — governance policy viewer', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
       govGoverned({ other_bound_surfaces: [] }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
 
     await screen.findByText('Policy v1')
     expect(
@@ -471,10 +445,11 @@ describe('SecurityPanel — posture disclosure', () => {
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
   })
 
   it('renders a pill per control using the server-derived count and unit', async () => {
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     // The whole point of the change: the count is data, not a hardcoded literal.
     expect(await screen.findByText('2 output paths')).toBeInTheDocument()
@@ -482,7 +457,7 @@ describe('SecurityPanel — posture disclosure', () => {
   })
 
   it('items are hidden until the row is expanded, then reveal label + detail', async () => {
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
     await screen.findByText('2 output paths')
 
     expect(screen.queryByText('Dashboard live stream')).not.toBeInTheDocument()
@@ -506,7 +481,7 @@ describe('SecurityPanel — posture disclosure', () => {
   })
 
   it('a long list is truncated with a "Show N more" affordance and is filterable', async () => {
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
     await screen.findByText('30 credential paths')
     fireEvent.click(screen.getByLabelText(/^Show Sensitive path blocking details/))
 
@@ -525,7 +500,7 @@ describe('SecurityPanel — posture disclosure', () => {
   })
 
   it('a short list gets no filter box', async () => {
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
     await screen.findByText('2 output paths')
     fireEvent.click(screen.getByLabelText(/^Show Output redaction details/))
 
@@ -553,7 +528,7 @@ describe('SecurityPanel — posture disclosure', () => {
         counts: { redaction_paths: null },
       }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     expect(await screen.findByText('unavailable')).toBeInTheDocument()
     expect(screen.queryByText('0 output paths')).not.toBeInTheDocument()
@@ -561,7 +536,7 @@ describe('SecurityPanel — posture disclosure', () => {
 
   it('shows a soft notice when the posture endpoint fails', async () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     expect(
       await screen.findByText(/Security posture detail is temporarily unavailable/),
@@ -576,7 +551,7 @@ describe('SecurityPanel — posture disclosure', () => {
     // governance viewer's soft notice exists to prevent. The two queries resolve
     // independently, so posture-first is a normal interleaving.
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     // Posture resolved; denied-commands never will.
     expect(await screen.findByText('137 built-in rules')).toBeInTheDocument()
@@ -590,7 +565,7 @@ describe('SecurityPanel — posture disclosure', () => {
     // are enforced, indefinitely. Over-reporting a security control is the worse
     // direction, so this state is explicitly "unavailable".
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     // Another control still resolves, proving the panel itself is fine.
     expect(await screen.findByText('2 output paths')).toBeInTheDocument()
@@ -608,7 +583,7 @@ describe('SecurityPanel — posture disclosure', () => {
         effective_count: 3,
       }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     expect(await screen.findByText('2 built-in rules')).toBeInTheDocument()
     expect(screen.queryByText('3 built-in rules')).not.toBeInTheDocument()
@@ -618,14 +593,52 @@ describe('SecurityPanel — posture disclosure', () => {
       await screen.findByText(/2 of 2 built-in rules are currently enforced/),
     ).toBeInTheDocument()
     // Custom patterns are accounted for, just not folded into the built-in ratio.
-    expect(screen.getByText(/1 custom pattern are counted separately below/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Your custom patterns are counted separately in Denied Commands/),
+    ).toBeInTheDocument()
+  })
+
+  it('the deny pill shows enabled built-ins, not the shipped rule total', async () => {
+    // The posture registry reports the SHIPPED built-in table; the pill must show
+    // what is actually enforced after opt-outs + policy pins. Counted from
+    // `dc.builtins` (1 of the 2 fixture rules disabled → 1), NOT `effective_count`,
+    // which also includes user_added and would overshoot the denominator.
+    //
+    // Lives here rather than with the rules section because the pill is a POSTURE
+    // row: the two sections share the `denied-commands` query key, which is what
+    // lets this count stay effective-accurate without the rules pane mounted.
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({
+        builtins: snapshot().builtins.map((b, i) => (i === 0 ? { ...b, enabled: false } : b)),
+        effective_count: 129,
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
+
+    expect(await screen.findByText('1 built-in rules')).toBeInTheDocument()
+    expect(screen.queryByText('137 built-in rules')).not.toBeInTheDocument()
+    expect(screen.queryByText('129 built-in rules')).not.toBeInTheDocument()
+  })
+
+  it('status rows reserve the external-link slot so every badge shares one right edge', async () => {
+    // The hover-only ExternalLink slot is reserved on every row, linked or not,
+    // so all badges share one right edge; rendering it only on rows with an
+    // href would push those badges left of the unlinked rows' badges.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
+
+    // 'Standard' (Process Sandbox) is linked; 'Interactive' (Tool Approval) is not.
+    // Both are also rail summaries, so scope to the posture card's own rows.
+    for (const text of ['Standard', 'Interactive']) {
+      const trailing = (await screen.findAllByText(text)).at(-1)!.parentElement
+      expect(trailing?.children).toHaveLength(2)
+    }
   })
 
   it('clearing a filter re-applies the truncation cap', async () => {
     // `expanded` must reset on a filter change: otherwise expanding a FILTERED
     // subset and then clearing the filter renders the whole list, defeating the
     // INITIAL_VISIBLE DOM cap. Must expand *while filtered* to exercise it.
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
     await screen.findByText('30 credential paths')
     fireEvent.click(screen.getByLabelText(/^Show Sensitive path blocking details/))
 
@@ -659,7 +672,7 @@ describe('SecurityPanel — posture disclosure', () => {
         counts: { redaction_paths: null, audit_surfaces: 2 },
       }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     // The badge is the row's payload, so it belongs in the accessible name.
     expect(
@@ -690,7 +703,7 @@ describe('SecurityPanel — posture disclosure', () => {
         counts: { brand_new_control: 3 },
       }),
     )
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
 
     expect(await screen.findByText('Brand new control')).toBeInTheDocument()
     expect(screen.getByText('3 widgets')).toBeInTheDocument()
@@ -728,7 +741,7 @@ describe('SecurityPanel — third-party app execution', () => {
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
       agent: { apps_allow_third_party: value },
     })
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
     const sw = await screen.findByRole('switch', { name: TITLE })
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
     return sw
@@ -796,7 +809,7 @@ describe('SecurityPanel — third-party app execution', () => {
    */
   it('a failed config read renders no switch at all and says the value is unknown', async () => {
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    renderWithProviders(<SecurityPanel />)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=apps' })
 
     expect(await screen.findByText(/could not read the current setting/i)).toBeInTheDocument()
     // No switch => no aria-checked => no assertion about a value we never read.
@@ -805,5 +818,266 @@ describe('SecurityPanel — third-party app execution', () => {
     expect(screen.queryByText(/trusts every third-party app/i)).not.toBeInTheDocument()
     // And nothing can overwrite the unknown value.
     expect(api.patchConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('SecurityPanel — inspector rail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+  })
+
+  /** Every rail row, in DOM order. */
+  function railRows() {
+    return screen.getAllByRole('option')
+  }
+
+  /** Echoes the ROUTER's query string. MemoryRouter never touches
+   *  window.location, so asserting on that would silently pass forever. */
+  function SearchProbe() {
+    return <div data-testid="search">{useLocation().search}</div>
+  }
+
+  it('renders one row per section and selects the first when the URL names none', async () => {
+    renderWithProviders(<SecurityPanel />)
+
+    const rows = railRows()
+    expect(rows.map(r => r.textContent)).toEqual([
+      expect.stringContaining('Live Security Posture'),
+      expect.stringContaining('YOLO (auto-approve)'),
+      expect.stringContaining('Denied Commands'),
+      expect.stringContaining('Third-party apps'),
+      expect.stringContaining('Defense-in-Depth Architecture'),
+      expect.stringContaining('Governance Policy'),
+      expect.stringContaining('Documentation'),
+    ])
+    expect(rows[0]).toHaveAttribute('aria-selected', 'true')
+    // ...and exactly one row is selected, so the rail never reads as two panes.
+    expect(rows.filter(r => r.getAttribute('aria-selected') === 'true')).toHaveLength(1)
+  })
+
+  it('mounts ONLY the selected section', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
+    await screen.findByText('30 credential paths')
+
+    // The rule table, the ceiling viewer and the docs links all belong to other
+    // sections: keeping them unmounted is the point of the rail (the built-in
+    // table is 137 rows) and is what makes each pane a screenful.
+    expect(screen.queryByRole('button', { name: 'Expand all' })).not.toBeInTheDocument()
+    expect(screen.queryByText('No enterprise policy in effect')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Security deep dive' })).not.toBeInTheDocument()
+  })
+
+  it('choosing a section swaps the pane and records it in the URL', async () => {
+    renderWithProviders(<><SecurityPanel /><SearchProbe /></>, { route: '/?section=posture' })
+    await screen.findByText('30 credential paths')
+
+    fireEvent.click(screen.getByRole('option', { name: /Denied Commands/ }))
+
+    // The rules pane is now mounted...
+    expect(await screen.findByRole('button', { name: 'Expand all' })).toBeInTheDocument()
+    // ...the posture pane is gone...
+    expect(screen.queryByText('30 credential paths')).not.toBeInTheDocument()
+    // ...and the choice is a deep link, so the section survives a reload and can
+    // be targeted by a command-palette result.
+    expect(screen.getByTestId('search')).toHaveTextContent('section=rules')
+  })
+
+  it('an unreadable third-party-apps value gets NO rail summary, rather than reading "Off"', async () => {
+    // Same rule the card itself follows: a failed read is not "off". A rail badge
+    // saying "Off" while third-party code is in fact admitted would be a false
+    // reassurance in the most glanceable place on the page.
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('nope'))
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
+
+    const row = screen.getByRole('option', { name: /Third-party apps/ })
+    await waitFor(() => {
+      expect(row).toHaveTextContent('Third-party apps')
+      expect(row).not.toHaveTextContent('Blocked')
+      expect(row).not.toHaveTextContent('Allowed')
+    })
+  })
+
+  it('summarises an ACTIVE auto-approve grant, not the configured duration', async () => {
+    // The state that is currently weakening the install outranks the setting.
+    const store = createTestStore({
+      dashboard: { status: { yolo: true } } as never,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
+
+    expect(screen.getByRole('option', { name: /YOLO \(auto-approve\)/ }))
+      .toHaveTextContent('YOLO (auto-approve)')
+  })
+})
+
+describe('SecurityPanel — rule search', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+  })
+
+  const SEARCH = 'Search rules, patterns, categories…'
+
+  async function renderRules() {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=rules' })
+    return screen.findByLabelText(SEARCH)
+  }
+
+  it('matches on description and reveals the hit without expanding anything', async () => {
+    const box = await renderRules()
+    // Categories are collapsed on arrival, so the rule row is not in the DOM yet.
+    expect(screen.queryByLabelText(TOGGLE_DESC)).not.toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: 'cloudformation' } })
+
+    // A filter whose hits stay folded away is a filter that did nothing.
+    expect(await screen.findByLabelText(TOGGLE_DESC)).toBeInTheDocument()
+    expect(screen.queryByLabelText(PINNED_DESC)).not.toBeInTheDocument()
+  })
+
+  it('matches on the pattern text, not just the description', async () => {
+    const box = await renderRules()
+    fireEvent.change(box, { target: { value: 'terminate-instances' } })
+
+    expect(await screen.findByLabelText(PINNED_DESC)).toBeInTheDocument()
+    expect(screen.queryByLabelText(TOGGLE_DESC)).not.toBeInTheDocument()
+  })
+
+  it('a category-name match keeps the whole category', async () => {
+    const box = await renderRules()
+    fireEvent.change(box, { target: { value: 'aws destr' } })
+
+    expect(await screen.findByLabelText(TOGGLE_DESC)).toBeInTheDocument()
+    expect(screen.getByLabelText(PINNED_DESC)).toBeInTheDocument()
+  })
+
+  it('the category badge keeps the SHIPPED denominator while filtered', async () => {
+    // The load-bearing assertion of this feature: a filter must never make the
+    // gate read as smaller than it is. Showing "1/1" for a single hit inside a
+    // 2-rule category would tell the reader a rule is not enforced.
+    const box = await renderRules()
+    expect(await screen.findByText('2/2')).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: 'cloudformation' } })
+
+    expect(await screen.findByLabelText(TOGGLE_DESC)).toBeInTheDocument()
+    expect(screen.getByText('2/2')).toBeInTheDocument()
+    expect(screen.queryByText('1/1')).not.toBeInTheDocument()
+    // The match count is reported as a ratio against the shipped total instead.
+    expect(screen.getByText(/1 \/ 2 rules/)).toBeInTheDocument()
+  })
+
+  it('says when the filter is what emptied the custom-pattern card', async () => {
+    // Otherwise an empty Card B reads as "you have no custom patterns" while one
+    // is configured and enforced.
+    const box = await renderRules()
+    expect(await screen.findByText(USER_PATTERN)).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: 'cloudformation' } })
+
+    expect(screen.queryByText(USER_PATTERN)).not.toBeInTheDocument()
+    expect(
+      screen.getByText('Your custom patterns are hidden by the current filter.'),
+    ).toBeInTheDocument()
+  })
+
+  it('reports a miss instead of an empty list', async () => {
+    const box = await renderRules()
+    fireEvent.change(box, { target: { value: 'zzzz' } })
+
+    expect(await screen.findByText('No rules match “zzzz”.')).toBeInTheDocument()
+  })
+
+  it('clearing the filter restores the collapsed accordion state', async () => {
+    // The filter force-opens its hits; clearing it must hand the accordion back
+    // to whatever the user had, not leave every category expanded.
+    const box = await renderRules()
+    fireEvent.change(box, { target: { value: 'cloudformation' } })
+    expect(await screen.findByLabelText(TOGGLE_DESC)).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: '' } })
+
+    await waitFor(() => expect(screen.queryByLabelText(TOGGLE_DESC)).not.toBeInTheDocument())
+  })
+})
+
+describe('SecurityPanel — review-round regressions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+  })
+
+  const SEARCH = 'Search rules, patterns, categories…'
+
+  it('keeps a half-typed deny pattern when the reader switches section and back', async () => {
+    // The rules pane unmounts when another section is selected, so the draft is
+    // held by the shell. Local state here would silently discard a pattern the
+    // user was still typing — a regression against the old single-scroll panel,
+    // where this input never unmounted.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=rules' })
+
+    const input = await screen.findByLabelText('Custom deny pattern')
+    fireEvent.change(input, { target: { value: 'rm -rf /important' } })
+
+    // Leave for another section...
+    fireEvent.click(screen.getByRole('option', { name: /Live Security Posture/ }))
+    expect(screen.queryByLabelText('Custom deny pattern')).not.toBeInTheDocument()
+
+    // ...and come back.
+    fireEvent.click(screen.getByRole('option', { name: /Denied Commands/ }))
+    expect(await screen.findByLabelText('Custom deny pattern')).toHaveValue('rm -rf /important')
+  })
+
+  it('reports NO approval summary until the status payload lands', async () => {
+    // `dashboard.status` is `StatusData | null` and starts as null, so an
+    // `=== undefined` guard never fires. Claiming the reassuring "Interactive"
+    // before the payload arrives would assert a security state we cannot know —
+    // on an install where auto-approve may be active.
+    const store = createTestStore({ dashboard: { status: null } as never })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
+
+    const row = screen.getByRole('option', { name: /YOLO \(auto-approve\)/ })
+    expect(row).not.toHaveTextContent('Interactive')
+  })
+
+  it('drops the expand/collapse controls while filtering, instead of leaving them inert', async () => {
+    // Matches render open regardless of the accordion state, so both controls
+    // and the per-category chevron would record state the user cannot see apply.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=rules' })
+    const box = await screen.findByLabelText(SEARCH)
+
+    expect(screen.getByRole('button', { name: 'Expand all' })).toBeInTheDocument()
+
+    fireEvent.change(box, { target: { value: 'cloudformation' } })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Expand all' })).not.toBeInTheDocument()
+    })
+    expect(screen.queryByRole('button', { name: 'Collapse all' })).not.toBeInTheDocument()
+    // ...and the category header is no longer an expand/collapse button either.
+    expect(screen.queryByRole('button', { name: /category rules/ })).not.toBeInTheDocument()
+  })
+
+  it('exposes the rail groups to assistive tech instead of hiding the headers', async () => {
+    // The headers carry the yours-vs-enforced split that the rail exists to
+    // convey; aria-hidden headers left screen-reader users with seven flat
+    // options. listbox > group > option is the ARIA-valid way to keep it.
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture' })
+
+    for (const name of ['Status', 'Your settings', 'Enforced', 'Reference']) {
+      expect(screen.getByRole('group', { name })).toBeInTheDocument()
+    }
+    // The listbox keeps exactly one accessible name — naming the wrapper too
+    // made a screen reader announce it twice.
+    expect(screen.getAllByRole('listbox', { name: 'Security sections' })).toHaveLength(1)
   })
 })

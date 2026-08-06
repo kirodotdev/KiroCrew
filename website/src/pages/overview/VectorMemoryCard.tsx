@@ -273,7 +273,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
     if (rawStep === 'verifying') return i18nT('pages.overview.vectorMemoryCard.verifying_model_integrity')
     if (rawStep === 'waiting_retry') {
       const attempt = status?.download_attempt ?? 0
-      return `Retrying download (attempt ${attempt})…`
+      return i18nT('pages.overview.vectorMemoryCard.retrying_download', { attempt })
     }
     if (step === 'downloading') {
       const dl = status?.bytes_downloaded ?? 0
@@ -282,7 +282,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         const pctDone = Math.round((dl / total) * 100)
         const dlMB = (dl / 1e6).toFixed(0)
         const totalMB = (total / 1e6).toFixed(0)
-        return `Downloading embedding model (${dlMB}/${totalMB} MB — ${pctDone}%)…`
+        return i18nT('pages.overview.vectorMemoryCard.downloading_embedding_model', { done: dlMB, total: totalMB, pct: pctDone })
       }
       return i18nT('pages.overview.vectorMemoryCard.downloading_embedding_model_610mb')
     }

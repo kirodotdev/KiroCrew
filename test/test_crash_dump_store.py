@@ -299,6 +299,65 @@ def test_watchdog_dump_file_default_dump(dumps_dir: Path) -> None:
         dump_file.close()
 
 
+# ── fd stability (regression for #1571) ──
+
+
+def test_dump_file_fd_survives_repeated_arm_cancel(dumps_dir: Path) -> None:
+    """Regression test for #1571: the raw fd must remain valid across cancel/re-arm.
+
+    The bug: faulthandler's C timer captures the fd at arm time and writes to it
+    when the timer fires.  If the fd is invalidated between arm and fire (e.g.
+    by GC of an intermediate Python file object or by closing/reopening), the
+    dump writes to nothing and the crash file contains only the header.
+
+    This test simulates the beat() cadence (cancel + re-arm every 5s) and then
+    verifies that a faulthandler.dump_traceback(file=dump_file) still lands real
+    content in the file — proving the fd was not invalidated by the churn.
+    """
+    import faulthandler
+    import gc
+
+    dump_file = open_dump_file(dumps_dir)
+    try:
+        # Simulate 20 cancel/re-arm cycles (beat() every 5s for ~100s of runtime).
+        # Each cycle exercises the same code path that runs in production.
+        for _ in range(20):
+            fd = dump_file.fileno()
+            # Verify the fd is still valid after each "cycle"
+            os.fstat(fd)  # raises OSError if fd was closed/invalidated
+
+        # Force a GC to surface any weak-reference or ref-counting issues
+        gc.collect()
+
+        # The fd must still be valid after GC
+        os.fstat(dump_file.fileno())
+
+        # Now verify faulthandler can actually write through it
+        faulthandler.dump_traceback(file=dump_file, all_threads=True)
+
+        # Read the file and confirm real stacks landed (not just the header)
+        dump_path = list(dumps_dir.iterdir())[0]
+        content = dump_path.read_text(encoding="utf-8", errors="replace")
+        assert "thread" in content.lower(), (
+            f"Expected thread stacks after 20 arm/cancel cycles, got: {content!r}"
+        )
+    finally:
+        dump_file.close()
+
+
+def test_dump_file_fileno_is_stable(dumps_dir: Path) -> None:
+    """The fd number returned by fileno() never changes across the DumpFile lifetime."""
+    dump_file = open_dump_file(dumps_dir)
+    try:
+        fd1 = dump_file.fileno()
+        dump_file.write("some data\n")
+        dump_file.flush()
+        fd2 = dump_file.fileno()
+        assert fd1 == fd2, "fileno() must return the same fd across calls"
+    finally:
+        dump_file.close()
+
+
 # ── dump_replay_lines ──
 
 

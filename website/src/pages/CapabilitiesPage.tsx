@@ -60,7 +60,7 @@ export default function CapabilitiesPage() {
   }, [provider])
 
   return (
-    <SidePanelLayout title={i18nT('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} headerRight={<RestartButton />}>
+    <SidePanelLayout title={i18nT('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<RestartButton />}>
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
         {tab === 'templates' && <AgentsPage embedded />}

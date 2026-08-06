@@ -957,3 +957,70 @@ class TestLoadSessionWithRetry:
         assert got is None
         assert rt.load_session.await_count == 1  # bail as soon as the runtime is dead
         assert sleep_mock.await_count == 0
+
+
+class TestStartKiroRuntimeModelEntitlement:
+    """_start_kiro_runtime withholds a configured model the account cannot run.
+
+    This is the path real dashboard sessions take. Sending an unusable model
+    here is what produced a failed turn every time: kiro-cli ACCEPTS the id at
+    session/set_model, so nothing fails locally, and only the service rejects
+    it mid-prompt as "-32603 ... model is not available".
+    """
+
+    def _kiro_provider(self, model):
+        provider = _build_provider(backend="")  # kiro backend
+        provider._client._work_dir = "/tmp/ws"
+        provider._client._agent = "kirocrew"
+        provider._client._sandbox_mode = "auto"
+        provider._client._extra_env = {}
+        provider._client._mcp_gateway_overlay = None
+        provider._client._mcp_gateway_settings_mcp_json = None
+        provider._client._mcp_gateway_socket = None
+        provider._client._model = model
+        provider._client._resume_session_id = ""  # straight to create_session
+        return provider
+
+    async def _run(self, model, advertised):
+        provider = self._kiro_provider(model)
+        handle = MagicMock()
+        handle.session_id = "kiro-sess-1"
+        handle.store_session_config = MagicMock()
+        handle.set_model = AsyncMock()
+        handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+        runtime = MagicMock()
+        runtime.pid = 4321
+        runtime.spawn = AsyncMock()
+        runtime.create_session = AsyncMock(return_value=handle)
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime),
+            patch(
+                "kiro_crew.providers.acp.AcpSessionProvider",
+                side_effect=lambda h, r, **kw: MagicMock(_handle=h, _runtime=r, resumed=False),
+            ),
+            patch("pathlib.Path.exists", return_value=False),
+        ):
+            await provider._start_kiro_runtime()
+        return handle
+
+    @pytest.mark.asyncio
+    async def test_unusable_configured_model_is_never_sent(self):
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
+        handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_usable_configured_model_is_applied(self):
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6", "claude-opus-4.8"])
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_unknown_entitlement_still_applies(self):
+        """No advertised list means unknowable, so behaviour is unchanged."""
+        handle = await self._run("claude-opus-4.8", [])
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_auto_sentinel_never_reaches_the_check(self):
+        handle = await self._run("auto", ["claude-sonnet-4.6"])
+        handle.set_model.assert_not_awaited()

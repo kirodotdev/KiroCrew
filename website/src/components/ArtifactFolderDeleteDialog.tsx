@@ -39,7 +39,7 @@ export default function ArtifactFolderDeleteDialog({
     }
   }
   return (
-    <Modal open={!!folder} onClose={() => { if (!busy) onClose() }} title={`Delete folder “${folder?.name ?? ''}”?`} maxWidth={480}>
+    <Modal open={!!folder} onClose={() => { if (!busy) onClose() }} title={i18nT('components.artifactFolderDeleteDialog.delete_folder', { name: folder?.name ?? '' })} maxWidth={480}>
       <p className="text-sm text-text m-0">
         {i18nT('components.artifactFolderDeleteDialog.this_folder_contains')} {i18nT('components.artifactFolderDeleteDialog.artifact', { count: stats.artifactCount })}
         {stats.subfolderCount > 0 ? ` across ${i18nT('components.artifactFolderDeleteDialog.subfolder', { count: stats.subfolderCount })}` : ''}.

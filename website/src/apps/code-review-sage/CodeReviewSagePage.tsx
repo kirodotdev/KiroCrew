@@ -283,7 +283,7 @@ export default function CodeReviewSagePage() {
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <SendBtn onClick={() => reviewRepo(false)} disabled={running || unreviewedCount === 0}>
-                  {running ? i18nT('apps.codeReviewSage.codeReviewSagePage.running') : `Review ${unreviewedCount} new`}
+                  {running ? i18nT('apps.codeReviewSage.codeReviewSagePage.running') : i18nT('apps.codeReviewSage.codeReviewSagePage.review_new', { count: unreviewedCount })}
                 </SendBtn>
                 <button onClick={() => reviewRepo(true)} disabled={running || repoPrs.count === 0}
                   title={i18nT('apps.codeReviewSage.codeReviewSagePage.re_review_every_open_pr_ignoring_the_reviewed_hi')}
@@ -446,7 +446,7 @@ export default function CodeReviewSagePage() {
                 <li key={ns.name} className="border-b border-border">
                   <div className="flex items-center gap-2.5 text-xs py-2">
                     <input type="checkbox" checked={isActive}
-                      aria-label={`Load namespace ${ns.name} during reviews`}
+                      aria-label={i18nT('apps.codeReviewSage.codeReviewSagePage.load_namespace_during_reviews', { name: ns.name })}
                       title={isActive ? i18nT('apps.codeReviewSage.codeReviewSagePage.active_loaded_during_reviews_uncheck_to_disable') : i18nT('apps.codeReviewSage.codeReviewSagePage.inactive_check_to_load_during_reviews')}
                       onChange={e => toggleActive(ns.name, e.target.checked)}
                       className="cursor-pointer" />
@@ -463,9 +463,9 @@ export default function CodeReviewSagePage() {
                         <span className="text-warn" title={i18nT('apps.codeReviewSage.codeReviewSagePage.pending_candidates_awaiting_consolidation')}>{ns.candidate} {i18nT('apps.codeReviewSage.codeReviewSagePage.pending')}</span>
                       )}
                       {ns.name !== 'default' && (
-                        <Clickable aria-label={`Delete namespace ${ns.name} and all its learnings`}
+                        <Clickable aria-label={i18nT('apps.codeReviewSage.codeReviewSagePage.delete_namespace_and_all_its_learnings', { name: ns.name })}
                           className="cursor-pointer hover:text-danger inline-flex"
-                          onClick={() => { if (confirm(`Delete namespace "${ns.name}" and all its learnings?`)) deleteNsMut.mutate(ns.name) }}>
+                          onClick={() => { if (confirm(i18nT('apps.codeReviewSage.codeReviewSagePage.delete_namespace_confirm', { name: ns.name }))) deleteNsMut.mutate(ns.name) }}>
                           <Trash2 size={12} />
                         </Clickable>
                       )}

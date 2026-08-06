@@ -196,7 +196,7 @@ function LiveSiteFrame({ url, slug }: { url: string; slug: string }) {
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         loading="lazy"
-        title={`Live preview: ${slug}`}
+        title={i18nT('components.webAppArtifactCard.live_preview', { slug })}
         tabIndex={-1}
         className="border-none bg-card block"
         style={{ width: BASE_W, height: BASE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}
@@ -265,7 +265,7 @@ function LocalAppFrame({ base, slug }: { base: string; slug: string }) {
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         loading="lazy"
-        title={`App preview: ${slug}`}
+        title={i18nT('components.webAppArtifactCard.app_preview', { slug })}
         tabIndex={-1}
         className="border-none bg-card block"
         style={{ width: BASE_W, height: BASE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}
@@ -394,14 +394,14 @@ export default function WebAppArtifactCard({
   const notDeployed = !deploy_target.public_url && !isExpired && !isDeploying
   const frameUrl = !isExpired && !isDeploying && remoteFramable ? framablePreviewUrl(deploy_target.public_url) : null
   const costLabel = cost.model === 'ttl-window'
-    ? `Estimated cost \u2014 over ${cost.window_hours}h TTL window`
+    ? i18nT('components.webAppArtifactCard.estimated_cost_over_ttl_window', { hours: cost.window_hours })
     : i18nT('components.webAppArtifactCard.estimated_monthly_cost')
 
   const handleTeardown = () => {
     const resourceList = architecture.resources
       .map((r: { type: string; id: string }) => `  ${r.type}: ${r.id}`)
       .join('\n')
-    const msg = `This will tear down the deployed application and delete these resources:\n\n${resourceList}\n\nThis action is not reversible. Continue?`
+    const msg = i18nT('components.webAppArtifactCard.tear_down_confirm', { resources: resourceList })
     if (!window.confirm(msg)) return
     teardownMut.mutate()
   }
@@ -483,7 +483,9 @@ export default function WebAppArtifactCard({
           <div className="rounded-xl border border-border bg-card p-4">
             <CostPills
               cost={cost}
-              label={`Estimated cost once deployed ${cost.model === 'ttl-window' ? `(over ${cost.window_hours}h)` : '(monthly)'}`}
+              label={cost.model === 'ttl-window'
+                ? i18nT('components.webAppArtifactCard.estimated_cost_once_deployed_over', { hours: cost.window_hours })
+                : i18nT('components.webAppArtifactCard.estimated_cost_once_deployed_monthly')}
             />
           </div>
         )}

@@ -42,6 +42,24 @@ from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT_SECS = 3.0
+
+# --- Bridge liveness (ping-while-outstanding) constants ---------------------
+# Interval between successive stub→gateway liveness pings while at least one
+# JSON-RPC request is outstanding. A peer that is merely slow (but alive)
+# responds to pings even while processing a long tool call.
+_BRIDGE_PING_INTERVAL_SECS = 10.0
+# How many CONSECUTIVE pings must go unanswered before declaring the peer dead.
+# Total grace period is _BRIDGE_PING_INTERVAL_SECS × _BRIDGE_PING_MAX_MISSES.
+_BRIDGE_PING_MAX_MISSES = 3
+# Reserved type field for the stub→gateway liveness ping control frame and its
+# response. The gateway echoes {"type": "pong"} for any {"type": "ping"} it
+# receives from a registered stub.
+_BRIDGE_PING_TYPE = "ping"
+# Cap on emitting the liveness error frames. Bounded because the whole point of
+# that path is to stop a caller hanging — an unbounded write to a wedged reader
+# would reproduce the defect it exists to fix.
+_ERROR_EMIT_TIMEOUT_SECS = 5.0
+_BRIDGE_PONG_TYPE = "pong"
 # Pre-flight ``ensure_backend`` reply timeout. Must comfortably
 # exceed cold backend fork latency. On timeout the stub falls back to a
 # direct per-session exec, so an over-generous value only costs a slower
@@ -497,6 +515,18 @@ async def handshake(
     raise FallbackRequestedError(f"unexpected handshake reply: type={msg_type!r}")
 
 
+class BridgeLivenessFailure:
+    """Returned by :func:`run_bridge` when the peer stops responding to
+    liveness pings while requests are outstanding. Contains the IDs of
+    the requests that were still pending so the caller can emit JSON-RPC
+    error frames before degrading."""
+
+    __slots__ = ("outstanding_ids",)
+
+    def __init__(self, outstanding_ids: list) -> None:  # noqa: D107
+        self.outstanding_ids = outstanding_ids
+
+
 async def run_bridge(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -504,13 +534,23 @@ async def run_bridge(
     *,
     stdin: Optional[asyncio.StreamReader] = None,
     stdout_writer: Optional[asyncio.StreamWriter] = None,
-) -> None:
+    ping_interval: float = _BRIDGE_PING_INTERVAL_SECS,
+    ping_max_misses: int = _BRIDGE_PING_MAX_MISSES,
+    peer_supports_ping: bool = False,
+) -> Optional[BridgeLivenessFailure]:
     """Pump stdin ↔ socket until either side closes or ``stop_event`` fires.
 
     ``stdin``/``stdout_writer`` are dependency-injected so tests can drive
     the bridge through in-process pipes; ``None`` falls back to real
     ``sys.stdin``/``sys.stdout``. On clean stdin EOF an ``Unregister``
-    frame is sent so gatewayd detaches without waiting on refcount."""
+    frame is sent so gatewayd detaches without waiting on refcount.
+
+    Returns ``None`` on normal termination. Returns a
+    :class:`BridgeLivenessFailure` when the gateway stopped answering
+    liveness pings while requests were outstanding — the caller should
+    emit JSON-RPC errors for the listed IDs and fall back to a direct
+    exec.
+    """
 
     # Writer-thread liveness signals. The real bridge hands stdout frames to a
     # daemon writer thread (see stdout_pump); if that thread dies (broken pipe
@@ -532,6 +572,17 @@ async def run_bridge(
     def _flag_writer_failed() -> None:
         writer_failed.set()
         bridge_loop.call_soon_threadsafe(writer_failed_evt.set)
+
+    # --- Liveness state (ping-while-outstanding) ----------------------------
+    # Track JSON-RPC request IDs forwarded to the gateway that have not yet
+    # received a response. The liveness monitor fires ONLY while this set is
+    # non-empty, so idle/slow-but-alive sessions are never timed out.
+    _outstanding_ids: set = set()
+    # Pong receipt flag: set by the stdout pump when a pong arrives, cleared
+    # by the monitor each tick. Lightweight alternative to a counter/queue.
+    _pong_received = asyncio.Event()
+    # Peer-dead event: set by the monitor when consecutive pings go unanswered.
+    _peer_dead_evt = asyncio.Event()
 
     async def stdin_pump() -> None:
         # Inbound line source. Tests inject an in-process StreamReader; the
@@ -589,6 +640,15 @@ async def run_bridge(
                 except Exception:
                     pass
                 return
+            # Track outbound JSON-RPC request IDs (have "method" + "id").
+            # Best-effort: parse failures are silently ignored — the frame is
+            # still forwarded verbatim.
+            try:
+                msg = json.loads(line)
+                if isinstance(msg, dict) and "method" in msg and "id" in msg:
+                    _outstanding_ids.add(msg["id"])
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
             try:
                 # Serialize with _recaller_loop's _write_frame writes on the
                 # same socket: the write itself is whole-frame atomic, but a
@@ -670,6 +730,25 @@ async def run_bridge(
                     return
                 if not line:
                     return
+                # Intercept pong control frames (gateway liveness reply) and
+                # track response IDs to clear outstanding requests.
+                # Best-effort: parse failures pass the line through verbatim.
+                _is_pong = False
+                try:
+                    msg = json.loads(line)
+                    if isinstance(msg, dict):
+                        if msg.get("type") == _BRIDGE_PONG_TYPE:
+                            _pong_received.set()
+                            _is_pong = True
+                        elif "id" in msg and "method" not in msg:
+                            # A response (has id, no method) — clear from
+                            # outstanding set.
+                            _outstanding_ids.discard(msg["id"])
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+                # Pong is a control frame; never forward to kiro-cli stdout.
+                if _is_pong:
+                    continue
                 try:
                     await _emit(line)
                 except (ConnectionError, BrokenPipeError):
@@ -683,6 +762,70 @@ async def run_bridge(
                 except queue.Full:
                     pass
 
+    async def _liveness_monitor() -> None:
+        """Ping the gateway ONLY while requests are outstanding, and declare the
+        peer dead after ``ping_max_misses`` consecutive unanswered pings.
+
+        Each ping/miss cycle consumes exactly ONE ``ping_interval``: when
+        something is outstanding the wait for the pong *is* the interval, so the
+        advertised grace is ``ping_interval × ping_max_misses`` rather than twice
+        that. Only an idle bridge sleeps separately, and it resets the miss count
+        so an earlier partial streak cannot carry across an idle gap.
+
+        Never fires on an idle bridge, nor on a peer that answers while still
+        working — that is the distinction between "slow" and "wedged", and the
+        reason a blanket bridge timeout is the wrong mechanism here.
+        """
+        consecutive_misses = 0
+        while not stop_event.is_set() and not _peer_dead_evt.is_set():
+            if not _outstanding_ids:
+                # Idle: burn one interval, then re-check. A stop during the wait
+                # exits cleanly.
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=ping_interval)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                consecutive_misses = 0
+                continue
+            # Clear the pong flag before sending so a reply to THIS ping is what
+            # satisfies the wait below, not a stale one.
+            _pong_received.clear()
+            try:
+                await _write_frame(writer, {"type": _BRIDGE_PING_TYPE})
+            except (OSError, ConnectionError, BrokenPipeError):
+                # Socket already broken — bridge will tear down on its own.
+                return
+            # This wait IS the cycle's interval — do not sleep again.
+            # We check immediately after sending: the pong may have arrived
+            # between our clear and the send (or during the write).
+            # Give the peer the full next interval to reply.
+            try:
+                await asyncio.wait_for(
+                    _pong_received.wait(), timeout=ping_interval
+                )
+            except asyncio.TimeoutError:
+                pass
+            if _pong_received.is_set():
+                consecutive_misses = 0
+            else:
+                consecutive_misses += 1
+                logger.warning(
+                    "stub liveness: ping unanswered (%d/%d), "
+                    "outstanding_ids=%d",
+                    consecutive_misses,
+                    ping_max_misses,
+                    len(_outstanding_ids),
+                )
+                if consecutive_misses >= ping_max_misses:
+                    logger.error(
+                        "stub liveness: peer dead after %d missed pings; "
+                        "triggering fallback",
+                        consecutive_misses,
+                    )
+                    _peer_dead_evt.set()
+                    return
+
     tasks = {
         asyncio.create_task(stdin_pump(), name="kirocrew-mcp-stub-stdin"),
         asyncio.create_task(stdout_pump(), name="kirocrew-mcp-stub-stdout"),
@@ -694,6 +837,16 @@ async def run_bridge(
             writer_failed_evt.wait(), name="kirocrew-mcp-stub-writer-failed"
         ),
     }
+    # Gated on negotiation, not assumed: an older gatewayd has no ping handler,
+    # so pinging it would guarantee a miss streak and force-degrade a healthy
+    # session. No capability, no monitor — the bridge behaves exactly as before.
+    if peer_supports_ping:
+        tasks.add(
+            asyncio.create_task(
+                _liveness_monitor(), name="kirocrew-mcp-stub-liveness"
+            )
+        )
+    result: Optional[BridgeLivenessFailure] = None
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
@@ -702,6 +855,11 @@ async def run_bridge(
                 t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await _safe_close(writer)
+        # If the peer-dead event fired, report a liveness failure so the
+        # caller can emit JSON-RPC errors and degrade.
+        if _peer_dead_evt.is_set() and _outstanding_ids:
+            result = BridgeLivenessFailure(list(_outstanding_ids))
+    return result
 
 
 def _fallback_log_path() -> Path:
@@ -969,7 +1127,14 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             name="kirocrew-mcp-stub-recaller",
         )
     try:
-        await run_bridge(reader, writer, stop_event)
+        liveness_failure = await run_bridge(
+            reader,
+            writer,
+            stop_event,
+            peer_supports_ping=bool(
+                isinstance(capabilities, list) and "bridge_ping" in capabilities
+            ),
+        )
     finally:
         if recaller_task is not None:
             if not recaller_task.done():
@@ -979,6 +1144,61 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             # asyncio logs "Task exception was never retrieved" and hides a bug.
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await recaller_task
+
+    # Liveness failure: the gateway stopped answering pings while requests were
+    # outstanding. Fail the outstanding calls FAST and CLEANLY instead of leaving
+    # them parked forever.
+    #
+    # Deliberately NOT followed by fallback_exec. The four pre-flight fallback
+    # sites work because kiro-cli's ``initialize`` is still unread in fd0, so the
+    # exec'd server comes up initialized. Here stdin_pump has already consumed
+    # and forwarded ``initialize``, and kiro-cli never re-sends it (see
+    # gatewayd's ``captured_init`` rationale), so an exec'd server would be a
+    # fresh, never-initialized MCP server that rejects every subsequent call.
+    # Exec would convert "wedged" into "fast-failing", not into "working" — and
+    # it would also throw away the socket a future reconnect could reuse.
+    if liveness_failure is not None:
+        def _emit_errors() -> None:
+            """Write the error frames on a worker thread.
+
+            A blocked kiro-cli reader (full stdout pipe) must not wedge the very
+            path whose job is to unwedge the caller, so the write is offloaded
+            and bounded by the caller's timeout rather than run inline.
+            """
+            for req_id in liveness_failure.outstanding_ids:
+                err_frame = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32603,
+                        "message": (
+                            "Gateway stopped responding; this call was failed so "
+                            "it would not hang. Retry it."
+                        ),
+                    },
+                }
+                sys.stdout.buffer.write(
+                    json.dumps(err_frame, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+            sys.stdout.buffer.flush()
+
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_emit_errors), timeout=_ERROR_EMIT_TIMEOUT_SECS
+            )
+        except (asyncio.TimeoutError, OSError, ValueError):
+            # Nothing better to do: the reader is gone or wedged, and the caller
+            # is already being abandoned. Exiting still closes stdout, which is
+            # what tells kiro-cli this server is done.
+            logger.warning("could not emit liveness error frames pool=%s", pool_label)
+        log_fallback("bridge_liveness_dead", stub_uuid, pool_label, args)
+        logger.warning(
+            "bridge peer stopped answering pings; failed %d outstanding call(s) "
+            "pool=%s",
+            len(liveness_failure.outstanding_ids),
+            pool_label,
+        )
+        return 1
     return 0
 
 

@@ -26,7 +26,10 @@ from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
     AcpError,
+    AcpModelUnavailable,
     AcpProcessDied,
+    advertised_model_ids,
+    model_is_unusable,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import STOP_REASON_END_TURN
@@ -477,7 +480,19 @@ class AcpSessionProvider(LLMProvider):
     # ── Model & Effort ──
 
     async def set_model(self, model_id: str) -> None:
-        """Switch the active model."""
+        """Switch the active model.
+
+        An explicit pick the account cannot run is REFUSED here rather than
+        silently downgraded (the opposite of the spawn path in ``providers.acp``,
+        which withholds an inherited default): the user asked for this exact
+        model, so reporting success while running another one would be a lie.
+        Raises :class:`AcpModelUnavailable` so the caller surfaces it as a user
+        error instead of recovering with a session reset — a reset here would
+        destroy the live conversation and still land on a different model.
+        """
+        advertised = advertised_model_ids(self._handle.available_models)
+        if model_is_unusable(model_id, advertised):
+            raise AcpModelUnavailable(model_id, advertised)
         await self._guarded(self._handle.set_model(model_id))
 
     async def set_mode(self, agent_name: str) -> None:

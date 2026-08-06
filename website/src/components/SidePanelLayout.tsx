@@ -1,6 +1,7 @@
 import React from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { safeGetSessionItem, safeSetSessionItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
 export interface SidePanelTab {
@@ -22,6 +23,11 @@ interface SidePanelLayoutProps {
   title: string
   tabs: readonly SidePanelTab[]
   defaultTab?: string
+  /** Stable id under which this page's last visited tab is remembered for the
+   *  rest of the browser session, so navigating away and back returns to it
+   *  instead of snapping to the first tab. Omit to disable remembering.
+   *  Must NOT be localized — it is a storage key, not a label. */
+  rememberKey?: string
   footer?: React.ReactNode
   headerRight?: React.ReactNode
   /** When true, content area uses overflow-hidden + flex layout for Virtuoso/fixed-height children */
@@ -29,19 +35,86 @@ interface SidePanelLayoutProps {
   children: (activeTab: string) => React.ReactNode
 }
 
-export default function SidePanelLayout({ title, tabs, defaultTab, footer, headerRight, fixedContent, children }: SidePanelLayoutProps) {
+/** sessionStorage namespace for the per-page remembered tab. Session-scoped on
+ *  purpose: returning to a page inside one sitting should resume where you
+ *  left off, but a fresh launch should open on the page's own first tab rather
+ *  than somewhere you were days ago. */
+const TAB_MEMORY_PREFIX = 'kirocrew:sidepanel-tab:'
+
+export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, fixedContent, children }: SidePanelLayoutProps) {
   const [params, setParams] = useSearchParams()
   const isMobile = useIsMobile()
   const rawTab = params.get('tab')
   const first = defaultTab || tabs[0]?.key || ''
-  const tab = rawTab && tabs.some(t => t.key === rawTab) ? rawTab : first
-  const setTab = (t: string) => setParams(prev => {
-    const next = new URLSearchParams(prev)
-    if (t === first) next.delete('tab')
-    else next.set('tab', t)
-    return next
-  }, { replace: true })
+
+  // Read the remembered tab ONCE, before any effect can overwrite it. Reading
+  // it lazily inside an effect instead would race the persist effect below,
+  // which fires on the same mount with the not-yet-restored tab.
+  const [remembered] = React.useState(() => (rememberKey ? safeGetSessionItem(TAB_MEMORY_PREFIX + rememberKey) : null))
+
+  // The tab to show whenever the URL carries no `?tab=`. Seeded from the
+  // remembered tab DURING THE FIRST RENDER, so the remembered pane is what
+  // actually paints — restoring from an effect instead would mount the first
+  // tab's pane for a frame (a visible flash, and real wasted work when that
+  // pane fetches: Overview loads memory + usage metrics).
+  //
+  // It stays in step with whatever is shown, rather than being a one-shot,
+  // because the param can vanish while this component is still MOUNTED: ⌘+,
+  // runs `navigate('/settings')` and the sidebar entry is that same route, so
+  // an already-open page keeps its layout alive and simply loses its param. A
+  // one-shot restore fell back to the first tab there — snapping the pane to
+  // Overview and letting the persist effect below overwrite the stored tab
+  // with `overview`, destroying the very preference this exists to keep.
+  const [fallbackTab, setFallbackTab] = React.useState<string | null>(() =>
+    rememberKey && !rawTab && remembered && tabs.some(t => t.key === remembered) ? remembered : null,
+  )
+
+  const tab = rawTab && tabs.some(t => t.key === rawTab) ? rawTab : (fallbackTab || first)
+  const setTab = (t: string) => {
+    // Synchronously, in the same batched update as the param write: picking the
+    // FIRST tab deletes the param, so a fallback still holding the previous tab
+    // would render it for a frame AND get re-written into the URL by the sync
+    // effect below — silently undoing the click.
+    if (rememberKey) setFallbackTab(t)
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (t === first) next.delete('tab')
+      else next.set('tab', t)
+      return next
+    }, { replace: true })
+  }
   const meta = tabs.find(t => t.key === tab)
+
+  // Keep the URL in step with the shown tab, so the address bar stays
+  // copy-pasteable — including after an in-place param drop. Keyed on the
+  // resolved tab rather than mount-only, and it cannot loop: writing the param
+  // makes `rawTab` truthy, which short-circuits the next run. `tab === first`
+  // writes nothing, matching `setTab`'s convention that the first tab is the
+  // param-less state.
+  //
+  // Deliberately a passive effect, NOT useLayoutEffect: react-router 7 drops
+  // navigations fired from a layout effect during the initial mount (its ready
+  // flag is set in a passive effect) — see the same note on SettingsPage's
+  // legacy tab remap.
+  React.useEffect(() => {
+    if (!rememberKey || rawTab || !tab || tab === first) return
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', tab)
+      return next
+    }, { replace: true })
+  }, [rememberKey, rawTab, tab, first, setParams])
+
+  // Remember the tab that is effectively shown — in component state, so an
+  // in-place param drop has something to fall back to, and in sessionStorage,
+  // so a later visit restores it. Keying off the shown tab (not just an
+  // explicit click) means a deep link (command palette, docs link) is
+  // remembered too.
+  React.useEffect(() => {
+    if (!rememberKey || !tab) return
+    setFallbackTab(tab)
+    safeSetSessionItem(TAB_MEMORY_PREFIX + rememberKey, tab)
+  }, [rememberKey, tab])
 
   return (
     <div className={`flex-1 min-h-0 flex overflow-hidden ${isMobile ? 'flex-col' : ''}`}>

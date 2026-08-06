@@ -22,7 +22,7 @@
 
 /** @typedef {'PASS'|'FAIL'|'MISSING'|'NOT RUN'} RowState */
 
-/** The six processes. Each may host more than one check. */
+/** The eight processes. Each may host more than one check. */
 export const SCRIPTS = [
   { key: 'pseudo', argv: ['gen-pseudolocale.mjs', '--check'] },
   { key: 'keys', argv: ['check-i18n-keys.mjs'] },
@@ -31,10 +31,11 @@ export const SCRIPTS = [
   { key: 'source', argv: ['check-source-strings.mjs'] },
   { key: 'strings', argv: ['check-i18n-strings.mjs'] },
   { key: 'dnt', argv: ['check-dnt-catalogs.mjs'] },
+  { key: 'manifest', argv: ['check-app-manifest-sync.mjs'] },
 ]
 
 /**
- * The twelve checks, in reading order within their section.
+ * The thirteen checks, in reading order within their section.
  *
  * `find` pulls the numbers out of the owning script's output on the PASSING path;
  * `whenFailed` does the same for the failing path, because most of these scripts print
@@ -114,6 +115,24 @@ export const CHECKS = [
     whenFailed: {
       find: /^\[dnt\] (\d+) do-not-translate violation\(s\) across (\d+) catalog/m,
       summary: m => `${m[1]} respelt term(s) across ${m[2]} catalog(s)`,
+    },
+  },
+  {
+    // Built-in app metadata is owned by `app.json` on the Python side, and
+    // `APP_MANIFEST_KEY` localises it WITHOUT replacing the manifest's English --
+    // so `kirocrew app list` keeps printing English by construction rather than by
+    // a fallback. The price of that design is two copies of the same sentence, and
+    // this is what stops them drifting: edit a `description` in `app.json` and,
+    // unchecked, the CLI shows the new words while the dashboard shows the old ones
+    // and nine translations silently describe a string that no longer exists.
+    // Hard-zero and honestly so: both sides are files at this commit, no baseline is
+    // read, and a failure names the exact key and both strings.
+    id: 'manifest-sync', script: 'manifest', scope: 'repo', enforce: 'hard-zero',
+    find: /^OK: (\d+) built-in manifests, (\d+) strings match/m,
+    summary: m => `${m[1]} manifests · ${m[2]} strings in sync`,
+    whenFailed: {
+      find: /^\[app-manifest-sync\] FAIL — (\d+) problem\(s\)/m,
+      summary: m => `${m[1]} manifest/catalog mismatch(es)`,
     },
   },
   {

@@ -100,6 +100,7 @@ from kiro_crew.validation import (
     AUTONUDGE_STOP_SCHEMA,
     CHANNEL_ID_RE,
     GET_CHAT_SESSION_SCHEMA,
+    KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
     KNOWLEDGE_DEDUP_SCHEMA,
     LEARN_ADD_SCHEMA,
     LIST_SESSIONS_SCHEMA,
@@ -1706,6 +1707,66 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "knowledge_add_document",
+            "description": (
+                "Add a document you have READ during this task to the user's "
+                "knowledge library, so it stays searchable later. Use it for a "
+                "document that turned out to be load-bearing -- a design doc, "
+                "spec, RFC, runbook, or wiki page that explains intent, a "
+                "decision, or how something works, and that you would want to "
+                "find again in a future session.\n\n"
+                "Pass the document TEXT you already have as `content` -- this tool "
+                "never opens files, so read the document with your own tools first, "
+                "then hand over the text. Also pass where it came from as "
+                "`source_uri` (the path or URL you read it from): that is what tells "
+                "two documents apart, so a second \"README\" does not silently "
+                "replace the first. Adding the same document twice is harmless: "
+                "identical content is refused, not duplicated.\n\n"
+                "Do NOT add: source code, agent instruction files (AGENTS.md, "
+                "SKILL.md), generated or machine-readable files, chat transcripts, "
+                "your own notes and summaries, or a page you only skimmed. When in "
+                "doubt, skip it -- a polluted library makes every future search "
+                "worse."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Human-readable document title, as the user would "
+                            "recognise it."
+                        ),
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The document text, as you already have it.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "One line on why this document is worth keeping. "
+                            "Recorded in the audit trail."
+                        ),
+                    },
+                    "source_uri": {
+                        "type": "string",
+                        "description": (
+                            "Where you read this document from -- a file path, "
+                            "URL, or any stable handle. This is the document's "
+                            "identity: re-adding the same source_uri replaces that "
+                            "document, and two documents with different URIs stay "
+                            "separate even when their titles match. Nothing here "
+                            "is opened or fetched -- it is only stored as a label. "
+                            "Required: without it two documents sharing a title "
+                            "would overwrite each other."
+                        ),
+                    },
+                },
+                "required": ["title", "content", "source_uri"],
             },
         },
         {
@@ -5842,6 +5903,52 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             metadata={"query": query, "result_count": len(results)},
         )
         return output
+
+    if name == "knowledge_add_document":
+        args = validate_tool_args(args, KNOWLEDGE_ADD_DOCUMENT_SCHEMA)
+        title = args["title"]
+        content = args.get("content", "")
+        if not content.strip():
+            return "Provide the document text as content."
+        # Routed through the gateway, not the store: ingestion needs the chunker,
+        # extraction pool and embedder, and only the gateway holds them.
+        resp = _post("/api/knowledge/agent-document", {
+            "title": title, "content": content,
+            "reason": args.get("reason", ""),
+            "source_uri": args.get("source_uri", ""),
+        }, timeout=180)
+        # The title arrives straight from the tool call, so it reaches the audit
+        # log before the server-side redaction the document body gets. SEL is
+        # persisted and readable, so redact it here.
+        audit_title, _ = redact_credentials(title)
+        audit_title, _ = redact_exfiltration_urls(audit_title)
+        if resp.get("error"):
+            sel().log_tool_invocation(
+                session_key=_resolve_session_key(),
+                source="mcp",
+                tool_name="knowledge_add_document",
+                outcome="error",
+                metadata={"title": audit_title},
+            )
+            return f"Could not add the document: {resp['error']}"
+        add_status = str(resp.get("status") or "")
+        sel().log_tool_invocation(
+            session_key=_resolve_session_key(),
+            source="mcp",
+            tool_name="knowledge_add_document",
+            outcome=add_status,
+            metadata={"title": audit_title, "items": resp.get("items", 0)},
+        )
+        if add_status == "duplicate":
+            return (f"Already in the knowledge library, nothing added "
+                    f"({resp.get('reason', 'duplicate content')}).")
+        # audit_title, not title: a document name is caller-supplied and free-form
+        # enough to carry a credential, and this string is rendered into chat and
+        # persisted in the transcript -- a wider audience than the audit log that
+        # already takes the redacted form. Redaction is a no-op for an ordinary name.
+        return (f"Added {audit_title!r} to the knowledge library "
+                f"({resp.get('items', 0)} chunk(s)). It is now searchable via "
+                f"local_knowledge_search.")
 
     if name == "knowledge_dedup":
         args = validate_tool_args(args, KNOWLEDGE_DEDUP_SCHEMA)

@@ -337,7 +337,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <button
           onClick={() => refreshMutation.mutate()}
           disabled={refreshMutation.isPending}
-          title={`Re-fetch this repo's issues + labels from ${terms.providerName}`}
+          title={i18nT('apps.issueRadar.views.settings.repoSettings.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
           className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-text disabled:opacity-40 cursor-pointer"
         >
           <RefreshCw size={13} className={refreshMutation.isPending ? 'animate-spin' : ''} /> {i18nT('apps.issueRadar.views.settings.repoSettings.refresh')}
@@ -465,7 +465,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
       <Card
         icon={Users}
         title={i18nT('apps.issueRadar.views.settings.repoSettings.members')}
-        desc={`Everyone with access to this repo, read from ${terms.providerName} — each with their role. Shown for reference; read-only here.`}
+        desc={i18nT('apps.issueRadar.views.settings.repoSettings.members_read_from_provider', { provider: terms.providerName })}
       >
         {membersLoading ? (
           <div className="text-[12px] text-muted py-1">{i18nT('apps.issueRadar.views.settings.repoSettings.loading_members')}</div>
@@ -474,7 +474,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         ) : members.length === 0 ? (
           <div className="text-[13px] text-muted py-1">
             {memberSource === 'derived'
-              ? `No members detected among ${repo}'s issues yet. Full roster access needs push permission on this repo.`
+              ? i18nT('apps.issueRadar.views.settings.repoSettings.no_members_detected_among', { repo })
               : i18nT('apps.issueRadar.views.settings.repoSettings.no_members_found_for_this_repo')}
           </div>
         ) : (

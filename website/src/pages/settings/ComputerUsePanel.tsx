@@ -8,6 +8,7 @@ import { api } from '../../api/client'
 import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 
 const QK = ['computer-use-config']
 
@@ -140,7 +141,7 @@ function PermRow({ label, state, pane }: { label: string; state: string; pane: s
       <span className="flex items-center gap-2">
         <Badge variant={variant}>{permLabel(state)}</Badge>
         {state !== GRANTED && (
-          <Btn onClick={() => openSystemSettings(pane)} aria-label={`Open System Settings for ${label}`}>
+          <Btn onClick={() => openSystemSettings(pane)} aria-label={i18nT('pages.settings.computerUsePanel.open_system_settings_for', { label })}>
             {i18nT('pages.settings.computerUsePanel.open_system_settings')} <ExternalLink className="lucide-inline" />
           </Btn>
         )}
@@ -267,7 +268,7 @@ export function ComputerUsePanel() {
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={macOnlyBadge}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
-            {cfg.reason || `Computer use is not available on ${cfg.platform}.`}
+            {cfg.reason || i18nT('pages.settings.computerUsePanel.computer_use_not_available', { platform: cfg.platform })}
           </div>
         </SettingsCard>
       </SettingsSection>
@@ -276,11 +277,7 @@ export function ComputerUsePanel() {
 
   return (
     <>
-      {saveError && (
-        <div className="mb-4 rounded-lg border border-danger/20 bg-danger/10 p-3 animate-rise">
-          <span className="text-[13px] text-danger">{saveError}</span>
-        </div>
-      )}
+      <ErrorNotice message={saveError} className="mb-4 animate-rise" />
 
       {/* A hand-edited keystone whose app lists could not be parsed. The page
           renders anyway — on purpose, because this is the only UI that can repair

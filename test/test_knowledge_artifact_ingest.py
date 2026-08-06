@@ -1,6 +1,7 @@
 """Tests for artifact -> Knowledge Library auto-ingest (aggregate source model)."""
 
 import asyncio
+import hashlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -119,7 +120,10 @@ class TestIngestTextGroupReplace:
         await pipeline.ingest_text("body", title="A", source_id=sid, old_item_ids=[])
         pipeline._maybe_dedup.assert_not_called()
         await pipeline.ingest_text("other", title="B", source_id=sid)
-        pipeline._maybe_dedup.assert_called_once_with(sid)
+        # The just-written document's hash is passed too: a source id alone is
+        # ambiguous once one source holds several documents.
+        pipeline._maybe_dedup.assert_called_once_with(
+            sid, hashlib.sha256(b"other").hexdigest())
 
 
 class TestEnsureArtifactSource:
@@ -462,3 +466,42 @@ class TestKindChangeFiresAnEvent:
         art_store.set_change_listener(lambda action, slug: seen.append((action, slug)))
         art_store.update(art.slug, name="Renamed", kind="svg")
         assert seen == [("upsert", art.slug)]
+
+
+def test_removing_a_deduped_artifact_releases_its_claim_on_the_winner(tmp_path):
+    """A deduped artifact owns no items but still holds the winner's.
+
+    Deleting the artifact must drop that claim, or a later winner deletion hands the
+    document to a source whose artifact is gone and the text stays searchable.
+    """
+    from kiro_crew.knowledge.artifact_ingest import remove_artifact
+    from kiro_crew.knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(str(tmp_path / "k.db"))
+    try:
+        agg = store.add_source(name="Artifacts", source_type="artifact",
+                               uri="artifact://library")
+        folder = store.add_source(name="docs", source_type="local_folder",
+                                  uri=str(tmp_path / "docs"))
+        h = "9" * 64
+        iid = store.add_item(title="spec.md", content="body", item_type="document",
+                             source_id=folder, content_hash=h)
+        store.add_source_location(iid, folder)
+        store.add_source_location(iid, agg)
+        store.db.execute(
+            "INSERT INTO artifact_item_state (source_id, slug, content_hash, "
+            "item_ids, updated_at, status) "
+            "VALUES (?, 'spec', ?, '[]', '2024-01-01', 'deduped')", (agg, h))
+        store.db.commit()
+
+        assert agg in store.sources_holding_item(iid)
+        remove_artifact(store, agg, "spec")
+
+        assert agg not in store.sources_holding_item(iid), (
+            "a removed artifact must release its claim")
+        assert store.get_item(iid) is not None, "the winner's item is untouched"
+        # And the winner's deletion now takes the document with it.
+        store.delete_source_cascade(folder)
+        assert store.get_item(iid) is None
+    finally:
+        store.db.close()

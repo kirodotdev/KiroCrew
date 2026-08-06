@@ -72,7 +72,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   disclosureKey,
 }: {
   message: ChatMessage
-  onFileOpen?: (path: string) => void
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   onFolderOpen?: (path: string) => void
   disclosureKey?: string
 }) {

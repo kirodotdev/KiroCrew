@@ -40,6 +40,7 @@ import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot 
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
+import ErrorNotice from '../components/ErrorNotice'
 /**
  * The artifact's active companion session: the bound slot for `slug`, or the most
  * recently active one if a race or a History-page resume left more than one.
@@ -85,8 +86,8 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
           className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border cursor-pointer bg-bg-elevated transition-colors ${
             current ? 'border-border text-muted hover:text-text' : 'border-dashed border-border text-muted hover:text-text hover:border-border-strong'
           }`}
-          title={current ? `Filed in ${path} — click to move` : i18nT('pages.artifactDetailPage.not_in_a_folder_click_to_file')}
-          aria-label={current ? `Folder: ${path}. Move to folder` : i18nT('pages.artifactDetailPage.move_to_folder')}
+          title={current ? i18nT('pages.artifactDetailPage.filed_in_click_to_move', { path }) : i18nT('pages.artifactDetailPage.not_in_a_folder_click_to_file')}
+          aria-label={current ? i18nT('pages.artifactDetailPage.folder_move_to_folder', { path }) : i18nT('pages.artifactDetailPage.move_to_folder')}
         >
           <FolderIcon size={10} className={current ? 'text-accent' : undefined} />
           {current ? current.name : 'folder'}
@@ -206,7 +207,7 @@ const ActivityTimeline = memo(function ActivityTimeline({
                 type="button"
                 onClick={() => navigateToSlot(ev.session_id as string)}
                 className="text-[11px] text-accent hover:underline cursor-pointer bg-transparent border-none p-0 mt-0.5"
-                title={`Open session ${ev.session_id}`}
+                title={i18nT('pages.artifactDetailPage.open_session', { sessionId: ev.session_id })}
               >
                 {i18nT('pages.artifactDetailPage.from_session')} {ev.session_id}
               </button>
@@ -764,7 +765,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const targetVersion = selectedVersion
     const newVersion = (detailQuery.data?.version ?? 1) + 1
     const ok = window.confirm(
-      `Revert to v${targetVersion}? This creates a new version (v${newVersion}) with v${targetVersion}'s content. The current state stays in version history.`,
+      i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
     )
     if (!ok) return
     setSaving(true)
@@ -1076,12 +1077,12 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // The pinned title keeps the sidebar readable.
       const res = await api.createChatSlot(
         undefined, undefined, undefined, undefined, undefined,
-        `Artifact: ${artifact.name}`, undefined, artifact.slug,
+        i18nT('pages.artifactDetailPage.session_title', { name: artifact.name }), undefined, artifact.slug,
       )
       if (prefillText) writePrefill(res.key, prefillText)
       dispatch(addSlotOptimistic({
         key: res.key,
-        title: res.title || `Artifact: ${artifact.name}`,
+        title: res.title || i18nT('pages.artifactDetailPage.session_title', { name: artifact.name }),
         messages: 0,
         running: false,
         artifact: artifact.slug,
@@ -1450,8 +1451,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 type="button"
                 onClick={() => removeTag(t)}
                 className="opacity-0 group-hover:opacity-100 hover:text-danger transition-opacity bg-transparent border-none cursor-pointer p-0 inline-flex items-center"
-                title={`Remove tag ${t}`}
-                aria-label={`Remove tag ${t}`}
+                title={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
+                aria-label={i18nT('pages.artifactDetailPage.remove_tag', { name: t })}
               >
                 <X size={10} />
               </button>
@@ -1531,8 +1532,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 onClick={handleRevert}
                 disabled={saving}
                 className="px-2 py-1 rounded-md text-[12px] font-medium border border-warn/40 text-warn hover:border-warn cursor-pointer transition-all disabled:opacity-40"
-                title={`Revert to v${selectedVersion}`}
-                aria-label={`Revert to v${selectedVersion}`}
+                title={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
+                aria-label={i18nT('pages.artifactDetailPage.revert_to_v', { version: selectedVersion })}
               >
                 <span className="inline-flex items-center gap-1"><RotateCcw size={13} /> {i18nT('pages.artifactDetailPage.revert')}</span>
               </button>
@@ -1701,11 +1702,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           </div>
         )}
 
-        {saveError && (
-          <div className="mb-3 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
-            <strong>{i18nT('pages.artifactDetailPage.save_failed')}</strong> {saveError}
-          </div>
-        )}
+        {/* No agent hand-off here, deliberately. `saveError` is set exactly when
+            handleSave threw, so `dirty` is still true and `editedContent` was
+            never persisted — a route change unmounts this page and the buffer is
+            gone. Every other nav-away on this page gates on
+            `dirty && confirm(discard_unsaved_changes)`, and the deleted-artifact
+            handler sets `saveError` INSTEAD of navigating precisely so the user
+            can copy their work out. A one-click navigation off this surface would
+            destroy it, and would bypass the beforeunload guard too. */}
+        <ErrorNotice
+          message={saveError}
+          title={i18nT('pages.artifactDetailPage.save_failed')}
+          className="mb-3"
+        />
 
         {/* Read-only publication sync-error surface: keeps a persisted sync
             error visible (no controls) if a publishing provider is ever
@@ -1830,8 +1839,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               are historical snapshots — when one is selected, isCurrent is
               false (because the dropdown is non-Live). */}
           {selectedVersion === null
-            ? `Showing Live (v${detailQuery.data?.version ?? '?'})`
-            : `Showing v${effectiveVersion} (historical)`}
+            ? i18nT('pages.artifactDetailPage.showing_live_v', { version: detailQuery.data?.version ?? '?' })
+            : i18nT('pages.artifactDetailPage.showing_v_historical', { version: effectiveVersion })}
           {dirty && <span className="ml-2 text-warn">{i18nT('pages.artifactDetailPage.unsaved_changes')}</span>}
           {commentable && commentCount === 0 && (
             <span className="ml-2 text-muted/80">{i18nT('pages.artifactDetailPage.tip_select_text_to_anchor_a_comment_or_use_the')} <strong>{i18nT('pages.artifactDetailPage.comments')}</strong> {i18nT('pages.artifactDetailPage.panel_to_add_one')}</span>

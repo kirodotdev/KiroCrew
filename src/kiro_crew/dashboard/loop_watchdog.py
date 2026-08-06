@@ -70,11 +70,14 @@ from collections.abc import Callable
 logger = logging.getLogger("kiro_crew.dashboard.loop_watchdog")
 
 
-def _default_dump(file: "typing.IO[str] | None" = None) -> None:
+def _default_dump(file: "typing.IO[str] | typing.Any | None" = None) -> None:
     """Dump every thread's stack to a dedicated file AND stderr.
 
     Writes to both the dedicated crash-dump file (for discoverability) and stderr
     (for journal/terminal visibility) so dumps are never lost.
+
+    *file* can be any object with a ``fileno()`` method (including
+    :class:`~kiro_crew.dashboard.crash_dump_store.DumpFile`).
     """
     target = file or sys.stderr
     faulthandler.dump_traceback(file=target, all_threads=True)
@@ -83,7 +86,7 @@ def _default_dump(file: "typing.IO[str] | None" = None) -> None:
         faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
 
 
-def _default_arm_later(timeout: float, file: "typing.IO[str] | None" = None) -> None:
+def _default_arm_later(timeout: float, file: "typing.IO[str] | typing.Any | None" = None) -> None:
     """Arm faulthandler's C-level timer.
 
     After ``timeout`` seconds with no re-pet, it dumps every thread's stack to
@@ -92,6 +95,12 @@ def _default_arm_later(timeout: float, file: "typing.IO[str] | None" = None) -> 
     thread states in C, so it fires even when the loop thread is wedged in a
     blocking syscall.  ``repeat=False`` because the process exits the first time
     it fires.
+
+    *file* can be any object with a ``fileno()`` method (including
+    :class:`~kiro_crew.dashboard.crash_dump_store.DumpFile`).  faulthandler's C
+    code extracts the fd via ``fileno()`` at arm time and holds only the integer
+    — so the fd must remain valid until fire.  :class:`DumpFile` guarantees this
+    by never closing its fd.
 
     **Trade-off:** hard-exit dumps land ONLY in the dedicated file (not
     stderr/journal) because ``faulthandler.dump_traceback_later`` targets a
@@ -165,7 +174,7 @@ class LoopStallWatchdog:
         dump: Callable[[], None] | None = None,
         arm_later: Callable[[float], None] | None = None,
         cancel_later: Callable[[], None] | None = None,
-        dump_file: "typing.IO[str] | None" = None,
+        dump_file: "typing.IO[str] | typing.Any | None" = None,
         log: logging.Logger | None = None,
     ) -> None:
         self._stall_after = stall_after

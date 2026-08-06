@@ -13,7 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.link import (
+    ChannelLink,
+    legacy_dashboard_mirror_key,
+    release_conversation_location,
+)
 from kiro_crew.session_map import SessionMap
 
 
@@ -185,6 +189,123 @@ class TestClearMirrorLink:
         )
         session_map.set_mirror_link("dashboard:chat-1", None)
         assert session_map.get_mirror_link("dashboard:chat-1") is None
+
+
+class TestClearMirrorLinksAt:
+    LINK = ChannelLink(channel_type="discord", channel_id="chan-1")
+
+    def test_clears_every_spelling_at_the_location(self, session_map):
+        # The stale-mirror shape: rows under key spellings the conversation no
+        # longer derives (rotated generation, pre-unification dashboard row)
+        # plus a dashboard session mirroring in — all at one location.
+        session_map.set_mirror_link("discord:agent:direct:u1", self.LINK)
+        session_map.set_mirror_link("dashboard:discord_agent_direct_u1", self.LINK)
+        session_map.set_mirror_link("dashboard:chat-3", self.LINK)
+        cleared = session_map.clear_mirror_links_at(self.LINK)
+        assert sorted(cleared) == [
+            "dashboard:chat-3",
+            "dashboard:discord_agent_direct_u1",
+            "discord:agent:direct:u1",
+        ]
+        assert session_map.find_mirror_sessions(self.LINK) == []
+
+    def test_returns_empty_when_location_free(self, session_map):
+        session_map.set_mirror_link("dashboard:chat-1", self.LINK)
+        other = ChannelLink(channel_type="discord", channel_id="chan-2")
+        assert session_map.clear_mirror_links_at(other) == []
+        assert session_map.get_mirror_link("dashboard:chat-1") == self.LINK
+
+    def test_no_save_when_location_free(self, session_map):
+        # An empty sweep must not touch disk — the common case is `!unlink`
+        # on an unlinked conversation.
+        with patch.object(session_map, "_save") as save:
+            assert session_map.clear_mirror_links_at(self.LINK) == []
+        save.assert_not_called()
+
+    def test_exact_location_match_includes_thread(self, session_map):
+        topic = ChannelLink(channel_type="telegram", channel_id="7", thread_id="42")
+        general = ChannelLink(channel_type="telegram", channel_id="7", thread_id=None)
+        session_map.set_mirror_link("dashboard:chat-1", topic)
+        assert session_map.clear_mirror_links_at(general) == []
+        assert session_map.clear_mirror_links_at(topic) == ["dashboard:chat-1"]
+
+    def test_clears_inbound_resume_binding_and_marker(self, session_map):
+        # Duplicate/corrupt inbound bindings are exactly what the inbound
+        # resolver refuses to pick from — the location sweep is the repair.
+        session_map.set_mirror_link("dashboard:chat-1", self.LINK, accepts_inbound=True)
+        assert session_map.clear_mirror_links_at(self.LINK) == ["dashboard:chat-1"]
+        assert session_map.mirror_accepts_inbound("dashboard:chat-1") is False
+        assert session_map.get_mirror_link("dashboard:chat-1") is None
+
+    def test_slack_bindings_are_out_of_scope(self, session_map):
+        session_map.set(
+            "dashboard:chat-1", "sid-abc"
+        )  # Slack link needs an entry to attach to
+        session_map.set_mirror_link(
+            "dashboard:chat-1",
+            ChannelLink(channel_type="slack", channel_id="C1", thread_id="ts-1"),
+        )
+        slack = ChannelLink(channel_type="slack", channel_id="C1", thread_id="ts-1")
+        assert session_map.clear_mirror_links_at(slack) == []
+        assert session_map.get_session_for_thread("ts-1") == "dashboard:chat-1"
+
+    def test_cleared_rows_survive_reload(self, session_map, tmp_path):
+        # The sweep must persist: a clear that only mutates memory would
+        # resurrect the stale binding on the next gateway start.
+        session_map.set_mirror_link("dashboard:chat-1", self.LINK)
+        session_map.clear_mirror_links_at(self.LINK)
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            reloaded = SessionMap()
+        assert reloaded.find_mirror_sessions(self.LINK) == []
+
+
+class TestReleaseConversationLocation:
+    """The shared in-channel unlink, composed against the REAL SessionMap."""
+
+    KEY = "discord:agent:direct:u1"
+    LINK = ChannelLink(channel_type="discord", channel_id="chan-1")
+
+    def test_free_location_reports_not_linked(self, session_map):
+        reply, swept = release_conversation_location(
+            session_map, key=self.KEY, location=self.LINK, channel="discord"
+        )
+        assert reply == "This conversation wasn't linked."
+        assert swept == []
+
+    def test_own_binding_reports_plain_success(self, session_map):
+        session_map.set_mirror_link(self.KEY, self.LINK)
+        reply, swept = release_conversation_location(
+            session_map, key=self.KEY, location=self.LINK, channel="discord"
+        )
+        # The conversation's own row falls to the key-addressed clear BEFORE
+        # the sweep runs, so one binding is never double-counted.
+        assert reply == "✅ Unlinked."
+        assert swept == []
+        assert session_map.find_mirror_sessions(self.LINK) == []
+
+    def test_stranded_and_foreign_rows_are_counted(self, session_map):
+        # Own binding + a row stranded under a rotated-generation spelling +
+        # a dashboard session mirroring in: one call frees the location and
+        # the reply owns up to the full count.
+        session_map.set_mirror_link(self.KEY, self.LINK)
+        session_map.set_mirror_link(f"{self.KEY}:gen1", self.LINK)
+        session_map.set_mirror_link("dashboard:chat-9", self.LINK)
+        reply, swept = release_conversation_location(
+            session_map, key=self.KEY, location=self.LINK, channel="discord"
+        )
+        assert reply == "✅ Unlinked (3 bindings)."
+        assert sorted(swept) == ["dashboard:chat-9", f"{self.KEY}:gen1"]
+        assert session_map.find_mirror_sessions(self.LINK) == []
+
+    def test_legacy_spelling_row_counted_once(self, session_map):
+        # A pre-unification row is reachable by the legacy key clear; the
+        # sweep must not see it again.
+        session_map.set_mirror_link(legacy_dashboard_mirror_key(self.KEY), self.LINK)
+        reply, swept = release_conversation_location(
+            session_map, key=self.KEY, location=self.LINK, channel="discord"
+        )
+        assert reply == "✅ Unlinked."
+        assert swept == []
 
 
 class TestPrunePreservesMirror:

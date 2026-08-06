@@ -601,10 +601,10 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
               !effectiveSlug
                 ? i18nT('components.widgetFrame.cannot_star_widget_has_no_slug_or_message_contex')
                 : savedSlug
-                  ? `Starred as "${savedSlug}" — click to remove`
+                  ? i18nT('components.widgetFrame.starred_as_click_to_remove', { name: savedSlug })
                   : i18nT('components.widgetFrame.star_as_artifact')
             }
-            aria-label={savedSlug ? `Remove artifact ${savedSlug} from library` : i18nT('components.widgetFrame.star_as_artifact')}
+            aria-label={savedSlug ? i18nT('components.widgetFrame.remove_artifact_from_library', { name: savedSlug }) : i18nT('components.widgetFrame.star_as_artifact')}
           >
             <Star size={12} fill={savedSlug ? 'currentColor' : 'none'} />
           </IconButton>

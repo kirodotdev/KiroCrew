@@ -196,7 +196,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           : {})}
       >
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
-        <span className="text-[13px] font-semibold text-text truncate min-w-0" title={`Subagent ${statusLabel}`}>{statusLabel}</span>
+        <span className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
         {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
         {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
@@ -309,12 +309,14 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
  * embedded MarkdownPanel — identical viewer to the document-tab path, just
  * hosted inline. Back returns to the list. */
 
-function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
+function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments, onFolderOpen }: {
   path: string
   slot: string
   onBack: () => void
   onFileSave: (filePath: string, content: string) => Promise<void>
   onSubmitComments?: (message: string) => void
+  /** Open a directory (a clicked breadcrumb segment) as a folder tab. */
+  onFolderOpen?: (p: string) => void
 }) {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['file-read', path],
@@ -430,6 +432,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
             onClose={handleClose}
             savedBaseline={data?.ok ? data.text : undefined}
             onSubmitComments={onSubmitComments}
+            onOpenFolder={onFolderOpen}
           />
         ) : (
           // Loading finished but the read did NOT succeed (404, HTTP error, or a
@@ -462,7 +465,7 @@ function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments }: {
  * conditional render IIFE it replaced). */
 function FilesTab({
   files, sources, issues, navLinks, navResolving, slot,
-  onFileOpen, onArtifactOpen, onFileRemove, onFileSave, onSubmitComments, openDocPaths,
+  onFileOpen, onArtifactOpen, onFileRemove, onFileSave, onSubmitComments, onFolderOpen, openDocPaths,
   previewPathValue, setPreviewPath,
 }: {
   files?: TouchedFile[]
@@ -478,6 +481,7 @@ function FilesTab({
   onFileRemove?: (path: string) => void
   onFileSave?: (filePath: string, content: string) => Promise<void>
   onSubmitComments?: (message: string) => void
+  onFolderOpen?: (p: string) => void
   openDocPaths?: Set<string>
   previewPathValue: string | null
   setPreviewPath: (p: string | null) => void
@@ -578,6 +582,7 @@ function FilesTab({
         onBack={() => setPreviewPath(null)}
         onFileSave={onFileSave}
         onSubmitComments={onSubmitComments}
+        onFolderOpen={onFolderOpen}
       />
     )
   }
@@ -1168,9 +1173,9 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFolderOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
-  files?: TouchedFile[]; onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
+  files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFolderOpen?: (p: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onAddToChat?: (text: string) => void
@@ -1517,6 +1522,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           onFileRemove={onFileRemove}
           onFileSave={onFileSave}
           onSubmitComments={onSubmitComments}
+          onFolderOpen={onFolderOpen}
           openDocPaths={openDocPaths}
           previewPathValue={previewPathValue}
           setPreviewPath={setPreviewPath}

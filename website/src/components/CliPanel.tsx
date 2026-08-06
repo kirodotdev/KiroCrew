@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check } from 'lucide-react'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd } from '../utils/terminalRegistry'
+import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
@@ -71,13 +72,45 @@ function ensureThemeObserver() {
   _themeObserver.observe(document.head, { childList: true })
 }
 
+/* ── Terminal font sync ──
+ * Push the app-wide terminal font preference (useTerminalFont) onto every
+ * cached xterm instance when it changes. Font family and size are canvas cell
+ * metrics, so after updating the options each terminal must re-measure and
+ * refit — remeasureAndFit toggles fontFamily to force xterm's CharSizeService
+ * re-measure (see its doc) and no-ops on hidden panes. rAF-coalesced so rapid
+ * font-size stepper clicks refit once. */
+function applyTerminalFontToAll(): void {
+  const font = getTerminalFont()
+  const fontFamily = resolveTerminalFontFamily(font.fontFamily)
+  for (const { term, fit } of termCache.values()) {
+    term.options.fontFamily = fontFamily
+    term.options.fontSize = font.fontSize
+    remeasureAndFit(term, fit)
+  }
+}
+
+let _fontRaf = 0
+function scheduleTerminalFontApply(): void {
+  if (_fontRaf) return
+  _fontRaf = requestAnimationFrame(() => { _fontRaf = 0; applyTerminalFontToAll() })
+}
+
+let _fontSubscribed = false
+/** Subscribe once (module-level) so a preference change repaints every terminal. */
+function ensureTerminalFontSync(): void {
+  if (_fontSubscribed || typeof window === 'undefined') return
+  _fontSubscribed = true
+  subscribeTerminalFont(scheduleTerminalFontApply)
+}
+
 function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
   let entry = termCache.get(id)
   if (!entry) {
+    const font = getTerminalFont()
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+      fontSize: font.fontSize,
+      fontFamily: resolveTerminalFontFamily(font.fontFamily),
       theme: getTermTheme(),
     })
     const fit = new FitAddon()
@@ -431,7 +464,7 @@ export default function CliPanel({ sessionId, cwd, visible = true, onSendToChat 
   visible?: boolean
   onSendToChat?: (text: string) => void
 }) {
-  useEffect(() => { ensureThemeObserver() }, [])
+  useEffect(() => { ensureThemeObserver(); ensureTerminalFontSync() }, [])
   return (
     <div className="flex flex-col w-full h-full overflow-hidden bg-bg px-3 pt-2">
       <TerminalView sessionId={sessionId} cwd={cwd} visible={visible} onSendToChat={onSendToChat} />

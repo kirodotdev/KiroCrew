@@ -116,7 +116,12 @@ Two properties are load-bearing at the architecture level:
   a mode other than `off`, `wrap_argv` raises rather than spawning unconfined.
   Running unconfined is an explicit opt-in (`agent.sandbox_allow_unsandboxed_exec`);
   a separate flag (`agent.sandbox_allow_no_isolation`) only demotes the warning's
-  log level and does not permit execution.
+  log level and does not permit execution. The opt-in's default is
+  **platform-independent** — a platform-derived default would grant unconfined
+  execution on every backend-less host with no operator having declared it — so
+  the discoverable path is instead a consent step in `kirocrew setup`, which
+  prompts (default no) when `detect_backend()` reports `"none"` and writes the
+  key only on an explicit yes.
 - **Delegation is audited, never silent.** When `kiro-cli`'s internal sandbox owns
   isolation for a spawn, the decision is config-driven (never a reaction to a wrap
   failure), logged once per process, and SEL-audited on an audit-or-deny basis: if

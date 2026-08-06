@@ -16,6 +16,8 @@ from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
     AcpError,
+    advertised_model_ids,
+    model_is_unusable,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -658,18 +660,37 @@ class AcpProvider(LLMProvider):
             # Apply the configured model override (mirrors AcpClient handshake).
             # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
             if configured_model and configured_model != DEFAULT_MODEL:
-                _t_model = time.monotonic()
-                try:
-                    await handle.set_model(configured_model)
-                    logger.info("Kiro runtime model set: %s", configured_model)
-                except Exception:
+                # Withhold a model this account cannot run rather than sending
+                # it. session/new has already reported what is on offer, and
+                # this model was NOT picked for this turn — it comes from the
+                # agent spec, the config default, or a slot value persisted
+                # before entitlements were known. Sending it anyway is what put
+                # a raw "-32603 ... model is not available" in the transcript on
+                # every turn: kiro-cli ACCEPTS the id here (so the except below
+                # never fires) and only the service rejects it, mid-prompt.
+                # Leaving it unset keeps the session on the backend's own
+                # default, so the turn succeeds.
+                _advertised = advertised_model_ids(handle.available_models)
+                if model_is_unusable(configured_model, _advertised):
                     logger.warning(
-                        "Failed to set model %s on kiro runtime session",
+                        "Configured model %s is not available to this account; "
+                        "leaving the session on the backend default (advertised: %s)",
                         configured_model,
-                        exc_info=True,
+                        ", ".join(_advertised),
                     )
-                finally:
-                    phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
+                else:
+                    _t_model = time.monotonic()
+                    try:
+                        await handle.set_model(configured_model)
+                        logger.info("Kiro runtime model set: %s", configured_model)
+                    except Exception:
+                        logger.warning(
+                            "Failed to set model %s on kiro runtime session",
+                            configured_model,
+                            exc_info=True,
+                        )
+                    finally:
+                        phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
 
             # Replace the placeholder AcpClient with the real AcpSessionProvider
             provider = AcpSessionProvider(handle, runtime, owns_runtime=True)

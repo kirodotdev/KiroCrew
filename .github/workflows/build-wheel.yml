@@ -74,6 +74,24 @@ jobs:
           pip install --upgrade build
           python -m build
 
+      # Guard against MANIFEST.in regressions (e.g. a global-exclude silently
+      # stripping a vendored runtime from the sdist, and therefore from the
+      # wheel built from it — see #1507): every file in the repo's vendored
+      # llama.cpp tree must be present in the built wheel.
+      - name: Verify vendored native libs survived into the wheel
+        run: |
+          python - <<'PY'
+          import pathlib, sys, zipfile
+          root = pathlib.Path("src/kiro_crew/_vendor/llama_cpp_libs")
+          names = set(zipfile.ZipFile(next(pathlib.Path("dist").glob("*.whl"))).namelist())
+          missing = [
+              p for p in sorted(root.rglob("*")) if p.is_file()
+              and f"kiro_crew/_vendor/llama_cpp_libs/{p.relative_to(root).as_posix()}" not in names
+          ]
+          if missing:
+              sys.exit("missing from wheel: " + ", ".join(str(p) for p in missing))
+          PY
+
       - name: Upload wheel artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

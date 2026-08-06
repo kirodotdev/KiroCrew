@@ -591,6 +591,10 @@ class MemoryConfig:
 class KnowledgeConfig:
     # Knowledge Library ingestion toggles. Embedding/retrieval settings live
     # under MemoryConfig (shared via create_embedder_from_config).
+    auto_add_documents: bool = True                     # agent adds documents it reads (aggregate "Auto-added" source); legacy spelling auto_ingest_doc_links accepted
+    auto_register_project_docs: bool = True             # register each worked-in project's documents as a folder source (document filter only)
+    auto_ingest_chunk_budget: int = 150                 # chunks per sweep for auto-registered sources; 0 = unbounded
+    dedup_every_n_sweeps: int = 12                      # full dedup pass cadence; 0 disables
     auto_ingest_artifacts: bool = True                  # on by default; ingest local artifacts into the KB (aggregate "Artifacts" source)
     auto_ingest_artifact_kinds: list[str] = ["markdown", "text", "html", "json"]  # reader-extractable kinds (widget/svg excluded)
     embed_timeout_secs: float = 10.0                    # per-request embed timeout; 0/unset -> built-in TIMEOUT (10s)
@@ -650,7 +654,7 @@ class DashboardConfig:
     tips_cadence_hours: float = 6.0    # min hours between surfaced tips (server-side gate; clamped >= 0)
     tips_snooze_hours: float = 48.0    # hours before a snoozed tip is eligible again (clamped >= 0)
     tips_recency_decay: float = 0.6    # weighted-random newer-bias decay (clamped to [0, 1])
-    tips_model: str = "claude-haiku-4.5"  # model for tips generation (pinned to Haiku for cost)
+    tips_model: str = "auto"  # model for tips generation ("auto" inherits the account's governed model)
     tips_explore_ratio: float = 0.2    # probability of random catalog pick vs personalized (clamped to [0, 1])
 
 @dataclass
@@ -987,6 +991,8 @@ Returns the effective config for a channel:
     "history_max_days": 365
   },
   "knowledge": {
+    "auto_add_documents": true,
+    "auto_register_project_docs": true,
     "auto_ingest_artifacts": true,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
     "embed_timeout_secs": 10.0,

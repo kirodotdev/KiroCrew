@@ -153,6 +153,22 @@ jobs:
           fi
           echo "::endgroup::"
 
+          echo "::group::model-selection — no hardcoded model id as a default/fallback"
+          # A hardcoded model id fails at runtime for accounts not entitled to it
+          # (free-tier gets a subset). Use the "auto" sentinel or
+          # agent.role_models.<role> (see AGENTS.md → Model selection).
+          # model_registry.py IS the id source-of-truth (excluded); the CC-seam
+          # fallback (_BACKGROUND_CC_MODEL) and *_FALLBACK_* maps are the one
+          # documented exception. tests live outside src/kiro_crew.
+          if git diff "$BASE".."$HEAD" -- ':(glob)src/kiro_crew/**/*.py' \
+               ':(exclude)src/kiro_crew/model_registry.py' \
+             | grep -nP "^\+.*(=|\":)\s*[\"'](claude-(opus|sonnet|haiku|fable)|opus-[0-9]|sonnet-[0-9]|haiku-[0-9]|fable-[0-9]|gpt-[0-9])" \
+             | grep -vP "_BACKGROUND_CC_MODEL|_FALLBACK_"; then
+            echo "::error::Do not hardcode a model id as a default/fallback. Use \"auto\" or agent.role_models.<role> (see AGENTS.md → Model selection)."
+            exit 1
+          fi
+          echo "::endgroup::"
+
   # The semantic AI layer of code review (the rules that cannot be
   # expressed as a grep) lives in claude-review.yml, which auto-runs on every
   # PR and fails the check on high-severity findings.

@@ -4,7 +4,7 @@ import type { AudioSample } from '../hooks/mic'
 /**
  * Audio-reactive "strands" shader.
  *
- * Adapted from reactbits.dev/animations/strands (MIT). Two deliberate
+ * Adapted from reactbits.dev/animations/strands (MIT). Three deliberate
  * departures from upstream:
  *
  *  1. **Raw WebGL2 instead of ogl.** Upstream ships an ogl-based component;
@@ -14,6 +14,9 @@ import type { AudioSample } from '../hooks/mic'
  *     by `resolution.y`, so on a wide-and-thin element `uv.x` runs to +/-12
  *     and the taper term repeats — you get a tiled row of lens shapes instead
  *     of continuous strands. `uStretch` compresses x only.
+ *  3. **`uPinch` (see the shader comment).** Upstream hard-codes the taper
+ *     frequency at 1.3, which puts the convergence points outside the element:
+ *     both ends read as clipped lines rather than as nodes.
  *
  * Uniforms are pulled from `sampleRef` INSIDE the render loop, so audio drives
  * the visuals at frame rate without a single React re-render. Passing the
@@ -36,7 +39,7 @@ uniform int   uColorCount;
 uniform int   uStrandCount;
 uniform float uSpeed, uAmplitude, uWaviness, uThickness, uGlow, uTaper,
               uSpread, uHueShift, uIntensity, uOpacity, uScale, uSaturation,
-              uStretch;
+              uStretch, uPinch;
 out vec4 fragColor;
 const float PI = 3.14159265;
 vec3 spectrum(float t){ return 0.5 + 0.5*cos(2.0*PI*(t+vec3(0.00,0.33,0.67))); }
@@ -55,12 +58,16 @@ void main(){
   uv /= max(uScale, 0.0001);
   // Decouple horizontal from vertical. Upstream normalizes both axes by
   // resolution.y; on a wide element that pushes uv.x far past the first lobe
-  // of max(cos(uv.x*PI*1.3), 0.0), so the taper envelope repeats across the
+  // of max(cos(uv.x*PI*uPinch), 0.0), so the taper envelope repeats across the
   // width. Compressing x alone makes the envelope span the element exactly
   // once while amplitude and thickness stay in their original vertical units.
   uv.x /= max(uStretch, 0.0001);
   float e = 0.06 + uIntensity*0.94;
-  float env = pow(max(cos(uv.x*PI*1.3), 0.0), uTaper);
+  // uPinch sets where the taper envelope reaches zero — i.e. where the strands
+  // converge into the two end nodes, at |uv.x| = 0.5/uPinch. Raising it pulls
+  // those nodes inward so they land INSIDE the element and read as nodes;
+  // upstream's 1.3 puts them past the edge, leaving both ends clipped mid-line.
+  float env = pow(max(cos(uv.x*PI*uPinch), 0.0), uTaper);
   vec3 col = vec3(0.0);
   for (int i = 0; i < ${MAX_STRANDS}; i++){
     if (i >= uStrandCount) break;
@@ -94,7 +101,7 @@ void main(){
 const MAP = {
   count: 7,
   speed: 0.5,
-  thickness: 0.6,
+  thickness: 0.78,
   taper: 2.0,
   spread: 1,
   hueShift: 0,
@@ -102,6 +109,8 @@ const MAP = {
   scale: 1.5,
   /** Target half-width in shader units; drives uStretch. */
   fillX: 0.34,
+  /** Where the strands converge, at |uv.x| = 0.5/pinch. See the shader comment. */
+  pinch: 2.0,
   saturation: 1.45,
   amplitude0: 0.3,
   amplitudeK: 2.3,
@@ -234,7 +243,7 @@ export default function Strands({ sampleRef, className = '' }: Props) {
       thickness: u('uThickness'), glow: u('uGlow'), taper: u('uTaper'),
       spread: u('uSpread'), hueShift: u('uHueShift'), intensity: u('uIntensity'),
       opacity: u('uOpacity'), scale: u('uScale'), saturation: u('uSaturation'),
-      stretch: u('uStretch'),
+      stretch: u('uStretch'), pinch: u('uPinch'),
     }
 
     let w = 1
@@ -277,6 +286,7 @@ export default function Strands({ sampleRef, className = '' }: Props) {
       gl.uniform1f(loc.opacity, MAP.opacity)
       gl.uniform1f(loc.scale, MAP.scale)
       gl.uniform1f(loc.saturation, MAP.saturation)
+      gl.uniform1f(loc.pinch, MAP.pinch)
       // The mapping itself.
       gl.uniform1f(loc.amplitude, MAP.amplitude0 + s.level * MAP.amplitudeK)
       gl.uniform1f(loc.intensity, MAP.intensity0 + s.level * MAP.intensityK)

@@ -29,10 +29,16 @@ def _make_mirror_app(state):
     return app
 
 
-def _fake_transport(channel_type="telegram", proactive=True):
+def _fake_transport(channel_type="telegram", proactive=True, max_message_chars=4096):
     return SimpleNamespace(
         channel_type=channel_type,
-        capabilities=SimpleNamespace(supports_proactive_send=proactive),
+        capabilities=SimpleNamespace(
+            supports_proactive_send=proactive,
+            # The real TransportCapabilities always carries this; the mirror
+            # backfill chunks to it instead of truncating, so the fake needs it
+            # to exercise that path rather than the getattr fallback.
+            max_message_chars=max_message_chars,
+        ),
         send_message=AsyncMock(return_value="mid-1"),
         configured_targets=MagicMock(
             return_value=[ConfiguredChannelTarget("user:123", f"{channel_type.title()} DM · 123")]
@@ -113,19 +119,32 @@ class TestMirrorLink:
 
     @pytest.mark.asyncio
     async def test_governance_narrowing_mid_delivery_fails_closed(self, tmp_path, monkeypatch):
-        # Permit the initial link + first send, then deny once the historical
-        # context-delivery loop starts. The endpoint must fail closed: return
-        # 403 and NOT persist the mirror link (regression for a denial that
-        # only broke the loop and still persisted + returned 200).
-        calls = {"n": 0}
+        # Permit the initial link + the announcement, then deny once the
+        # historical context-delivery loop starts. The endpoint must fail closed:
+        # return 403 and NOT persist the mirror link (regression for a denial
+        # that only broke the loop and still persisted + returned 200).
+        transport = _fake_transport("telegram")
 
         def _permits(*args, **kwargs):
-            calls["n"] += 1
-            return SimpleNamespace(permitted=calls["n"] < 3, rule="", layer="", reason="")
+            # A PREDICATE, not a call counter. The old version denied on the
+            # third governance consult, which silently depended on exactly two
+            # consults happening before the loop — change how many messages the
+            # backfill selects, or add a pre-loop check, and the denial lands on
+            # a pre-loop gate while every assertion below still passes, so the
+            # test stops guarding the path it was written for.
+            #
+            # Keying on "has the transport already delivered?" pins the denial
+            # to the first in-loop unit regardless of selection size: the
+            # announcement is the only send before the loop.
+            return SimpleNamespace(
+                permitted=not transport.send_message.await_args_list,
+                rule="",
+                layer="",
+                reason="",
+            )
 
         monkeypatch.setattr("kiro_crew.platform.governance_profiles.governance_permits", _permits)
         state = _prep(tmp_path, monkeypatch)
-        transport = _fake_transport("telegram")
         state.register_channel_transport(transport)
         state.sessions.set_mirror_link = MagicMock()
         # Give the slot history so the context-delivery loop iterates.
@@ -145,6 +164,12 @@ class TestMirrorLink:
             assert resp.status == 403
             assert (await resp.json())["error"] == "channel is not permitted"
 
+        # Non-vacuity: the announcement is sent only AFTER its own governance
+        # check passes, so having sent it proves the denial came later than that
+        # check — i.e. inside the context-delivery loop, which is the path under
+        # test. Without this, a denial at the very first gate would produce the
+        # same 403 and the same unpersisted link.
+        assert transport.send_message.await_count >= 1
         state.sessions.set_mirror_link.assert_not_called()
         state = _prep(tmp_path, monkeypatch)
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
@@ -401,3 +426,246 @@ class TestMirrorReminder:
             assert (await resp.json())["error"] == "channel_type required"
 
         transport.send_message.assert_not_awaited()
+
+
+class TestMirrorBackfillFidelity:
+    """The non-Slack mirror seeds the same turn-aware history, chunked not cut.
+
+    Deliberately asymmetric with the Slack path: this delivery stays INLINE
+    because its per-message governance re-check has to be able to fail the
+    request closed with 403, which a backgrounded drain could not do after the
+    handler had already returned 200 and persisted the link.
+    """
+
+    # A LITERAL ceiling, deliberately NOT chat_mirror._MAX_INLINE_BACKFILL_UNITS:
+    # asserting against the module constant would move with it, so raising the
+    # cap — or deleting it — would still pass. This leaves headroom for a
+    # deliberate tuning change while still failing an unbounded loop.
+    _BOUND_CEILING = 16
+
+    def _linked(self, tmp_path, monkeypatch, max_message_chars=4096):
+        state = _prep(tmp_path, monkeypatch)
+        transport = _fake_transport("telegram", max_message_chars=max_message_chars)
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link = MagicMock()
+        return state, transport
+
+    async def _link(self, state):
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "telegram", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+
+    def _sent(self, transport):
+        """Delivered bodies, excluding the link announcement."""
+        texts = [call.args[1] for call in transport.send_message.await_args_list]
+        return [t for t in texts if "Session linked from dashboard" not in t]
+
+    @pytest.mark.asyncio
+    async def test_filter_runs_before_slice(self, tmp_path, monkeypatch):
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        for role, content in [
+            ("user", "why is the build red"),
+            ("assistant", "a lint rule changed"),
+            ("tool", "grep ..."),
+            ("tool", "cat ..."),
+            ("tool", "pytest ..."),
+        ]:
+            slot.append(role, content)
+        slot.drain()
+
+        await self._link(state)
+        body = "\n".join(self._sent(transport))
+        assert "why is the build red" in body
+        assert "a lint rule changed" in body
+        assert "grep" not in body and "pytest" not in body
+
+    @pytest.mark.asyncio
+    async def test_long_message_is_chunked_not_truncated(self, tmp_path, monkeypatch):
+        state, transport = self._linked(tmp_path, monkeypatch, max_message_chars=500)
+        slot = state.get_or_create_slot("s1")
+        long_answer = "".join(f"[{i:04d}]" for i in range(600))  # 3600 chars
+        slot.append("user", "explain")
+        slot.append("assistant", long_answer)
+        slot.drain()
+
+        await self._link(state)
+        sent = self._sent(transport)
+        assert all(len(text) <= 500 for text in sent), "a chunk exceeded the transport limit"
+        body = "".join(sent)
+        for i in (0, 300, 599):
+            assert f"[{i:04d}]" in body, f"marker {i} lost — content was truncated"
+
+    @pytest.mark.asyncio
+    async def test_first_turn_and_gap_marker(self, tmp_path, monkeypatch):
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        for i in range(1, 11):
+            slot.append("user", f"question {i}")
+            slot.append("assistant", f"answer {i}")
+        slot.drain()
+
+        await self._link(state)
+        sent = self._sent(transport)
+        body = "\n".join(sent)
+        assert "question 1" in body
+        assert "question 10" in body
+        assert "question 3" not in body
+        markers = [t for t in sent if "earlier turn" in t]
+        assert len(markers) == 1
+        # Slack would report 4 skipped (10 turns, 5 recent). The inline path is
+        # additionally under a delivery budget, so the oldest recent turn is
+        # folded into the marker instead of being sent -- 5, not 4. That fold is
+        # the point of the budget: the marker absorbs the overflow.
+        assert "5 earlier turns" in markers[0]
+
+    @pytest.mark.asyncio
+    async def test_history_that_fits_exactly_is_not_trimmed(self, tmp_path, monkeypatch):
+        """No gap marker when there is no gap.
+
+        Six two-message turns is exactly the 12-unit budget. An earlier version
+        reserved the marker's slot unconditionally, so the reservation pushed the
+        oldest turn out and then spent that slot announcing the omission it had
+        itself caused — a false gap on history that fit.
+        """
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        for i in range(1, 7):
+            slot.append("user", f"q{i}")
+            slot.append("assistant", f"a{i}")
+        slot.drain()
+
+        await self._link(state)
+        sent = self._sent(transport)
+        body = "\n".join(sent)
+        assert not any("earlier turn" in t for t in sent), f"false gap marker: {sent}"
+        for i in range(1, 7):
+            assert f"q{i}" in body, f"turn {i} was trimmed even though it fit"
+        assert len(sent) == 12, f"expected all 12 units, got {len(sent)}"
+
+    @pytest.mark.asyncio
+    async def test_inline_delivery_is_bounded(self, tmp_path, monkeypatch):
+        """The request cannot grow without limit just because history did.
+
+        This path is inline (its governance re-check must be able to 403), so
+        every extra unit is another governance hop plus a send on a channel that
+        may accept ~1 msg/s. Long history must not push the request past a
+        browser fetch timeout.
+        """
+
+        state, transport = self._linked(tmp_path, monkeypatch, max_message_chars=200)
+        slot = state.get_or_create_slot("s1")
+        for i in range(1, 9):
+            slot.append("user", f"question {i}")
+            slot.append("assistant", f"answer {i} " + "y" * 900)  # ~5 units each
+        slot.drain()
+
+        await self._link(state)
+        sent = self._sent(transport)
+        assert len(sent) <= self._BOUND_CEILING, (
+            f"inline delivery sent {len(sent)} units, over the budget"
+        )
+        # Priority order: the newest turn is irreducible, then the marker, then
+        # the opening turn, then older turns. Here each turn costs ~6 units, so
+        # the opening turn cannot be afforded and is folded into the count.
+        body = "\n".join(sent)
+        assert "question 8" in body, "newest turn was trimmed away"
+        assert any("earlier turn" in t for t in sent), "trim happened with no marker"
+
+    @pytest.mark.asyncio
+    async def test_delivery_scales_with_the_budget_not_with_history(
+        self, tmp_path, monkeypatch
+    ):
+        """Ten times the history must not mean ten times the request duration."""
+
+        counts = []
+        for turn_count in (8, 80):
+            state, transport = self._linked(tmp_path, monkeypatch)
+            slot = state.get_or_create_slot("s1")
+            for i in range(1, turn_count + 1):
+                slot.append("user", f"q{i}")
+                slot.append("assistant", f"a{i}")
+            slot.drain()
+            await self._link(state)
+            counts.append(len(self._sent(transport)))
+
+        assert all(c <= self._BOUND_CEILING for c in counts), counts
+        assert counts[0] == counts[1], (
+            f"unit count tracked history length ({counts}) instead of the budget"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_slack_mrkdwn_conversion_on_a_non_slack_channel(self, tmp_path, monkeypatch):
+        """Telegram is not Slack: markdown must pass through unconverted."""
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "doc it")
+        slot.append("assistant", "## Heading\n\n**bold** text")
+        slot.drain()
+
+        await self._link(state)
+        body = "\n".join(self._sent(transport))
+        assert "## Heading" in body
+        assert "**bold**" in body
+
+    @pytest.mark.asyncio
+    async def test_credentials_are_redacted(self, tmp_path, monkeypatch):
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        slot.append("user", "creds")
+        slot.append("assistant", f"key is {secret}")
+        slot.drain()
+
+        await self._link(state)
+        body = "\n".join(self._sent(transport))
+        assert secret not in body
+
+    @pytest.mark.asyncio
+    async def test_compaction_rows_are_excluded(self, tmp_path, monkeypatch):
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "real question")
+        slot.append("assistant", "real answer")
+        slot.append("assistant", "context compacted", meta={"kind": "compaction"})
+        slot.drain()
+
+        await self._link(state)
+        body = "\n".join(self._sent(transport))
+        assert "real question" in body and "real answer" in body
+        assert "context compacted" not in body
+
+    @pytest.mark.asyncio
+    async def test_delivery_stays_inline_so_the_link_persists_after_seeding(
+        self, tmp_path, monkeypatch
+    ):
+        """The 200 must not be returned before the seeding is delivered.
+
+        This is the property that forbids backgrounding this path: the mirror
+        link is persisted only after every unit has cleared governance.
+        """
+        state, transport = self._linked(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "one")
+        slot.append("assistant", "two")
+        slot.drain()
+
+        order: list[str] = []
+        original_send = transport.send_message
+
+        async def _tracked_send(*args, **kwargs):
+            order.append("send")
+            return await original_send(*args, **kwargs)
+
+        transport.send_message = _tracked_send
+        state.sessions.set_mirror_link = MagicMock(side_effect=lambda *a, **k: order.append("persist"))
+
+        await self._link(state)
+        assert "persist" in order, "link was never persisted"
+        assert order.index("persist") == len(order) - 1, (
+            "the link was persisted before delivery finished"
+        )
+        assert order.count("send") >= 3, "announcement + both messages should have been sent"

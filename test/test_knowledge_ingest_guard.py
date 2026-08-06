@@ -76,10 +76,19 @@ class TestSizeGuard:
             with pytest.raises(FileTooLargeError) as exc_info:
                 await pipeline.ingest_file(str(big))
 
+        # The caller who supplied the name gets it back, so the skip is actionable.
         assert "huge-export.md" in str(exc_info.value)
         assert "max_ingest_file_mb" in str(exc_info.value)
-        warned = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("huge-export.md" in m and "max_ingest_file_mb" in m for m in warned)
+
+        warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        # ... but the application log must NOT carry it. A document name is
+        # caller-supplied and free-form enough to carry a credential, and the log is
+        # the one sink here with no redaction contract and the widest reach.
+        assert warned, "an oversized skip must still be visible in the log"
+        assert not any("huge-export.md" in m for m in warned), (
+            "the document name must not reach the application log")
+        # The log still has to be worth reading: what to raise, and where to look.
+        assert any("max_ingest_file_mb" in m and "source_id=" in m for m in warned)
         sel_spy.log_tool_invocation.assert_called_once()
         assert sel_spy.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
         assert "oversized" in sel_spy.log_tool_invocation.call_args.kwargs["resources"]
@@ -180,9 +189,9 @@ class TestChunkingOffLoop:
         seen: list[int] = []
         real = pipeline._maybe_dedup
 
-        def _spy(source_id):
+        def _spy(source_id, content_hash=""):
             seen.append(threading.get_ident())
-            return real(source_id)
+            return real(source_id, content_hash)
 
         pipeline._maybe_dedup = _spy  # type: ignore[method-assign]
         await pipeline.ingest_text("some body text", title="t")
@@ -409,3 +418,174 @@ class TestChunkPropsCoercion:
         assert built, "per-source chunker was not built"
         assert built[-1].target_size == 128
         assert built[-1].overlap == 7
+
+
+def test_persistent_source_outranks_a_transient_holder(tmp_path):
+    """A folder copy must be allowed to land when only an upload holds the content.
+
+    The gate honours the same persistent-over-transient ranking as ``pick_winner``,
+    so arrival order cannot leave the only searchable copy inside a transient
+    upload whose deletion would take the content with it.
+    """
+    from kiro_crew.knowledge.ingestion import IngestionPipeline
+    from kiro_crew.knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(str(tmp_path / "k.db"))
+    try:
+        pipe = IngestionPipeline(store=store, extractor=MagicMock(),
+                                 chunker=MagicMock(), reader=MagicMock(),
+                                 embedder=None)
+        upload = store.add_source(name="dropped.md", source_type="upload",
+                                  uri="upload://dropped.md")
+        folder = store.add_source(name="notes", source_type="local_folder",
+                                  uri=str(tmp_path / "notes"))
+        h = "f" * 64
+        store.db.execute(
+            "INSERT INTO items (id, source_id, title, content, item_type, "
+            "content_hash, created_at, updated_at) VALUES ('i1', ?, "
+            "'dropped.md', 'body', 'document', ?, '2024-01-01T00:00:00', "
+            "'2024-01-01T00:00:00')", (upload, h))
+        store.db.commit()
+
+        # Incoming folder copy outranks the transient upload -> write proceeds.
+        assert pipe._skip_as_duplicate(h, folder) is None
+
+        # Reverse direction still refuses: a transient copy adds nothing.
+        assert pipe._skip_as_duplicate(h, upload) is None  # same source, not a dup
+        other_upload = store.add_source(name="again.md", source_type="upload",
+                                        uri="upload://again.md")
+        assert pipe._skip_as_duplicate(h, other_upload) is not None
+    finally:
+        store.close()
+
+
+def test_oversized_file_message_redacts_the_caller_supplied_name(tmp_path, monkeypatch, caplog):
+    """An upload's filename is caller-supplied and can carry a credential.
+
+    It reaches a gateway WARNING, a persisted SEL event and the raised error, so
+    the name is redacted at every one of those sinks.
+    """
+    import asyncio
+    import logging
+
+    from kiro_crew.knowledge.ingestion import FileTooLargeError, IngestionPipeline
+    from kiro_crew.knowledge.readers import FileReader
+    from kiro_crew.knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(str(tmp_path / "k.db"))
+    try:
+        pipe = IngestionPipeline(store=store, extractor=MagicMock(),
+                                 chunker=MagicMock(), reader=FileReader(),
+                                 embedder=None)
+        big = tmp_path / "payload.md"
+        big.write_text("x" * 4096)
+        _set_limit_mb(monkeypatch, 0.001)
+
+        leaky = "report AKIAIOSFODNN7EXAMPLE.md"
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(FileTooLargeError) as excinfo:
+                asyncio.get_event_loop().run_until_complete(
+                    pipe.ingest_file(str(big), original_name=leaky))
+
+        assert "AKIAIOSFODNN7EXAMPLE" not in str(excinfo.value)
+        assert "REDACTED" in str(excinfo.value)
+        assert "AKIAIOSFODNN7EXAMPLE" not in caplog.text
+    finally:
+        store.close()
+
+
+def test_the_duplicate_gate_records_the_refusing_source_as_a_holder(tmp_path):
+    """Refusing the write must not cost the source its claim on the document.
+
+    Under "one document, many locations" a source that HAS a copy is recorded as a
+    location even when it stores no second physical copy. Without that, the copy is
+    invisible to the reference count: deleting the holder destroys the only items
+    while this source's file is still on disk, and nothing brings the content back.
+    """
+    from kiro_crew.knowledge.ingestion import IngestionPipeline
+    from kiro_crew.knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(str(tmp_path / "k.db"))
+    try:
+        pipe = IngestionPipeline(store=store, extractor=MagicMock(),
+                                 chunker=MagicMock(), reader=MagicMock(),
+                                 embedder=None)
+        first = store.add_source(name="notes-a", source_type="local_folder",
+                                 uri=str(tmp_path / "a"))
+        second = store.add_source(name="notes-b", source_type="local_folder",
+                                  uri=str(tmp_path / "b"))
+        h = "c" * 64
+        store.db.execute(
+            "INSERT INTO items (id, source_id, title, content, item_type, "
+            "content_hash, created_at, updated_at) VALUES ('i1', ?, "
+            "'dup.md', 'body', 'document', ?, '2024-01-01T00:00:00', "
+            "'2024-01-01T00:00:00')", (first, h))
+        store.add_source_location("i1", first)
+        store.db.commit()
+
+        # Same content arriving in the second folder is refused (no second copy)...
+        assert pipe._skip_as_duplicate(h, second) is not None
+        # ... but the second folder is now recorded as holding the document.
+        assert second in store.sources_holding_item("i1"), (
+            "a refused source must still be recorded as a location")
+
+        # So deleting the first folder moves the document instead of destroying it.
+        store.delete_source_cascade(first)
+        item = store.get_item("i1")
+        assert item is not None, "the document must survive while another file holds it"
+        assert item["source_id"] == second
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_an_auto_added_source_scrubs_secrets_before_extraction(
+        pipeline, kstore, tmp_path):
+    """A folder nobody chose must not hand a credential to the extraction worker.
+
+    Auto-registration indexes project documents with no confirmation step, so the
+    user never agreed to this folder's contents leaving the machine. The document's
+    own text is therefore scrubbed ahead of chunking, extraction and storage.
+    """
+    doc = tmp_path / "runbook.md"
+    doc.write_text("# Runbook\n\nUse AKIAIOSFODNN7EXAMPLE to rotate the fleet.\n")
+    src = kstore.add_source(
+        name="project docs", source_type="local_folder", uri=str(tmp_path),
+        properties={"sync_status": "active", "auto_added": True})
+
+    await pipeline.ingest_file(str(doc), source_id=src)
+
+    stored = " ".join(
+        r["content"] or "" for r in kstore.db.execute(
+            "SELECT content FROM items WHERE source_id = ?", (src,)).fetchall())
+    assert stored, "the document should have been ingested"
+    assert "AKIAIOSFODNN7EXAMPLE" not in stored, (
+        "an auto-added source must not store a raw credential")
+    # What the extractor was handed must be scrubbed too -- that is the call that
+    # leaves the machine.
+    sent = " ".join(
+        str(c) for call in pipeline.extractor.extract_batch.await_args_list
+        for c in (call.args[0] if call.args else []))
+    assert "AKIAIOSFODNN7EXAMPLE" not in sent, (
+        "the credential must not reach the extraction worker")
+
+
+@pytest.mark.asyncio
+async def test_a_hand_registered_source_is_left_alone(pipeline, kstore, tmp_path):
+    """The scrub is scoped to sources the user did NOT choose.
+
+    Registering a folder by hand is a deliberate act, and silently rewriting its
+    indexed text would be a behaviour change for every existing source.
+    """
+    doc = tmp_path / "notes.md"
+    doc.write_text("# Notes\n\nUse AKIAIOSFODNN7EXAMPLE to rotate the fleet.\n")
+    src = kstore.add_source(name="my docs", source_type="local_folder",
+                            uri=str(tmp_path), properties={"sync_status": "active"})
+
+    await pipeline.ingest_file(str(doc), source_id=src)
+
+    stored = " ".join(
+        r["content"] or "" for r in kstore.db.execute(
+            "SELECT content FROM items WHERE source_id = ?", (src,)).fetchall())
+    assert "AKIAIOSFODNN7EXAMPLE" in stored, (
+        "a hand-registered source keeps its existing behaviour")

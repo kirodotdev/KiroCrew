@@ -21,6 +21,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 
 import { i18nT } from '../i18n/t'
+import ErrorNotice from '../components/ErrorNotice'
 /** Common shape returned by the agent/workspace mutation endpoints. */
 interface AgentMutationResult {
   error?: string
@@ -744,7 +745,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               aria-label={i18nT('pages.kiroCrewAgentsPage.new_sessions_use')}
               style={{ width: 190 }}
             />
-            {error && <span className="text-[12px] text-danger">{error}</span>}
+            <ErrorNotice message={error} variant="inline" />
           </div>
         )}
 
@@ -980,7 +981,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           </DialogBody>
 
           <DialogFooter>
-            {error && <span className="mr-auto text-[13px] text-danger">{error}</span>}
+            <ErrorNotice message={error} variant="inline" className="mr-auto" />
             <Btn onClick={closeSheet}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
             {creating ? (
               <SendBtn onClick={create} disabled={sheetBusy}>

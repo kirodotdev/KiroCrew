@@ -794,7 +794,7 @@ export default function ThemeExperienceLayer() {
           key={decl.id}
           data-theme-frame="1"
           data-theme-pointer={decl.pointerEvents ? '1' : '0'}
-          title={`theme overlay ${decl.id}`}
+          title={i18nT('components.themeExperienceLayer.theme_overlay', { id: decl.id })}
           src={overlayUrl(slug, decl.id)}
           sandbox="allow-scripts"
           onLoad={(e) => postThemeState((e.currentTarget as HTMLIFrameElement).contentWindow)}

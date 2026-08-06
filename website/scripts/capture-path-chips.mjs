@@ -27,6 +27,9 @@ const BASE = process.argv[2] || 'http://127.0.0.1:6807'
 const OUT = process.argv[3] || '../temp-screenshots/path-chips'
 mkdirSync(OUT, { recursive: true })
 
+const NOTES = '/Users/diwm/.kiro/crew/workspace/blue-angels-seattle-2026.md'
+const DISPATCH = '/Users/diwm/.kiro/crew/workspace/KiroCrew/src/kiro_crew/acp/_dispatch.py'
+
 /**
  * The classification the chips scene MUST produce, in document order.
  * Anything actionable that should not be, or vice versa, fails the run.
@@ -42,8 +45,33 @@ const EXPECTED_KINDS = [
   ['/Users/diwm/.kiro/crew/deleted-notes.md', 'plain'],
 ]
 
+/**
+ * Cited source locations, in document order.
+ *
+ * Asserts `data-path` and `data-path-line` alongside the kind, because the whole
+ * point of this scene is that the chip RESOLVES the path without the `:line`
+ * while still DISPLAYING it. A regression that went back to probing the whole
+ * token shows up here as `plain`; one that silently dropped the line from the
+ * click shows up as a missing `data-path-line`.
+ */
+const EXPECTED_CITED = [
+  ['purpose', 'plain', undefined, undefined],
+  [`${DISPATCH}:447`, 'file', DISPATCH, '447'],
+  [':493', 'plain', undefined, undefined],
+  [`${DISPATCH}:504:12`, 'file', DISPATCH, '504'],
+  [DISPATCH.replace('_dispatch.py', 'missing.py') + ':12', 'plain', undefined, undefined],
+  [`${NOTES}:10-16`, 'file', NOTES, '10'],
+]
+
 const SCENES = [
   { scene: 'chips', marker: 'code[data-path-kind="dir"]', note: 'directory chip resolved; git refs inert' },
+  { scene: 'cited', marker: 'code[data-path-line="447"]', note: 'file:line chips live; bare :line inert' },
+  // Waits on the DECORATION, not just the editor: the marker is the highlight
+  // itself, so a reveal that scrolled but failed to paint fails the run.
+  { scene: 'reveal', marker: '.mc-line-reveal', note: 'panel scrolled to line 447 and flashed it' },
+  // The marker only proves SOME line was painted; the assertion block below counts
+  // the painted lines, which is what would catch a first-line-only reveal.
+  { scene: 'range', marker: '.mc-line-reveal', note: 'panel revealed the whole 10-16 span' },
   { scene: 'folder', marker: 'text=website', note: 'folder tab body lists dirs then files' },
 ]
 
@@ -75,12 +103,28 @@ const run = async () => {
         await ctx.close()
         continue
       }
-      if (scene === 'chips') {
-        const actual = await page.$$eval('code', els =>
-          els.map(e => [e.textContent, e.dataset.pathKind ?? 'plain']))
-        if (JSON.stringify(actual) !== JSON.stringify(EXPECTED_KINDS)) {
+      if (scene === 'range') {
+        // Monaco paints one whole-line decoration node per visible line, so a
+        // `:10-16` span must render 7 of them. A reveal that centred line 10 and
+        // dropped the rest would render 1 and fail here.
+        const painted = await page.$$eval('.mc-line-reveal', els => els.length)
+        if (painted !== 7) {
+          console.error(`  FAIL ${theme}/${scene}: expected 7 painted lines for :10-16, saw ${painted}`)
+          failed += 1
+          await ctx.close()
+          continue
+        }
+      }
+      if (scene === 'chips' || scene === 'cited') {
+        const cited = scene === 'cited'
+        const expected = cited ? EXPECTED_CITED : EXPECTED_KINDS
+        const actual = await page.$$eval('code', (els, withPath) =>
+          els.map(e => withPath
+            ? [e.textContent, e.dataset.pathKind ?? 'plain', e.dataset.path, e.dataset.pathLine]
+            : [e.textContent, e.dataset.pathKind ?? 'plain']), cited)
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
           console.error(`  FAIL ${theme}/${scene}: classification drifted`)
-          console.error(`    expected ${JSON.stringify(EXPECTED_KINDS)}`)
+          console.error(`    expected ${JSON.stringify(expected)}`)
           console.error(`    actual   ${JSON.stringify(actual)}`)
           failed += 1
           await ctx.close()

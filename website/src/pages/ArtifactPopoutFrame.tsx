@@ -40,7 +40,7 @@ export default function ArtifactPopoutFrame() {
   // distinguishable at the OS level.
   useEffect(() => {
     const label = artifact?.name || slug || i18nT('pages.artifactPopoutFrame.artifact')
-    document.title = `${label} — Kiro Crew`
+    document.title = i18nT('pages.artifactPopoutFrame.window_title', { label })
   }, [slug, artifact?.name])
 
   return (

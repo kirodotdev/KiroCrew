@@ -63,10 +63,21 @@ when done. See [acp-client.md](acp-client.md) for `AcpRuntime` /
 `AcpSessionHandle`.
 
 **Cheapest-model bg tasks**: the categorical/classification background tasks
-force `claude-haiku-4.5` via a best-effort per-session `set_model` (guarded so
-backends that can't switch fall through to their default): folder-icon
-(`chat_folders.py`), link-summary (`chat_nav.py`), and lesson-contradiction
-check (`dashboard/handlers/cron.py`).
+(folder-icon `chat_folders.py`, link-summary `chat_nav.py`, session title
+`chat_title.py`, session-summary `handlers/sessions.py`, STT endpointing
+`stt_stream.py`, and the lesson-contradiction check `dashboard/handlers/cron.py`,
+plus tips generation) express a `"auto"` model preference and pass it to a
+best-effort per-session `set_model`. The wire chokepoint
+(`AcpSessionHandle.set_model` → `resolve_usable_model`) mirrors the interactive
+`_wire_model_id`: it sends a served id, sends `"auto"` only when the backend
+advertises it, and for anything else — `"auto"` where a partition doesn't serve
+it, or an unentitled concrete id — resolves to `""` and **skips the
+send**, inheriting the session's served backend default. So these tasks never
+put an unserved model or a literal unavailable `"auto"` on the wire (which would
+fail with `Invalid model ID`). A reactive retry in `run_bg_oneliner`
+(retry once with the first advertised model on a mid-prompt rejection) remains a
+thin backstop for the fail-open case where the advertised set was unknown at
+send time.
 
 ## Key Behaviors
 
@@ -502,6 +513,12 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 - `SessionManager.set_mirror_link(key, link)` / `clear_mirror_link(key)` /
   `get_mirror_link(key)` — persist/read the outbound `ChannelLink` (Slack routes
   to `set_slack_link` so its reverse index stays intact).
+- `SessionManager.clear_mirror_links_at(link)` — value-keyed sweep: clears
+  EVERY session whose mirror targets that exact non-Slack location and returns
+  the cleared keys. The write counterpart of `find_mirror_sessions`, and the
+  only clear that reaches a binding stranded under a key spelling the
+  conversation no longer derives (a rotated DM generation, a pre-unification
+  `dashboard:` row).
 - `POST /api/chat/slots/{name}/mirror-link` | `mirror-unlink` — dashboard-side
   endpoints (auth posture matches `slack-link`: under the `/api/chat`
   `mixed_internal_paths` prefix, never the strict `internal_paths` set).
@@ -516,10 +533,17 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   silently omitted (Teams before first inbound; WeCom proactive send); the menu
   keeps those rows keyboard-focusable, shows the reason inline, and announces
   the same reason instead of presenting an unexplained disabled action.
-- In-channel `/link` / `/unlink` — write/clear the link on the current
-  conversation's `dashboard_mirror_key`. `/link` does not control display,
-  history, or the inbound direction — only the outbound echo; `/unlink` changes
-  nothing else, since the two sids already exist independently.
+- In-channel `/link` / `/unlink` — `/link` writes the link on the current
+  conversation's `dashboard_mirror_key`; it does not control display, history,
+  or the inbound direction — only the outbound echo. `/unlink` frees the
+  LOCATION via the shared `messaging.link.release_conversation_location`
+  helper (one implementation for every DM dispatcher): after the key-addressed
+  clears it sweeps every binding whose mirror targets this conversation
+  (`clear_mirror_links_at`), including a binding stranded under a rotated DM
+  generation and another dashboard session's outbound mirror into the
+  conversation — the same occupant set the Discord resume conflict check
+  refuses on, so its "Run `!unlink` first" guidance is always followable. The
+  reply reports the count when more than one binding was cleared.
 
 **Delivery** (`chat_runner._deliver_cross_surface_reply` /
 `_deliver_cross_surface_user_message`, via the shared `_resolve_mirror_target`
@@ -755,7 +779,15 @@ In-place compaction (both backends) keeps the `_sessions` entry healthy:
 a concurrent `get_or_create()` reuses it, queueing on the session
 semaphore behind the compact, then continues on the compacted session.
 
-Only the kiro-cli recycle fallback tears the entry down. It records the
+Only the kiro-cli failure recycle tears the entry down, and it runs inside
+`_compact_in_place` under the turn semaphore that the compact attempt
+already holds — never after releasing it. That is load-bearing: releasing
+first and re-acquiring for the recycle leaves a gap a queued turn wins, and
+that turn is then dispatched into a kiro-cli still finishing its compaction,
+receives the late `completed` status instead of an `end_turn`, and hangs
+holding the semaphore until the prompt timeout.
+
+The recycle records the
 exact session object under teardown in `_recycling` (distinct from
 `_compacting`, which is just the trigger dedup gate): `get_or_create()`
 skips reuse only when the map still holds that exact object, then

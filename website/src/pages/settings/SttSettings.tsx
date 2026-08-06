@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, X, Hourglass, Package } from 'lucide-react'
+import { Hourglass, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints, reportIfMicDenied } from '../../hooks/mic'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 interface SttConfig {
   enabled: boolean
   provider: string
@@ -23,6 +24,7 @@ interface SttConfig {
   models: Record<string, string>
   mlx_models?: Record<string, string>
   providers?: string[]
+  streaming_providers?: string[]
   language_codes?: string[]
   install_step: string
   install_detail: string
@@ -73,6 +75,7 @@ function stepLabel(step: string): string {
 const PROVIDER_LABEL_KEY: Record<string, string> = {
   whisper: 'pages.settings.sttSettings.provider_whisper',
   mlx: 'pages.settings.sttSettings.provider_mlx',
+  apple: 'pages.settings.sttSettings.provider_apple',
   transcribe: 'pages.settings.sttSettings.provider_transcribe',
 }
 
@@ -193,21 +196,35 @@ export default function SttSettings() {
   const isTranscribe = stt.provider === 'transcribe'
   const provider = stt.provider || 'whisper'
   const providerOptions = stt.providers?.length ? stt.providers : ['whisper', 'transcribe']
+  // Gate the streaming controls on the CAPABILITY, not on a provider name. The
+  // backend owns the list (`stt_stream._STREAMING_PROVIDERS`) and serves it, so
+  // adding a streaming provider cannot silently hide its own toggle — which is
+  // exactly what happened when `apple` was added while this read `isTranscribe`.
+  const streamingProviders = stt.streaming_providers?.length
+    ? stt.streaming_providers
+    : ['transcribe']
+  const canStream = streamingProviders.includes(provider)
   const languageOptions = stt.language_codes?.length ? stt.language_codes : ['en-US']
   const installStepLabel = stepLabel(stt.install_step)
 
-  // Switching to Transcribe turns on streaming by default (one click to undo).
-  const handleProvider = (v: string) => set(v === 'transcribe' && !stt.streaming ? { provider: v, streaming: true } : { provider: v })
+  // Moving to a streaming-capable provider turns streaming on by default (one click
+  // to undo) — a provider chosen FOR its live partials should not need a second
+  // step to produce any. Leaving it on a non-streaming provider would be a lie, so
+  // it is also turned off when moving to one that cannot stream.
+  const handleProvider = (v: string) => {
+    const streams = streamingProviders.includes(v)
+    if (streams && !stt.streaming) return set({ provider: v, streaming: true })
+    if (!streams && stt.streaming) return set({ provider: v, streaming: false })
+    return set({ provider: v })
+  }
 
   return (
     <>
-      {err && (
-        <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
-          <AlertTriangle className="lucide-inline shrink-0 text-danger" />
-          <span className="text-sm text-danger flex-1">{err}</span>
-          <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.settings.sttSettings.dismiss_error')} onClick={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}><X className="lucide-inline" /></button>
-        </div>
-      )}
+      <ErrorNotice
+        message={err}
+        onDismiss={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}
+        className="mb-4 animate-rise"
+      />
       <SettingsCard>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 
@@ -220,7 +237,7 @@ export default function SttSettings() {
           description={i18nT('pages.settings.sttSettings.input_device_used_to_capture_your_voice')}
           value={micId}
           options={['', ...mics.map(d => d.deviceId)]}
-          optionLabels={['System default', ...mics.map((d, i) => d.label || `Microphone ${i + 1}`)]}
+          optionLabels={[i18nT('pages.settings.sttSettings.system_default'), ...mics.map((d, i) => d.label || i18nT('pages.settings.sttSettings.microphone_2', { n: i + 1 }))]}
           onChange={changeMic}
           disabled={saving}
         />
@@ -244,11 +261,11 @@ export default function SttSettings() {
           <SettingsSelect label={i18nT('pages.settings.sttSettings.mlx_model')} hint={i18nT('pages.settings.sttSettings.whisper_model_running_on_apple_mlx_metal_gpu_dow')} value={stt.mlx_model || ''} options={Object.keys(stt.mlx_models || {})} optionLabels={Object.entries(stt.mlx_models || {}).map(([n, s]) => `${n.replace('mlx-community/', '')} (${s})`)} onChange={v => set({ mlx_model: v })} disabled={saving} />
         )}
 
-        {isTranscribe && (
+        {canStream && (
           <SettingsToggle label={i18nT('pages.settings.sttSettings.streaming')} description={i18nT('pages.settings.sttSettings.stream_live_partial_transcripts_into_the_input_b')} checked={!!stt.streaming} onChange={v => set({ streaming: v })} disabled={saving} />
         )}
 
-        {isTranscribe && stt.streaming && (
+        {canStream && stt.streaming && (
           <SettingsToggle label={i18nT('pages.settings.sttSettings.endpointing')} description={i18nT('pages.settings.sttSettings.endpointing_desc')} checked={!!stt.endpointing} onChange={v => set({ endpointing: v })} disabled={saving} />
         )}
 

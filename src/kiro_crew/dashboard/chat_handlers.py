@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import model_registry
+from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -35,9 +36,16 @@ from kiro_crew.dashboard.chat_persistence import (
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
-from kiro_crew.dashboard.chat_runner import _context_usage_payload, _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _context_usage_payload,
+    _run_chat,
+    _start_next_queued_turn,
+)
 from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
+    _MANUAL_CONTINUE_MSG,
+    _MANUAL_RESUME_MSG,
+    SYNTHETIC_RECOVERY_KIND,
     _build_stream_chunk,
     _edit_queued_by_id,
     _emit_agent_assignment,
@@ -51,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
 )
+from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import (
     _MAX_PENDING_CONTEXT,
     DashboardState,
@@ -1348,6 +1357,230 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def api_chat_slot_continue(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/continue — hand the thread back to the agent.
+
+    Two callers, one mechanism: picking up a turn that was cut short, and asking
+    a slot that finished cleanly to carry on. They are one endpoint because they
+    are indistinguishable from the transcript — a force-quit runs no ``finally``,
+    so a killed turn leaves no error row behind and reads exactly like a
+    completed one. ``_has_conversation`` authorizes; ``_is_interrupted`` only
+    chooses which of the two continuation bodies the model receives.
+
+    Runs the same synthetic-continuation machinery the runner already uses for
+    its own post-transient recovery: queue the continuation at the head, then let
+    ``_start_next_queued_turn`` land it as an ``inject`` row and dispatch the
+    turn. No bespoke dispatch path, and the row folds into the existing recovery
+    card instead of printing machine prose as a user bubble.
+
+    The frontend decides whether to OFFER this (it has the transcript, `running`
+    and the queue locally, so it needs no server field for that). This endpoint
+    re-checks under ``slot._lock`` because the client's view is a WS snapshot and
+    therefore lagging: a press landing in the instant a turn starts, or a second
+    browser tab acting on a stale cache, would otherwise dispatch a duplicate
+    turn against one slot — real tokens, real tool calls, real repo writes. Every
+    other dispatch route guards the same way (see ``api_chat_slot_regenerate``).
+    """
+    blocked = await reject_if_kiro_unverified(request)
+    if blocked is not None:
+        return blocked
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # App ownership check (App Kit §5.2): deny-by-default for app tokens, mirroring
+    # api_chat. Without it an app token holding /api/chat could resume ANY
+    # interrupted slot — including a dashboard user's — and that is not a read: it
+    # dispatches an agent turn that runs tools and writes to the repo. Same
+    # indistinguishable 404 as the send path, so the response cannot be used to
+    # probe which foreign slots exist.
+    request_app = request.get("app", "")
+    if request_app and request_app != slot._app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat_continue",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error=(
+                "app cannot access unscoped slots" if not slot._app
+                else "app does not own this slot"
+            ),
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    async with slot._lock:
+        if slot.running:
+            return web.json_response(
+                {"error": "slot is running", "code": "slot_running"}, status=409
+            )
+        if slot._in_stage_execution:
+            # An autopilot plan reads `running` False BETWEEN stages while it is
+            # still mid-plan, so `running` alone would let a Continue dispatch
+            # concurrently with the next stage — two turns interleaving tool calls
+            # and repository writes on one slot.
+            return web.json_response(
+                {"error": "slot is orchestrating", "code": "slot_orchestrating"}, status=409
+            )
+        if slot._stopping or slot._stop_state != "idle":
+            return web.json_response(
+                {"error": "a stop is in progress", "code": "slot_stopping"}, status=409
+            )
+        if slot.queue_depth:
+            # The runner is about to pick the thread back up on its own; adding a
+            # continuation would double-fire.
+            return web.json_response(
+                {"error": "queued messages pending", "code": "slot_queue_pending"}, status=409
+            )
+        if any(not f.done() for f in slot._approval_futures.values()):
+            return web.json_response(
+                {"error": "approval pending", "code": "slot_approval_pending"}, status=409
+            )
+        # Background sub-agents are still running (or waiting to start) for this
+        # slot. `slot.running` is False here — the parent turn ENDS while its
+        # children keep going — so nothing above catches this, and the widened
+        # gate below makes it the common shape rather than the rare one (before
+        # this endpoint accepted a settled transcript, a parent that finished
+        # cleanly after `spawn_run` was refused only incidentally, by
+        # `_is_interrupted`).
+        #
+        # It has to be refused HERE rather than left to the queue: a synthetic
+        # recovery entry satisfies `is_system_injection_item`, so
+        # `_dequeue_next_system_message` drains it straight through the
+        # `hold_users` gate that exists to stop exactly this (chat_runner) — the
+        # hold only holds plain USER messages. A parent turn would start and
+        # interleave tool calls and repository writes with its own children's
+        # completion injections. `api_chat` queues instead of dispatching for the
+        # same reason; Continue has nowhere to queue to, so it refuses.
+        #
+        # Two things this must NOT get wrong, both of which look like a working
+        # guard right up until they lose a file write:
+        #
+        # * `effective_session_key`, never `f"dashboard:{slot.key}"`. A slot born
+        #   on a channel carries the channel key (`slack:<ts>`) and its children
+        #   register under THAT, so the dashboard-prefixed form silently matches
+        #   nothing — `_history_key_for`'s own docstring says as much.
+        # * QUEUED children count. A spawn that hit the concurrency/stagger gate
+        #   is deliberately absent from `_agents` (see `SubagentInfo.queued`), so
+        #   `running_agents_for` cannot see it, yet it WILL start on its own and
+        #   write concurrently with the turn this endpoint would dispatch.
+        # * IN-FLIGHT RESULT DELIVERY counts too. The last child can finish —
+        #   emptying both probes — while its `[Subagent completion event]`
+        #   injection is still landing. Starting a turn in that window interleaves
+        #   with the injection and corrupts transcript order. This is why the
+        #   runner's own synthesis gate pairs the two conditions at BOTH its call
+        #   sites (`chat_runner.py:2273` and `:2305`): `running_agents_for(...)`
+        #   alone is not "no children are touching this slot".
+        subs = getattr(state, "subagents", None)
+        if subs is not None:
+            child_key = effective_session_key(slot)
+            running = subs.running_agents_for(child_key)
+            # Fail closed on None: that is the probe FAILING, not a slot with no
+            # children, and mistaking the two dispatches the interleaved turn this
+            # guard exists to prevent. Mirrors the stage gate in chat_orchestrator.
+            queued = 0
+            if running is not None:
+                try:
+                    queued = subs._queued_depth(child_key)
+                except Exception:
+                    # An unreadable queue is unknown children, not zero children.
+                    logger.debug("continue: queued-depth probe failed", exc_info=True)
+                    queued = 1
+            inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
+            if running is None or running or queued or inflight:
+                return web.json_response(
+                    {"error": "sub-agents are running", "code": "slot_subagents_running"},
+                    status=409,
+                )
+        if not _has_conversation(slot):
+            return web.json_response(
+                {"error": "nothing to continue", "code": "slot_empty"}, status=409
+            )
+
+        # _is_interrupted no longer AUTHORIZES the continue — it only picks which
+        # body to inject. Both are true statements about their own case, and
+        # getting this wrong is not cosmetic: telling a model that finished
+        # cleanly that it was "interrupted before it finished" sends it looking
+        # for half-done work that does not exist.
+        resume = _MANUAL_RESUME_MSG if _is_interrupted(slot) else _MANUAL_CONTINUE_MSG
+        slot.queue_insert(0, resume, kind=SYNTHETIC_RECOVERY_KIND)
+
+    sel().log_tool_invocation(
+        session_key=_history_key_for(name),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name="dashboard_continue",
+        tool_kind="command",
+        outcome="ok",
+        metadata={"slot": name},
+    )
+    started = await _start_next_queued_turn(state, slot)
+    if not started:
+        # Lost a race for the queue entry (a concurrent dequeue consumed it).
+        # The turn is running either way, so this is not an error for the caller.
+        logger.info("continue: queue entry consumed by a concurrent dequeue (slot %s)", name)
+    state.push_slots_update()
+    return web.json_response({"ok": True, "slot": slot.key})
+
+
+def _has_conversation(slot: _ChatSlot) -> bool:
+    """True when the transcript holds a real turn to continue FROM.
+
+    The authorization check behind Continue. It is deliberately weak — anything
+    a person could look at and say "carry on with that" qualifies — because a
+    hard-killed gateway writes no error row, so an interrupted turn is often
+    shape-identical to a completed one and no predicate can separate them. The
+    button is therefore offered on any idle slot with a transcript, and this
+    guard only refuses the one case with nothing to reason about at all: an empty
+    slot (or one holding only scaffolding rows such as a compaction notice),
+    where a continuation would reach the model with no conversation under it.
+
+    Rows are walked with the same skip rules as ``_is_interrupted`` so the two
+    cannot disagree about what counts as the conversation's floor.
+    """
+    for m in slot.messages:
+        meta = m.get("meta") or {}
+        if m.get("role") == "assistant" and meta.get("kind") == "compaction":
+            continue
+        if m.get("role") in ("user", "assistant") and m.get("content"):
+            return True
+    return False
+
+
+def _is_interrupted(slot: _ChatSlot) -> bool:
+    """True when the transcript shows a turn that ended without a reply.
+
+    Two shapes: the last conversational row is the USER's (nothing came back at
+    all — a gateway restart mid-turn leaves exactly this), or it is the
+    ASSISTANT's but an error row follows it (the turn streamed partway then died,
+    which is otherwise shape-identical to a clean completion).
+
+    No longer a gate — ``_has_conversation`` authorizes Continue and this only
+    selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
+    ``_MANUAL_CONTINUE_MSG``). A False result therefore means "as far as the
+    transcript shows, the last turn finished", NOT "there is nothing to do":
+    a force-quit or force-exit runs no ``finally``, so the error row that would
+    have proved the interruption was never written.
+
+    Deliberately does not distinguish "produced some output" from "produced
+    none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the
+    distinction would buy a branch and nothing else.
+    """
+    saw_trailing_error = False
+    for m in reversed(slot.messages):
+        role = m.get("role")
+        meta = m.get("meta") or {}
+        if role == "assistant" and meta.get("kind") == "compaction":
+            continue
+        if role in ("user", "assistant") and m.get("content"):
+            return True if role == "user" else saw_trailing_error
+        if role == "error":
+            saw_trailing_error = True
+    return False
+
+
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/interrupt — interrupt current turn and
     immediately process the next queued message.
@@ -1994,6 +2227,12 @@ async def _try_live_model_switch(
         return False
     try:
         await provider.client.set_model(wire)
+    except AcpModelUnavailable:
+        # NOT a "the call didn't land" failure, so the reset fallback below is
+        # the wrong recovery: it would tear down the live conversation and then
+        # cold-start on a DIFFERENT model while the caller reported success.
+        # Propagate so the handler answers 4xx and the slot keeps its old model.
+        raise
     except Exception as exc:
         logger.warning(
             "Live set_model(%s) failed for slot %s: %s: %s — falling back to reset",
@@ -2015,12 +2254,12 @@ def _broadcast_context_reset(state: "DashboardState", slot_key: str, provider: A
     Without this the frontend keeps the previous model's stored ``{used,
     window}`` until the next turn emits an event. ``reset: true`` tells the
     ``sseContextUsage`` reducer it may REPLACE or DELETE the stored token entry
-    (per-turn events deliberately never delete, so a pct-only event cannot wipe
-    good counts). With a live provider the payload carries the freshly rebased
-    stats from ``set_model``; without one (the session-reset path) it carries no
-    tokens, so the reducer deletes the entry and the UI falls back to its own
-    model-derived window for the slot's new model. Best-effort: a broadcast
-    failure must not fail the switch.
+    (a frame WITHOUT ``reset`` never deletes, so the backend sets ``reset``
+    whenever it has no real counts to send). With a live provider the payload
+    carries the freshly rebased stats from ``set_model``; without one (the
+    session-reset path) it carries no tokens, so the reducer deletes the entry
+    and the UI falls back to its own model-derived window for the slot's new
+    model. Best-effort: a broadcast failure must not fail the switch.
     """
     try:
         if provider is not None:
@@ -2056,10 +2295,25 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         return web.json_response({"error": reason}, status=400)
     if slot.model == model_name:
         return web.json_response({"ok": True, "model": model_name})
-    slot.model = model_name
     session_key = _history_key_for(name)
     provider = state.sessions.get_provider(session_key)
-    if await _try_live_model_switch(name, slot, provider, model_name):
+    prior_model = slot.model
+    slot.model = model_name
+    try:
+        went_live = await _try_live_model_switch(name, slot, provider, model_name)
+    except AcpModelUnavailable as exc:
+        # The live session refused the pick as unavailable to this account. Roll
+        # the slot back so the picker keeps showing what is actually running, and
+        # answer 4xx — deliberately NOT the reset fallback below, which would
+        # destroy the conversation and cold-start on a different model while
+        # reporting success. Only the session that owns the advertised list gets
+        # to make this call, so there is no pre-emptive gate here to go stale.
+        slot.model = prior_model
+        logger.warning("Slot %s model rejected: %s", name, exc)
+        return web.json_response(
+            {"error": str(exc), "code": "model_unavailable"}, status=400
+        )
+    if went_live:
         _broadcast_context_reset(state, slot.key, provider)
     else:
         logger.info("Slot %s model switched to %r, resetting session", name, model_name or "auto")

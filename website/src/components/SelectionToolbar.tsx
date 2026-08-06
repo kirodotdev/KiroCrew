@@ -356,12 +356,28 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   }, [externalSelection])
 
   useEffect(() => {
+    // Every deferred selection check has to be cancellable. These fire 0-50ms
+    // after a pointer/key event, so an unmount inside that window leaves a
+    // check running for a component that is gone. In a browser that is benign
+    // but wrong — `setVisible` on an unmounted component is a no-op and the
+    // stale `checkSelection` just reads the live selection for nothing. Where
+    // it actually breaks is host teardown: with the document/window already
+    // gone (jsdom between tests), the same late callback throws an uncaught
+    // `ReferenceError: window is not defined` from `window.getSelection()`.
+    // That is the identical failure mode `copyTimerRef` above already guards;
+    // only the touch-path `selectionChangeTimer` below was ever cleared here.
+    const pending = new Set<ReturnType<typeof setTimeout>>()
+    const defer = (fn: () => void, ms: number) => {
+      const id = setTimeout(() => { pending.delete(id); fn() }, ms)
+      pending.add(id)
+    }
+
     const onMouseUp = (e: MouseEvent) => {
       if (toolbarRef.current && toolbarRef.current.contains(e.target as Node)) return
       triggeredByMouseRef.current = true
       lastMouseRef.current = { x: e.clientX, y: e.clientY }
       // Small delay to let selection finalize
-      setTimeout(checkSelection, 50)
+      defer(checkSelection, 50)
     }
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -369,7 +385,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // Check selection on Shift+Arrow keys (keyboard selection)
       if (e.shiftKey) {
         triggeredByMouseRef.current = false
-        setTimeout(checkSelection, 50)
+        defer(checkSelection, 50)
       }
     }
 
@@ -379,7 +395,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // Clicking inside the container clears the selection (cursor reposition) —
       // dismiss after a tick so the new (empty) selection state is readable.
       if (containerRef.current && containerRef.current.contains(e.target as Node)) {
-        setTimeout(() => { if (!window.getSelection()?.toString().trim()) setVisible(false) }, 0)
+        defer(() => { if (!window.getSelection()?.toString().trim()) setVisible(false) }, 0)
         return
       }
       setVisible(false)
@@ -413,6 +429,11 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('selectionchange', onSelectionChange)
       if (selectionChangeTimer) clearTimeout(selectionChangeTimer)
+      // Cancel every deferred check still in flight. `checkSelection` depends
+      // only on the stable `containerRef`, so this effect does not re-run after
+      // mount and this cleanup is effectively unmount-only.
+      for (const id of pending) clearTimeout(id)
+      pending.clear()
     }
     // `containerRef` is a stable RefObject (its identity never changes across
     // renders), so listing it does not re-run the effect; it satisfies the

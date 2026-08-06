@@ -12,9 +12,17 @@ const mc = (window as { kirocrew?: { isElectron?: boolean; platform?: string } }
 
 export const isElectron = !!mc?.isElectron
 export const isMacElectron = isElectron && mc?.platform === 'darwin'
+export const isWinElectron = isElectron && mc?.platform === 'win32'
 
 /** Header left inset clearing the traffic lights: 16px inset + ~52px button group + 16px gap. */
 export const TRAFFIC_LIGHT_INSET_PX = 84
+
+/**
+ * Width reserved on the right for the Windows titleBarOverlay caption buttons
+ * (minimize/maximize/close). The overlay is 138px wide at default DPI on
+ * Windows 10/11. The header must not place interactive controls in this zone.
+ */
+export const WIN_CAPTION_OVERLAY_WIDTH = 138
 
 /**
  * True when an app declares `platform.requiresDesktopApp` but we are in a

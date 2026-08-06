@@ -44,6 +44,9 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
+from kiro_crew.agent_files import (
+    REQUIRED_KIRO_AGENT_FILES,
+)
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
 from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
@@ -120,11 +123,78 @@ def kiro_agents_dir_path() -> Path:
     return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
 
 
+def missing_required_agent_specs() -> list[str]:
+    """Return the :data:`REQUIRED_KIRO_AGENT_FILES` absent from the agents dir.
+
+    A post-install verification, not a duplicate of the install: an empty result
+    is the only proof that ``rebuild_agent_config`` actually left usable specs on
+    disk. Raising is NOT enough on its own, because two non-raising paths also
+    end with no spec written:
+
+    * ``rebuild_agent_config`` mkdirs the agents directory as its first act, so a
+      failure anywhere after that leaves a created-but-EMPTY directory — which
+      reads as "installed" to anything that only checks the directory.
+    * it also RETURNS EARLY when :func:`_decline_shared_agent_home` refuses to
+      rewrite a shared agent home. Correct on a machine that already has specs
+      (it protects the real install's MCP servers); fatal on one that does not,
+      where there is nothing to fall back to.
+
+    Checking the filesystem covers both, plus a spec deleted after install. The
+    cost of NOT checking is that the first symptom is kiro-cli answering every
+    ``session/set_mode`` with "Mode '<name>' not found" — one failed turn at a
+    time, with nothing pointing at the install as the cause.
+    """
+    if _decline_shared_agent_home(audit=False) is not None:
+        # This instance is not allowed to own these specs (a pod, or a gateway
+        # booted from a linked git worktree), so their absence is not a defect it
+        # can repair. Reporting them would put an unrepairable install behind a
+        # full-screen gate whose only remedy declines every time. ``audit=False``
+        # keeps this read out of the SEL log -- the audit records write DECISIONS,
+        # and a status poll is not one.
+        return []
+    agents_dir = kiro_agents_dir_path()
+    return [name for name in REQUIRED_KIRO_AGENT_FILES if not (agents_dir / name).is_file()]
+
+
 # AGENT_FILENAME imported from agent_files (single source of truth).
 _MAIN_AGENT_NAME = "kirocrew"
 # Cheap Claude Code model for KiroCrew's background agents (lite / heartbeat).
-# Stored in the agent_state sidecar, never in the kiro spec (deny_unknown_fields).
+# Last-resort fallback for the claude_code (CC) seam ONLY: that backend cannot
+# resolve the "auto" sentinel, so an unpinned background role needs a concrete
+# cheap model. The kiro-cli path uses the resolved role model (default "auto").
 _BACKGROUND_CC_MODEL = "claude-sonnet-4.6"
+
+
+def _background_agent_model() -> str:
+    """Kiro-spec model for background worker agents (lite / heartbeat).
+
+    Resolves ``agent.role_models['background']`` -> ``agent.model`` -> ``"auto"``
+    (see :meth:`AgentConfig.resolve_model`). Defaults to ``"auto"`` — which the
+    provider resolves server-side against the account's entitlement — so a
+    background agent stays usable on every subscription tier unless an operator
+    deliberately pins a (cheaper) model. Never raises: a config hiccup falls
+    back to ``"auto"``.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().agent.resolve_model("background")
+    except Exception:
+        logger.debug("background model resolve failed; using 'auto'", exc_info=True)
+        return "auto"
+
+
+def _background_cc_model() -> str:
+    """cc_model (claude_code seam) for background agents.
+
+    The CC backend cannot resolve ``"auto"``, so an unpinned background role
+    falls back to :data:`_BACKGROUND_CC_MODEL`; an operator's explicit pin is
+    honored when it names a concrete model.
+    """
+    m = _background_agent_model()
+    return m if m and m != "auto" else _BACKGROUND_CC_MODEL
+
+
 _KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
 # Well-known Claude Code global MCP config. The core does not read this at
 # rebuild/discovery/apply time (OSS is Kiro-only); a companion contributes it as
@@ -1791,7 +1861,7 @@ def migrate_agent_specs() -> int:
     return cleaned
 
 
-def _decline_shared_agent_home() -> Path | None:
+def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     """Return the spec path to report, WITHOUT writing, when this instance must
     not own the shared agent home; ``None`` when writing is safe.
 
@@ -1877,43 +1947,45 @@ def _decline_shared_agent_home() -> Path | None:
         # is recorded -- the two private-target returns above are not decisions
         # about a shared resource, so auditing them would add volume without
         # adding traceability.
+        if audit:
+            sel().log_api_access(
+                caller="system",
+                operation="agent_home_write",
+                outcome="allowed",
+                source="rebuild_agent_config",
+                resources=str(target),
+            )
+        return None  # an ordinary install writing its own shared home
+
+    if audit:
+        logger.warning(
+            "Refusing to rewrite the shared agent home %s from an ephemeral instance "
+            "(checkout %s, data home %s): it would repoint the real install's MCP "
+            "servers at this instance's venv and data home, and break them outright "
+            "when it is torn down. This instance will use the existing specs instead. "
+            "Deliberately no remedy is suggested here: redirecting the agent home via "
+            "KIRO_HOME also relocates kiro-cli's session storage, which Kiro Crew still "
+            "reads from the host path -- see kiro_home()'s scope caveat.",
+            target,
+            Path(__file__).resolve().parents[2],
+            own_home or "default",
+        )
+        # This is a permission decision on a shared, security-relevant resource (the
+        # specs carry every managed MCP server's command + env), so it belongs in the
+        # audit trail and not only in the log: a silent refusal is indistinguishable
+        # from a write that simply did not happen when reconstructing what an
+        # ephemeral instance did to the host.
         sel().log_api_access(
             caller="system",
             operation="agent_home_write",
-            outcome="allowed",
+            outcome="denied",
             source="rebuild_agent_config",
             resources=str(target),
+            error=(
+                f"ephemeral instance (checkout {Path(__file__).resolve().parents[2]}, "
+                f"data home {own_home or 'default'}) refused write to shared agent home"
+            ),
         )
-        return None  # an ordinary install writing its own shared home
-
-    logger.warning(
-        "Refusing to rewrite the shared agent home %s from an ephemeral instance "
-        "(checkout %s, data home %s): it would repoint the real install's MCP "
-        "servers at this instance's venv and data home, and break them outright "
-        "when it is torn down. This instance will use the existing specs instead. "
-        "Deliberately no remedy is suggested here: redirecting the agent home via "
-        "KIRO_HOME also relocates kiro-cli's session storage, which KiroCrew still "
-        "reads from the host path -- see kiro_home()'s scope caveat.",
-        target,
-        Path(__file__).resolve().parents[2],
-        own_home or "default",
-    )
-    # This is a permission decision on a shared, security-relevant resource (the
-    # specs carry every managed MCP server's command + env), so it belongs in the
-    # audit trail and not only in the log: a silent refusal is indistinguishable
-    # from a write that simply did not happen when reconstructing what an
-    # ephemeral instance did to the host.
-    sel().log_api_access(
-        caller="system",
-        operation="agent_home_write",
-        outcome="denied",
-        source="rebuild_agent_config",
-        resources=str(target),
-        error=(
-            f"ephemeral instance (checkout {Path(__file__).resolve().parents[2]}, "
-            f"data home {own_home or 'default'}) refused write to shared agent home"
-        ),
-    )
     return kiro_agents_dir_path() / AGENT_FILENAME
 
 
@@ -2635,6 +2707,48 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 install_agent = rebuild_agent_config
 
 
+def ensure_agent_materialized(agent: str | None) -> bool:
+    """Self-heal: guarantee the managed default agent config exists on disk.
+
+    kiro-cli discovers its selectable *modes* at process startup by scanning
+    ``~/.kiro/agents/*.json``. A session that spawns ``kiro chat --agent <name>``
+    and then issues ``session/set_mode {modeId: <name>}`` therefore needs the
+    backing file present BEFORE spawn, or kiro-cli answers
+    ``-32603 "Mode '<name>' not found"`` on every turn (the crash this closes).
+    Normally ``kirocrew setup --agent-only`` writes it, but a source checkout /
+    dev launch that skips setup leaves it absent — this makes the runtime
+    self-sufficient regardless.
+
+    Only the managed default (``AGENT_FILENAME`` → ``kirocrew.json``) is
+    regenerable here, via :func:`rebuild_agent_config`. App/custom agents are
+    owned by their own subsystems, so a missing one is reported (``False``) and
+    left to the caller's graceful set_mode fallback rather than being guessed at.
+
+    Returns ``True`` when the managed default file is present (already, or after
+    a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
+    Best-effort — never raises, so it can sit on the spawn hot path.
+    """
+    try:
+        managed = Path(AGENT_FILENAME).stem
+        if not agent or agent != managed:
+            return False
+        agent_file = kiro_agents_dir_path() / AGENT_FILENAME
+        if agent_file.exists():
+            return True
+        logger.warning(
+            "Managed agent config %s missing — regenerating before spawn "
+            "(self-heal for kiro-cli 'Mode not found')",
+            agent_file,
+        )
+        rebuild_agent_config()
+        return agent_file.exists()
+    except Exception:
+        logger.warning(
+            "ensure_agent_materialized failed for agent %r", agent, exc_info=True
+        )
+        return False
+
+
 def _install_aim_capabilities() -> None:
     """Write a bare ``kirocrew-lite`` agent config.
 
@@ -2662,7 +2776,7 @@ def _install_lite_agent_fallback() -> None:
     lite_path = kiro_agents_dir_path() / _LITE_AGENT_FILENAME
     lite_config = {
         "name": "kirocrew-lite",
-        "model": "auto",
+        "model": _background_agent_model(),
         "tools": [],
         "mcpServers": {},
         "prompt": "",
@@ -2670,12 +2784,12 @@ def _install_lite_agent_fallback() -> None:
     _atomic_json_write(lite_path, lite_config)
     # Cheap model for the claude_code (CC) provider. kiro-cli resolves the lite
     # model from `model` via --agent; the CC backend can't, so the provider
-    # factory reads this cc_model for the lite agent. Sonnet is plenty for
-    # background title/compaction/heartbeat work. "auto" for the kiro spec keeps
-    # the lite agent usable on every subscription tier (a pinned premium model
-    # is rejected outright on accounts that lack it). Stored in the sidecar
-    # (kiro spec stays schema-clean).
-    agent_state.set_cc_model("kirocrew-lite", _BACKGROUND_CC_MODEL)
+    # factory reads this cc_model for the lite agent. The kiro spec above uses
+    # the resolved background role model (default "auto", entitlement-safe on
+    # every tier); the CC seam needs a concrete model, so it falls back to the
+    # cheap default when the role is unpinned. Stored in the sidecar (kiro spec
+    # stays schema-clean).
+    agent_state.set_cc_model("kirocrew-lite", _background_cc_model())
 
 
 _KNOWLEDGE_SYSTEM_PROMPT = (
@@ -2925,7 +3039,7 @@ def _install_heartbeat_agent() -> None:
             "cycle with a read-only MCP toolset. Tool approval is gated "
             "gateway-side against HEARTBEAT_SAFE_TOOLS."
         ),
-        "model": "claude-sonnet-4.6",
+        "model": _background_agent_model(),
         "includeMcpJson": False,
         "prompt": _HEARTBEAT_SYSTEM_PROMPT,
         "mcpServers": mcp,
@@ -2937,7 +3051,7 @@ def _install_heartbeat_agent() -> None:
 
     _atomic_json_write(path, config)
     # CC model for the heartbeat agent lives in the sidecar, not the kiro spec.
-    agent_state.set_cc_model("kirocrew-heartbeat", _BACKGROUND_CC_MODEL)
+    agent_state.set_cc_model("kirocrew-heartbeat", _background_cc_model())
     logger.info("Installed heartbeat agent config: %s", path)
 
 

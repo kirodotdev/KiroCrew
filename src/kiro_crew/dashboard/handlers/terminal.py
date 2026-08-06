@@ -19,6 +19,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_path
+from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.security import (
@@ -396,6 +397,21 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         - Client→Server: {"type":"ping"}
         - Server→Client: {"type":"pong"}
     """
+    # A WebSocket upgrade is a GET, and `csrf_middleware` validates the origin
+    # only for unsafe methods, so the handshake would otherwise arrive
+    # unchecked. The session cookie is attached automatically and SameSite=Lax
+    # does not distinguish ports, so any other loopback origin could open a PTY
+    # under the operator's own session. The other two WebSocket routes check in
+    # their own handlers for the same reason (`ws.py`, `stt_stream.py`).
+    if not check_origin(request, require=True):
+        _sel().log_api_access(
+            caller=request.get("user") or "unknown",
+            operation="terminal.ws.open",
+            outcome="denied",
+            source="dashboard",
+            resources=f"origin_not_allowed={request.headers.get('Origin', '')[:80]!r}",
+        )
+        raise web.HTTPForbidden(text="WebSocket origin not allowed")
     caller = request.get("user")
     if not caller:
         _sel().log_api_access(

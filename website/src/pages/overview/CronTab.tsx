@@ -19,6 +19,7 @@ import SortableHeader from '../../components/SortableHeader'
 import { useCronActions } from '../../hooks/useCronActions'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) {
   const provider = useProvider()
   const noCrons = useAppSelector(s => s.dashboard.status?.no_crons)
@@ -111,7 +112,7 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
   }
   return (<>
     {noCrons && <div className="bg-yellow-900/30 border border-yellow-700/50 text-yellow-200 px-4 py-2 rounded-lg mb-3 text-sm"><AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.cronTab.cron_execution_disabled')}<code className="text-yellow-300">{i18nT('pages.overview.cronTab.no_crons')}</code>{i18nT('pages.overview.cronTab.jobs_are_managed_by_another_instance')}</div>}
-    <Card><CardTitle>{i18nT('pages.overview.cronTab.add_job')} <InfoTip text={`Schedule recurring or one-time tasks. Jobs run in their own ${provider.labels.sessionProcess} session. Use cron expressions or interval seconds.`} /></CardTitle>
+    <Card><CardTitle>{i18nT('pages.overview.cronTab.add_job')} <InfoTip text={i18nT('pages.overview.cronTab.schedule_recurring_or_one_time_tasks', { sessionProcess: provider.labels.sessionProcess })} /></CardTitle>
       <div className="flex flex-col gap-3">
         <fieldset className="contents" aria-label={i18nT('pages.overview.cronTab.job_details')}>
         <div className="flex gap-2 items-center flex-wrap">
@@ -149,7 +150,9 @@ export default function CronTab({ refreshTrigger }: { refreshTrigger: number }) 
           </>)}
           <SendBtn onClick={add}>{i18nT('pages.overview.cronTab.add')}</SendBtn>
         </div>
-        {error && <div className="text-danger text-[13px]">{error}</div>}
+        {/* No hand-off: the notice sits beside unsaved form input, and the button
+          navigates away — which would discard what the user typed. */}
+        <ErrorNotice message={error} />
       </div></Card>
     <Card><CardTitle>{i18nT('pages.overview.cronTab.jobs')}</CardTitle>
       <div className="mb-3"><SearchInput placeholder={i18nT('pages.overview.cronTab.filter_jobs')} value={cronFilter} onChange={e => setCronFilter(e.target.value)} /></div>

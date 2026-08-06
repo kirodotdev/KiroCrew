@@ -260,8 +260,25 @@ cloudflared tunnel --url http://localhost:5476 run kirocrew
 
 With [ngrok](https://ngrok.com/docs) the equivalent is
 `ngrok http --domain=kirocrew.example.com 5476`.
-[Tailscale Funnel](https://tailscale.com/kb/1223/funnel) also works and keeps
-the service inside your tailnet.
+
+**If you use Tailscale, prefer `tailscale serve` over Funnel.** The two are not
+the same and the difference is the whole security story:
+
+- [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve) publishes the
+  dashboard **only inside your tailnet** — nothing is reachable from the public
+  internet, you get TLS and a stable MagicDNS hostname, and who can reach it is
+  governed by your tailnet ACLs. This is the better answer for the phone case:
+  ```bash
+  tailscale serve --bg --https 443 http://127.0.0.1:5476
+  ```
+  Then set `dashboard.url` to `https://<machine>.<tailnet>.ts.net` (below) so the
+  origin allowlist and the `Host` barrier accept it.
+- [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) does the opposite: it
+  puts the service **on the public internet**, like cloudflared and ngrok. Use it
+  only if you actually want public ingress.
+
+A shared corporate tailnet is not a private network — every member who can reach
+the Serve endpoint is inside your trust boundary, so keep the ACL narrow.
 
 Then set the URL in `~/.kiro/crew/config.json` and restart:
 
@@ -284,13 +301,25 @@ the tunnel. Keep the tunnel process running (tmux, or the provider's own
 service installer such as `cloudflared service install`).
 
 > **A tunnel puts your dashboard on the public internet.** Token auth is always
-> mounted, tokens are HMAC-signed and IP-pinned, and the DNS-rebinding `Host`
-> barrier applies to every non-probe request. Even so, prefer a provider that
-> adds its own authentication layer (Cloudflare Access, a Tailscale-private
-> funnel) and keep session lifetimes short. Note also that config-write and
-> secret-reveal endpoints refuse tunnelled requests: `is_direct_local_request()`
-> treats any request carrying `Forwarded` / `X-Forwarded-*` / `X-Real-IP` as
-> remote, and every standard tunnel and reverse proxy attaches those.
+> mounted, tokens are HMAC-signed, and the DNS-rebinding `Host` barrier applies to
+> every non-probe request.
+>
+> **Do not count on IP pinning here.** A token is pinned to the address that first
+> used it — but every tunnel above runs on *this* host and connects to the gateway
+> from loopback, so the address it pins to is the tunnel process, not your phone.
+> One pin is then satisfied by anyone who reaches the dashboard through that same
+> tunnel, for the life of the session (up to 20 hours; `kirocrew token` defaults
+> straight to `20h`). For the same reason the audit trail records the caller as
+> `127.0.0.1` rather than a client address. Security Posture → Dashboard token
+> auth reports which of the two states you are actually in.
+>
+> So the real controls for a tunnelled dashboard are the provider's own auth layer
+> (Cloudflare Access, or `tailscale serve`, which keeps the service inside your
+> tailnet instead of publishing it) plus short session lifetimes — not the pin.
+> Note also that config-write and secret-reveal endpoints refuse tunnelled requests:
+> `is_direct_local_request()` treats any request carrying `Forwarded` /
+> `X-Forwarded-*` / `X-Real-IP` as remote, and every standard tunnel and reverse
+> proxy attaches those.
 
 ### Getting a link on your phone
 
@@ -406,9 +435,10 @@ On Linux this writes a **system-level** systemd unit at
 `/etc/systemd/system/kirocrew.service` and enables it, so the gateway survives
 SSH disconnects, restarts on failure, and starts on boot
 (`WantedBy=multi-user.target`). On macOS it writes a launchd LaunchAgent at
-`~/Library/LaunchAgents/dev.kirocrew.gateway.plist` with `RunAtLoad` and
-`KeepAlive`/`SuccessfulExit=false`, so it starts at user login and relaunches on
-a non-zero exit but stays down after a clean stop.
+`~/Library/LaunchAgents/dev.kirocrew.gateway.plist` with `RunAtLoad`,
+`KeepAlive=true`, and a finite `ExitTimeOut`, so it starts at login, relaunches
+after exit, and force-kills only after the graceful stop deadline. An explicit
+`kirocrew stop` unloads the agent so it stays down for the current login session.
 
 ```bash
 kirocrew service status      # service state

@@ -10,6 +10,8 @@
  * duplication. Collapsing them would reopen the offline draft-loss path.
  */
 
+import { i18nT } from '../i18n/t'
+
 export interface OfflineProps {
   'aria-disabled': boolean
   title?: string
@@ -44,7 +46,7 @@ export function offlineProps(online: boolean, verb: string, label?: string): Off
   if (online) return { 'aria-disabled': false }
   return {
     'aria-disabled': true,
-    title: `Gateway offline — reconnect to ${verb}`,
-    ...(label ? { 'aria-label': `${label} disabled — gateway offline` } : {}),
+    title: i18nT('utils.offline.gateway_offline_reconnect', { action: verb }),
+    ...(label ? { 'aria-label': i18nT('utils.offline.disabled_gateway_offline', { label }) } : {}),
   }
 }

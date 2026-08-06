@@ -133,6 +133,61 @@ already-shipped catalogs**: where several existing languages chose different wor
 for one English string, English is hiding a distinction and the merged value is
 wrong.
 
+## Built-in app copy comes from Python, and is localised without touching it
+
+An app's `displayName`, `description`, `highlights[]` and `ui.pages[0].label` live in
+`src/kiro_crew/apps/builtins/<app>/app.json` on the **Python** side, and the App Store
+components interpolate them raw. So they were English in every locale, and the nav rail
+read `Papyrus` while that app's own page header was translated.
+
+`src/components/appstore/appManifest.ts` holds `APP_MANIFEST_KEY`: one entry per
+built-in id, mapping each field to a catalog key under `apps.<camelId>.manifest.*`.
+Render through its resolvers — `appDisplayName`, `appDescription`, `appPageLabel`,
+`appHighlights` — never off the raw record.
+
+**It is additive on purpose: `app.json` keeps its English.** The obvious design is VS
+Code's, a `%key%` placeholder inside the manifest, and it was rejected because it
+*replaces* the English. `kirocrew app list` prints `displayName` straight to a terminal
+with no catalog, and `ui_language_tag()` returns `''` whenever the user is on "follow the
+browser" — so resolving there would mean a second localisation stack in Python plus a
+request locale the backend does not have. Keeping the manifest untouched leaves every
+catalog-less consumer correct **by construction** rather than by a fallback.
+
+The price is two copies of the same English, and `scripts/check-app-manifest-sync.mjs`
+is what makes that safe. It is a hard zero: it derives the expected keys from each app
+id and fails if one is missing from `en.json` or holds anything but the manifest's own
+prose, byte for byte.
+
+**Adding or editing a built-in — the order that avoids a red build:**
+
+1. Edit `app.json` (or add the app under `builtins/<dir>/app.json`).
+2. Add the matching keys to `locales/en.json` under `apps.<camelId>.manifest.*`
+   (`display_name`, `description`, `page_label`, `highlight_1..N`) with values
+   **identical** to the manifest.
+3. Add the entry to `APP_MANIFEST_KEY`, one `highlights` key per bullet.
+4. Translate into the other nine catalogs — `catalogParity.test.ts` is all-or-nothing.
+5. Run `npm run i18n:check`.
+
+Two traps worth knowing before you debug them:
+
+- **These keys are NOT covered by `[key-refs]`.** The resolvers read
+  `i18nT(k.displayName)` off a local, which `check-i18n-keys.mjs` cannot follow — it
+  reports `appManifest.ts: 0 -> 4` under the report-only `[dynamic-keys]`. Key existence
+  is proved by `[manifest-sync]` instead. Do not read a green `[key-refs]` as coverage
+  here.
+- **A `highlights` length mismatch is silent by design.** `appHighlights()` falls back to
+  the manifest's full English list rather than truncating, because losing a bullet is
+  worse than showing it untranslated. `[manifest-sync]` fails on the mismatch, and
+  `src/test/appManifest.test.ts` pins the count.
+
+Third-party apps are deliberately out of scope: their copy is their author's to
+translate, so they fall through to whatever the manifest supplied. That fallthrough is
+also a **trust boundary** — `keysFor()` refuses to resolve when `_registry` is set, so a
+registry row that reuses a built-in id cannot wear the built-in's localised identity next
+to an Install button. `_registry` is attached server-side and cannot be forged by index
+content; `origin` can, which is why it is not the signal. Same ordering as `sourceLabel()`
+and `isVerified()` in `src/components/appstore/types.ts`.
+
 ## Formatting follows the app language, not the browser
 
 `d.toLocaleDateString()`, `d.toLocaleDateString([])` and

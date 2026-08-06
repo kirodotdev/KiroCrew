@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from windows_sim import builtin_open_sharing_violation
 
 from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_from_history,
@@ -1022,3 +1023,41 @@ def test_push_slots_update_survives_a_partially_constructed_state():
         assert bare._slots_push_suspend == 1
     assert bare._slots_push_suspend == 0
     assert bare._slots_push_pending is False
+
+
+def test_a_transient_metadata_read_failure_does_not_drop_a_tab(tmp_path, monkeypatch):
+    """A tab must survive a Windows sharing violation on its transcript.
+
+    ``_restore_open_slots_steps`` skips any key whose metadata reads back empty,
+    on the reasoning that the session was never persisted -- and it does so
+    silently (``logger.debug``). But ``_read_metadata`` also returned ``{}`` when
+    it simply could not OPEN the file, which on Windows happens transiently while
+    an indexer or AV scanner holds a just-written transcript
+    (``ERROR_SHARING_VIOLATION`` -> ``PermissionError``). The two were
+    indistinguishable, so one unlucky read silently cost the user a tab and the
+    restore returned one short -- the shape of the intermittent
+    ``assert 5 == 6`` / ``assert 7 == 8`` failures on the Windows CI line.
+
+    Faults the FIRST read of exactly one session's transcript, which is what a
+    scanner holding one file looks like, and requires the full set back.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    keys = [f"chat-{i}-transient" for i in range(6)]
+    for k in keys:
+        _seed_session(state, k)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    # The transcript filename for the 3rd tab — the one the scanner "holds".
+    victim = state2.conversation_log._path(_history_key_for(keys[2])).name
+
+    with builtin_open_sharing_violation(match=victim, times=1) as seen:
+        restored = restore_open_slots(state2)
+
+    assert seen["n"] >= 1, "the simulator never intercepted the transcript open"
+    assert restored == 6, (
+        f"a single transient sharing violation dropped {6 - restored} tab(s); "
+        f"restored slots: {sorted(state2._slots)}"
+    )
+    assert keys[2] in state2._slots

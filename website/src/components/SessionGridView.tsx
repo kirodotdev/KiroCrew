@@ -258,7 +258,7 @@ function PlaceholderPane({
         <button
           disabled={!forkSourceSlot || forkSession.isPending}
           onClick={() => forkSession.mutate()}
-          title={forkSourceSlot ? `Fork ${forkSourceTitle || forkSourceSlot} (child session)` : 'No session to fork yet'}
+          title={forkSourceSlot ? i18nT('components.sessionGridView.fork_child_session', { name: forkSourceTitle || forkSourceSlot }) : i18nT('components.sessionGridView.no_session_to_fork_yet')}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}

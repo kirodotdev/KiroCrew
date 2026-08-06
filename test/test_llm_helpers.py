@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
@@ -208,6 +208,67 @@ class TestStreamAndCollectPromptBusy:
     async def test_shuts_down_provider_after_retries_exhausted(self) -> None:
         """After all retries fail, provider.shutdown() is called."""
         provider = _make_provider(error=AcpError("already in progress"))
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(PromptBusyExhaustedError),
+        ):
+            await stream_and_collect(provider, "test")
+
+        provider.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_formatted_prompt_busy_still_retries(self) -> None:
+        """A FORMATTED prompt-busy must take the busy arm, not fall through.
+
+        Regression guard. The shared-runtime raise path routes through
+        _format_acp_error, which rewrites the backend's "prompt already in
+        progress" into user-facing prose carrying none of that substring. When
+        this check was string-only, such an error skipped BOTH busy arms
+        (cancel+retry and PromptBusyExhaustedError) and surfaced as a generic
+        failure — leaving the wedged parent session un-reset for every
+        unattended caller (workflows/agent_pool, handlers/side, the
+        subagent-completion injector).
+        """
+        from kiro_crew.acp.client import _format_acp_error
+
+        formatted = _format_acp_error(
+            {"code": -32603, "message": "Internal error", "data": "Prompt already in progress"}
+        )
+        # Precondition: the marker the old check relied on really is gone.
+        assert "already in progress" not in formatted
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise AcpPromptBusy(formatted)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = AsyncMock()
+        provider.cancel = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.stream = _stream
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test")
+
+        assert result == "ok"
+        assert call_count == 2
+        provider.cancel.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_formatted_prompt_busy_exhaustion_still_raises_typed(self) -> None:
+        """The exhaustion arm must also fire for a formatted prompt-busy."""
+        from kiro_crew.acp.client import _format_acp_error
+
+        formatted = _format_acp_error(
+            {"code": -32603, "message": "Internal error", "data": "Prompt already in progress"}
+        )
+        provider = _make_provider(error=AcpPromptBusy(formatted))
 
         with (
             patch("asyncio.sleep", new_callable=AsyncMock),

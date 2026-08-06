@@ -2016,6 +2016,16 @@ KNOWLEDGE_DEDUP_SCHEMA = ToolSchema(
     ],
 )
 
+KNOWLEDGE_ADD_DOCUMENT_SCHEMA = ToolSchema(
+    tool_name="knowledge_add_document",
+    fields=[
+        FieldSpec("title", str, required=True, max_len=200),
+        FieldSpec("content", str, required=True, max_len=2_000_000),
+        FieldSpec("reason", str, required=False, max_len=500),
+        FieldSpec("source_uri", str, required=True, max_len=1024),
+    ],
+)
+
 # ISO calendar date (YYYY-MM-DD) for the chat-history date filters.
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -2075,6 +2085,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,
+    "knowledge_add_document": KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
     "search_chat_history": SEARCH_CHAT_HISTORY_SCHEMA,
     "get_chat_session": GET_CHAT_SESSION_SCHEMA,
     "list_sessions": LIST_SESSIONS_SCHEMA,

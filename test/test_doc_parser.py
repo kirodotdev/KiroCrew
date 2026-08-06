@@ -274,3 +274,70 @@ class TestDecompressionGuards:
         # Allow only 100 bytes of output
         with pytest.raises(ValueError, match="exceeds size limit"):
             _safe_decompress(big, max_size=100)
+
+
+# ── XXE (XML external entity) guards ──
+
+class TestXxeGuards:
+    """Uploaded office docs are untrusted XML. The hardened parser must not
+    resolve external entities (local-file disclosure / entity-expansion DoS)."""
+
+    def test_docx_external_entity_not_expanded(self):
+        """A .docx declaring an external entity that points at a local secret
+        must not leak that file's contents, and must fail closed to ""."""
+        secret_fd, secret_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            with os.fdopen(secret_fd, "w") as f:
+                f.write("TOP-SECRET-XXE-CANARY")
+            xxe_xml = (
+                '<?xml version="1.0"?>'
+                f'<!DOCTYPE w:document [<!ENTITY xxe SYSTEM "file://{secret_path}">]>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main">'
+                "<w:body><w:p><w:r><w:t>&xxe;</w:t></w:r></w:p></w:body>"
+                "</w:document>"
+            )
+            fd, path = tempfile.mkstemp(suffix=".docx")
+            os.close(fd)
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("word/document.xml", xxe_xml)
+            try:
+                result = extract_text(path, filename="xxe.docx")
+                # defusedxml rejects the DTD, so extraction fails closed to "".
+                # The one thing that must never happen: the secret leaking out.
+                assert "TOP-SECRET-XXE-CANARY" not in result
+                assert result == ""
+            finally:
+                os.unlink(path)
+        finally:
+            if os.path.exists(secret_path):
+                os.unlink(secret_path)
+
+    def test_pptx_external_entity_not_expanded(self):
+        """Same XXE guard for the .pptx slide path."""
+        secret_fd, secret_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            with os.fdopen(secret_fd, "w") as f:
+                f.write("TOP-SECRET-XXE-CANARY")
+            xxe_xml = (
+                '<?xml version="1.0"?>'
+                f'<!DOCTYPE p:sld [<!ENTITY xxe SYSTEM "file://{secret_path}">]>'
+                '<p:sld xmlns:a="http://schemas.openxmlformats.org/'
+                'drawingml/2006/main"'
+                ' xmlns:p="http://schemas.openxmlformats.org/'
+                'presentationml/2006/main">'
+                "<p:cSld><p:spTree><a:t>&xxe;</a:t></p:spTree></p:cSld></p:sld>"
+            )
+            fd, path = tempfile.mkstemp(suffix=".pptx")
+            os.close(fd)
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("ppt/slides/slide1.xml", xxe_xml)
+            try:
+                result = extract_text(path, filename="xxe.pptx")
+                assert "TOP-SECRET-XXE-CANARY" not in result
+                assert result == ""
+            finally:
+                os.unlink(path)
+        finally:
+            if os.path.exists(secret_path):
+                os.unlink(secret_path)

@@ -153,6 +153,31 @@ def test_no_edition_dir_is_never_missing():
 # ── The build helpers actually pass the env / take the skip ──
 
 
+def _popen_recorder(seen: list) -> type:
+    """Record the build spawn: the build runs through ``subprocess.Popen``."""
+
+    class _P:
+        returncode = 0
+
+        def __init__(self, argv, **kwargs):
+            seen.append((argv, kwargs.get("env")))
+
+        def wait(self, timeout=None):
+            return 0
+
+    return _P
+
+
+def _popen_forbidden(message: str) -> type:
+    """A ``Popen`` that fails the test if the build is reached at all."""
+
+    class _P:
+        def __init__(self, argv, **_kwargs):  # pragma: no cover - must not run
+            raise AssertionError(message)
+
+    return _P
+
+
 def _website(tmp_path: Path) -> Path:
     """Minimal ``<proj>/website`` so the helpers get past their own guards."""
     w = tmp_path / "website"
@@ -179,9 +204,11 @@ def test_sync_build_passes_the_edition_env_to_npm_run_build(monkeypatch, tmp_pat
         return _Done()
 
     monkeypatch.setattr(frontend.subprocess, "run", _run)
+    monkeypatch.setattr(frontend.subprocess, "Popen", _popen_recorder(seen))
+    monkeypatch.setattr(frontend, "_stage_dist_locked", lambda *_a, **_k: None)
     frontend.build_frontend_sync(tmp_path, log=lambda _m: None)
 
-    build = [(argv, env) for argv, env in seen if argv[:3] == ["/usr/bin/npm", "run", "build"]]
+    build = [(argv, env) for argv, env in seen if list(argv[1:3]) == ["run", "build"]]
     assert build, f"npm run build was never invoked; saw {[a for a, _ in seen]}"
     _argv, env = build[0]
     assert env is not None, "npm run build inherited the env — the edition seam is lost"
@@ -203,6 +230,9 @@ def test_sync_build_skips_when_edition_sources_are_absent(monkeypatch, tmp_path)
 
     monkeypatch.setattr(frontend.subprocess, "run", _run)
     messages: list[str] = []
+    monkeypatch.setattr(
+        frontend.subprocess, "Popen", _popen_forbidden("npm must not run when the edition sources are absent")
+    )
     frontend.build_frontend_sync(tmp_path, log=messages.append)
 
     assert calls == []
@@ -236,9 +266,11 @@ def test_async_build_passes_the_edition_env_to_npm_run_build(monkeypatch, tmp_pa
         return _Proc()
 
     monkeypatch.setattr(frontend.asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(frontend.subprocess, "Popen", _popen_recorder(seen))
+    monkeypatch.setattr(frontend, "_stage_dist_locked", lambda *_a, **_k: None)
     asyncio.run(frontend.build_frontend_async(str(tmp_path)))
 
-    build = [(argv, env) for argv, env in seen if argv[:3] == ("/usr/bin/npm", "run", "build")]
+    build = [(argv, env) for argv, env in seen if list(argv[1:3]) == ["run", "build"]]
     assert build, f"npm run build was never invoked; saw {[a for a, _ in seen]}"
     _argv, env = build[0]
     assert env is not None, "npm run build inherited the env — the edition seam is lost"
@@ -256,6 +288,9 @@ def test_async_build_skips_when_edition_sources_are_absent(monkeypatch, tmp_path
 
     monkeypatch.setattr(frontend.asyncio, "create_subprocess_exec", _exec)
     progress: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        frontend.subprocess, "Popen", _popen_forbidden("npm must not run when the edition sources are absent")
+    )
     asyncio.run(
         frontend.build_frontend_async(
             str(tmp_path), push_progress=lambda k, m: progress.append((k, m))
@@ -285,9 +320,11 @@ def test_stock_build_still_inherits_the_env(monkeypatch, tmp_path):
         return _Done()
 
     monkeypatch.setattr(frontend.subprocess, "run", _run)
+    monkeypatch.setattr(frontend.subprocess, "Popen", _popen_recorder(seen))
+    monkeypatch.setattr(frontend, "_stage_dist_locked", lambda *_a, **_k: None)
     frontend.build_frontend_sync(tmp_path, log=lambda _m: None)
 
-    build = [(argv, env) for argv, env in seen if argv[:3] == ["/usr/bin/npm", "run", "build"]]
+    build = [(argv, env) for argv, env in seen if list(argv[1:3]) == ["run", "build"]]
     assert build
     assert build[0][1] is None
 
@@ -386,7 +423,9 @@ def test_stage_dist_keeps_the_served_bundle_when_the_copy_fails(tmp_path, monkey
     # The previously served bundle is untouched.
     assert (served / "index.html").read_text() == "<html>previous</html>"
     # No staging leftovers.
-    assert not list(served.parent.glob(".dist.staging.*"))
+    # The .dist.staging.lock file is the persistent flock target; what must
+    # not survive is a staging DIRECTORY.
+    assert not [q for q in served.parent.glob(".dist.staging.*") if q.is_dir()]
 
 
 def test_stage_dist_replaces_the_served_bundle_on_success(tmp_path):
@@ -403,7 +442,9 @@ def test_stage_dist_replaces_the_served_bundle_on_success(tmp_path):
     assert (served / "index.html").read_text() == "<html>fresh</html>"
     # A replace, not a merge -- stale files from the old bundle are gone.
     assert not (served / "stale-asset.js").exists()
-    assert not list(served.parent.glob(".dist.staging.*"))
+    # The .dist.staging.lock file is the persistent flock target; what must
+    # not survive is a staging DIRECTORY.
+    assert not [q for q in served.parent.glob(".dist.staging.*") if q.is_dir()]
 
 
 def test_edition_configured_tracks_the_env_var(monkeypatch):

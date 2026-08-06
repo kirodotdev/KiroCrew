@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from conftest import MockSlackClient
 
+from conftest import MockSlackClient
 from kiro_crew.context import ContextBuilder
 from kiro_crew.memory import MemoryStore
 from kiro_crew.providers.base import LLMEvent

@@ -220,7 +220,7 @@ SQLite table `episodic_memories` — conversation fragments with optional embedd
 - **Injection screening (XPIA defense-in-depth)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first, since `/api/memory/events` surfaces it verbatim on the dashboard. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen: a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
 - **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-0.03×days_old)`, then MMR diversity reranking (Jaccard-based, `_MMR_LAMBDA` = 0.6)
 - **MMR reranking**: Maximal Marginal Relevance balances relevance with diversity. Greedy iterative selection penalizes candidates similar to already-selected results. Prevents redundant episodic fragments from consuming the context budget. Configurable via `mmr=False` parameter to disable. The candidate pool is deliberately NOT truncated toward `limit` (that tail pick is the point of MMR); the only bound is the recall-safe `_MMR_MAX_POOL` = 1000 ceiling for pathological inputs.
-- **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection (empirically determined from a 100-query benchmark: 50 relevant + 50 irrelevant, F1=0.980), relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, because long texts dilute cosine scores. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Results below it are filtered in `get_episodic_context()` only; `search_episodic()` returns all results for dashboard/API use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all.
+- **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection (empirically determined from a 100-query benchmark: 50 relevant + 50 irrelevant, F1=0.980), relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, because long texts dilute cosine scores. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Admission runs BEFORE the decay ranking, MMR, and the `limit` cut: `get_episodic_context()` calls `search_episodic(relevance_filter=True)`, which drops sub-threshold candidates first, so a highly relevant but old memory cannot be ordered past `limit` by a cluster of recent-but-irrelevant rows that the gate would then remove — a case that otherwise returned empty context while an exact match sat in the store. `search_episodic()` defaults to `relevance_filter=False` and returns the full ranked set for dashboard/API/CLI use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all.
 - **Fallback ladder**: FAISS (needs faiss + numpy) → `_sqlite_vector_search`, stdlib cosine over the stored blobs → FTS5/LIKE keyword search (OR logic on text + tags) when there is no query embedding at all. The middle rung matters: faiss is an optional accelerator, not a declared dependency, so a stock install still gets vector recall from the stored vectors.
 - **Cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries. `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap.
 
@@ -671,6 +671,62 @@ exclude). To keep it off the per-message filesystem/config hot path:
   when the loader is rebuilt (per gateway), matching `extra_paths` semantics;
 - exactly **one** SEL audit event is emitted for the matched set (skipped
   entirely when nothing matched, the common case), not one per skill scanned.
+
+A match injects the skill's **full body, by default and unchanged.** What is new
+is a per-skill way out: `inject_on_trigger: false` in a skill's frontmatter
+reduces its contribution to a single `[Relevant skills for this message]` line —
+name, truncated description, `SKILL.md` path, containing dir — rendered by
+`trigger_hint()`, and the agent reads the file if the skill applies, the same
+affordance `## Available Skills` already directs it to. `split_triggered()`
+partitions one match into bodies and pointers, so a mixed match emits both.
+
+Why the knob is worth having: a body is 8k–34k chars, and word-overlap matching
+pulls in large unrelated skills often enough that body price per match makes
+`loaded_skill` the largest single block of assembled context — ~48% of it on a
+measured instance, with about half of that being verbatim resends of a body ACP
+already replays from native history. Opting a skill out reclaims its full size on
+every match.
+
+Why the default is nevertheless the expensive one: a pointer makes delivery
+**voluntary**. A skill authored to be *obeyed* the moment its topic appears — a
+mandatory pre-flight check, for instance — would be silently skipped by an agent
+that declines to read it, and a silent miss has no signal to catch it. Defaulting
+to pointer would make *forgetting* the field fail open, and failing open on a
+mandate is worse than spending the bytes. Opting out is therefore an explicit
+per-skill statement that the skill is an offer rather than a mandate, which only
+its author can make. Absent or malformed, the field means inject.
+
+The `false` value carries no new privilege surface: it can only reduce what a
+skill delivers, and foreign-imported skills are refused for declaring `triggers`
+at all (`onboarding_import.py`), so an import cannot reach either path.
+
+Unchanged: `always: true` pinned skills (skipped by the matcher entirely) and the
+explicit `$skillname` token. Set `skills.max_triggered = 0` to stop flagging
+altogether and rely only on the index, `$skillname`, and `skill_search`. The
+pointer block is attributed as `skill_hint` in the per-turn context breakdown, so
+it is never folded into whatever precedes it.
+
+**Why a per-skill opt-out rather than per-session dedup.** Injecting the body on
+first match and a pointer thereafter would capture the measured resend waste
+without any per-skill declaration, and it was considered. It was not chosen here
+because it needs correct re-arming on compaction, `/new`, agent switch, model
+switch, and `SKILL.md` mtime change — and a missed re-arm fails unsafe, leaving
+the agent believing it holds instructions compaction has since dropped. The
+compaction signal is also single-slot (`SessionManager.set_compact_callback`
+refuses a second registration) and already claimed by
+`DashboardState.wire_session_compact_callback`, so wiring it is not free. The
+opt-out is stateless and has neither failure mode. Dedup remains a legitimate
+future addition — it is orthogonal, since re-sending a body ACP already replays
+does nothing for enforcement even on a skill that must be enforced.
+
+**What `_record_use` counts.** A trigger match, which is what it has always
+counted — the call sits in `get_triggered_skills` ahead of any delivery decision,
+as it did when delivery was unconditional. Decoupling delivery does make the
+consequence plainer: the lazy-load hotness ledger accrues hits for skills the
+agent may never read, so a matcher false positive still earns ranking weight.
+That is pre-existing, and cheaper to correct now that a false positive costs a
+line rather than a body — measuring the matcher's false-positive rate is the
+prerequisite, not a change to the ledger.
 
 **CRUD operations** (via `SkillsLoader`):
 - `create_skill(name, content)` — creates `{name}/SKILL.md`, supports nested paths

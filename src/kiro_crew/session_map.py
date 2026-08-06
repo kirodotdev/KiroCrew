@@ -489,6 +489,35 @@ class SessionMap:
                 matches.append(key)
         return matches
 
+    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+        """Clear EVERY session whose mirror targets an exact non-Slack location.
+
+        The write counterpart of :meth:`find_mirror_sessions`. An in-channel
+        unlink means "nothing mirrors into this conversation anymore", and the
+        bindings that occupy a location are matched by VALUE there — so a row
+        stranded under a key spelling the conversation no longer uses (a rotated
+        DM generation, a pre-unification ``dashboard:`` row) or a dashboard
+        session mirroring into the conversation still blocks it while being
+        unreachable by any key-addressed :meth:`clear_mirror_link`. Clearing by
+        location closes that gap and doubles as the repair path for duplicate
+        bindings, which the inbound resolver deliberately refuses to pick from.
+
+        Returns the cleared session keys (empty when the location was free).
+        Slack mirrors live in their own reverse index and are out of scope,
+        exactly as in :meth:`find_mirror_sessions`.
+        """
+        cleared: list[str] = []
+        for key in self.find_mirror_sessions(link):
+            entry = self._data.get(key)
+            if entry is None:  # pragma: no cover - keys come from _data itself
+                continue
+            entry.pop("mirror", None)
+            entry.pop("mirror_accepts_inbound", None)
+            cleared.append(key)
+        if cleared:
+            self._save()
+        return cleared
+
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding; return True iff one existed.
 

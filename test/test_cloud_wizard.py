@@ -38,7 +38,7 @@ def _patch_post_launch(monkeypatch, *, logged_in: bool = True) -> dict[str, list
             ready=True,
         )
 
-    def fake_register(instance_id, *, name, remote_port=5476):
+    def fake_register(instance_id, *, name, profile="", region="", remote_port=5476):
         calls["register"].append(instance_id)
         return "reg-1"
 

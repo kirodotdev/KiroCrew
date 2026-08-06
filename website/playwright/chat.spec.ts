@@ -24,6 +24,14 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     // name — a loose /send/i also matches the "Edit & Resend" buttons on seeded
     // assistant messages (strict-mode violation).
     await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    // Type first: the composer's primary button only READS "Send" when there is
+    // something to send. On an EMPTY composer over a slot that already holds a
+    // conversation it morphs into Continue (`selectContinuable`), so asserting
+    // "Send" unconditionally makes this spec depend on whether the slot it landed
+    // on happens to carry history — passing or failing on leftover state rather
+    // than on the interface rendering. Filling the box pins the state the
+    // assertion is actually about.
+    await page.getByPlaceholder(/message/i).fill('hello')
     await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible()
   })
 

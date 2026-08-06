@@ -15,6 +15,7 @@ import { api } from '../../api/client'
 import { Badge, Btn } from '../ui'
 import HeroCapsule from './HeroCapsule'
 import type { InstalledApp } from './types'
+import { appDisplayName, appDescription } from './appManifest'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateNumeric } from '../../i18n/format'
@@ -80,7 +81,7 @@ export default function InstalledAppCard({
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <button type="button" className="font-medium text-text cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0 text-left" onClick={onDetail}>{app.displayName || app.name}</button>
+                <button type="button" className="font-medium text-text cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0 text-left" onClick={onDetail}>{appDisplayName(app)}</button>
                 <span className="text-[11px] text-muted bg-bg-elevated px-1.5 py-0.5 rounded">{i18nT('components.appstore.installedAppCard.v')}{app.version}{app.updateAvailable && ` (v${app._newVersion} available)`}</span>
                 {isBuiltin ? (
                   <>
@@ -109,7 +110,7 @@ export default function InstalledAppCard({
                   <Badge variant="ok">{i18nT('components.appstore.installedAppCard.external')}</Badge>
                 )}
               </div>
-              <p className="text-sm text-muted mb-2 line-clamp-2">{m?.description}</p>
+              <p className="text-sm text-muted mb-2 line-clamp-2">{appDescription({ name: app.name, description: m?.description })}</p>
               <div className="flex items-center gap-3 text-[12px] text-muted flex-wrap">
                 {m?.author && <span className="flex items-center gap-1"><Users size={11} /> {m.author}</span>}
                 {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {i18nT('components.appstore.installedAppCard.agent', { count: agentCount })}</span>}
@@ -156,7 +157,7 @@ export default function InstalledAppCard({
               <Btn
                 onClick={() => onAction(app.name, 'update')}
                 disabled={actionLoading === `${app.name}:update`}
-                title={`Update to v${app._newVersion || app.version}`}
+                title={i18nT('components.appstore.installedAppCard.update_to', { version: app._newVersion || app.version })}
                 className="!bg-[var(--info)] !text-white hover:!opacity-80"
               >
                 <ArrowUp size={14} /> {i18nT('components.appstore.installedAppCard.update')}

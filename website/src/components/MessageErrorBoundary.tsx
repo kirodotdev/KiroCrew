@@ -1,5 +1,7 @@
 import { Component, type ReactNode } from 'react'
 import { AlertTriangle, Code } from 'lucide-react'
+import AskAgentButton from './AskAgentButton'
+import { recordError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -29,6 +31,20 @@ export default class MessageErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error) {
     // eslint-disable-next-line no-console
     console.error('[MessageErrorBoundary] Message render failed:', error.message)
+    // Journaled so the fallback's hand-off carries the stack. Deliberately NOT
+    // cached on the instance: `componentDidUpdate` resets `state.error` on a
+    // content change (streaming recovery) but could not reset an instance field,
+    // and React runs render BEFORE componentDidCatch — so a cached report handed
+    // down as a prop would be the PREVIOUS crash's. AskAgentButton looks the
+    // current one up from the journal at click time instead.
+    try {
+      recordError({
+        source: 'render',
+        message: error.message || error.name,
+        code: 'message_render',
+        detail: [error.stack, this.props.rawContent].filter(Boolean).join('\n\n'),
+      })
+    } catch { /* journaling must never mask the error it describes */ }
   }
 
   componentDidUpdate(prevProps: Props) {
@@ -49,9 +65,13 @@ export default class MessageErrorBoundary extends Component<Props, State> {
         <div className="flex items-center gap-1.5 text-warning">
           <AlertTriangle size={14} />
           <span className="font-medium">{i18nT('components.messageErrorBoundary.message_failed_to_render')}</span>
+          <AskAgentButton
+            message={this.state.error.message}
+            className="ml-auto"
+          />
           {this.props.rawContent && (
             <button
-              className="ml-auto flex items-center gap-1 text-[11px] text-muted hover:text-text transition-colors cursor-pointer"
+              className="flex items-center gap-1 text-[11px] text-muted hover:text-text transition-colors cursor-pointer"
               onClick={() => this.setState(s => ({ showRaw: !s.showRaw }))}
             >
               <Code size={12} />

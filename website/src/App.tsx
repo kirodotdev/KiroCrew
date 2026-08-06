@@ -11,6 +11,7 @@ import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectS
 import { createSlot, appendMessage, setSlotRunning, switchSlot } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
+import { installSoftNavigate } from './utils/errorReport'
 import { fetchNotifications, ackNotification } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
@@ -36,7 +37,7 @@ import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
-import { isMacElectron } from './lib/electron'
+import { isMacElectron, isWinElectron } from './lib/electron'
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -73,7 +74,7 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel from './components/BottomTerminalPanel'
-import { toggleBottomTerminal } from './hooks/useBottomTerminal'
+import { toggleBottomTerminal, useBottomTerminalOpen } from './hooks/useBottomTerminal'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
 import AppPage from './pages/AppPage'
@@ -94,8 +95,10 @@ import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
+import ReportProblemModal from './components/ReportProblemModal'
 
 import { i18nT } from './i18n/t'
+import { appPageLabel } from './components/appstore/appManifest'
 import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
@@ -423,8 +426,12 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
   return { tip, tipOn, rowRef, showTip, hideTip, dismissTip }
 }
 
-function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId }: {
+function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
+  /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
+   *  terminal). `active` only paints the row; without aria-pressed a screen
+   *  reader announces an identical button whether the panel is open or shut. */
+  pressed?: boolean
 }) {
   const navigate = useNavigate()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
@@ -453,6 +460,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       onFocus={showTip}
       onBlur={hideTip}
       aria-label={collapsed ? label : undefined}
+      aria-pressed={pressed}
     >
       {badge}
       {iconEl}
@@ -849,6 +857,10 @@ export default function App() {
   // so there is no hidden-until-fetch-resolves flash.
   const terminalEnabled = terminalConfig?.enabled !== false
   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
+  // Only the `open` flag, not the whole store — the panel's height changes on
+  // every mousemove during a grip-drag, and a primitive snapshot lets
+  // useSyncExternalStore's Object.is check skip those re-renders of App.
+  const bottomTerminalOpen = useBottomTerminalOpen()
   const navigate = useNavigate()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
@@ -865,6 +877,21 @@ export default function App() {
       }),
     )
   }, [isPopout, isEmbed, navigate, dispatch])
+
+  // Publish the router navigator for the error → agent hand-off. AskAgentButton
+  // is deliberately hook-free (its callers include ErrorBoundary fallbacks, where
+  // router context may be what threw), so it navigates through this seam and
+  // falls back to a full page load when nothing is installed.
+  //
+  // Popout and embed windows never register, for the same reason the nav-intent
+  // handler above skips them: routing THAT window to /chat would replace the
+  // surface the user deliberately popped out (an artifact editor renders error
+  // banners of its own). They fall through to the hard-nav path instead.
+  useEffect(() => {
+    if (isPopout || isEmbed) return
+    installSoftNavigate(navigate)
+    return () => installSoftNavigate(null)
+  }, [isPopout, isEmbed, navigate])
 
   const {
     colorTheme,
@@ -1091,7 +1118,7 @@ export default function App() {
             return [{
               path,
               id: dynamicApp ? `app-${a.name}` : a.name,
-              label: page.label || a.displayName || a.name,
+              label: appPageLabel(a.name, page.label, a.displayName),
               group: 'Apps',
               icon,
             }]
@@ -1438,6 +1465,9 @@ export default function App() {
   useNativeNotification(botName, avatar)
 
   const [updateError, setUpdateError] = useState('')
+  // Nav-rail "Report issue" → the shared diagnostics flow. Held at shell level
+  // (not in the rail) so the modal is not unmounted when the rail collapses.
+  const [reportProblemOpen, setReportProblemOpen] = useState(false)
 
   const handleUpdate = useCallback(async () => {
     setShowChangelog(false)
@@ -1575,7 +1605,7 @@ export default function App() {
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       style={{
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
@@ -1699,7 +1729,7 @@ export default function App() {
                 const memValid = m.memTotal > 0
                 const dskValid = m.diskTotal > 0
                 const cpuValid = typeof m.cpuPct === 'number' && Number.isFinite(m.cpuPct)
-                const staleTitle = sysMetricsStale ? ' (stale: fetch failing)' : ''
+                const staleTitle = sysMetricsStale ? ` ${i18nT('app.stale_fetch_failing')}` : ''
                 segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={sysMetricsStale ? i18nT('app.metrics_are_stale_latest_fetch_failed') : i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
                   <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : i18nT('app.cpu_unavailable')}>{i18nT('app.cpu')} {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
                   <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : i18nT('app.memory_unavailable')}>{i18nT('app.mem')} {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
@@ -1816,6 +1846,9 @@ export default function App() {
           <NotificationsBellButton />
         </div>
       </header>
+
+      {/* Report a Problem — mounted by the nav rail's "Report issue" link. */}
+      <ReportProblemModal open={reportProblemOpen} onClose={() => setReportProblemOpen(false)} />
 
       {/* Update error modal */}
       {updateError && (
@@ -2211,7 +2244,12 @@ export default function App() {
                   path="#"
                   label={i18nT('app.terminal')}
                   icon={<SquareTerminal size={16} />}
-                  active={false}
+                  /* This row TOGGLES the docked panel instead of navigating, so
+                     "active" tracks the panel's open flag rather than the route.
+                     Without it the row only lit on hover, leaving no indication
+                     the panel below was open once the pointer moved away. */
+                  active={bottomTerminalOpen}
+                  pressed={bottomTerminalOpen}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
                   onClickOverride={() => toggleBottomTerminal()}
@@ -2288,7 +2326,16 @@ export default function App() {
                   <div className="rail-community-links flex items-center gap-[5px] flex-1 min-w-0 ml-1.5 text-[12px]">
                     <a href="https://github.com/kirodotdev/KiroCrew" target="_blank" rel="noopener noreferrer" title={i18nT('app.star_kirocrew_on_github')} aria-label={i18nT('app.star_kirocrew_on_github')} className="shrink-0 rounded text-muted hover:text-text transition-colors">{i18nT('app.star_us')}</a>
                     <span aria-hidden="true" className="shrink-0 opacity-40">·</span>
-                    <a href="https://github.com/kirodotdev/KiroCrew/issues" target="_blank" rel="noopener noreferrer" title={i18nT('app.report_an_issue_on_github')} aria-label={i18nT('app.report_an_issue_on_github')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors">{i18nT('app.report_issue')}</a>
+                    {/* "Report issue" opens the SAME diagnostics flow as Settings ›
+                        About › Support rather than linking to the bare issue list.
+                        A user who reaches for this link is reporting a failure, and
+                        an empty issue form loses exactly what triage needs (logs +
+                        crash reports); the collector scrubs secrets, zips them, and
+                        still ends at a pre-filled GitHub issue, so the old
+                        destination is reachable WITH evidence attached. A <button>
+                        (not an <a>) because it no longer navigates — styled to match
+                        its sibling link so the row's width budget above is unchanged. */}
+                    <button type="button" onClick={() => setReportProblemOpen(true)} title={i18nT('app.report_a_problem_with_diagnostics')} aria-label={i18nT('app.report_a_problem_with_diagnostics')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-0 p-0 text-[12px]">{i18nT('app.report_issue')}</button>
                   </div>
                   <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center ml-1 w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
                 </div>

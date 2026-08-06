@@ -528,8 +528,15 @@ def launch(
     elif conn and conn.error:
         ui.warn("Dashboard tunnel did not become ready.")
         ui.detail(conn.error)
-    # Register for the managed /instances experience (best effort).
-    connect_mod.register_instance(instance_id, name=f"Kiro Crew Cloud ({result.tag})")
+    # Register for the managed /instances experience (best effort). Registers
+    # over the native SSM transport, so the dashboard reaches the box with no
+    # SSH key / inbound port / ~/.ssh/config.
+    connect_mod.register_instance(
+        instance_id,
+        name=f"Kiro Crew Cloud ({result.tag})",
+        profile=profile,
+        region=region,
+    )
 
     # ── Done ──────────────────────────────────────────────────────────────
     print()

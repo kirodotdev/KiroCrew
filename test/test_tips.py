@@ -1261,7 +1261,7 @@ class TestConfigClamping:
     def test_tips_model_default(self) -> None:
         from kiro_crew.config.loader import DashboardConfig
         cfg = DashboardConfig()
-        assert cfg.tips_model == "claude-haiku-4.5"
+        assert cfg.tips_model == "auto"
 
     def test_tips_explore_ratio_default(self) -> None:
         from kiro_crew.config.loader import DashboardConfig
@@ -1311,10 +1311,10 @@ class TestConfigClamping:
         """tips_model read as string from dashboard data."""
         from kiro_crew.config.loader import KiroCrewConfig
 
-        # Default config should have the haiku model
+        # Default config inherits the account's governed model via "auto"
         cfg = KiroCrewConfig.load()
         assert isinstance(cfg.dashboard.tips_model, str)
-        assert cfg.dashboard.tips_model == "claude-haiku-4.5"
+        assert cfg.dashboard.tips_model == "auto"
 
 
 class TestOptOutState:

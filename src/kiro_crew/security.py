@@ -15,6 +15,7 @@ import shlex
 import socket
 import string
 import sys
+import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -4147,6 +4148,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
+    # resolved during startup and exec'd into, so a writable one is arbitrary
+    # code execution in the gateway's own identity — the agent must not be able
+    # to author it, and must not be able to read it back to discover a target to
+    # aim at either. Only the human-driven dashboard cutover writes it, and the
+    # gateway's own startup reader opens it directly rather than through this
+    # gate, so both keep working.
+    "live_target.json",
     # The computer-use primary enable ({enabled, allowed_apps, extra_denied_apps}).
     # Same class of control as ``denied_commands.json`` directly above, and here
     # for the same reason: flipping ``enabled`` grants full desktop observation
@@ -4516,9 +4525,20 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     return candidates
 
 
-def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+def _home_dir_targets_uncached(
+    home_dirs: list[str],
+    roots: tuple[str, str | None] | None = None,
+) -> set[str]:
     """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
     on-disk targets.
+
+    *roots* optionally supplies the ``(home, crew_home)`` anchors already
+    resolved by the caller. The TTL cache in :func:`_home_dir_targets` MUST pass
+    it: resolving the roots here as well would read the filesystem a second
+    time, and a root symlink repointed between the two reads would file this
+    set under a key naming the OTHER root — caching one root's targets against
+    another root's key, which fails OPEN. ``None`` (direct callers and tests)
+    resolves them here as before.
 
     Anchors against BOTH the logical home and its realpath.  On macOS the
     per-user temp/home prefix can itself be reached via OS symlinks (``/var`` →
@@ -4534,10 +4554,10 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     secrets. On POSIX a single-segment entry splits to a 1-element list, so
     this is a no-op there.
     """
-    try:
-        home = str(Path.home().resolve())
-    except (OSError, ValueError):
-        home = str(Path.home())
+    if roots is not None:
+        home, crew_home = roots
+    else:
+        home, crew_home = _resolved_root_key()
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *d.split("/")).casefold()
@@ -4556,12 +4576,8 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     # prefix an entry carries and re-anchor the leaf under the env-override
     # root ADDITIONALLY (the ~/-rooted default forms stay, so every location is
     # always covered).
-    kiro_home_env = os.environ.get("KIROCREW_HOME")
-    if kiro_home_env:
-        try:
-            kiro_home = str(Path(kiro_home_env).expanduser().resolve())
-        except (OSError, ValueError):
-            kiro_home = os.path.abspath(os.path.expanduser(kiro_home_env))
+    if crew_home:
+        kiro_home = crew_home
         for d in home_dirs:
             for _prefix in _CREW_HOME_PREFIXES:
                 # Compare with POSIX separators (home_dirs entries are authored
@@ -4578,6 +4594,103 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
                         pass
                     break
     return sensitive_targets
+
+
+# How long a built target set stays reusable. ``_home_dir_targets_uncached``
+# rebuilds a ~75-entry set on EVERY ``is_sensitive_path`` call and measured at
+# 1.14ms of that call's 1.25ms (91%) on a dev desktop, because it realpath()s
+# ``$HOME`` and each KIROCREW_HOME-anchored leaf. Callers hit it per FILE — one
+# skills-tree walk made thousands of identical calls and took 4.2s, of which
+# 3.5s was this rebuild.
+#
+# Deliberately TTL-bounded rather than a plain ``lru_cache``: part of the set is
+# derived from FILESYSTEM state, so an unbounded cache would keep matching a
+# stale target if a symlink were repointed after the cache warmed — a gate that
+# fails OPEN. A few seconds bounds that window.
+#
+# The key is built from the RESOLVED roots (``Path.home().resolve()`` and the
+# resolved ``KIROCREW_HOME``), NOT from the raw env vars, because those two
+# values are exactly what the builder anchors its targets on. Keying on the raw
+# ``$HOME`` string was wrong twice over:
+#   1. Repointing a symlink AT ``$HOME`` leaves ``$HOME`` unchanged while every
+#      target moves, so the gate returned False for a credential path the
+#      uncached code blocked (a real, reproduced bypass — see the regression
+#      test ``test_repointed_home_symlink_is_not_served_from_cache``).
+#   2. ``Path.home()`` reads ``USERPROFILE`` on Windows and never ``HOME``, so on
+#      that platform the key omitted the one variable that decides the anchor.
+# Resolving the roots costs ~2 realpath calls (~0.06ms) against the ~1.14ms
+# rebuild it replaces, so the win survives.
+#
+# Residual, accepted: a symlink swapped DEEPER inside the crew home (an
+# individual keystone leaf, or an intermediate directory on the way to one) can
+# still be served stale for up to the TTL. Detecting that needs the per-leaf
+# realpath calls that ARE the expense — measured 45 realpath calls per build,
+# 94% of its 1.39ms — so there is no cheap way to keep the cache and revalidate
+# them.
+#
+# The TTL is therefore sized as small as it can be while still doing its job.
+# The value is 0.1s, NOT a "few seconds", because a skills walk issues thousands
+# of calls in a burst and one build serves the whole burst either way. Measured
+# cold-walk cost against this constant:
+#     5.0s -> 0.95s    1.0s -> 0.93s    0.1s -> 0.95s    0.0s -> 4.66s
+# So 0.1s keeps the entire win while cutting the stale window 50x versus 5.0s.
+# Only 0.0 (no cache) closes the window completely, and that reverts to the 4.7s
+# scan whose GIL-held cost wedges the event loop — the defect this exists to fix.
+_HOME_TARGETS_TTL_SECS = 0.1
+# key -> (expiry_monotonic, targets)
+_home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
+
+
+def _resolved_root_key() -> tuple[str, str | None]:
+    """Return the (home, crew_home) roots the target set is anchored on.
+
+    Mirrors how :func:`_home_dir_targets_uncached` derives its anchors, so the
+    cache key changes exactly when the anchors would. Falls back to the
+    unresolved form on OSError/ValueError the same way the builder does.
+    """
+    try:
+        home = str(Path.home().resolve())
+    except (OSError, ValueError):
+        home = str(Path.home())
+    crew_env = os.environ.get("KIROCREW_HOME")
+    if not crew_env:
+        return home, None
+    try:
+        crew = str(Path(crew_env).expanduser().resolve())
+    except (OSError, ValueError):
+        crew = os.path.abspath(os.path.expanduser(crew_env))
+    return home, crew
+
+
+def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+    """TTL-cached :func:`_home_dir_targets_uncached`.
+
+    Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
+    (see the note above the constant for why the raw env vars are not enough).
+
+    ponytail: the returned set is the cached instance, not a copy — both
+    callers only iterate it. A future caller that MUTATES the result would
+    poison the cache for every other caller; copy here if that ever happens.
+    """
+    # Resolve the roots ONCE and use the same tuple for both the key and the
+    # build. Resolving separately let a root symlink repointed between the two
+    # reads file one root's targets under the other root's key — a fail-OPEN
+    # TOCTOU. Local review caught this; see the regression test
+    # test_roots_are_resolved_once_for_key_and_build.
+    roots = _resolved_root_key()
+    key = (tuple(home_dirs),) + roots
+    now = time.monotonic()
+    cached = _home_targets_cache.get(key)
+    if cached is not None and now < cached[0]:
+        return cached[1]
+    targets = _home_dir_targets_uncached(home_dirs, roots)
+    # Bound the dict: the key space is tiny (two constant home_dirs lists ×
+    # roots), but a test or embedder that churns KIROCREW_HOME must not grow it
+    # without limit.
+    if len(_home_targets_cache) > 32:
+        _home_targets_cache.clear()
+    _home_targets_cache[key] = (now + _HOME_TARGETS_TTL_SECS, targets)
+    return targets
 
 
 def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None = None) -> bool:
