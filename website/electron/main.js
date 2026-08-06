@@ -10,6 +10,8 @@ const { findKirocrewBin } = require("./find-bin");
 const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
+const { exitImmersiveModes } = require("./blocking-prompt");
+const { shouldRetryLocalTokenMint, tokenMintRetryDelayMs, TOKEN_MINT_MAX_RETRIES } = require("./token-acquire");
 const { createDisplayMediaHandler } = require("./display-media");
 const {
   createPermissionRequestHandler,
@@ -1873,19 +1875,30 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
   try {
     await waitForBackend(win, healthUrl, { watchSpawn: backendUrl === BACKEND_URL });
     if (win.isDestroyed()) return;
-    let token = await fetchLocalToken(backendUrl);
-    if (!token) ({ token } = await fetchRemoteToken(new URL(backendUrl).port));
-    if (win.isDestroyed()) return;
 
-    if (token) {
-      // Hold the boot reveal until it has both finished its animation and the
-      // gateway is ready, then fade out and hand off to the dashboard.
-      await fadeLoadingScreen(wc);
+    // Acquire a dashboard token, retrying a transient warmup 403 on our OWN
+    // gateway. A gateway we just (re)started regenerates its .local_secret at
+    // boot, so right after /api/status answers the local mint can 403 briefly
+    // while the secret settles. For a foreign gateway (SSH forward / external)
+    // the secret is on the remote host and the local mint can never succeed, so
+    // that case falls straight through to the prompt (see shouldRetryLocalTokenMint).
+    // The healthy path mints on attempt 0 and returns immediately — no added latency.
+    for (let attempt = 0; ; attempt++) {
+      let token = await fetchLocalToken(backendUrl);
+      if (!token) ({ token } = await fetchRemoteToken(new URL(backendUrl).port));
       if (win.isDestroyed()) return;
-      wc.loadURL(`${backendUrl}?token=${token}`);
-      if (backendUrl === BACKEND_URL) startLivenessMonitor(win);
-    } else {
-      // Fallback — check if gateway allows unauthenticated access
+
+      if (token) {
+        // Hold the boot reveal until it has both finished its animation and the
+        // gateway is ready, then fade out and hand off to the dashboard.
+        await fadeLoadingScreen(wc);
+        if (win.isDestroyed()) return;
+        wc.loadURL(`${backendUrl}?token=${token}`);
+        if (backendUrl === BACKEND_URL) startLivenessMonitor(win);
+        return;
+      }
+
+      // No token — check if the gateway allows unauthenticated access.
       const status = await new Promise((resolve) => {
         http.get(backendUrl, (res) => {
           res.resume();
@@ -1893,30 +1906,56 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
         }).on("error", () => resolve(0));
       });
       if (win.isDestroyed()) return;
-      if (status === 403) {
-        // The page has to say WHICH machine to mint on. A gateway we did not
-        // spawn (an `ssh -L` forward, or an externally-started one) has its own
-        // .local_secret, so our CLI can only mint against it FROM that machine;
-        // pointing the user at this one would send them where the gateway is
-        // not. Reuse the boot-time port-owner probe rather than guessing.
-        //
-        // NOTE `URL.port` is "" for a default-port URL (http://host/ on :80).
-        // Left empty it would look up the wrong remote-host entry, probe no
-        // port at all, and let the page fall back to :5476 — i.e. describe and
-        // submit to a gateway that isn't the one we just got a 403 from.
-        const promptPort = defaultedPort(backendUrl);
-        const remoteHost = getRemoteHostConfig(store, promptPort)?.host || "";
-        const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(promptPort);
-        const kind = classifyAuthBlock({ localOwner, remoteHost });
-        glog(`token prompt: kind=${kind} owner=${localOwner} port=${promptPort} host=${remoteHost || "(none)"}`);
-        if (win.isDestroyed()) return;
-        wc.loadFile(path.join(__dirname, "token-prompt.html"), {
-          query: { port: promptPort, kind, host: remoteHost },
-        });
-      } else {
+
+      if (status !== 403) {
+        // Not an auth block — the gateway serves without a token.
         wc.loadURL(backendUrl);
         if (backendUrl === BACKEND_URL) startLivenessMonitor(win);
+        return;
       }
+
+      // 403: classify WHICH machine to mint on. A gateway we did not spawn (an
+      // `ssh -L` forward, or an externally-started one) has its own
+      // .local_secret, so our CLI can only mint against it FROM that machine;
+      // pointing the user at this one would send them where the gateway is not.
+      // Reuse the boot-time port-owner probe rather than guessing.
+      //
+      // NOTE `URL.port` is "" for a default-port URL (http://host/ on :80).
+      // Left empty it would look up the wrong remote-host entry, probe no port
+      // at all, and let the page fall back to :5476 — i.e. describe and submit
+      // to a gateway that isn't the one we just got a 403 from.
+      const promptPort = defaultedPort(backendUrl);
+      const remoteHost = getRemoteHostConfig(store, promptPort)?.host || "";
+      const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(promptPort);
+      const kind = classifyAuthBlock({ localOwner, remoteHost });
+
+      // Our own gateway may still be warming up its regenerated secret — retry
+      // the mint with backoff before giving up. A foreign gateway can't be
+      // minted against locally, so never spin on it: fall through to the prompt.
+      if (shouldRetryLocalTokenMint({ kind, attempt })) {
+        glog(`token mint: transient 403 on own gateway (kind=${kind}, attempt=${attempt + 1}/${TOKEN_MINT_MAX_RETRIES + 1}) — retrying after backoff`);
+        await new Promise((r) => setTimeout(r, tokenMintRetryDelayMs(attempt)));
+        if (win.isDestroyed()) return;
+        continue;
+      }
+
+      glog(`token prompt: kind=${kind} owner=${localOwner} port=${promptPort} host=${remoteHost || "(none)"}`);
+      if (win.isDestroyed()) return;
+      // token-prompt.html replaces the dashboard inside THIS window's
+      // WebContentsView (win.webContents is the view's, see setupWindowContents).
+      // In fullscreen/kiosk the traffic lights + app menu are hidden, so the
+      // user was trapped with no way out but force-kill. Drop immersive modes
+      // first, which restores Close / Cmd-Q as the exit.
+      //
+      // Deliberately NO in-page exit: the window is a BaseWindow, so a
+      // `window.close()` in the page would destroy the VIEW and leave a blank
+      // shell behind. A keyboard exit has to go through the main process
+      // (windowForWebContents) to close the host window.
+      exitImmersiveModes(win);
+      wc.loadFile(path.join(__dirname, "token-prompt.html"), {
+        query: { port: promptPort, kind, host: remoteHost },
+      });
+      return;
     }
   } catch (err) {
     if (win.isDestroyed()) return;
