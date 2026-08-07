@@ -41,7 +41,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import (
     Callable,
@@ -624,6 +624,12 @@ class Decision:
     reason: str
     rule: str = ""  # rule1-allow | rule1-deny | rule2-intersect | ordinal | gate | default
     layer: str = ""  # policy | profile | both | default
+    # The governed item this outcome is ABOUT. One gate query can carry several
+    # identities for a single call (a prose title plus a trusted tool name plus an
+    # MCP reference), so a denial has to say WHICH one it denied or the audit
+    # record names the wrong subject. Empty when the caller asked about one item
+    # and already knows it.
+    item: str = ""
 
 
 # A control that can answer "is this item permitted?" for ONE level.  Both
@@ -2112,6 +2118,8 @@ def gate_decision(
     *,
     tool_kind: str = "",
     raw_params: Optional[Mapping[str, object]] = None,
+    mcp_ref: str = "",
+    extra_titles: Tuple[str, ...] = (),
 ) -> Decision:
     """Resolve a PreToolUse gate title against the governance ceiling ∩ profile.
 
@@ -2124,9 +2132,43 @@ def gate_decision(
     permitted here — an ungoverned scope permits.  When BOTH levels are
     ungoverned the result permits (the standalone default), so a host with no
     policy + no profile behaves exactly as today.
+
+    ``mcp_ref`` supplies an ALREADY-canonical ``@server`` / ``@server/tool``
+    reference for a caller that holds the server and tool as separate trusted
+    fields; it is checked in the ``mcp`` scope alongside anything the title maps
+    to.  Taking the reference directly is what makes such a call exact: the
+    ``mcp__<server>__<tool>`` title form is read by splitting on the LAST ``__``,
+    so it cannot represent a tool name containing ``__``, and a caller holding
+    the untangled fields must not be made to encode them into a form that loses
+    the distinction.
+
+    ``extra_titles`` carries any further NON-model-authored names the caller holds
+    for the SAME call (the trusted ``_meta.kiro.toolName`` beside a prose display
+    title). They belong in this one call rather than a second one: a separate call
+    re-resolves the active profile, so a hot reload between the two could answer
+    each question from a different snapshot and permit a tool that both complete
+    profiles deny. Empty entries are ignored.
     """
     pairs = list(classify_tool_title(tool_title))
+    # Additional NON-model-authored titles the caller holds for the same call --
+    # e.g. the trusted ``_meta.kiro.toolName`` beside an LLM-authored display
+    # title. They are classified here, in ONE decision, rather than asked as
+    # separate calls: each separate call would resolve the active profile again,
+    # so a profile hot-reloaded mid-call could serve a DIFFERENT snapshot to each
+    # question and a tool denied by both complete profiles could be permitted by
+    # every individual lookup. One snapshot, every target, deny if any denies.
+    # Empty entries are skipped: an empty title classifies to the unprefixed
+    # scopes as a real queryable item (``('tools', '')``), not a no-op, so it
+    # could match a rule it has nothing to do with.
+    for extra in extra_titles:
+        if extra:
+            pairs.extend(classify_tool_title(extra))
     pairs.extend(classify_tool_args(tool_kind, raw_params))
+    if mcp_ref:
+        pairs.append(("mcp", mcp_ref))
+    # Order-preserving dedupe -- a caller whose title already equals its trusted
+    # identity must not pay the same resolve twice.
+    pairs = list(dict.fromkeys(pairs))
     if not pairs:
         return Decision(True, "title not name-gate-governed", rule="default")
     # Deny if ANY governed scope the title/args map to denies it (the unprefixed
@@ -2135,7 +2177,10 @@ def gate_decision(
     for scope, item in pairs:
         decision = resolve(ceiling, profile, scope, item)
         if not decision.permitted:
-            return decision
+            # Name the identity that actually denied: with several targets in one
+            # query the caller cannot infer it, and an audit naming the prose
+            # title instead of the trusted tool name is a misleading record.
+            return replace(decision, item=item)
     return Decision(True, "permitted by all mapped scopes", rule="rule2-intersect")
 
 
