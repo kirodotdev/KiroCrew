@@ -324,6 +324,16 @@ describe('App routing', () => {
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
   })
 
+  it('sizes the app shell in dvh so mobile browser chrome cannot cover the bottom row', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    // happy-dom does no layout, so the utility pair itself is pinned: h-dvh
+    // tracks the visible viewport where dvh is supported, h-screen (100vh,
+    // which extends under collapsible mobile browser UI) is the fallback.
+    const shell = screen.getByTestId('dashboard-shell').closest('.h-screen')
+    expect(shell).not.toBeNull()
+    expect(shell!.className).toContain('supports-[height:100dvh]:h-dvh')
+  })
+
   it('redirects /agents to the Agent Capabilities panel', () => {
     renderWithProviders(<App />, { route: '/agents' })
     expect(screen.getByTestId('capabilities-page')).toBeInTheDocument()
