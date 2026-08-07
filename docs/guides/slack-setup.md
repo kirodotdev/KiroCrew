@@ -461,13 +461,19 @@ Dashboard tokens grant full session access, so treat them like passwords.
 | ✅ Do | ❌ Don't |
 |-------|----------|
 | Keep the dashboard behind your own tunnel or reverse proxy | Share dashboard URLs, which carry the token in `?token=` |
-| Run `kirocrew logout` or restart the gateway if a token is exposed | Paste tokens in Slack channels, shared docs, or wikis |
+| If a token is exposed, revoke at your tunnel or reverse-proxy auth layer — `kirocrew logout` alone does not end refresh sessions | Paste tokens in Slack channels, shared docs, or wikis |
 | Avoid showing the browser URL bar during screen shares | Leave dashboard links in screen-share recordings |
 | Leave the built-in `kirocrew token` deny rules enabled | Trust an AI agent that asks to run `kirocrew token` |
 
-`kirocrew logout` revokes every issued cookie, not just in-memory state: it bumps
-a persisted revocation generation, so cookies handed out before the logout are
-rejected on their next request.
+`kirocrew logout` revokes every issued **access** cookie, not just in-memory
+state: it bumps a persisted revocation generation, so access cookies handed out
+before the logout are rejected on their next request. It does **not** revoke
+refresh chains, and neither does restarting the gateway, so a browser still
+holding a valid `mc_refresh_<port>` cookie can obtain a fresh access cookie
+afterwards — see
+[remote-and-mobile.md](remote-and-mobile.md#session-duration). To cut off an
+exposed dashboard, revoke at your tunnel or reverse-proxy auth layer, or sign out
+in that browser (`POST /api/auth/logout`), which does revoke its chain.
 
 > ⚠️ **Prompt injection risk**: an attacker can hide instructions in a webpage or
 > document that trick your agent into running `kirocrew token` and exfiltrating
