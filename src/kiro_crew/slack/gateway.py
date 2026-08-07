@@ -5403,13 +5403,51 @@ class GatewayOrchestrator:
             # layout. Teaching it the wheel path (which needs the installer, not a
             # git reset) is a separate change from making the CHECK honest.
             if update_required(_running_version):
+                # A mandatory floor is handled by layout, because "apply" means
+                # different things per install shape:
+                #   * git checkout (self_updatable) -> git fetch + reset applies.
+                #   * wheel/cli.sh (not self_updatable, but carries an installer
+                #     `update_command`) -> cannot self-apply unattended; warn and
+                #     light the dashboard badge so the operator runs `kirocrew
+                #     update`. Before this branch existed the path `return`ed
+                #     silently, leaving the host below the floor with no signal.
+                #   * externally managed (dmg/appimage/docker: not self_updatable
+                #     AND no `update_command`) -> its own updater owns this; the
+                #     backend must not drive a git reset on a non-git tree nor
+                #     show an inapplicable CLI-update badge. Log and return.
+                if _update_info.get("self_updatable"):
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s — "
+                        "applying a mandatory update (overrides auto_update)",
+                        _running_version,
+                        min_version(),
+                    )
+                    await self._auto_apply_update()
+                    return
+                if _update_info.get("update_command"):
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s, "
+                        "but this install (%s) updates by re-running the installer — "
+                        "run `kirocrew update`",
+                        _running_version,
+                        min_version(),
+                        _update_info.get("install_kind") or "unknown",
+                    )
+                    # Light the badge: the SSE snapshot reads
+                    # `_update_info["available"]`, which the check may have left
+                    # False (a pre-release remote reads as not-newer) even though
+                    # the floor makes this update mandatory.
+                    _update_info["available"] = True
+                    if self.dashboard_state:
+                        self.dashboard_state.push_refresh("update_available")
+                    return
                 logger.warning(
-                    "Version compliance: running %s is below the policy minimum %s — "
-                    "applying a mandatory update (overrides auto_update)",
+                    "Version compliance: running %s is below the policy minimum %s, but this "
+                    "install (%s) is updated by its own updater — not applying from the backend",
                     _running_version,
                     min_version(),
+                    _update_info.get("install_kind") or "unknown",
                 )
-                await self._auto_apply_update()
                 return
 
             if _update_info.get("available"):

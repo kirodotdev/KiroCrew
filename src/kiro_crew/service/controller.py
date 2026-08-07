@@ -74,10 +74,18 @@ def uninstall_service() -> int:
     """Stop and remove the platform service. Idempotent."""
     plat = current_platform()
     if plat == Platform.SYSTEMD:
-        linux.uninstall()
-        # Whatever removes the service removes the grant, so a host is left as
-        # it was found rather than carrying an orphaned userns permission.
-        profile = linux.remove_apparmor_profile()
+        # uninstall() needs root to remove the root-owned unit, so it can raise
+        # ServiceInstallError on a non-root host without sudo. Catch it and exit
+        # non-zero with the reason rather than letting a traceback escape (and
+        # leaving the service installed).
+        try:
+            linux.uninstall()
+            # Whatever removes the service removes the grant, so a host is left
+            # as it was found rather than carrying an orphaned userns permission.
+            profile = linux.remove_apparmor_profile()
+        except linux.ServiceInstallError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
         print("✅ kirocrew service stopped and removed.")
         if profile.message:
             print(f"   {'⚠️ ' if not profile.ok else ''}{profile.message}")

@@ -21,7 +21,8 @@ Four parts, in the order you will need them:
 ### Host requirements
 
 - **OS**: any modern Linux distribution (Ubuntu 22.04+, Debian 12+, Fedora,
-  Amazon Linux 2023). macOS works too, with launchd instead of systemd.
+  CentOS Stream / RHEL 8+, CentOS 7, Amazon Linux 2 / 2023). macOS works too,
+  with launchd instead of systemd.
 - **Python**: 3.10 or newer (`setup.cfg` sets `python_requires = >=3.10`).
 - **Node.js**: needed to build the dashboard bundle. `website/package.json`
   declares `"node": "20 || >=22"`; `kirocrew doctor` warns below Node 16.
@@ -39,14 +40,26 @@ Four parts, in the order you will need them:
 ### Install the basics
 
 ```bash
-# Debian / Ubuntu
+# Debian / Ubuntu (python3-venv is a separate package here)
 sudo apt-get update && sudo apt-get install -y git tmux python3 python3-pip python3-venv
 
-# Fedora / Amazon Linux 2023
-sudo dnf install -y git tmux python3 python3-pip
+# Fedora / CentOS Stream / RHEL 8+ / Amazon Linux 2023 (python3 may be 3.9;
+# python3.11 gives the 3.10+ the backend needs)
+sudo dnf install -y git tmux python3.11 python3.11-pip
+
+# CentOS 7 / RHEL 7 (yum; base repos ship only Python 3.6, which is too old —
+# install a newer interpreter yourself first, e.g. mise; see below)
+sudo yum install -y git tmux
+curl https://mise.run | sh && mise use -g python@3.12
 ```
 
-Install Node.js from your distro, [nodejs.org](https://nodejs.org/), or a
+The `curl … | sh` installer performs this distro Python bootstrap for you. On
+CentOS 7 and older Ubuntu, where no base-repo package supplies Python 3.10+, it
+uses an already-installed [mise](https://mise.jdx.dev/) if you have one and
+otherwise stops with instructions — the signed installer does not pipe an
+unsigned script into a shell, so install mise yourself first
+(`curl https://mise.run | sh`) if you want that path. Install Node.js from your
+distro, [nodejs.org](https://nodejs.org/), or a
 version manager such as [nvm](https://github.com/nvm-sh/nvm). `tmux` is handy
 for a first smoke test before you install the service.
 

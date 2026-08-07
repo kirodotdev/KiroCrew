@@ -128,24 +128,83 @@ command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the sig
 # fine on 3.9 and then crash on first run. Prefer the newest interpreter the
 # project builds and tests on (3.12 is the CI target); 3.13 is untested and
 # only a last resort before bare python3, which itself only counts if >=3.10.
-PY=""
-for c in python3.12 python3.11 python3.10 python3.13 python3; do
-  command -v "$c" >/dev/null 2>&1 || continue
-  if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-    PY="$c"; break
+_py_usable() {
+  command -v "$1" >/dev/null 2>&1 || return 1
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null
+}
+
+# Resolve the newest supported interpreter into PY (left empty if none found).
+_resolve_python() {
+  for _c in python3.12 python3.11 python3.10 python3.13 python3; do
+    if _py_usable "$_c"; then PY="$_c"; return 0; fi
+  done
+  return 1
+}
+
+# Privilege prefix for a package-manager install: empty when already root or
+# when no sudo exists; otherwise `sudo`. Two sudo shapes by context:
+#   - A real terminal on stdin (`sh cli.sh` run interactively): use a normal
+#     `sudo`, which may prompt for a password the user can actually type. A
+#     non-interactive `sudo -n` here would fail on any password-protected sudo
+#     and drop the whole distro-install path (a fresh Ubuntu never installs
+#     python3-venv, then the venv step aborts).
+#   - No controlling TTY (the documented `curl ... | sh` pipe): only a
+#     passwordless `sudo -n` can work, so gate on it and otherwise leave SUDO
+#     empty and let the install attempt fail through to the guidance below.
+SUDO=""
+if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
+  # A terminal on EITHER stdin or stderr means a password prompt can be shown
+  # and answered -- true for `sh cli.sh` and also for `curl ... | sh` in a normal
+  # shell, where stdin is the pipe but stderr is still the tty. Only when
+  # neither is a terminal (cron, CI, fully redirected) do we require a
+  # passwordless `sudo -n` and otherwise leave SUDO empty.
+  if [ -t 0 ] || [ -t 2 ]; then
+    SUDO="sudo"
+  elif sudo -n true 2>/dev/null; then
+    SUDO="sudo -n"
   fi
-done
-if [ -z "$PY" ] && command -v dnf >/dev/null 2>&1; then
-  # Amazon Linux 2023 ships python3 = 3.9; a 3.10+ interpreter is one dnf away.
-  echo "No Python >=3.10 found; attempting: dnf install python3.11 ..."
-  if [ "$(id -u)" = "0" ]; then
-    dnf install -y -q python3.11 >/dev/null 2>&1 || true
-  elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-    sudo dnf install -y -q python3.11 >/dev/null 2>&1 || true
-  fi
-  command -v python3.11 >/dev/null 2>&1 && PY="python3.11"
 fi
-[ -n "$PY" ] || err "Python >=3.10 is required (KiroCrew uses 3.10+ stdlib features). On Amazon Linux: sudo dnf install python3.11"
+
+PY=""
+_resolve_python || true
+if [ -z "$PY" ]; then
+  # No system Python >=3.10. Try the distro package manager first, then re-probe.
+  # Covers Debian/Ubuntu (apt), Amazon Linux 2023 / RHEL 8+ / CentOS Stream
+  # (dnf), and RHEL/CentOS 7 (yum). The apt branch also pulls python3-venv, which
+  # Debian splits out of the base interpreter (see the venv step below).
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "No Python >=3.10 found; attempting: apt-get install python3 python3-venv python3-pip ..."
+    $SUDO apt-get update -qq >/dev/null 2>&1 || true
+    $SUDO apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "No Python >=3.10 found; attempting: dnf install python3.11 ..."
+    $SUDO dnf install -y -q python3.11 python3.11-pip >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    echo "No Python >=3.10 found; attempting: yum install python3 ..."
+    $SUDO yum install -y -q python3 python3-pip >/dev/null 2>&1 || true
+  fi
+  _resolve_python || true
+fi
+if [ -z "$PY" ]; then
+  # The distro packages could not supply >=3.10: RHEL/CentOS 7 ships 3.6 and
+  # older Ubuntu 3.8, and neither has a >=3.10 package in its base repos. If the
+  # operator has ALREADY installed mise (its python-build-standalone runs on old
+  # glibc and bundles venv/pip), use it. This installer never bootstraps mise
+  # itself: piping an unsigned third-party script into `sh` would break the
+  # whole point of a signed installer (pinned key + SHA-256-verified wheel, no
+  # unsigned fallback). A source build MAY provision mise -- see
+  # ensure-python.sh -- but that is an explicit, non-piped path, not this
+  # published one-liner.
+  MISE="$HOME/.local/bin/mise"
+  [ -x "$MISE" ] || MISE="$(command -v mise 2>/dev/null || true)"
+  if [ -n "$MISE" ] && [ -x "$MISE" ]; then
+    echo "No system Python >=3.10; using your installed mise to provision one ..."
+    "$MISE" use -g "python@3.12" >/dev/null 2>&1 || true
+    _cand="$("$MISE" which python 2>/dev/null || true)"
+    if _py_usable "$_cand"; then PY="$_cand"; fi
+  fi
+fi
+[ -n "$PY" ] || err "Python >=3.10 is required and could not be found. Install it (Debian/Ubuntu: 'sudo apt-get install python3 python3-venv python3-pip'; RHEL/CentOS 8+/Amazon Linux: 'sudo dnf install python3.11'; CentOS 7: install a newer Python via SCL or mise, e.g. 'curl https://mise.run | sh && mise use -g python@3.12'), then re-run."
 if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
 else err "need sha256sum or shasum to verify the download"; fi
@@ -328,6 +387,26 @@ else
   VENV="${KIROCREW_VENV:-${_DATA_HOME_FOR_VENV%/}-venv}"
   _OLD_VENV="${_DATA_HOME_FOR_VENV%/}/venv"
   echo "Installing into managed venv at $VENV ..."
+  # Debian/Ubuntu ship the base `python3` WITHOUT the venv/ensurepip module (it
+  # lives in the separate `python3-venv` / `python3.X-venv` package), so
+  # `python3 -m venv` there dies with "ensurepip is not available" and, under
+  # `set -eu`, aborts the whole install with a raw stack trace. Probe the
+  # capability first; if it is missing, try to apt-install the version-matched
+  # venv package, then re-probe. A minimal RHEL/CentOS python bundles venv, so
+  # this only bites apt systems.
+  if ! "$PY" -c 'import ensurepip, venv' >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      # e.g. "3.12" -> python3.12-venv; also install the generic python3-venv so
+      # a bare `python3` interpreter is covered too.
+      _pyminor="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+      echo "Installing the venv module (python3-venv) ..."
+      $SUDO apt-get update -qq >/dev/null 2>&1 || true
+      $SUDO apt-get install -y "python${_pyminor}-venv" python3-venv >/dev/null 2>&1 \
+        || $SUDO apt-get install -y python3-venv >/dev/null 2>&1 || true
+    fi
+    "$PY" -c 'import ensurepip, venv' >/dev/null 2>&1 \
+      || err "$PY cannot create a virtual environment (the venv/ensurepip module is missing). On Debian/Ubuntu install it with 'sudo apt-get install python3-venv' (or 'python${_pyminor:-3}-venv'), then re-run."
+  fi
   "$PY" -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
   "$VENV/bin/pip" install --quiet "$WHL"
@@ -379,6 +458,20 @@ printf '%s\n' "$CHANNEL" > "$_DATA_HOME/channel"
 echo ""
 echo "Installed kirocrew $VER (channel: $CHANNEL)."
 case ":$PATH:" in
-  *":$BIN:"*) echo "Run: kirocrew --help" ;;
-  *) echo "Add $BIN to your PATH, then run: kirocrew --help" ;;
+  *":$BIN:"*) : ;;
+  *) echo "Add $BIN to your PATH first (e.g. add it in your shell profile)." ;;
 esac
+# Point at the actual next step, not just --help: a user who ran the one-liner
+# wants a running gateway. The persistent-service path (systemd/launchd) is
+# otherwise buried in the docs, which is the #1 remote-crew onboarding
+# complaint. `service install` is the durable path; `gateway` is the foreground
+# one for a quick look.
+echo ""
+echo "Next steps:"
+echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
+echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
+echo "  kirocrew --help             # everything else"
+echo ""
+echo "Need a non-default port (e.g. 5476 is already taken)? Set it at install time;"
+echo "it is baked into the service unit:"
+echo "  KIROCREW_PORT=5477 kirocrew service install"

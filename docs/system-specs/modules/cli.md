@@ -681,11 +681,26 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
 
 - **Linux** (`current_platform() == SYSTEMD`):
   - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
-  - Install: `sudo tee` writes the unit, then `sudo systemctl
+  - Install: `sudo install` writes the unit, then `sudo systemctl
     daemon-reload && sudo systemctl enable --now kirocrew.service`.
+    Privilege is resolved per call: already-root (euid 0) skips `sudo`
+    entirely — required on minimal container / `root`-login images that
+    ship no `sudo` binary — and a non-root caller with no `sudo` fails
+    with a clear `ServiceInstallError` rather than an uncaught
+    `FileNotFoundError`.
   - The gateway runs as `User=$USER Group=$(id -gn)` — kirocrew
-    code never runs under sudo. Only `tee` and `systemctl` invocations
+    code never runs under sudo. Only `install` and `systemctl` invocations
     are elevated.
+  - **Environment**: values are captured from the installer's environment
+    into the unit's `Environment=` lines at install time
+    (`service_environment()` in `service/common.py`) — this is how
+    `KIROCREW_PORT=5477 kirocrew service install` binds a non-default port.
+    The unit also reads `EnvironmentFile=-/etc/kirocrew/kirocrew.env`, an
+    operator-editable file the installer seeds create-if-absent (a reinstall
+    never clobbers edits). systemd applies the file AFTER — and overriding —
+    the baked `Environment=` lines, so editing it and running `sudo systemctl
+    restart kirocrew` changes a value (e.g. the port) without reinstalling.
+    Uninstall removes the file and its `/etc/kirocrew` directory.
   - Boot survival via `WantedBy=multi-user.target` (no linger needed —
     that's a user-service concept; this is system-level).
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.

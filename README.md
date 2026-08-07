@@ -330,9 +330,15 @@ chat. Read the [security architecture](docs/architecture/security-deep-dive.md) 
 
 **Installer details.** The installer resolves the channel feed, verifies the wheel's SHA-256 against
 the published manifest, installs through `pipx` when available or a managed
-virtual environment at `~/.kiro/crew/venv`, and records the channel in
-`~/.kiro/crew/channel`. The channels are `stable`, `insider`, and `nightly`, and
-`KIROCREW_CHANNEL` sets the default.
+virtual environment at `~/.kiro/crew-venv` (beside the data home; override with
+`KIROCREW_VENV`), and records the channel in `~/.kiro/crew/channel`. The channels
+are `stable`, `insider`, and `nightly`, and `KIROCREW_CHANNEL` sets the default.
+On Linux it installs a Python 3.10+ interpreter from your distro when the system
+lacks one — via `apt` on Debian/Ubuntu, `dnf` on Amazon Linux / RHEL / CentOS
+Stream, `yum` on CentOS 7. Where no base-repo package supplies 3.10+ (CentOS 7,
+older Ubuntu) it uses an already-installed [mise](https://mise.jdx.dev/) if you
+have one, otherwise it prints how to install a newer Python and stops. The
+signed installer never pipes an unsigned third-party script into a shell.
 
 **Pin an exact wheel.** You can also install one exact wheel directly and pin it to its published
 SHA-256. Every version directory publishes a `SHA256SUMS` file next to the
@@ -381,6 +387,17 @@ kirocrew service install
 kirocrew service status
 kirocrew logs
 ```
+
+To bind a non-default port (for example a host where `5476` is already taken),
+set `KIROCREW_PORT` when you install the service — the value is baked into the
+unit:
+
+```bash
+KIROCREW_PORT=5477 kirocrew service install
+```
+
+To change it later without reinstalling, edit `/etc/kirocrew/kirocrew.env`
+(created by `service install`) and run `sudo systemctl restart kirocrew`.
 
 The desktop app can use this local Gateway or connect to a remote one. For an
 always-on VPS, home server, or cloud VM in your account, follow the

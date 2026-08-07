@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -36,6 +38,33 @@ from kiro_crew.service.common import (
 log = logging.getLogger(__name__)
 
 UNIT_PATH = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
+
+# Operator-editable environment overrides, read by the unit via
+# ``EnvironmentFile=``. Placed AFTER the baked ``Environment=`` lines in the
+# unit so an edit here overrides the install-time snapshot (systemd.exec(5):
+# later assignments win). This is what makes a port change a one-liner
+# (`edit + systemctl restart`) instead of a full re-install: the baked
+# ``Environment=KIROCREW_PORT`` was frozen at `service install` time, so before
+# this file there was no supported way to change it on a running unit.
+ENV_DIR = Path("/etc/kirocrew")
+ENV_FILE_PATH = ENV_DIR / "kirocrew.env"
+
+# Seed contents written only when the file is absent (a re-install never
+# clobbers operator edits). Everything is commented out so the file changes
+# nothing until an operator opts in.
+_ENV_FILE_TEMPLATE = """\
+# Kiro Crew service environment overrides.
+#
+# This file is read by the systemd unit (EnvironmentFile=) AFTER the values
+# baked in at `kirocrew service install` time, so anything set here WINS. Edit
+# it, then apply without reinstalling:
+#
+#     sudo systemctl restart kirocrew
+#
+# Bind a non-default dashboard port (e.g. to run a second crew beside the
+# default 5476, or when 5476 is already taken):
+#KIROCREW_PORT=5477
+"""
 
 
 def _sd_quote(value: str) -> str:
@@ -79,6 +108,18 @@ def _sd_quote(value: str) -> str:
 
 
 def _current_user() -> str:
+    """Resolve the user the gateway should run AS (the ``User=`` in the unit).
+
+    Prefer ``SUDO_USER`` when it names a non-root account: the module invariant
+    is that the gateway — which imports MCP / LLM / agent code — runs as the
+    invoking human, never root, so ``sudo kirocrew service install`` must target
+    that human, not the root that sudo elevated us to. Falls back to
+    ``USER`` / ``LOGNAME`` for a non-sudo invocation. May return ``"root"`` or
+    ``""``; :func:`install` refuses to render a root-run agent from either.
+    """
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if sudo_user and sudo_user != "root":
+        return sudo_user
     return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
 
@@ -117,6 +158,25 @@ def _current_uid(user: str) -> int | None:
         return None
 
 
+def _home_for_user(user: str) -> str:
+    """Home directory of ``user`` from its passwd entry, else ``Path.home()``.
+
+    Must NOT use ``Path.home()`` for a sudo-selected user: under
+    ``sudo -H kirocrew service install`` the process's ``HOME`` is ``/root``
+    while ``User=`` is the human (``SUDO_USER``). Baking ``/root`` into the
+    unit's ``HOME`` / ``WorkingDirectory`` would then point the service at a
+    directory the non-root ``User=`` cannot enter, and it fails to start. Keep
+    the home tied to the SAME account the unit runs as. Falls back to
+    ``Path.home()`` when the lookup is unavailable (non-Unix, unknown user).
+    """
+    try:
+        import pwd  # Unix-only; lazy so this module still imports on Windows.
+
+        return pwd.getpwnam(user).pw_dir
+    except Exception:
+        return str(Path.home())
+
+
 def render_unit(apparmor_profile: str = "") -> str:
     """Render the systemd system-unit file contents.
 
@@ -132,7 +192,10 @@ def render_unit(apparmor_profile: str = "") -> str:
     bin_path = kirocrew_bin()
     user = _current_user()
     group = _current_group(user) if user else ""
-    home = str(Path.home())
+    # Tie HOME / WorkingDirectory to the SAME account as User= (see
+    # _home_for_user): under `sudo -H` the process HOME is /root while User= is
+    # the sudo-selected human, and baking /root in would break service start.
+    home = _home_for_user(user) if user else str(Path.home())
     # `--no-open` for the same reason as the launchd plist: a service starts on
     # boot and on every restart, and auto-opening a browser there is wrong. It is
     # simply less visible on a headless Linux box than on a desktop.
@@ -189,6 +252,13 @@ def render_unit(apparmor_profile: str = "") -> str:
         "Restart=on-failure\n"
         "RestartSec=10\n"
         f"TimeoutStopSec={TOTAL_SHUTDOWN_BUDGET_SECS}\n"
+        # Operator-editable overrides. systemd applies EnvironmentFile= AFTER —
+        # and overriding — the baked Environment= lines below (systemd.exec(5)),
+        # so editing this file and restarting changes a value (e.g.
+        # KIROCREW_PORT) without a re-install. The leading "-" makes a missing
+        # file non-fatal, so the unit still starts where install could not write
+        # /etc/kirocrew (the baked Environment= values then apply).
+        f"EnvironmentFile=-{ENV_FILE_PATH}\n"
         # Pin a high open-file limit rather than inheriting the host's
         # ambient DefaultLimitNOFILE. Stock systemd defaults to 1024 — and
         # the frontend production build (vite/rollup) opens ~1000
@@ -208,24 +278,85 @@ class ServiceInstallError(RuntimeError):
     """Raised when service install can't proceed without manual user action."""
 
 
+def _privilege_prefix() -> list[str]:
+    """Return the argv prefix that runs a command with root privilege.
+
+    Empty when the caller is already root (``euid == 0``) — a minimal
+    container or a ``root`` login often has no ``sudo`` binary at all, so
+    invoking ``sudo`` there would raise ``FileNotFoundError`` for a privilege
+    the process already holds. When not root, ``sudo`` is required to write the
+    root-owned unit and drive ``systemctl``; if it is missing we cannot proceed,
+    and the caller must surface a clear :class:`ServiceInstallError` rather than
+    let a raw ``FileNotFoundError`` escape ``controller.install_service`` (which
+    only catches ``ServiceInstallError``). ``_require_privilege`` enforces that.
+    """
+    # getattr: os.geteuid does not exist on Windows, where this module is
+    # imported (via controller) even though these functions never run there.
+    # Default 1000 (a non-root euid) keeps the "needs sudo" branch on any
+    # platform lacking geteuid, which is the safe assumption.
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() == 0:
+        return []
+    return ["sudo"]
+
+
+def _require_privilege() -> None:
+    """Raise a clean error if privilege escalation is needed but unavailable.
+
+    Called by every write/control action before it shells out, so a Linux host
+    without ``sudo`` (and not already root) fails on the friendly
+    ``ServiceInstallError`` path the CLI prints, instead of an uncaught
+    ``FileNotFoundError`` traceback.
+
+    Scoped to Linux: this is the systemd module, and in production the
+    controller only dispatches here on Linux (macOS uses launchd). The check
+    exists specifically for the Linux-host-without-sudo case, so on any other
+    platform it is a no-op — which also keeps these functions callable in
+    cross-platform unit tests that mock the subprocess layer on a host with no
+    ``sudo`` binary.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    geteuid = getattr(os, "geteuid", None)
+    is_root = geteuid is not None and geteuid() == 0
+    if not is_root and shutil.which("sudo") is None:
+        raise ServiceInstallError(
+            "This action needs root to manage the system service at "
+            f"{UNIT_PATH}, but 'sudo' was not found. Re-run as root, or install "
+            "sudo (e.g. 'yum install sudo' / 'apt-get install sudo')."
+        )
+
+
 def _sudo_run(
     *args: str,
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command under sudo, capturing output.
+    """Run a command with root privilege, capturing output.
 
-    Sudo prompts for a password on first use; subsequent calls within
-    the cached ticket window run silently. All three call sites
-    (``install``, ``uninstall``, ``stop``) are interactive user
-    commands invoked from a TTY, so we always allow the prompt.
+    Prepends ``sudo`` only when the caller is not already root (see
+    :func:`_privilege_prefix`). Sudo prompts for a password on first use;
+    subsequent calls within the cached ticket window run silently. All call
+    sites (``install``, ``uninstall``, ``stop``) are interactive user commands
+    invoked from a TTY, so we always allow the prompt.
+
+    A missing ``sudo`` is turned into a synthetic non-zero result rather than a
+    raised ``FileNotFoundError``, so best-effort callers (``restart``, ``stop``)
+    degrade to "did not run" instead of crashing. The raising entry points
+    (``install`` / ``uninstall``) call :func:`_require_privilege` first, so they
+    surface the precise reason before reaching here.
     """
-    return subprocess.run(
-        ["sudo", *args],
-        input=input_text,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            [*_privilege_prefix(), *args],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            args=list(args), returncode=127, stdout="", stderr="sudo: command not found"
+        )
 
 
 def _systemctl(*args: str, sudo: bool = True) -> subprocess.CompletedProcess[str]:
@@ -253,7 +384,7 @@ def _write_unit_via_sudo(contents: str) -> subprocess.CompletedProcess[str]:
             fh.write(contents)
         return subprocess.run(
             [
-                "sudo",
+                *_privilege_prefix(),
                 "install",
                 "-m",
                 "0644",
@@ -314,6 +445,48 @@ def _sudo_run_checked(*argv: str) -> None:
         raise ServiceInstallError((res.stderr or res.stdout).strip())
 
 
+def _seed_env_file() -> None:
+    """Create the operator-editable overrides file if it does not already exist.
+
+    Create-if-absent is the whole contract: a re-install must never clobber an
+    operator's edits (the value they set here is precisely what survives a
+    re-install, unlike the baked ``Environment=`` snapshot). Best-effort — the
+    unit references it with ``EnvironmentFile=-`` so a seeding failure is
+    non-fatal and simply leaves the baked defaults in force, and install() must
+    proceed to daemon-reload/restart regardless.
+
+    Existence is probed through a PRIVILEGED ``test -e``, never
+    ``Path.exists()``: a pre-existing root-owned ``/etc/kirocrew`` with a
+    restrictive mode makes ``Path.exists()`` raise ``PermissionError`` under the
+    invoking (non-root) user on Python 3.12, which would abort the install. The
+    whole body is wrapped so any unexpected error degrades to a warning.
+    """
+    try:
+        # rc 0 => the file already exists (privileged stat sees through a
+        # root-only directory); leave whatever is there untouched.
+        if _sudo_run("test", "-e", str(ENV_FILE_PATH)).returncode == 0:
+            return
+        _sudo_run("mkdir", "-p", str(ENV_DIR))
+        # 0644: readable so an operator can inspect it, root-owned so an
+        # unprivileged process cannot rewrite the service's environment.
+        _install_file_via_sudo(_ENV_FILE_TEMPLATE, ENV_FILE_PATH, mode="0644")
+    except (ServiceInstallError, OSError):
+        log.warning("Could not seed %s; the service uses baked defaults", ENV_FILE_PATH)
+
+
+def _env_file_is_untouched_seed() -> bool:
+    """True only when the overrides file still holds our exact seed template.
+
+    Uninstall uses this to decide whether the file is ours to delete. Any
+    difference — an operator edit, a file they pre-provisioned before install,
+    or an unreadable file — returns False so their configuration is left intact.
+    """
+    try:
+        return ENV_FILE_PATH.read_text(encoding="utf-8") == _ENV_FILE_TEMPLATE
+    except OSError:
+        return False
+
+
 def install() -> apparmor.ProfileOutcome:
     """Write the unit file and enable+start the service. Idempotent.
 
@@ -332,11 +505,29 @@ def install() -> apparmor.ProfileOutcome:
     service start, so loading it afterwards would leave the first gateway process
     unprofiled and every agent spawn failing closed until the next restart.
     """
+    # Fail early and cleanly if we cannot escalate: without this the first
+    # `sudo` call raises FileNotFoundError, which controller.install_service
+    # does not catch, so the CLI prints a traceback instead of the reason.
+    _require_privilege()
+
     user = _current_user()
     if not user:
         raise ServiceInstallError(
             "Could not determine current user (USER and LOGNAME both unset). "
             "Set $USER and re-run."
+        )
+    # Never render a root-run agent. The gateway imports MCP / LLM / agent code,
+    # and the module invariant is that it runs as the invoking human, never
+    # root. When invoked as bare root (a root login, or `sudo` with no
+    # SUDO_USER) `user` resolves to "root"; refuse rather than write a
+    # `User=root` unit that would run untrusted tools with host-wide root. The
+    # operator picks a real account via `sudo -u <user>` / `SUDO_USER` / `$USER`.
+    if user == "root":
+        raise ServiceInstallError(
+            "Refusing to install a service that runs the agent as root. The "
+            "gateway runs untrusted tools and must run as a normal user. Re-run "
+            "as that user (e.g. via their login, or `sudo -u <user> kirocrew "
+            "service install`), or set $USER to a non-root account."
         )
 
     # Decide before writing the unit: the directive has to be in the unit that
@@ -351,6 +542,10 @@ def install() -> apparmor.ProfileOutcome:
             f"{UNIT_PATH} is owned by root.\n"
             f"   sudo install said: {(write_res.stderr or write_res.stdout).strip()}"
         )
+
+    # Seed the operator-editable overrides file (create-if-absent), so a later
+    # `KIROCREW_PORT=...` edit + restart works without re-installing.
+    _seed_env_file()
 
     # Before daemon-reload/enable/restart: the AppArmorProfile= directive is
     # applied by systemd at unit START, so the profile must already be loaded or
@@ -438,9 +633,19 @@ def uninstall() -> None:
     # when the unit isn't even present.
     if not UNIT_PATH.exists():
         return
+    _require_privilege()
     _systemctl("stop", f"{SERVICE_NAME}.service")
     _systemctl("disable", f"{SERVICE_NAME}.service")
     _sudo_run("rm", "-f", str(UNIT_PATH))
+    # Remove the overrides file ONLY when it still holds our untouched seed —
+    # proving both that we wrote it and that the operator never edited it. An
+    # operator-authored or -edited /etc/kirocrew/kirocrew.env (including one
+    # pre-provisioned before install, which _seed_env_file preserves) is their
+    # config, not ours to delete. rmdir is best-effort and only clears an empty
+    # dir, so it never removes anything else parked under /etc/kirocrew.
+    if _env_file_is_untouched_seed():
+        _sudo_run("rm", "-f", str(ENV_FILE_PATH))
+        _sudo_run("rmdir", str(ENV_DIR))
     _systemctl("daemon-reload")
 
 
