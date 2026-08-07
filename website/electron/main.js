@@ -39,9 +39,13 @@ const { initMochi, shutdownMochi } = require("./mochi/index");
 const { initCrewCompanion, shutdownCrewCompanion } = require("./crew-companion/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { createBrowserViewManager, isUntrustedContents } = require("./browser-view");
-// chooseControlTransport is exercised by the routing layer (see Stage 6 notes),
-// not here — main.js only owns the plane and its gate.
-const { canAgentControl, createControlPlane, OWNER } = require("./browser-control");
+const {
+  canAgentControl,
+  isLoopbackUrl,
+  mayBootstrapView,
+  createControlPlane,
+  OWNER,
+} = require("./browser-control");
 const { createBrowserOps } = require("./browser-ops");
 const { createAgentCommandChannel } = require("./browser-agent-channel");
 const { secretCandidates } = require("./home-dir");
@@ -1190,6 +1194,15 @@ function setupWindowContents(win, backendUrl) {
     const existing = browserPanels.get(id);
     if (existing || !create) return existing || null;
 
+    // `agentAct` is the HUMAN panel's own "Let the agent act" control (it owns the
+    // LIGHT/CDP handoff surfaced in the Browser panel), NOT the agent's
+    // authorization to drive the page. That authorization is Browser Mode — the
+    // Settings toggle the agent command-channel dispatch now honors directly (see
+    // `entry.gate`). So a fresh entry starts with the human control OFF; a mounted
+    // panel sets it authoritatively via `browser:set-agent-act`. It is deliberately
+    // NO LONGER seeded from a per-session consent set: that set — and the gate that
+    // read it — are gone, because gating the built-in view behind a second grant
+    // gated a strictly weaker capability than Browser Mode already authorizes.
     const entry = { id, agentAct: false };
     entry.manager = createBrowserViewManager({
       createView: () =>
@@ -1252,9 +1265,25 @@ function setupWindowContents(win, backendUrl) {
         console.warn(`[browser-control] ${id} ${event} ${JSON.stringify(detail)}`);
       },
     });
+    // The gate the control plane consults on every owner transition — for both
+    // the agent command channel and the human panel wiring. It reduces to the
+    // VIEW PRECONDITION, because authorization to drive the built-in browser is
+    // Browser Mode (the Settings toggle), the agent's keystone-level grant.
+    //
+    // Precedent (src/kiro_crew/security.py ~line 4236): Browser Mode is documented
+    // as keystone-level authorization — "Presence alone is the authorization" —
+    // and in attach mode it authorizes driving the operator's OWN running,
+    // logged-in browser. The agent's browser_* tools only exist while Browser Mode
+    // is on. Gating this isolated embedded Electron view behind a SECOND
+    // per-session grant therefore gated a strictly WEAKER capability than the
+    // toggle already authorizes; that inconsistency is removed by passing
+    // agentActEnabled:true rather than the per-session flag. (canAgentControl's
+    // loopback exemption is now redundant — nothing is gated on a per-session
+    // grant — so no URL is passed here; the function + its tests stay in
+    // browser-control.js as documented there.)
     entry.gate = () =>
       canAgentControl({
-        agentActEnabled: entry.agentAct,
+        agentActEnabled: true,
         viewOpen: entry.manager.getState().open,
       });
 
@@ -1274,6 +1303,40 @@ function setupWindowContents(win, backendUrl) {
   win._mcBrowserPanel = browserPanel;
   win._mcBrowserPanels = browserPanels;
   win._mcDestroyBrowserPanel = destroyBrowserPanel;
+  // Chat sessions this window hosts that MAY host a browser panel, whether or
+  // not one is mounted right now.
+  //
+  // This is what makes the built-in browser the default. The agent command
+  // channel only long-polls the gateway for the session keys it reports (see
+  // listPanelIds), and the gateway's command bus treats "a key was polled for"
+  // as "a live panel exists" — so a chat whose Browser tab was never opened had
+  // NO key, the bus answered NoPanelError, and the very first "open this page"
+  // fell back to the Playwright mirror. Reporting the session keys here keeps the
+  // on-demand bootstrap in `dispatch` reachable.
+  //
+  // Reachability is simply "the active slots the renderer declares" (see the
+  // `browser:track-session` IPC + ChatPage's tracking effect). It grants NOTHING:
+  // authorization to drive the built-in browser is Browser Mode itself — the
+  // Settings toggle, whose presence is the agent's keystone-level grant and
+  // without which the browser_* tools do not exist. There is therefore no longer
+  // a separate per-session consent set to keep alongside this one; the two sets
+  // that used to coexist (durable-consent + transient-reachability) collapse to
+  // this single reachability set. Kept SEPARATE from `browserPanels` on purpose:
+  // closing the panel destroys its entry (see `browser:close`), and a session
+  // must stay reachable across that so the next request re-opens natively.
+  const reachableSessions = new Set();
+  win._mcReachableSessions = reachableSessions;
+
+  // NOTE: there is deliberately no did-navigate "revoke consent on reload"
+  // handler here anymore. It existed ONLY to reset the per-session grant when the
+  // dashboard document reloaded (a granted background slot must not be re-seeded
+  // as agent-controlled). With the per-session grant removed — Browser Mode is
+  // the agent's authorization, and it does not reset on a dashboard repaint —
+  // there is nothing consent-shaped left to revoke, and releasing the agent's
+  // LIGHT control just because the dashboard reloaded would wrongly interrupt a
+  // still-authorized agent. Reachability is re-declared by the renderer's tracking
+  // effect on mount (and pruned by its cleanup on slot change), so it needs no
+  // reload sweep either.
 
   // ── Agent command channel ──
   // The agent's `browser_*` MCP calls originate in the Python gateway, which has
@@ -1290,31 +1353,75 @@ function setupWindowContents(win, backendUrl) {
     fetchFn: (url, init) => fetch(url, init),
     getGatewayUrl: () => win._mcBackendUrl,
     getSecret: () => readInternalSecret(),
-    // Only panels that actually exist can be driven; an empty list parks the
-    // poller instead of spinning.
-    listPanelIds: () => [...browserPanels.keys()],
+    // Panels that exist PLUS sessions that may host one on demand. Reporting a
+    // key is what registers it with the gateway's command bus, so a declared-but-
+    // unmounted session must appear here or its first navigate can never arrive.
+    // An empty list parks the poller instead of spinning.
+    listPanelIds: () => {
+      // Never report a key to a gateway that is not on THIS machine.
+      //
+      // This channel authenticates with the local internal secret, so the only
+      // gateway that can accept it is a local one. When the window is connected
+      // to a REMOTE gateway, `_mcBackendUrl` IS that remote host, and polling it
+      // would push the local secret through the tunnel to be rejected 403 —
+      // forever, since the poller retries, making the remote append one SEL
+      // denial per attempt without bound.
+      //
+      // This was unreachable while only CONSENTED sessions were reported (a
+      // remote-connected window usually had none, and an empty list parks the
+      // poller). Reporting every active slot removed that accident, so the
+      // condition is now explicit. Parking is also the correct behaviour on a
+      // remote host: it has no Electron view to drive, and the mirror is the
+      // right transport there. Fails closed — an unset or unparseable URL is
+      // not loopback, so it reports nothing.
+      if (!isLoopbackUrl(win._mcBackendUrl)) return [];
+      return [...new Set([...browserPanels.keys(), ...reachableSessions])];
+    },
     dispatch: async (sessionKey, op, args) => {
-      const entry = browserPanel(sessionKey, { create: false });
+      // A `navigate` may CREATE the panel it needs, so the agent's first
+      // "open this page" can reach the native view instead of falling back to the
+      // Playwright mirror. Any other op has no page to act on until one exists, so
+      // it still requires a live panel.
+      const bootstrapping = op === "navigate";
+      const entry = browserPanel(sessionKey, { create: bootstrapping });
       if (!entry) throw new Error(`no native browser panel for session ${sessionKey}`);
       // A `navigate` is what BOOTSTRAPS the view, and the ORDER here matters.
       // `canAgentControl` refuses with `no-browser-view` when nothing is open, so
       // acquiring LIGHT first would refuse before any bootstrap could run — the
       // agent's very first "open this page" would fall back to Playwright and
-      // never reach the native browser, defeating the point of routing natively.
+      // never reach the native browser.
       //
-      // Authorization is still enforced first and separately: agent-act must
-      // already be granted. Only the "a view exists" precondition is satisfied by
-      // creating one, never the permission itself.
-      if (op === "navigate" && !entry.manager.getWebContents()) {
+      // Authorization is Browser Mode itself (see `entry.gate`) — the agent's
+      // browser_* tools only exist while it is on — so NO per-session grant is
+      // required here. Only the "a view exists" precondition is satisfied by
+      // creating one; the view precondition is still enforced, never bypassed.
+      if (bootstrapping && !entry.manager.getWebContents()) {
         const pre = entry.gate();
-        if (!pre || !pre.agentActEnabled) {
-          throw new Error("browser control refused: agent-act-not-authorized");
+        // `mayBootstrapView` tolerates ONLY the absent-view refusal this branch is
+        // about to satisfy by opening a view. It is a named, tested predicate
+        // because the inline version of it shipped broken — it read a property the
+        // gate never returns, making the verdict a constant that refused every
+        // native bootstrap. Every OTHER refusal still stops the bootstrap.
+        if (!mayBootstrapView(pre)) {
+          throw new Error(`browser control refused: ${pre.reason}`);
         }
         // `manager.navigate` creates the view when none is open and applies the
-        // same non-web URL guard as the CDP path.
+        // same http/https-only guard as the CDP path and the human's own control.
         const opened = entry.manager.navigate(String((args && args.url) || ""));
         if (opened && opened.refused) {
           return { ok: false, code: "bad_url", error: `refused non-web URL: ${args && args.url}` };
+        }
+        // The view now exists in THIS process but the dashboard owns layout, so
+        // without a rect it would be composited nowhere and the user would see an
+        // empty panel. Tell the SPA to surface the Browser panel for this session
+        // so it mounts, measures and reports bounds (see useNativeBrowser).
+        try {
+          view.webContents.send("browser:agent-opened", {
+            panelId: sessionKey,
+            url: (opened && opened.url) || String((args && args.url) || ""),
+          });
+        } catch {
+          // A torn-down dashboard view must not fail the navigation itself.
         }
         // Take LIGHT now that a view exists, so ownership is recorded for the ops
         // that follow and the same gate runs against the real post-open state.
@@ -1325,7 +1432,7 @@ function setupWindowContents(win, backendUrl) {
         return { ok: true, url: (opened && opened.url) || String((args && args.url) || "") };
       }
       // The agent is acting unattended, so it must hold LIGHT — and taking it
-      // runs the same gate (agent-act authorization) as any other transition.
+      // runs the same gate (the view precondition; authorization is Browser Mode).
       const taken = await entry.control.setOwner(OWNER.LIGHT, entry.gate());
       if (taken.refused) throw new Error(`browser control refused: ${taken.refused}`);
       return dispatchBrowserOp(entry, op, args);
@@ -2753,6 +2860,20 @@ app.whenReady().then(async () => {
   // The dashboard renderer is the authority on whether the agent is authorized
   // to act (it owns that toggle), so it pushes the flag; the main process keeps
   // it per panel and evaluates the gate itself on every transition.
+  ipcMain.handle("browser:track-session", (event, panelId, tracked) => {
+    // Reachability, and now the ONLY session-declaration channel. The renderer
+    // declares its active chat slot here so the agent command channel polls for
+    // it (see listPanelIds) and the agent's first navigate can arrive and be
+    // JUDGED by the gate — which is now just the view precondition, since Browser
+    // Mode is the authorization. Grants nothing on its own.
+    const owner = windowForWebContents(event.sender);
+    const set = owner && owner._mcReachableSessions;
+    const id = typeof panelId === "string" ? panelId.trim() : "";
+    if (!set || !id) return { ok: false };
+    if (tracked) set.add(id);
+    else set.delete(id);
+    return { ok: true };
+  });
   ipcMain.handle("browser:set-agent-act", async (event, panelId, enabled) => {
     const p = panelFor(event, panelId);
     if (!p) return { ok: false };

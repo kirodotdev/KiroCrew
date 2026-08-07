@@ -5902,7 +5902,6 @@
       "will_provision": "将预置"
     },
     "webPreviewPanel": {
-      "agent_can_act": "智能体可操作",
       "back": "后退",
       "browser_live": "浏览器 — 实时",
       "can_t_embed_an_http_page_here": "无法在此嵌入 http:// 页面",
@@ -5913,8 +5912,6 @@
       "expand_preview_hide_nav_sessions": "展开（隐藏导航和会话）",
       "forward": "前进",
       "http": "http://",
-      "let_the_agent_act": "允许智能体操作",
-      "lets_the_agent_click_type_and_navigate_this_page": "让智能体代你在此页面上点击、输入和跳转",
       "live_browser_session": "实时浏览器会话",
       "load_preview": "加载预览",
       "localhost_5173": "localhost:5173",
@@ -5931,7 +5928,6 @@
       "responsive_desktop": "自适应（桌面）",
       "screenshot_an_area_into_the_chat": "截取区域到聊天",
       "stopped_responding_it_ll_reconnect_automatically": "已停止响应。\n              恢复后会自动重连 — 也可以现在重新加载。",
-      "the_agent_can_click_type_and_navigate_this_page": "智能体可以在此页面上点击、输入和跳转",
       "the_agent_started_a_local_preview_load_it_to_vie": "代理已启动本地预览。加载它即可在此面板中查看站点。",
       "the_server_at": "服务器",
       "this_dashboard_is_served_over_https_so_the_brows": "此仪表板通过 HTTPS 提供服务，因此浏览器会阻止嵌入",

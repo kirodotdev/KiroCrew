@@ -5902,7 +5902,6 @@
       "will_provision": "プロビジョニングされます"
     },
     "webPreviewPanel": {
-      "agent_can_act": "エージェントが動作可能",
       "back": "戻る",
       "browser_live": "ブラウザー — ライブ",
       "can_t_embed_an_http_page_here": "http://ページはここに埋め込めません",
@@ -5913,8 +5912,6 @@
       "expand_preview_hide_nav_sessions": "プレビューを拡大（ナビゲーションとセッションを非表示）",
       "forward": "進む",
       "http": "http://",
-      "let_the_agent_act": "エージェントに動作させる",
-      "lets_the_agent_click_type_and_navigate_this_page": "エージェントがこのページをクリック、入力、ナビゲートできようにします",
       "live_browser_session": "ライブブラウザーセッション",
       "load_preview": "プレビューを読み込む",
       "localhost_5173": "localhost:5173",
@@ -5931,7 +5928,6 @@
       "responsive_desktop": "レスポンシブ（デスクトップ）",
       "screenshot_an_area_into_the_chat": "チャットにエリアをスクリーンショット",
       "stopped_responding_it_ll_reconnect_automatically": "応答を停止しました。\n              戻ったら自動的に再接続するか、今すぐリロードしてください。",
-      "the_agent_can_click_type_and_navigate_this_page": "エージェントはこのページをクリック、入力、ナビゲートできます",
       "the_agent_started_a_local_preview_load_it_to_vie": "エージェントがローカルプレビューを開始しました。このパネルでサイトを表示するには読み込んでください。",
       "the_server_at": "サーバー：",
       "this_dashboard_is_served_over_https_so_the_brows": "このダッシュボードはHTTPSで提供されるため、ブラウザーは",

@@ -6072,7 +6072,6 @@
       "will_provision": "Se aprovisionará"
     },
     "webPreviewPanel": {
-      "agent_can_act": "El agente puede actuar",
       "back": "Atrás",
       "browser_live": "Navegador: en directo",
       "can_t_embed_an_http_page_here": "Aquí no se puede incrustar una página http://",
@@ -6083,8 +6082,6 @@
       "expand_preview_hide_nav_sessions": "Ampliar (ocultar la navegación y las sesiones)",
       "forward": "Adelante",
       "http": "http://",
-      "let_the_agent_act": "Permitir que el agente actúe",
-      "lets_the_agent_click_type_and_navigate_this_page": "Permite que el agente haga clic, escriba y navegue en esta página por ti",
       "live_browser_session": "Sesión de navegador en directo",
       "load_preview": "Cargar la vista previa",
       "localhost_5173": "localhost:5173",
@@ -6101,7 +6098,6 @@
       "responsive_desktop": "Adaptable (escritorio)",
       "screenshot_an_area_into_the_chat": "Capturar un área en el chat",
       "stopped_responding_it_ll_reconnect_automatically": "dejó de responder.\n              Se volverá a conectar automáticamente cuando esté disponible, o recarga ahora.",
-      "the_agent_can_click_type_and_navigate_this_page": "El agente puede hacer clic, escribir y navegar en esta página",
       "the_agent_started_a_local_preview_load_it_to_vie": "El agente inició una vista previa local. Cárgala para ver el sitio en este panel.",
       "the_server_at": "El servidor en",
       "this_dashboard_is_served_over_https_so_the_brows": "Este panel se sirve por HTTPS, por lo que el navegador bloquea incrustar una página",

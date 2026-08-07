@@ -193,6 +193,22 @@ def test_non_tool_call_is_never_intercepted() -> None:
     assert proxy._try_native_tool_call({"method": "initialize", "id": 1}) is None
 
 
+def test_extension_mode_never_routes_to_the_native_view() -> None:
+    """Extension mode is the operator's explicit choice of their OWN browser.
+
+    When ``extension_mode`` is on, Playwright drives the user's real, logged-in
+    Chrome via the extension + token. Native routing must yield to that choice:
+    ``_try_native_tool_call`` returns None (fall through to Playwright) and must
+    NOT attempt any native command POST -- otherwise a native-default transport
+    would silently hijack ops away from the browser the user deliberately picked.
+    """
+    with _session(), patch.object(proxy, "_EXTENSION_MODE", True), patch.object(
+        proxy, "loopback_urlopen"
+    ) as urlopen:
+        assert proxy._try_native_tool_call(_call()) is None
+    urlopen.assert_not_called()  # never even reached the native command bus
+
+
 # ── refusal vs transport ───────────────────────────────────────────────────
 
 
@@ -207,6 +223,27 @@ def test_refusal_returns_an_mcp_error_and_does_not_fall_back() -> None:
     assert "error" in out and "result" not in out
     assert "agent-act-not-authorized" in out["error"]["message"]
     assert out["id"] == 7
+
+
+def test_no_authorization_shaped_reason_is_ever_a_fallback_marker() -> None:
+    """Only genuine ABSENCE degrades to the mirror; an authorization deny is final.
+
+    An earlier revision briefly listed `agent-act-consent-required` here to serve a
+    per-session consent model. Nothing emitted it once that model was removed, so it sat
+    as a dead branch that pre-authorized a consent-shaped deny to become a silent mirror
+    fallback -- the exact "a deny must not become an allow by another route" failure the
+    sibling test guards. Authorization is Browser Mode alone now, so this asserts the
+    list holds nothing authorization-shaped, and that such a reason still fails hard.
+    """
+    assert not [m for m in proxy._NATIVE_ABSENT_MARKERS if "agent-act" in m or "consent" in m]
+
+    for reason in ("agent-act-not-authorized", "agent-act-consent-required"):
+        payload = json.dumps(
+            {"id": "c1", "ok": False, "error": f"browser control refused: {reason}"}
+        ).encode()
+        with _session(), patch.object(proxy, "loopback_urlopen", return_value=_Resp(payload)):
+            out = proxy._try_native_tool_call(_call())
+        assert out is not None and "error" in out, f"{reason} must stay fatal"
 
 
 def test_only_no_panel_http_statuses_fall_back() -> None:

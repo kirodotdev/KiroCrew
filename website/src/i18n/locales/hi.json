@@ -5987,7 +5987,6 @@
       "will_provision": "प्रोविज़न किया जाएगा"
     },
     "webPreviewPanel": {
-      "agent_can_act": "एजेंट कार्रवाई कर सकता है",
       "back": "पीछे",
       "browser_live": "ब्राउज़र — लाइव",
       "can_t_embed_an_http_page_here": "http:// पेज को यहाँ एम्बेड नहीं किया जा सकता",
@@ -5998,8 +5997,6 @@
       "expand_preview_hide_nav_sessions": "फैलाएँ (नेव और सेशन छिपाएँ)",
       "forward": "आगे",
       "http": "http://",
-      "let_the_agent_act": "एजेंट को कार्रवाई करने दें",
-      "lets_the_agent_click_type_and_navigate_this_page": "एजेंट को आपके लिए इस पेज पर क्लिक, टाइप और नेविगेट करने देता है",
       "live_browser_session": "लाइव ब्राउज़र सत्र",
       "load_preview": "पूर्वावलोकन लोड करें",
       "localhost_5173": "localhost:5173",
@@ -6016,7 +6013,6 @@
       "responsive_desktop": "रेस्पॉन्सिव (डेस्कटॉप)",
       "screenshot_an_area_into_the_chat": "चैट में किसी क्षेत्र का स्क्रीनशॉट लें",
       "stopped_responding_it_ll_reconnect_automatically": "ने जवाब देना बंद कर दिया।\n              जब यह वापस आएगा तो यह स्वतः दोबारा कनेक्ट हो जाएगा — या अभी रीलोड करें।",
-      "the_agent_can_click_type_and_navigate_this_page": "एजेंट इस पेज पर क्लिक, टाइप और नेविगेट कर सकता है",
       "the_agent_started_a_local_preview_load_it_to_vie": "एजेंट ने एक स्थानीय पूर्वावलोकन शुरू किया। इस पैनल में साइट देखने के लिए इसे लोड करें।",
       "the_server_at": "इस पते पर चल रहा सर्वर:",
       "this_dashboard_is_served_over_https_so_the_brows": "यह डैशबोर्ड HTTPS पर सर्व होता है, इसलिए ब्राउज़र एम्बेड करने से रोक देता है — एक",

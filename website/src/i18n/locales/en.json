@@ -4323,7 +4323,6 @@
       "will_provision": "Will provision"
     },
     "webPreviewPanel": {
-      "agent_can_act": "Agent can act",
       "back": "Back",
       "browser_live": "Browser — live",
       "can_t_embed_an_http_page_here": "Can't embed an http:// page here",
@@ -4331,8 +4330,6 @@
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Enter your dev-server URL above (e.g. a Vite or static server running on localhost) to\n              preview the site you're working on — it live-reloads as you edit.",
       "forward": "Forward",
       "http": "http://",
-      "let_the_agent_act": "Let the agent act",
-      "lets_the_agent_click_type_and_navigate_this_page": "Lets the agent click, type, and navigate this page for you",
       "live_browser_session": "Live browser session",
       "load_preview": "Load preview",
       "localhost_5173": "localhost:5173",
@@ -4348,7 +4345,6 @@
       "reload_preview": "Reload preview",
       "screenshot_an_area_into_the_chat": "Screenshot an area into the chat",
       "stopped_responding_it_ll_reconnect_automatically": "stopped responding.\n              It'll reconnect automatically when it's back — or reload now.",
-      "the_agent_can_click_type_and_navigate_this_page": "The agent can click, type, and navigate this page",
       "the_agent_started_a_local_preview_load_it_to_vie": "The agent started a local preview. Load it to view the site in this panel.",
       "the_server_at": "The server at",
       "this_dashboard_is_served_over_https_so_the_brows": "This dashboard is served over HTTPS, so the browser blocks embedding an",

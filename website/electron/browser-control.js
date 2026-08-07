@@ -116,26 +116,72 @@ function planTransition(current, requested) {
  * "let the agent act" authorization — the same gate that authorizes agent
  * browsing today, not a new browser-specific toggle (design decision §8).
  * A human driving the page needs no gate: their gesture is the consent.
+ *
+ * This PR deliberately does NOT carve an ungated class out of this. An earlier
+ * revision split ops into "view" (ungated) and "operate", so that a chat "open
+ * this page" could reach the native view without a grant. Review killed it on the
+ * merits, and the reasoning is worth keeping here so it is not re-attempted:
+ * the embedded view runs on a `persist:` partition holding sessions the user
+ * logged into BY HAND, so even a bare `navigate` sends authenticated requests
+ * with their cookies — an injected `/logout` or token-bearing action URL is a
+ * real state change with consent off. The Playwright fallback has no such reach
+ * in its DEFAULT isolated profile (empty storage state); its extension mode does
+ * drive the user's own Chrome, but that mode is opted into separately. "The same
+ * navigate is one ungated click away" does not hold either, because the human's
+ * click is ATTENDED and they chose the URL.
  */
-function canAgentControl(state) {
-  const s = state || {};
-  if (!s.agentActEnabled) return { allowed: false, reason: "agent-act-not-authorized" };
-  if (!s.viewOpen) return { allowed: false, reason: "no-browser-view" };
-  return { allowed: true, reason: null };
-}
+/**
+ * Loopback hosts — a dev server on this machine, not a site with an identity.
+ *
+ * Mirrors the renderer's own `isLoopbackHost` (WebPreviewPanel.tsx) so both
+ * transports agree on what "local" means.
+ */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"]);
 
 /**
- * Which control transport should serve the agent's `browser_*` calls?
+ * Is this URL a loopback dev server?
  *
- * Mirrors the display-transport rule in the panel: if frames are streaming, the
- * browser lives in another process (remote gateway / Playwright proxy) and only
- * the proxy can drive it. Otherwise, when a native view is available in this
- * process, drive it in-process over CDP.
+ * Used to EXEMPT local targets from the agent-act grant. The grant exists to
+ * protect an authenticated browsing identity: the embedded browser runs on a
+ * `persist:` partition that accumulates real logins, so a navigate is not a
+ * passive read — it SENDS those cookies. None of that applies to `localhost`,
+ * because cookies are host-scoped and a dev server holds no third-party session.
+ *
+ * The exemption does not compose into an escape: it is evaluated against the
+ * TARGET of a navigate, so a local page that tells the agent to visit a real site
+ * produces a non-loopback target and is gated normally.
  */
-function chooseControlTransport(state) {
+function isLoopbackUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || ""));
+  } catch {
+    return false;  // not a URL at all — never exempt
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const h = String(u.hostname || "").toLowerCase();
+  // `*.localhost` is reserved for loopback (RFC 6761) and the desktop app uses it.
+  return LOOPBACK_HOSTS.has(h) || h === "localhost" || h.endsWith(".localhost");
+}
+
+function canAgentControl(state) {
   const s = state || {};
-  if (s.framesStreaming) return "proxy";
-  return s.nativeAvailable ? "native" : "proxy";
+  // `loopback` is an exemption, NOT a grant: it is absent from every existing
+  // caller, so omitting it preserves the previous behaviour exactly.
+  //
+  // NOTE: as of the "built-in browser is the default" change, the agent command
+  // channel builds this gate with `agentActEnabled: true` unconditionally —
+  // Browser Mode (the Settings toggle) is the agent's authorization, so no
+  // per-session grant gates the built-in view. That makes this loopback exemption
+  // REDUNDANT for the agent path (nothing is gated on the per-session grant), but
+  // it is kept intact — the function is still a faithful primitive, the human
+  // panel wiring still consults it, and its tests still pin the exemption's shape
+  // for any future caller that passes a real per-session flag.
+  if (!s.agentActEnabled && !s.loopback) {
+    return { allowed: false, reason: "agent-act-not-authorized" };
+  }
+  if (!s.viewOpen) return { allowed: false, reason: "no-browser-view" };
+  return { allowed: true, reason: null };
 }
 
 /**
@@ -363,12 +409,30 @@ function createControlPlane(deps) {
   };
 }
 
+/**
+ * May a `navigate` proceed to CREATE the view, given the pre-open gate verdict?
+ *
+ * Extracted as a pure predicate because the inline version of this shipped
+ * broken: it read `verdict.agentActEnabled`, a property `canAgentControl` never
+ * returns, so the test was a CONSTANT and every native bootstrap was refused
+ * even with the grant on. Nothing failed, because the expression had no test.
+ *
+ * `no-browser-view` is the ONE refusal a bootstrap may tolerate — it is the
+ * precondition the caller is about to satisfy by opening a view. Every other
+ * refusal, authorization above all, must still stop it.
+ */
+function mayBootstrapView(verdict) {
+  const v = verdict || {};
+  return !!v.allowed || v.reason === "no-browser-view";
+}
+
 module.exports = {
   OWNER,
   OWNERS,
   CDP_VERSION,
   planTransition,
   canAgentControl,
-  chooseControlTransport,
+  isLoopbackUrl,
+  mayBootstrapView,
   createControlPlane,
 };

@@ -125,7 +125,7 @@ import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { groupDisplayItems, applyRunningState } from './chat/groupDisplayItems'
-import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
+import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
@@ -974,39 +974,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [showHistorySuggestions])
-  // Native-act consent is per-session (keyed by slot), not page-global: granting
-  // it in one session must not bleed into another. ChatPage never remounts on
-  // slot switch, so a single boolean would leak across every session. Kept
-  // in-memory only (resets on reload).
-  //
-  // This gates the DESKTOP native path only: whether the agent may drive the
-  // user's real embedded browser (browser-control.js `canAgentControl`). Reading
-  // and operating a Playwright browser is default-on once Browser Mode is enabled
-  // in Settings; this extra gesture exists because the native path acts on the
-  // user's actual logged-in browser and must not be auto-granted.
-  const [agentActBySlot, setAgentActBySlot] = useState<Record<string, boolean>>({})
-  const agentActEnabled = activeSlot ? (agentActBySlot[activeSlot] ?? false) : false
-  // Broadcast the active slot's native-act consent so the Browser panel's live
-  // mirror shows "Let the agent act" only while it is OFF. (agentActRef, kept in
-  // sync below, is reused by the browse-frame effect to replay state to a
-  // late-mounting panel.)
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: agentActEnabled } }))
-  }, [agentActEnabled])
-  // The Browser panel's "Let the agent act" button requests granting native-act
-  // consent for the active slot (idempotent — never revokes it).
-  useEffect(() => {
-    const onEnable = (e: Event) => {
-      // Prefer the slot carried by the panel (the browsing session whose page is
-      // shown); fall back to the active slot only if none was supplied. This
-      // keeps the consent attributed to the correct session.
-      const slot = (e as CustomEvent<{ slot?: string }>).detail?.slot || activeSlotRef.current
-      if (!slot) return
-      setAgentActBySlot(prev => (prev[slot] ? prev : { ...prev, [slot]: true }))
-    }
-    window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
-    return () => window.removeEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
-  }, [])
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
@@ -1172,8 +1139,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const inputRef = useRef(input)
   inputRef.current = input
-  const agentActRef = useRef(agentActEnabled)
-  agentActRef.current = agentActEnabled
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
  // forensic attribution. Set on widget pre-fill, consumed
@@ -4133,20 +4098,53 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // Only auto-open the Browser tab when the browsing session IS the one on
       // screen (the active slot). A background session's frames must not open —
       // or, with the panel's own session gate, display in — another session's
-      // panel; that would misattribute the "Let the agent act" grant.
+      // panel.
       if (!key || key !== activeSlotRef.current) return
       const prev = browseFrameOpenedRef.current
       if (prev.key !== key || now - prev.ts > 90_000) {
         dispatch(openActivityPanel())
         tabsCtlRef.current.openView('browser')
-        // A freshly-mounted panel starts with browseOn=false; replay the current
-        // native-act consent so the live mirror shows the right interaction state.
-        window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: agentActRef.current } }))
       }
       browseFrameOpenedRef.current = { key, ts: now }
     }
     window.addEventListener('kirocrew-browser-frame', onFrame)
     return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
+  }, [dispatch])
+  // Reachability: declare the active slot to the Electron main process so the
+  // agent command channel polls for it (see listPanelIds) even before the Browser
+  // tab is ever opened — this is what makes the built-in browser the default for a
+  // fresh chat. It is NOT a grant: authorization to drive the built-in browser is
+  // Browser Mode (the Settings toggle), and the main-process gate is just the view
+  // precondition. There is no longer a separate per-session consent registration —
+  // the command channel can only deliver an op for a session key it polls for, and
+  // it must poll before any URL is known, so gating reachability on a per-session
+  // grant would make the whole native path unreachable for a fresh chat.
+  useEffect(() => {
+    const api = (window as unknown as {
+      browserAPI?: { trackSession?: (id: string, tracked: boolean) => Promise<unknown> }
+    }).browserAPI
+    if (!api?.trackSession || !activeSlot) return
+    void api.trackSession(activeSlot, true)
+    return () => { void api.trackSession?.(activeSlot, false) }
+  }, [activeSlot])
+  // Native counterpart of the mirror auto-open above. When the agent opens a page
+  // in the BUILT-IN browser, the WebContentsView is created in the Electron main
+  // process but the dashboard owns layout — until the Browser panel mounts and
+  // reports its rect, the page is composited nowhere and the user sees nothing.
+  // So surface the panel on the main process's `browser:agent-opened` signal.
+  //
+  // Same active-slot guard as the mirror path: a background session's page must
+  // not open another session's panel.
+  useEffect(() => {
+    const api = (window as unknown as {
+      browserAPI?: { onAgentOpened?: (cb: (p: { panelId?: string }) => void) => () => void }
+    }).browserAPI
+    if (!api?.onAgentOpened) return      // plain browser (no preload bridge)
+    return api.onAgentOpened(({ panelId }) => {
+      if (!panelId || panelId !== activeSlotRef.current) return
+      dispatch(openActivityPanel())
+      tabsCtlRef.current.openView('browser')
+    })
   }, [dispatch])
   // "Run in terminal" (from chat code blocks): open a FRESH terminal tab in
   // this chat and run the command in it, starting in the chat's working dir.

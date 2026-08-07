@@ -108,7 +108,24 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser:set-control-owner", panelId, owner),
   getControl: (panelId) => ipcRenderer.invoke("browser:get-control", panelId),
   control: (panelId, op, args) => ipcRenderer.invoke("browser:control", panelId, op, args),
+  // Declares that a chat session may host a browser panel, so the agent command
+  // channel polls for it even before the Browser tab is ever opened. Grants no
+  // authorization — authorization to drive the built-in browser is Browser Mode
+  // (the Settings toggle), and the gate is just the view precondition. This is
+  // the ONLY session-declaration channel: reachability is simply the active slots
+  // the renderer declares here.
+  trackSession: (panelId, tracked) =>
+    ipcRenderer.invoke("browser:track-session", panelId, !!tracked),
   // Events carry their own panelId so a listener can ignore other panels'.
+  // `onAgentOpened` fires when the AGENT bootstrapped a native view for a
+  // session whose Browser panel may not be mounted yet — the dashboard must
+  // surface that panel so it can report bounds, or the page would render to
+  // nowhere.
+  onAgentOpened: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("browser:agent-opened", handler);
+    return () => ipcRenderer.removeListener("browser:agent-opened", handler);
+  },
   onDidNavigate: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on("browser:did-navigate", handler);

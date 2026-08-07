@@ -6072,7 +6072,6 @@
       "will_provision": "Va provisionner"
     },
     "webPreviewPanel": {
-      "agent_can_act": "L'agent peut agir",
       "back": "Retour",
       "browser_live": "Navigateur — en direct",
       "can_t_embed_an_http_page_here": "Impossible d'intégrer une page http:// ici",
@@ -6083,8 +6082,6 @@
       "expand_preview_hide_nav_sessions": "Agrandir (masquer la navigation et les sessions)",
       "forward": "Suivant",
       "http": "http://",
-      "let_the_agent_act": "Autoriser l'agent à agir",
-      "lets_the_agent_click_type_and_navigate_this_page": "Permet à l'agent de cliquer, saisir du texte et naviguer sur cette page pour vous",
       "live_browser_session": "Session de navigateur en direct",
       "load_preview": "Charger l'aperçu",
       "localhost_5173": "localhost:5173",
@@ -6101,7 +6098,6 @@
       "responsive_desktop": "Adaptatif (ordinateur)",
       "screenshot_an_area_into_the_chat": "Capturer une zone dans la conversation",
       "stopped_responding_it_ll_reconnect_automatically": "ne répond plus.\n              Il se reconnectera automatiquement dès qu'il sera de retour — ou rechargez maintenant.",
-      "the_agent_can_click_type_and_navigate_this_page": "L'agent peut cliquer, saisir du texte et naviguer sur cette page",
       "the_agent_started_a_local_preview_load_it_to_vie": "L'agent a démarré un aperçu local. Chargez-le pour voir le site dans ce panneau.",
       "the_server_at": "Le serveur à l'adresse",
       "this_dashboard_is_served_over_https_so_the_brows": "Ce tableau de bord est servi via HTTPS, donc le navigateur bloque l'intégration d'une page",

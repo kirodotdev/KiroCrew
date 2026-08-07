@@ -5987,7 +5987,6 @@
       "will_provision": "Wird bereitstellen"
     },
     "webPreviewPanel": {
-      "agent_can_act": "Agent kann handeln",
       "back": "Zurück",
       "browser_live": "Browser — live",
       "can_t_embed_an_http_page_here": "Eine http://-Seite kann hier nicht eingebettet werden",
@@ -5998,8 +5997,6 @@
       "expand_preview_hide_nav_sessions": "Erweitern (Navigation und Sitzungen ausblenden)",
       "forward": "Weiterleiten",
       "http": "http://",
-      "let_the_agent_act": "Dem Agenten erlauben zu handeln",
-      "lets_the_agent_click_type_and_navigate_this_page": "Erlaubt dem Agenten, für Sie auf dieser Seite zu klicken, zu tippen und zu navigieren",
       "live_browser_session": "Live-Browsersitzung",
       "load_preview": "Vorschau laden",
       "localhost_5173": "localhost:5173",
@@ -6016,7 +6013,6 @@
       "responsive_desktop": "Responsiv (Desktop)",
       "screenshot_an_area_into_the_chat": "Einen Bereich als Screenshot in den Chat einfügen",
       "stopped_responding_it_ll_reconnect_automatically": "antwortet nicht mehr.\n              Es verbindet sich automatisch neu, sobald es wieder da ist — oder laden Sie jetzt neu.",
-      "the_agent_can_click_type_and_navigate_this_page": "Der Agent kann auf dieser Seite klicken, tippen und navigieren",
       "the_agent_started_a_local_preview_load_it_to_vie": "Der Agent hat eine lokale Vorschau gestartet. Laden Sie sie, um die Site in diesem Panel anzuzeigen.",
       "the_server_at": "Der Server unter",
       "this_dashboard_is_served_over_https_so_the_brows": "Dieses Dashboard wird über HTTPS bereitgestellt, daher blockiert der Browser das Einbetten eines",

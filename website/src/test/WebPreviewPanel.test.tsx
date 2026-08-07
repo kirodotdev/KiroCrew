@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
-import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, withCacheBuster, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
+import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, withCacheBuster } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
 // the button renders under happy-dom (which has no mediaDevices.getDisplayMedia).
@@ -352,40 +352,12 @@ describe('WebPreviewPanel — live agent-browse mirror', () => {
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
-  it('offers "Let the agent act" while the toggle is off and requests it for THIS session on click', () => {
-    const seen: (string | undefined)[] = []
-    const handler = (e: Event) => seen.push((e as CustomEvent<{ slot?: string }>).detail?.slot)
-    window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, handler)
-    try {
-      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-      emitFrame('sess-1')
-      fireEvent.click(screen.getByText('Let the agent act'))
-      // Grant must be attributed to the panel's own (browsing) session, not a
-      // global/active-slot fallback.
-      expect(seen).toEqual(['sess-1'])
-    } finally {
-      window.removeEventListener(PREVIEW_ENABLE_BROWSE_EVENT, handler)
-    }
-  })
-
   it('does NOT show the live mirror for a frame from a DIFFERENT session (no cross-session leak)', () => {
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     emitFrame('sess-2') // a background session's browse frame
-    // This panel is scoped to sess-1, so a sess-2 frame must not flip it live —
-    // otherwise "Let the agent act" would authorize the wrong session.
+    // This panel is scoped to sess-1, so a sess-2 frame must not flip it live.
     expect(screen.queryByText('Browser — live')).toBeNull()
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
-  })
-
-  it('reflects the toggle ON: shows "Agent can act", hides the enable button', () => {
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    emitFrame('sess-1')
-    expect(screen.getByText('Let the agent act')).toBeInTheDocument()
-    act(() => {
-      window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: true } }))
-    })
-    expect(screen.getByText('Agent can act')).toBeInTheDocument()
-    expect(screen.queryByText('Let the agent act')).toBeNull()
   })
 })
 
@@ -433,18 +405,15 @@ describe('WebPreviewPanel — native browser transport', () => {
   it('native view OWNS the panel when available — a chat-opened page lands in it, not the mirror', async () => {
     installNativeBridge(true)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    // NOTE: 'Let the agent act' appears on BOTH surfaces (the native header
-    // reuses the mirror's keys), so it cannot distinguish them. Wait instead for
-    // the mirror's <img> to be gone, which only happens once the native view is
-    // open and owning the panel. Before getState resolves, a streamed frame
-    // legitimately shows the mirror -- that is the deliberate fallback for a
-    // desktop shell whose native view has nothing in it yet.
+    // Wait for the mirror's <img> to be gone, which only happens once the native
+    // view is open and owning the panel. Before getState resolves, a streamed
+    // frame legitimately shows the mirror -- that is the deliberate fallback for
+    // a desktop shell whose native view has nothing in it yet.
     emitFrame('sess-1')
     await waitFor(() => expect(screen.queryByAltText('Live browser session')).toBeNull())
     // A further streamed frame must NOT override the now-open native view.
     emitFrame('sess-1')
     expect(screen.queryByAltText('Live browser session')).toBeNull()
-    expect(screen.getByText('Let the agent act')).toBeInTheDocument()
   })
 
   it('shows the mirror when the bridge EXISTS but no native view is open yet', async () => {
@@ -468,19 +437,15 @@ describe('WebPreviewPanel — native browser transport', () => {
     expect(screen.getByAltText('Live browser session')).toBeInTheDocument()
   })
 
-  it('wires the Globe toggle: ON acquires LIGHT control, OFF releases to NONE', async () => {
-    const api = installNativeBridge(true)
-    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    await screen.findByText('Let the agent act')
-    // Globe ON → mirror agent-act authorization AND request LIGHT.
-    act(() => { window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: true } })) })
-    await waitFor(() => expect(api.setControlOwner.mock.calls.at(-1)?.[1]).toBe('light'))
-    expect(api.setAgentAct.mock.calls.at(-1)?.[1]).toBe(true)
-    // Globe OFF → actively release.
-    act(() => { window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: false } })) })
-    await waitFor(() => expect(api.setControlOwner.mock.calls.at(-1)?.[1]).toBe('none'))
-    expect(api.setAgentAct.mock.calls.at(-1)?.[1]).toBe(false)
-  })
+  // NOTE: three tests are deliberately gone from here — they pinned the
+  // per-session consent model this panel no longer has: the Globe toggle
+  // acquiring/releasing LIGHT, the BROWSE_MODE_REQUEST_EVENT pull handshake, and
+  // the slot filter on its answer. Browser Mode is now the authorization
+  // (security.py: "Presence alone is the authorization") and the agent command
+  // channel takes LIGHT itself, so the panel carries no agent-authorization
+  // control to assert. Transport selection is still covered by the three tests
+  // above (native owns the panel / mirror before a native view / mirror when no
+  // bridge exists).
 
   it('hides (never destroys) the native view when the panel goes inactive, and closes it on unmount', async () => {
     const api = installNativeBridge(true)

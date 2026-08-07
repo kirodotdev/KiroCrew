@@ -5902,7 +5902,6 @@
       "will_provision": "프로비저닝될 항목"
     },
     "webPreviewPanel": {
-      "agent_can_act": "에이전트 조작 가능",
       "back": "뒤로",
       "browser_live": "브라우저 — 라이브",
       "can_t_embed_an_http_page_here": "여기에는 http:// 페이지를 삽입할 수 없습니다",
@@ -5913,8 +5912,6 @@
       "expand_preview_hide_nav_sessions": "펼치기 (내비게이션·세션 숨기기)",
       "forward": "앞으로",
       "http": "http://",
-      "let_the_agent_act": "에이전트에게 조작 허용",
-      "lets_the_agent_click_type_and_navigate_this_page": "에이전트가 이 페이지를 대신 클릭·입력·탐색할 수 있게 합니다",
       "live_browser_session": "라이브 브라우저 세션",
       "load_preview": "미리 보기 불러오기",
       "localhost_5173": "localhost:5173",
@@ -5931,7 +5928,6 @@
       "responsive_desktop": "반응형(데스크톱)",
       "screenshot_an_area_into_the_chat": "영역을 캡처해 채팅에 넣기",
       "stopped_responding_it_ll_reconnect_automatically": "응답을 멈췄습니다.\n 복구되면 자동으로 다시 연결됩니다 — 지금 새로 고쳐도 됩니다.",
-      "the_agent_can_click_type_and_navigate_this_page": "에이전트가 이 페이지를 클릭·입력·탐색할 수 있습니다",
       "the_agent_started_a_local_preview_load_it_to_vie": "에이전트가 로컬 미리 보기를 시작했습니다. 이 패널에서 사이트를 보려면 불러오세요.",
       "the_server_at": "서버:",
       "this_dashboard_is_served_over_https_so_the_brows": "이 대시보드는 HTTPS로 제공되므로 브라우저가 다음 삽입을 차단합니다:",

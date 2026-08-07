@@ -244,9 +244,24 @@ _NATIVE_OPS: dict[str, str] = {
 # failures clear it, so closing the panel restores full Playwright behaviour.
 _native_panel_seen = False
 
-# Error text from the Electron side meaning "no view/panel to drive" rather than
-# "not allowed to drive it". An absent panel is a transport gap; a deny is not.
-_NATIVE_ABSENT_MARKERS = ("no-browser-view", "no native browser panel", "no-native-panel")
+# Error text from the Electron side meaning "fall back to Playwright" rather than
+# "this operation is forbidden".
+#
+# An absent panel is a transport gap; a deny is not, and a deny must stay fatal --
+# falling back would re-run the op on Playwright's page and turn a refusal into an
+# allow by another route (see test_refusal_returns_an_mcp_error_and_does_not_fall_back).
+#
+# Keep this list to genuine ABSENCE. An earlier revision of the native-default work
+# added an authorization-shaped reason here (`agent-act-consent-required`) to cover a
+# per-session consent model that no longer exists; nothing emitted it once that model
+# was removed, leaving a dead branch that pre-authorized a future consent-shaped deny
+# to degrade into a silent mirror fallback. Authorization now lives entirely in
+# Browser Mode, so a deny reaching this proxy is always final.
+_NATIVE_ABSENT_MARKERS = (
+    "no-browser-view",
+    "no native browser panel",
+    "no-native-panel",
+)
 
 
 def _names_absent_panel(detail: str) -> bool:
@@ -808,6 +823,17 @@ def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
     act" cannot be bypassed by another route.
     """
     if msg.get("method") != "tools/call":
+        return None
+    # Extension mode is an explicit user choice: the operator turned on
+    # ``extension_mode`` in Settings so Playwright drives their OWN running,
+    # logged-in browser via the Playwright extension + token. Native routing must
+    # NEVER override that deliberate choice -- so we yield here and let the call
+    # fall through to Playwright (which, in extension mode, acts on the user's own
+    # browser). This is WHY the guard lives in the routing path and not only in the
+    # frame-send path: suppressing the dashboard mirror is not enough; if native
+    # routing captured the op the user's browser would be silently hijacked even
+    # though no native op ever reached them.
+    if _EXTENSION_MODE:
         return None
     global _native_panel_seen
     params = msg.get("params") or {}

@@ -5987,7 +5987,6 @@
       "will_provision": "যা তৈরি করা হবে"
     },
     "webPreviewPanel": {
-      "agent_can_act": "এজেন্ট কাজ করতে পারে",
       "back": "পেছনে",
       "browser_live": "ব্রাউজার — লাইভ",
       "can_t_embed_an_http_page_here": "এখানে কোনো http:// পেজ এম্বেড করা যাবে না",
@@ -5998,8 +5997,6 @@
       "expand_preview_hide_nav_sessions": "প্রসারিত করো (নেভিগেশন ও সেশন লুকাও)",
       "forward": "সামনে",
       "http": "http://",
-      "let_the_agent_act": "এজেন্টকে কাজ করতে দিন",
-      "lets_the_agent_click_type_and_navigate_this_page": "এজেন্টকে আপনার হয়ে এই পেজে ক্লিক, টাইপ ও নেভিগেট করতে দেয়",
       "live_browser_session": "লাইভ ব্রাউজার সেশন",
       "load_preview": "প্রিভিউ লোড করুন",
       "localhost_5173": "localhost:5173",
@@ -6016,7 +6013,6 @@
       "responsive_desktop": "রেসপন্সিভ (ডেস্কটপ)",
       "screenshot_an_area_into_the_chat": "চ্যাটে একটি অংশের স্ক্রিনশট নিন",
       "stopped_responding_it_ll_reconnect_automatically": "সাড়া দেওয়া বন্ধ করেছে।\n              এটি ফিরে এলে স্বয়ংক্রিয়ভাবে আবার সংযুক্ত হবে — অথবা এখনই রিলোড করুন।",
-      "the_agent_can_click_type_and_navigate_this_page": "এজেন্ট এই পেজে ক্লিক, টাইপ ও নেভিগেট করতে পারে",
       "the_agent_started_a_local_preview_load_it_to_vie": "এজেন্ট একটি লোকাল প্রিভিউ চালু করেছে। এই প্যানেলে সাইটটি দেখতে এটি লোড করুন।",
       "the_server_at": "এই ঠিকানার সার্ভার:",
       "this_dashboard_is_served_over_https_so_the_brows": "এই ড্যাশবোর্ডটি HTTPS-এর মাধ্যমে পরিবেশিত, তাই ব্রাউজার এখানে এম্বেড করতে দেয় না কোনো",

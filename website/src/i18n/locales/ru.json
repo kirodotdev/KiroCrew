@@ -6157,7 +6157,6 @@
       "will_provision": "Будет создано"
     },
     "webPreviewPanel": {
-      "agent_can_act": "Агент может действовать",
       "back": "Назад",
       "browser_live": "Браузер — активен",
       "can_t_embed_an_http_page_here": "Здесь нельзя встроить http:// страницу",
@@ -6168,8 +6167,6 @@
       "expand_preview_hide_nav_sessions": "Развернуть (скрыть навигацию и сессии)",
       "forward": "Вперёд",
       "http": "http://",
-      "let_the_agent_act": "Разрешить агенту действовать",
-      "lets_the_agent_click_type_and_navigate_this_page": "Позволяет агенту нажимать, вводить текст и переходить по этой странице за вас",
       "live_browser_session": "Активный сеанс браузера",
       "load_preview": "Загрузить предпросмотр",
       "localhost_5173": "localhost:5173",
@@ -6186,7 +6183,6 @@
       "responsive_desktop": "Адаптивный (компьютер)",
       "screenshot_an_area_into_the_chat": "Снимок области в чат",
       "stopped_responding_it_ll_reconnect_automatically": "перестал отвечать.\n              Подключение восстановится автоматически, когда он снова заработает, — или обновите сейчас.",
-      "the_agent_can_click_type_and_navigate_this_page": "Агент может нажимать, вводить текст и переходить по этой странице",
       "the_agent_started_a_local_preview_load_it_to_vie": "Агент запустил локальный предпросмотр. Загрузите его, чтобы посмотреть сайт в этой панели.",
       "the_server_at": "Сервер",
       "this_dashboard_is_served_over_https_so_the_brows": "Эта панель работает по HTTPS, поэтому браузер блокирует встраивание",

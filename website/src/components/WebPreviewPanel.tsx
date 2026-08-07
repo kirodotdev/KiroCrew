@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop, MousePointerClick } from 'lucide-react'
+import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop } from 'lucide-react'
 
 import { safeSetItem } from '../utils/safeStorage'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
@@ -55,18 +55,6 @@ export const PREVIEW_FOCUS_EVENT = 'kirocrew-preview-focus'
  * crop button just asks for it via this event rather than duplicating capture.
  */
 export const PREVIEW_SNIP_EVENT = 'kirocrew-web-preview-snip'
-/**
- * Window event: the panel requests enabling "Let the agent use the browser" (operate mode) so the
- * agent may actively drive the browser. ChatPage listens and turns browse mode
- * on for the active slot. Fired by the live mirror's "Let the agent act" button.
- */
-export const PREVIEW_ENABLE_BROWSE_EVENT = 'kirocrew-enable-browse'
-/**
- * Window event: ChatPage broadcasts the current per-slot browse-mode state so
- * the panel can reflect it — the "Let the agent act" button shows only while
- * browse mode is OFF.
- */
-export const BROWSE_MODE_EVENT = 'kirocrew-browse-mode'
 /**
  * How long after the last agent-browse frame we keep the live mirror on screen
  * before falling back to the preview body. Frames arrive only when the agent
@@ -362,14 +350,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // they go stale (LIVE_FRAME_TTL_MS) we fall back to the preview body.
   const { frame, lastTs, sessionKey: frameSessionKey, sessionName } = useBrowserFrame()
   const [nowTick, setNowTick] = useState(() => Date.now())
-  // Whether "Let the agent use the browser" (operate) is currently on — broadcast by ChatPage so
-  // the mirror can show "Let the agent act" only while it's off.
-  const [browseOn, setBrowseOn] = useState(false)
-  useEffect(() => {
-    const onMode = (e: Event) => setBrowseOn(!!(e as CustomEvent<{ on?: boolean }>).detail?.on)
-    window.addEventListener(BROWSE_MODE_EVENT, onMode)
-    return () => window.removeEventListener(BROWSE_MODE_EVENT, onMode)
-  }, [])
   // While frames are live, re-evaluate staleness on an interval so the mirror
   // auto-retires after the agent stops browsing (frames only push on capture).
   useEffect(() => {
@@ -387,9 +367,9 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   }, [frame, lastTs])
   // Session-scoped: only surface the mirror when the streaming frame belongs to
   // THIS panel's session. useBrowserFrame is global (latest frame from ANY
-  // session); without this check a background session's browse would render in —
-  // and, via "Let the agent act" below, authorize [BROWSE] on — the wrong
-  // session's panel. `sessionKey` must be present and equal the frame's key.
+  // session); without this check a background session's browse would render into
+  // the wrong session's panel. `sessionKey` must be present and equal the
+  // frame's key.
   const isLive = !!frame && !!lastTs && !!sessionKey && frameSessionKey === sessionKey
     && nowTick - lastTs < LIVE_FRAME_TTL_MS
 
@@ -405,15 +385,13 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   //     reports `available: false`) -> the browser lives in another process and
   //     only streamed frames can show it, so the mirror is the FALLBACK.
   //
-  // `agentActEnabled: browseOn` wires the Globe toggle ("Let the agent use the
-  // browser") to the native view's agent-control gate: on -> acquire (LIGHT),
-  // off -> release. Scoped by sessionKey: each Browser panel owns its own view
-  // and authorization. `enabled` is just `active` now (native no longer yields
-  // to streaming frames), so switching side-panel tabs hides — never destroys —
-  // the view.
-  const native = useNativeBrowser(sessionKey || '', active, {
-    agentActEnabled: browseOn,
-  })
+  // Scoped by sessionKey: each Browser panel owns its own native view. `enabled`
+  // is just `active` (native no longer yields to streaming frames), so switching
+  // side-panel tabs hides — never destroys — the view. Authorization for the
+  // agent to drive the view is Browser Mode itself (the Settings toggle),
+  // enforced in the Electron main process (browser-control.js `canAgentControl`);
+  // the panel no longer carries a per-session agent-act toggle.
+  const native = useNativeBrowser(sessionKey || '', active)
   // Native wins when available. Its view is "open" once a page has been loaded
   // into it; until then the panel shows the ordinary iframe preview.
   const nativeOpen = native.available && !!native.state?.open
@@ -425,13 +403,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // view had nothing to show -- a blank panel. `!nativeOpen` is the real
   // condition: a native view that is open owns the surface, otherwise mirror.
   const showMirror = isLive && !nativeOpen
-  const requestInteraction = useCallback(() => {
-    // Target the session whose page is on screen — which is THIS panel's
-    // session, since isLive required a session_key match — never a global or
-    // active-slot fallback. Carrying the slot keeps the grant attributed to the
-    // browsing session even if the active slot differs.
-    window.dispatchEvent(new CustomEvent(PREVIEW_ENABLE_BROWSE_EVENT, { detail: { slot: sessionKey } }))
-  }, [sessionKey])
 
   const persist = useCallback((u: string) => {
     if (storageKey && u) safeSetItem(storageKey, u)
@@ -649,20 +620,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           ) : (
             <div className="flex-1" />
           )}
-          {browseOn ? (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.the_agent_can_click_type_and_navigate_this_page')}>
-              <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.agent_can_act')}
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={requestInteraction}
-              className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
-              title={i18nT('components.webPreviewPanel.lets_the_agent_click_type_and_navigate_this_page')}
-            >
-              <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.let_the_agent_act')}
-            </button>
-          )}
         </div>
         <div className="relative bg-black flex-1 min-h-0 flex items-center justify-center">
           {frame ? (
@@ -693,25 +650,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_live')}</span>
         <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
         <div className="flex-1" />
-        {/* Globe toggle ("Let the agent use the browser") wiring: turning it on
-            acquires in-process (LIGHT) agent control of THIS native view; off
-            releases it. `requestInteraction` asks ChatPage to flip the toggle on
-            for this session — the hook (agentActEnabled: browseOn) then drives
-            setControlOwner. Reuses the live-mirror's keys, no new strings. */}
-        {browseOn ? (
-          <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.the_agent_can_click_type_and_navigate_this_page')}>
-            <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.agent_can_act')}
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={requestInteraction}
-            className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
-            title={i18nT('components.webPreviewPanel.lets_the_agent_click_type_and_navigate_this_page')}
-          >
-            <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.let_the_agent_act')}
-          </button>
-        )}
       </div>
       {/* Address bar. The preview subtree below (which owns the other URL form)
           is hidden while the native surface is up, so without this the user
