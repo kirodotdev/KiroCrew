@@ -36,6 +36,7 @@ from kiro_crew.telegram.client import (
 from kiro_crew.telegram.commands import (
     ConversationState,
     parse_command,
+    parse_dashboard_ttl,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import (
@@ -391,6 +392,38 @@ class TestParseCommand:
     def test_mid_turn_override_none_without_body(self) -> None:
         # A bare directive with no message body is not an override.
         assert parse_mid_turn_override("/queue") == (None, "/queue")
+
+    def test_dashboard_command(self) -> None:
+        """Dashboard command requires both /kirocrew and 'dashboard' subcommand."""
+        assert parse_command("/kirocrew dashboard") == "dashboard"
+        assert parse_command("/kirocrew dashboard 2h") == "dashboard"
+        assert parse_command("/KIROCREW DASHBOARD") == "dashboard"
+        assert parse_command("  /kirocrew   dashboard  ") == "dashboard"
+
+    def test_dashboard_command_requires_subcommand(self) -> None:
+        """Bare /kirocrew without 'dashboard' is not a command."""
+        assert parse_command("/kirocrew") is None
+        assert parse_command("/kirocrew help") is None
+        assert parse_command("/kirocrew other") is None
+
+
+class TestParseDashboardTtl:
+    def test_default_ttl(self) -> None:
+        """Default is 1 hour when no TTL specified."""
+        assert parse_dashboard_ttl("/kirocrew dashboard") == 3600
+
+    def test_hours(self) -> None:
+        assert parse_dashboard_ttl("/kirocrew dashboard 2h") == 7200
+        assert parse_dashboard_ttl("/kirocrew dashboard 5H") == 18000
+
+    def test_minutes(self) -> None:
+        assert parse_dashboard_ttl("/kirocrew dashboard 30m") == 1800
+        assert parse_dashboard_ttl("/kirocrew dashboard 90M") == 5400
+
+    def test_invalid_ttl_uses_default(self) -> None:
+        """Invalid TTL format falls back to 1 hour."""
+        assert parse_dashboard_ttl("/kirocrew dashboard xyz") == 3600
+        assert parse_dashboard_ttl("/kirocrew dashboard") == 3600
 
 
 class TestConversationState:

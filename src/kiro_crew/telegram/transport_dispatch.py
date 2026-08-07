@@ -47,6 +47,7 @@ from kiro_crew.sel import sel
 from kiro_crew.telegram.commands import (
     ConversationState,
     parse_command,
+    parse_dashboard_ttl,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
@@ -85,6 +86,7 @@ Commands:
 /link — Mirror this conversation's dashboard tab here
 /unlink — Stop mirroring
 /stop — Stop the current reply and clear the queue
+/kirocrew dashboard [<N>h|<N>m] — Get a dashboard login link (default 1h, max 20h)
 /help — Show this message
 
 While a reply is running, prefix a message to control it:
@@ -260,6 +262,9 @@ class TelegramDispatcher:
             return
         if cmd == "stop":
             await self._handle_stop(route, chat_id)
+            return
+        if cmd == "dashboard":
+            await self._handle_dashboard(route, chat_id, text)
             return
 
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
@@ -641,6 +646,43 @@ class TelegramDispatcher:
             )
         except Exception:
             logger.debug("telegram: queue receipt cancel-finalize failed", exc_info=True)
+
+    async def _handle_dashboard(
+        self, route: tuple[str, str], chat_id: int, text: str
+    ) -> None:
+        """Generate and send a presigned dashboard login link.
+
+        Mirrors the Slack ``/kirocrew dashboard`` implementation: calls
+        ``generate_token`` directly (not via shell) and constructs the
+        dashboard URL.
+        """
+        assert self.client is not None
+        from kiro_crew.dashboard.token_auth import generate_token
+
+        thread = self._route_thread(route)
+        ttl_secs = parse_dashboard_ttl(text)
+        # Clamp to 20h max (same as Slack)
+        max_ttl = 20 * 60 * 60
+        if ttl_secs > max_ttl:
+            ttl_secs = max_ttl
+        try:
+            token = generate_token(ttl_seconds=ttl_secs)
+            port = self.cfg.dashboard.port
+            base = f"http://localhost:{port}"
+            url = f"{base}/?token={token}"
+            ttl_display = f"{ttl_secs // 3600}h" if ttl_secs >= 3600 else f"{ttl_secs // 60}m"
+            await self._reply(
+                chat_id,
+                f"🔗 Dashboard link (valid {ttl_display}):\n{url}",
+                thread=thread,
+            )
+        except Exception as exc:
+            logger.warning("telegram /kirocrew dashboard: token generation failed", exc_info=True)
+            await self._reply(
+                chat_id,
+                f"⚠️ Could not generate dashboard link: {exc}",
+                thread=thread,
+            )
 
     async def _handle_stop(self, route: tuple[str, str], chat_id: int) -> None:
         """Hard cancel: abort the in-flight turn and clear everything.

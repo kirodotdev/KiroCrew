@@ -7,6 +7,7 @@ Commands:
   /unlink      — stop mirroring
   /stop        — stop the current reply and clear the queue (alias: /cancel)
   /help        — show available commands
+  /kirocrew dashboard [<N>h|<N>m]  -- send a presigned dashboard link
 
 Mid-turn overrides (prefix a message sent WHILE a reply is running; they
 override the global ``messaging.queue_mode`` for that one message):
@@ -30,13 +31,17 @@ _HELP_ALIASES = frozenset(("/help",))
 _LINK_ALIASES = frozenset(("/link",))
 _UNLINK_ALIASES = frozenset(("/unlink",))
 _STOP_ALIASES = frozenset(("/stop", "/cancel"))
+_DASHBOARD_ALIASES = frozenset(("/kirocrew",))
 
 
 def parse_command(text: str) -> str | None:
-    """Return 'new', 'compact', 'link', 'unlink', 'help', 'stop', or None."""
+    """Return 'new', 'compact', 'link', 'unlink', 'help', 'stop', 'dashboard', or None."""
     stripped = text.strip()
     # Telegram commands always start with /
-    cmd = stripped.split()[0].lower() if stripped.startswith("/") else ""
+    if not stripped.startswith("/"):
+        return None
+    parts = stripped.split()
+    cmd = parts[0].lower()
     if cmd in _NEW_ALIASES:
         return "new"
     if cmd in _COMPACT_ALIASES:
@@ -49,6 +54,9 @@ def parse_command(text: str) -> str | None:
         return "help"
     if cmd in _STOP_ALIASES:
         return "stop"
+    # /kirocrew dashboard [<TTL>]
+    if cmd in _DASHBOARD_ALIASES and len(parts) >= 2 and parts[1].lower() == "dashboard":
+        return "dashboard"
     return None
 
 
@@ -75,3 +83,20 @@ def parse_mid_turn_override(text: str) -> tuple[str | None, str]:
     if cmd in _STEER_ALIASES:
         return "steer", rest
     return None, text
+
+
+def parse_dashboard_ttl(text: str) -> int:
+    """Parse optional TTL from a ``/kirocrew dashboard [<N>h|<N>m]`` command.
+
+    Returns the session TTL in seconds. Defaults to 3600 (1 hour) when no
+    duration is given or the duration is unparseable.
+    """
+    from kiro_crew.dashboard.token_auth import parse_duration
+
+    parts = text.strip().split()
+    # Expected: ["/kirocrew", "dashboard", "<ttl>"]
+    if len(parts) >= 3:
+        parsed = parse_duration(parts[2])
+        if parsed is not None:
+            return parsed
+    return 3600
