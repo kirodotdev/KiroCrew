@@ -2534,7 +2534,14 @@ async def test_make_live_unsafe_path_returns_code(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
-    """macOS restart asks launchd for a bounded SIGTERM-first stop."""
+    """macOS restart asks launchd for a bounded SIGTERM-first stop.
+
+    Pinned as a DOMAIN-TARGETED ``kill TERM``, not launchctl's legacy label-only
+    ``stop``: Dev Fleet spawns every command inside ``sandbox-exec``, and launchd
+    refuses the legacy stop routine for a sandboxed caller ("Not privileged to
+    stop service.") whatever the seatbelt profile allows. A regression to the
+    legacy form makes Restart fail on every Mac, so the shape is asserted here.
+    """
     monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
     monkeypatch.setattr(
         mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
@@ -2561,8 +2568,15 @@ async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
     # The PID stands in for systemd's monotonic start stamp: it changes on every
     # respawn, which is the edge the frontend handshake waits for.
     assert res["start_id"] == "4242"
-    assert ["launchctl", "stop", mod._gateway_label()] in calls
+    # Addressed via the backend's own domain helper rather than a second copy of
+    # the uid logic (which would also break on Windows, where getuid is absent).
+    domain = mod.gateway_service.LaunchdBackend.domain()
+    assert ["launchctl", "kill", "TERM", f"{domain}/{mod._gateway_label()}"] in calls
+    # `kickstart -k` would restart it too, but as a hard kill rather than the
+    # graceful SIGTERM the ExitTimeOut budget is sized for.
     assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
+    # The legacy verb is what the sandbox blocks — it must not reappear.
+    assert not any(c[:2] == ["launchctl", "stop"] for c in calls)
 
 
 @pytest.mark.asyncio
@@ -2587,7 +2601,7 @@ async def test_restart_gateway_darwin_refuses_stale_loaded_contract(monkeypatch)
     res = await mod._restart_gateway()
     assert res["ok"] is False
     assert "loaded launchd restart contract is outdated" in res["error"]
-    assert not any(c[:2] == ["launchctl", "stop"] for c in calls)
+    assert not any(c[:3] == ["launchctl", "kill", "TERM"] for c in calls)
 
 
 @pytest.mark.asyncio
@@ -2647,7 +2661,7 @@ async def test_make_live_darwin_writes_pointer_and_stops_agent(monkeypatch, tmp_
     import json as _json
     data = _json.loads(ptr_file.read_text())
     assert Path(data["checkout"]).resolve() == wt.resolve()
-    assert any(c[:2] == ["launchctl", "stop"] for c in calls)
+    assert any(c[:3] == ["launchctl", "kill", "TERM"] for c in calls)
     assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
     assert not any("bootout" in c or "bootstrap" in c for c in calls)
 
@@ -2670,8 +2684,8 @@ async def test_make_live_darwin_rolls_back_pointer_on_restart_failure(
     async def fake_run_cmd(cmd, **kw):
         if cmd[:2] == ["launchctl", "print"]:
             return (0, "  pid = 99\n", "")
-        if cmd[:2] == ["launchctl", "stop"]:
-            return (1, "", "stop refused")
+        if cmd[:3] == ["launchctl", "kill", "TERM"]:
+            return (1, "", "restart refused")
         return (0, "", "")
 
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
