@@ -22,6 +22,7 @@ import {
 import * as api from './devFleetApi'
 
 import { i18nT } from '../i18n/t'
+import { compareText } from '../i18n/format'
 /* ─── Notification helper (replaces useNotify) ─── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _dispatch: any = null
@@ -1069,16 +1070,33 @@ export default function DevFleetPage() {
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
   const statusRank = (w: Worktree) => (w.is_main ? 0 : w.running ? 1 : (!w.has_dist ? 3 : 2))
+  // Secondary key for the status sort: the PR pill is the other "status" on a
+  // row, so rows with equal pod status order by review state — active work
+  // (open, then draft) floats up and finished work (closed, then merged)
+  // sinks to the bottom of its group, next in spirit to the Prune-merged
+  // button. Without this, a fleet that is mostly not-built degenerates into
+  // a plain alphabetical list with open/merged pills interleaved at random.
+  // Check order mirrors reviewState() below so the sort always agrees with
+  // the rendered pill.
+  const prRank = (w: Worktree) => {
+    if (!w.pr) return 2
+    const s = String(w.pr.state || '').toUpperCase()
+    if (s === 'MERGED') return 4
+    if (s === 'DRAFT' || w.pr.isDraft) return 1
+    if (s === 'OPEN') return 0
+    if (s === 'CLOSED') return 3
+    return 2 // unknown state — rank with the PR-less rows
+  }
   const mainRows = wts.filter((w) => w.is_main)
   const legacyAll = wts.filter((w) => !w.is_main && w.legacy)
   const others = wts.filter((w) => !w.is_main && matchesRow(w) && (showLegacy || !w.legacy))
   others.sort((a, b) => sortBy === 'name'
-    ? a.name.localeCompare(b.name)
+    ? compareText(a.name, b.name)
     : sortBy === 'recent'
-      ? ((b.last_updated_at || 0) - (a.last_updated_at || 0)) || a.name.localeCompare(b.name)
+      ? ((b.last_updated_at || 0) - (a.last_updated_at || 0)) || compareText(a.name, b.name)
       : sortBy === 'behind'
-        ? ((b.behind || 0) - (a.behind || 0)) || a.name.localeCompare(b.name)
-        : (statusRank(a) - statusRank(b)) || a.name.localeCompare(b.name))
+        ? ((b.behind || 0) - (a.behind || 0)) || compareText(a.name, b.name)
+        : (statusRank(a) - statusRank(b)) || (prRank(a) - prRank(b)) || compareText(a.name, b.name))
   const visible = [...mainRows, ...others]
 
   const reviewState = (w: Worktree) => {

@@ -181,6 +181,43 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(trigger).toHaveTextContent('Sort: behind'))
   })
 
+  it('status sort orders equal pod-status rows by PR state, not alphabetically', async () => {
+    // Names are chosen so plain alphabetical order (a→e) CONTRADICTS the
+    // expected review-state order (open → draft → no PR → closed → merged);
+    // without the prRank secondary key this test fails.
+    const FLEET_PR = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'wt-a-merged', is_main: false, running: false, has_dist: false, pr: { number: 1, state: 'MERGED', url: 'https://github.com/org/repo/pull/1', isDraft: false } },
+        { name: 'wt-b-closed', is_main: false, running: false, has_dist: false, pr: { number: 2, state: 'CLOSED', url: 'https://github.com/org/repo/pull/2', isDraft: false } },
+        { name: 'wt-c-nopr', is_main: false, running: false, has_dist: false },
+        { name: 'wt-d-draft', is_main: false, running: false, has_dist: false, pr: { number: 4, state: 'OPEN', url: 'https://github.com/org/repo/pull/4', isDraft: true } },
+        { name: 'wt-e-open', is_main: false, running: false, has_dist: false, pr: { number: 5, state: 'OPEN', url: 'https://github.com/org/repo/pull/5', isDraft: false } },
+        // Pod status stays the PRIMARY key: a running pod with a merged PR
+        // still sorts above every not-built row.
+        { name: 'wt-z-pod-merged', is_main: false, running: true, has_dist: true, port: 7781, health: 200, pr: { number: 6, state: 'MERGED', url: 'https://github.com/org/repo/pull/6', isDraft: false } },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_PR), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('wt-e-open')).toBeInTheDocument())
+    // Default sort is 'status'. Expected order: pod-up row first, then the
+    // not-built rows by review state (open, draft, no PR, closed, merged).
+    const expected = ['wt-z-pod-merged', 'wt-e-open', 'wt-d-draft', 'wt-c-nopr', 'wt-b-closed', 'wt-a-merged']
+    const els = expected.map((n) => screen.getByText(n))
+    for (let i = 0; i < els.length - 1; i++) {
+      expect(
+        els[i].compareDocumentPosition(els[i + 1]) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `${expected[i]} should render before ${expected[i + 1]}`,
+      ).toBeTruthy()
+    }
+  })
+
   it('shows build-pending chip when fleet.build_pending is true', async () => {
     const FLEET_BP = { ...FLEET, build_pending: true }
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
