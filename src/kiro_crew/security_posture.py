@@ -117,7 +117,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/session_memory.py",
         "Chat titles served by `GET /api/sessions/memory`. Titles are generated from "
         "user content, and the resume path in `chat_handlers` assigns a "
-        "client-supplied `body[\"title\"]` to the slot with no scan of its own, so this "
+        'client-supplied `body["title"]` to the slot with no scan of its own, so this '
         "serializer is the boundary that guarantees the scan — the same "
         "output-boundary reason as the sibling subagent-task text.",
     ),
@@ -190,7 +190,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the cut cannot split a credential into a fragment the scanner misses. FAIL-CLOSED: "
         "these six tools are conveniences, so withholding a result beats leaking. The ERROR "
         "paths are scanned too (`_redact_error`): tool ARGUMENTS reach exception text by "
-        "design — `get_finding` raises \"no finding with fingerprint <fp>\" with the caller's "
+        'design — `get_finding` raises "no finding with fingerprint <fp>" with the caller\'s '
         "raw value — so a credential-shaped argument was echoed straight back to the model "
         "and into the SEL record. Measured before fixing. The exception type and JSON-RPC "
         "error code are composed in after scrubbing, so the message stays actionable.",
@@ -243,10 +243,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "`commit.py` builds its `error` from `(proc.stderr or '')[:160]` — raw git stderr, "
         "which quotes refs, paths and whatever a repository's own hooks printed. That was "
         "latent while nothing rendered it; surfacing a refused commit at the finding row made "
-        "it a live path to the browser, so all five `result.get(\"error\")` responses plus the "
+        'it a live path to the browser, so all five `result.get("error")` responses plus the '
         "PR-status and draft bodies are scanned. "
         "Covers the TERMINAL ERROR field on the same response too "
-        "(`_fail`): `f\"{type(exc).__name__}: {exc}\"` was assigned raw while the feed "
+        '(`_fail`): `f"{type(exc).__name__}: {exc}"` was assigned raw while the feed '
         "beside it was scanned, and an exception message routinely quotes what failed — a "
         "git url, a subprocess argv, a path — so a run dying on an agent-influenced value "
         "carried it to the browser. The exception TYPE is composed in after redaction so "
