@@ -82,6 +82,7 @@
   "pages.chatSidebar.running_session",
   "pages.chatSidebar.session",
   "pages.devFleetPage.commits_behind_main_2",
+  "pages.knowledge.sourcesList.files_failed_count",
   "pages.knowledge.sourcesList.supported_file_found",
   "pages.overview.mcpTab.pending_change",
   "pages.overview.memoryTab.session",

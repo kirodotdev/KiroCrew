@@ -51,6 +51,7 @@ from kiro_crew.knowledge.ingestion import (
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
+from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
@@ -613,7 +614,14 @@ async def source_counts(request: web.Request) -> web.Response:
 
 
 async def list_sources(request: web.Request) -> web.Response:
-    """GET /api/knowledge/sources."""
+    """GET /api/knowledge/sources.
+
+    Each source carries a ``spend`` block: how far its indexing has got and how
+    many Kiro requests it still owes -- one model call is one billed request, so
+    the figure is directly comparable to a bill. Indexing draws those requests
+    sweep after sweep at idle, so without them here the only place the ongoing
+    cost surfaces is a credit balance after the fact.
+    """
     store = _store(request)
     uri_filter = request.query.get("uri")
     if uri_filter:
@@ -630,7 +638,14 @@ async def list_sources(request: web.Request) -> web.Response:
             "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
             "ON s.id = c.source_id ORDER BY s.updated_at DESC"
         ).fetchall()
-    return web.json_response([dict(r) for r in rows])
+    sources = [dict(r) for r in rows]
+    # Aggregate scans plus a size stat per outstanding file, and the dashboard polls
+    # this list while a source is syncing -- offloaded so a large folder cannot stall
+    # chat and heartbeat processing on the event loop.
+    spend = await asyncio.to_thread(source_spend, store, sources)
+    for source in sources:
+        source["spend"] = spend.get(source["id"], {})
+    return web.json_response(sources)
 
 
 # Max wall-clock the native folder dialog may stay open before we give up.
