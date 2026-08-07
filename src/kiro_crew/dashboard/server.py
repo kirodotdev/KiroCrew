@@ -1373,6 +1373,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         manager = SshTunnelManager(
             registry,
             base_port=_cfg.instances.tunnel_base_port,
+            connect_timeout_secs=_cfg.instances.connect_timeout_secs,
             ssh_compression=_cfg.instances.ssh_compression,
             max_recovery_attempts=_cfg.instances.max_recovery_attempts,
             recover_backoff_max_secs=_cfg.instances.recover_backoff_max_secs,

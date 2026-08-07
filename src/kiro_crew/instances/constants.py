@@ -67,6 +67,27 @@ DEFAULT_RECOVER_BACKOFF_MAX_SECS: float = 30.0
 # case is ~MAX_RECOVERY_ATTEMPTS_CEILING * this (~8h).
 RECOVER_BACKOFF_MAX_CEILING_SECS: float = 300.0
 
+# How long (secs) to wait for the local forward port to start accepting
+# connections before declaring a connect attempt failed. A direct ``ssh -L``
+# needs only a TCP handshake, so 15s is generous for most hosts. However, hosts
+# behind a ProxyCommand (jump host, WSSH, corporate proxy) routinely spend
+# 12-16s on the proxy handshake alone before ssh even begins the forward, so
+# this timeout becomes the binding constraint. Exposed as a user-tunable via
+# ``kirocrew config set instances.connect_timeout_secs <value>`` so operators on
+# slow-proxy hosts can raise it without patching the installed package.
+DEFAULT_CONNECT_TIMEOUT_SECS: float = 15.0
+
+# SSM's ``session-manager-plugin`` completes a WebSocket handshake with the SSM
+# service before it binds the local port — routinely slower than a direct ssh
+# TCP connect. This higher default mirrors that reality. When the user supplies
+# an explicit ``connect_timeout_secs`` override, it wins for both transports.
+DEFAULT_SSM_CONNECT_TIMEOUT_SECS: float = 25.0
+
+# Upper bound (secs) on a user-configured instances.connect_timeout_secs. Keeps
+# a pathological value from making the connect path hang indefinitely. 120s is
+# generous enough for any realistic proxy chain while still bounding the wait.
+CONNECT_TIMEOUT_CEILING_SECS: float = 120.0
+
 # Proactively re-mint each instance's dashboard token at this fraction of its
 # TTL, before the 20h cap. 0.8 = refresh at 80% elapsed.
 DEFAULT_TOKEN_REFRESH_FRACTION: float = 0.8

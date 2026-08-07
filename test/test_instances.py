@@ -28,6 +28,7 @@ class TestConfig:
     def test_defaults_off_and_tunables(self):
         from kiro_crew.config.loader import InstancesConfig
         from kiro_crew.instances.constants import (
+            DEFAULT_CONNECT_TIMEOUT_SECS,
             DEFAULT_TUNNEL_BASE_PORT,
             DEFAULT_WARM_SET_CAP,
         )
@@ -36,6 +37,7 @@ class TestConfig:
         assert c.enabled is False
         assert c.warm_set_cap == DEFAULT_WARM_SET_CAP == 5
         assert c.tunnel_base_port == DEFAULT_TUNNEL_BASE_PORT == 7778
+        assert c.connect_timeout_secs == DEFAULT_CONNECT_TIMEOUT_SECS == 15.0
 
     def test_clamps_out_of_range(self):
         from kiro_crew.config.loader import InstancesConfig
@@ -54,6 +56,7 @@ class TestConfig:
             "warm_set_cap": 5,
             "tunnel_base_port": 7778,
             "ssh_compression": True,
+            "connect_timeout_secs": 15.0,
             "max_recovery_attempts": 8,
             "recover_backoff_max_secs": 30.0,
             "probe_failure_threshold": 3,
@@ -65,6 +68,7 @@ class TestConfig:
             "instances.warm_set_cap",
             "instances.tunnel_base_port",
             "instances.ssh_compression",
+            "instances.connect_timeout_secs",
             "instances.max_recovery_attempts",
             "instances.recover_backoff_max_secs",
             "instances.probe_failure_threshold",
@@ -137,6 +141,50 @@ class TestConfig:
             ).recover_backoff_max_secs
             == RECOVER_BACKOFF_MAX_CEILING_SECS
         )
+
+    def test_connect_timeout_default_and_clamps(self):
+        from kiro_crew.config.loader import InstancesConfig
+        from kiro_crew.instances.constants import (
+            CONNECT_TIMEOUT_CEILING_SECS,
+            DEFAULT_CONNECT_TIMEOUT_SECS,
+        )
+
+        # Default value matches the constant.
+        c = InstancesConfig()
+        assert c.connect_timeout_secs == DEFAULT_CONNECT_TIMEOUT_SECS == 15.0
+
+        # Explicit override is honored.
+        c = InstancesConfig(connect_timeout_secs=45.0)
+        assert c.connect_timeout_secs == 45.0
+
+        # Below 1 falls back to the default.
+        c = InstancesConfig(connect_timeout_secs=0.5)
+        assert c.connect_timeout_secs == DEFAULT_CONNECT_TIMEOUT_SECS
+
+        c = InstancesConfig(connect_timeout_secs=-10.0)
+        assert c.connect_timeout_secs == DEFAULT_CONNECT_TIMEOUT_SECS
+
+        # Above the ceiling is clamped.
+        assert CONNECT_TIMEOUT_CEILING_SECS == 120.0
+        c = InstancesConfig(connect_timeout_secs=999.0)
+        assert c.connect_timeout_secs == CONNECT_TIMEOUT_CEILING_SECS
+
+        # Boundary value itself is left untouched.
+        c = InstancesConfig(connect_timeout_secs=CONNECT_TIMEOUT_CEILING_SECS)
+        assert c.connect_timeout_secs == CONNECT_TIMEOUT_CEILING_SECS
+
+    def test_connect_timeout_parses_from_config_file(self, tmp_path, monkeypatch):
+        import json
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(
+            json.dumps({"instances": {"connect_timeout_secs": 45.0}})
+        )
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
+        cfg = KiroCrewConfig.load()
+        assert cfg.instances.connect_timeout_secs == 45.0
 
 
 # ── PortAllocator ───────────────────────────────────────────────────────────
@@ -2646,6 +2694,7 @@ class TestStartupRevive:
                 enabled=True,
                 tunnel_base_port=53400,
                 ssh_compression=False,
+                connect_timeout_secs=15.0,
                 max_recovery_attempts=8,
                 recover_backoff_max_secs=30.0,
                 probe_failure_threshold=3,
