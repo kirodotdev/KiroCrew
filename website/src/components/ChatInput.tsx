@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Play, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import { Toggle } from './ui'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -309,9 +309,12 @@ interface ChatInputProps {
   continuable?: boolean
   /**
    * True when the transcript SHOWS the last turn ending badly (unanswered user
-   * row, or a trailing error). Copy only: it picks between "the last turn was
-   * interrupted" and the neutral "keep going" wording, so the button never
-   * asserts a breakage it cannot see.
+   * row, or a trailing error). Picks between "the last turn was interrupted" and
+   * the neutral "keep going" wording, so the button never asserts a breakage it
+   * cannot see. NOT copy-only any more: `ChatPage` composes this into the
+   * `continuable` it passes, so on the dashboard it also decides whether the
+   * control appears at all. A caller may still pass `continuable` alone — the
+   * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
   onContinue?: () => void
@@ -983,12 +986,12 @@ function ChatInput({
   //
   // But ONLY when the transcript actually shows a broken turn. The default
   // placeholder is not dead space: it is the only surface that teaches the three
-  // sigils (`/command · @file · $skill`). Continue is now offered on EVERY idle
-  // slot holding a conversation, so overriding unconditionally would delete that
-  // hint permanently for any returning chat and leave it visible only in a
-  // brand-new one. A visibly-interrupted turn is rare and genuinely needs the
-  // explanation more than the hint; the steady state does not, and gets the ▶
-  // button plus its label instead.
+  // sigils (`/command · @file · $skill`), so overriding it unconditionally would
+  // delete that hint for every returning chat and leave it visible only in a
+  // brand-new one. On the dashboard the two conditions now coincide — ChatPage
+  // gates the control on the interruption itself — but this component is still
+  // callable with `continuable` alone, and in that case the hint survives and
+  // the labeled Resume button carries the affordance on its own.
   const continuePlaceholder = continuable && onContinue && continueIsRecovery
     ? i18nT('components.chatInput.turn_interrupted_press_continue')
     : ''
@@ -2650,23 +2653,39 @@ function ChatInput({
               {/*
                 Sixth state of this button. The first five are send / stop /
                 queue / steer / disabled; this one claims the ONE state that was
-                previously dead weight — an empty composer on an idle slot that
-                already holds a conversation. Pressing it hands the thread back
-                to the agent instead of sending nothing. The moment the user
-                types a character the arrow and the send action come back, so the
-                control never carries two meanings at once.
+                previously dead weight — an empty composer on a slot whose last
+                turn was cut off. Pressing it hands the thread back to the agent
+                instead of sending nothing. The moment the user types a character
+                the arrow and the send action come back, so the control never
+                carries two meanings at once.
+
+                Labeled, not an icon: this is the only control in the row whose
+                action a first-time user cannot infer from its glyph. A bare ▶
+                reads as "resume paused media", which is the wrong model — the
+                agent is not paused, it is being asked for another turn — and an
+                icon-only button puts that correction in a tooltip, which does
+                not exist on touch. The word carries it instead, and RotateCw
+                replaces Play so the glyph stops promising playback. Widening to
+                a pill is deliberate: at 32px round it was pixel-identical to
+                Send, so the two most consequential buttons in the composer
+                differed only by the symbol inside them.
+
+                The visible text is also the accessible name — no aria-label,
+                which would override the label a sighted user reads and break
+                WCAG 2.5.3 (Label in Name). `title` carries the longer
+                explanation for hover.
               */}
               {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
                 <button
-                  className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
                   disabled={continuing || disabled || optimizing || !connected}
-                  aria-label={continueLabel}
                   title={continueLabel}
                   data-testid="composer-continue"
                   {...offlineProps(connected, 'continue', continueLabel)}
                 >
-                  {continuing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                  {continuing ? <Loader2 size={14} className="animate-spin" /> : <RotateCw size={14} />}
+                  {i18nT('components.chatInput.resume')}
                 </button>
               ) : (
               <button

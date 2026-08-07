@@ -5503,7 +5503,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
-              continuable={continuable}
+              /* Composed with `interrupted`, matching the ErrorCard gate above.
+                 Availability alone would put a filled primary button on the
+                 composer of every idle chat that holds a conversation — an
+                 accent-filled control reads as "this is your next move", so on
+                 a slot that finished cleanly it advertises pending work that
+                 does not exist and the only thing distinguishing it from Send
+                 is a hover tooltip. `interrupted` is not merely the wording
+                 now: it is the reason the control exists at all. When nothing
+                 proves an interruption the composer falls back to the ordinary
+                 Send button, disabled while empty, like every other chat.
+
+                 The cost is a turn that died leaving no evidence — a hard kill
+                 after a mid-turn assistant segment already flushed, which is
+                 the one shape `_is_interrupted` cannot see. That slot loses its
+                 one-click nudge; typing anything still resumes it. Closing that
+                 hole needs a persisted turn-in-flight marker (backend), not a
+                 louder button here. */
+              continuable={continuable && interrupted}
               continueIsRecovery={interrupted}
               onContinue={handleContinue}
               continuing={continuing}

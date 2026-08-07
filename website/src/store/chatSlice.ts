@@ -1269,17 +1269,27 @@ export const selectContinuable = (state: RootState): boolean => {
 }
 
 /**
+ * True when *m* is the card recorded because the USER pressed Stop.
+ *
+ * Two forms exist and both are load-bearing: the websocket path sets `kind` AND
+ * `meta.kind` (see the stop_event branch in the message reducer), while a
+ * transcript rehydrated from disk carries only the JSON-encoded `cls` that
+ * `parse_cls_meta()` unpacks into `meta`. `ChatPage` and `ChatMessageList`
+ * already test both; this is the same predicate named once so a fourth caller
+ * cannot check only half of it.
+ */
+export const isStopEvent = (m: ChatMessage): boolean =>
+  m.kind === 'stop_event' || (m.meta as { kind?: string } | undefined)?.kind === 'stop_event'
+
+/**
  * True when the transcript SHOWS the last turn ending without the assistant
  * handing the floor back — the user's row is last, or an `error` row trails the
  * assistant's.
  *
- * Copy only. `selectContinuable` decides whether the button appears; this
- * decides what it says, so a slot that was visibly cut short can name that
- * ("the last turn was interrupted") while a slot that finished gets the neutral
- * "keep going" wording. Mirrors `_is_interrupted` in
- * `src/kiro_crew/dashboard/chat_handlers.py`, which makes the same split to pick
- * the continuation body handed to the model — the two must agree, or the button
- * promises one thing and the agent is told another.
+ * Gates the composer's Resume button (composed with `selectContinuable` in
+ * ChatPage) and selects the continuation body handed to the model. Mirrors
+ * `_is_interrupted` in `src/kiro_crew/dashboard/chat_handlers.py` — the two must
+ * agree, or the button promises one thing and the agent is told another.
  *
  * A false result means "nothing in the transcript proves an interruption", never
  * "the turn definitely finished": the force-quit case leaves no evidence.
@@ -1289,6 +1299,18 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
   let sawTrailingError = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
+    // A deliberate Stop ENDS the turn; it does not interrupt it. This must be
+    // tested before the user/assistant check, because pressing Stop before the
+    // reply produced any text leaves `[user, stop_event]` — shape-identical to
+    // "the gateway died before anything came back", which is what this scan
+    // would otherwise read it as. Without this branch the same visible action
+    // (pressing Stop) offered Resume or not depending purely on whether a
+    // segment had flushed first, i.e. on invisible timing the user cannot
+    // predict. The user chose to stop; the floor is theirs, so the composer
+    // shows Send. Reached only for the NEWEST turn's terminator — an older stop
+    // card deeper in history is never scanned, because a later user/assistant
+    // row returns first.
+    if (isStopEvent(m)) return false
     if (m.role === 'error') { sawTrailingError = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {

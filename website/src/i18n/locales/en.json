@@ -3004,6 +3004,7 @@
       "remove": "Remove",
       "resized": "RESIZED",
       "resized_to_fit_model_limits": "Resized to fit model limits",
+      "resume": "Resume",
       "review_in_panel": "Review in panel",
       "screenshot": "Screenshot",
       "send": "Send",
@@ -3018,7 +3019,7 @@
       "taking_longer_than_expected": "taking longer than expected",
       "total": "Total",
       "trust_reads": "Trust reads",
-      "turn_interrupted_press_continue": "Last turn was interrupted — press ▶ to continue, or just type",
+      "turn_interrupted_press_continue": "Last turn was interrupted — press Resume, or just type",
       "upload_file": "Upload file",
       "use_a_skill": "Use a skill",
       "used": "Used"

@@ -67,6 +67,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    parse_cls_meta,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance
@@ -1550,20 +1551,51 @@ def _has_conversation(slot: _ChatSlot) -> bool:
     return False
 
 
+def _is_stop_event(m: dict) -> bool:
+    """True when *m* is the card recorded because the user pressed Stop.
+
+    Three carriers, and the in-memory one is the easy miss: the stop is appended
+    as ``slot.append("system", stop_msg, stop_msg)`` with **no** ``meta=`` kwarg,
+    so ``_ChatSlot.append`` never creates a ``meta`` key and the discriminator
+    exists ONLY inside the JSON-encoded ``cls``/``content``. ``parse_cls_meta()``
+    is what unpacks it, and it runs on the way OUT to a client
+    (``_prepare_messages`` / ``_broadcast_chat_message``) — which is why the
+    frontend sees ``meta.kind`` while this module, reading the live window, does
+    not. Checking only ``kind``/``meta.kind`` here therefore matched a restored
+    row but never a freshly-stopped one, silently diverging from the frontend
+    mirror in exactly the case the two must agree on.
+
+    Mirrors ``isStopEvent`` in ``website/src/store/chatSlice.ts``.
+    """
+    if m.get("kind") == "stop_event":
+        return True
+    meta = m.get("meta") or {}
+    if meta.get("kind") == "stop_event":
+        return True
+    # Live window: the discriminator is still JSON inside `cls`.
+    parsed = parse_cls_meta(m.get("cls") or "")
+    return bool(parsed and parsed.get("kind") == "stop_event")
+
+
 def _is_interrupted(slot: _ChatSlot) -> bool:
     """True when the transcript shows a turn that ended without a reply.
 
-    Two shapes: the last conversational row is the USER's (nothing came back at
-    all — a gateway restart mid-turn leaves exactly this), or it is the
+    Two shapes qualify: the last conversational row is the USER's (nothing came
+    back at all — a gateway restart mid-turn leaves exactly this), or it is the
     ASSISTANT's but an error row follows it (the turn streamed partway then died,
     which is otherwise shape-identical to a clean completion).
 
-    No longer a gate — ``_has_conversation`` authorizes Continue and this only
-    selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
-    ``_MANUAL_CONTINUE_MSG``). A False result therefore means "as far as the
-    transcript shows, the last turn finished", NOT "there is nothing to do":
-    a force-quit or force-exit runs no ``finally``, so the error row that would
-    have proved the interruption was never written.
+    One shape is explicitly excluded: a trailing ``stop_event``. The user pressing
+    Stop is a deliberate ending, not an interruption, and stopping before the
+    reply emitted any text produces the same ``[user, ...]`` tail as a crash.
+
+    Still selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
+    ``_MANUAL_CONTINUE_MSG``), and on the dashboard it now also gates whether the
+    composer offers the control at all — see the ``continuable && interrupted``
+    composition in ``website/src/pages/ChatPage.tsx``. A False result means "as
+    far as the transcript shows, the last turn finished or was ended on purpose",
+    NOT "there is nothing to do": a force-quit runs no ``finally``, so the error
+    row that would have proved an interruption was never written.
 
     Deliberately does not distinguish "produced some output" from "produced
     none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the
@@ -1573,6 +1605,15 @@ def _is_interrupted(slot: _ChatSlot) -> bool:
     for m in reversed(slot.messages):
         role = m.get("role")
         meta = m.get("meta") or {}
+        # A deliberate Stop ENDS the turn; it does not interrupt it. Tested
+        # before the user/assistant branch because stopping before the reply
+        # emitted any text leaves ``[user, stop_event]`` -- shape-identical to
+        # "the gateway died before anything came back". See ``_is_stop_event``
+        # for why the discriminator has to be resolved from three carriers.
+        # Only the NEWEST turn's terminator reaches here -- an older stop card
+        # is never scanned, because a later user/assistant row returns first.
+        if _is_stop_event(m):
+            return False
         if role == "assistant" and meta.get("kind") == "compaction":
             continue
         if role in ("user", "assistant") and m.get("content"):
