@@ -7,6 +7,7 @@ import {
   ScrollText,
   Code2,
   Webhook,
+  ArrowDownToLine,
   ListChecks,
   Bot,
   Server,
@@ -79,6 +80,13 @@ const EXTRA_PAGES: readonly Omit<PageEntry, 'title'>[] = [
   // "Explore" accent link, not a rail row), so it must be listed here to
   // stay reachable from the palette.
   { key: 'apps', route: '/apps', icon: inlineIcon(LayoutGrid) },
+  // Inbound webhooks is `hiddenFromNav` too (reached from Settings → Webhooks),
+  // so the registry no longer offers it and the palette needs it from here.
+  // Distinct from the `hooks` entry below (the agent-hooks page) in BOTH title
+  // and icon: the two sit adjacent on a "hooks" query, and a shared glyph left
+  // the route as the only thing telling them apart. The inbound arrow also says
+  // which direction this one runs.
+  { key: 'webhooks', route: '/webhooks', icon: inlineIcon(ArrowDownToLine) },
   { key: 'logs', route: '/logs', icon: inlineIcon(ScrollText) },
   { key: 'developer', route: '/developer', icon: inlineIcon(Code2) },
   { key: 'hooks', route: '/hooks', icon: inlineIcon(Webhook) },
@@ -98,6 +106,10 @@ const EXTRA_PAGES: readonly Omit<PageEntry, 'title'>[] = [
  */
 const EXTRA_PAGE_TITLE_KEY: Record<string, string> = {
   apps: 'components.commandPalette.providers.pagesProvider.explore',
+  // Reuses strings that already exist in every catalog rather than adding new
+  // ones. Titled "Inbound webhooks", not "Webhooks", to stay distinguishable
+  // from the `hooks` entry (the agent-hooks page) that sits beside it.
+  webhooks: 'pages.settings.webhooksPanel.inbound_webhooks',
   logs: 'components.commandPalette.providers.pagesProvider.logs',
   developer: 'components.commandPalette.providers.pagesProvider.developer',
   hooks: 'components.commandPalette.providers.pagesProvider.hooks',

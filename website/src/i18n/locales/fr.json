@@ -205,8 +205,8 @@
         "createTitle": "Créer un pack",
         "descPlaceholder": "ex. un chat roux mignon, un robot pixel, un lapin tout doux…",
         "description": "Description du personnage",
-        "duplicateExtraName": "Deux clips ne peuvent pas porter le nom «\u202f{{name}}\u202f» — renomme d'abord l'un d'eux",
-        "reservedExtraName": "«\u202f{{name}}\u202f» est le nom d'un emplacement intégré — choisis un autre nom pour ce clip",
+        "duplicateExtraName": "Deux clips ne peuvent pas porter le nom « {{name}} » — renomme d'abord l'un d'eux",
+        "reservedExtraName": "« {{name}} » est le nom d'un emplacement intégré — choisis un autre nom pour ce clip",
         "editTitle": "Modifier le pack",
         "flipX": "Retourner à l’horizontale",
         "hint8152": "Joués de temps en temps, tout seuls. Ajoutez ce que vous voulez — une balade, une humeur, un salut.",
@@ -9770,6 +9770,16 @@
         "support": "Assistance",
         "blurb": "Quelque chose ne fonctionne pas ? Envoyez-nous un rapport de diagnostic — les secrets sont d’abord masqués dans les journaux.",
         "report_a_problem": "Signaler un problème"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhooks entrants",
+        "endpoint_status": "Point de terminaison",
+        "lets_an_outside_system_start_one_agent_turn": "Permet à un système externe — une tâche CI, un bot de revue, un script de déploiement — de lancer un tour d'agent en envoyant un message en POST avec un jeton d'accès.",
+        "manage_webhooks": "Gérer les webhooks",
+        "tokens_count_one": "{{count}} jeton d'accès",
+        "tokens_count_other": "{{count}} jetons d'accès",
+        "tokens_count_many": "{{count}} jetons d'accès",
+        "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
       }
     },
     "settingsPage": {
@@ -10389,6 +10399,10 @@
       "voice": {
         "description": "Paramètres de synthèse vocale et de reconnaissance vocale (dictée)",
         "label": "Voix"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Permettre à un système externe de lancer un tour d'agent"
       }
     }
   },

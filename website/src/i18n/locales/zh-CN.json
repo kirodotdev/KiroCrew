@@ -1795,8 +1795,8 @@
         "createTitle": "新建外观包",
         "descPlaceholder": "例如：一只可爱的橘猫、一个像素机器人、一只毛茸茸的兔子……",
         "description": "角色描述",
-        "duplicateExtraName": "两个片段不能用相同的名称\u201c{{name}}\u201d — 先重命名其中一个",
-        "reservedExtraName": "\u201c{{name}}\u201d是内置槽位名称 — 为这个片段选择其他名称",
+        "duplicateExtraName": "两个片段不能用相同的名称“{{name}}” — 先重命名其中一个",
+        "reservedExtraName": "“{{name}}”是内置槽位名称 — 为这个片段选择其他名称",
         "editTitle": "编辑外观包",
         "flipX": "水平翻转",
         "hint8152": "偶尔会自己播放。想加什么都行 — 散步、心情、挥手。",
@@ -9693,6 +9693,14 @@
         "support": "支持",
         "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",
         "report_a_problem": "反馈问题"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "入站 webhook",
+        "endpoint_status": "端点",
+        "lets_an_outside_system_start_one_agent_turn": "让外部系统——CI 任务、审查机器人、部署脚本——通过 POST 发送带访问令牌的消息，启动一次助手轮次。",
+        "manage_webhooks": "管理 webhook",
+        "tokens_count_other": "{{count}} 个访问令牌",
+        "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
       }
     },
     "settingsPage": {
@@ -10192,6 +10200,10 @@
       "voice": {
         "description": "文字转语音与语音转文字（听写）设置",
         "label": "语音"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "让外部系统启动一次助手轮次"
       }
     }
   },

@@ -205,8 +205,8 @@
         "createTitle": "Neues Paket erstellen",
         "descPlaceholder": "z. B. eine niedliche orange Katze, ein Pixel-Roboter, ein flauschiger Hase …",
         "description": "Charakterbeschreibung",
-        "duplicateExtraName": "Zwei Clips können nicht denselben Namen „{{name}}\u201c tragen — benenne zuerst einen um",
-        "reservedExtraName": "„{{name}}\u201c ist der Name eines integrierten Slots — wähle einen anderen Namen für diesen Clip",
+        "duplicateExtraName": "Zwei Clips können nicht denselben Namen „{{name}}“ tragen — benenne zuerst einen um",
+        "reservedExtraName": "„{{name}}“ ist der Name eines integrierten Slots — wähle einen anderen Namen für diesen Clip",
         "editTitle": "Paket bearbeiten",
         "flipX": "Horizontal spiegeln",
         "hint8152": "Wird ab und zu von selbst abgespielt. Füge hinzu, was du möchtest – ein Umherwandern, eine Stimmung, ein Winken.",
@@ -9784,6 +9784,15 @@
         "support": "Support",
         "blurb": "Etwas funktioniert nicht? Senden Sie uns einen Diagnosebericht — Protokolle werden zuvor von Geheimnissen befreit.",
         "report_a_problem": "Problem melden"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Eingehende Webhooks",
+        "endpoint_status": "Endpunkt",
+        "lets_an_outside_system_start_one_agent_turn": "Ermöglicht es einem externen System – einem CI-Job, einem Review-Bot, einem Deploy-Skript –, einen Agentendurchlauf zu starten, indem es eine Nachricht mit einem Zugriffstoken per POST sendet.",
+        "manage_webhooks": "Webhooks verwalten",
+        "tokens_count_one": "{{count}} Zugriffstoken",
+        "tokens_count_other": "{{count}} Zugriffstoken",
+        "could_not_read_webhook_status": "Webhook-Status konnte nicht gelesen werden — prüfe, ob das Gateway läuft"
       }
     },
     "settingsPage": {
@@ -10290,6 +10299,10 @@
       "voice": {
         "description": "Einstellungen für Text-zu-Sprache und Sprache-zu-Text (Diktat)",
         "label": "Sprache"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Externes System einen Agentendurchlauf starten lassen"
       }
     }
   },

@@ -78,6 +78,20 @@ describe('createPagesProvider — registry + extras', () => {
     expect(spy).toHaveBeenCalledWith('/hooks')
   })
 
+  it('keeps the hiddenFromNav Webhooks surface reachable from the palette', async () => {
+    // Regression: `hiddenFromNav: true` drops the surface from
+    // `getBuiltinSurfaces()`, so without an EXTRA_PAGES entry typing "webhooks"
+    // returned nothing and Settings was the only way in.
+    const { nav, spy } = navigate()
+    const p = createPagesProvider(nav)
+
+    const arr = await run(p, 'webhooks')
+    const hit = arr.find((r) => r.subtitle === '/webhooks')
+    expect(hit).toBeDefined()
+    hit!.onActivate()
+    expect(spy).toHaveBeenCalledWith('/webhooks')
+  })
+
   it('dedupes by route with the registry winning over EXTRA_PAGES', async () => {
     const { nav } = navigate()
     const p = createPagesProvider(nav)

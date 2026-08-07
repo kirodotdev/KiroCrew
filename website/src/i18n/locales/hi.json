@@ -9760,6 +9760,15 @@
         "support": "सहायता",
         "blurb": "कुछ काम नहीं कर रहा? हमें डायग्नोस्टिक रिपोर्ट भेजें — लॉग से सीक्रेट पहले ही हटा दिए जाते हैं।",
         "report_a_problem": "समस्या रिपोर्ट करें"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "इनबाउंड webhooks",
+        "endpoint_status": "एंडपॉइंट",
+        "lets_an_outside_system_start_one_agent_turn": "किसी बाहरी सिस्टम — कोई CI जॉब, रिव्यू बॉट, डिप्लॉय स्क्रिप्ट — को ऐक्सेस टोकन के साथ मैसेज POST करके एक एजेंट टर्न शुरू करने देता है।",
+        "manage_webhooks": "Webhooks प्रबंधन",
+        "tokens_count_one": "{{count}} ऐक्सेस टोकन",
+        "tokens_count_other": "{{count}} ऐक्सेस टोकन",
+        "could_not_read_webhook_status": "webhook स्थिति नहीं पढ़ी जा सकी — देखो कि गेटवे चल रहा है"
       }
     },
     "settingsPage": {
@@ -10372,6 +10381,10 @@
       "voice": {
         "description": "टेक्स्ट-टू-स्पीच और स्पीच-टू-टेक्स्ट (डिक्टेशन) सेटिंग्स",
         "label": "वॉइस"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "किसी बाहरी सिस्टम को एक एजेंट टर्न शुरू करने दो"
       }
     }
   },

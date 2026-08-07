@@ -9760,6 +9760,15 @@
         "support": "সহায়তা",
         "blurb": "কিছু কাজ করছে না? আমাদের একটি ডায়াগনস্টিক রিপোর্ট পাঠান — লগ থেকে সিক্রেট আগেই মুছে ফেলা হয়।",
         "report_a_problem": "সমস্যা জানান"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "ইনবাউন্ড webhook",
+        "endpoint_status": "এন্ডপয়েন্ট",
+        "lets_an_outside_system_start_one_agent_turn": "বাইরের কোনো সিস্টেমকে — একটি CI জব, একটি রিভিউ বট, একটি ডিপ্লয় স্ক্রিপ্ট — অ্যাক্সেস টোকেন সহ একটি বার্তা POST করে এজেন্টের একটি পালা শুরু করতে দেয়।",
+        "manage_webhooks": "Webhook পরিচালনা করুন",
+        "tokens_count_one": "{{count}}টি অ্যাক্সেস টোকেন",
+        "tokens_count_other": "{{count}}টি অ্যাক্সেস টোকেন",
+        "could_not_read_webhook_status": "webhook স্ট্যাটাস পড়া যায়নি — দেখো গেটওয়ে চলছে কিনা"
       }
     },
     "settingsPage": {
@@ -10372,6 +10381,10 @@
       "voice": {
         "description": "টেক্সট-টু-স্পিচ এবং স্পিচ-টু-টেক্সট (ডিকটেশন) সেটিংস",
         "label": "ভয়েস"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "বাইরের কোনো সিস্টেমকে এজেন্টের একটি পালা শুরু করতে দিন"
       }
     }
   },

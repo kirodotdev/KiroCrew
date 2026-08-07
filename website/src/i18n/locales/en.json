@@ -6408,6 +6408,15 @@
         "wechat_login_qr_code": "WeChat login QR code",
         "who_can_message_the_bot": "Who can message the bot",
         "wxid": "wxid_…"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Inbound webhooks",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Lets an outside system — a CI job, a review bot, a deploy script — start one agent turn by POSTing a message with an access token.",
+        "manage_webhooks": "Manage webhooks",
+        "tokens_count_one": "{{count}} access token",
+        "tokens_count_other": "{{count}} access tokens",
+        "could_not_read_webhook_status": "Could not read webhook status — check that the gateway is running"
       }
     },
     "settingsPage": {
@@ -6907,6 +6916,14 @@
       "unattributed": "Unattributed",
       "unattributed_hint": "Agent runtimes alive on this machine that this gateway does not own — a stale runtime from a previous gateway generation, or a running pod (a separate gateway with its own data home).",
       "uptime": "Uptime"
+    }
+  },
+  "settings": {
+    "tabs": {
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Let an outside system start one agent turn"
+      }
     }
   }
 }

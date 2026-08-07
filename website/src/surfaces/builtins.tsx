@@ -83,8 +83,11 @@ registerBuiltinSurface({
 })
 
 // Inbound webhooks: token store, registered contexts, and run history for
-// POST /api/hooks/agent. A Main-group destination because it is an always-on
-// gateway capability, not an installable app.
+// POST /api/hooks/agent. Reached from Settings → Webhooks rather than the rail:
+// it is operator configuration touched once at setup, not a daily destination,
+// and a top-level slot overstated it next to Sessions and Schedule. The route
+// stays registered, so bookmarks and the command palette still resolve it
+// (`pagesProvider` EXTRA_PAGES) — only the rail item goes.
 registerBuiltinSurface({
   navId: 'webhooks',
   route: '/webhooks',
@@ -92,6 +95,7 @@ registerBuiltinSurface({
   labelKey: 'nav.webhooks',
   icon: <Webhook size={16} />,
   group: surfaceMachineValue('Main'),
+  hiddenFromNav: true,
 })
 
 // ── Apps ───────────────────────────────────────────────────────────────────

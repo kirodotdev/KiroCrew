@@ -9851,6 +9851,16 @@
         "support": "Soporte",
         "blurb": "¿Algo no funciona? Envíanos un informe de diagnóstico — antes se eliminan los secretos de los registros.",
         "report_a_problem": "Reportar un problema"
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhooks entrantes",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Permite que un sistema externo —una tarea de CI, un bot de revisión, un script de despliegue— inicie un turno del agente enviando por POST un mensaje con un token de acceso.",
+        "manage_webhooks": "Gestionar webhooks",
+        "tokens_count_one": "{{count}} token de acceso",
+        "tokens_count_other": "{{count}} tokens de acceso",
+        "tokens_count_many": "{{count}} tokens de acceso",
+        "could_not_read_webhook_status": "No se pudo leer el estado del webhook — comprueba que el gateway esté en ejecución"
       }
     },
     "settingsPage": {
@@ -10470,6 +10480,10 @@
       "voice": {
         "description": "Ajustes de texto a voz y de voz a texto (dictado)",
         "label": "Voz"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Permite que un sistema externo inicie un turno del agente"
       }
     }
   },
