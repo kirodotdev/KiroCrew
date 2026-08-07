@@ -2412,12 +2412,14 @@
       },
       "chat": {
         "ask_placeholder": "Frag {{name}}...",
+        "bind_failed": "Der Agent des Haustiers konnte nicht verbunden werden – bitte gleich noch einmal versuchen.",
         "edit_cancel": "Abbrechen",
         "edit_mode": "Bearbeiten — zum Ersetzen senden oder abbrechen",
         "load_earlier": "Ältere Nachrichten laden",
         "scroll_bottom": "Zum Neuesten springen",
         "send": "Senden",
         "send_failed": "Senden fehlgeschlagen – bitte Verbindung prüfen und erneut versuchen.",
+        "slot_occupied": "Der Chat-Slot des Haustiers enthält bereits eine andere Unterhaltung – bitte den Slot leeren, um die Verbindung wiederherzustellen.",
         "stop": "Stopp",
         "what_is_this": "Was ist das?"
       },

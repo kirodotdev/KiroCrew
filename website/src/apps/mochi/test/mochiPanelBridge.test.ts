@@ -264,10 +264,137 @@ describe('mochi panelBridge chat transport', () => {
       .mockResolvedValueOnce({ ok: false, status: 503 }) // ensureSlot fails
       .mockResolvedValue({ ok: true, json: async () => ({ agent: 'mochi' }) })
     vi.stubGlobal('fetch', fetchMock)
-    await bridge.sendMessage('one')
+    // A failed slot-create must ABORT the send (same invariant as the rebind
+    // branches): a bare return fell through to the chat POST, so the turn
+    // landed in an unbound slot and the ambient dashboard agent answered.
+    await expect(bridge.sendMessage('one')).rejects.toThrow(/could not create the pet slot/)
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+    // The latch never tripped, so the next send retries the bind and goes through.
     await bridge.sendMessage('two')
     const createCalls = fetchMock.mock.calls.filter((c) => c[0] === '/api/chat/slots')
     expect(createCalls.length).toBeGreaterThanOrEqual(2)
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(true)
+  })
+
+  it('refuses to adopt an empty-agent slot that has a turn running', async () => {
+    // Adoption rebinds, and a rebind resets the slot session: rebinding a busy
+    // slot would tear down the turn already streaming in it. The endpoint
+    // enforces this atomically (409 `slot_running`, covered below), but the
+    // `running` flag rides along on the get_or_create response, so ensureSlot
+    // refuses BEFORE the rebind POST as a free fast path — no extra request,
+    // no round-trip wasted on a refusal we can already predict.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', running: true }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(bridge.sendMessage('hi')).rejects.toThrow(/busy/)
+    // Neither the rebind nor the chat turn was posted.
+    expect(
+      fetchMock.mock.calls.some((c) => c[0] === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`),
+    ).toBe(false)
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+
+    // Once the running turn ends, the retry adopts and sends (latch never tripped).
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', running: false }) })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, agent: 'mochi' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    await bridge.sendMessage('hi again')
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(true)
+  })
+
+  it('surfaces the server-side busy refusal of the rebind as the busy bind error', async () => {
+    // The client's `running` check reads a lagging snapshot: a turn can start
+    // between the get_or_create response and the rebind POST. The endpoint
+    // re-checks atomically under the slot's turn lock and refuses with 409
+    // `slot_running` instead of tearing the turn down — ensureSlot must
+    // surface that as the same "busy, retry in a moment" bind error as the
+    // fast path (NOT the generic bind failure), abort the send, and leave the
+    // latch false so the next send retries.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        // Snapshot reads idle — the race window the server guard closes.
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', running: false }) })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({ error: 'slot is running', code: 'slot_running' }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const err = await bridge.sendMessage('hi').catch((e: unknown) => e)
+    expect(bridge.isMochiBindError(err)).toBe(true)
+    expect(String(err)).toMatch(/busy/)
+    // The refused send never reached the chat POST.
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+
+    // Once the turn ends the retry adopts and sends (latch never tripped).
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', running: false }) })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, agent: 'mochi' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    await bridge.sendMessage('hi again')
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(true)
+  })
+
+  it('keeps non-busy rebind refusals on the generic bind error', async () => {
+    // Only the structured 409 `slot_running` refusal means "busy, retry in a
+    // moment"; any other rebind failure (here a 409 without the code and an
+    // unparseable body) must stay on the generic bind error so a real binding
+    // defect is not misreported as transient busyness.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', running: false }) })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => {
+            throw new Error('no body')
+          },
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(bridge.sendMessage('hi')).rejects.toThrow(/could not bind the pet agent/)
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+  })
+
+  it('classifies every ensureSlot failure as a bind error, distinct from transport failures', async () => {
+    // ChatPanel keys its error string off this classification: bind failures say
+    // "couldn't connect the pet's agent", NOT "check your connection" — blaming
+    // the network for a server-side binding refusal sends the user debugging
+    // the wrong thing.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => ({ agent: '', running: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const err = await bridge.sendMessage('hi').catch((e: unknown) => e)
+    expect(bridge.isMochiBindError(err)).toBe(true)
+    // A plain transport error is NOT a bind error.
+    expect(bridge.isMochiBindError(new TypeError('Failed to fetch'))).toBe(false)
   })
 
   it('refuses to send when the slot is owned by another agent', async () => {
@@ -279,6 +406,152 @@ describe('mochi panelBridge chat transport', () => {
     vi.stubGlobal('fetch', fetchMock)
     await expect(bridge.sendMessage('hi')).rejects.toThrow(/another agent/)
     // The chat turn was NOT posted into the foreign slot.
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+  })
+
+  it('adopts a pre-existing mochi slot whose agent binding is empty', async () => {
+    // A `mochi` slot persisted before the agent-binding feature (or restored from
+    // open_slots.json at boot) comes back from get_or_create with an EMPTY agent,
+    // so the ambient dashboard default answers the pet — the reported bug. Because
+    // it is OUR OWN slot (not a foreign named agent), ensureSlot must ADOPT it via
+    // the explicit rebind endpoint rather than refusing, then send.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '' }) })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, agent: 'mochi' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await bridge.sendMessage('hi')
+
+    const rebind = fetchMock.mock.calls.find(
+      (c) => c[0] === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`,
+    )!
+    expect(rebind).toBeTruthy()
+    expect(rebind[1].method).toBe('POST')
+    expect(JSON.parse(rebind[1].body)).toEqual({ agent: bridge.MOCHI_AGENT })
+    // The chat turn WAS posted, into the now-rebound slot.
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(true)
+  })
+
+  it('REFUSES a POPULATED empty-agent slot — never deletes, never rebinds, never sends', async () => {
+    // A populated empty-agent slot carries a foreign transcript (rebinding
+    // would replay it into the pet's fresh session), and the prior answer —
+    // DELETE + recreate — was unsafe: the `running` check is a lagging
+    // snapshot, so a turn another tab started after it would be cancelled
+    // outright by the DELETE. GPT round-9: refuse instead of deleting.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        // The persisted, populated, unbound slot.
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', messages: 7 }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(bridge.sendMessage('hi')).rejects.toThrow(/occupied by an existing conversation/)
+    // No DELETE, no recreate, no rebind, no turn posted.
+    expect(
+      fetchMock.mock.calls.some((c) => c[1] && (c[1] as RequestInit).method === 'DELETE'),
+    ).toBe(false)
+    expect(fetchMock.mock.calls.filter((c) => c[0] === '/api/chat/slots').length).toBe(1)
+    expect(
+      fetchMock.mock.calls.some((c) => c[0] === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`),
+    ).toBe(false)
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+  })
+
+  it('classifies the occupied refusal distinctly from transient bind errors', async () => {
+    // ChatPanel keys a SEPARATE string off this classification: the occupied
+    // refusal is permanent until the user clears the populated slot, so the
+    // bind_failed "try again in a moment" copy would loop the user on advice
+    // that can never work (Design/UX watch item on this PR).
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '', messages: 7 }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const err = await bridge.sendMessage('hi').catch((e: unknown) => e)
+    // Still a bind error (the name is the classification key)…
+    expect(bridge.isMochiBindError(err)).toBe(true)
+    // …but carrying the occupied discriminator.
+    expect(bridge.isMochiSlotOccupiedError(err)).toBe(true)
+
+    // Transient refusals do NOT carry it: a busy slot is genuinely retryable.
+    const busyMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => ({ agent: '', running: true }) })
+    vi.stubGlobal('fetch', busyMock)
+    const busyErr = await bridge.sendMessage('hi').catch((e: unknown) => e)
+    expect(bridge.isMochiBindError(busyErr)).toBe(true)
+    expect(bridge.isMochiSlotOccupiedError(busyErr)).toBe(false)
+    // Nor do plain transport errors.
+    expect(bridge.isMochiSlotOccupiedError(new TypeError('Failed to fetch'))).toBe(false)
+  })
+
+  it('the populated refusal keeps the latch false so the next send retries adoption', async () => {
+    // First send refuses on the populated slot; once the slot is empty (user
+    // cleared it), the next send must re-run the adoption from the top and
+    // bind normally — the refusal must not latch the bridge shut.
+    let slotCalls = 0
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        slotCalls += 1
+        // Populated on the first adoption attempt, empty afterwards.
+        return Promise.resolve({
+          ok: true,
+          json: async () => (slotCalls === 1 ? { agent: '', messages: 7 } : { agent: '', messages: 0 }),
+        })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, agent: 'mochi' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(bridge.sendMessage('hi')).rejects.toThrow(/occupied by an existing conversation/)
+    await bridge.sendMessage('hi again')
+    expect(
+      fetchMock.mock.calls.some((c) => c[0] === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`),
+    ).toBe(true)
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(true)
+  })
+
+  it('does not send when adopting an empty-agent slot fails to rebind', async () => {
+    // If the rebind POST fails, ensureSlot must THROW so the send aborts — a bare
+    // return left the flag false but sendMessage still POSTed the turn to the
+    // unbound slot, where the ambient dashboard agent answered the pet. The throw
+    // also keeps the flag false, so the next send retries the bind.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/api/chat/slots') {
+        return Promise.resolve({ ok: true, json: async () => ({ agent: '' }) })
+      }
+      if (url === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`) {
+        return Promise.resolve({ ok: false, status: 503 })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(bridge.sendMessage('hi')).rejects.toThrow(/could not bind the pet agent/)
+    // The turn was NOT posted to the unbound slot.
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
+
+    // A second send retries the bind (flag never latched).
+    await expect(bridge.sendMessage('hi again')).rejects.toThrow(/could not bind the pet agent/)
+    const rebinds = fetchMock.mock.calls.filter(
+      (c) => c[0] === `/api/chat/slots/${bridge.MOCHI_SLOT}/agent`,
+    )
+    expect(rebinds.length).toBe(2)
+    // Still no chat turn posted after the retry either.
     expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat?ws=1')).toBe(false)
   })
 

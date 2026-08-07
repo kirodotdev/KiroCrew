@@ -2456,12 +2456,14 @@
       },
       "chat": {
         "ask_placeholder": "Pergunte ao {{name}}...",
+        "bind_failed": "Não foi possível ligar o agente do pet — tenta novamente daqui a pouco.",
         "edit_cancel": "Cancelar",
         "edit_mode": "Editando — envie para substituir ou cancele",
         "load_earlier": "Carregar mensagens anteriores",
         "scroll_bottom": "Ir para as mais recentes",
         "send": "Enviar",
         "send_failed": "Não foi possível enviar — verifica a ligação e tenta novamente.",
+        "slot_occupied": "O espaço de chat do pet contém outra conversa — limpe-o para reconectar.",
         "stop": "Parar",
         "what_is_this": "O que é isto?"
       },

@@ -326,3 +326,45 @@ class TestAgentAuthoredEventsAreRedacted:
             assert description is None, "custom pack description must not reach the persona"
         finally:
             await hooks.on_shutdown(ctx)
+
+
+class TestStartupPromptOrdering:
+    """The pet's persona reaches its agent only if the rendered prompt files are
+    on disk BEFORE ``apply_policy`` materializes the agent configs.
+
+    ``bridges._apply_agent_prompt`` pins the prompt "ABSOLUTE and EXISTING only":
+    a prompt whose file does not yet exist is dropped with a warning ("prompt file
+    does not exist, ignoring"), so the materialized ``mochi--mochi.json`` carries
+    no ``prompt`` and the pet answers as the generic default agent until a later
+    restart. The drop itself is already covered by
+    ``test_mochi_agent_prompt.py::TestApplyAgentPrompt`` — the untested gap this
+    pins is the ``on_startup`` ORDERING that used to run ``apply_policy`` (which
+    reads the files) BEFORE ``MochiRuntime.__init__`` rendered them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_prompt_files_exist_before_policy_is_applied(self, tmp_path, monkeypatch):
+        from kiro_crew.apps.builtins.mochi import soul_loader
+
+        ctx = _Ctx(tmp_path)
+        seen: dict[str, bool] = {}
+        real_apply = hooks.apply_policy
+
+        def _spy(data_dir: Any, settings: Any) -> Any:
+            # Capture whether BOTH generated prompt files are on disk at the exact
+            # moment the agent configs are (re)materialized. Before the fix
+            # apply_policy ran first, so neither existed and the persona was
+            # silently dropped from the materialized config.
+            seen["chat"] = soul_loader.rendered_prompt_path(Path(data_dir)).is_file()
+            seen["bg"] = soul_loader.rendered_bg_prompt_path(Path(data_dir)).is_file()
+            return real_apply(data_dir, settings)
+
+        monkeypatch.setattr(hooks, "apply_policy", _spy)
+        await hooks.on_startup(ctx)
+        try:
+            assert seen == {"chat": True, "bg": True}
+            # And the files really are the rendered persona documents on disk.
+            assert soul_loader.rendered_prompt_path(tmp_path).is_file()
+            assert soul_loader.rendered_bg_prompt_path(tmp_path).is_file()
+        finally:
+            await hooks.on_shutdown(ctx)

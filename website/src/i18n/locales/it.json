@@ -2456,12 +2456,14 @@
       },
       "chat": {
         "ask_placeholder": "Chiedi a {{name}}...",
+        "bind_failed": "Impossibile collegare l'agente dell'animale — riprova tra un attimo.",
         "edit_cancel": "Annulla",
         "edit_mode": "Modifica — invia per sostituire o annulla",
         "load_earlier": "Carica messaggi precedenti",
         "scroll_bottom": "Vai agli ultimi",
         "send": "Invia",
         "send_failed": "Invio non riuscito — controlla la connessione e riprova.",
+        "slot_occupied": "Lo slot di chat dell'animale contiene un'altra conversazione — svuotalo per riconnetterti.",
         "stop": "Ferma",
         "what_is_this": "Che cos'è?"
       },

@@ -2456,12 +2456,14 @@
       },
       "chat": {
         "ask_placeholder": "Pregúntale a {{name}}...",
+        "bind_failed": "No se pudo conectar el agente de la mascota — inténtalo de nuevo en un momento.",
         "edit_cancel": "Cancelar",
         "edit_mode": "Editando — envía para reemplazar o cancela",
         "load_earlier": "Cargar mensajes anteriores",
         "scroll_bottom": "Ir a lo último",
         "send": "Enviar",
         "send_failed": "No se pudo enviar — comprueba la conexión e inténtalo de nuevo.",
+        "slot_occupied": "El espacio de chat de la mascota contiene otra conversación — vacíalo para volver a conectar.",
         "stop": "Detener",
         "what_is_this": "¿Qué es esto?"
       },

@@ -1279,7 +1279,11 @@ export default function App() {
       const currentAgent = currentSlot?.agent || defaultAgent
       const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
       const nextIdx = (idx + 1) % installedAgents.length
+      // The endpoint refuses to rebind a slot with a turn in flight (409
+      // slot_running) instead of tearing the turn down — a cycle landing
+      // mid-turn is now a no-op, not an unhandled rejection.
       api.chatSlotAgent(activeSlot, installedAgents[nextIdx].name)
+        .catch((e) => console.error('[App] cycleAgent failed', e))
     },
     onCyclePrevAgent: () => {
       const slots = store.getState().dashboard.slots
@@ -1289,7 +1293,9 @@ export default function App() {
       const currentAgent = currentSlot?.agent || defaultAgent
       const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
       const prevIdx = (idx - 1 + installedAgents.length) % installedAgents.length
+      // Same busy-refusal handling as onCycleAgent above.
       api.chatSlotAgent(activeSlot, installedAgents[prevIdx].name)
+        .catch((e) => console.error('[App] cyclePrevAgent failed', e))
     },
     onCycleReasoningEffort: () => {
       const activeSlot = store.getState().chat.activeSlot

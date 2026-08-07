@@ -2456,12 +2456,14 @@
       },
       "chat": {
         "ask_placeholder": "Demander à {{name}}...",
+        "bind_failed": "Impossible de connecter l'agent du compagnon — réessaie dans un instant.",
         "edit_cancel": "Annuler",
         "edit_mode": "Modification — envoyez pour remplacer, ou annulez",
         "load_earlier": "Charger les messages précédents",
         "scroll_bottom": "Aller au plus récent",
         "send": "Envoyer",
         "send_failed": "Échec de l'envoi — vérifie ta connexion et réessaie.",
+        "slot_occupied": "L'espace de discussion du compagnon contient une autre conversation — videz-le pour vous reconnecter.",
         "stop": "Arrêter",
         "what_is_this": "Qu'est-ce que c'est ?"
       },

@@ -574,6 +574,16 @@ export default [
             exclude: [
               // Diagnostics and dev-only output.
               '^console\\.\\w+$', '^(Type)?Error$', '^URL(SearchParams)?$',
+              // `MochiBindError` (apps/mochi/panel/panelBridge.ts): same class as
+              // `Error` one entry up — the message is a thrown diagnostic, never
+              // rendered. ChatPanel classifies the error BY NAME (`isMochiBindError`)
+              // and shows the localized `apps.mochi.chat.bind_failed` catalog string;
+              // `.message` exists for the console and bug reports. Most of its call
+              // sites already slipped through the lowercase-diagnostic words shape
+              // above, which was exemption by accident of punctuation — a comma or a
+              // quoted slot name flipped a message from exempt to reported. Naming
+              // the callee puts the exemption where the argument actually lives.
+              '^MochiBindError$',
               // `popoutController.ts`'s two console shims: `logDebug` is
               // `console.debug` and `logWarn` is `console.warn`, both behind a debug
               // flag. Identical class to `^console\.\w+$` one line up — the argument

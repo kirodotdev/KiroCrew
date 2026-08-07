@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -4655,6 +4656,546 @@ class TestRuntimeWiring:
         assert (
             meta.get("agent") == "new-agent"
         ), f"expected new-agent in metadata, got {meta.get('agent')!r}"
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_refuses_running_slot(self, tmp_path, monkeypatch):
+        """A rebind against a slot with a turn in flight is refused with 409.
+
+        The reset this endpoint performs tears down the slot's live session, so
+        without the guard a rebind racing a turn kills that turn mid-stream —
+        the caller's `running` view is a lagging snapshot, so only this
+        endpoint can check atomically with the reset decision. The refusal must
+        be structured (`code: slot_running`) so clients can distinguish "busy,
+        retry later" from a binding defect, and must leave the slot untouched:
+        no agent mutation, no session reset.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "existing-agent"
+        state.sessions.reset = AsyncMock()
+
+        # A pending future is the same turn-in-flight signal the runner
+        # maintains: `slot.running` derives from `slot.task` not being done.
+        slot.task = asyncio.get_running_loop().create_future()
+        try:
+            async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["code"] == "slot_running"
+                assert data["error"] == "slot is running"
+        finally:
+            slot.task.cancel()
+            slot.task = None
+
+        # The refusal is a pure no-op: binding unchanged, session not reset,
+        # rebind marker never flipped (set only AFTER the running re-check).
+        assert slot.agent == "existing-agent"
+        assert slot._rebind_in_progress is False
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_rolls_back_binding_on_reset_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed rebind restores the prior binding before the queue drains.
+
+        The caller gets a 500 and nothing was persisted, so the OLD binding is
+        the committed truth — but the handler's outer ``finally`` still drains
+        messages queued during the rebind. Without rollback they would
+        dispatch under the half-applied NEW agent the caller was told failed.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "existing-agent"
+        prior_workspace = slot.workspace
+        prior_project = slot.project
+        state.sessions.reset = AsyncMock(side_effect=RuntimeError("provider shutdown failed"))
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+            assert resp.status == 500
+
+        # The committed binding is authoritative again — a queued turn drains
+        # under it, not under the never-persisted "new-agent".
+        assert slot.agent == "existing-agent"
+        assert slot.workspace == prior_workspace
+        assert slot.project == prior_project
+        assert slot._rebind_in_progress is False
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_serializes_persist_with_rebind(
+        self, tmp_path, monkeypatch
+    ):
+        """Rapid rebinds persist in binding order — disk matches the last binding.
+
+        The binding persist runs INSIDE the rebind critical section, so a second
+        rebind cannot enter until the first one's metadata write has landed.
+        Before this, the persist ran after ``slot._lock`` released: two rapid
+        successful rebinds raced their worker-thread writes, the newer rebind's
+        write could acquire the history lock first and the older one land last,
+        and a gateway restart then restored the stale agent. Modeled here by
+        delaying the FIRST persist: the second rebind is dispatched only once
+        the first is provably inside its persist, so without the serialization
+        the slow "agent-a" write overtakes "agent-b" on disk.
+
+        Also pins the persist PAYLOAD: the critical section commits a
+        three-field binding (agent, workspace, project), so all three must land
+        in the same metadata update. Persisting the agent alone left stale
+        workspace/project in the merged metadata — a restart then restored the
+        NEW agent combined with the OLD context. The stale values seeded below
+        model a prior binding's persisted workspace/project.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.reset = AsyncMock()
+
+        history_key = "dashboard:s1"
+        state.conversation_log.append(history_key, "user", "hi", agent="old-agent")
+        # A prior binding's persisted context: the rebind's payload must
+        # overwrite these, or a restart recombines them with the new agent.
+        state.conversation_log.update_metadata(
+            history_key, {"workspace": "stale-ws", "project": "/stale/project"}
+        )
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+
+        real_update = state.conversation_log.update_metadata
+        first_persist_entered = threading.Event()
+        calls: list[dict] = []
+
+        def delayed_update(key: str, fields: dict) -> None:
+            calls.append(fields)
+            if len(calls) == 1:
+                first_persist_entered.set()
+                # Runs on a worker thread (asyncio.to_thread), never the loop.
+                # Long enough that, absent serialization, the second rebind's
+                # write reliably lands first and this stale one lands last.
+                time.sleep(0.3)
+            real_update(key, fields)
+
+        monkeypatch.setattr(state.conversation_log, "update_metadata", delayed_update)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            task_a = asyncio.ensure_future(
+                client.post("/api/chat/slots/s1/agent", json={"agent": "agent-a"})
+            )
+            # Dispatch the second rebind only once the first is inside its
+            # persist — the exact interleaving the ordering guarantee covers.
+            await asyncio.get_running_loop().run_in_executor(
+                None, first_persist_entered.wait, 5.0
+            )
+            assert first_persist_entered.is_set()
+            resp_b = await client.post("/api/chat/slots/s1/agent", json={"agent": "agent-b"})
+            resp_a = await task_a
+            assert resp_a.status == 200
+            assert resp_b.status == 200
+
+        assert slot.agent == "agent-b"
+        meta = state.conversation_log.get_metadata(history_key)
+        assert meta.get("agent") == "agent-b", (
+            f"persisted agent {meta.get('agent')!r} diverged from the in-memory "
+            f"binding {slot.agent!r} — persists landed out of binding order"
+        )
+        # Every rebind persist carries the full three-field binding.
+        for fields in calls:
+            assert set(fields) >= {"agent", "workspace", "project"}, (
+                f"rebind persisted {sorted(fields)} — workspace/project missing, "
+                f"a restart recombines the new agent with stale context"
+            )
+        # The stale seeded context was overwritten: disk matches the in-memory
+        # binding for all three fields, not just the agent.
+        assert meta.get("workspace") == slot.workspace
+        assert meta.get("workspace") != "stale-ws"
+        assert meta.get("project", "") == slot.project
+        assert meta.get("project") != "/stale/project"
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_rolls_back_binding_on_persist_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """A failing agent persist rolls the binding back — no memory/disk split.
+
+        The persist is part of the atomic switch: if the metadata write raises,
+        the caller gets a 500 and the prior binding is restored, so a restart
+        (which replays disk) and the live slot agree on the same agent. The old
+        swallow-and-continue behavior left memory on the new agent with disk on
+        the old one — the restart-restores-the-wrong-agent defect, just reached
+        through a failed write instead of reordered writes.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "existing-agent"
+        prior_workspace = slot.workspace
+        prior_project = slot.project
+        state.sessions.reset = AsyncMock()
+
+        history_key = "dashboard:s1"
+        state.conversation_log.append(history_key, "user", "hi", agent="existing-agent")
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+
+        def failing_update(key: str, fields: dict) -> None:
+            raise OSError("disk unavailable")
+
+        monkeypatch.setattr(state.conversation_log, "update_metadata", failing_update)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+            assert resp.status == 500
+
+        assert slot.agent == "existing-agent"
+        assert slot.workspace == prior_workspace
+        assert slot.project == prior_project
+        assert slot._rebind_in_progress is False
+        # Disk still carries the agent the slot reverted to.
+        meta = state.conversation_log.get_metadata(history_key)
+        assert meta.get("agent") == "existing-agent"
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_refuses_between_stages(self, tmp_path, monkeypatch):
+        """A rebind between an orchestrated plan's stages is refused with 409.
+
+        `running` alone misses the between-stages window: `_in_stage_execution`
+        stays true there while `running` flips false, and a rebind through the
+        gap resets the session so the REMAINING stages run under another
+        agent/workspace — silently corrupting the plan.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "existing-agent"
+        state.sessions.reset = AsyncMock()
+        slot._in_stage_execution = True  # between stages: no live task
+        try:
+            async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "slot_running"
+        finally:
+            slot._in_stage_execution = False
+        assert slot.agent == "existing-agent"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_denies_foreign_app_token(self, tmp_path, monkeypatch):
+        """An app token cannot rebind a slot it does not own (App Kit §5.2).
+
+        Without the same fail-closed guard `api_chat` runs, any permitted app
+        token could rebind — and thereby session-reset — a foreign slot. Both
+        denial shapes 404 like `api_chat`: an unscoped (dashboard) slot, and a
+        slot owned by a different app.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        unscoped = state.get_or_create_slot("s1")
+        unscoped.agent = "existing-agent"
+        foreign = state.get_or_create_slot("s2")
+        foreign.agent = "existing-agent"
+        foreign._app = "other-app"
+        state.sessions.reset = AsyncMock()
+
+        app = _make_app_with_agent_routes(state)
+
+        # Mark the request as app-scoped, the same way the token middleware
+        # does for a real app credential.
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "mochi"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+
+        async with TestClient(TestServer(app)) as client:
+            for slot_name in ("s1", "s2"):
+                resp = await client.post(f"/api/chat/slots/{slot_name}/agent", json={"agent": "new-agent"})
+                assert resp.status == 404, slot_name
+        assert unscoped.agent == "existing-agent"
+        assert foreign.agent == "existing-agent"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_rebinds_idle_slot(self, tmp_path, monkeypatch):
+        """Companion to the running-slot refusal: an idle slot still rebinds.
+
+        Guards the guard — a check inverted, or widened past `running`, would
+        break the panel's empty-agent adoption path outright.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.reset = AsyncMock()
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["ok"] is True
+            assert data["agent"] == "new-agent"
+
+        assert slot.agent == "new-agent"
+        state.sessions.reset.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_api_chat_treats_rebind_in_progress_as_busy(self, tmp_path, monkeypatch):
+        """A send landing while a rebind is mid-critical-section must queue.
+
+        The rebind guard (``api_chat_slot_agent``) checks `running` and then
+        AWAITS a session reset under ``slot._lock`` with
+        ``slot._rebind_in_progress`` set. The send path dispatches
+        ``slot.task`` without that lock, so before this gate a turn could start
+        inside the guard's awaited window and be torn down moments later by
+        the reset — a mid-stream kill neither side asked for. With the gate,
+        the concurrent send loses cleanly: the message queues and no turn
+        starts against the session the guard is about to reset.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+
+        dispatched: list[str] = []
+
+        async def fake_run_chat(st, sl, msg):
+            dispatched.append(msg)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+
+        # Simulate the rebind guard mid-critical-section: the real handler
+        # holds slot._lock AND sets the flag before its awaited reset.
+        await slot._lock.acquire()
+        slot._rebind_in_progress = True
+        try:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat", json={"message": "hello mid-rebind", "slot": "s1"}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data.get("queued") is True
+        finally:
+            slot._rebind_in_progress = False
+            slot._lock.release()
+
+        assert dispatched == []
+        assert slot.task is None
+        assert not slot.running
+        assert [item["content"] for item in slot._queue] == ["hello mid-rebind"]
+
+    @pytest.mark.asyncio
+    async def test_api_chat_dispatches_during_non_rebind_lock_hold(self, tmp_path, monkeypatch):
+        """A send during a NON-rebind ``slot._lock`` hold dispatches — never queues.
+
+        ``slot._lock`` has holders besides the rebind guard (history saves,
+        variant switches, the continue/regenerate guards). None of them kicks
+        the queue afterwards — the usual drain runs in a finishing turn's
+        teardown — so a send queued against one of those holds would strand
+        until an unrelated turn happened to run, and be lost on restart. The
+        busy gate must therefore read the rebind-scoped flag, not a generic
+        ``slot._lock.locked()`` probe: with the lock held and the flag clear
+        (simulating e.g. a history save), the send dispatches immediately,
+        exactly as it did before the rebind guard existed.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+
+        dispatched: list[str] = []
+
+        async def fake_run_chat(st, sl, msg):
+            dispatched.append(msg)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+
+        await slot._lock.acquire()  # a non-rebind holder: flag stays False
+        try:
+            assert slot._rebind_in_progress is False
+            async with TestClient(TestServer(_make_app(state))) as client:
+                # ws=1: the dispatch path answers with JSON instead of holding
+                # an SSE stream open (same as the other dispatch-path tests).
+                resp = await client.post(
+                    "/api/chat?ws=1", json={"message": "hello mid-save", "slot": "s1"}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data.get("queued") is not True
+            if slot.task is not None:
+                await asyncio.wait_for(slot.task, timeout=5)
+        finally:
+            slot._lock.release()
+
+        assert dispatched == ["hello mid-save"]
+        assert not slot._queue
+
+    @pytest.mark.asyncio
+    async def test_api_chat_send_racing_rebind_queues_then_runs_on_new_binding(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end race: a send concurrent with a rebind never gets torn down.
+
+        Drives the real interleaving: the rebind suspends inside its locked
+        session reset, the send arrives in that window, and exactly one of the
+        two clean outcomes must occur — here the send queues (no turn exists
+        for the reset to kill) and, once the rebind releases the lock, the
+        handler's post-release kick dispatches the queued message on the NEW
+        binding. Nothing is lost and nothing is killed mid-stream.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+
+        reset_entered = asyncio.Event()
+        release_reset = asyncio.Event()
+
+        async def slow_reset(_key):
+            reset_entered.set()
+            await release_reset.wait()
+
+        state.sessions.reset = AsyncMock(side_effect=slow_reset)
+
+        dispatched: list[str] = []
+
+        async def fake_run_chat(st, sl, msg, **_kw):
+            dispatched.append(msg)
+
+        # The post-rebind kick dispatches through the queue drain in
+        # chat_runner, not through the send path's own dispatch site.
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", fake_run_chat)
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        mock_cfg.dashboard.merge_queued_messages = False
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+
+        from kiro_crew.dashboard.chat import api_chat_slot_agent
+
+        app = _make_app(state)
+        app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
+
+        async with TestClient(TestServer(app)) as client:
+            rebind = asyncio.create_task(
+                client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+            )
+            await asyncio.wait_for(reset_entered.wait(), timeout=5)
+
+            # The guard is suspended mid-reset with the rebind marker set —
+            # this is the exact signal api_chat's busy gate reads.
+            assert slot._rebind_in_progress is True
+
+            # The guard now holds slot._lock, suspended mid-reset. This send
+            # previously started a turn the reset would then tear down.
+            send = await client.post(
+                "/api/chat", json={"message": "hello mid-rebind", "slot": "s1"}
+            )
+            assert send.status == 200
+            send_data = await send.json()
+            assert send_data.get("queued") is True
+            assert not slot.running  # no turn started into the doomed session
+
+            release_reset.set()
+            resp = await asyncio.wait_for(rebind, timeout=5)
+            assert resp.status == 200
+
+            # The marker cleared with the critical section (finally), so the
+            # slot does not read busy forever after the rebind completes.
+            assert slot._rebind_in_progress is False
+
+            # The rebind's post-release kick dispatched the queued message.
+            assert slot.task is not None
+            await asyncio.wait_for(slot.task, timeout=5)
+
+        assert dispatched == ["hello mid-rebind"]
+        assert slot.agent == "new-agent"
+        assert not slot._queue
+
+    @pytest.mark.asyncio
+    async def test_api_chat_rebind_reset_failure_still_drains_queued_send(
+        self, tmp_path, monkeypatch
+    ):
+        """A reset that raises mid-rebind must not strand messages queued during it.
+
+        Sends landing inside the rebind's critical section queue on the
+        ``_rebind_in_progress`` gate, and only the rebind handler's
+        post-release kick ever drains an idle slot's queue. With a
+        success-path-only kick, a ``_reset_slot_session`` failure clears the
+        flag (inner ``finally``) but never drains: the queued prompt sits
+        until an unrelated turn happens to finish — forever, on an idle slot.
+        The kick therefore lives in a ``finally`` so the error path drains
+        too. Draining into the failed slot is safe: ``sessions.reset`` pops
+        the session key before teardown, so the kicked turn cold-starts
+        through ``get_or_create`` instead of resuming the torn-down session.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+
+        reset_entered = asyncio.Event()
+        release_reset = asyncio.Event()
+
+        async def failing_reset(_key):
+            reset_entered.set()
+            await release_reset.wait()
+            raise RuntimeError("session teardown failed")
+
+        state.sessions.reset = AsyncMock(side_effect=failing_reset)
+
+        dispatched: list[str] = []
+
+        async def fake_run_chat(st, sl, msg, **_kw):
+            dispatched.append(msg)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", fake_run_chat)
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        mock_cfg.dashboard.merge_queued_messages = False
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+
+        from kiro_crew.dashboard.chat import api_chat_slot_agent
+
+        app = _make_app(state)
+        app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
+
+        async with TestClient(TestServer(app)) as client:
+            rebind = asyncio.create_task(
+                client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
+            )
+            await asyncio.wait_for(reset_entered.wait(), timeout=5)
+            assert slot._rebind_in_progress is True
+
+            # A send lands inside the critical section and queues on the flag.
+            send = await client.post(
+                "/api/chat", json={"message": "hello mid-rebind", "slot": "s1"}
+            )
+            assert send.status == 200
+            send_data = await send.json()
+            assert send_data.get("queued") is True
+
+            # The reset now raises; the rebind request itself fails (aiohttp
+            # surfaces the handler exception as a 500) — but its failure must
+            # not strand the queued message.
+            release_reset.set()
+            resp = await asyncio.wait_for(rebind, timeout=5)
+            assert resp.status == 500
+            assert slot._rebind_in_progress is False
+
+            # The error-path kick dispatched the queued message anyway.
+            assert slot.task is not None
+            await asyncio.wait_for(slot.task, timeout=5)
+
+        assert dispatched == ["hello mid-rebind"]
+        assert not slot._queue
 
     @pytest.mark.asyncio
     async def test_api_chat_slot_create_response_includes_workspace(self, tmp_path, monkeypatch):

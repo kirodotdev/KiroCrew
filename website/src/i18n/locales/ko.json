@@ -2368,12 +2368,14 @@
       },
       "chat": {
         "ask_placeholder": "{{name}}에게 질문…",
+        "bind_failed": "펫의 에이전트에 연결할 수 없습니다 — 잠시 후 다시 시도하세요.",
         "edit_cancel": "취소",
         "edit_mode": "편집 중 — 보내서 바꾸거나 취소하세요",
         "load_earlier": "이전 메시지 불러오기",
         "scroll_bottom": "최신으로 이동",
         "send": "보내기",
         "send_failed": "보낼 수 없습니다 — 연결을 확인하고 다시 시도하세요.",
+        "slot_occupied": "펫의 채팅 슬롯에 다른 대화가 있습니다 — 다시 연결하려면 슬롯을 비우세요.",
         "stop": "정지",
         "what_is_this": "이건 무엇인가요?"
       },

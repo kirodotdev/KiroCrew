@@ -250,7 +250,24 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
 
-    if slot.running or slot._in_stage_execution:
+    # ``slot._rebind_in_progress`` marks the rebind guard in
+    # ``api_chat_slot_agent`` mid-critical-section: it re-checks `running` and
+    # then AWAITS a session reset under ``slot._lock``. This send path
+    # dispatches `slot.task` WITHOUT the lock (its own check-to-dispatch is
+    # synchronous on the event loop, so it needs none against other sends),
+    # which means a turn started inside the guard's awaited window would be
+    # torn down moments later by the rebind's reset — the mid-stream kill the
+    # guard exists to prevent, just moved one step later. Reading the flag
+    # synchronously here closes that half of the race: rebind in flight → the
+    # message takes the queue path below and is drained once the slot settles
+    # (``api_chat_slot_agent`` kicks the queue after its critical section).
+    # The probe is deliberately rebind-SCOPED, not ``slot._lock.locked()``:
+    # the lock has other holders (history saves, variant switches, the
+    # continue/regenerate guards) that never kick the queue, so a generic
+    # lock read would queue a send those holders never drain — stranding the
+    # prompt until an unrelated turn happens to run (or losing it on restart).
+    _rebind_in_flight = slot._rebind_in_progress
+    if slot.running or slot._in_stage_execution or _rebind_in_flight:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. Fire-and-forget —
@@ -265,7 +282,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # start a concurrent turn. The orchestrating flag keeps it on the queue
         # path (steer is unavailable between stages, so it falls through to the
         # queue below and is held until the plan ends).
-        if body.get("steer") and message:
+        #
+        # ``_rebind_in_flight`` is excluded from the steer branch: a slot that
+        # is busy only because a rebind is mid-critical-section has no live
+        # turn to steer into — any `_acp_client` still visible belongs to the
+        # session the rebind is about to reset — so the message must queue,
+        # never steer.
+        if body.get("steer") and message and not _rebind_in_flight:
             _client = slot._acp_client
             if _client is not None and getattr(_client, "supports_steer", False):
                 # Register as pending BEFORE the await: _client.steer() suspends
@@ -2163,69 +2186,214 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
         return web.json_response({"error": "invalid agent name"}, status=400)
 
-    # Stored verbatim — never rewritten to whatever currently answers. See the
-    # same reasoning in api_chat_slot_create.
-    slot.agent = agent_name
+    # App ownership check (App Kit §5.2): deny-by-default for app tokens —
+    # the same fail-closed guard ``api_chat`` runs. Without it, any permitted
+    # app token could rebind (and thereby session-reset) a FOREIGN slot it
+    # does not own. Dashboard users (empty request_app) can access everything.
+    request_app = request.get("app", "")
+    if request_app:
+        if not slot._app or request_app != slot._app:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat_slot_agent",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
+                error=(
+                    "app cannot access unscoped slots"
+                    if not slot._app
+                    else "app does not own this slot"
+                ),
+            )
+            return web.json_response({"error": "not found", "code": "not_found"}, status=404)
 
-    # Resolve workspace from agent bindings
-    workspace = "default"
+    # A rebind resets the slot session (below), which tears down any turn
+    # already streaming in the slot. Callers gate on a `running` snapshot
+    # (``serialize_slot``), but that view lags: a turn can start between the
+    # snapshot and this POST. Re-check under ``slot._lock``, atomically with
+    # the rebind decision, the same way the other lagging-snapshot routes
+    # guard (see ``api_chat_slot_continue``) — refuse with a structured 409
+    # instead of killing the in-flight turn; the caller retries once the
+    # turn ends.
     try:
-        cfg = KiroCrewConfig.load()
-        if agent_name:
-            # Resolve by the name being STORED, which is exactly the name dispatch
-            # will resolve later (`chat_runner` -> resolve_agent_bindings(
-            # slot.agent)). Looking it up as an alias first and taking THAT
-            # alias's workspace disagreed with dispatch whenever the two differ:
-            # a name that is merely some alias's `kiro_agent` target, or a
-            # materialized app agent, dispatches with the DEFAULT bindings while
-            # the slot had recorded the alias's workspace. A materialized agent
-            # previously matched nothing here at all, so the slot kept the
-            # PREVIOUS agent's project — latent until app agents could dispatch.
-            # Resolve WITH the slot's project scope (warmed off-loop first) so a
-            # project agent counts as resolved rather than falling back.
-            await warm_project_agent_names(slot.project or None)
-            bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
-            ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
-            slot.workspace = ws_name
-            workspace = ws_name
-            # A project-scope agent exists only inside slot.project: kiro-cli
-            # resolves --agent against $PWD/.kiro/agents, so resetting the
-            # project here would make the very agent just selected unresolvable
-            # on the next turn (slot advertises it, default answers — the
-            # silent-substitution bug #1684 exists to remove). Aliases keep the
-            # reset: their project comes from their own workspace bindings.
-            is_project_agent = agent_name not in cfg.agents and agent_name in (
-                cached_project_agent_names(slot.project or None) or frozenset()
-            )
-            if not is_project_agent:
-                slot.project = default_project_dir(workspace)
-    except Exception:
-        logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
+        async with slot._lock:
+            # ``running`` alone misses the between-stages window of an
+            # orchestrated plan: ``_in_stage_execution`` stays true there while
+            # ``running`` flips false, and a rebind through that gap resets the
+            # session so the REMAINING stages run under another agent/workspace.
+            if slot.running or slot._in_stage_execution:
+                return web.json_response(
+                    {"error": "slot is running", "code": "slot_running"}, status=409
+                )
 
-    # Reset session so next message uses the new agent
-    logger.info("Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew")
-    await _reset_slot_session(state, slot, _history_key_for(name))
-    # The reset destroyed any eagerly created session; picking an agent is
-    # itself a strong first-message intent signal (it also resets the
-    # project), so re-arm the speculative spawn for the new bindings.
-    schedule_eager_spawn(state, slot)
-    # Persist the new agent so the session resumes under the correct agent
-    # after a gateway restart.  Written after reset succeeds so we never
-    # advertise an agent we couldn't actually switch to.
-    if state.conversation_log:
-        try:
-            # update_metadata enters _locked (flock + os.close); those are
-            # blocking-on-loop-prohibited, so offload to a worker thread rather
-            # than run them on the event loop (a wedged peer must never freeze
-            # chat/WS/heartbeat).
-            await asyncio.to_thread(
-                state.conversation_log.update_metadata,
-                _history_key_for(name),
-                {"agent": agent_name},
-            )
-        except Exception:
-            logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
-    state.push_slots_update()
+            # Mark the rebind critical section for ``api_chat``'s busy gate. Set
+            # AFTER the running re-check (a refused rebind must not flip the flag)
+            # and cleared in the ``finally`` below — before the lock releases and
+            # before the queue kick, so the kick always sees a settled flag. The
+            # flag (not ``slot._lock.locked()``) is what routes concurrent sends
+            # to the queue: it is scoped to THIS operation, the only lock holder
+            # that kicks the queue afterwards, so no other holder can capture a
+            # send it will never drain.
+            slot._rebind_in_progress = True
+            # Snapshot the committed binding: if anything below raises (agent
+            # resolution, session reset), the caller gets a 500 and the OLD
+            # binding stays authoritative — but the ``finally`` at the end of
+            # this handler still drains messages queued during the rebind.
+            # Without a rollback those queued turns would dispatch under the
+            # half-applied NEW binding that was never committed anywhere (the
+            # metadata persistence below never ran), silently answering with
+            # an agent the caller was told failed to switch.
+            prior_binding = (slot.agent, slot.workspace, slot.project)
+            try:
+                # Stored verbatim — never rewritten to whatever currently answers. See the
+                # same reasoning in api_chat_slot_create.
+                slot.agent = agent_name
+
+                # Resolve workspace from agent bindings
+                workspace = "default"
+                try:
+                    cfg = KiroCrewConfig.load()
+                    if agent_name:
+                        # Resolve by the name being STORED, which is exactly the name dispatch
+                        # will resolve later (`chat_runner` -> resolve_agent_bindings(
+                        # slot.agent)). Looking it up as an alias first and taking THAT
+                        # alias's workspace disagreed with dispatch whenever the two differ:
+                        # a name that is merely some alias's `kiro_agent` target, or a
+                        # materialized app agent, dispatches with the DEFAULT bindings while
+                        # the slot had recorded the alias's workspace. A materialized agent
+                        # previously matched nothing here at all, so the slot kept the
+                        # PREVIOUS agent's project — latent until app agents could dispatch.
+                        # Resolve WITH the slot's project scope (warmed off-loop first) so a
+                        # project agent counts as resolved rather than falling back.
+                        await warm_project_agent_names(slot.project or None)
+                        bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
+                        ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+                        slot.workspace = ws_name
+                        workspace = ws_name
+                        # A project-scope agent exists only inside slot.project: kiro-cli
+                        # resolves --agent against $PWD/.kiro/agents, so resetting the
+                        # project here would make the very agent just selected unresolvable
+                        # on the next turn (slot advertises it, default answers — the
+                        # silent-substitution bug #1684 exists to remove). Aliases keep the
+                        # reset: their project comes from their own workspace bindings.
+                        is_project_agent = agent_name not in cfg.agents and agent_name in (
+                            cached_project_agent_names(slot.project or None) or frozenset()
+                        )
+                        if not is_project_agent:
+                            slot.project = default_project_dir(workspace)
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve agent bindings for %r", agent_name, exc_info=True
+                    )
+
+                # Reset session so next message uses the new agent
+                logger.info(
+                    "Slot %s agent switched to %r, resetting session",
+                    name,
+                    agent_name or "kirocrew",
+                )
+                await _reset_slot_session(state, slot, _history_key_for(name))
+                # Persist the new binding INSIDE the critical section, before
+                # ``_rebind_in_progress`` clears, so persists land in binding
+                # order: outside the lock, two rapid successful rebinds race
+                # their worker-thread writes — the newer rebind's write can
+                # acquire the history lock first and the older one land last,
+                # so a restart restores the stale agent. Under ``slot._lock``
+                # commit order equals binding order. The critical section
+                # commits a THREE-field binding — the resolution above sets
+                # ``slot.workspace`` and ``slot.project`` alongside the agent
+                # — so all three persist in one metadata update, under the
+                # exact keys the restore paths read back (``workspace`` /
+                # ``project`` in ``chat_persistence``). Persisting the agent
+                # alone recombined the NEW agent with the STALE persisted
+                # workspace/project on restart, restoring the wrong context.
+                # An empty ``project`` overwrites a stale path in the merged
+                # metadata; restore skips the falsy value, matching the
+                # fresh-slot default. The persist is part of
+                # the atomic switch: a raise here reaches the rollback below,
+                # so memory and disk never diverge — the caller is told the
+                # switch failed while disk still holds the binding the slot
+                # reverts to. Sends arriving during the write queue via
+                # ``_rebind_in_progress`` and drain in the outer ``finally``
+                # (the designed busy semantics). ``update_metadata`` enters
+                # ``_locked`` (flock + os.close); those are
+                # blocking-on-loop-prohibited, so offload to a worker thread.
+                # Extending the lock over this await cannot deadlock: the
+                # history layer never takes slot locks, so the only lock order
+                # is ``slot._lock`` → history lock, and the acquire is bounded
+                # (``HistoryLockTimeout`` after its deadline), so a wedged
+                # peer fails the rebind instead of wedging the slot.
+                if state.conversation_log:
+                    await asyncio.to_thread(
+                        state.conversation_log.update_metadata,
+                        _history_key_for(name),
+                        {
+                            "agent": agent_name,
+                            "workspace": slot.workspace,
+                            "project": slot.project,
+                        },
+                    )
+                # The reset destroyed any eagerly created session; picking an
+                # agent is itself a strong first-message intent signal (it also
+                # resets the project), so re-arm the speculative spawn for the
+                # new bindings. Success path only — AFTER the persist above:
+                # a failed rebind rolls the binding back below and must not
+                # warm a session for it. Safe under the lock — fire-and-forget
+                # task creation whose debounced body re-validates
+                # ``slot.running`` before touching the slot.
+                schedule_eager_spawn(state, slot)
+            except BaseException:
+                # Restore the committed binding before the queue drains in the
+                # outer ``finally``: the switch FAILED (the caller sees the
+                # error), so queued messages must run under the agent the slot
+                # actually still has — not the mutated new one. A resolution
+                # or reset failure never reached the persist; a persist
+                # failure left the prior file intact (``update_metadata``
+                # writes tmp + atomic ``os.replace``, unlinking the tmp on
+                # failure), so disk agrees with the restored binding in every
+                # branch.
+                slot.agent, slot.workspace, slot.project = prior_binding
+                raise
+            finally:
+                slot._rebind_in_progress = False
+    finally:
+        # Messages that arrived DURING the rebind took the queue path in
+        # ``api_chat`` (``slot._rebind_in_progress`` reads as busy there)
+        # precisely so the reset above could not tear their turn down
+        # mid-stream. Nothing else drains the queue of an idle slot — the
+        # usual drain runs in a finishing turn's teardown — so kick it here,
+        # in a ``finally`` so EVERY exit drains: a reset that raises after
+        # messages started queuing would otherwise strand them (the flag
+        # clears in the inner ``finally``, but no later drain ever visits an
+        # idle slot's queue). The queued prompt starts now, on the binding
+        # the slot actually carries; ``sessions.reset`` pops the session key
+        # before teardown, so even a mid-reset failure leaves the kicked turn
+        # cold-starting through ``get_or_create`` rather than resuming the
+        # torn-down session. The 409 refusal path passes through here too,
+        # but it never set the flag (so nothing queued on the rebind's
+        # account) and its ``slot.running`` guard holds, keeping the kick a
+        # no-op there. Ordering: the inner ``finally`` cleared the flag
+        # before the lock released, so the kick dispatches under settled
+        # ``api_chat`` busy semantics. Same post-release kick as
+        # ``api_chat_slot_continue``; the running/orchestrating re-check is
+        # race-free because it is synchronous with the dispatch inside
+        # ``_start_next_queued_turn`` (no await between them). There is no
+        # await between the marker clearing and this kick — such a window
+        # would let a new send dispatch directly (the slot reads idle) and
+        # overtake the queued one, reversing message order; the agent persist
+        # runs inside the critical section, before the marker clears, exactly
+        # so it cannot open that window here. ``not slot._last_turn_auth_required``
+        # mirrors the orchestrator's drain gate: a prompt held after a
+        # signed-out turn must wait for the post-login resume — draining it
+        # here would burn it on a second auth failure and lose the resume.
+        if (
+            slot._queue
+            and not slot.running
+            and not slot._in_stage_execution
+            and not slot._last_turn_auth_required
+        ):
+            await _start_next_queued_turn(state, slot)
+        state.push_slots_update()
     return web.json_response({"ok": True, "agent": agent_name, "workspace": workspace})
 
 

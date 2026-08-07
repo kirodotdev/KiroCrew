@@ -3796,7 +3796,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingModel('')
       return
     }
-    await api.chatSlotAgent(activeSlot, agentName)
+    try {
+      await api.chatSlotAgent(activeSlot, agentName)
+    } catch (e) {
+      // The endpoint refuses to rebind a slot with a turn in flight (409
+      // slot_running) instead of tearing the turn down. Keep the dropdown
+      // open with the agent unchanged — same logging convention as ChatPane's
+      // switchAgent.
+      console.error('[ChatPage] switchAgent failed', e)
+      return
+    }
     setAgentDropdown(false)
     // queryClient, setAgentDropdown, and the setPending* setters are all stable
     // (react-query client / useState setters / useCallback([])), so listing them

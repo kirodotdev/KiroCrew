@@ -1730,12 +1730,14 @@
       },
       "chat": {
         "ask_placeholder": "Ask {{name}}...",
+        "bind_failed": "Couldn't connect the pet's agent — try again in a moment.",
         "edit_cancel": "Cancel",
         "edit_mode": "Editing — send to replace, or cancel",
         "load_earlier": "Load earlier messages",
         "scroll_bottom": "Scroll to Latest",
         "send": "Send",
         "send_failed": "Couldn't send — check your connection and try again.",
+        "slot_occupied": "The pet's chat slot holds another conversation — clear it to reconnect.",
         "stop": "Stop",
         "what_is_this": "What is this?"
       },

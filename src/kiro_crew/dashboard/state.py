@@ -891,6 +891,7 @@ class _ChatSlot:
         "_app",
         "_pending_variants",
         "_lock",
+        "_rebind_in_progress",
         "forked_from",
         "_fork_lock",
         "_tab_id",
@@ -1149,6 +1150,13 @@ class _ChatSlot:
         # Regenerate feature: variants pending attachment to next finalized assistant message
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
+        # True ONLY while the rebind guard in ``api_chat_slot_agent`` is inside
+        # its locked critical section (set after the running re-check, cleared
+        # in a finally before the lock releases). ``api_chat``'s busy gate reads
+        # this flag — deliberately NOT ``self._lock.locked()``, which has other
+        # holders (history saves, variant switches, continue/regenerate guards)
+        # that never kick the queue and would strand a queued send.
+        self._rebind_in_progress: bool = False
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         self._tab_id: str = ""  # permanent tab identity for cross-restart session chaining

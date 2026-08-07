@@ -2368,12 +2368,14 @@
       },
       "chat": {
         "ask_placeholder": "问问{{name}}…",
+        "bind_failed": "无法连接宠物的代理 — 请稍后重试。",
         "edit_cancel": "取消",
         "edit_mode": "编辑中 — 发送以替换原消息，或取消",
         "load_earlier": "加载更早的消息",
         "scroll_bottom": "滚动到最新",
         "send": "发送",
         "send_failed": "发送失败 — 请检查网络连接后重试。",
+        "slot_occupied": "宠物的聊天会话位已被另一个对话占用 — 请清除该会话后重新连接。",
         "stop": "停止",
         "what_is_this": "这是什么？"
       },
