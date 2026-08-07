@@ -606,10 +606,12 @@ def transcript_sort_key(ts: str) -> tuple[int, float]:
     Shared by every path that has to put two independently written streams of
     transcript lines into one chronological order.
 
-    Timestamps in one transcript are not written in one format. The dashboard
-    path stores offset-aware values; the channel path stores
-    ``datetime.now().isoformat()``, which is local and naive. Comparing those as
-    STRINGS orders them by their text, so on any host that is not UTC a naive
+    Timestamps in one transcript are not guaranteed to share one format. Both
+    the dashboard and the channel path now write offset-aware values (message
+    rows via :func:`monotonic_transcript_ts`, metadata via
+    :func:`metadata_now_iso`), but transcripts written by older builds still
+    hold naive ``datetime.now().isoformat()`` rows. Comparing those as STRINGS
+    orders them by their text, so on any host that is not UTC a naive
     ``10:00:00`` sorts before an aware ``09:30:00+00:00`` that actually happened
     later — and this merge deletes the source file afterwards, so the wrong order
     is what survives.
@@ -638,6 +640,26 @@ def _parse_transcript_ts(ts: str) -> datetime | None:
         return datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
+
+
+def metadata_now_iso() -> str:
+    """Offset-aware ISO-8601 stamp for a transcript metadata timestamp.
+
+    A transcript's metadata line carries absolute-instant fields --
+    ``created_at``, ``updated_at``, ``compacted_at``, ``rotated_at`` -- that are
+    read back as points in time, not wall clocks: the dashboard renders a
+    session's ``created_at`` as a local-time timestamp, and
+    :func:`transcript_sort_key` orders lines against it. A bare
+    ``datetime.now().isoformat()`` records naive local wall-clock with no
+    offset, so a reader (the browser, or a merge running on another host) has no
+    way to know which timezone produced it -- the dashboard then renders it
+    verbatim, showing a Slack/channel session's creation time in UTC instead of
+    the viewer's local zone (issue #1948). Resolving to an absolute instant with
+    ``astimezone()`` records the offset, matching the message-row convention in
+    :func:`monotonic_transcript_ts` so both the metadata line and the rows below
+    it speak the same, unambiguous format.
+    """
+    return datetime.now().astimezone().isoformat()
 
 
 def monotonic_transcript_ts(previous: str | None, now: datetime) -> str:
@@ -1307,7 +1329,7 @@ class ConversationLog:
                 self._dir.mkdir(parents=True, exist_ok=True)
                 meta: dict = {
                     "_type": "metadata",
-                    "created_at": datetime.now().isoformat(),
+                    "created_at": metadata_now_iso(),
                     "last_consolidated": 0,
                 }
                 if agent:
@@ -1628,7 +1650,7 @@ class ConversationLog:
             else:
                 safe_offset = offset
             meta["last_consolidated"] = safe_offset
-            meta["updated_at"] = datetime.now().isoformat()
+            meta["updated_at"] = metadata_now_iso()
             lines[0] = json.dumps(meta) + "\n"
             # Reduce lock hold for this one-line metadata rewrite: skip the
             # fsync (fsync=False). ``last_consolidated`` is recoverable
@@ -2264,7 +2286,7 @@ class ConversationLog:
             self._dir.mkdir(parents=True, exist_ok=True)
             meta = {
                 "_type": "metadata",
-                "created_at": datetime.now().isoformat(),
+                "created_at": metadata_now_iso(),
                 "last_consolidated": 0,
             }
             lines = [""]  # placeholder; replaced below
@@ -2777,9 +2799,9 @@ class ConversationLog:
         orig_meta = self.get_metadata(key) or {}
         meta = {
             "_type": "metadata",
-            "created_at": orig_meta.get("created_at", datetime.now().isoformat()),
+            "created_at": orig_meta.get("created_at", metadata_now_iso()),
             "last_consolidated": orig_meta.get("last_consolidated", 0),
-            "compacted_at": datetime.now().isoformat(),
+            "compacted_at": metadata_now_iso(),
         }
         # Carry the rotation generation forward so a compaction (which is NOT a
         # rotation) doesn't reset it to 0 and spuriously trip the generation
@@ -2860,7 +2882,7 @@ class ConversationLog:
             try:
                 meta = json.loads(meta_line)
                 meta["last_consolidated"] = 0
-                meta["rotated_at"] = datetime.now().isoformat()
+                meta["rotated_at"] = metadata_now_iso()
                 meta["rotation_generation"] = int(meta.get("rotation_generation", 0) or 0) + 1
                 meta_line = json.dumps(meta) + "\n"
             except json.JSONDecodeError:
