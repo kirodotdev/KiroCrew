@@ -128,18 +128,18 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
 
     Fallbacks distinguish two cases so a config ERROR can never silently disable
     sandboxing (fail-secure security control):
-    - ``sandbox`` **absent/unset** -> ``"off"``: the intended default, deferring
-      isolation to kiro-cli's own internal sandbox (kiro-cli >= 2.13).
+    - ``sandbox`` **absent/unset** -> ``"auto"``: the intended default, engages
+      OS-level isolation and automatically defers to kiro-cli's own internal
+      sandbox on macOS when it is enabled (kiro-cli >= 2.13).
     - ``sandbox`` **present but malformed/unrecognised** (typo, wrong type) ->
       ``"auto"``: fail SECURE. A garbage value is a misconfiguration, not an
       intent to run unsandboxed, so we re-enable KiroCrew's OS-level confinement
       rather than degrade to no isolation.
-    Set ``agent.sandbox="auto"`` to explicitly re-enable KiroCrew confinement.
     """
     data = _read_config() if config is None else config
     mode = _section(data, "agent").get("sandbox")
     if mode is None:
-        return "off"  # unset -> intended default (defer to kiro-cli sandbox)
+        return "auto"  # unset -> intended default (OS-level isolation engaged)
     if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
         return mode
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed

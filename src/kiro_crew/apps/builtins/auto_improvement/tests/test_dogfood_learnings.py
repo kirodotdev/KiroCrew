@@ -1671,8 +1671,8 @@ class TestTheLoopRunnerRefusesWithoutCredentialConfinement:
     `strip_credential_env`, which hides `~/.aws`, `~/.gnupg`, `gh`/`gcloud`/`kube` config and
     scrubs the token env. The PROVIDER path (`SessionAgentRunner`) drives a Kiro Crew session
     instead, so isolation is whatever the gateway's `sandbox` setting provides — and that field
-    DEFAULTS TO "off" ("defers isolation to kiro-cli's internal agent sandbox"), which this app
-    cannot inspect. On a gateway with no effective sandbox, a repository instruction reaching
+    DEFAULTS TO "auto" (engages OS-level isolation and defers to kiro-cli's internal agent sandbox
+    on macOS when enabled). On a gateway with mode='off' set, a repository instruction reaching
     the agent's auto-approved Bash (`python helper.py`) could read those stores and exfiltrate
     over an unrestricted network.
 

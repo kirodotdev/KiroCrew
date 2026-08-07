@@ -2343,6 +2343,79 @@ def _warn_no_isolation(mode: str) -> None:
     )
 
 
+def _warn_mode_off_unconfined(argv: list[str], is_kiro_spawn: bool) -> None:
+    """Emit a once-per-process SECURITY warning when mode='off' results in
+    no OS-level isolation and no verified delegation.
+
+    This covers the gap where the documented mutual-exclusion invariant (above
+    ``_KIRO_INTERNAL_SETTINGS_PATH``) is violated by an explicit mode='off'
+    config without the kiro-cli delegation being active.
+    """
+    # Honour the same acknowledgment as _warn_no_isolation (SEC-009 opt-in).
+    if _allow_no_isolation():
+        if not getattr(_warn_mode_off_unconfined, "_info_logged", False):
+            _warn_mode_off_unconfined._info_logged = True  # type: ignore[attr-defined]
+            logger.info(
+                "agent.sandbox='off' with no active delegation; operator opted "
+                "in via sandbox_allow_no_isolation. Command: %s",
+                argv[0] if argv else "unknown",
+            )
+        return
+
+    # Per-branch latch so a non-kiro spawn doesn't suppress the kiro-spawn warning.
+    _warned_set: set = getattr(_warn_mode_off_unconfined, "_warned_set", set())
+
+    if is_kiro_spawn and sys.platform == "darwin":
+        if "darwin_kiro" in _warned_set:
+            return
+        _warned_set.add("darwin_kiro")
+        logger.warning(
+            "SECURITY: agent.sandbox='off' but kiro-cli's internal sandbox is "
+            "NOT enabled (~/.kiro/settings/amazon-internal.json). Both isolation "
+            "layers are inactive — ~/.aws, ~/.ssh and other secrets are readable "
+            "by the agent subprocess and only the bypassable app-level "
+            "security.py checks remain. Set agent.sandbox='auto' or enable "
+            "kiro-cli's internal sandbox to restore OS-level confinement. "
+            "Command: %s",
+            argv[0] if argv else "unknown",
+        )
+    elif sys.platform.startswith("linux"):
+        if "linux" in _warned_set:
+            return
+        _warned_set.add("linux")
+        logger.warning(
+            "SECURITY: agent.sandbox='off' on Linux — there is no kiro-cli "
+            "delegation mechanism on this platform, so the agent subprocess "
+            "runs with NO OS-level confinement. ~/.aws, ~/.ssh and other "
+            "secrets are readable by it and only the bypassable app-level "
+            "security.py checks remain. Set agent.sandbox='auto' to engage "
+            "namespace isolation. Command: %s",
+            argv[0] if argv else "unknown",
+        )
+    elif sys.platform == "win32":
+        if "win32" in _warned_set:
+            return
+        _warned_set.add("win32")
+        logger.warning(
+            "SECURITY: agent.sandbox='off' on Windows — no OS-level sandbox "
+            "backend exists on this platform. The agent subprocess runs with "
+            "full filesystem access. Command: %s",
+            argv[0] if argv else "unknown",
+        )
+    else:
+        if "other" in _warned_set:
+            return
+        _warned_set.add("other")
+        logger.warning(
+            "SECURITY: agent.sandbox='off' for a non-kiro-cli subprocess — "
+            "running without OS-level confinement. Set agent.sandbox='auto' "
+            "to engage seatbelt isolation. Command: %s",
+            argv[0] if argv else "unknown",
+        )
+
+    _warn_mode_off_unconfined._warned_set = _warned_set  # type: ignore[attr-defined]
+
+
 def detect_backend(config_mode: str = "auto") -> str:
     """Detect the best available sandbox backend.
 
@@ -2520,6 +2593,57 @@ def wrap_argv(
     mode = _clamp_sandbox_mode(mode)
 
     if mode == "off":
+        # Fix #2: verify kiro-cli delegation before honoring "off". The
+        # documented invariant (sandbox.py:1680-1681) requires that when
+        # Kiro Crew's seatbelt is off, kiro-cli's internal sandbox is ON —
+        # but the old early return never checked. Now we verify the delegation
+        # on macOS kiro-cli spawns; on Linux (where kiro's internal sandbox
+        # doesn't apply) or non-kiro spawns, "off" means genuinely unconfined.
+        kiro_spawn_off = (
+            _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
+        )
+        if sys.platform == "darwin" and kiro_spawn_off and kiro_internal_sandbox_enabled():
+            # Delegation is valid: kiro-cli's sandbox IS active. Apply env scrub
+            # (same as _delegate_to_kiro_internal_sandbox) but WITHOUT the
+            # seatbelt fallback on SEL failure — mode="off" must never produce a
+            # nested seatbelt wrap (the exact EPERM case the design prevents).
+            # SEL audit-or-degrade: record the delegation with critical=True
+            # (synchronous write for tamper-evident log), but on failure degrade
+            # to unconfined passthrough rather than seatbelt wrap (which would
+            # EPERM inside kiro-cli's already-active sandbox).
+            try:
+                from kiro_crew.sel import sel
+
+                sel().log_tool_invocation(
+                    session_key="sandbox",
+                    agent="system",
+                    source="sandbox.wrap_argv",
+                    tool_name=argv[0] if argv else "unknown",
+                    tool_kind="subprocess",
+                    outcome="delegated",
+                    resources=(
+                        "mode=off: kiro internal sandbox on -> env scrub only "
+                        "(no seatbelt, no seatbelt-fallback)"
+                    ),
+                    critical=True,  # synchronous write for audit integrity
+                )
+            except Exception:
+                # Fail OPEN (not to seatbelt): an unaudited delegation with
+                # mode=off still applies env scrub but returns without seatbelt.
+                # This is deliberately different from _delegate_to_kiro_internal_sandbox
+                # which falls back to seatbelt — here that fallback would EPERM.
+                logger.warning(
+                    "SECURITY: SEL audit failed for mode=off delegation; "
+                    "proceeding with env scrub but no seatbelt. Command: %s",
+                    argv[0] if argv else "unknown",
+                    exc_info=True,
+                )
+            unset_args = _sandbox_env_unset_args("standard", strip_python_env)
+            if unset_args:
+                return ["env", *unset_args, *argv], None
+            return list(argv), None
+        # Fix #3: Make the degradation loud — both layers are inactive.
+        _warn_mode_off_unconfined(argv, kiro_spawn_off)
         return argv, None
 
     # Already inside a KiroCrew sandbox (script cron, sandboxed agent child, app

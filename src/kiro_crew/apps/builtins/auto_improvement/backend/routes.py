@@ -100,12 +100,12 @@ _CONFIG_WRITABLE = frozenset(
         # strict credential masking. Default OFF, fail-closed. The subprocess path spawns
         # through `sandboxed_spawn_argv(mode="strict")` + `strip_credential_env`, which hides
         # `~/.aws`/`~/.gnupg`/`gh` stores; the PROVIDER path drives a Kiro Crew session
-        # instead, so isolation is whatever the gateway's `sandbox` setting gives — and that
-        # DEFAULTS TO "off" (isolation deferred to kiro-cli's internal agent sandbox, which
-        # this app cannot inspect). On a gateway with no effective sandbox, a repository
-        # instruction reaching the agent's auto-approved Bash could read those stores and
-        # exfiltrate. `runner._build_runner` therefore runs OFFLINE unless the sandbox is
-        # 'auto' or this flag is set. Same one-time-consent shape as
+        # instead, so isolation is whatever the gateway's `sandbox` setting gives — and only
+        # 'cc'/'strict' profiles hide credential directories from the agent. On a gateway
+        # with default 'auto'/'standard' (which exposes .aws/.ssh for workflow use), a
+        # repository instruction reaching the agent's auto-approved Bash could read those
+        # stores and exfiltrate. `runner._build_runner` therefore runs OFFLINE unless the
+        # sandbox is 'cc'/'strict' or this flag is set. Same one-time-consent shape as
         # `watcherAcceptEgressRisk`. Raised by the GPT review.
         "acceptUnsandboxedAgentRisk",
         # Run budget. Safe to expose: these only ever SHRINK or grow how much work

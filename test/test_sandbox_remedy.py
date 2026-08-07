@@ -19,14 +19,22 @@ import kiro_crew.sandbox as sb
 
 
 @pytest.fixture(autouse=True)
-def _clean_probe_state() -> Any:
+def _clean_probe_state(monkeypatch) -> Any:
     """Each test starts and ends with no cached backend or probe verdict.
 
     Joining the background warm thread is part of that isolation, not politeness:
     it writes the same `_last_unshare_failure` record these tests plant, so a thread still in flight from an earlier test lands mid-test
     and replaces a planted verdict with the real host's one. Joining (rather than
     sleeping) makes that deterministic.
+
+    Clears ``KIROCREW_SANDBOX_ACTIVE`` to prevent the "already inside sandbox"
+    passthrough from short-circuiting tests on sandboxed hosts.
     """
+    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    monkeypatch.setattr(
+        sb, "_KIRO_INTERNAL_SETTINGS_PATH",
+        "/nonexistent/kirocrew-test/amazon-internal.json",
+    )
     _join_warm_thread()
     sb.reset_backend()
     yield
