@@ -1447,6 +1447,16 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Nothing about this key is sensitive to read back, so the masked GET
     # already surfaces it for the toggle's initial state.
     "telemetry.beacon_enabled": {"type": "bool"},
+    # Tailnet-derived dashboard origin (RFC §4). Only the boolean enable is
+    # editable: there is no companion key here for a hand-written tailnet name,
+    # because the name is *derived from the local daemon and validated against the
+    # tailnet's own MagicDNS suffix* — accepting one from an API caller would hand
+    # the CSRF origin allowlist an attacker-chosen value, which is the whole thing
+    # ``tailnet._valid_magicdns_name`` exists to prevent. Enabling takes effect on
+    # the next gateway start (the origin set is built once during startup), and an
+    # enterprise ceiling can refuse the enabling write outright — see the
+    # ``capabilities.tailnet_origin`` gate below.
+    "dashboard.tailscale.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY
@@ -1511,6 +1521,29 @@ def _beacon_governance_pinned_off() -> bool:
     decision behind it.
     """
     return beacon.is_governance_pinned_off(audit_tool="config_patch_dashboard")
+
+
+def _tailnet_governance_pinned_off() -> bool:
+    """Return whether a ceiling pins ``capabilities.tailnet_origin`` off (blocking).
+
+    The tailnet twin of :func:`_beacon_governance_pinned_off`, and delegating for
+    the same reason: ``tailnet.is_governance_pinned_off`` is the one resolution, so
+    the PATCH gate, the startup derivation gate and the CLI gate cannot disagree
+    about whether a host is pinned.
+
+    Runs in a worker thread (see the call site): the resolution reads the
+    trust-root policy file and the active profile from disk.
+
+    ``audit_tool``: this is an ENFORCEMENT decision (it refuses the write with a
+    403), so it routes through the audited seam and lands a
+    ``governance_decision`` SEL record. The name is distinct per call site so the
+    trail says which control refused; the route additionally logs its own
+    ``config.patch`` denial via ``_log_sel``, which records the API call while
+    this records the governance decision behind it.
+    """
+    from kiro_crew.dashboard import tailnet  # noqa: F811 - local: keeps the import edge lazy
+
+    return tailnet.is_governance_pinned_off(audit_tool="config_patch_dashboard_tailnet")
 
 
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
@@ -1613,6 +1646,23 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if pinned:
             return _deny(
                 "telemetry is disabled by your administrator's security policy",
+                f"{path_key}={value}",
+                403,
+            )
+
+    # Same rule, same direction, for the tailnet origin derivation. `false` stays
+    # writable under a ceiling that already forbids it, for the same reason as
+    # above: the ceiling is a floor, a narrower local choice composes with it, and
+    # refusing the write would strand the user if the policy were later lifted.
+    # The 403 exists so a pinned host cannot store `true` behind a control that
+    # does nothing — `resolve_tailnet_host` already refuses to derive, so without
+    # this the config file and the card would both claim "on" while no origin is
+    # ever added.
+    if path_key == "dashboard.tailscale.enabled" and value is True:
+        pinned = await asyncio.to_thread(_tailnet_governance_pinned_off)
+        if pinned:
+            return _deny(
+                "tailnet access is disabled by your administrator's security policy",
                 f"{path_key}={value}",
                 403,
             )

@@ -438,6 +438,35 @@ export interface SecurityPostureData {
   counts: Record<string, number | null>
 }
 
+/**
+ * GET /api/tailnet/status — whether this machine's Tailscale MagicDNS name is in
+ * the dashboard's Origin allow-list.
+ *
+ * `state` is derived SERVER-SIDE and the UI must render off it directly rather
+ * than recomputing it from the other fields: one owner for the state machine
+ * means the two layers cannot disagree about what "active" means. Precedence is
+ * `pinned` > `off` > `unresolved` > `active`.
+ *
+ * `host` / `origin` / `resolved_at` describe the STARTUP resolution — the value
+ * that actually went into `build_allowed_origins` — not a fresh probe. A live
+ * probe could report a name the running origin set does not contain (daemon came
+ * up after the gateway), and rendering that as trusted is the same
+ * checked-but-never-ran defect the posture registry guards against.
+ */
+export interface TailnetStatusData {
+  /** `dashboard.tailscale.enabled` as actually loaded, post-hydration. */
+  enabled: boolean
+  /** `capabilities.tailnet_origin` pinned off at the POLICY layer. */
+  governance_pinned: boolean
+  /** MagicDNS name resolved at startup; `''` when none was. */
+  host: string
+  /** `https://<host>`; `''` when `host` is `''`. */
+  origin: string
+  /** Epoch seconds of that startup resolution; `0` when it never resolved. */
+  resolved_at: number
+  state: 'pinned' | 'off' | 'unresolved' | 'active'
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -1077,6 +1106,11 @@ export const api = {
   // means "temporarily unresolvable", never "zero".
   securityStats: () => get('/api/security/stats').then(j) as Promise<{ denied_commands: number | null; suspicious_patterns: number | null; tool_schemas: number | null; redaction_paths: number | null }>,
   securityPosture: () => get('/api/security/posture').then(j) as Promise<SecurityPostureData>,
+  // Tailnet origin (Settings → Security). READ ONLY here: the toggle writes
+  // `dashboard.tailscale.enabled` through the generic config PATCH, because the
+  // setting IS a config value and the status endpoint only reports what the
+  // running server resolved from it at startup.
+  tailnetStatus: () => get('/api/tailnet/status').then(j) as Promise<TailnetStatusData>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.
   deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,

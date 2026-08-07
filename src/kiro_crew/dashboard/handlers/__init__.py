@@ -348,6 +348,9 @@ from kiro_crew.dashboard.handlers.steering import (  # noqa: E402, F401
     resolve_steering_file,
     steering_roots,
 )
+from kiro_crew.dashboard.handlers.tailnet import (  # noqa: E402, F401
+    api_tailnet_status,
+)
 
 # ── Task Runner (extracted to handlers/taskrunner.py) ──
 from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401

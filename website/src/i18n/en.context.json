@@ -137,6 +137,7 @@
         "pages.settings.notificationsPanel.preset_pop": "Name of a notification sound preset — a short percussive 'pop'. One of several sound names in a picker; it names the sound, so translate only if the language has a natural onomatopoeia, otherwise keep it.",
         "pages.settings.securityPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
         "pages.settings.securityPanel.off": "State value meaning disabled. Not the preposition or the adverb.",
+        "pages.settings.securityPanel.tailnet_state_off": "State badge on the Tailnet origin card meaning the setting is disabled, so no tailnet name is in the dashboard origin allow-list. Sits beside \"Active\" and \"Not resolved\" as one of four states. The adjective/state, not the preposition or the adverb.",
         "pages.settings.slackPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
         "pages.settings.sttSettings.dictation_panel": "Label for the toggle in Settings > Voice that switches the recording UI between the animated dictation panel and the thin status bar.",
         "pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of": "Description under the 'Dictation panel' toggle in Settings > Voice. 'WebGL2' is a technology name and must not be translated. 'reduced motion' refers to the OS accessibility preference.",

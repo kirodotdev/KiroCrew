@@ -24,6 +24,11 @@ vi.mock('../../api/client', () => ({
     // YoloDurationCard, which tolerates an unresolved read.
     kirocrewConfig: vi.fn(),
     patchConfig: vi.fn(),
+    // Read by the rail on every mount to summarise the tailnet-origin section.
+    // Present here so the rail's own read is a resolved query rather than a
+    // crash on an undefined queryFn; the section's behaviour is covered in
+    // SecurityPanel.tailnet.test.tsx.
+    tailnetStatus: vi.fn(),
   },
 }))
 
@@ -34,6 +39,24 @@ import { SecurityPanel } from './SecurityPanel'
 const PINNED_DESC = 'Blocks EC2 instance termination'
 const TOGGLE_DESC = 'Blocks CloudFormation stack deletion'
 const USER_PATTERN = 'rm -rf /tmp/mine'
+
+/** Default payload for the rail's tailnet read.
+ *
+ * Every `beforeEach` in this file resolves `api.tailnetStatus` with this. It must
+ * RESOLVE rather than merely exist: a bare `vi.fn()` returns undefined, which
+ * react-query rejects ("Query data cannot be undefined") and reports once per
+ * test, since the rail reads it on mount in all of them. `off` is the right
+ * default here — this file covers the rest of the panel, and the section's own
+ * states are covered in SecurityPanel.tailnet.test.tsx.
+ */
+const TAILNET_OFF = {
+  enabled: false,
+  governance_pinned: false,
+  host: '',
+  origin: '',
+  resolved_at: 0,
+  state: 'off',
+} as const
 
 function snapshot(overrides: Partial<DeniedCommandsData> = {}): DeniedCommandsData {
   return {
@@ -176,6 +199,7 @@ describe('SecurityPanel — denied commands', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
   })
 
   it('toggling a built-in OFF opens the confirm modal and only mutates after ack', async () => {
@@ -316,6 +340,7 @@ describe('SecurityPanel — governance policy viewer', () => {
     vi.clearAllMocks()
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
   })
 
   it('shows the standalone "no enterprise policy" state when has_policy is false', async () => {
@@ -446,6 +471,7 @@ describe('SecurityPanel — posture disclosure', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
   })
 
   it('renders a pill per control using the server-derived count and unit', async () => {
@@ -828,6 +854,7 @@ describe('SecurityPanel — inspector rail', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
   })
 
   /** Every rail row, in DOM order. */
@@ -849,6 +876,7 @@ describe('SecurityPanel — inspector rail', () => {
       expect.stringContaining('Live Security Posture'),
       expect.stringContaining('YOLO (auto-approve)'),
       expect.stringContaining('Denied Commands'),
+      expect.stringContaining('Tailnet origin'),
       expect.stringContaining('Third-party apps'),
       expect.stringContaining('Defense-in-Depth Architecture'),
       expect.stringContaining('Governance Policy'),
@@ -994,6 +1022,7 @@ describe('SecurityPanel — rule search', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
   })
 
   const SEARCH = 'Search rules, patterns, categories…'
@@ -1088,6 +1117,7 @@ describe('SecurityPanel — review-round regressions', () => {
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
   })
 
   const SEARCH = 'Search rules, patterns, categories…'

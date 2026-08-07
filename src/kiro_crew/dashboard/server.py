@@ -2574,6 +2574,7 @@ async def start_dashboard(
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
     app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
+    app.router.add_get("/api/tailnet/status", handlers.api_tailnet_status)
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
     app.router.add_get("/api/sessions/search", handlers.api_sessions_search)
@@ -2952,6 +2953,16 @@ async def start_dashboard(
             "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
             _tailnet_host,
         )
+    # Stashed on the app, not left a local, because GET /api/tailnet/status must
+    # report the value the running origin set was actually built from rather than
+    # re-probe the daemon (see handlers/tailnet.py). ``tailnet_resolved_at`` is
+    # stamped unconditionally — it timestamps the resolution ATTEMPT, so an
+    # "unresolved" card can say when we last looked; ``0`` means the derivation
+    # never ran (feature off, or pinned). Both start-up paths set both keys: only
+    # one of them serves this route today, but an earlier round of this feature
+    # already shipped a bug from touching one startup site and not the other.
+    app["tailnet_host"] = _tailnet_host
+    app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
     app["allowed_origins"] = build_allowed_origins(
         port, local_only, configured_host, tailnet_host=_tailnet_host
     )
@@ -3475,14 +3486,22 @@ async def start_api_server(
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
+    _tailnet_host = await tailnet.resolve_tailnet_host(
+        KiroCrewConfig.load().dashboard.tailscale.enabled
+    )
     app["allowed_origins"] = build_allowed_origins(
         port,
         local_only,
         configured_host,
-        tailnet_host=await tailnet.resolve_tailnet_host(
-            KiroCrewConfig.load().dashboard.tailscale.enabled
-        ),
+        tailnet_host=_tailnet_host,
     )
+    # Stashed for the same reason as in start_dashboard, and set here too even
+    # though /api/tailnet/status is registered on the dashboard app: leaving one of
+    # the two startup paths without the keys is exactly the class of bug an earlier
+    # round of this feature already shipped, and a handler moved into the MCP
+    # surface later would silently read "" as "nothing was trusted".
+    app["tailnet_host"] = _tailnet_host
+    app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
     app["local_only"] = local_only
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
