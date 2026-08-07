@@ -1332,6 +1332,124 @@ class TestProbeRemote:
         assert "500" in result.error
 
     @pytest.mark.asyncio
+    async def test_probe_remote_401_reports_needs_auth(self) -> None:
+        """A tokenless 401 from a remote OAuth server is needs_auth, not error.
+
+        The runtime holds the OAuth token and calls the server fine; the probe
+        never sees that token, so 401 means "authenticate", not "broken".
+        """
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.error == ""
+
+    @pytest.mark.asyncio
+    async def test_probe_remote_403_with_challenge_reports_needs_auth(self) -> None:
+        """A 403 carrying a WWW-Authenticate challenge is also needs_auth."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 403
+        resp.headers = {"WWW-Authenticate": 'Bearer resource_metadata="https://example.com/.well-known"'}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "needs_auth"
+        assert result.error == ""
+
+    @pytest.mark.asyncio
+    async def test_probe_remote_403_without_challenge_is_error(self) -> None:
+        """A plain 403 (no challenge) is a real error, not needs_auth."""
+        server = McpServerInfo(name="remote", url="https://example.com/mcp")
+
+        resp = MagicMock()
+        resp.status = 403
+        resp.headers = {}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "error"
+        assert "403" in result.error
+
+    @pytest.mark.asyncio
+    async def test_probe_remote_401_with_static_auth_header_is_error(self) -> None:
+        """A 401 despite a configured Authorization header is a real error.
+
+        The caller supplied a credential and it was rejected — that is a
+        genuine failure, so it must not be masked as needs_auth.
+        """
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer stale-token"},
+        )
+
+        resp = MagicMock()
+        resp.status = 401
+        resp.headers = {}
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "error"
+        assert "401" in result.error
+
+    def test_needs_authorization_predicate(self) -> None:
+        """Unit-level truth table for _needs_authorization."""
+        from kiro_crew.mcp_discovery import _needs_authorization
+
+        # Tokenless 401 → authenticate.
+        assert _needs_authorization(401, {}, {}) is True
+        # 403 with a challenge → authenticate.
+        assert _needs_authorization(403, {"WWW-Authenticate": "Bearer"}, {}) is True
+        # Header lookups are case-insensitive.
+        assert _needs_authorization(403, {"www-authenticate": "Bearer"}, {}) is True
+        # 403 without a challenge → not an auth prompt.
+        assert _needs_authorization(403, {}, {}) is False
+        # A rejected static credential is a real error, never needs_auth.
+        assert _needs_authorization(401, {}, {"Authorization": "Bearer x"}) is False
+        assert _needs_authorization(401, {}, {"authorization": "Bearer x"}) is False
+        # Other statuses are never needs_auth.
+        assert _needs_authorization(500, {}, {}) is False
+
+    @pytest.mark.asyncio
     async def test_probe_remote_connection_error(self) -> None:
         """Connection failure sets error status."""
         server = McpServerInfo(name="remote", url="https://unreachable.example.com/mcp")

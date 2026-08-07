@@ -20,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -299,7 +300,7 @@ class McpServerInfo:
     env: dict[str, str] = field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
-    status: str = "unknown"  # unknown | ok | error | probing | outdated | disabled
+    status: str = "unknown"  # unknown | ok | error | probing | outdated | disabled | needs_auth
     tools: list[str] = field(default_factory=list)
     error: str = ""
     source: str = "agent"  # agent | mcp.json | discovered  (legacy field, prefer presence)
@@ -766,6 +767,27 @@ async def _read_jsonrpc_response(resp: aiohttp.ClientResponse) -> dict:
     return await resp.json()
 
 
+def _needs_authorization(
+    status_code: int, resp_headers: Mapping[str, str], sent_headers: Mapping[str, str]
+) -> bool:
+    """True when a remote probe response means "authenticate", not "broken".
+
+    The runtime completes OAuth and holds the token; the probe does not. So a
+    tokenless probe of an OAuth server gets 401 (or 403 with a
+    ``WWW-Authenticate`` challenge). Treat that as ``needs_auth``.
+
+    A static ``Authorization`` header in the config is a different case: the
+    caller supplied a credential and it was rejected, which is a real error.
+    """
+    if any(k.lower() == "authorization" for k in sent_headers):
+        return False
+    if status_code == 401:
+        return True
+    if status_code == 403 and any(k.lower() == "www-authenticate" for k in resp_headers):
+        return True
+    return False
+
+
 async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
     """Probe a remote Streamable HTTP MCP server via POST."""
     server.status = "probing"
@@ -790,8 +812,18 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(server.url, json=init_body, headers=hdrs) as resp:
                 if resp.status != 200:
-                    server.status = "error"
-                    server.error = f"HTTP {resp.status}"
+                    if _needs_authorization(resp.status, resp.headers, server.headers):
+                        # A remote OAuth server answers a tokenless probe with
+                        # 401 (or 403 + WWW-Authenticate). That is the expected
+                        # reply, not a fault: the kiro-cli runtime holds the
+                        # OAuth token and calls the server fine. The probe never
+                        # sees that token (KiroCrew keeps no credentials), so
+                        # report "needs_auth" instead of a misleading error.
+                        server.status = "needs_auth"
+                        server.error = ""
+                    else:
+                        server.status = "error"
+                        server.error = f"HTTP {resp.status}"
                     _cache_probe(server)
                     return server
                 data = await _read_jsonrpc_response(resp)
