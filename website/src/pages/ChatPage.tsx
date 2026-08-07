@@ -101,6 +101,7 @@ import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiv
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
+import { usePushToTalk } from '../hooks/usePushToTalk'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import type { TurnStats } from './chat/AssistantMessage'
@@ -1569,50 +1570,86 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // is only re-created when they change. `[voice]` would recreate every
   // render (hooks don't memoize their return by default), re-rendering all
   // child components that receive `toggleVoice` as a prop.
-  const toggleVoice = useCallback(() => {
+  /**
+   * Start voice capture, with the gating and state resets every entry point
+   * needs. Extracted from `toggleVoice` so the push-to-talk key driver
+   * (`usePushToTalk`) goes through the SAME preamble — calling `voice.start()`
+   * raw would skip the disarm reset and the frozen-snapshot clear, and a
+   * key-started dictation would then be rebuilt from stale pre-dictation text.
+   *
+   * RETURNS the start promise. Load-bearing, not incidental: `usePushToTalk`
+   * chains on it to stop a session whose async startup only finished after the
+   * key was already released. Swallowing it here leaves that guard unreachable
+   * and the microphone open with nothing holding it.
+   *
+   * `silent` suppresses the "voice needs setting up" modal. The key binding is a
+   * PASSIVE trigger — a bare modifier is also an ordinary typing modifier — so a
+   * keystroke that used to type a character must never throw an unsolicited
+   * dialog. Clicking the mic button is a deliberate request and still explains
+   * itself.
+   */
+  const startVoice = useCallback((opts?: { silent?: boolean }): Promise<void> | void => {
     // Starting a recording while server-side STT is disabled would capture
     // audio that never gets transcribed. Point the user at the enable setting
-    // instead. Guard on !recording so this only gates the *start* — stopping
-    // an in-progress recording is always allowed.
-    if (!voice.recording && (!sttConfigLoaded || !sttEnabled || !sttAvailable)) {
-      setVoiceSetupOpen(true)
+    // instead — unless this came from the keyboard (see `silent`).
+    if (!sttConfigLoaded || !sttEnabled || !sttAvailable) {
+      if (!opts?.silent) setVoiceSetupOpen(true)
       return
     }
-    if (!voice.recording) {
-      // Exclusive sessions: the mic is a single shared device, so refuse to
-      // START a new recording while another session's transcription is still
-      // in flight (voice.transcribing). This is what keeps voice single-session
-      // — no two recordings/transcriptions ever overlap — so the busy state
-      // needs only a single owner and can never be misattributed. Stopping an
-      // in-progress recording (the else path) is always allowed.
-      if (voice.transcribing) return
-      sttDisarmedRef.current = false
-      // Reset stale snapshot from a prior session that ended without
-      // finals — otherwise onPartial sees a non-null ref, skips
-      // re-snapshotting, and text typed between sessions is dropped.
-      frozenInputRef.current = null
-      frozenCaretRef.current = null
-    } else if (streamEnabledRef.current) {
-      // Manual stop of a STREAMING recording: streamStop() drains the socket
-      // asynchronously and a final can still arrive. The dictated text is
-      // already in the composer (onPartial writes each hypothesis into `input`),
-      // so disarm to drop that draining final — otherwise it rebuilds from the
-      // stale pre-dictation frozenInputRef and clobbers any text typed while the
-      // socket drains. (Batch is untouched: its onstop transcript is the ONLY
-      // copy and must land, so it is never disarmed here.)
+    // Exclusive sessions: the mic is a single shared device, so refuse to
+    // START a new recording while another session's transcription is still
+    // in flight (voice.transcribing). This is what keeps voice single-session
+    // — no two recordings/transcriptions ever overlap — so the busy state
+    // needs only a single owner and can never be misattributed.
+    if (voice.transcribing) return
+    sttDisarmedRef.current = false
+    // Reset stale snapshot from a prior session that ended without
+    // finals — otherwise onPartial sees a non-null ref, skips
+    // re-snapshotting, and text typed between sessions is dropped.
+    frozenInputRef.current = null
+    frozenCaretRef.current = null
+    return voice.start()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.transcribing, voice.start, sttEnabled, sttConfigLoaded, sttAvailable])
+
+  /** Stop voice capture. Always allowed — only starting is gated. */
+  const stopVoice = useCallback(() => {
+    // Manual stop of a STREAMING recording: streamStop() drains the socket
+    // asynchronously and a final can still arrive. Disarming drops that draining
+    // final — but ONLY do so once the composer actually holds a copy of the
+    // speech, which is exactly what frozenInputRef being set means (onPartial
+    // snapshots it on the FIRST partial, then writes each hypothesis into
+    // `input`). Then the final is redundant and dropping it prevents a rebuild
+    // from the stale snapshot clobbering text typed while the socket drains.
+    //
+    // With frozenInputRef still null NO partial has landed, so the composer
+    // holds nothing and the draining final is the ONLY copy of the utterance:
+    // disarming there silently deletes what the user just said. That is the
+    // ordinary case for a short press against a COLD stream, where the release
+    // beats the server's first partial. (Batch is likewise never disarmed here:
+    // its onstop transcript is always the only copy.)
+    if (streamEnabledRef.current && frozenInputRef.current !== null) {
       sttDisarmedRef.current = true
     }
-    voice.toggle()
-    // Depend on the individual stable members actually read, not the whole
-    // `voice` object — `[voice]` would recreate this callback every render and
-    // re-render every child that receives `toggleVoice` (see comment above).
+    voice.stop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voice.recording, voice.transcribing, voice.toggle, sttEnabled, sttConfigLoaded, sttAvailable])
+  }, [voice.stop])
+
+  const toggleVoice = useCallback(() => {
+    if (voice.recording) stopVoice()
+    else startVoice()
+    // Depends on the individual member actually read (`voice.recording`), not the
+    // whole `voice` object — `[voice]` would recreate this callback every render
+    // and re-render every child that receives `toggleVoice`. No suppression is
+    // needed here because the split into startVoice/stopVoice left this list
+    // genuinely exhaustive.
+  }, [voice.recording, startVoice, stopVoice])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
   // the composer. Streaming additionally disarms the draining final AND removes
   // the live dictated region from the composer at the frozenInputRef boundary:
-  // onPartial rebuilt the value as `frozen [+ separator] + partial`, so we drop
+  // the region is recomputed with the same `spliceDictation` call onPartial used
+  // (so it matches a mid-draft caret splice, not just an append), and we drop
   // exactly that region — preserving the pre-dictation text verbatim (including
   // its own trailing whitespace) AND any suffix typed after the dictation. When
   // the region can't be verified (the user replaced/edited it), leave the
@@ -1631,14 +1668,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const frozen = frozenInputRef.current
       const p = voiceRef.current.partial
       if (frozen !== null && p) {
-        const sep = frozen === '' || frozen.endsWith(' ') ? '' : ' '
-        const dictated = frozen + sep + p
-        if (cur.startsWith(dictated)) {
-          // The ONLY verifiable case: the composer still begins with exactly the
-          // region onPartial wrote (frozen + separator + partial). Drop that
-          // region and keep the frozen prefix verbatim + any suffix the user
-          // typed after the dictation.
-          setInput(frozen + cur.slice(dictated.length))
+        // Reconstruct the composer value through the SAME pure function that
+        // wrote it. onPartial splices at the snapshotted caret, so for a
+        // mid-draft caret the value is `before + lead + partial + trail + after`
+        // — NOT `frozen + separator + partial`. Re-deriving the region with an
+        // append-only formula failed `startsWith` for every mid-draft dictation
+        // and fell through to the leave-unchanged branch, stranding the partial
+        // in the draft. spliceDictation reads the same frozen caret, so this
+        // reproduces the write exactly for both the append and mid-caret shapes.
+        const written = spliceDictation(frozen, p).value
+        if (cur.startsWith(written)) {
+          // The composer still begins with exactly the region onPartial wrote.
+          // Restore the pre-dictation text verbatim and keep any suffix the user
+          // typed after it.
+          setInput(frozen + cur.slice(written.length))
         }
         // else: the dictated region can't be verified exactly — the user edited
         // or replaced it (e.g. deleted the separator, or typed their own text
@@ -1650,10 +1693,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
       // (frozen===null, or no current partial: nothing verifiably removable —
       // leave the composer as-is rather than risk clobbering user text.)
+      // Clear BOTH halves of the snapshot: they are written together in
+      // onPartial and a surviving caret would aim the next session's first
+      // splice at a position from the discarded one.
       frozenInputRef.current = null
+      frozenCaretRef.current = null
     }
     voiceRef.current.cancel()
-  }, [])
+  }, [spliceDictation])
+
+  // Push-to-talk / tap-to-toggle keyboard binding (default: hold right ⌥ on
+  // macOS, ⌥⇧Space elsewhere). Routed through startVoice/stopVoice rather than
+  // voice.start/stop so a key-driven dictation gets the same gating and
+  // snapshot resets as the mic button, and `cancelVoice` — NOT the hook's raw
+  // cancel — for the discard. Since capture now opens on the keydown, a fast
+  // partial can reach the composer before the press is revealed as a chord or a
+  // sub-threshold tap, and the raw cancel would strand that text; `cancelVoice`
+  // runs the streaming rollback that removes the dictated region (and no-ops
+  // when nothing verifiably removable was written). No `prewarm`: the driver
+  // opens capture on the keydown itself, so there is no warm-up step to
+  // schedule.
+  usePushToTalk(
+    {
+      recording: voice.recording,
+      // silent: a bare modifier is also an ordinary typing modifier, so a
+      // keystroke must never raise the voice-setup modal on its own.
+      start: () => startVoice({ silent: true }),
+      stop: stopVoice,
+      cancel: cancelVoice,
+    },
+    { disabled: !voiceInputSupported },
+  )
   // Stop any in-flight recording and clear the streaming prefix when the user
   // switches slots. The mic is a single shared device, so a recording can't
   // follow the user to another session; a BATCH transcript is still delivered

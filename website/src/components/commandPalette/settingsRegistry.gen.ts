@@ -637,6 +637,13 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.how-the-key-works",
+    "label": "How the key works",
+    "tab": "voice",
+    "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
     "id": "voice.language",
     "label": "Language",
     "tab": "voice",
@@ -720,6 +727,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
     "tab": "voice",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "voice.tap-vs-hold-cutoff",
+    "label": "Tap vs. hold cutoff",
+    "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on.",
+    "tab": "voice",
+    "type": "stepper",
     "occurrence": 1
   },
   {
