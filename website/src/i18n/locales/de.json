@@ -3641,6 +3641,8 @@
       "close": "Schließen",
       "no_scope": "Keine {{scope}}",
       "pinned": "Angepinnt",
+      "retry": "Wiederholen",
+      "something_went_wrong": "Etwas ist schiefgelaufen",
       "providers": {
         "recentsProvider": {
           "approve": "Genehmigen",

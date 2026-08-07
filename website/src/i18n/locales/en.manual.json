@@ -726,6 +726,8 @@
     },
     "commandPalette": {
       "no_scope": "No {{scope}}",
+      "something_went_wrong": "Something went wrong",
+      "retry": "Retry",
       "providers": {
         "recentsProvider": {
           "approve": "Approve",

@@ -3769,6 +3769,8 @@
       "close": "Cerrar",
       "no_scope": "No hay {{scope}}",
       "pinned": "Fijados",
+      "retry": "Reintentar",
+      "something_went_wrong": "Algo salió mal",
       "providers": {
         "recentsProvider": {
           "approve": "Aprobar",

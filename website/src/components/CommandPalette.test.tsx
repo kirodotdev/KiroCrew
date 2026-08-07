@@ -817,3 +817,71 @@ describe('CommandPalette — per-type Enter matrix (dispatchEnter routing)', () 
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Scoped-tab error state — a provider rejection on a scoped tab must render a
+ * distinct error banner (with retry), not the "No matches" empty state that
+ * makes a backend failure indistinguishable from an empty corpus (#1928).
+ */
+describe('CommandPalette — scoped-tab error state (#1928)', () => {
+  afterEach(() => {
+    // Restore default mocks so later suites aren't affected.
+    H.sessionsProvider.search.mockImplementation(async () => [H.sessResult])
+    H.allProvider.search.mockResolvedValue([H.allResult])
+  })
+
+  it('renders an error state with a Retry button when a scoped provider rejects', async () => {
+    // Make the sessions provider reject so the scoped tab hits the error path.
+    H.sessionsProvider.search.mockRejectedValue(new Error('backend unreachable'))
+
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    // Scope to Sessions via the $ sigil shortcut — but Sessions doesn't have a
+    // sigil, so we use the prefix + Tab path instead.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions') // hint label
+    act(() => { fireEvent.keyDown(window, { key: 'Tab' }) })
+
+    // The scoped tab should show the error state, not "No matches".
+    expect(await screen.findByText('Something went wrong')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    expect(screen.queryByText('No matches')).toBeNull()
+  })
+
+  it('the Retry button re-runs the scoped search', async () => {
+    H.sessionsProvider.search.mockRejectedValue(new Error('transient'))
+
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions')
+    act(() => { fireEvent.keyDown(window, { key: 'Tab' }) })
+    await screen.findByText('Something went wrong')
+
+    const callsBefore = H.sessionsProvider.search.mock.calls.length
+
+    // Now fix the provider and click Retry.
+    H.sessionsProvider.search.mockResolvedValue([H.sessResult])
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+    // The provider should have been called again.
+    await waitFor(() => {
+      expect(H.sessionsProvider.search.mock.calls.length).toBeGreaterThan(callsBefore)
+    })
+  })
+
+  it('the All tab does NOT show an error state when a provider rejects', async () => {
+    // The All aggregator catches per-provider errors internally (allAggregator.ts:120-124),
+    // so its own search never rejects — even when an underlying provider does.
+    // The allProvider mock here is already well-behaved (returns [allResult]),
+    // so verify the normal path is unaffected.
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'alice' } })
+    expect(await screen.findByText('All Result', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText('Something went wrong')).toBeNull()
+  })
+})

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { createPortal } from 'react-dom'
-import { Search, X, Pin, MessageSquare, Clock, Plus } from 'lucide-react'
+import { Search, X, Pin, MessageSquare, Clock, Plus, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 
 import { useAppSelector } from '../store'
@@ -357,7 +357,7 @@ export default function CommandPalette({
         : '',
     [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
   )
-  const { data: results = [], isLoading: loading } = useQuery({
+  const { data: results = [], isLoading: loading, isError, refetch } = useQuery({
     queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint],
     queryFn: () => Promise.resolve(activeProvider.search(debouncedQuery)),
     enabled: open,
@@ -455,8 +455,27 @@ export default function CommandPalette({
 
   if (!open) return null
 
+  // A scoped tab whose provider rejected shows a distinct error state so the
+  // user can tell a backend failure from a genuinely empty corpus.  The All
+  // tab's aggregator already guards each provider individually (contributes []
+  // on failure), so the error branch only fires for scoped views.
+  const scopedError = isError && !!scopeProvider
+
   const emptyState = loading ? (
     <div className="px-3 py-6 text-center text-[12px] text-muted">{i18nT('components.commandPalette.searching')}</div>
+  ) : scopedError ? (
+    <div className="px-3 py-6 text-center text-[12px] text-muted" role="alert">
+      <AlertTriangle size={16} className="inline-block mb-1 text-danger lucide-inline" aria-hidden="true" />
+      <div className="mt-1">{i18nT('components.commandPalette.something_went_wrong')}</div>
+      <button
+        type="button"
+        className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-text bg-bg-hover border border-border cursor-pointer hover:bg-accent-subtle transition-colors"
+        onClick={() => refetch()}
+      >
+        <RefreshCw size={12} className="lucide-inline" />
+        {i18nT('components.commandPalette.retry')}
+      </button>
+    </div>
   ) : (
     <div className="px-3 py-6 text-center text-[12px] text-muted">
       {query.trim()

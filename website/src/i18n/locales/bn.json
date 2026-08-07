@@ -3722,6 +3722,8 @@
       "close": "বন্ধ করুন",
       "no_scope": "কোনো {{scope}} নেই",
       "pinned": "পিন করা",
+      "retry": "পুনরায় চেষ্টা করুন",
+      "something_went_wrong": "কিছু একটা ভুল হয়েছে",
       "providers": {
         "recentsProvider": {
           "approve": "অনুমোদন",

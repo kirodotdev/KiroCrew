@@ -132,7 +132,10 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
       const q = query.trim()
       if (q.length > 0 && q.length < SESSIONS_MIN_QUERY_CHARS) return []
       // Folders resolve in parallel with the search; a folders failure only
-      // costs the chips, never the results.
+      // costs the chip labels, never the results.  This catch is intentional:
+      // folders are cosmetic, so a failed fetch degrades to "no chips" rather
+      // than rejecting the entire search (which would now surface as an error
+      // state on the scoped tab — see CommandPalette's `scopedError` branch).
       const [data, folders] = await Promise.all([
         fetchSessions(q),
         fetchFolders ? fetchFolders().catch(() => []) : Promise.resolve([]),
