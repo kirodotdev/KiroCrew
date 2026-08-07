@@ -244,7 +244,12 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
 
 
 async def api_spawn_steer(request: web.Request) -> web.Response:
-    """POST /api/spawn/{agent_id}/steer — inject into a RUNNING run's turn."""
+    """POST /api/spawn/{agent_id}/steer — inject into a RUNNING run's turn.
+
+    Body: ``{message, mode?}``. ``mode="interrupt"`` (default) injects into
+    the running turn; ``mode="follow_up"`` queues the message for delivery as
+    a continuation AFTER the run's current turn completes (never interrupts).
+    """
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response(
@@ -263,7 +268,16 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "message is required", "code": "message_required"}, status=400
         )
-    ok, detail = await state.subagents.steer_run(agent_id, message)
+    mode = str(body.get("mode", "") or "interrupt").strip()
+    if mode not in ("interrupt", "follow_up"):
+        return web.json_response(
+            {"error": "mode must be 'interrupt' or 'follow_up'", "code": "invalid_mode"},
+            status=400,
+        )
+    if mode == "follow_up":
+        ok, detail = await state.subagents.follow_up_run(agent_id, message)
+    else:
+        ok, detail = await state.subagents.steer_run(agent_id, message)
     if not ok:
         if detail == "not_found":
             return web.json_response(
@@ -285,7 +299,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": detail, "code": "steer_failed"}, status=502
         )
-    return web.json_response({"id": agent_id, "status": "steered"})
+    return web.json_response(
+        {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
+    )
 
 
 async def api_spawn_release(request: web.Request) -> web.Response:

@@ -615,7 +615,9 @@ class TestSpawnLifecycleTools:
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
             out = _call_tool("spawn_steer", {"agent_id": "a1", "message": "stop that"})
         assert m.call_args[0][0] == "/api/spawn/a1/steer"
-        assert m.call_args[0][1] == {"message": "stop that"}
+        # mode defaults to "interrupt" (spawn_steer's original semantics);
+        # "follow_up" queues for delivery after the run's turn completes.
+        assert m.call_args[0][1] == {"message": "stop that", "mode": "interrupt"}
         assert "Steered run a1" in out
 
     def test_steer_propagates_backend_error(self):

@@ -722,6 +722,11 @@ def test_no_raw_cancel_outside_chokepoint():
         # Shielded terminal-report tasks drained at shutdown — also not managed
         # runs; cancelling them cannot trigger a respawn.
         "report_task.cancel()",
+        # follow_up watchers (spawn_steer mode="follow_up") — observers, not
+        # managed runs: no terminal marker applies, and cancelling one cannot
+        # trigger a respawn (it only ever DISPATCHES via continue_conversation,
+        # which cancel_all pre-empts by cancelling watchers first).
+        "followup_watcher.cancel()",
     )
     chokepoint_src = inspect.getsource(
         subagent_mod.SubagentManager._cancel_task_intentionally

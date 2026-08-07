@@ -942,6 +942,7 @@ SPAWN_STEER_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("agent_id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("mode", str, pattern=re.compile(r"^(interrupt|follow_up)$")),
     ],
 )
 

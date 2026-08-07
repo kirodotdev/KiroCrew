@@ -364,7 +364,12 @@ def _list_tools() -> list[dict[str, Any]]:
                 "session_starting error if it still isn't up — retry then); "
                 "runs still WAITING in the spawn queue return not_found until "
                 "they start. Only works while the run is executing; for a "
-                "finished continuable run use spawn_continue instead."
+                "finished continuable run use spawn_continue instead. "
+                "mode='follow_up' queues the message instead of interrupting: "
+                "it is delivered as a continuation on the run's conversation "
+                "AFTER its current turn completes — use it when the correction "
+                "can wait and interrupting critical work mid-execution would "
+                "do more harm than good."
             ),
             "inputSchema": {
                 "type": "object",
@@ -376,6 +381,18 @@ def _list_tools() -> list[dict[str, Any]]:
                     "message": {
                         "type": "string",
                         "description": "Instruction to inject into the running turn",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["interrupt", "follow_up"],
+                        "description": (
+                            "interrupt (default): inject into the running turn "
+                            "now. follow_up: wait for the current turn to "
+                            "complete, then deliver as a continuation on the "
+                            "run's conversation (its result arrives as a "
+                            "separate completion event; multiple queued "
+                            "follow-ups drain as one continuation)"
+                        ),
                     },
                 },
                 "required": ["agent_id", "message"],
@@ -3658,11 +3675,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         args = validate_tool_args(args, SPAWN_STEER_SCHEMA)
         agent_id = (args.get("agent_id") or "").strip()
         message = (args.get("message") or "").strip()
+        mode = (args.get("mode") or "interrupt").strip()
         if not agent_id or not message:
             return "Error: agent_id and message are required"
-        d = _post(f"/api/spawn/{agent_id}/steer", {"message": message})
+        d = _post(f"/api/spawn/{agent_id}/steer", {"message": message, "mode": mode})
         if d.get("error"):
             return f"Error: {d['error']}"
+        if mode == "follow_up":
+            return (
+                f"Queued follow-up for run {agent_id}: it will be delivered as "
+                "a continuation on the run's conversation after its current "
+                "turn completes. The continuation's result arrives as a "
+                "separate [Subagent completion event] — after this run's own."
+            )
         return (
             f"Steered run {agent_id}: the message was injected into its "
             "running turn. Its completion event will reflect the correction."
