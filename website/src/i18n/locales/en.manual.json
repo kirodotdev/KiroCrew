@@ -2333,7 +2333,11 @@
       },
       "sideChat": {
         "ask_a_side_question_2": "Ask a side question…",
-        "copied": "Copied!"
+        "copied": "Copied!",
+        "queue_cancel_failed": "Could not cancel that queued question",
+        "queue_edit_failed": "Could not update that queued question",
+        "steer_demoted_to_queue": "The turn ended — queued instead",
+        "steered": "Steered"
       },
       "sidePanel": {
         "hide_line_numbers": "Hide line numbers",

@@ -7096,8 +7096,12 @@
         "context_from": "संदर्भ:",
         "copied": "कॉपी किया गया!",
         "copy": "कॉपी करें",
+        "queue_cancel_failed": "कतार में लगे उस प्रश्न को रद्द नहीं किया जा सका",
+        "queue_edit_failed": "कतार में लगे उस प्रश्न को अपडेट नहीं किया जा सका",
         "refresh_context": "संदर्भ ताज़ा करें",
         "send": "भेजें",
+        "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
+        "steered": "स्टीयर किया गया",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",
         "turn_other": "{{count}} टर्न"

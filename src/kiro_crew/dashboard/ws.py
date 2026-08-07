@@ -26,6 +26,7 @@ _WS_COUNTS_CACHE_TTL = 30  # seconds between refreshing lesson/cron counts
 SUBAGENT_REPLAY_BATCH_THRESHOLD = 8
 
 SIDE_RESULT_EVENT = "chat.side_result"
+SIDE_QUEUE_EVENT = "chat.side_queue"
 SIDE_KIND = "side"
 
 
@@ -64,6 +65,7 @@ def broadcast_side_result(
     is_error: bool = False,
     final: bool = False,
     ts: float | None = None,
+    steer: bool = False,
 ) -> None:
     """Broadcast a side conversation event on the dedicated side channel.
 
@@ -95,7 +97,56 @@ def broadcast_side_result(
         payload["is_error"] = True
     if final:
         payload["final"] = True
+    if steer:
+        payload["steer"] = True
     state.broadcast_ws(SIDE_RESULT_EVENT, payload)
+
+
+def broadcast_side_queue(
+    state: DashboardState,
+    *,
+    slot_key: str,
+    action: str,
+    queue_id: str,
+    content: str = "",
+    depth: int = 0,
+    front: bool = False,
+    steer_id: str = "",
+) -> None:
+    """Broadcast a side-queue mutation on the dedicated side channel.
+
+    ``action`` is one of ``push`` | ``edit`` | ``cancel`` | ``drain``. ``drain``
+    fires when the entry leaves the queue to become the next side turn, so the
+    frontend can retire its card without waiting for the user frame. ``depth``
+    is the queue length AFTER the mutation, letting a client that missed a frame
+    resync its badge without a refetch.
+
+    ``front`` says the entry went to the HEAD of the queue rather than the tail —
+    which is how a requeued steer and a failed drain's entry land. Without it a
+    client appends them and shows a different next question than the backend will
+    actually run.
+
+    Kept separate from ``chat.side_result`` so a queue mutation never enters the
+    transcript reducer, and separate from the main chat's ``queue_push`` so side
+    queue entries can never be mistaken for parent-slot turns.
+    """
+    payload: dict[str, object] = {
+        "kind": SIDE_KIND,
+        "slot": slot_key,
+        "action": action,
+        "queue_id": queue_id,
+        "depth": depth,
+        "ts": time.time(),
+    }
+    if front:
+        payload["front"] = True
+    if steer_id:
+        # Not sensitive — an opaque ledger id. It lets the submitting client match
+        # its own RAW steer text to this card, whose content is redacted here.
+        payload["steer_id"] = steer_id
+    if content:
+        payload["content"] = redact_credentials(redact_exfiltration_urls(content)[0])[0]
+    state.broadcast_ws(SIDE_QUEUE_EVENT, payload)
 
 
 def _check_ws_origin(request: web.Request) -> None:
