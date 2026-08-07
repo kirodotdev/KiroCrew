@@ -33,14 +33,20 @@ while guaranteeing the underlying fd is never closed until the process exits.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
+import re
+import socket
+import stat
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.platform_compat import pid_exists
 
 logger = logging.getLogger(__name__)
 
@@ -137,26 +143,332 @@ def get_dumps_dir() -> Path:
 
 
 def _list_dumps(dumps_dir: Path | None = None) -> list[Path]:
-    """Return existing dump files sorted oldest-first."""
+    """Return existing dump files sorted oldest-first.
+
+    A concurrent gateway on the same data home (isolated pod, overlapping
+    restart) can unlink a dump between ``iterdir()`` and ``stat()``. Vanished
+    entries are skipped instead of letting ``FileNotFoundError`` propagate —
+    the startup sweep runs on every boot, so that raise would abort gateway
+    startup.
+    """
     d = dumps_dir or get_dumps_dir()
     if not d.is_dir():
         return []
-    dumps = sorted(
-        (f for f in d.iterdir() if f.name.startswith(DUMP_PREFIX) and f.suffix == DUMP_SUFFIX),
-        key=lambda p: p.stat().st_mtime,
-    )
-    return dumps
-
-
-def rotate_dumps(max_dumps: int = _DEFAULT_MAX_DUMPS, dumps_dir: Path | None = None) -> int:
-    """Remove oldest dumps if count exceeds max_dumps.  Returns number removed."""
-    dumps = _list_dumps(dumps_dir)
-    removed = 0
-    # Keep max_dumps - 1 so there's room for the new one we're about to create
-    while len(dumps) > max_dumps - 1:
-        oldest = dumps.pop(0)
+    entries: list[tuple[float, Path]] = []
+    for f in d.iterdir():
+        if not (f.name.startswith(DUMP_PREFIX) and f.suffix == DUMP_SUFFIX):
+            continue
         try:
-            oldest.unlink()
+            entries.append((f.stat().st_mtime, f))
+        except OSError:
+            continue  # vanished mid-listing — a concurrent sweep got it first
+    entries.sort(key=lambda t: t[0])
+    return [p for _, p in entries]
+
+
+# The header written by open_dump_file() is 3 comment lines + 1 blank line.
+# Anything beyond that is real faulthandler stack content.
+_HEADER_LINES = 4
+
+_PID_LINE_RE = re.compile(r"^# PID: (\d+)(?: @ (\S+))?(?: start=(\S+))?\s*$", re.MULTILINE)
+
+# Ceiling for a plausible PID. Linux pid_max tops out at 2**22; Windows and
+# macOS stay far below 2**31-1. Anything above this is a corrupt header, not a
+# process — and values past the C int range would overflow ``os.kill``.
+_PID_MAX = 2**31 - 1
+
+
+# A real header is 4 short lines (~200 bytes); anything the sweep needs to see
+# — header-only-ness, the ``# PID:`` line — sits comfortably inside this bound.
+_HEADER_SCAN_BYTES = 8192
+
+
+def _read_dump_head(dump_path: Path) -> tuple[str, bool]:
+    """Read at most ``_HEADER_SCAN_BYTES`` bytes of a REGULAR dump file.
+
+    Returns ``(text, truncated)`` — ``truncated`` is computed on BYTES before
+    decoding (multibyte characters shrink the decoded length, so a character
+    count cannot detect the cut). Opens with ``O_NOFOLLOW`` (symlink ->
+    ``ELOOP``) and verifies the fd is a regular file, so a ``loopstall-*.txt``
+    symlinked at ``/dev/zero`` (or a FIFO) cannot pull an unbounded read into
+    the startup sweep. Raises ``OSError`` on refusal or read failure — callers
+    already treat that as "leave the file alone".
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(str(dump_path), flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"not a regular file: {dump_path}")
+        chunks: list[bytes] = []
+        remaining = _HEADER_SCAN_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    truncated = len(data) > _HEADER_SCAN_BYTES
+    return data[:_HEADER_SCAN_BYTES].decode("utf-8", errors="replace"), truncated
+
+
+def _is_header_only(dump_path: Path) -> bool:
+    """True iff *dump_path* contains only the startup header (no thread stacks).
+
+    A header-only dump means that gateway session never wedged — the file was
+    pre-created at startup (faulthandler needs a stable fd for the process
+    lifetime) and faulthandler never fired into it.  Raises ``OSError`` through
+    to the caller on read failure so callers can choose their own conservative
+    fallback.
+    """
+    content, truncated = _read_dump_head(dump_path)
+    if truncated:
+        return False  # far larger than any header — has stack content
+    return len(content.splitlines()) <= _HEADER_LINES
+
+
+@functools.lru_cache(maxsize=1)
+def _pid_domain() -> str:
+    """Identify the PID domain this process's PID is meaningful in.
+
+    A PID only names a process within one kernel PID table. The data home can
+    be shared across tables — an NFS/network home mounted on several hosts, or
+    a container bind-mounting the host's data home into its own PID namespace
+    — and there a locally-unknown PID says nothing about the owning gateway's
+    liveness. The domain string (hostname, plus the PID-namespace id on Linux)
+    is recorded next to the PID at header-write time so later readers can tell
+    "this PID is checkable here" from "this PID belongs to a table I cannot
+    see".
+    """
+    host = socket.gethostname() or "unknown-host"
+    try:
+        # Two containers sharing a bind-mounted data home can report the same
+        # hostname while having disjoint PID tables; the namespace id
+        # disambiguates. Absent /proc (macOS, Windows), hostname suffices.
+        ns = os.readlink("/proc/self/ns/pid")
+        host = f"{host}/{ns}"
+    except OSError:
+        pass
+    # The header line is parsed with a whitespace-delimited token; keep the
+    # recorded domain one token even if the hostname contains whitespace.
+    return re.sub(r"\s+", "-", host)
+
+
+def _pid_start_id(pid: int) -> str | None:
+    """Best-effort start identity of *pid* — distinguishes PID reuse.
+
+    A PID probing alive is necessary but not sufficient for ownership: the
+    recorded gateway may have exited and the kernel may have handed its PID to
+    an unrelated process. The starttime field (22nd in ``/proc/<pid>/stat``,
+    clock ticks since boot) is fixed for a process's lifetime, so a recorded
+    start ID that no longer matches means the owner is GONE even though the
+    PID is live. Returns ``None`` where the probe is unavailable (no procfs:
+    macOS, Windows) or unreadable — callers must then fall back to plain PID
+    liveness (conservative: protects a possibly-reused PID's file rather than
+    risking deletion of a live owner's fd target).
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read(4096)
+        # Field 2 (comm) may contain spaces/parens; fields after the LAST ')'
+        # are unambiguous. starttime is field 22 overall -> index 19 after it.
+        tail = stat.rsplit(b")", 1)[1].split()
+        return tail[19].decode("ascii")
+    except (OSError, IndexError, UnicodeDecodeError):
+        return None
+
+
+def _dump_owner(dump_path: Path) -> tuple[int, str | None, str | None] | None:
+    """Extract ``(pid, pid_domain, start_id)`` from a dump file's header.
+
+    ``pid_domain`` and ``start_id`` are ``None`` for headers written before
+    each was recorded. Returns ``None`` outright for anything that cannot be a
+    real PID — including digit strings too long to convert or values beyond
+    the pid_t ceiling, which would otherwise raise out of ``int()`` or
+    overflow the liveness probe's ``os.kill`` — so a corrupt header degrades
+    to "leave the file alone" instead of aborting the startup sweep.
+    """
+    try:
+        m = _PID_LINE_RE.search(_read_dump_head(dump_path)[0])
+    except OSError:
+        return None
+    if m is None:
+        return None
+    try:
+        pid = int(m.group(1))
+    except ValueError:
+        return None
+    if not 0 < pid <= _PID_MAX:
+        return None
+    return pid, m.group(2), m.group(3)
+
+
+def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool | None:
+    """Best-effort liveness of the gateway that owns *dump_path*.
+
+    Returns ``True`` (owner confirmed alive), ``False`` (owner confirmed
+    dead), or ``None`` when ownership cannot be established: no parseable
+    ``# PID:`` line, or a PID from a different PID domain (another host
+    sharing the data home, another PID namespace) where a local liveness
+    probe is meaningless — probing such a PID locally would misread an
+    active remote gateway as dead.
+
+    PID reuse: a live PID alone does not prove the OWNER is alive — the
+    recorded gateway may have exited and the kernel may have recycled its PID.
+    When the header recorded a start ID and the live process's start ID
+    differs, the owner is confirmed dead (``False``) despite the live PID.
+    When either side lacks a start ID (legacy header, no procfs), plain PID
+    liveness stands — conservative, since ``True`` only ever protects a file.
+    """
+    owner = _dump_owner(dump_path)
+    if owner is None:
+        return None
+    pid, domain, recorded_start = owner
+    if domain is None or domain != _pid_domain():
+        return None
+    if pid == os.getpid():
+        return True
+    if not is_pid_alive(pid):
+        return False
+    if recorded_start is not None:
+        current_start = _pid_start_id(pid)
+        if current_start is not None and current_start != recorded_start:
+            return False  # PID recycled: live process is not the owner
+    return True
+
+
+def _owner_foreign(dump_path: Path) -> bool:
+    """True iff the dump's header names an owner in a FOREIGN PID domain.
+
+    Distinct from "ownership unknown" (no/corrupt PID line): a foreign-domain
+    owner may be a LIVE gateway on another host or namespace sharing the data
+    home, whose faulthandler still holds this file's fd — deleting the path
+    would send its future stall evidence to an unreachable inode. Files with
+    no attributable owner carry no such risk and stay reapable.
+    """
+    owner = _dump_owner(dump_path)
+    return owner is not None and owner[1] is not None and owner[1] != _pid_domain()
+
+
+def sweep_stale_dumps(
+    dumps_dir: Path | None = None,
+    *,
+    is_pid_alive: Callable[[int], bool] = pid_exists,
+) -> int:
+    """Remove header-only dumps left behind by dead gateway sessions.
+
+    Every gateway startup pre-creates a dump file so faulthandler has a stable
+    fd; a session that exits without ever wedging leaves that file behind as a
+    4-line header with zero diagnostic content.  Restart the gateway often
+    enough and those empty files pile up to the rotation cap — padding the
+    diagnostics bundle's per-bundle dump quota and, worse, aging REAL stall
+    dumps out of rotation (``rotate_dumps`` removes oldest-first by mtime, so
+    nine clean restarts after a wedge would delete the only evidence of it).
+
+    A dump is swept iff ALL of:
+    * it is header-only (a dump with stacks is evidence — never touched), and
+    * its header carries a parseable ``# PID:`` line from THIS PID domain
+      (same host and, on Linux, same PID namespace — a PID recorded by a
+      gateway on another host sharing the data home, or in another PID
+      namespace, cannot be liveness-checked locally and is left alone), and
+    * that PID is confirmed no longer alive (a live PID means a concurrently
+      running gateway on this data home still owns the file — e.g. an
+      isolated pod or an overlapping restart — so it is left alone).
+
+    Unreadable files, headers without a PID line, and headers whose PID
+    belongs to a foreign PID domain are all left alone (conservative:
+    rotation will reap them eventually).  Returns the number of files
+    removed.
+    """
+    removed = 0
+    for path in _list_dumps(dumps_dir):
+        if _owner_alive(path, is_pid_alive) is not False:
+            continue  # owner alive, or ownership unknowable — leave it alone
+        # Classify only AFTER the owner is confirmed dead: a dead process can
+        # no longer append stacks, so the header-only verdict cannot be
+        # invalidated between this check and the unlink. The reverse order
+        # would race a gateway that wedges (writes stacks) and exits right
+        # after classification — deleting fresh evidence.
+        try:
+            if not _is_header_only(path):
+                continue
+        except OSError:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            logger.debug("could not sweep stale dump %s", path, exc_info=True)
+    if removed:
+        logger.info("swept %d stale header-only crash dump(s) from prior sessions", removed)
+    return removed
+
+
+def rotate_dumps(
+    max_dumps: int = _DEFAULT_MAX_DUMPS,
+    dumps_dir: Path | None = None,
+    *,
+    is_pid_alive: Callable[[int], bool] = pid_exists,
+) -> int:
+    """Remove dumps if count exceeds max_dumps.  Returns number removed.
+
+    Header-only dumps (no stack content — the session never wedged) are
+    sacrificed first, oldest-first; dumps with real stacks are only removed
+    once no header-only candidates remain.  This keeps genuine stall evidence
+    alive as long as possible when empty startup files share the directory.
+
+    A dump whose ``# PID:`` owner is this process, or is confirmed alive in
+    this PID domain, is never a victim: faulthandler holds that file's fd for
+    the owning session's whole lifetime, so unlinking it would send any later
+    stall evidence to an unreachable inode. Every live gateway's active dump
+    is header-only until it wedges — exactly the class sacrificed first.
+    A dump whose header names a FOREIGN-domain owner (another host or PID
+    namespace sharing the data home) is also never a victim: its owner may be
+    alive with faulthandler holding the fd, and that cannot be checked from
+    here — its own domain's rotation reaps it. Dumps with NO attributable
+    owner (no/corrupt PID line, legacy domain-less headers) stay
+    rotation-eligible and are ranked purely by content — under cap pressure
+    they are removed just as the pre-sweep rotation removed them, so
+    unattributable files cannot pile up unboundedly.
+    """
+    dumps = _list_dumps(dumps_dir)
+
+    def _sacrifice_order(dumps: list[Path]) -> list[Path]:
+        header_only: list[Path] = []
+        unreadable: list[Path] = []
+        stacked: list[Path] = []
+        for p in dumps:
+            if _owner_alive(p, is_pid_alive) is True:
+                continue  # a live session still owns this fd — never a victim
+            if _owner_foreign(p):
+                # A foreign-domain owner (another host/namespace sharing the
+                # data home) cannot be liveness-checked here, and if it IS
+                # alive its faulthandler holds this file's fd — unlinking the
+                # path would send its future stall evidence to an unreachable
+                # inode. Its own gateway's rotation reaps it in its domain.
+                continue
+            try:
+                (header_only if _is_header_only(p) else stacked).append(p)
+            except OSError:
+                # Unreadable is ambiguous: junk (symlink, wrong type) or real
+                # evidence behind a transient read error. Sacrifice it after
+                # known header-only files but before confirmed stack evidence.
+                unreadable.append(p)
+        return header_only + unreadable + stacked
+
+    victims = _sacrifice_order(dumps)
+    # Compute the excess ONCE and attempt exactly that many victims (keep
+    # max_dumps - 1 so there's room for the new one we're about to create).
+    # Counting only successful unlinks would let two overlapping rotations
+    # each treat the other's deletions as "still excess" and remove twice
+    # the intended number of files.
+    excess = len(dumps) - (max_dumps - 1)
+    removed = 0
+    for victim in victims[: max(excess, 0)]:
+        try:
+            victim.unlink()
             removed += 1
         except OSError:
             pass
@@ -191,9 +503,16 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     fd = os.open(str(path), flags, 0o644)
 
     f = DumpFile(fd, path)
-    # Write a header so the file is identifiable even before a dump fires
+    # Write a header so the file is identifiable even before a dump fires.
+    # The PID is qualified with its PID domain (host + PID namespace) so a
+    # later sweep only trusts a local liveness probe for PIDs it can see, and
+    # with the process start ID so a recycled PID cannot masquerade as the
+    # owner (omitted where procfs is unavailable — readers then fall back to
+    # plain PID liveness).
+    start_id = _pid_start_id(os.getpid())
+    start_tok = f" start={start_id}" if start_id is not None else ""
     f.write(f"# KiroCrew loop-stall crash dump — opened {ts}\n")
-    f.write(f"# PID: {os.getpid()}\n")
+    f.write(f"# PID: {os.getpid()} @ {_pid_domain()}{start_tok}\n")
     f.write("# If thread stacks appear below, the event loop wedged and faulthandler fired.\n")
     f.write("\n")
     _active_dump_file = f
@@ -215,12 +534,7 @@ def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
     dumps = _list_dumps(dumps_dir)
     for path in reversed(dumps):
         try:
-            # Header is 4 lines (3 comment lines + blank).  Real dump content
-            # starts after that.
-            content = path.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines()
-            # If there are more than 4 lines, there's actual stack content
-            if len(lines) > 4:
+            if not _is_header_only(path):
                 return path
         except OSError:
             continue
@@ -270,8 +584,7 @@ def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
     """Extract the first N lines of actual stack content from a dump file."""
     try:
         lines = dump_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        # Skip the 4-line header
-        stack_lines = [ln for ln in lines[4:] if ln.strip()]
+        stack_lines = [ln for ln in lines[_HEADER_LINES:] if ln.strip()]
         return stack_lines[:max_lines]
     except OSError:
         return []
@@ -291,8 +604,7 @@ def dump_replay_lines(
     except OSError:
         return [], False
     all_lines = content.splitlines()
-    # Skip the 4-line header
-    stack_lines = [ln for ln in all_lines[4:] if ln.strip()]
+    stack_lines = [ln for ln in all_lines[_HEADER_LINES:] if ln.strip()]
     result: list[str] = []
     total = 0
     for ln in stack_lines:
