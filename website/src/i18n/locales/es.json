@@ -5624,7 +5624,9 @@
       "view_only_clicks_here_don_t_reach_the_page": "Solo visualización: los clics aquí no llegan a la página",
       "waiting_for_the_browser_to_take_a_screenshot": "Esperando a que el navegador haga una captura de pantalla…",
       "web_preview": "Vista previa web",
-      "responsive_desktop": "Adaptable (escritorio)"
+      "responsive_desktop": "Adaptable (escritorio)",
+      "can_t_preview_this_dashboard_here": "Aquí no se puede ver la vista previa de este panel",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL es el propio servidor del panel, que no permite ser incrustado. Introduce en su lugar la URL de un servidor de desarrollo."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Solo agente — sin contexto de Kiro Crew ni MCP",

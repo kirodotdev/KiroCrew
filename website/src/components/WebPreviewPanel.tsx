@@ -198,6 +198,52 @@ function isLoopbackHost(h: string): boolean {
   return LOOPBACK_HOSTS.has(h) || h === 'localhost' || h.endsWith('.localhost')
 }
 
+/** A URL's port as the browser resolves it, so `:80` and an absent port on
+ *  `http://` compare equal. */
+function effectivePort(u: URL): string {
+  if (u.port) return u.port
+  return u.protocol === 'https:' ? '443' : '80'
+}
+
+/**
+ * True when `url` points back at the gateway serving this dashboard.
+ *
+ * Such a target can never render in the preview iframe, and the panel would
+ * otherwise show a blank frame with no explanation. The gateway answers every
+ * request with `X-Frame-Options: SAMEORIGIN` and CSP `frame-ancestors 'self'`,
+ * and `isolatePreviewHost` deliberately swaps the host to the *other* loopback
+ * name for cookie isolation — so the frame is always cross-origin to the
+ * dashboard by construction, and always refused. (Keeping the host identical to
+ * pass `'self'` is not an option: that is the cookie leak the swap exists to
+ * prevent.) Reporting it beats framing it.
+ *
+ * Both sides must be loopback: when the dashboard is reached over a tunnel or a
+ * LAN address, a loopback target is the *user's own* machine — an ordinary dev
+ * server — not this gateway. Ports are compared because the host strings
+ * legitimately differ (`localhost` vs `127.0.0.1`) for one and the same server.
+ * `dashboardOrigin` defaults to the current document location (overridable for
+ * tests).
+ *
+ * Same port on loopback therefore means the same server, with one exception: a
+ * dev server bound to a DIFFERENT loopback interface (`::1`) on the gateway's own
+ * port is a distinct listener that this reports as self. That target degrades to
+ * the explanatory state plus its open-in-browser link rather than to a blank
+ * frame, so the misread costs a click and never silently swallows a page.
+ */
+export function isDashboardOrigin(url: string, dashboardOrigin?: string): boolean {
+  let target: URL
+  try { target = new URL(url) } catch { return false }
+  let origin = dashboardOrigin
+  if (origin == null) {
+    try { origin = typeof window !== 'undefined' ? window.location.href : '' } catch { origin = '' }
+  }
+  if (!origin) return false
+  let self_: URL
+  try { self_ = new URL(origin) } catch { return false }
+  if (!isLoopbackHost(target.hostname) || !isLoopbackHost(self_.hostname)) return false
+  return effectivePort(target) === effectivePort(self_)
+}
+
 /**
  * Normalize a loopback preview URL's host so it is both reachable under the
  * dashboard CSP and cookie-isolated from the dashboard. Two rewrites, in order:
@@ -248,6 +294,21 @@ export function isolatePreviewHost(url: string, dashboardHost?: string): string 
 }
 
 /**
+ * Isolate a host only for a target the panel will actually FRAME.
+ *
+ * The host swap in `isolatePreviewHost` exists to keep the dashboard's
+ * host-scoped cookie out of a framed server. A target that is this gateway is
+ * never framed — it renders the explanatory state instead — so the swap buys no
+ * safety there and actively misreports the target: someone who typed
+ * `127.0.0.1:6776` would be told `localhost:6776` "is the dashboard's own
+ * server", at the exact moment the panel is explaining itself. Show what they
+ * entered.
+ */
+function isolateFrameTarget(url: string): string {
+  return isDashboardOrigin(url) ? url : isolatePreviewHost(url)
+}
+
+/**
  * Feed a URL into a session's Web Preview tab from OUTSIDE the panel — e.g.
  * ChatPage auto-detecting a dev-server URL (or the agent's `kirocrew:preview`
  * marker) in chat. Persists it as the session's preview target (so the panel
@@ -261,7 +322,7 @@ export function setSessionPreviewUrl(sessionKey: string, rawUrl: string, open = 
   if (!sessionKey) return null
   const norm = normalizeUrl(rawUrl)
   if (!norm) return null
-  const isolated = isolatePreviewHost(norm)
+  const isolated = isolateFrameTarget(norm)
   safeSetItem(`${URL_KEY_PREFIX}${sessionKey}`, isolated)
   if (open) {
     window.dispatchEvent(new CustomEvent(PREVIEW_URL_EVENT, { detail: { slot: sessionKey, url: isolated } }))
@@ -281,9 +342,11 @@ export function setSessionPreviewUrl(sessionKey: string, rawUrl: string, open = 
  * Chat-fed URLs are additionally **loopback-only**: agent output (which can be
  * prompt-injected by browsed/read content) can only ever offer a LOCAL dev
  * server, never an external host — the feature's whole purpose is local
- * previews, so this costs nothing. The manual URL bar is not restricted (typing
- * a URL is the user's own action). Returns the normalized+isolated URL, or null
- * when unusable or non-loopback.
+ * previews, so this costs nothing. A URL pointing back at this gateway is
+ * rejected too: it can never be framed (see `isDashboardOrigin`), so offering it
+ * would only produce a Load button that leads to a blank panel. The manual URL
+ * bar is not restricted (typing a URL is the user's own action). Returns the
+ * normalized+isolated URL, or null when unusable, non-loopback, or self.
  */
 export function setSessionPreviewPending(sessionKey: string, rawUrl: string): string | null {
   if (!sessionKey) return null
@@ -294,6 +357,7 @@ export function setSessionPreviewPending(sessionKey: string, rawUrl: string): st
   } catch {
     return null
   }
+  if (isDashboardOrigin(norm)) return null
   const isolated = isolatePreviewHost(norm)
   safeSetItem(`${PENDING_KEY_PREFIX}${sessionKey}`, isolated)
   window.dispatchEvent(new CustomEvent(PREVIEW_PENDING_EVENT, { detail: { slot: sessionKey, url: isolated } }))
@@ -447,7 +511,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     }
     // Isolate defensively in case a legacy same-host value was persisted before
     // isolatePreviewHost existed.
-    saved = saved ? isolatePreviewHost(saved) : ''
+    saved = saved ? isolateFrameTarget(saved) : ''
     let pend = ''
     if (pendingKey) {
       try { pend = localStorage.getItem(pendingKey) || '' } catch { /* ignore */ }
@@ -509,7 +573,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   const commit = useCallback((raw: string) => {
     const norm = normalizeUrl(raw)
     if (!norm) return
-    const isolated = isolatePreviewHost(norm)
+    const isolated = isolateFrameTarget(norm)
     setNav(n => pushNav(n, isolated))
     setDraft(isolated)
     persist(isolated)
@@ -598,6 +662,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     [url],
   )
 
+  // A URL pointing back at this gateway is refused by its own frame-ancestors
+  // policy, which the liveness probe below cannot see (the server is up, so the
+  // probe passes) — detect it so we explain instead of framing a blank page.
+  const selfOrigin = useMemo(() => !!url && isDashboardOrigin(url), [url])
+
   // Liveness probe: a cross-origin iframe cannot tell us its server died — it
   // just keeps showing the last document. While a URL is actually framed (loaded,
   // embeddable, tab active) poll it with a no-cors GET; a connection-refused error
@@ -605,7 +674,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // unreachable and unmount the iframe (clearing the stale page). A later success
   // auto-restores it. (Two strikes tolerates a brief HMR/dev-server restart.)
   useEffect(() => {
-    if (!url || mixedContent || pending || !active) return
+    if (!url || mixedContent || selfOrigin || pending || !active) return
     setUnreachable(false)
     let fails = 0
     let cancelled = false
@@ -628,7 +697,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     void probe()
     const id = setInterval(() => { void probe() }, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [url, reloadKey, mixedContent, pending, active])
+  }, [url, reloadKey, mixedContent, selfOrigin, pending, active])
 
   const iconBtn = 'flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text '
     + 'hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 '
@@ -936,6 +1005,28 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors no-underline"
             >
               <ExternalLink size={13} /> {i18nT('components.webPreviewPanel.open')} {url}
+            </a>
+          </div>
+        ) : selfOrigin ? (
+          // Points back at this gateway, which refuses to be framed. The probe
+          // can't surface this (the server is up), so say so here rather than
+          // leaving an unexplained blank frame.
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            <Globe size={22} className="text-muted" />
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.can_t_preview_this_dashboard_here')}</div>
+            <div className="text-[11px] text-muted max-w-[320px] leading-snug">
+              {i18nT('components.webPreviewPanel.this_url_is_the_dashboard_s_own_server_which_ref')}
+            </div>
+            <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+              {url}
+            </code>
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors no-underline"
+            >
+              <ExternalLink size={13} /> {i18nT('components.webPreviewPanel.open_in_browser')}
             </a>
           </div>
         ) : unreachable ? (

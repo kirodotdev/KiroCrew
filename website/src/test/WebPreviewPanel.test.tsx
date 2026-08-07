@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
-import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, withCacheBuster, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
+import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster, PREVIEW_ENABLE_BROWSE_EVENT, BROWSE_MODE_EVENT } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
 // the button renders under happy-dom (which has no mediaDevices.getDisplayMedia).
@@ -76,6 +76,38 @@ describe('isolatePreviewHost', () => {
   })
 })
 
+
+describe('isDashboardOrigin', () => {
+  it('matches the gateway across the two loopback aliases (same port)', () => {
+    // The real case: the panel is on one alias, the target names the other, and
+    // both are the same listening server — which refuses to be framed.
+    expect(isDashboardOrigin('http://127.0.0.1:6776/api/hooks/agent', 'http://localhost:6776/')).toBe(true)
+    expect(isDashboardOrigin('http://localhost:6776/', 'http://127.0.0.1:6776/chat')).toBe(true)
+    expect(isDashboardOrigin('http://127.0.0.1:6776/', 'http://kirocrew.localhost:6776/')).toBe(true)
+  })
+  it('does not match a dev server on a different port', () => {
+    expect(isDashboardOrigin('http://localhost:5173/', 'http://localhost:6776/')).toBe(false)
+    expect(isDashboardOrigin('http://127.0.0.1:3000/', 'http://localhost:6776/')).toBe(false)
+  })
+  it('treats an absent port as the scheme default, so :80 and bare compare equal', () => {
+    expect(isDashboardOrigin('http://localhost/', 'http://localhost:80/')).toBe(true)
+    expect(isDashboardOrigin('http://localhost:80/', 'http://localhost/')).toBe(true)
+    expect(isDashboardOrigin('http://localhost:8080/', 'http://localhost/')).toBe(false)
+  })
+  it('never matches a non-loopback target', () => {
+    expect(isDashboardOrigin('https://example.com/', 'https://example.com/')).toBe(false)
+  })
+  it('never matches when the dashboard itself is remote', () => {
+    // Over a tunnel or a LAN address, a loopback target is the USER's own
+    // machine — an ordinary dev server — not this gateway.
+    expect(isDashboardOrigin('http://localhost:443/', 'https://crew.example.com/')).toBe(false)
+    expect(isDashboardOrigin('http://localhost:6776/', 'http://192.168.1.4:6776/')).toBe(false)
+  })
+  it('returns false for an unparseable url or an unknown dashboard origin', () => {
+    expect(isDashboardOrigin('not a url', 'http://localhost:6776/')).toBe(false)
+    expect(isDashboardOrigin('http://localhost:6776/', '')).toBe(false)
+  })
+})
 
 describe('withCacheBuster', () => {
   it('appends the reload counter for any non-initial load', () => {
@@ -208,6 +240,73 @@ describe('WebPreviewPanel', () => {
     act(() => { ret = setSessionPreviewPending('sess-1', 'http://myapp.localhost:5173') })
     expect(ret).not.toBeNull()
     expect(screen.getByText('Preview ready')).toBeInTheDocument()
+  })
+
+  it('reports a target that is this gateway instead of framing a blank page', () => {
+    // The dashboard's own origin can never render in the iframe: the gateway
+    // sends frame-ancestors 'self' and the cookie-isolation host swap makes the
+    // frame cross-origin by construction. The liveness probe can't see that
+    // (the server IS up), so the panel has to say so itself.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: `${window.location.host}/api/hooks/agent` } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.getByText("Can't preview this dashboard here")).toBeInTheDocument()
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    // The target is still named, and an escape hatch is offered.
+    expect(screen.getByText(/\/api\/hooks\/agent/)).toBeInTheDocument()
+    expect(screen.getByText('Open in browser')).toBeInTheDocument()
+  })
+
+  it('still frames an ordinary dev server on another port', () => {
+    // Guards the port comparison: only the gateway's own port is refused.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'localhost:5173' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.queryByText("Can't preview this dashboard here")).toBeNull()
+    expect(screen.getByTitle('Web preview')).toBeInTheDocument()
+  })
+
+  it('shows a self-origin target exactly as entered, not host-swapped', () => {
+    // The cookie-isolation swap protects a FRAMED server. This target is never
+    // framed, so swapping it would tell someone who typed the dashboard's own
+    // host that the OTHER loopback alias "is the dashboard's own server" while
+    // the panel is explaining itself. Typing the dashboard's host is what
+    // triggers the swap, so that is the case this pins.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    const typed = `${window.location.host}/api/hooks/agent`
+    fireEvent.change(input, { target: { value: typed } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    expect(screen.getByText("Can't preview this dashboard here")).toBeInTheDocument()
+    const shown = `http://${typed}`
+    expect(screen.getByText(shown)).toBeInTheDocument()
+    expect((input as HTMLInputElement).value).toBe(shown)
+    // The escape hatch points at what they typed too.
+    expect(screen.getByText('Open in browser').closest('a')).toHaveAttribute('href', shown)
+  })
+
+  it('still cookie-isolates an ordinary dev server it WILL frame', () => {
+    // Guards the narrowness of the exemption: only the never-framed self target
+    // keeps its host.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'localhost:5173' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
+    expect(targetOf(frame)).toBe(`http://${iso('localhost')}:5173/`)
+  })
+
+  it('refuses a chat-fed URL that points back at this gateway', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    // An agent discussing webhooks mentions the gateway's own URL in prose; the
+    // offer must not be raised, since Load could only lead to a blank panel.
+    let ret: string | null = 'sentinel'
+    act(() => { ret = setSessionPreviewPending('sess-1', `http://${window.location.host}/api/hooks/agent`) })
+    expect(ret).toBeNull()
+    expect(screen.queryByText('Preview ready')).toBeNull()
+    expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
   it('dismisses a pending feed without navigating', () => {

@@ -5486,7 +5486,9 @@
       "view_only_clicks_here_don_t_reach_the_page": "Nur ansehen — Klicks hier erreichen die Seite nicht",
       "waiting_for_the_browser_to_take_a_screenshot": "Warten darauf, dass der Browser einen Screenshot erstellt…",
       "web_preview": "Web-Vorschau",
-      "responsive_desktop": "Responsiv (Desktop)"
+      "responsive_desktop": "Responsiv (Desktop)",
+      "can_t_preview_this_dashboard_here": "Dieses Dashboard kann hier nicht in der Vorschau angezeigt werden",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Diese URL ist der Server des Dashboards selbst, der das Einbetten ablehnt. Geben Sie stattdessen die URL eines Dev-Servers ein."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Nur Agent — kein Kiro Crew-Kontext oder MCP",

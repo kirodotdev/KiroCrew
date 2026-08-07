@@ -1698,7 +1698,9 @@
       "exit_expanded_preview": "Collapse",
       "expand_preview": "Expand preview",
       "expand_preview_hide_nav_sessions": "Expand (hide nav and sessions)",
-      "responsive_desktop": "Responsive (desktop)"
+      "responsive_desktop": "Responsive (desktop)",
+      "can_t_preview_this_dashboard_here": "Can't preview this dashboard here",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "This URL is the dashboard's own server, which refuses to be embedded. Enter a dev server URL instead."
     },
     "welcomeView": {
       "autopilot": "Autopilot",

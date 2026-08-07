@@ -5548,7 +5548,9 @@
       "view_only_clicks_here_don_t_reach_the_page": "Affichage seul — les clics ici n'atteignent pas la page",
       "waiting_for_the_browser_to_take_a_screenshot": "En attente de la capture d'écran du navigateur…",
       "web_preview": "Aperçu web",
-      "responsive_desktop": "Adaptatif (ordinateur)"
+      "responsive_desktop": "Adaptatif (ordinateur)",
+      "can_t_preview_this_dashboard_here": "Impossible de prévisualiser ce tableau de bord ici",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Cette URL est le serveur du tableau de bord lui-même, qui refuse d'être intégré. Saisissez plutôt l'URL d'un serveur de développement."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Agent seul — aucun contexte Kiro Crew ni MCP",

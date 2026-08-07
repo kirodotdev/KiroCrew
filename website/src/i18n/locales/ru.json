@@ -5691,7 +5691,9 @@
       "view_only_clicks_here_don_t_reach_the_page": "Только просмотр — нажатия здесь не доходят до страницы",
       "waiting_for_the_browser_to_take_a_screenshot": "Ожидание снимка экрана от браузера…",
       "web_preview": "Веб-предпросмотр",
-      "responsive_desktop": "Адаптивный (компьютер)"
+      "responsive_desktop": "Адаптивный (компьютер)",
+      "can_t_preview_this_dashboard_here": "Эту панель нельзя показать здесь",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Этот URL — сервер самой панели, который запрещает встраивание. Введите вместо него URL dev-сервера."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Только агент — без контекста Kiro Crew и MCP",

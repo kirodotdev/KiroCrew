@@ -5562,7 +5562,9 @@
       "view_only_clicks_here_don_t_reach_the_page": "শুধু দেখার জন্য — এখানে ক্লিক করলে পেজে পৌঁছায় না",
       "waiting_for_the_browser_to_take_a_screenshot": "ব্রাউজার স্ক্রিনশট নেওয়ার জন্য অপেক্ষা করা হচ্ছে…",
       "web_preview": "ওয়েব প্রিভিউ",
-      "responsive_desktop": "রেসপন্সিভ (ডেস্কটপ)"
+      "responsive_desktop": "রেসপন্সিভ (ডেস্কটপ)",
+      "can_t_preview_this_dashboard_here": "এই ড্যাশবোর্ড এখানে প্রিভিউ করা যাবে না",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "এই URL ড্যাশবোর্ডের নিজস্ব সার্ভার, যা এম্বেড করা যায় না। বরং একটি dev-server URL দিন।"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "শুধু এজেন্ট — Kiro Crew কনটেক্সট বা MCP নেই",

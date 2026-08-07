@@ -5419,7 +5419,9 @@
       "view_only_clicks_here_don_t_reach_the_page": "仅供查看 — 在此处点击不会作用于页面",
       "waiting_for_the_browser_to_take_a_screenshot": "正在等待浏览器截图…",
       "web_preview": "网页预览",
-      "responsive_desktop": "自适应（桌面）"
+      "responsive_desktop": "自适应（桌面）",
+      "can_t_preview_this_dashboard_here": "无法在此预览此仪表板",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "此 URL 是仪表板自身的服务器，不允许被嵌入。请改为输入开发服务器 URL。"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "仅代理 — 无 Kiro Crew 上下文或 MCP",
