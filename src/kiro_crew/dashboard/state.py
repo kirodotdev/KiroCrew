@@ -25,7 +25,11 @@ from aiohttp import web
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import (
+    OPTIONS_RE_LINE,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+)
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
@@ -45,6 +49,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
+from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -485,7 +490,15 @@ _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 CRON_NOTIFY_PREFIX = "[Cron notification from "
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
-SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
+# Both sub-agent markers, for the checks that must treat either shape as a system
+# injection. Pass this straight to ``str.startswith`` (it accepts a tuple) instead
+# of listing the prefixes per call site: the batch marker is a SIBLING of the
+# per-agent one rather than an extension of it, so a per-prefix check written
+# against one silently misses the other, and a third shape would miss both.
+SUBAGENT_COMPLETION_PREFIXES = (
+    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+)
 # One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
 # each result has been processed in its own turn (see gateway._subagent_done arm
 # + chat_runner drain/idle branch). Its visible reply is the consolidated,
@@ -2197,6 +2210,15 @@ class DashboardState:
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
+            # Which release lane these bytes came from: "nightly", "insider" or
+            # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
+            # dashboard to parse `version` itself, because the rule is not
+            # obvious (the same release is stamped as SemVer for desktop and
+            # PEP 440 for wheels, and neither PEP 440 prerelease spelling
+            # contains a `-`) and a frontend mirror of it would drift silently.
+            # The dashboard uses this to give prerelease users an obvious way to
+            # report a bug; see release_channel.py for the full rule.
+            "release_channel": _release_channel_of_build(),
             # True when the gateway has wired up a live Slack client (Socket Mode
             # connected). None in pure-dashboard mode or when Slack is disabled.
             "slack_connected": self.slack_client is not None,
@@ -2811,6 +2833,38 @@ class DashboardState:
     def get_slot(self, name: str) -> _ChatSlot | None:
         """Look up a slot by name without creating it. Returns None if absent."""
         return self._slots.get(name)
+
+    def spend_slot_by_session(self) -> dict[str, str]:
+        """Map each live slot's SESSION key to the SLOT key its spend is filed under.
+
+        Per-turn usage is persisted under ``slot.key``
+        (``chat_runner.persist_token_record_async``), while a session is addressed
+        by :func:`effective_session_key`. For an ordinary dashboard slot those are
+        the same string modulo the ``dashboard:`` prefix, so a prefix rule is
+        enough. For a slot bound to a channel or cron conversation they are
+        UNRELATED: the turns run under ``linked_session_key`` while the spend rows
+        still carry the dashboard slot key, so a consumer joining spend by session
+        key finds nothing and renders "unknown" for a session that did spend.
+
+        This is the reverse index that closes that gap. It lives here because
+        DashboardState owns the slots and the identity rule; a consumer rebuilding
+        it would be a second owner of the rule, which is how the two sides drifted
+        apart in the first place.
+        """
+        # Local import: chat_utils imports FROM state at module level, so a
+        # top-level import here is a cycle. state.py already defers
+        # `dashboard_slot_key` the same way.
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        out: dict[str, str] = {}
+        for slot in list(self._slots.values()):
+            try:
+                session_key = effective_session_key(slot)
+            except Exception:  # pragma: no cover - defensive; a slot mid-teardown
+                continue
+            if session_key:
+                out[session_key] = slot.key
+        return out
 
     def native_subagent_snapshots(
         self,

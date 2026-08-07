@@ -62,7 +62,13 @@ Out-of-band lanes that never gate a PR:
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
   live label set, because keyword rules mislabel often enough to be worse than no
   label), `pr-merge-conflict-label.yml` and `fork-pr-label.yml` (both mirror a fact
-  GitHub does not surface in the `/pulls` list onto a label).
+  GitHub does not surface in the `/pulls` list onto a label), and
+  `add-contributor.yml` (a daily cron, plus manual dispatch, adds each merged
+  PR's author to the README Contributors block via
+  `scripts/update_contributors.py`; because the default branch is protected it
+  opens a rolling PR rather than committing directly, like `test-durations.yml`.
+  A login in `.github/contributors-optout.txt` is never added, which keeps the
+  README's removal promise enforceable against the full-rebuild collector).
 
 ## `ci.yml`: correctness
 

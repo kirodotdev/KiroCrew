@@ -531,6 +531,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_logs_cmd",
         "cli_server.py::_spawn_detached_gateway",
         "cli_server.py::_update",
+        "cli_server.py::_update_wheel",
         "cli_setup.py::_setup_electron",
         # Cursor Motion overlay renderer: `<this interpreter> -m
         # kiro_crew.computer_use.overlay_proc`, a fixed argv built from

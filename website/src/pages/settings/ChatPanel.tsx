@@ -3,8 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup } from '../../components/settings'
 import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, type DashboardConfig, type SendMode } from '../chat/ChatSettings'
 import { api } from '../../api/client'
-import { useProvider } from '../../providers'
-import { modelListRefetchInterval } from '../../providers/modelListHealth'
+import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
@@ -103,7 +102,6 @@ const CHUNK_BUDGET_DEFAULT = 150
 
 export function ChatPanel() {
   const qc = useQueryClient()
-  const provider = useProvider()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
   const [saveError, setSaveError] = useState('')
 
@@ -297,14 +295,7 @@ export function ChatPanel() {
   // These are the DEFAULTS for new sessions. A session's own model/effort
   // picker still overrides them per-slot; nothing here touches live sessions.
   // Same query key as every other model picker so the list is fetched once.
-  const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => {
-      const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name !== 'auto')]
-    },
-    refetchInterval: modelListRefetchInterval,
-  })
+  const availableModels = useAvailableModels()
   // '' in config means "unset" and resolves the same way 'auto' does, so both
   // render as the 'auto' option rather than as a missing selection.
   const defaultModel = mcCfg?.agent?.model || 'auto'

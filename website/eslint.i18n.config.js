@@ -248,6 +248,55 @@ export default [
           // Content-based exemptions, applied wherever the string appears.
           words: {
             exclude: [
+              // CSS transform functions built from numbers, e.g.
+              // `translate(${x}px, ${y}px)` or `rotate(${deg}deg)`. These are style
+              // values written into el.style.transform, not copy.
+              // NOTE the safer alternative was preferred first — moving the value into a
+              // stylesheet — and it is used everywhere it can be. It cannot be used for
+              // per-frame animation, where the numbers come from a rAF loop and no
+              // stylesheet can express them.
+              //
+              // FULL-STRING, not a prefix: the plugin compiles each entry with
+              // `generateFullMatchRegExp`, which appends `$`. Written as a prefix this
+              // matched only the bare `translate(` and exempted nothing else — the exact
+              // trap `i18nLintExemptions.test.ts` was written to catch. Interpolation
+              // splits one template into several literals, so the shapes that must match
+              // are `scale(`, `translate(-50%, -50%) translate(`, `px) scale(`, `px, `
+              // and `)`: a run of transform function names, CSS units, digits and
+              // punctuation, and nothing else. Any other letter makes it prose again, so
+              // real copy ('Preview (', 'Rotate the image') is still reported.
+              String.raw`^(?:(?:translate|translateX|translateY|rotate|scale|scaleX|scaleY|matrix)\(|px|deg|[-\d.%,\s()])+$`,
+
+              // A URL query built from an already-encoded value, e.g.
+              // `${PATH}?id=${encodeURIComponent(x)}`. A request path is a server
+              // contract; translating it would 404. Full-string for the same reason as
+              // above; the literals that reach the linter here are `?id=` and `?since=`.
+              String.raw`^\?[a-z_]+=$`,
+
+              // A catalog KEY assembled at runtime, e.g.
+              // `apps.crewCompanion.state.${slot}`. Translating a key would break the
+              // lookup it performs — the value it resolves to is what gets translated.
+              String.raw`^apps\.[A-Za-z]+\.[A-Za-z]+\.$`,
+
+              // MIME type lists for a file picker's `accept`, e.g.
+              // 'application/json,.json' or 'image/png,image/webp,.png'. These are a
+              // browser API contract, not copy: translating one silently stops the
+              // picker matching any file. Shape: a slash-bearing type or a dot-extension,
+              // in a comma-separated list, with no spaces — which prose never has.
+              String.raw`^(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+)(?:,(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+))*$`,
+
+              // `window.open` feature strings. 'noopener,noreferrer' is a SECURITY
+              // argument — translating it would drop the protection that stops the opened
+              // page reaching back through window.opener. Same shape rule as above would
+              // not catch it (no slash, no dot), so it is named explicitly.
+              String.raw`^(?:noopener|noreferrer|_blank|_self)(?:,(?:noopener|noreferrer))*$`,
+
+              // Identifier PREFIXES that get concatenated with an index to form a slot
+              // id, e.g. 'extra_load_' + i. Snake_case with a trailing underscore is a
+              // shape UI copy never takes, and translating it would rename the slot and
+              // orphan the art already stored under the old id.
+              String.raw`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_$`,
+
               // Tailwind and CSS: class strings are the single largest false-positive
               // source under `mode: 'all'`.
               //
@@ -340,6 +389,17 @@ export default [
               // debt on the keys that predate this entry, instead of leaving each
               // one to a per-file ceiling that hides it.
               '^mc:[A-Za-z0-9:._-]+$',
+              // The COMPANION's own browser-storage prefix, `cc:` — e.g.
+              // `cc:pendingCursor`, `cc:lastStats`. Exactly the `mc:` case above, for
+              // the app's own namespace: these live at module level under an ALL-CAPS
+              // name, which is where `i18n-strict` looks inside, and the camelCase
+              // pattern cannot reach them because it forbids the colon.
+              //
+              // A separate entry rather than widening the `mc:` one to any prefix: a
+              // generic "word, colon, no spaces" shape would start exempting real copy
+              // the moment a label contains a colon, which several already do
+              // ("Missing:", "Preset name:").
+              '^cc:[A-Za-z0-9:._-]+$',
               '^[\\w.-]+/[\\w./-]*$',
               // EVERY PATTERN IN THIS FILE IS MATCHED FULL-STRING, so a prefix
               // pattern MUST spell out its own tail. `eslint-plugin-i18next` compiles
@@ -381,6 +441,14 @@ export default [
               // carry a spaced em dash. UI copy is neither bracketed nor em-dash-joined,
               // and the bracketed CSS attribute selector covered above has no em dash.
               '^\\[[A-Za-z][A-Za-z0-9 ]* — [A-Za-z0-9 ]+\\]$',
+              // The same class of wire marker without an em dash. ENUMERATED, not
+              // shaped: the thing this protects is a small closed set of named
+              // constants, and a shape like "bracketed capitalized words" would
+              // also exempt a future hardcoded placeholder (`[No results found]`),
+              // shipping it untranslated to every locale without tripping the
+              // gate. Adding a marker here is a deliberate one-line act, which is
+              // the right cost for adding one to the wire protocol.
+              '^\\[(Subagent|Subagent batch|Workflow) completion event\\]$',
               // NOTE ON SHAPE: the plugin wraps every pattern as `^<pattern>$`
               // (`generateFullMatchRegExp`), so a pattern must describe the WHOLE
               // string. A prefix-only pattern like `^data:` becomes `^^data:$` and can

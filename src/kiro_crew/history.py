@@ -18,7 +18,7 @@ import re
 import threading
 import time as _time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
@@ -415,6 +415,29 @@ def update_metadata_off_loop(
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
+
+# Hard ceilings on the memory the two search memos may hold, in real retained
+# bytes as reported by ``str.__sizeof__`` — NOT in characters.
+#
+# ``len()`` is the wrong unit and dangerously so: CPython stores a ``str`` in the
+# narrowest width its contents allow, so one character is 1 byte for latin-1, 2
+# for the BMP, and 4 for astral planes. A ceiling of 160 MB counted in characters
+# retains 168 MB of ASCII, 336 MB of CJK, or 671 MB of emoji — and CJK is the
+# ordinary case for a non-English corpus, not a pathological one. The sizers
+# therefore call ``__sizeof__`` per string, and the snippet memo also charges for
+# its list container.
+#
+# Why bytes and not an entry count: a session is read up to
+# ``_SESSION_MAX_BYTES`` (2 MB), so ``_SEARCH_SCAN_WINDOW`` entries is anywhere
+# from a few MB to ~1 GB depending on the corpus. An entry count therefore
+# bounds nothing that matters; it only *looked* safe because real sessions are
+# small (a 171 MB / 230-session corpus folds to ~8 MB).
+#
+# The two are separate rather than one shared pool so a corpus that blows the
+# snippet budget cannot starve the fold, which is the one that keeps matching
+# off the critical path. Their sum is the ceiling to reason about.
+_SEARCH_FOLD_BUDGET_BYTES = 96 * 1024 * 1024
+_SEARCH_SNIPPET_BUDGET_BYTES = 64 * 1024 * 1024
 
 # Canonical set of memory_mode values that mark a session private — never
 # searchable/listable/summarizable. Single source of truth shared by the MCP
@@ -880,6 +903,163 @@ class _LRUCache(Generic[_V]):
             self._data.clear()
 
 
+class _SearchTextCache(Generic[_V]):
+    """Byte-budgeted memo for the two derived corpora ``search_sessions`` needs.
+
+    Distinct from :class:`_LRUCache` because the access pattern is different in
+    the one way that decides an eviction policy. A search walks
+    ``_SEARCH_SCAN_WINDOW`` sessions **in the same recency order every query**,
+    so the working set is cyclic. Under LRU a cyclic scan larger than the cache
+    evicts each entry exactly one step before its next read: the hit rate does
+    not degrade, it collapses to zero, and it does so for the users with the
+    most sessions — the ones the memo exists for. ``_folded_cache`` was sized
+    ``max(cache_max, _SEARCH_SCAN_WINDOW)`` for precisely that reason.
+
+    An entry *count* is the wrong bound to carry that guarantee, though: 500
+    entries is 37 MB on one corpus and could be far more on another, because a
+    session is read up to ``_SESSION_MAX_BYTES``. The bound here is therefore
+    **bytes**, which is what actually has to fit in the gateway's RSS.
+
+    A byte budget reintroduces the cliff, so eviction is replaced by
+    **admission control**: when a new entry would exceed the budget it is simply
+    not stored, and the entries already held are kept. For a cyclic scan that
+    turns 0% into (whatever fraction fits)% — and because ``search_sessions``
+    walks most-recent-first, the fraction that stays cached is the most recently
+    active sessions, which is the half worth keeping. Existing entries are still
+    replaced in place on a content change (same key, new value), so a session
+    that is being written to never gets stuck on a stale value.
+
+    ``max_bytes <= 0`` disables the bound (behaves like a plain dict).
+
+    Thread safety mirrors :class:`_LRUCache`: one lock, every method atomic, no
+    method calls another locked method.
+    """
+
+    def __init__(self, max_bytes: int, sizer: Callable[[_V], int], label: str = "") -> None:
+        self._max_bytes = max_bytes
+        self._sizer = sizer
+        self._label = label
+        self._data: dict[str, _V] = {}
+        self._bytes = 0
+        self._admitted = 0
+        self._refused = 0
+        self._refused_since_prune = 0
+        self._warned = False
+        self._lock = threading.Lock()
+
+    def get(self, key: str, default: _V | None = None) -> _V | None:
+        with self._lock:
+            return self._data.get(key, default)
+
+    def __setitem__(self, key: str, value: _V) -> None:
+        cost = self._sizer(value)
+        with self._lock:
+            previous = self._data.get(key)
+            if previous is not None:
+                # Replacement, not growth: release the old cost first so a
+                # session that keeps being appended to cannot inflate the
+                # accounting or be refused admission for its own new value.
+                self._bytes -= self._sizer(previous)
+                del self._data[key]
+            if self._max_bytes > 0 and self._bytes + cost > self._max_bytes:
+                self._refused += 1
+                self._refused_since_prune += 1
+                warn = not self._warned
+                self._warned = True
+                if warn:
+                    # Say it once, at the moment the ceiling starts binding.
+                    # Without this the degradation is observable only under a
+                    # debugger, which makes "diagnosable" an empty claim.
+                    logger.warning(
+                        "search memo %s hit its %d MB ceiling (%d entries, %d "
+                        "admitted); sessions past it fall back to re-reading "
+                        "their file, so warm search will be slower on this "
+                        "corpus",
+                        self._label or "cache",
+                        self._max_bytes // (1024 * 1024),
+                        len(self._data),
+                        self._admitted,
+                    )
+                return
+            self._data[key] = value
+            self._bytes += cost
+            self._admitted += 1
+
+    def pop(self, key: str, default: _V | None = None) -> _V | None:
+        with self._lock:
+            if key in self._data:
+                value = self._data.pop(key)
+                self._bytes -= self._sizer(value)
+                return value
+            return default
+
+    def retain(self, live_keys: Container[str]) -> int:
+        """Drop every entry whose key is not in *live_keys*; return how many.
+
+        The release valve that keeps admission control from becoming a one-way
+        ratchet. Without it, a cache that fills freezes on whatever it happened
+        to hold first: entries that have since aged out of the scan window keep
+        their budget forever (only invalidation or a stat failure pops them),
+        while every newly created session is refused — so the newest and most
+        searched sessions become exactly the cold ones, and warm latency
+        regresses over process lifetime until a restart.
+
+        Safe against the LRU cliff this class exists to avoid, because it only
+        drops entries a search can no longer reach: ``search_sessions`` walks the
+        ``_SEARCH_SCAN_WINDOW`` most recent sessions, so anything outside that
+        window is dead weight by construction rather than an entry one step from
+        its next read.
+
+        Called only under pressure (see ``refused_since_prune``) so an
+        uncontended cache never pays for the scan.
+        """
+        with self._lock:
+            doomed = [k for k in self._data if k not in live_keys]
+            for k in doomed:
+                self._bytes -= self._sizer(self._data.pop(k))
+            self._refused_since_prune = 0
+            return len(doomed)
+
+    def refused_since_prune(self) -> int:
+        """Admissions turned away since the last :meth:`retain`.
+
+        Nonzero means the budget is binding right now, which is the signal to
+        spend a prune. Distinct from the cumulative ``refused`` in
+        :meth:`stats`, which never resets so it stays useful for diagnosis.
+        """
+        with self._lock:
+            return self._refused_since_prune
+
+    def __contains__(self, key: object) -> bool:
+        with self._lock:
+            return key in self._data
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+            self._bytes = 0
+
+    def stats(self) -> dict[str, int]:
+        """Observability for the budget: how full it is and what it turned away.
+
+        ``refused`` rising while ``entries`` is flat is the signal that the
+        budget is smaller than the working set, i.e. that searches on this
+        corpus are paying the cold cost for the sessions that did not fit.
+        """
+        with self._lock:
+            return {
+                "entries": len(self._data),
+                "bytes": self._bytes,
+                "max_bytes": self._max_bytes,
+                "admitted": self._admitted,
+                "refused": self._refused,
+            }
+
+
 class ConversationLog:
     """Append-only JSONL conversation store with provenance and rotation."""
 
@@ -934,7 +1114,7 @@ class ConversationLog:
         #: staleness (an append bumps the file mtime, so the entry is
         #: recomputed on the next call). Own ``_LRUCache`` → own internal lock.
         self._recent_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
-        #: Bounded, mtime-keyed LRU of ``(mtime, doc_chars, casefolded_blob)``
+        #: Bounded, mtime-keyed memo of ``(mtime, doc_chars, casefolded_blob)``
         #: per session, consumed only by :meth:`search_sessions`.
         #:
         #: Folding is the dominant cost of a search: the substring count itself
@@ -944,17 +1124,33 @@ class ConversationLog:
         #: corpus does not change between the keystrokes of one search, so the
         #: fold is memoized here and each query pays only the count.
         #:
-        #: Sized to cover the ENTIRE scan window, never ``cache_max``. A search
-        #: walks ``_SEARCH_SCAN_WINDOW`` sessions in the same order every query,
-        #: so an LRU smaller than that window is evicted exactly one step ahead
-        #: of its next read: the hit rate collapses to zero rather than
-        #: degrading, and the memoization silently stops working for the users
-        #: with the most sessions — the ones it exists for. ``max`` rather than a
-        #: bare constant so a caller shrinking ``cache_max`` cannot reintroduce
-        #: that cliff; this cache holds derived strings, which are far smaller
-        #: than the parsed transcripts ``cache_max`` is tuned for.
-        self._folded_cache: _LRUCache[tuple[float, int, str]] = _LRUCache(
-            max(cache_max, _SEARCH_SCAN_WINDOW)
+        #: Bounded by BYTES, not entries — see ``_SEARCH_FOLD_BUDGET_BYTES``. The
+        #: previous ``max(cache_max, _SEARCH_SCAN_WINDOW)`` entry bound existed to
+        #: stop an LRU from collapsing to a zero hit rate against the cyclic scan
+        #: order; :class:`_SearchTextCache` keeps that guarantee by refusing
+        #: admission instead of evicting, so the sessions that fit stay cached
+        #: and the bound is now a real memory ceiling rather than a proxy for one.
+        self._folded_cache: _SearchTextCache[tuple[float, int, str]] = _SearchTextCache(
+            _SEARCH_FOLD_BUDGET_BYTES, lambda v: v[2].__sizeof__(), "fold"
+        )
+        #: session key → (mtime, raw message texts) for snippet extraction.
+        #:
+        #: The fold above answers "does this session match"; this answers "show me
+        #: the line". Without it every returned row re-opened its file and
+        #: re-parsed JSONL until the first hit, which profiling showed to be 92%
+        #: of a warm query (55% in ``json.raw_decode`` alone, ~7.2k parses per
+        #: query on a 230-session corpus). The cost is not the match count but how
+        #: deep the first hit sits, which is why a 21-hit query measured 189 ms
+        #: while a 50-hit query measured 81 ms.
+        #:
+        #: Filled by :meth:`_build_folded`, which already materializes exactly
+        #: this list to build the fold — so the second corpus costs one extra
+        #: reference, never an extra read. Raw (not folded) because the snippet is
+        #: displayed to the user; the fold cannot be reused for it.
+        self._snippet_cache: _SearchTextCache[tuple[float, list[str]]] = _SearchTextCache(
+            _SEARCH_SNIPPET_BUDGET_BYTES,
+            lambda v: v[1].__sizeof__() + sum(t.__sizeof__() for t in v[1]),
+            "snippet",
         )
         #: tab_id → [session keys] chain index. ``None`` means "stale, rebuild
         #: on next chained read"; a dict is an authoritative snapshot. Rebuilt
@@ -1843,7 +2039,9 @@ class ConversationLog:
         needle = query.casefold()
         # (score, -rank, meta, needs_snippet)
         scored: list[tuple[float, int, dict, bool]] = []
-        for rank, meta in enumerate(self.list_sessions()[:_SEARCH_SCAN_WINDOW]):
+        window = self.list_sessions()[:_SEARCH_SCAN_WINDOW]
+        self._prune_search_memos({m["key"] for m in window})
+        for rank, meta in enumerate(window):
             doc_chars, folded = self._folded_content(meta["key"])
             content_hits = folded.count(needle) if folded else 0
             title_hits = (meta.get("title") or "").casefold().count(needle)
@@ -1887,6 +2085,7 @@ class ConversationLog:
             mtime = path.stat().st_mtime
         except OSError:
             self._folded_cache.pop(key, None)
+            self._snippet_cache.pop(key, None)
             return (0, "")
         cached = self._folded_cache.get(key)
         if cached and cached[0] == mtime:
@@ -1912,11 +2111,12 @@ class ConversationLog:
                 mtime = path.stat().st_mtime
             except OSError:
                 self._folded_cache.pop(key, None)
+                self._snippet_cache.pop(key, None)
                 return (0, "")
             cached = self._folded_cache.get(key)
             if cached and cached[0] == mtime:
                 return (cached[1], cached[2])
-            built = self._build_folded(key)
+            built = self._build_folded(key, mtime)
             if built is None:
                 # The read failed rather than finding no content. Caching that
                 # would be keyed by an mtime the file still has, so a session
@@ -1929,7 +2129,27 @@ class ConversationLog:
             self._folded_cache[key] = (mtime, built[0], built[1])
             return built
 
-    def _build_folded(self, key: str) -> tuple[int, str] | None:
+    def _prune_search_memos(self, live_keys: set[str]) -> None:
+        """Free budget held by sessions that have left the scan window.
+
+        Only runs for a memo that is currently refusing admissions, so an
+        uncontended cache never pays the scan. Entries outside *live_keys* are
+        unreachable by any future search (it walks only the
+        ``_SEARCH_SCAN_WINDOW`` most recent sessions), so dropping them cannot
+        cost a hit — which is what makes this safe where an LRU eviction would
+        not be.
+
+        Called before the walk, so a refusal raised *during* a walk is released
+        on the NEXT query rather than that one: the prune needs the scan window,
+        which the walk computes. The lag is one query (~20 ms for a keystroke
+        caller) and self-clearing; what it prevents is budget staying pinned by
+        aged-out sessions for the life of the process.
+        """
+        for cache in (self._folded_cache, self._snippet_cache):
+            if cache.refused_since_prune():
+                cache.retain(live_keys)
+
+    def _build_folded(self, key: str, mtime: float) -> tuple[int, str] | None:
         """Parse *key* and fold its content — the cache-miss half of
         :meth:`_folded_content`.
 
@@ -1970,6 +2190,11 @@ class ConversationLog:
             return None
         if not texts:
             return (0, "")
+        # Hand the same list to the snippet memo. The caller has already stat'ed
+        # under ``_file_lock`` and passes that mtime, so both memos are keyed by
+        # one observation of the file and cannot disagree about which revision
+        # they hold. Storing here is why the second corpus costs no extra read.
+        self._snippet_cache[key] = (mtime, texts)
         return (sum(len(t) for t in texts), "\x00".join(texts).casefold())
 
     def _iter_message_texts(self, key: str) -> Iterator[str]:
@@ -2007,6 +2232,37 @@ class ConversationLog:
     #: Hard cap on a returned snippet.
     _SNIPPET_MAX = 200
 
+    def _snippet_texts(self, key: str) -> Iterator[str]:
+        """Yield *key*'s message texts for snippet extraction, memo first.
+
+        Prefers ``_snippet_cache`` — filled by :meth:`_build_folded` from the same
+        read that produced the fold — and falls back to re-reading the file.
+
+        The memo is validated against the file's current mtime, so it degrades to
+        the file read rather than serving a stale snippet. That check is cheap
+        relative to the parse it avoids, and unlike the fold this path does NOT
+        need ``_file_lock``: a snippet is display-only, so the worst case for a
+        preserved-mtime rewrite racing here is one stale preview line, not a
+        session that stops matching. The fold — which decides whether a row
+        appears at all — keeps the lock.
+
+        Falls back for three reasons, all of which must stay non-fatal: the entry
+        was refused admission by the byte budget, the fold cached ``(0, "")`` for
+        a session with no text and so stored nothing, or the file changed since
+        the fold. Propagates ``OSError`` from the fallback read, which
+        :meth:`_content_snippet` already treats as "no snippet".
+        """
+        cached = self._snippet_cache.get(key)
+        if cached is not None:
+            try:
+                if cached[0] == self._path(key).stat().st_mtime:
+                    return iter(cached[1])
+            except OSError:
+                # Let the fallback read raise the OSError the caller handles,
+                # rather than deciding here what a vanished file means.
+                pass
+        return self._iter_message_texts(key)
+
     def _content_snippet(self, key: str, query: str) -> str:
         """Return a match-centered window of *key*'s content around *query*.
 
@@ -2036,7 +2292,7 @@ class ConversationLog:
         if not needle:
             return ""
         try:
-            for text in self._iter_message_texts(key):
+            for text in self._snippet_texts(key):
                 pos = text.casefold().find(needle)
                 if pos < 0:
                     continue
@@ -2579,6 +2835,12 @@ class ConversationLog:
         # exactly when they do. Its own mtime guard is not enough here: the
         # housekeeping rewrites below restore the pre-write mtime.
         self._folded_cache.pop(key, None)
+        # Same reasoning for the snippet source: it is the raw form of what the
+        # fold is derived from, so it goes stale at exactly the same moment. Its
+        # own mtime check would miss the preserved-mtime rewrites below, and a
+        # missed invalidation here shows the user a preview line quoting text
+        # that is no longer in the session.
+        self._snippet_cache.pop(key, None)
         # Also drop any memoized recent() windows for this key. Necessary
         # because housekeeping rewrites (mark_consolidated/update_metadata/
         # rewrite_session/rotation) restore the pre-write mtime via

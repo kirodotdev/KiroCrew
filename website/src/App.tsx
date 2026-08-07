@@ -27,7 +27,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -97,6 +97,7 @@ import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
 import ReportProblemModal from './components/ReportProblemModal'
+import FeedbackPill from './components/FeedbackPill'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
@@ -1855,16 +1856,15 @@ export default function App() {
               <w.component />
             </ErrorBoundary>
           ))}
-          {/* Request a Feature — its own bordered pill (28px tall, 12px radius),
-              separated from the readout capsule (item 2.3). */}
+          {/* Feedback — "Request a Feature" plus, on a prerelease build, a
+              channel chip that opens the same Report a Problem flow. Its own
+              bordered pill (28px tall, 12px radius), separated from the readout
+              capsule (item 2.3). */}
           {!isMobile && (
-            <button
-              className="flex items-center gap-1.5 h-7 px-2.5 rounded-xl bg-card text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap shrink-0"
-              onClick={requestFeature}
-              title={i18nT('app.request_a_feature')}
-            >
-              <Lightbulb size={13} /> {i18nT('app.request_a_feature_2')}
-            </button>
+            <FeedbackPill
+              onRequestFeature={requestFeature}
+              onReportProblem={() => setReportProblemOpen(true)}
+            />
           )}
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,

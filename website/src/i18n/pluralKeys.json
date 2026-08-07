@@ -1,6 +1,7 @@
 [
   "apps.codeReviewSage.codeReviewSagePage.open_pr",
   "apps.codeReviewSage.codeReviewSagePage.pattern",
+  "apps.crewCompanion.memories.days_together",
   "apps.crewCompanion.memories.row_breathing",
   "apps.crewCompanion.memories.row_reminders",
   "apps.crewCompanion.reminders.scheduled_count",

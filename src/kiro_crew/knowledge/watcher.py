@@ -21,7 +21,7 @@ from .autosource import (
 )
 from .dedup import dedup_sweep
 from .embedder import embedder_signature
-from .folder_watcher import FolderWatcher
+from .folder_watcher import FolderWatcher, folder_chunk_budget
 from .ingestion import (
     FileTooLargeError,
     IngestionPipeline,
@@ -229,6 +229,12 @@ class KnowledgeWatcher:
                             resources=f"source_id={source['id']} reason=not_contained",
                         )
                         continue
+                else:
+                    # A hand-added folder is paced too. The user asked for the whole
+                    # folder and still gets it -- newest files first, the rest on
+                    # later sweeps -- but pointing the Library at a source repo no
+                    # longer spends the whole bill before anyone can look at it.
+                    budget = folder_chunk_budget(props)
                 stats = await self._folder_watcher.scan_source(source, chunk_budget=budget)
                 if stats.get("error"):
                     logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])

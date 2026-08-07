@@ -9,7 +9,6 @@ import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
@@ -28,8 +27,8 @@ import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
-import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
+import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
@@ -1004,21 +1003,11 @@ function ChatSidebar({
   })
 
   // Bulk model switch — apply one model to every live session at once.
-  const provider = useProvider()
   const [bulkModelOpen, setBulkModelOpen] = useState(false)
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
-  const { data: bulkModelOptions = [] } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => {
-      const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name && m.name !== 'auto')]
-    },
-    enabled: bulkModelOpen,
-    staleTime: 60_000,
-    refetchInterval: modelListRefetchInterval,
-  })
+  const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
   const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
   // Count only slots that would actually change: model differs from the target
   // (the backend leaves already-on-target slots as `unchanged`), minus running

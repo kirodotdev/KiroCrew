@@ -70,7 +70,7 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew learn add/list/remove` | Manage learned corrections |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
-| `kirocrew logout` | Revoke all active dashboard sessions |
+| `kirocrew logout` | Revoke all active dashboard access sessions (does not revoke refresh chains) |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git pull + rebuild) |
 | `kirocrew status` | Show runtime stats from running gateway |

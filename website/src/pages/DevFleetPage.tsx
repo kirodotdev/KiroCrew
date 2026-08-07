@@ -377,7 +377,7 @@ interface Worktree {
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
   path?: string
 }
-interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
+interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -1277,7 +1277,17 @@ export default function DevFleetPage() {
           <div style={{ minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', overflow: 'hidden' } as CSSProperties}>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.name}</span>
             {w.dirty ? <span title={i18nT('pages.devFleetPage.uncommitted_changes')}>{"\u2022"}</span> : null}
-            {w.is_main ? <span style={mut}>{i18nT('pages.devFleetPage.main')}</span> : null}
+            {/* The primary checkout can be left parked on a feature branch (a
+                past PR checked out in place and never switched back). The row's
+                name is hardcoded to the base branch, so without this badge the
+                fleet renders "main" while every git fact on the row (PR pill,
+                behind count) describes the parked branch — and the user only
+                learns the truth when Pull+Build refuses to sync. Requires
+                base_branch in the payload so an absent field can never
+                false-flag a repo whose base is not literally "main". */}
+            {w.is_main ? (fleet?.base_branch && w.branch && w.branch !== fleet.base_branch
+              ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_primary_checkout_is_on_branch_not_base', { branch: w.branch, base: fleet.base_branch })}>{i18nT('pages.devFleetPage.parked_on_branch', { branch: w.branch })}</Badge>
+              : <span style={mut}>{i18nT('pages.devFleetPage.main')}</span>) : null}
             {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_live_gateway_on_this_port_runs_from_this_che')}>{i18nT('pages.devFleetPage.live')}</Badge> : null}
             {/* A staged cutover outlives the toast that announced it: without a
                 persistent marker an operator who dismissed or missed the toast

@@ -1071,6 +1071,38 @@ async def api_security_posture(_request: web.Request) -> web.Response:
 # caller raising it arbitrarily (e.g. {"subagent_auto_max": 9999}) to bypass
 # the concurrency limit.
 
+# Agent settings whose ENFORCED effect is fixed at gateway startup.
+# ``SubagentManager`` is constructed with ``max_subagents`` and
+# ``subagent_max_turns`` and never re-reads the config afterwards;
+# ``max_concurrent`` is stored once with no setter, and ``subagent_auto_max``
+# only reaches that enforced value as the ``hard_cap`` inside
+# ``compute_max_subagents``, which the same construction calls.
+#
+# Precisely: persisting one of these does NOT change what the running gateway
+# ENFORCES. It is not inert, though — the advisory cap advertised to the model
+# re-resolves from config on each read, so after a write the reported cap can
+# move while the enforced one stays put. That divergence is pre-existing and
+# deliberate (overflow queues, so the advertised number is guidance rather than
+# a limit); this constant describes only the enforced side, which is what the
+# restart is for.
+#
+# ``dynamic-subagent-sizing.md`` states the contract this mirrors: "The cap is
+# computed once per gateway start. Restart to recompute." The ``restart_required``
+# response field is the existing convention for exactly this case — the channel
+# config handlers already return it for settings read at boot, and the frontend
+# API client already types it.
+#
+# ``conductor_skill`` is deliberately absent: it is applied inline by this
+# handler (the skill file is regenerated/removed in-request), so it takes effect
+# immediately and must not raise the restart hint.
+_STARTUP_READ_AGENT_KEYS = frozenset(
+    {
+        "max_subagents",
+        "subagent_max_turns",
+        "subagent_auto_max",
+    }
+)
+
 
 async def api_kirocrew_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/kirocrew — read or update KiroCrew config."""
@@ -1109,6 +1141,13 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         if not isinstance(data.get("agent"), dict):
             data["agent"] = {}
         agent = data["agent"]
+        # Snapshot the persisted values BEFORE any mutation. The dashboard sends
+        # all four settings on every save and enables Save whenever any one is
+        # dirty, so "was applied" is not "was changed" -- keying the restart hint
+        # off the raw applied list would flag a restart for a conductor-only save.
+        # Same truthfulness guard as handlers/messaging.py (see its no-op-save
+        # comments) so the flag stays trustworthy enough to act on.
+        before = dict(agent)
         # subagent_max_turns keeps the generic 1..N validation; max_subagents is
         # special — 0 is the "auto-size" sentinel and its upper bound is the
         # configured hard cap (dynamic-subagent-sizing.md §5.5/§6).
@@ -1209,7 +1248,13 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                         p.unlink()
                 except Exception:
                     logger.exception("Failed to clean up conductor skill")
-        return web.json_response({"ok": True})
+        # A startup-read key that was merely re-sent with its existing value did
+        # not change the enforced cap, so it must not raise the hint.
+        restart_required = any(
+            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key)
+            for key in applied
+        )
+        return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()
     return web.json_response(_masked_config_dict(cfg))
@@ -1382,6 +1427,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_register_project_docs": {"type": "bool"},
     "knowledge.auto_ingest_artifacts": {"type": "bool"},
     "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone

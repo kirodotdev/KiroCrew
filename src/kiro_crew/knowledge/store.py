@@ -323,6 +323,12 @@ class KnowledgeStore:
                 updated_at TEXT NOT NULL
             );
 
+            -- ``attempts`` counts CONSECUTIVE non-terminal ingest attempts on a row,
+            -- i.e. how many times it has been left in 'scanning'. It is what bounds
+            -- crash recovery: every retry re-chunks the file and pays for one model
+            -- extraction call per chunk, so a file that never completes has to be
+            -- retired rather than retried on every sweep. Reset to 0 by any terminal
+            -- write ('done', 'deduped', 'failed').
             CREATE TABLE IF NOT EXISTS folder_file_state (
                 source_id TEXT NOT NULL REFERENCES sources(id),
                 file_path TEXT NOT NULL,
@@ -334,6 +340,7 @@ class KnowledgeStore:
                 status TEXT DEFAULT 'pending',
                 error_message TEXT,
                 merged_into_source_id TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (source_id, file_path)
             );
 
@@ -447,6 +454,7 @@ class KnowledgeStore:
                     status TEXT DEFAULT 'pending',
                     error_message TEXT,
                     merged_into_source_id TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (source_id, file_path)
                 )
             """)
@@ -468,6 +476,17 @@ class KnowledgeStore:
             # the data-loss shape this feature already had to remove once.
             if "text_hash" not in ffs_cols:
                 self.db.execute("ALTER TABLE folder_file_state ADD COLUMN text_hash TEXT")
+            # Consecutive non-terminal attempt count, the bound on crash recovery --
+            # see the CREATE TABLE comment. Existing rows start at 0, including any
+            # already stuck in 'scanning': that is deliberate, so a database carrying
+            # a file that cannot be ingested spends the same small retry budget as a
+            # fresh one and then retires the row, instead of re-ingesting it (and
+            # paying for its extraction calls) on every sweep for as long as the
+            # source exists.
+            if "attempts" not in ffs_cols:
+                self.db.execute(
+                    "ALTER TABLE folder_file_state "
+                    "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         # Migrate: artifact_item_state table -- per-artifact item-group tracking
         # for the aggregate "Artifacts" KB source, keyed by artifact slug.
         if "artifact_item_state" not in tables:

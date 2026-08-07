@@ -5948,6 +5948,43 @@ def redact(text: str) -> str:
     return text
 
 
+# Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to
+# real filesystem roots rather than "any slash-separated token", and both branches
+# refuse to start mid-token so a URL is never mistaken for a path -- without the
+# lookbehinds, ``https://api.github.com/repos/x`` matches twice (``s:/`` as a drive
+# letter, ``/repos`` as a root) and the URL is destroyed.
+_LOCAL_PATH_RE = re.compile(
+    r"(?:"
+    r"(?<![\w:/])/(?:home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+    r"|(?<![A-Za-z])[A-Za-z]:\\"
+    r")"
+    r"[^\s'\"<>|]*"
+)
+_LOCAL_PATH_PLACEHOLDER = "[redacted-path]"
+
+
+def redact_local_paths(text: str) -> tuple[str, list[str]]:
+    """Strip absolute host filesystem paths from *text*.
+
+    Complements :func:`redact_credentials`, which matches credential *patterns*
+    and leaves a bare path such as
+    ``[Errno 2] No such file or directory: '/home/alice/.kiro/crew/vaults/v1'``
+    untouched. That string is the common shape of an OS or subprocess error, and
+    on an error surface that reaches a browser it discloses the account name and
+    on-disk layout of the host (CWE-209).
+
+    Returns the redacted text and a list of human-readable notes, matching the
+    signature of the sibling passes so callers can chain them uniformly.
+    """
+    notes: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        notes.append(f"Redacted local path ({len(match.group(0))} chars)")
+        return _LOCAL_PATH_PLACEHOLDER
+
+    return _LOCAL_PATH_RE.sub(_sub, text), notes
+
+
 # ── Streaming redaction (pentest issue 3) ──
 # Per-chunk redaction misses a credential split across token/streaming
 # boundaries: a chunk ending ``...AKIA`` and the next starting ``IOSFODNN7...``

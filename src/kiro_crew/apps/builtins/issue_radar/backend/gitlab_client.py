@@ -64,6 +64,7 @@ from .errors import (
     ProviderSetupError,
     PrSearchError,
     RepoUrlError,
+    sanitize_cli_stderr,
 )
 
 # Historical aliases, mirroring github_client so provider-agnostic callers can
@@ -412,7 +413,7 @@ def _raise_if_auth_failure(stderr_tail: str, host: str) -> None:
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
-    return " ".join((proc.stderr or "").strip().splitlines()[-3:])
+    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
 
 
 def _is_forbidden(tail: str) -> bool:

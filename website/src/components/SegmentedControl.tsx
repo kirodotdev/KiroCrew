@@ -8,6 +8,15 @@ export interface Segment<T extends string = string> {
   icon?: React.ReactNode
   count?: number
   tooltip?: string
+  /**
+   * Render the segment but refuse selection — for an option the surface knows
+   * about and cannot serve yet. Showing it greyed says "planned"; omitting it
+   * says "does not exist", and silently accepting the click says "broken".
+   * A disabled segment carries `aria-disabled` rather than the `disabled`
+   * attribute so it stays reachable by keyboard and its tooltip stays readable,
+   * which is where the reason for the greying lives.
+   */
+  disabled?: boolean
 }
 
 interface SegmentedControlProps<T extends string = string> {
@@ -96,9 +105,16 @@ export default function SegmentedControl<T extends string = string>({ segments, 
               {segments.map(s => (
                 <button
                   key={s.key}
-                  onClick={() => { onChange(s.key); setDropdownOpen(false) }}
-                  className={`flex items-center gap-2 w-full px-3 py-1.5 text-[12px] font-medium cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover ${
-                    s.key === value ? 'text-accent' : 'text-muted'
+                  aria-disabled={s.disabled === true || undefined}
+                  onClick={() => {
+                    if (s.disabled === true) return
+                    onChange(s.key)
+                    setDropdownOpen(false)
+                  }}
+                  className={`flex items-center gap-2 w-full px-3 py-1.5 text-[12px] font-medium border-none bg-transparent text-left ${
+                    s.disabled === true
+                      ? 'text-muted/40 cursor-not-allowed'
+                      : `cursor-pointer hover:bg-bg-hover ${s.key === value ? 'text-accent' : 'text-muted'}`
                   }`}
                 >
                   {s.icon}
@@ -118,19 +134,28 @@ export default function SegmentedControl<T extends string = string>({ segments, 
       <div ref={containerRef} className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
         {segments.map(s => {
           const isActive = s.key === value
+          const isDisabled = s.disabled === true
           return (
             <motion.button
               key={s.key}
               layout
-              onClick={() => onChange(s.key)}
+              aria-disabled={isDisabled || undefined}
+              onClick={() => {
+                if (isDisabled) return
+                onChange(s.key)
+              }}
               title={s.tooltip || s.label}
-              whileTap={isActive ? { scale: 0.95 } : undefined}
+              whileTap={isActive && !isDisabled ? { scale: 0.95 } : undefined}
               transition={{ duration: 0.15 }}
-              className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors z-[1] ${
-                isActive ? 'text-accent' : 'text-muted hover:text-text hover:bg-bg-hover'
+              className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium border-none transition-colors z-[1] ${
+                isDisabled
+                  ? 'text-muted/40 cursor-not-allowed'
+                  : isActive
+                    ? 'text-accent cursor-pointer'
+                    : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
               }`}
             >
-              {isActive && (
+              {isActive && !isDisabled && (
                 <motion.div
                   layoutId={`${layoutId}-indicator`}
                   className="absolute inset-0 bg-card rounded-md shadow-sm border border-border"

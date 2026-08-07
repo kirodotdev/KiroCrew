@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } fr
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
-import { modelListRefetchInterval } from '../providers/modelListHealth'
+import { useModelsDegraded } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
@@ -21,6 +21,7 @@ import {
   selectTurnInterrupted,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
+  selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
   mcpAppKey,
@@ -65,6 +66,7 @@ import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import AgentDropdownList, { ManageAgentsFooter } from '../components/AgentDropdownList'
@@ -81,6 +83,7 @@ import ChatInput from '../components/ChatInput'
 import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
+import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
@@ -161,6 +164,8 @@ import { shouldMountSidePanel, isSidePanelHidden } from './chat/sidePanelMount'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch } from './chat/SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/WorkflowCompletionCard'
+import SubagentCompletionCard from './chat/SubagentCompletionCard'
+import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
@@ -925,14 +930,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
   const filteredAgents = filteredAgentsByName
-  const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => {
-      const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name !== 'auto')]
-    },
-    refetchInterval: modelListRefetchInterval,
-  })
+  const availableModels = useAvailableModels()
   const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(availableModels)
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
@@ -2116,6 +2114,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch(openActivityPanel())
     search.close()
   }, [tabsCtl, dispatch, search.close])
+
+  // Open the Subagents panel from a completion card. A per-agent event
+  // deep-links to the agent it reports on, so the panel lands on that
+  // transcript rather than whatever was last selected; a wave digest names no
+  // single agent and just opens the tab.
+  const handleSubagentPanelOpen = useCallback((parsed: ParsedSubagentCompletion) => {
+    if (parsed.kind === 'single') dispatch(selectSubagent(parsed.agentId))
+    dispatch(openActivityToTab('subagents'))
+  }, [dispatch])
 
   // Open an artifact as a side-panel tab — the artifact twin of
   // handleFileOpen, and the single entry point every in-chat artifact
@@ -3779,9 +3786,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // render pass every time the query settled, for a value that is a pure function
   // of the query result.
   const resolvedModel = _slotResolvedModel || ''
+  // The model to DISPLAY for this slot. A slot can stay pinned to a model the
+  // account can no longer run (a plan downgrade leaves the pin behind): the
+  // backend withholds it at spawn and runs the session on its own default, so
+  // showing the pin would name a model no turn will use. The degraded flag is
+  // the authority on whether the list can be trusted — a cached list served
+  // while /api/models fails is stale, not authoritative — and is subscribed to
+  // rather than read, because it can flip without the list changing.
+  const _modelsDegraded = useModelsDegraded(provider.id)
+  const shownModel = displayModel(
+    currentSlot?.model || resolvedModel || '',
+    availableModels,
+    _modelsDegraded,
+  )
   // True when the pin row would be a no-op: the agent already stores exactly
   // the model the composer is showing. 'auto' is the inherit spelling, never a
-  // stored pin, so it never counts as pinned.
+  // stored pin, so it never counts as pinned. Reads the slot's REAL model, not
+  // `shownModel` — this pairs with the write below, and a display fallback must
+  // never decide what gets persisted.
   const _modelPinActive = currentSlot?.model || resolvedModel || ''
   const _modelPinPinned =
     !!_modelPinCfg?.model && _modelPinCfg.model === _modelPinActive && _modelPinActive !== 'auto'
@@ -4561,6 +4583,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // An injected workflow completion event renders as a compact status card
     // (with the full result folded away) instead of a wall of raw JSON.
     if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} disclosureKey={key} />
+    // An injected sub-agent completion event is machine-facing prompt text (the
+    // spawn-discipline instructions are addressed to the model). It renders as a
+    // compact outcome row with the payload folded away, not as a chat bubble.
+    if (isSubagentCompletionMessage(m)) return <SubagentCompletionCard key={key} message={m} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} disclosureKey={key} onOpenPanel={handleSubagentPanelOpen} />
     const isUser = m.role === 'user'
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'
@@ -4637,7 +4663,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -5465,7 +5491,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               agentName={currentSlot?.agent || 'default'}
               agentSource={installedAgents.find(a => a.name === (currentSlot?.agent || 'default'))?.source}
-              modelName={currentSlot?.model || resolvedModel || 'auto'}
+              modelName={shownModel}
               onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect) => { setModelBtnRect(rect); setModelDropdown(!modelDropdown) }}
               onProjectClick={(rect) => {
@@ -5474,7 +5500,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
-              contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
+              contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
               continuable={continuable}
@@ -5507,7 +5533,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
-              onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
+              onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
               onAutoNudgeClick={setAutoNudgeOpen}
               autoNudgeLoop={autoNudgeLoop}
               autoNudgeOpen={autoNudgeOpen}
@@ -5600,12 +5626,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 inputRef={modelInputRef}
                 onListKeyDown={onModelListKeyDown}
                 models={filteredModels}
-                activeModel={currentSlot?.model || resolvedModel || 'auto'}
+                activeModel={shownModel}
                 onSelectModel={name => switchModel(name)}
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
-                hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel))}
+                hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
                 defaultEffort={defaultEffort}
@@ -5614,12 +5640,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   navigate(`/settings?tab=chat&highlight=${SETTINGS_DEFAULT_MODEL_ID}`)
                 }}
                 agentName={_modelPinAgent}
+                pinModelName={_modelPinActive || 'auto'}
+                pinModelUnavailable={pinIsWithheld(_modelPinActive, shownModel)}
                 pinnedToAgent={_modelPinPinned}
                 onPinToAgent={() => {
                   setModelDropdown(false)
                   pinModelToAgentMut.mutate({
                     agent: _modelPinAgent,
-                    model: currentSlot?.model || resolvedModel || '',
+                    // The slot's REAL model, never the display fallback: a
+                    // stale/degraded list must not be able to persist 'auto'
+                    // over a pin the account actually has.
+                    model: _modelPinActive === 'auto' ? '' : _modelPinActive,
                   })
                 }}
               />,
@@ -5633,7 +5664,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
             {/* Reasoning effort dropdown portal */}
-            {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) && createPortal(
+            {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
                 <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={defaultEffort} onClose={() => setReasoningEffortDropdown(false)} />
               </div>,

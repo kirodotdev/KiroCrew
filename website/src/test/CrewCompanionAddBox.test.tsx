@@ -18,6 +18,7 @@ const payload: RemindersPayload = {
   sessionNotificationsEnabled: true,
   breakReminderMins: 45,
   language: 'English',
+  present: true,
 }
 
 const setup = (onAdd: (t: string, f: string, e?: number) => Promise<boolean>) => {

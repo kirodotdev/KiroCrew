@@ -1,7 +1,9 @@
 {
   "threshold": 0,
   "minTokens": 180,
-  "reporters": ["console"],
+  "reporters": [
+    "console"
+  ],
   "ignore": [
     "**/node_modules/**",
     "**/dist/**",
@@ -17,8 +19,22 @@
     "**/electron/**",
     "**/tui/**",
     "**/src/pages/scenes/**",
-    "**/src/pages/knowledge/**"
+    "**/src/pages/knowledge/**",
+    "**/src/apps/crew-companion/ColorCustomizerPanel.tsx",
+    "**/src/apps/crew-companion/ContextMenu.tsx",
+    "**/src/apps/crew-companion/PackEditor.tsx",
+    "**/src/apps/crew-companion/SaveDialog.tsx",
+    "**/src/apps/crew-companion/SpriteImporter.tsx",
+    "**/src/apps/crew-companion/SpriteRenderer.tsx",
+    "**/src/apps/crew-companion/animationResolver.ts",
+    "**/src/apps/crew-companion/appearanceTypes.ts",
+    "**/src/apps/crew-companion/bubbleLayout.ts",
+    "**/src/apps/crew-companion/catPresets.ts",
+    "**/src/apps/crew-companion/colorCustomizer.ts",
+    "**/src/apps/crew-companion/spriteDetect.ts",
+    "**/src/apps/crew-companion/useMood.ts"
   ],
   "absolute": true,
-  "gitignore": true
+  "gitignore": true,
+  "_comment_crew_companion": "Crew Companion and Mochi are two separately-shippable companion apps that descend from the same desktop-buddy codebase, so the files listed below start as near-copies of Mochi's. They are exempt BY FILE, not by directory: every other file in crew-companion is still checked, and any new file added there is checked from the moment it exists. Sharing this layer was considered and rejected -- each app is enabled, disabled and versioned on its own, and the two are expected to diverge (Mochi is agentic, Crew Companion paces your day), so a shared module would couple two products that deliberately ship apart. Remove an entry here the moment its file stops matching Mochi's."
 }

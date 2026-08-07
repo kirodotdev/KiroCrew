@@ -67,10 +67,20 @@ _memory_sampler = SessionMemorySampler()
 async def api_sessions_memory(request: web.Request) -> web.Response:
     """GET /api/sessions/memory — per-session and per-task memory footprint."""
     state: DashboardState = request.app["state"]
+    # Built on the loop, not in the sampling thread: it walks live slot objects.
+    # Pure dict work, so it costs nothing here. Guarded because `state` is a
+    # MagicMock in much of the suite, whose attribute call returns a mock rather
+    # than a dict — the sampler must receive a real mapping or nothing.
+    # Built on the loop, not in the sampling thread: it walks live slot objects,
+    # and it is pure dict work. `hasattr` because a stub state in the suite may not
+    # carry the method at all; validating the VALUE is `_spend_for_session`'s job,
+    # so it is not repeated here — one owner for that rule.
+    aliases = state.spend_slot_by_session() if hasattr(state, "spend_slot_by_session") else None
     payload = await _memory_sampler.sample(
         state.sessions,
         getattr(state, "subagents", None),
         get_slot=state.get_slot,
+        spend_slot_by_session=aliases,
     )
     return web.json_response(payload)
 
@@ -106,6 +116,123 @@ _usage_cache: dict[str, object] = {}
 _usage_cache_ts: float = 0.0
 _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
 _usage_fetching = False
+
+# --- Text-scrape gate ------------------------------------------------------
+# The `/usage` text scrape is a REAL billed kiro-cli chat turn, unlike the
+# GetUsageLimits API read the primary path uses. It runs on a timer for as long
+# as a dashboard tab is open, so an ungated fallback bills the user forever just
+# to render a credit meter. Hence: opt-in via config, logged once when it is
+# skipped, and backed off when it repeatedly fails.
+
+#: True once the "scrape is disabled" notice has been logged. The refresh runs
+#: every _USAGE_REFRESH_SECS forever, so logging per cycle would fill the log
+#: with a message that never changes.
+_usage_scrape_disabled_logged = False
+#: Consecutive scrape attempts that produced no usable credit plan.
+_usage_scrape_failures = 0
+#: monotonic deadline before which no further scrape is attempted.
+_usage_scrape_backoff_until = 0.0
+#: Consecutive failures tolerated before the scrape is parked. Two refresh
+#: intervals of bad luck stay within normal retry; a third means the scrape is
+#: broken (kiro-cli format change, wedged CLI, revoked auth), and every further
+#: attempt spends credits for output that cannot be parsed.
+_USAGE_SCRAPE_FAILURE_THRESHOLD = 3
+#: How long a broken scrape is parked. Long relative to the 10-minute refresh so
+#: a persistent breakage costs a handful of turns per day, not one per interval.
+_USAGE_SCRAPE_BACKOFF_SECS = 6 * 3600
+
+
+def _text_scrape_enabled() -> bool:
+    """True when the user has opted in to the credit-spending `/usage` scrape.
+
+    Fails CLOSED: any error reading config means the scrape does not run, so a
+    malformed config can never silently start billing chat turns. Blocking I/O
+    (stat + parse), so callers offload it.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return bool(KiroCrewConfig.load().dashboard.usage_text_scrape_enabled)
+    except Exception:
+        logger.debug("usage text-scrape gate unreadable; treating as disabled", exc_info=True)
+        return False
+
+
+def _log_scrape_disabled_once() -> None:
+    """Announce the skipped scrape exactly once per process."""
+    global _usage_scrape_disabled_logged
+    if _usage_scrape_disabled_logged:
+        return
+    _usage_scrape_disabled_logged = True
+    logger.info(
+        "Kiro usage: the API returned no credit plan and the /usage text scrape "
+        "is disabled, so the credit pill stays unavailable. The scrape is a "
+        "billed kiro-cli chat turn every %ds; enable it with "
+        "dashboard.usage_text_scrape_enabled = true in config.json if you want "
+        "to pay for the readout.",
+        _USAGE_REFRESH_SECS,
+    )
+
+
+def _scrape_in_backoff() -> bool:
+    """True while a repeatedly-failing scrape is parked."""
+    return time.monotonic() < _usage_scrape_backoff_until
+
+
+def _record_scrape_outcome(success: bool) -> None:
+    """Track consecutive scrape failures and park the scrape once they pile up.
+
+    Every attempt costs credits, so a scrape that cannot produce a usable plan
+    must stop retrying on each TTL expiry. Any success clears the counter, so a
+    transient hiccup does not accumulate toward the ceiling.
+    """
+    global _usage_scrape_failures, _usage_scrape_backoff_until
+    if success:
+        _usage_scrape_failures = 0
+        _usage_scrape_backoff_until = 0.0
+        return
+    _usage_scrape_failures += 1
+    if _usage_scrape_failures >= _USAGE_SCRAPE_FAILURE_THRESHOLD:
+        _usage_scrape_backoff_until = time.monotonic() + _USAGE_SCRAPE_BACKOFF_SECS
+        logger.warning(
+            "Kiro usage: %d consecutive /usage text scrapes yielded no credit "
+            "plan; pausing the scrape for %ds so it stops spending credits on "
+            "unusable output.",
+            _usage_scrape_failures,
+            _USAGE_SCRAPE_BACKOFF_SECS,
+        )
+
+
+def _cache_without_scrape(api_usage: object, identity: dict[str, object]) -> None:
+    """Cache the best available value when the scrape is not going to run.
+
+    Degrades rather than erroring: keep a previously-good value (dimmed
+    ``stale``) so the pill does not blink out, otherwise surface whatever
+    partial fields the API did return alongside ``available: False`` — the
+    frontend's existing signal to hide the pill instead of rendering blanks.
+
+    Preserving is gated on ``_same_identity``: with the scrape disabled, a
+    plan-less API answer recurs every refresh forever, so an unguarded preserve
+    would serve the PREVIOUS account's balance and email indefinitely after a
+    switch A->B. An unproven identity (missing or mismatched email / start_url,
+    including an account that never carried one) therefore reports unavailable
+    instead — hiding the pill is a cosmetic loss, attributing one account's
+    spend to another is not.
+
+    ``identity`` is this refresh's whoami, resolved before the API attempt, so a
+    switch landing inside that attempt is caught on the following refresh rather
+    than this one.
+    """
+    global _usage_cache, _usage_cache_ts
+    if _usage_cache.get("credits_plan") is not None and _same_identity(_usage_cache, identity):
+        _usage_cache = {**_usage_cache, "stale": True}
+    else:
+        partial = {k: _redact_strings(v) for k, v in api_usage.items()} if (
+            isinstance(api_usage, dict)
+        ) else {}
+        partial.pop("_profile_arn", None)
+        _usage_cache = {**partial, "available": False}
+    _usage_cache_ts = time.time()
 
 
 def _safe_float(text: str) -> float | None:
@@ -466,6 +593,10 @@ async def _fetch_usage_bg() -> None:
     proc = None
     sandbox_cleanup = None
     kiro_bin: str | None = None
+    # Only a refresh that actually SPAWNED the billed scrape feeds the failure
+    # backoff — an API-path error or a missing kiro-cli says nothing about
+    # whether the scrape works.
+    scrape_attempted = False
     try:
         kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
@@ -532,6 +663,20 @@ async def _fetch_usage_bg() -> None:
         # Fallback: scrape kiro-cli /usage stdout. Lossy for org-managed accounts
         # on recent kiro-cli (no overage line), but the only source when the API
         # path is unavailable (no token / non-Kiro build).
+        #
+        # This is a BILLED chat turn, not a free read, and this refresh runs on a
+        # timer whenever a dashboard tab is open — so it only happens when the
+        # user has explicitly opted in, and stops entirely once it has failed
+        # enough times to look broken. Both checks are before the spawn, so a
+        # disabled or parked scrape costs nothing at all.
+        if not await asyncio.to_thread(_text_scrape_enabled):
+            _log_scrape_disabled_once()
+            _cache_without_scrape(api_usage, identity)
+            return
+        if _scrape_in_backoff():
+            _cache_without_scrape(api_usage, identity)
+            return
+        scrape_attempted = True
         # Route through the OS-level sandbox, consistent with how the main agent
         # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv).
         argv, sandbox_cleanup = wrap_argv(
@@ -548,6 +693,10 @@ async def _fetch_usage_bg() -> None:
         raw = (out or err or b"").decode(errors="replace")
         parsed = _parse_usage(raw)
         if parsed.get("credits_plan") is not None:
+            # A parseable plan means the scrape itself works, so clear any
+            # accumulated failures even on the preservation path below (which
+            # discards the value for being overage-blind, not for being broken).
+            _record_scrape_outcome(True)
             # Converge on the canonical shape (credits_used = total, explicit
             # credits_overage) so the dashboard never branches on source, then
             # redact credentials / exfil URLs from every string leaf before the
@@ -603,13 +752,18 @@ async def _fetch_usage_bg() -> None:
             # No parseable credit plan this cycle (unrecognized /usage output,
             # or transient garbage). Keep the last good value (stale) rather than
             # blanking the pill; only hide when we have nothing to show.
+            _record_scrape_outcome(False)
             _cache_transient_failure()
     except asyncio.TimeoutError:
         # Transient hang — keep the last good value (stale) instead of blanking.
         logger.debug("Background usage fetch timed out")
+        if scrape_attempted:
+            _record_scrape_outcome(False)
         _cache_transient_failure()
     except Exception:
         logger.debug("Background usage fetch failed", exc_info=True)
+        if scrape_attempted:
+            _record_scrape_outcome(False)
         _cache_transient_failure()
     finally:
         # Always reap the subprocess on any exit path (timeout, error, or task
