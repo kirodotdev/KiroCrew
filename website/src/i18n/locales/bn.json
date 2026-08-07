@@ -6839,6 +6839,7 @@
       "subagentProgressBar": {
         "collapse_agent_list": "সাবএজেন্ট তালিকা সংকুচিত করো",
         "expand_agent_list": "সাবএজেন্ট তালিকা প্রসারিত করো",
+        "levels": "স্তর",
         "backend_hiccup_retrying": "ব্যাকএন্ডে সমস্যা — আবার চেষ্টা করা হচ্ছে…",
         "more_running_normally": "আরও কয়েকটি স্বাভাবিকভাবে চলছে…",
         "no_activity": "— কোনো অ্যাক্টিভিটি নেই",
@@ -6855,6 +6856,7 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
       "subagentRunCard": {
+        "depth_levels": "স্তর",
         "open_in_the_subagents_panel": "সাবএজেন্ট প্যানেলে খুলুন",
         "open_subagents_panel": "সাবএজেন্ট প্যানেল খুলুন",
         "waiting": "অপেক্ষমাণ",

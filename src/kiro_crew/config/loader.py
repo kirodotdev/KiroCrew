@@ -1126,6 +1126,34 @@ class AgentConfig:
             "Values support ~ expansion. Empty list disables cwd overrides.",
         ),
     )
+    subagent_tree_attribution: bool = field(
+        default=False,
+        metadata=_meta(
+            "SubAgent Tree Attribution",
+            "Opt-in: expose the nested-subagent orchestration tree in the UI by "
+            "attributing each spawned child to its true parent, and permit "
+            "subagents to spawn further subagents. When off, children are told "
+            "not to spawn (can_spawn=False is a prompt-level instruction) and "
+            "the tree renders flat. Either way nesting is bounded by "
+            "subagent_max_per_session, which is enforced unconditionally and "
+            "does not depend on this flag.",
+        ),
+    )
+    subagent_max_per_session: int = field(
+        default=0,
+        metadata=_meta(
+            "SubAgent Max Tree Nodes",
+            "Hard cap on the number of subagents in ONE orchestration tree — "
+            "every node under a single root session (the originating "
+            "dashboard/slack/cron session), at every nesting depth, including "
+            "spawns still queued. This is the ceiling that bounds nesting: it is "
+            "computed from the tree ROOT, so unlike a depth limit it stays exact "
+            "even when a shared runtime flattens a nested spawn's parent "
+            "identity. 0 = auto: use the effective global max_subagents cap, so "
+            "one tree may consume the whole budget but never queue past it. "
+            "There is no unlimited setting.",
+        ),
+    )
     max_channels: int = field(
         default=1,
         metadata=_meta("Max Channels", "Maximum concurrent agent channels (1-5)."),
@@ -2680,6 +2708,10 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
+    # Per-tree node ceiling. 0 is the auto sentinel (= effective global cap);
+    # bounded by the same absolute ceiling so it can never be widened past the
+    # host-safe limit.
+    ("agent", "subagent_max_per_session", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
     ("dashboard", "loop_stall_exit_after_secs", LOOP_STALL_EXIT_AFTER_MIN, LOOP_STALL_EXIT_AFTER_MAX),
@@ -4646,6 +4678,8 @@ class KiroCrewConfig:
                 bot_name=_sanitize_bot_name(agent_data.get("bot_name", "")),
                 max_channels=agent_data.get("max_channels", 1),
                 max_channel_agents=agent_data.get("max_channel_agents", 3),
+                subagent_tree_attribution=bool(agent_data.get("subagent_tree_attribution", False)),
+                subagent_max_per_session=_safe_int(agent_data.get("subagent_max_per_session", 0), MAX_SUBAGENTS_FIXED_FLOOR, lo=0, hi=SUBAGENT_AUTO_MAX_CEILING),
                 soft_stop_budget_secs=max(
                     0.5, min(60.0, _safe_float(agent_data.get("soft_stop_budget_secs", 10.0), 10.0))
                 ),

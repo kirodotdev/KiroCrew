@@ -4666,6 +4666,7 @@
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "backend hiccup — retrying…",
+        "levels": "levels",
         "more_running_normally": "more running normally…",
         "no_activity": "— no activity",
         "no_activity_possibly_stalled": "No activity — possibly stalled",
@@ -4676,6 +4677,7 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "subagentRunCard": {
+        "depth_levels": "levels",
         "open_in_the_subagents_panel": "Open in the Subagents panel",
         "open_subagents_panel": "Open Subagents panel",
         "waiting": "waiting",

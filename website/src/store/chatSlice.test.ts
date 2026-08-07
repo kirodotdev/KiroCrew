@@ -6,6 +6,8 @@ import chatReducer, {
   hydrateSlotMessages,
   sseSubagentSpawn,
   sseSubagentChunk,
+  sseSubagentUpdateMeta,
+  sseSubagentDone,
   sseToolActivity,
   sseToolResult,
   switchSlot,
@@ -574,5 +576,103 @@ describe('chat frame append is idempotent per server row id (issue #1704)', () =
     )
     const msgs = store.getState().chat.messages
     expect(msgs[msgs.length - 1].content).toBe('newest reply')
+  })
+})
+
+describe('sseSubagentSpawn — status-downgrade guard (nested tree port)', () => {
+  it('does not resurrect a terminal agent to running on a late WS spawn event', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    // Agent finishes via reconcile backfill
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew', done: true, depth: 1 }))
+    expect(store.getState().chat.subagents.x1.status).toBe('done')
+    // Late WS spawn event arrives — must NOT overwrite done→running
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew' }))
+    expect(store.getState().chat.subagents.x1.status).toBe('done')
+  })
+
+  it('patches parent/depth on a terminal agent from a late spawn event', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew', done: true }))
+    // Late spawn with metadata still patches through
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew', parent: 'subagent:parent1', depth: 2 }))
+    expect(store.getState().chat.subagents.x1.status).toBe('done')
+    expect(store.getState().chat.subagents.x1.parentKey).toBe('subagent:parent1')
+    expect(store.getState().chat.subagents.x1.depth).toBe(2)
+  })
+
+  it('allows done:true spawn to create an agent in terminal state (reconcile backfill)', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew', done: true, parent: 'dashboard:a', depth: 1 }))
+    expect(store.getState().chat.subagents.x1.status).toBe('done')
+    expect(store.getState().chat.subagents.x1.parentKey).toBe('dashboard:a')
+    expect(store.getState().chat.subagents.x1.depth).toBe(1)
+  })
+
+  // The guard covers 'done' | 'error' | 'stopped'. The cases above only reach
+  // terminal state through the reconcile-backfill path (done:true); these two
+  // drive it through the REAL sseSubagentDone action, which is the only way an
+  // agent becomes 'error' or 'stopped'. Without these, a guard that checked
+  // only status === 'done' would still pass the whole suite.
+  it.each([
+    { outcome: 'failed' as const, expected: 'error' },
+    { outcome: 'stopped' as const, expected: 'stopped' },
+  ])('does not resurrect an agent terminated via sseSubagentDone ($outcome)', ({ outcome, expected }) => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew', parent: 'subagent:p1', depth: 2 }))
+    expect(store.getState().chat.subagents.x1.status).toBe('running')
+    store.dispatch(sseSubagentDone({ slot: 'a', id: 'x1', elapsed: 5, outcome }))
+    expect(store.getState().chat.subagents.x1.status).toBe(expected)
+    // Late WS spawn event must not downgrade the terminal status back to running
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 't', agent: 'kirocrew', parent: 'subagent:p2', depth: 3 }))
+    expect(store.getState().chat.subagents.x1.status).toBe(expected)
+    // ...but authoritative tree metadata still patches through
+    expect(store.getState().chat.subagents.x1.parentKey).toBe('subagent:p2')
+    expect(store.getState().chat.subagents.x1.depth).toBe(3)
+  })
+})
+
+describe('sseSubagentUpdateMeta (nested tree port)', () => {
+  it('patches parent and depth without disturbing status or streaming', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentSpawn({ slot: 'a', id: 'x1', task: 'work', agent: 'kirocrew' }))
+    store.dispatch(sseSubagentChunk({ slot: 'a', id: 'x1', text: 'hello' }))
+    // Now patch metadata
+    store.dispatch(sseSubagentUpdateMeta({ slot: 'a', id: 'x1', parent: 'subagent:parent2', depth: 3 }))
+    const agent = store.getState().chat.subagents.x1
+    expect(agent.parentKey).toBe('subagent:parent2')
+    expect(agent.depth).toBe(3)
+    expect(agent.status).toBe('running')
+    expect(agent.streaming).toBe('hello')
+  })
+
+  it('is a no-op when the agent does not exist', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    // Should not throw
+    store.dispatch(sseSubagentUpdateMeta({ slot: 'a', id: 'nonexistent', parent: 'dashboard:a', depth: 1 }))
+    expect(store.getState().chat.subagents.nonexistent).toBeUndefined()
+  })
+})
+
+describe('depth ordering — parent resolution through a finished intermediate', () => {
+  it('stores depth from backfill spawn even when intermediate parent is done', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('slot1'))
+    // Parent agent (L1) — already finished
+    store.dispatch(sseSubagentSpawn({ slot: 'slot1', id: 'parent1', task: 'orchestrate', agent: 'kirocrew', done: true, parent: 'dashboard:slot1', depth: 1 }))
+    // Child agent (L2) — still running, parent is done
+    store.dispatch(sseSubagentSpawn({ slot: 'slot1', id: 'child1', task: 'work', agent: 'kirocrew', parent: 'subagent:parent1', depth: 2 }))
+    const parent = store.getState().chat.subagents.parent1
+    const child = store.getState().chat.subagents.child1
+    expect(parent.status).toBe('done')
+    expect(parent.depth).toBe(1)
+    expect(child.status).toBe('running')
+    expect(child.depth).toBe(2)
+    expect(child.parentKey).toBe('subagent:parent1')
   })
 })

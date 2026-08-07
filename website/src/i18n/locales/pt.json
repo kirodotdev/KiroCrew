@@ -6915,6 +6915,7 @@
       "subagentProgressBar": {
         "collapse_agent_list": "Recolher a lista de subagentes",
         "expand_agent_list": "Expandir a lista de subagentes",
+        "levels": "níveis",
         "backend_hiccup_retrying": "falha temporária no backend — tentando novamente…",
         "more_running_normally": "mais em execução normal…",
         "no_activity": "— sem atividade",
@@ -6931,6 +6932,7 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Aguardando para iniciar — na fila devido ao limite de simultaneidade"
       },
       "subagentRunCard": {
+        "depth_levels": "níveis",
         "open_in_the_subagents_panel": "Abrir no painel de subagentes",
         "open_subagents_panel": "Abrir painel de subagentes",
         "waiting": "aguardando",

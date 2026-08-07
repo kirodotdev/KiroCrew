@@ -42,7 +42,8 @@ The `spawn_run` tool accepts:
 - **Timeout**: 30 minutes per subagent task, 20 minutes delivery, 5 minutes per injection attempt
 - **Turn limit**: 100 turns per subagent (configurable via `agent.subagent_max_turns`, UI max 200)
 - **Memory guard**: spawns are refused when available memory drops below 4 GB (configurable via `agent.spawn_min_memory_gb`, set to 0 to disable)
-- **No nesting**: subagents cannot spawn their own subagents
+- **Nesting**: off by default. Set `agent.subagent_tree_attribution = true` to let subagents spawn their own subagents and to render the orchestration tree in the UI; when off they are instructed not to spawn (a prompt-level instruction, not a hard gate). See [Nested Subagent Tree](nested-subagent-tree.md)
+- **Max tree nodes**: one orchestration tree is bounded by `agent.subagent_max_per_session` — every nesting level counts, plus anything queued, and a spawn past it is refused rather than queued (`0` = auto: the effective `max_subagents` cap; there is no unlimited setting)
 - **Redaction**: task strings in SubagentInfo are redacted (credentials + exfiltration URLs) before surfacing to Slack/dashboard
 
 ## Named Agents

@@ -652,6 +652,7 @@ class TestConservativeShutdown:
         # slot (a1933a4b, ported earlier in this branch); an empty queue makes
         # _drain_queue return immediately without touching other attrs.
         mgr._queue = []
+        mgr._tree = MagicMock()
         mgr._running_count = 1
         mgr._default_timeout = 300
         mgr._write_tombstone = MagicMock()
@@ -715,6 +716,7 @@ class TestConservativeShutdown:
         mgr._report_owners = {}
         # Fork adaptation: see test_session_sharing_never_kills_runtime.
         mgr._queue = []
+        mgr._tree = MagicMock()
         mgr._running_count = 2
         mgr._default_timeout = 300
         mgr._write_tombstone = MagicMock()

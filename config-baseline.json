@@ -57,6 +57,8 @@
           "~/workplace",
           "~/workplaces"
         ],
+        "subagent_tree_attribution": false,
+        "subagent_max_per_session": 0,
         "max_channels": 1,
         "max_channel_agents": 3,
         "log_level": "WARNING",
@@ -671,6 +673,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "agent.subagent_tree_attribution",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SubAgent Tree Attribution",
+      "help": "Opt-in: expose the nested-subagent orchestration tree in the UI by attributing each spawned child to its true parent, and permit subagents to spawn further subagents. When off, children are told not to spawn (can_spawn=False is a prompt-level instruction) and the tree renders flat. Either way nesting is bounded by subagent_max_per_session, which is enforced unconditionally and does not depend on this flag.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.subagent_max_per_session",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SubAgent Max Tree Nodes",
+      "help": "Hard cap on the number of subagents in ONE orchestration tree — every node under a single root session (the originating dashboard/slack/cron session), at every nesting depth, including spawns still queued. This is the ceiling that bounds nesting: it is computed from the tree ROOT, so unlike a depth limit it stays exact even when a shared runtime flattens a nested spawn's parent identity. 0 = auto: use the effective global max_subagents cap, so one tree may consume the whole budget but never queue past it. There is no unlimited setting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "agent.max_channels",

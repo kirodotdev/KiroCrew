@@ -14,6 +14,7 @@ import ctypes
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -63,6 +64,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
 from kiro_crew.session_surface import has_dashboard_surface
+from kiro_crew.session_tree import SessionTree
 from kiro_crew.session_workspace import result_path as _ws_result_path
 from kiro_crew.slack.format import extract_options
 from kiro_crew.stats import Stats
@@ -757,6 +759,29 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
     return compute_max_subagents(cfg)
 
 
+def resolve_max_tree_nodes(cfg: KiroCrewConfig) -> int:
+    """Resolve the per-tree node ceiling (``agent.subagent_max_per_session``).
+
+    This is the hard stop on nesting. Depth cannot serve that role: on a shared
+    ACP runtime kiro-cli flattens caller identity, so a nested spawn's parent
+    edge is unknowable at spawn time and any depth ceiling is fail-OPEN there. A
+    node count is computed from the tree ROOT instead, and flattening collapses
+    the parent TO that root — so the count is exact even when the edge is wrong.
+
+    ``0`` is the auto sentinel: use the effective global cap, letting one tree
+    consume the whole budget while still refusing (not queueing) past it. This
+    NEVER returns 0 — there is deliberately no unlimited setting — and it fails
+    closed to the legacy floor when the config cannot be read.
+    """
+    try:
+        configured = int(cfg.agent.subagent_max_per_session)
+    except (AttributeError, TypeError, ValueError):
+        return _LEGACY_DEFAULT_MAX
+    if configured > 0:
+        return configured
+    return resolve_max_subagents(cfg)
+
+
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 _CPU_SUBTREE_MAX_PROCS = 256
 
@@ -843,14 +868,40 @@ def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
     return ("", f"cwd is not under any allowed root: {allowed_roots}")
 
 
-_SYSTEM_PREFIX = (
-    "You are a focused sub-agent. Complete the following task concisely. "
-    "Do NOT create other agents. Report your result directly.\n"
-    "IMPORTANT: Do NOT narrate your own process, failures, retries, or "
-    "orchestration decisions. The user does not care how you got the answer. "
-    "Do NOT include [OPTIONS: ...] tags. Do NOT use the AskUserQuestion tool. "
-    "Only output meaningful, actionable results. Never output greetings or filler.\n\n"
+_NO_SPAWN_CLAUSE = "Do NOT create other agents. "
+_MAY_SPAWN_CLAUSE = (
+    "You may spawn sub-agents via spawn_run if a task genuinely benefits from "
+    "parallel decomposition — use spawn_run, not the blocking spawn_sub_agents, "
+    "which would hold your slot while your children wait for one. The whole tree "
+    "shares one node budget: once it is spent a spawn is refused outright, so "
+    "spawn only what the task needs. "
 )
+
+
+def _build_system_prefix(can_spawn: bool = False) -> str:
+    """Build the system prefix for a subagent, optionally allowing spawn."""
+    spawn_clause = _MAY_SPAWN_CLAUSE if can_spawn else _NO_SPAWN_CLAUSE
+    return (
+        f"You are a focused sub-agent. Complete the following task concisely. "
+        f"{spawn_clause}Report your result directly.\n"
+        "IMPORTANT: Do NOT narrate your own process, failures, retries, or "
+        "orchestration decisions. The user does not care how you got the answer. "
+        "Do NOT include [OPTIONS: ...] tags. Do NOT use the AskUserQuestion tool. "
+        "Only output meaningful, actionable results. Never output greetings or filler.\n\n"
+    )
+
+
+# Default prefix used by existing call sites (no-spawn).
+_SYSTEM_PREFIX = _build_system_prefix(can_spawn=False)
+
+# Regex for stream-based attribution: matches the server-composed per-child line
+# in spawn_run tool output. Two leading spaces, 8 hex chars (capture group 1),
+# optional ` (agent_name)`, then `: `.
+_SPAWN_RESULT_ID_RE = re.compile(r"^  ([0-9a-f]{8})(?: \([^)\n]*\))?: ", re.MULTILINE)
+
+# MCP server that serves spawn_run. Attribution requires this identity so a
+# model-authored tool title cannot masquerade as a spawn_run result.
+_CORE_MCP_SERVER = "kirocrew-core"
 
 
 @dataclass
@@ -862,16 +913,29 @@ class SubagentInfo:
     started: float = field(default_factory=time.time)
     done: bool = False
     # True for the record returned by a spawn that hit the stagger/concurrency
-    # gate and was QUEUED instead of started. Such a record is not registered in
-    # ``_agents`` and carries no live state — but its ``id`` IS the id the agent
-    # will run under once ``_drain_queue`` starts it (pre-assigned at accept
-    # time), so callers may print it or hold on to it.
+    # gate and was QUEUED instead of started.  The record IS registered in
+    # ``_agents`` and ``_pending_attribution`` at queue time so tree-depth
+    # attribution can resolve queued children before drain.  Its ``id`` IS the
+    # id the agent will run under once ``_drain_queue`` starts it (pre-assigned
+    # at accept time), so callers may print it or hold on to it.
     queued: bool = False
     result: str = ""
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
     error: str = ""
     parent_session_key: str = ""
+    # Tree edge, deliberately SEPARATE from parent_session_key.
+    #
+    # parent_session_key is ROUTABLE: `_subagent_done` delivers this agent's
+    # completion through it (dashboard slot, or Slack session). Overwriting it
+    # with a `subagent:<id>` tree edge silently drops the result — that key
+    # matches no delivery surface (`dashboard_slot_key()` returns "" for it, and
+    # the Slack path explicitly excludes the `subagent:` prefix), so the waiting
+    # parent never hears back. Attribution therefore records the tree edge here
+    # and leaves the routable key untouched.
+    tree_parent_key: str = ""
+    depth: int = 1  # 1 = direct child of root; nested spawns get depth > 1
+    can_spawn: bool = False  # whether this subagent is permitted to spawn children
     agent: str = ""
     # The app that spawned this child (empty for a non-app spawn). Persisted so
     # the child's per-tool-call gate can resolve the app's Level-2 profile, not
@@ -1093,6 +1157,8 @@ class SubagentManager:
         self._completion_keep = completion_keep
         self._completion_keep_chars = completion_keep_chars
         self._running_count = 0
+        # --- Nested orchestration tree (topology of the agent forest) ---
+        self._tree = SessionTree()
         # Strong refs to in-flight shielded terminal reports (see
         # `_spawn_terminal_report`); drained in `cancel_all`.
         self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
@@ -1117,6 +1183,37 @@ class SubagentManager:
         except AttributeError:
             pass  # test doubles without the setter
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        # --- Nested-tree attribution state ---
+        self._pending_attribution: set[str] = set()
+        # Resolve attribution config once at process startup.
+        try:
+            _cfg = KiroCrewConfig.load()
+            _acfg = _cfg.agent
+            self._attribution_enabled: bool = bool(
+                getattr(_acfg, "subagent_tree_attribution", False)
+            )
+            # Per-TREE node ceiling — the nesting safety control. Depth is
+            # observability only (see _compute_spawn_depth): on a shared runtime
+            # kiro-cli flattens caller identity, so a nested spawn's parent edge
+            # is unknowable at spawn time and any depth-based ceiling is
+            # fail-OPEN there. A node count needs no parent identity — it is
+            # computed from the tree ROOT, and flattening collapses the parent TO
+            # that root, so the count stays EXACT even when the edge is wrong.
+            #
+            # 0 = auto: use the effective global cap, so one tree may consume the
+            # whole budget but can never queue past it. There is deliberately no
+            # "unlimited" setting: this is a fork-bomb ceiling, not a preference.
+            #
+            # Cached with the rest: the spawn path runs on the event loop and must
+            # not touch disk, and it must observe the SAME config the manager was
+            # constructed with rather than re-reading a different one mid-run.
+            self._max_per_session: int = resolve_max_tree_nodes(_cfg)
+        except Exception:
+            logger.warning("tree: agent config unreadable at init — deny-by-default")
+            self._attribution_enabled = False
+            # Fail CLOSED. This is the only hard stop on nesting, so an
+            # unreadable config must not widen it; drop to the legacy floor.
+            self._max_per_session = _LEGACY_DEFAULT_MAX
         # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
         # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
@@ -1606,6 +1703,13 @@ class SubagentManager:
                 logger.debug("Reaper: cost-log compaction failed", exc_info=True)
             for agent_id, info in list(self._agents.items()):
                 if info.done:
+                    continue
+                # Queued placeholders haven't started executing yet — their
+                # ``started`` timestamp is queue-accept time, not exec start.
+                # The queue/cancel lifecycle owns their fate; the reaper must
+                # not force-kill them (doing so corrupts slot accounting when
+                # _drain_queue later starts the same id).
+                if info.queued:
                     continue
                 elapsed = now - info.started
                 # Startup watchdog: a subagent that entered execution but is
@@ -2155,6 +2259,13 @@ class SubagentManager:
         # Drain here so the freed slot is used immediately.
         if self._release_slot(info):
             self._running_count = max(0, self._running_count - 1)
+            # Reparent, do NOT prune the subtree: cancel() and the reaper act on
+            # ONE agent and do not cascade, so a reaped parent can still have
+            # live children. Pruning them out of the tree would silently free
+            # their budget under the per-tree node cap — the same undercount
+            # normal completion had, on the teardown path instead.
+            self._reparent_queued_children(session_key)
+            self._tree.remove_and_reparent(session_key)
             self._drain_queue()
 
         try:
@@ -2365,6 +2476,51 @@ class SubagentManager:
     @property
     def running_count(self) -> int:
         return self._running_count
+
+    def count_for_session(self, session_key: str) -> int:
+        """Live subagents under the ROOT session that *session_key* belongs to.
+
+        This is the per-session accounting behind the ``subagent_max_per_session``
+        cap: it counts the whole subtree (every nesting depth) under the
+        originating user / cron / dashboard session, excluding that root itself.
+        Returns 0 when the session has no tracked subagents yet.
+        """
+        root = self._tree.root_of(session_key)
+        if root is None:
+            return 0
+        return self._tree.subtree_size(root, include_self=False)
+
+    def root_slot_for(self, session_key: str) -> str | None:
+        """Dashboard slot name at the root of *session_key*'s orchestration tree.
+
+        Walks the session tree to the originating root and returns the slot name
+        (``dashboard:`` prefix stripped) so nested subagent UI events surface on
+        the user's session card instead of a phantom ``subagent:<id>`` slot.
+        Returns ``None`` when the root is not a dashboard session (e.g. cron /
+        slack) or the key is not tracked — callers fall back to legacy routing.
+        """
+        root = self._tree.root_of(session_key)
+        if root is None or not root.startswith("dashboard:"):
+            return None
+        return root[len("dashboard:"):]
+
+    def _routable_parent_key(self, child_key: str, parent_session_key: str) -> str | None:
+        """A routable delivery surface for *child_key*, or None to keep as-is.
+
+        ``parent_session_key`` is the completion-delivery route; a
+        ``subagent:<id>`` value names no surface (``dashboard_slot_key`` returns
+        "" for it and the Slack branch excludes the prefix), so a child carrying
+        one has its result silently dropped. Resolve the tree ROOT instead, which
+        is by construction a dashboard / slack / cron surface. Returns None when
+        the key is already routable, or when the root cannot be resolved — the
+        caller then leaves the key untouched rather than guessing.
+        """
+        if not parent_session_key.startswith("subagent:"):
+            return None
+        root = self._tree.root_of(child_key)
+        if root and not root.startswith("subagent:"):
+            return root
+        return None
 
     def running_agents_for(self, parent_key: str) -> list[dict]:
         """Return summary dicts for agents belonging to *parent_key*."""
@@ -2617,6 +2773,42 @@ class SubagentManager:
                 )
                 return self._announce_rejection(info)
 
+        # --- Per-session cap: limit concurrent subagents under one root ---
+        per_session_max = self._max_per_session
+        if per_session_max > 0:
+            session_agent_count = self.count_for_session(parent_session_key) + self._queued_depth(parent_session_key)
+            if session_agent_count >= per_session_max:
+                logger.warning(
+                    "Subagent spawn refused: session has %d agents (max %d per session)",
+                    session_agent_count, per_session_max,
+                )
+                sel().log_tool_invocation(
+                    session_key=parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="refused_max_per_session",
+                    metadata={
+                        "session_agents": session_agent_count,
+                        "max_per_session": per_session_max,
+                        "task": _redacted_task[:120],
+                    },
+                )
+                info = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=(
+                        f"spawn refused: session already has {session_agent_count} "
+                        f"agents (max {per_session_max} per session; raise "
+                        f"agent.subagent_max_per_session to allow more)"
+                    ),
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                return self._announce_rejection(info)
+
         # --- Governance: spawn capability gate (blast-radius containment) ---
         # A policy/profile may disable sub-agent spawning entirely, or bound it
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
@@ -2738,9 +2930,17 @@ class SubagentManager:
                 agent=agent,
                 app=app,
                 queued=True,
+                parent_session_key=parent_session_key,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
             )
+            # Register for attribution NOW so _attribute_spawn_children can
+            # resolve this child's depth when the parent's tool_response fires
+            # (before _drain_queue re-enters spawn).  Without this, a queued
+            # child's id is absent from _pending_attribution at attribution
+            # time, making it invisible to tree-depth accounting.
+            self._pending_attribution.add(agent_id)
+            self._agents[agent_id] = info
             return info
 
         # `_agent_prevalidated` skips the on-loop agent-directory scan: a caller
@@ -2783,7 +2983,48 @@ class SubagentManager:
             conversation_key=conversation_key,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
+        # --- Depth (observability) + tree registration ---
+        # Depth drives the UI tree (indent + "N levels"); it is NOT a ceiling.
+        # Nesting is bounded by the per-tree node cap above, which is exact
+        # because it is rooted rather than parent-relative.
+        child_depth = self._compute_spawn_depth(parent_session_key)
+        # A drained spawn may have already been attributed while queued: the
+        # parent's tool_response fired _attribute_spawn_children which resolved
+        # the queued record's depth.  Preserve that (monotonic: can only grow).
+        if _from_queue:
+            existing = self._agents.get(agent_id)
+            if existing:
+                if existing.depth > child_depth:
+                    child_depth = existing.depth
+                # Preserve tree_parent_key attributed while queued so
+                # the UI receives the correct parent edge.
+                if getattr(existing, "tree_parent_key", None):
+                    info.tree_parent_key = existing.tree_parent_key
+        info.depth = child_depth
+        # Spawn permission is opt-in and independent of depth: it selects the
+        # spawn clause in the child's system prompt (_build_system_prefix) and
+        # nothing else. It is a prompt-level instruction, never an enforcement
+        # point — the per-tree node cap is what actually refuses a spawn.
+        info.can_spawn = self._attribution_enabled
+        # Queue-path already registered in _pending_attribution (at accept
+        # time, before the parent's tool_response fires attribution).  Skipping
+        # the re-add avoids a 1.5s gate stall when attribution already consumed
+        # the id between queuing and draining.
+        if not _from_queue:
+            self._pending_attribution.add(agent_id)
         self._agents[agent_id] = info
+        self._tree.add(f"subagent:{agent_id}", parent_session_key)
+        # `parent_session_key` is the completion DELIVERY route and must name a
+        # real surface; `tree_parent_key` carries the true tree edge. A
+        # `subagent:<id>` route names none, so the child's result is dropped.
+        # Reachable whenever caller identity is NOT flattened (session_sharing
+        # off): the nested spawn then arrives with its real subagent parent.
+        # Normalising here rather than in attribution is deliberate — attribution
+        # exists to repair flattening, so it does not run where this bites.
+        _route = self._routable_parent_key(f"subagent:{agent_id}", parent_session_key)
+        if _route:
+            info.tree_parent_key = info.tree_parent_key or parent_session_key
+            info.parent_session_key = _route
         self._running_count += 1
         self._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
         # Batch lifecycle: announce the wave ONCE, on its first member to
@@ -2848,6 +3089,7 @@ class SubagentManager:
                 info.done = True
                 info.error = "spawn rejected: no approval mechanism configured"
                 self._running_count -= 1
+                self._tree.prune_subtree(f"subagent:{agent_id}")
                 self._drain_queue()
                 sel().log_tool_invocation(
                     session_key=info.parent_session_key,
@@ -2869,6 +3111,7 @@ class SubagentManager:
             info.done = True
             info.error = "spawn rejected: no approval mechanism configured"
             self._running_count -= 1
+            self._tree.prune_subtree(f"subagent:{agent_id}")
             self._drain_queue()
             sel().log_tool_invocation(
                 session_key=info.parent_session_key,
@@ -2911,6 +3154,12 @@ class SubagentManager:
         the error synchronously in the returned info, and injecting a
         completion turn for them would double-report.
         """
+        # If this agent was preassigned (queued batch member), replace the
+        # pending placeholder with the terminal info so it doesn't remain
+        # permanently live, and clear its pending attribution slot.
+        if info.id in self._agents:
+            self._agents[info.id] = info
+            self._pending_attribution.discard(info.id)
         if info.batch_id and self._on_done:
             try:
                 self._tasks[f"reject-{info.id}"] = asyncio.ensure_future(self._safe_announce(info))
@@ -3282,6 +3531,53 @@ class SubagentManager:
                 detail,
             )
 
+    def _reparent_queued_children(self, finishing_key: str) -> None:
+        """Reassign queued spawns parented to *finishing_key* before the node is
+        removed from the tree.
+
+        Without this, ``_drain_queue`` would later call ``spawn()`` with a stale
+        ``parent_session_key`` pointing to a node no longer in the tree.
+        ``tree.add`` would then auto-create the dead parent as a phantom root,
+        making ``root_of`` resolve to an unroutable ``subagent:`` key — silently
+        dropping the child's completion delivery.
+
+        The fix: walk the tree from *finishing_key* to find its routable
+        ancestor (the tree parent, or the root of the subtree) and patch each
+        queued item's ``parent_session_key`` to that surface.
+        """
+        if not self._queue:
+            return
+        node = self._tree.get(finishing_key)
+        if node is None:
+            return
+        # Find the routable ancestor: walk up until we hit a non-subagent key
+        # (dashboard/slack/cron surface) or the root.
+        routable = node.parent_key
+        while routable and routable.startswith("subagent:"):
+            ancestor = self._tree.get(routable)
+            if ancestor is None:
+                break
+            routable = ancestor.parent_key
+        if not routable:
+            # Fall back to root_of the finishing node (which is non-subagent by
+            # construction — roots are always user/dashboard/cron surfaces).
+            routable = self._tree.root_of(finishing_key)
+        if not routable or routable.startswith("subagent:"):
+            return  # Cannot resolve; spawn() will handle via _routable_parent_key
+
+        for params in self._queue:
+            if params.get("parent_session_key") == finishing_key:
+                params["parent_session_key"] = routable
+                # Also patch the SubagentInfo record: cancel() reads
+                # info.parent_session_key directly (not the queue dict), so
+                # a queued child cancelled after its parent was removed from
+                # the tree would still hold the stale unroutable key.
+                aid = params.get("_preassigned_id", "")
+                if aid and aid in self._agents:
+                    info = self._agents[aid]
+                    info.tree_parent_key = info.tree_parent_key or info.parent_session_key
+                    info.parent_session_key = routable
+
     def _drain_queue(self) -> None:
         """Spawn the next queued task if a slot is available and the stagger
         interval has elapsed.
@@ -3304,6 +3600,31 @@ class SubagentManager:
                 pass  # no running loop (sync/test context)
             return
         params = self._queue.pop(0)
+        # Guard: if the queued spawn was cancelled/reaped while waiting, skip
+        # it entirely — starting a stopped task is strictly worse than a no-op.
+        # The cancel() path sets info.done and info.user_stopped on the record
+        # registered at queue time; check that before spawning.
+        preassigned_id = str(params.get("_preassigned_id", ""))
+        if preassigned_id:
+            existing = self._agents.get(preassigned_id)
+            if existing and (existing.done or existing.user_stopped):
+                logger.info(
+                    "Skipping drain of cancelled queued spawn '%s'",
+                    preassigned_id,
+                )
+                # Still emit queue depth update and try draining the next item.
+                self._emit_queue_depth(
+                    str(params.get("parent_session_key", "")),
+                    str(params.get("batch_id", "")),
+                )
+                if self._queue and self._running_count < self._max_concurrent:
+                    try:
+                        asyncio.get_event_loop().call_later(
+                            self._spawn_stagger_secs, self._drain_queue
+                        )
+                    except RuntimeError:
+                        pass
+                return
         logger.info(
             "Draining queue: spawning '%s' (%d left)",
             str(params.get("task", ""))[:40],
@@ -3367,6 +3688,7 @@ class SubagentManager:
             # announce below double-reported the completion.
             if self._release_slot(info):
                 self._running_count -= 1
+                self._tree.prune_subtree(f"subagent:{info.id}")
                 self._drain_queue()
             self._tasks.pop(info.id, None)
             sel().log_tool_invocation(
@@ -3748,8 +4070,13 @@ class SubagentManager:
                 # `reaped`, which is how an earlier revision leaked slots).
                 if self._release_slot(info):
                     self._running_count -= 1
+                    # Reparent live children so the per-tree node cap stays
+                    # accurate when a parent finishes before its descendants.
+                    self._reparent_queued_children(f"subagent:{info.id}")
+                    self._tree.remove_and_reparent(f"subagent:{info.id}")
                     self._drain_queue()
                 self._tasks.pop(info.id, None)
+                self._pending_attribution.discard(info.id)
                 # Teardown is done (or was skipped because the reaper did it) —
                 # release the report's delivered-tombstone gate. Unconditional,
                 # so the report can never wedge on a cancelled teardown.
@@ -3960,9 +4287,22 @@ class SubagentManager:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
 
     def _queued_depth(self, parent_session_key: str) -> int:
-        """Number of spawns currently queued for *parent_session_key* (waiting
-        behind the concurrency cap / stagger gate, not yet started)."""
-        return sum(1 for q in self._queue if q.get("parent_session_key", "") == parent_session_key)
+        """Queued spawns under the same root tree as *parent_session_key*.
+
+        Counts ALL queue entries whose parent resolves to the same root --
+        not just those with an exact parent_session_key match. This prevents
+        sibling subagents from each ignoring the other's queued children
+        when checking the per-tree node cap.
+        """
+        root = self._tree.root_of(parent_session_key)
+        if root is None:
+            # Not yet in the tree — fall back to exact match (legacy behavior
+            # for the root session's own spawns before any tree node exists).
+            return sum(1 for q in self._queue if q.get("parent_session_key", "") == parent_session_key)
+        return sum(
+            1 for q in self._queue
+            if (self._tree.root_of(q.get("parent_session_key", "")) or q.get("parent_session_key", "")) == root
+        )
 
     def queued_count_for(self, parent_session_key: str) -> int:
         """Public queued-spawn count for *parent_session_key*.
@@ -4028,6 +4368,92 @@ class SubagentManager:
             )
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
+
+    def _compute_spawn_depth(self, parent_session_key: str) -> int:
+        """Depth this spawn occupies in the orchestration tree — DISPLAY ONLY.
+
+        Top-level subagents (parent is a user / cron / dashboard session) are
+        depth 1. A subagent spawned by another subagent is ``parent.depth + 1``.
+
+        This is deliberately best-effort and carries NO safety weight. On a
+        shared ACP runtime kiro-cli flattens caller identity, so a nested spawn
+        can arrive wearing its root's key and be computed as depth 1; attribution
+        repairs that from the parent's own stream milliseconds later
+        (:meth:`_attribute_spawn_children`). Because depth cannot be trusted at
+        spawn time, nesting is bounded by the per-tree node cap
+        (``subagent_max_per_session``) instead, which is rooted and therefore
+        immune to the flattening.
+
+        A ``subagent:<id>`` parent that is no longer tracked has an unknown
+        depth; report 2 — the floor for "nested, exact depth unrecoverable" —
+        rather than 1, which would render it as top-level in the UI.
+        """
+        if parent_session_key.startswith("subagent:"):
+            parent_id = parent_session_key.split(":", 1)[1]
+            parent = self._agents.get(parent_id)
+            return (parent.depth + 1) if parent is not None else 2
+        return 1
+
+    def _attribute_spawn_children(self, parent: SubagentInfo, output: str) -> None:
+        """Attribute spawned children to their true parent via stream output parsing.
+
+        Pure REPAIR, no enforcement. A shared runtime flattens caller identity,
+        so a nested child registers under its root; this recovers the real parent
+        edge from the spawning parent's own stream and fixes the child's depth so
+        the UI tree is correct. Nesting is bounded elsewhere, by the per-tree node
+        cap in :meth:`spawn` — which is why nothing here refuses or cancels.
+
+        Gated on ``subagent_tree_attribution``. It used to run unconditionally
+        because it fed the depth ceiling, and a safety control must not be
+        switchable. That ceiling is gone — the per-tree node cap replaced it and
+        is built in :meth:`spawn` from the session tree, which attribution never
+        touches — so the only thing left here is UI metadata, and it now honours
+        the UI opt-in. With the flag off, tree_parent_key stays empty and the
+        surfaces render flat, which is what "default off" is supposed to mean.
+
+        Security properties:
+        - Anchored regex matches only server-composed lines
+        - Exactly-once consumption from _pending_attribution
+        - Monotonic depth (can only increase)
+        - Self-id skip
+        """
+        if not self._attribution_enabled:
+            return
+        matched_ids = _SPAWN_RESULT_ID_RE.findall(output)
+        if not matched_ids:
+            return
+
+        for cid in matched_ids:
+            # Skip self-id
+            if cid == parent.id:
+                continue
+            # Only consume from pending (exactly-once)
+            if cid not in self._pending_attribution:
+                continue
+            child = self._agents.get(cid)
+            if child is None:
+                # Agent evicted/completed before attribution
+                self._pending_attribution.discard(cid)
+                continue
+            self._pending_attribution.discard(cid)
+
+            # Attribute the tree edge WITHOUT touching parent_session_key: that
+            # key is the child's completion-delivery route, and a
+            # `subagent:<id>` value matches no delivery surface (see
+            # SubagentInfo.tree_parent_key).
+            child.tree_parent_key = f"subagent:{parent.id}"
+            child.depth = max(child.depth, parent.depth + 1)  # monotonic
+            sel().log_tool_invocation(
+                session_key=f"subagent:{parent.id}",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="attributed_tree_parent",
+                metadata={
+                    "subagent_id": cid,
+                    "depth": child.depth,
+                    "parent_id": parent.id,
+                },
+            )
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         """Inner execution — called within timeout wrapper."""
@@ -4209,9 +4635,13 @@ class SubagentManager:
             is_cc = self._is_cc_provider(client)
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
+        # Named agents still get the depth guard (D1 closes the latent recursion
+        # risk for named-agent spawns).
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))
         raw_task = info._raw_task or info.task
-        message = raw_task if named_agent else (_SYSTEM_PREFIX + raw_task)
+        # Depth-aware prefix: subagents with can_spawn=True get the spawn clause.
+        prefix = _build_system_prefix(can_spawn=info.can_spawn)
+        message = raw_task if named_agent else (prefix + raw_task)
         if info._cancel_retry_used and (info.streaming_text or info.tool_count > 0):
             # One-shot auto-continue after an unexpected cancellation: tell the
             # model the prior attempt was interrupted so it completes the task
@@ -4243,7 +4673,14 @@ class SubagentManager:
         # Reports inherited agent (not just info.agent) so telemetry shows
         # the actual agent used for this subagent session.
         await self._fire_event(
-            "subagent_spawn", info, {"task": _redact(info.task), "agent": agent or ""}
+            "subagent_spawn",
+            info,
+            {
+                "task": _redact(info.task),
+                "agent": agent or "",
+                "parent": info.tree_parent_key or info.parent_session_key,
+                "depth": info.depth,
+            },
         )
         # Stream results to disk for orchestrated chat.
 
@@ -4296,6 +4733,10 @@ class SubagentManager:
         # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
         # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
         _pending_tools: dict[str, str] = {}
+        # tool_call_ids whose MCP envelope canonically identifies them as this
+        # server's spawn_run. Kept apart from `_pending_tools` because that map
+        # holds a model-influenced display title (see the EVENT_TOOL_CALL branch).
+        _canonical_spawn_calls: set[str] = set()
 
         async def _stream_with_transient_retry():
             """Yield stream events, retrying transient backend errors.
@@ -4548,6 +4989,18 @@ class SubagentManager:
                     _raw = _raw[9:]
                 if event.tool_call_id:
                     _pending_tools[event.tool_call_id] = _raw
+                    # Separately record the CANONICAL MCP identity for the
+                    # attribution trigger. `_pending_tools` is derived from
+                    # `event.title`, a display string the model influences — a
+                    # shell call titled "spawn_run" would otherwise be able to
+                    # drive tree attribution and re-parent (or cancel) a
+                    # legitimately pending child. `tool_name` + `mcp_server_name`
+                    # come from the MCP envelope, not from model output.
+                    if (
+                        event.tool_name == "spawn_run"
+                        and (event.mcp_server_name or "").casefold() == _CORE_MCP_SERVER
+                    ):
+                        _canonical_spawn_calls.add(event.tool_call_id)
                 await fire_tool_hooks(
                     self.hook_store,
                     event.title,
@@ -4561,10 +5014,18 @@ class SubagentManager:
                 # branch existed, hooks registered for subagent-spawned tools
                 # received PreToolUse but never PostToolUse — losing the
                 # tool_response payload.
+                _tool_name = _pending_tools.pop(event.tool_call_id, "")
+                _out_full = event.tool_output or ""
+                # Stream-based tree attribution: intercept spawn_run results.
+                # Gated on the CANONICAL MCP identity captured at tool-call time,
+                # never on `_tool_name` — that is a model-influenced display title.
+                _was_canonical_spawn = event.tool_call_id in _canonical_spawn_calls
+                _canonical_spawn_calls.discard(event.tool_call_id)
+                if _was_canonical_spawn:
+                    self._attribute_spawn_children(info, _out_full)
                 if self.hook_store is not None:
                     try:
-                        _tool_name = _pending_tools.pop(event.tool_call_id, "")
-                        _out = _redact((event.tool_output or "")[:2000])
+                        _out = _redact(_out_full[:2000])
                         await self.hook_store.fire(
                             HOOK_EVENT_POST_TOOL_USE,
                             tool_name=_tool_name,
@@ -4794,6 +5255,46 @@ class SubagentManager:
         if not info or info.done:
             return False
         info.user_stopped = True
+
+        # --- Queued-but-not-yet-started: no process to kill. Mark done and
+        # let _drain_queue skip it (the guard there checks user_stopped/done).
+        if info.queued:
+            info.done = True
+            # Remove from queue to avoid even hitting the drain guard.
+            self._queue = [
+                p for p in self._queue if p.get("_preassigned_id") != agent_id
+            ]
+            self._pending_attribution.discard(agent_id)
+            # Emit a neutral subagent_done so the UI updates immediately.
+            await self._fire_event(
+                "subagent_done",
+                info,
+                {
+                    "stopped": True,
+                    "queued": True,
+                    "elapsed": 0,
+                    "task": info.task,
+                },
+            )
+            # Normalise an unroutable parent key before announcing.  Queued
+            # items never passed through the spawn() normalisation path (they
+            # are created before tree registration), so parent_session_key may
+            # still be a raw `subagent:<id>` that _subagent_done cannot deliver
+            # to.  Walk from the parent's own tree node to the root surface.
+            if info.parent_session_key.startswith("subagent:"):
+                root = self._tree.root_of(info.parent_session_key)
+                if root and not root.startswith("subagent:"):
+                    info.tree_parent_key = info.tree_parent_key or info.parent_session_key
+                    info.parent_session_key = root
+
+            # Finalize so the parent's wave accounting sees the terminal state.
+            # Without this, a batch parent waiting for all children to complete
+            # would hang forever when a queued child is cancelled (e.g. by
+            # attribution detecting over-depth).
+            if self._on_done and self._claim_finalize(info):
+                await self._safe_announce(info)
+            return True
+
         # Neutral semantics live in the RECORD, not just the live event: a user
         # stop leaves ``error`` unset so every consumer (reconnect snapshots,
         # tombstones, /api/spawn listing, orphan reconciliation) derives the

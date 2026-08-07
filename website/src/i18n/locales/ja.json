@@ -6739,13 +6739,15 @@
         "stop_running_subagent": "実行中のサブエージェントを停止",
         "stop_subagent": "サブエージェント {{name}} を停止",
         "stop_this_subagent": "このサブエージェントを停止",
-        "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
+        "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中",
+        "levels": "レベル"
       },
       "subagentRunCard": {
         "open_in_the_subagents_panel": "サブエージェントパネルで開く",
         "open_subagents_panel": "サブエージェントパネルを開く",
         "waiting": "待機中",
-        "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
+        "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中",
+        "depth_levels": "レベル"
       },
       "taskProgressBar": {
         "all_tasks_complete": "すべてのタスクが完了しました",

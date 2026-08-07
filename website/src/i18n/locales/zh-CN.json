@@ -6682,6 +6682,7 @@
       "subagentProgressBar": {
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",
+        "levels": "层",
         "backend_hiccup_retrying": "后端异常 — 正在重试…",
         "more_running_normally": "个仍在正常运行…",
         "no_activity": "— 无活动",
@@ -6698,6 +6699,7 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队"
       },
       "subagentRunCard": {
+        "depth_levels": "层",
         "open_in_the_subagents_panel": "在“子代理”面板中打开",
         "open_subagents_panel": "打开子代理面板",
         "waiting": "等待中",

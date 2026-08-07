@@ -521,7 +521,11 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "id": info.id,
             "task": _redact(info.task),
             "done": info.done,
-            "parent": info.parent_session_key,
+            # Tree edge first: the UI builds parent->child links from this, and
+            # a nested child's edge lives in tree_parent_key (parent_session_key
+            # stays the routable completion-delivery key).
+            "parent": info.tree_parent_key or info.parent_session_key,
+            "depth": info.depth,
             "agent": info.agent,
             "started": info.started,
         }

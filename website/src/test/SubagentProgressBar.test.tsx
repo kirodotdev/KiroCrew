@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
@@ -30,9 +31,14 @@ function makeStore(running: string[], pending?: string) {
 }
 
 function renderBar(store: ReturnType<typeof makeStore>) {
+  // The chip's reconcile poll is a React Query `useQuery` (shared key, so split
+  // panes issue one request), which requires a provider in the tree.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <Provider store={store}>
-      <SubagentProgressBar slot={SLOT} />
+      <QueryClientProvider client={queryClient}>
+        <SubagentProgressBar slot={SLOT} />
+      </QueryClientProvider>
     </Provider>,
   )
 }

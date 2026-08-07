@@ -88,7 +88,7 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
   return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
 }
 
-function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
+function SubagentPane({ a, slot, onClick, selected, depth }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean; depth?: number }) {
   const bodyRef = useRef<HTMLPreElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const autoScroll = useRef(true)
@@ -179,7 +179,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     // keyboard/AT semantics. The outer div carries the scroll-to anchor for
     // chip-selected cards.
     <div ref={cardRef}>
-    <Clickable className={`mx-2 mb-3 rounded-lg border bg-card overflow-hidden shadow-sm transition-all animate-scale-in ${isRunning || isPending ? 'border-border-strong' : 'border-border opacity-60'}${selected ? ' ring-1 ring-accent' : ''}`} onClick={onClick}>
+    <Clickable className={`mx-2 mb-3 rounded-lg border bg-card overflow-hidden shadow-sm transition-all animate-scale-in ${isRunning || isPending ? 'border-border-strong' : 'border-border opacity-60'}${selected ? ' ring-1 ring-accent' : ''}`} style={(depth && depth > 1) ? { marginLeft: `${8 + (depth - 1) * 12}px` } : undefined} onClick={onClick}>
       {/* Header — collapse toggle when the subagent is done */}
       <div
         className={`flex items-center gap-2 px-3 py-2.5${isDone ? ' cursor-pointer select-none hover:bg-bg-hover transition-colors' : ''}`}
@@ -1226,8 +1226,13 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   const containerRef = useRef<HTMLDivElement>(null)
   // Exception-first ordering: agents needing attention (failed, stalled,
   // retrying, pending approval) sort to the top; the healthy/finished
-  // majority follows. Stable within a rank (insertion order preserved).
+  // Tree-aware sort: children never render above their parent. Within sibling
+  // groups, status-priority rank still applies. Build a pre-order walk that
+  // respects tree structure, with status-priority sort within each group.
   const ids = useMemo(() => {
+    const entries = Object.values(subagents)
+    if (!entries.length) return []
+    const present = new Set(entries.map(a => a.id))
     const rank = (a: SubagentActivity | undefined) => {
       if (!a) return 9
       if (a.status === 'error') return 0
@@ -1238,7 +1243,29 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       if (a.status === 'stopped') return 5
       return 6 // done
     }
-    return Object.keys(subagents).sort((x, y) => rank(subagents[x]) - rank(subagents[y]))
+    // Group children by parentKey
+    const kids: Record<string, SubagentActivity[]> = {}
+    entries.forEach(a => { const p = a.parentKey || ''; (kids[p] ||= []).push(a) })
+    // Sort each sibling group by status-priority rank (stable)
+    Object.values(kids).forEach(arr => arr.sort((x, y) => rank(x) - rank(y)))
+    // Pre-order walk
+    const out: string[] = []
+    const seen = new Set<string>()
+    const walk = (parentKey: string) => {
+      (kids[parentKey] || []).forEach(a => {
+        if (seen.has(a.id)) return
+        seen.add(a.id); out.push(a.id); walk(`subagent:${a.id}`)
+      })
+    }
+    // Roots: nodes whose parent is not another present node
+    entries.forEach(a => {
+      const pk = a.parentKey || ''
+      const parentPresent = pk.startsWith('subagent:') && present.has(pk.slice(9))
+      if (!parentPresent && !seen.has(a.id)) { seen.add(a.id); out.push(a.id); walk(`subagent:${a.id}`) }
+    })
+    // Safety: unreachable nodes
+    entries.forEach(a => { if (!seen.has(a.id)) { seen.add(a.id); out.push(a.id) } })
+    return out
   }, [subagents])
   const hasSubagents = ids.length > 0
   // Agents accepted but not yet started — queued behind the concurrency cap /
@@ -1462,6 +1489,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                   slot={slot}
                   onClick={() => setSelected(i)}
                   selected={id === selectedSubagentId}
+                  depth={subagents[id]?.depth}
                 />
               ))}
               {cappedCount > 0 && (

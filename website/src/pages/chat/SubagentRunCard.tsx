@@ -13,7 +13,7 @@
  * exactly the window in which the UI would otherwise look empty. Clicking opens
  * the Subagents side panel.
  */
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -158,8 +158,48 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // the exact window the user is most likely to be looking at it.
   const queued = useAppSelector(s => s.chat.subagentQueued?.[slot] ?? 0)
 
-  const mine = launch.ids.map(id => subagents[id])
-  const counts = tally(mine)
+  // ONE rooted-here set drives EVERY number on this card. Mixing scopes is what
+  // produced "2 agents running · 3 levels": a launch-scoped count beside a
+  // subtree-scoped depth, two numbers that cannot describe the same set (three
+  // levels needs at least three agents). It also let the card claim the wave
+  // "finished" while a grandchild it spawned was still running.
+  //
+  // Grandchildren are spawned BY a subagent, so they never appear in
+  // `launch.ids`; they are reachable only by walking `parentKey` back to one of
+  // our own ids.
+  const { subtree, descendantCount, myMaxDepth } = useMemo(() => {
+    const mineIds = new Set(launch.ids)
+    const parentOf: Record<string, string | undefined> = {}
+    for (const a of Object.values(subagents)) if (a) parentOf[a.id] = a.parentKey
+    // Walk up the subagent chain; bounded so a malformed cycle cannot spin.
+    const rootsHere = (start?: string): boolean => {
+      let p = start
+      for (let guard = 0; p && guard < 32; guard++) {
+        if (!p.startsWith('subagent:')) return false
+        const pid = p.slice('subagent:'.length)
+        if (mineIds.has(pid)) return true
+        p = parentOf[pid]
+      }
+      return false
+    }
+    // Launch members first, KEEPING undefined holes: `tally` counts those as
+    // `unknown`, which is how the card knows some announced member is no longer
+    // observable. Descendants come from the store, so they are never holes.
+    const members: (SubagentActivity | undefined)[] = launch.ids.map(id => subagents[id])
+    const descendants = Object.values(subagents).filter(
+      a => a && !mineIds.has(a.id) && rootsHere(a.parentKey),
+    ) as SubagentActivity[]
+    let md = 1
+    for (const a of [...members, ...descendants]) {
+      if (a?.depth && a.depth > md) md = a.depth
+    }
+    return {
+      subtree: [...members, ...descendants],
+      descendantCount: descendants.length,
+      myMaxDepth: md,
+    }
+  }, [subagents, launch.ids])
+  const counts = tally(subtree)
   // `unknown` = ids the live slice no longer holds (history reload, or dismissed
   // from the panel). Treat them as neither running nor terminal.
   //
@@ -170,7 +210,12 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // match. Taking the total from `ids` would make a 2-agent wave read "1 agent".
   // Tasks that failed to start are reported in a separate section and never
   // reach the header, so this does not over-count them.
-  const total = launch.announced || launch.ids.length
+  const launchTotal = launch.announced || launch.ids.length
+  // The wave is the launch PLUS everything it spawned. Counting only the
+  // announced members would let the card report "N agents finished" while a
+  // grandchild is still running — a wrong terminal state, not just a wrong
+  // number. `launchTotal` stays a transcript fact; descendants are added on top.
+  const total = launchTotal + descendantCount
   const settled = counts.done + counts.failed + counts.stopped
   // True only when every announced member is observable through `launch.ids`.
   // Waves launched by a current backend always are: SubagentManager pre-assigns
@@ -179,8 +224,9 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // still fall short and must not be claimed on — messages persisted by an
   // older backend (queued members recorded as `q1`/`q2`, with the agent that
   // ran carrying an id found nowhere in the text), and ids the live slice has
-  // since dropped (history reload, "Dismiss done").
-  const fullyObservable = launch.ids.length >= total && counts.unknown === 0
+  // since dropped (history reload, "Dismiss done"). Descendants are read from
+  // the store, so they are always observable and cannot weaken this.
+  const fullyObservable = launch.ids.length >= launchTotal && counts.unknown === 0
 
   const label = counts.running > 0
     ? `${counts.running} agent${counts.running === 1 ? '' : 's'} running`
@@ -236,6 +282,11 @@ const SubagentRunCard = memo(function SubagentRunCard({
           <div className="flex items-center gap-1.5 flex-wrap">
             <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
             <span className="truncate text-[13px] font-medium text-text-strong">{label}</span>
+            {myMaxDepth > 1 && (
+              <span className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent/70">
+                {myMaxDepth} {i18nT('pages.chat.subagentRunCard.depth_levels')}
+              </span>
+            )}
             {queued > 0 && settled === 0 && (
               <span
                 className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted"

@@ -473,7 +473,10 @@ class TestSessionSharingMultiAgent:
              patch("kiro_crew.subagent.sel"):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot1")
-            await asyncio.sleep(1.0)
+            # Gate stalls ambiguous spawns for up to _ATTRIBUTION_GATE_SECS (1.5s)
+            # when attribution is off (default).  Wait long enough for the gate
+            # timeout to expire and _run_inner to reach the session-sharing setup.
+            await asyncio.sleep(2.5)
 
         # Both should use session sharing
         assert info1._session_sharing is True
@@ -501,7 +504,9 @@ class TestSessionSharingMultiAgent:
              patch("kiro_crew.subagent.sel"):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot2")
-            await asyncio.sleep(1.0)
+            # Gate stalls ambiguous spawns for up to _ATTRIBUTION_GATE_SECS (1.5s)
+            # when attribution is off (default).  Wait long enough for gate timeout.
+            await asyncio.sleep(2.5)
 
         assert info1._session_sharing is True
         assert info2._session_sharing is True

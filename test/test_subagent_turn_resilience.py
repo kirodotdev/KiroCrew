@@ -321,6 +321,12 @@ async def test_unexpected_cancel_after_tool_activity_finalizes_without_respawn()
                 tool_kind="edit",
                 tool_call_id="tc1",
                 tool_input={},
+                tool_name="write_file",
+                mcp_server_name="builder-mcp",
+                raw_tool_params=None,
+                is_shell=False,
+                shell_command=None,
+                request_id="req1",
             )
             started.set()
             await asyncio.Event().wait()  # hang until cancelled — NO text ever
@@ -645,6 +651,12 @@ async def test_transient_error_after_tool_call_sends_continue_prompt():
                     tool_kind="edit",
                     tool_call_id="tc1",
                     tool_input={},
+                    tool_name="write_file",
+                    mcp_server_name="builder-mcp",
+                    raw_tool_params=None,
+                    is_shell=False,
+                    shell_command=None,
+                    request_id="req2",
                 )
                 raise _TransientError("500 before first token")
             yield _text_event("done after tool")

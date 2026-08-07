@@ -561,6 +561,13 @@ export interface SubagentActivity {
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
   approving?: boolean
+  /** Orchestration parent session key: `dashboard:<slot>` (direct child of the
+   *  chat session) or `subagent:<id>` (child of another subagent). Populated
+   *  from the WS spawn event and/or the reconcile backfill from `/api/spawn`. */
+  parentKey?: string
+  /** Nesting depth: 1 = top-level subagent spawned by this session, 2 = child
+   *  of a subagent, 3 = grandchild, etc. Populated from the backend. */
+  depth?: number
   /** Inline terminal output for native (`native:*`) cards only. Native cards
    *  cannot lazy-load from disk (no SubagentManager record), so the bounded
    *  done-event result is stored here. Managed cards leave this unset and use

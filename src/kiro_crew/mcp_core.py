@@ -3508,7 +3508,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 body["approval_mode"] = approval_mode
             d = _post("/api/spawn", body)
             if d.get("error"):
-                error_line = f"{t[:60]}: {d['error']}"
+                # Strip newlines: a task containing \n could inject a fake
+                # roster line matching _SPAWN_RESULT_ID_RE in attribution.
+                safe_t = t[:60].replace("\n", " ").replace("\r", " ")
+                error_line = f"{safe_t}: {d['error']}"
                 if d.get("transport_error"):
                     # The gateway may have accepted the spawn before the
                     # response failed. Treat it as unknown, not rejected, and
@@ -3569,7 +3572,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 )
             for aid, a, t in zip(agent_ids, agent_names, agent_tasks):
                 label = f"{aid} ({a})" if a else aid
-                spawn_lines.append(f"  {label}: {t[:80]}")
+                # Strip newlines: a task containing \n could inject a fake child
+                # line matching _SPAWN_RESULT_ID_RE in downstream attribution.
+                safe_task = t[:80].replace("\n", " ").replace("\r", " ")
+                spawn_lines.append(f"  {label}: {safe_task}")
             if keep:
                 spawn_lines.append(
                     "These conversations have GUARANTEED continuability: after "
@@ -3722,13 +3728,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 sa_body["cwd"] = cwd
             d = _post("/api/spawn", sa_body)
             if d.get("error"):
-                sa_errors.append(f"{_redact_sa(prompt[:60])}: {_redact_sa(d['error'])}")
+                # Strip newlines from prompt to prevent roster-line forgery
+                safe_prompt = _redact_sa(prompt[:60]).replace("\n", " ").replace("\r", " ")
+                sa_errors.append(f"{safe_prompt}: {_redact_sa(d['error'])}")
             else:
                 aid = d.get("id", "")
                 if aid:
                     sa_ids.append(aid)
                 else:
-                    sa_errors.append(f"{_redact_sa(prompt[:60])}: spawn returned no agent id")
+                    safe_prompt = _redact_sa(prompt[:60]).replace("\n", " ").replace("\r", " ")
+                    sa_errors.append(f"{safe_prompt}: spawn returned no agent id")
 
         if not sa_ids and sa_errors:
             return "Error spawning sub-agents:\n" + "\n".join(f"  - {e}" for e in sa_errors)

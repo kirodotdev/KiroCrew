@@ -1147,6 +1147,93 @@ describe('ActivityViewer — queued subagents', () => {
   })
 })
 
+/**
+ * Depth indentation in the sidebar (nested tree).
+ *
+ * The chip conveys hierarchy with box-drawing connectors, but the sidebar has
+ * only one signal: a per-depth `marginLeft` on the card. That makes the indent
+ * the ENTIRE tree affordance here, and it is invisible to any assertion about
+ * text or ordering — a screenshot of a flat stack and a screenshot of a
+ * correctly indented stack differ by a handful of pixels per level, which is
+ * exactly the kind of regression a human reviewer waves through.
+ *
+ * So assert the computed offset per depth, not merely that depth is "used".
+ */
+describe('ActivityViewer — subagent depth indentation', () => {
+  const SLOT = 'test-slot'
+
+  function storeWrapper({ children }: { children: React.ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    return (
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      </Provider>
+    )
+  }
+
+  function agent(id: string, depth: number, parentKey: string) {
+    return {
+      id, task: `task-${id}`, agent: 'kirocrew', status: 'running' as const,
+      streaming: '', lastTool: '', startedAt: 1000, elapsed: 1, depth, parentKey,
+    }
+  }
+
+  // A 4-level chain: root -> L2 -> L3 -> L4.
+  const subagents = {
+    a1: agent('a1', 1, `dashboard:${SLOT}`),
+    b2: agent('b2', 2, 'subagent:a1'),
+    c3: agent('c3', 3, 'subagent:b2'),
+    d4: agent('d4', 4, 'subagent:c3'),
+  }
+
+  function cardFor(id: string): HTMLElement {
+    // The card is the nearest ancestor carrying the per-depth inline style.
+    const label = screen.getByText(`task-${id}`)
+    const card = label.closest('[style*="margin-left"], [style*="marginLeft"]')
+    return (card as HTMLElement) ?? (label.closest('div') as HTMLElement)
+  }
+
+  it('indents each depth level by a distinct, increasing offset', () => {
+    render(
+      <ActivityViewer subagents={subagents} toolLog={[]} open onToggle={vi.fn()} slot={SLOT} view="subagents" />,
+      { wrapper: storeWrapper },
+    )
+
+    // depth 1 is the root: no indent. depths 2..4 step by 12px from a 8px base.
+    const offsets = ['a1', 'b2', 'c3', 'd4'].map(id => {
+      const el = cardFor(id)
+      return parseInt(el.style.marginLeft || '0', 10) || 0
+    })
+
+    expect(offsets[0]).toBe(0)          // root: unindented
+    expect(offsets[1]).toBe(8 + 12)     // depth 2
+    expect(offsets[2]).toBe(8 + 24)     // depth 3
+    expect(offsets[3]).toBe(8 + 36)     // depth 4
+
+    // Strictly increasing: a flat stack (all equal) must fail this.
+    for (let i = 1; i < offsets.length; i++) {
+      expect(offsets[i]).toBeGreaterThan(offsets[i - 1])
+    }
+    // And all four must be distinct — the exact failure the sidebar screenshot showed.
+    expect(new Set(offsets).size).toBe(4)
+  })
+
+  it('does not indent when depth is absent (legacy flat attribution)', () => {
+    const flat = {
+      x1: { ...agent('x1', 1, ''), depth: undefined as number | undefined, parentKey: undefined as string | undefined },
+    }
+    render(
+      <ActivityViewer subagents={flat} toolLog={[]} open onToggle={vi.fn()} slot={SLOT} view="subagents" />,
+      { wrapper: storeWrapper },
+    )
+    const el = cardFor('x1')
+    expect(parseInt(el.style.marginLeft || '0', 10) || 0).toBe(0)
+  })
+})
+
 // ── Section headers are shared across tabs ──────────────────────────────────
 //
 // The Files and Artifacts tabs sit behind adjacent buttons in the same panel, so

@@ -296,3 +296,113 @@ describe('SubagentRunCard rendering', () => {
     expect(screen.queryByTestId('subagent-card-queued')).toBeNull()
   })
 })
+
+/**
+ * Nested-depth badge.
+ *
+ * The card's only depth affordance is a "N levels" chip shown when the wave
+ * contains a nested spawn (`myMaxDepth > 1`). It is the one surface of the
+ * nested-tree feature that could not be captured visually — the card only
+ * renders from a real spawn_run tool message in the transcript, which a Redux
+ * fixture cannot synthesise — so this test is its only guard.
+ */
+describe('SubagentRunCard — nested depth badge', () => {
+  function agentAtDepth(id: string, depth: number): SubagentActivity {
+    return { ...agent(id, 'running'), depth } as SubagentActivity
+  }
+
+  function storeWith(subagents: Record<string, SubagentActivity>) {
+    return createTestStore({
+      chat: { activeSlot: SLOT, subagents, subagentQueued: {} } as unknown as ChatState,
+    })
+  }
+
+  it('reports the deepest level in the wave', () => {
+    const store = storeWith({
+      a1: agentAtDepth('a1', 1),
+      a2: agentAtDepth('a2', 2),
+      a3: agentAtDepth('a3', 4),   // deepest wins, not the last one seen
+    })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1', 'a2', 'a3'], announced: 3 }} slot={SLOT} />, { store })
+    expect(screen.getByText(/4\s+levels/)).toBeTruthy()
+  })
+
+  it('reports depth from a nested DESCENDANT that is not in launch.ids', () => {
+    // The real nested case: the launch announced one top-level agent, which then
+    // spawned a child of its own. That grandchild is absent from `launch.ids`
+    // (only the root's own spawn_run result lists ids), so a card that reads
+    // depth from `launch.ids` alone shows no badge for the very run the badge
+    // exists to describe. It is reachable only by following `parentKey`.
+    const store = storeWith({
+      a1: agentAtDepth('a1', 1),
+      deep: { ...agentAtDepth('deep', 3), parentKey: 'subagent:mid' } as SubagentActivity,
+      mid: { ...agentAtDepth('mid', 2), parentKey: 'subagent:a1' } as SubagentActivity,
+    })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />, { store })
+    expect(screen.getByText(/3\s+levels/)).toBeTruthy()
+  })
+
+  it('ignores depth from an unrelated wave in the same slot', () => {
+    // Guards the walk against over-reach: another launch's deep subtree must not
+    // inflate this card's badge.
+    const store = storeWith({
+      a1: agentAtDepth('a1', 1),
+      other: { ...agentAtDepth('other', 5), parentKey: 'subagent:elsewhere' } as SubagentActivity,
+    })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />, { store })
+    expect(screen.queryByText(/5\s+levels/)).toBeNull()
+  })
+
+  it('counts the whole subtree, so the count and the depth describe one set', () => {
+    // The bug this pins: a launch-scoped COUNT beside a subtree-scoped DEPTH
+    // rendered "2 agents running · 3 levels" — three levels cannot be made of
+    // two agents. Every number on the card must come from the same set.
+    const store = storeWith({
+      a1: agentAtDepth('a1', 1),
+      mid: { ...agentAtDepth('mid', 2), parentKey: 'subagent:a1' } as SubagentActivity,
+      deep: { ...agentAtDepth('deep', 3), parentKey: 'subagent:mid' } as SubagentActivity,
+    })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />, { store })
+    expect(screen.getByText(/3\s+levels/)).toBeTruthy()
+    // 3 running, not 1: the descendants are part of what this launch caused.
+    expect(screen.getByText(/3 agents running/)).toBeTruthy()
+  })
+
+  it('does NOT report the wave finished while a descendant is still running', () => {
+    // Worse than a wrong number: the card must not claim a terminal state while
+    // a grandchild it spawned is still live.
+    const store = storeWith({
+      a1: { ...agentAtDepth('a1', 1), status: 'done' } as SubagentActivity,
+      deep: { ...agentAtDepth('deep', 2), parentKey: 'subagent:a1' } as SubagentActivity,
+    })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />, { store })
+    expect(screen.queryByText(/finished/)).toBeNull()
+    expect(screen.getByText(/1 agent running/)).toBeTruthy()
+  })
+
+  it('counts descendants in the finished total, not just the announced members', () => {
+    // `total` governs the settled branch. With a launch-scoped total the card
+    // reports "1 agent finished" for a wave that actually settled two agents —
+    // the announced count standing in for the whole subtree.
+    const store = storeWith({
+      a1: { ...agentAtDepth('a1', 1), status: 'done' } as SubagentActivity,
+      deep: { ...agentAtDepth('deep', 2), parentKey: 'subagent:a1', status: 'done' } as SubagentActivity,
+    })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1'], announced: 1 }} slot={SLOT} />, { store })
+    expect(screen.getByText(/2 agents finished/)).toBeTruthy()
+    expect(screen.queryByText(/1 agent finished/)).toBeNull()
+  })
+
+  it('hides the badge for a flat wave, so depth 1 adds no noise', () => {
+    const store = storeWith({ a1: agentAtDepth('a1', 1), a2: agentAtDepth('a2', 1) })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1', 'a2'], announced: 2 }} slot={SLOT} />, { store })
+    expect(screen.queryByText(/levels/)).toBeNull()
+  })
+
+  it('hides the badge when depth is absent (legacy flat attribution)', () => {
+    // subagent_tree_attribution defaults off, so entries carry no depth at all.
+    const store = storeWith({ a1: agent('a1', 'running'), a2: agent('a2', 'running') })
+    renderWithProviders(<SubagentRunCard launch={{ ids: ['a1', 'a2'], announced: 2 }} slot={SLOT} />, { store })
+    expect(screen.queryByText(/levels/)).toBeNull()
+  })
+})

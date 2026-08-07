@@ -6991,6 +6991,7 @@
       "subagentProgressBar": {
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
+        "levels": "уровня",
         "backend_hiccup_retrying": "сбой бэкенда — повтор…",
         "more_running_normally": "ещё выполняются нормально…",
         "no_activity": "— нет активности",
@@ -7007,6 +7008,7 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Ожидает запуска — в очереди из-за лимита параллельности"
       },
       "subagentRunCard": {
+        "depth_levels": "уровня",
         "open_in_the_subagents_panel": "Открыть на панели «Субагенты»",
         "open_subagents_panel": "Открыть панель «Субагенты»",
         "waiting": "ожидание",

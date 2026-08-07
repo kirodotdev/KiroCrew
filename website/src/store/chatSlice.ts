@@ -1707,25 +1707,39 @@ const chatSlice = createSlice({
         if (b) { b.approving = action.payload.approving; return }
       }
     },
-    sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string }>) {
+    sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; parent?: string; depth?: number; done?: boolean; startedAt?: number; elapsed?: number }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
       const subs = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
         : state.subagents
       const existing = subs[action.payload.id]
       if (existing?.status === 'pending') {
-        existing.status = 'running'
+        existing.status = action.payload.done ? 'done' : 'running'
         existing.agent = action.payload.agent || existing.agent || 'kirocrew'
         // The spawn event carries the authoritative task text (the pending
         // card's task is derived from the approval title, which may be empty
         // or just "spawn_run") — always prefer the spawn payload's task.
         if (action.payload.task) existing.task = action.payload.task
+        if (action.payload.startedAt != null) existing.startedAt = action.payload.startedAt
+        if (action.payload.elapsed != null) existing.elapsed = action.payload.elapsed
+        if (action.payload.depth != null) existing.depth = action.payload.depth
+        if (action.payload.parent) existing.parentKey = action.payload.parent
+        return
+      }
+      // Status-downgrade guard: a late WS spawn event for an agent already
+      // terminal (e.g. reconcile-backfilled as done) must not resurrect it
+      // to 'running' — only allow the overwrite when the payload agrees the
+      // agent is done. Metadata (parent/depth) still patches through.
+      if (existing && (existing.status === 'done' || existing.status === 'error' || existing.status === 'stopped') && !action.payload.done) {
+        if (action.payload.parent) existing.parentKey = action.payload.parent
+        if (action.payload.depth != null) existing.depth = action.payload.depth
         return
       }
       subs[safeKey(action.payload.id)] = {
         id: action.payload.id, task: action.payload.task, agent: action.payload.agent || 'kirocrew',
-        status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
+        status: action.payload.done ? 'done' : 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: action.payload.startedAt ?? existing?.startedAt ?? Date.now(), elapsed: action.payload.elapsed ?? 0,
         toolCount: 0, stalled: false,
+        parentKey: action.payload.parent, depth: action.payload.depth ?? 1,
       }
     },
     sseSubagentChunk(state, action: PayloadAction<{ slot: string; id: string; text: string }>) {
@@ -1811,6 +1825,16 @@ const chatSlice = createSlice({
         const st = subs[id]?.status
         if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
       }
+    },
+    /** Patch authoritative parent/depth from the API onto an entry created by
+     *  a WS event that lacked those fields — without disturbing streaming,
+     *  lastTool, or status. Used by the reconcile backfill. */
+    sseSubagentUpdateMeta(state, action: PayloadAction<{ slot: string; id: string; parent?: string; depth?: number }>) {
+      if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
+      const a = getSlotSub(state, action.payload.slot, action.payload.id)
+      if (!a) return
+      if (action.payload.parent) a.parentKey = action.payload.parent
+      if (action.payload.depth != null) a.depth = action.payload.depth
     },
     sseSubagentDone(state, action: PayloadAction<{ slot: string; id: string; elapsed: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; result?: string }>) {
       if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
@@ -2737,7 +2761,7 @@ export const {
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
-  sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
+  sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents, sseSubagentUpdateMeta,
   setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,

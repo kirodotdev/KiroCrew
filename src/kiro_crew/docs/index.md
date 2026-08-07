@@ -30,6 +30,7 @@ index, first-time setup, and Slack credentials.
 | [Cron Jobs](cron-and-scheduling.md) | Schedule recurring tasks, e.g. "every weekday at 9am give me a pipeline briefing" |
 | [Subagents](subagents.md) | Spawn parallel background workers for fan-out research and multi-package work |
 | [Dynamic Sub-Agent Sizing](dynamic-subagent-sizing.md) | Auto-size the concurrent sub-agent cap from host memory/CPU and a learned per-agent cost |
+| [Nested Subagent Tree](nested-subagent-tree.md) | How a subagent-spawned subagent recovers its true parent, and what bounds nesting |
 | [Memory](memory-and-learning.md) | Persistent preferences, project context, and learned corrections across sessions, plus per-session persistent / incognito / temporary memory modes |
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
