@@ -67,6 +67,16 @@ class LLMProvider(ABC):
     def context_usage_pct(self) -> float:
         """Return last known context usage percentage."""
 
+    def context_usage_unknown(self) -> bool:
+        """True when a 0% reading means "unknown", not "empty".
+
+        A backend that compacts in place reports 0% for a transcript whose real
+        size it has not measured yet, which is byte-identical to a brand-new
+        session. Callers that act on a threshold need the two apart. Default
+        False for providers that never compact unobserved.
+        """
+        return False
+
     def context_window_tokens(self) -> int:
         """Return the real served context window in tokens (0 if unknown).
 

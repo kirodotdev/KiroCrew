@@ -31,6 +31,7 @@ from .errors import (
     ProviderSetupError,
     PrSearchError,
     RepoUrlError,
+    sanitize_cli_stderr,
 )
 
 # ── exception aliases ────────────────────────────────────────────────────────
@@ -204,6 +205,16 @@ def _gh_env() -> dict[str, str]:
     return minimal_env(**{k: os.environ[k] for k in _GH_ENV_PASSTHROUGH if k in os.environ})
 
 
+def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
+    """Last few stderr lines, sanitized for display.
+
+    These strings travel to the browser through the routes' error bodies, so host
+    paths and private hosts are stripped while the actionable phrasing (auth,
+    not-found, 403, timeout) is preserved.
+    """
+    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
+
+
 def _gh_run(argv: list[str], *, timeout: float, input_text: str | None = None) -> subprocess.CompletedProcess:
     """Single spawn chokepoint for every ``gh`` call — replaces argv[0] with the
     trusted canonical gh and passes the minimal env (see the hardening note
@@ -261,7 +272,7 @@ def _run_gh_api(path: str, jq_filter: str, *, timeout: float = GH_TIMEOUT_SEC, p
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         _raise_if_auth_failure(tail)
         raise GhCliError(f"gh api {path} failed (exit {proc.returncode}): {tail}")
 
@@ -324,7 +335,7 @@ def verify_repo_access(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"could not read {owner}/{repo} (exit {proc.returncode}): {tail}")
 
     try:
@@ -605,7 +616,7 @@ def get_current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         _raise_if_auth_failure(tail)
         raise GhCliError(f"gh api user failed (exit {proc.returncode}): {tail}")
 
@@ -727,7 +738,7 @@ def get_issue_detail(owner: str, repo: str, number: int, *, timeout: float = GH_
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"could not read {owner}/{repo}#{int(number)} (exit {proc.returncode}): {tail}")
 
     try:
@@ -770,7 +781,7 @@ def get_ref_summary(owner: str, repo: str, number: int, *, timeout: float = GH_T
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(
             f"could not read {owner}/{repo}#{int(number)} (exit {proc.returncode}): {tail}"
         )
@@ -998,7 +1009,7 @@ def _run_gh_write(
 
     if proc.returncode != 0:
         stderr = proc.stderr or ""
-        tail = " ".join(stderr.strip().splitlines()[-3:])
+        tail = sanitize_cli_stderr(" ".join(stderr.strip().splitlines()[-3:]))
         if "HTTP 403" in stderr or "HTTP 401" in stderr:
             raise GhPermissionError(
                 f"GitHub refused the write ({method} {path}) — your `gh` session "
@@ -1303,7 +1314,7 @@ def _fetch_pr_detail_once(
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"could not read {owner}/{repo} PR #{int(number)} (exit {proc.returncode}): {tail}")
 
     try:
@@ -1653,7 +1664,7 @@ def fetch_pr_summaries(
     ]
     proc = _gh_run(argv, timeout=timeout)
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"gh api graphql (pr summaries) failed (exit {proc.returncode}): {tail}")
 
     return _parse_summary_rows(proc.stdout or "")
@@ -1692,7 +1703,7 @@ def fetch_pr_readiness(
     ]
     proc = _gh_run(argv, timeout=timeout)
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"gh api graphql (pr readiness) failed (exit {proc.returncode}): {tail}")
     return _parse_readiness_rows(proc.stdout or "")
 
@@ -1726,7 +1737,7 @@ def fetch_pr_readiness_by_number(
         ]
         proc = _gh_run(argv, timeout=timeout)
         if proc.returncode != 0:
-            tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+            tail = _stderr_tail(proc)
             raise GhCliError(
                 f"gh api graphql (pr readiness by number) failed "
                 f"(exit {proc.returncode}): {tail}"
@@ -1794,7 +1805,7 @@ def fetch_pr_summaries_by_number(
         ]
         proc = _gh_run(argv, timeout=timeout)
         if proc.returncode != 0:
-            tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+            tail = _stderr_tail(proc)
             raise GhCliError(
                 f"gh api graphql (pr summaries by number) failed (exit {proc.returncode}): {tail}"
             )
@@ -2474,7 +2485,7 @@ def _run_gh_graphql_mutation(
     proc = _gh_run(argv, timeout=timeout)
     combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
     if proc.returncode != 0 or '"errors"' in (proc.stdout or ""):
-        tail = " ".join(combined.strip().splitlines()[-3:])
+        tail = sanitize_cli_stderr(" ".join(combined.strip().splitlines()[-3:]))
         lowered = combined.lower()
         if (
             "HTTP 403" in combined

@@ -33,9 +33,9 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from kiro_crew import __version__
+from kiro_crew import __version__, release_channel
 from kiro_crew.config.loader import config_dir
 from kiro_crew.security import (
     is_sensitive_path,
@@ -289,12 +289,49 @@ def _kiro_cli_version() -> str:
         return "unavailable"
 
 
+#: PEP 440 prerelease segment — see
+#: :data:`kiro_crew.release_channel._PEP440_PRERELEASE`, which owns the rule.
+#: Kept here only so the pattern is greppable from this module's tests.
+_PEP440_PRERELEASE = release_channel._PEP440_PRERELEASE
+
+
 def _channel() -> str:
-    if "-nightly." in __version__:
-        return "nightly"
-    if "-" in __version__:
-        return "prerelease"
-    return "stable"
+    """This build's release channel.
+
+    Thin alias for :func:`kiro_crew.release_channel.channel`, which owns the
+    rule (and documents why it is not a one-line substring test) — the status
+    payload needs the same answer without importing this collector.
+
+    Passes this module's ``__version__`` EXPLICITLY rather than letting the
+    other module read its own: every other version-dependent field in the
+    pre-filled issue URL comes from ``diagnostics.__version__``, so a single
+    patch point keeps the URL internally consistent instead of letting the
+    channel and the version field disagree.
+    """
+    return release_channel.channel(__version__)
+
+
+#: Release channel -> repository label. Owned by :mod:`release_channel` so the
+#: dashboard, this flow, and the triage workflow share one vocabulary.
+_CHANNEL_LABELS = release_channel.CHANNEL_LABELS
+
+#: ``beacon.distribution()`` value -> the exact option text of bug_report.yml's
+#: "How is it installed?" dropdown. Prefilling a dropdown requires the option
+#: string VERBATIM; an unmatched value leaves the field empty rather than
+#: erroring, so a drift here degrades to "user picks it themselves".
+_INSTALL_OPTIONS = {
+    "dmg": "Desktop app",
+    "appimage": "Desktop app",
+    "wheel": "pip / pipx",
+    "docker": "Docker",
+    "source": "From source",
+}
+
+#: Release channel -> the exact option text of bug_report.yml's "Release
+#: channel" dropdown. Same verbatim-match requirement as ``_INSTALL_OPTIONS``;
+#: ``test_diagnostics.py`` asserts both maps against the template's real option
+#: lists so a rename there cannot silently stop prefilling.
+_CHANNEL_OPTIONS = release_channel.CHANNEL_FORM_OPTIONS
 
 
 def _versions_text(note: str) -> str:
@@ -316,26 +353,61 @@ def _versions_text(note: str) -> str:
 
 
 def _issue_url(result: BundleResult, note: str) -> str:
-    title = "[bug] process exited / chat failure"
-    body = "\n".join(
-        [
-            "## What happened",
-            note.strip() or "_(describe the problem here)_",
-            "",
-            "## Environment",
-            f"- Kiro Crew: `{__version__}` ({_channel()})",
-            f"- kiro-cli: `{_kiro_cli_version()}`",
-            f"- OS: `{platform.platform()}`",
-            "",
-            "## Diagnostics",
-            f"Attach the diagnostics bundle: `{result.filename}`",
-            f"(saved locally at `{result.zip_path}` — {result.total_redactions} "
-            "secret(s) auto-redacted before packaging).",
-            "",
-            "<!-- Drag the .zip into this issue before submitting. -->",
-        ]
-    )
-    return f"{_ISSUE_NEW_URL}?" + urlencode({"title": title, "body": body})
+    """Build the pre-filled new-issue URL the modal's primary button opens.
+
+    Routes through the ``bug_report.yml`` ISSUE FORM rather than posting a
+    free-form ``body=``, for two reasons that both serve triage:
+
+    * **The channel label is attached at filing time.** ``labels=`` carries
+      ``channel: <lane>`` derived from the running build, so a nightly or
+      insider report is filterable the instant it lands — no maintainer has to
+      read a version string out of the body to know which lane it came from,
+      and ``issue-triage.yml``'s model never gets a chance to guess it.
+    * **The form's own fields arrive filled.** A free-form body skipped the
+      form entirely, so reports from this flow lacked the version / install
+      answers that triage reads. Field ids double as query params, so they can
+      be prefilled from what the gateway already knows.
+
+    Deliberately NOT prefilled: ``platform``. The form's own help text warns
+    that a guess there becomes a wrong ``platform:`` label, and the host OS is
+    exactly a guess — it says where the bug was SEEN, not that it is specific
+    to that OS. The ``search`` checkbox is also left untouched: it is an
+    attestation, and prefilling an attestation makes it worthless.
+    """
+    # Imported lazily: ``beacon`` is a heavier module than diagnostics needs at
+    # import time, and this is the only place that wants it.
+    from kiro_crew import beacon
+
+    channel = _channel()
+    params = {
+        "template": "bug_report.yml",
+        "labels": ",".join(["bug", _CHANNEL_LABELS[channel]]),
+        "title": "[bug] ",
+        "version": __version__,
+        "channel": _CHANNEL_OPTIONS[channel],
+        "what-happened": note.strip() or "",
+        "context": "\n".join(
+            [
+                f"Diagnostics bundle: `{result.filename}`",
+                "",
+                f"Collected locally at `{result.zip_path}` — "
+                f"{result.total_redactions} secret(s) auto-redacted before "
+                "packaging.",
+                "",
+                f"kiro-cli: `{_kiro_cli_version()}`",
+                f"Host: `{platform.platform()}`",
+                "",
+                "<!-- Drag the .zip into this issue before submitting. -->",
+            ]
+        ),
+    }
+    install = _INSTALL_OPTIONS.get(beacon.distribution())
+    if install:
+        params["install"] = install
+    # quote (not quote_plus): a literal `+` in a version stamp or path would
+    # decode back as a space under form-encoding, and `%20` is unambiguous
+    # everywhere GitHub parses this.
+    return f"{_ISSUE_NEW_URL}?" + urlencode(params, quote_via=quote)
 
 
 def _prune_old_bundles(out_dir: Path, keep: int) -> None:

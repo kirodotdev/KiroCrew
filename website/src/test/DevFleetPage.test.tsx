@@ -49,6 +49,68 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('No worktrees found')).toBeInTheDocument())
   })
 
+  it('main row warns when the primary checkout is parked on a non-base branch', async () => {
+    // Regression: the primary checkout was left on a merged PR's feature
+    // branch. The row's name is hardcoded to the base branch, so without the
+    // badge the fleet claimed "main" while showing that branch's merged PR
+    // pill — contradictory, and the truth only surfaced when Pull+Build
+    // refused to sync.
+    const data = {
+      base_branch: 'main',
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 117, branch: 'fix/old-merged-pr', pr: { number: 1742, state: 'MERGED', url: 'https://github.com/org/repo/pull/1742', isDraft: false } },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('Parked on fix/old-merged-pr')).toBeInTheDocument())
+    // The tooltip explains the consequence (Pull+Build refuses to sync).
+    expect(screen.getByText('Parked on fix/old-merged-pr')).toHaveAttribute('title', expect.stringContaining('fix/old-merged-pr'))
+  })
+
+  it('main row keeps the plain label when the primary checkout is on the base branch', async () => {
+    const data = {
+      base_branch: 'main',
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, branch: 'main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText(/main/).length).toBeGreaterThan(0))
+    expect(screen.queryByText(/^Parked on /)).toBeNull()
+  })
+
+  it('main row does not false-flag when the payload lacks base_branch', async () => {
+    // An older backend that omits base_branch must not trigger the warning —
+    // comparing against a hardcoded 'main' would false-flag repos whose base
+    // branch has a different name.
+    const data = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, branch: 'trunk' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText(/main/).length).toBeGreaterThan(0))
+    expect(screen.queryByText('Parked on trunk')).toBeNull()
+  })
+
   it('shows error state on network failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('Network error')))
     renderPage()

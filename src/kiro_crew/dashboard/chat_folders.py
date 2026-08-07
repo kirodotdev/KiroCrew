@@ -295,7 +295,15 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "hidden" in body:
         changes["hidden"] = bool(body["hidden"])
     if "order" in body:
-        changes["order"] = int(body["order"])
+        # A non-numeric, null, or non-finite order is caller error, not a server
+        # fault: int() would raise and surface as a 500 (no middleware maps
+        # handler exceptions). OverflowError covers JSON infinities such as
+        # 1e309, which int() rejects with neither TypeError nor ValueError.
+        # Skip the field instead, matching api_chat_tag_update.
+        try:
+            changes["order"] = int(body["order"])
+        except (TypeError, ValueError, OverflowError):
+            pass
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""

@@ -15,12 +15,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
@@ -42,11 +44,38 @@ def _make_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
 
+# The dashed fences this module emits to separate context from the current turn.
+# Scrubbed from CALLER content only, and deliberately NOT added to
+# ``context._STRUCTURAL_MARKER_RES``: ``ContextBuilder.build_message`` neutralizes
+# the whole turn with that global set, so a global entry would strip the fences
+# added below and collapse the separation it is meant to create.
+_CALLER_FENCE_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"[-]{3,}\s*CONTEXT\s*ENTRY\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+    re.compile(r"[-]{3,}\s*USER\s*MESSAGE\s*(?:BEGIN|END)\s*[-]{3,}", re.IGNORECASE),
+)
+_FENCE_NEUTRALIZED = "[marker-removed]"
+
+
+def _scrub_caller_fences(text: str) -> str:
+    """Remove this module's own framing fences from caller-supplied content."""
+    for pattern in _CALLER_FENCE_RES:
+        text = pattern.sub(_FENCE_NEUTRALIZED, text)
+    return text
+
+
 def _flatten_messages(messages: list[dict[str, Any]]) -> str:
     """Flatten OpenAI messages array into a single prompt string.
 
     Preserves the last user message as primary. System and prior messages
     are prepended as context block.
+
+    Every caller-supplied ``content`` is scrubbed of the bracket boundary markers
+    (via :func:`_neutralize_structural_markers`) and of this module's own dashed
+    fences (via :func:`_scrub_caller_fences`). Collapsing distinct role channels
+    into one string means the role labels and the fences below become the only
+    signal of where caller content starts and stops, so content that replicates
+    one could otherwise close its own region and forge a ``[SYSTEM]`` block the
+    agent treats as authoritative.
     """
     if not messages:
         return ""
@@ -62,6 +91,11 @@ def _flatten_messages(messages: list[dict[str, Any]]) -> str:
                 for p in content
                 if isinstance(p, dict) and p.get("type") == "text"
             )
+        elif not isinstance(content, str):
+            # A scalar (or null) content is off-spec but must not 500: coerce
+            # before the scrubbers, which are string-only.
+            content = "" if content is None else str(content)
+        content = _scrub_caller_fences(_neutralize_structural_markers(content))
         if role == "user":
             if last_user:
                 context_parts.append(f"[Previous user message] {last_user}")

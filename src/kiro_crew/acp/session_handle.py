@@ -410,12 +410,7 @@ class AcpSessionHandle:
             except asyncio.QueueEmpty:
                 break
 
-        self.last_prompt_stats = AcpPromptStats(
-            context_pct=self.last_prompt_stats.context_pct,
-            context_used_tokens=self.last_prompt_stats.context_used_tokens,
-            context_window_tokens=self.last_prompt_stats.context_window_tokens,
-            context_tokens_from_usage=self.last_prompt_stats.context_tokens_from_usage,
-        )
+        self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
         # send_request must be inside the turn-state guard: _turn_done was just
         # cleared above, so if the request raises (e.g. AcpRuntimeDead on a
@@ -1523,6 +1518,7 @@ class AcpSessionHandle:
                 # valid JSON). NaN is caught by its self-inequality.
                 pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
                 self.last_prompt_stats.context_pct = pct_f
+                self.last_prompt_stats.note_pct_reported()
                 self._backfill_context_window(pct_f)
             except (TypeError, ValueError):
                 pass
@@ -1728,6 +1724,7 @@ class AcpSessionHandle:
                         self.last_prompt_stats.context_window_tokens = int(size)
                         # Mark authoritative so metadata pct cannot clobber it.
                         self.last_prompt_stats.context_tokens_from_usage = True
+                        self.last_prompt_stats.note_pct_reported()
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
             return []

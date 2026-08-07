@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from tmpdir_helpers import short_tmp_base
 
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
@@ -42,7 +43,7 @@ def short_tmp_dir():
     the nine inline calls this replaces each leaked a directory that survived the
     run; ``/tmp`` is not swept per-run the way pytest's own basetemp is.
     """
-    base = Path(tempfile.mkdtemp(dir="/tmp"))
+    base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
     try:
         yield base
     finally:

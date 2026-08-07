@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard import terminal_commands
 from kiro_crew.dashboard.handlers import terminal
 
 
@@ -1122,6 +1123,325 @@ class TestApiTerminalComplete:
         with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))):
             resp = await terminal.api_terminal_complete(req)
         assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["doc.txt"]
+
+    @pytest.mark.asyncio
+    async def test_a_path_listing_carries_no_entry_kind(self, tmp_path):
+        # The client drops an entry that does not belong to the tier it asked for,
+        # so the path tier must not start emitting `kind` — that would silently
+        # empty every path menu.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "doc"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))):
+            resp = await terminal.api_terminal_complete(req)
+        assert all("kind" not in e for e in json.loads(resp.text)["entries"])
+
+
+class TestApiTerminalCompleteCommandTier:
+    """POST /api/terminal/complete with `argv` — subcommand and flag completions.
+
+    The engine itself is covered in test_terminal_commands.py; this class covers
+    the ROUTE: tier selection, the audit vocabulary, and the response shape.
+    """
+
+    @pytest.fixture(autouse=True)
+    def sel_log(self):
+        with patch.object(terminal, "_sel") as mock_sel:
+            log = MagicMock()
+            mock_sel.return_value.log_api_access = log
+            yield log
+
+    def _req(self, body, user="testuser", registry=None):
+        req = _make_request(user=user, registry=registry)
+        req.json = AsyncMock(return_value=body)
+        return req
+
+    @staticmethod
+    def _entries(*names):
+        return [
+            terminal_commands.CmdEntry(n, f"about {n}", n.startswith("-")) for n in names
+        ]
+
+    def _complete(self, entries, reason="cmd_listed"):
+        return patch.object(
+            terminal_commands, "complete", AsyncMock(return_value=(entries, reason)),
+        )
+
+    @pytest.mark.asyncio
+    async def test_argv_selects_the_command_tier(self, tmp_path):
+        # A real directory is present, so answering with subcommands rather than its
+        # contents proves the tier was chosen by `argv`, not by what happened to be
+        # on disk.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh", "pr"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             self._complete(self._entries("create", "checkout")):
+            resp = await terminal.api_terminal_complete(req)
+        body = json.loads(resp.text)
+        assert resp.status == 200
+        assert [e["name"] for e in body["entries"]] == ["create", "checkout"]
+        assert all(e["kind"] == "sub" for e in body["entries"])
+        # `dir: null` is the existing "nothing resolved on the filesystem" signal,
+        # reused so the response needs no new top-level field.
+        assert body["dir"] is None
+        assert body["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_passes_the_token_and_cwd_through_to_the_engine(self, tmp_path):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "cre", "argv": ["gh", "pr"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=(self._entries("create"), "cmd_listed"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal_commands, "complete", engine):
+            await terminal.api_terminal_complete(req)
+        assert engine.await_args.args[:3] == (["gh", "pr"], "cre", str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_answers_flags_for_a_dash_token(self):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "--ti", "argv": ["gh", "pr", "create"]},
+            registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             self._complete(self._entries("--title")):
+            resp = await terminal.api_terminal_complete(req)
+        body = json.loads(resp.text)
+        assert [(e["name"], e["kind"]) for e in body["entries"]] == [("--title", "flag")]
+        assert body["prefix"] == "--ti"
+
+    @pytest.mark.asyncio
+    async def test_answers_even_when_the_cwd_cannot_be_read(self):
+        # A subcommand list does not depend on the working directory, so this branch
+        # is ordered BEFORE the path tier's unknown-cwd refusal.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=None)), \
+             self._complete(self._entries("pr")):
+            resp = await terminal.api_terminal_complete(req)
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["pr"]
+
+    @pytest.mark.asyncio
+    async def test_does_not_fall_back_to_a_path_listing(self, tmp_path):
+        # The tiers are disjoint. Falling through would list the cwd for a word the
+        # client already decided cannot be a path.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             self._complete([], "cmd_none"):
+            resp = await terminal.api_terminal_complete(req)
+        assert json.loads(resp.text)["entries"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "argv", [[], "gh", ["./gh"], ["/usr/bin/gh"], [""], ["gh\n"], [7], {}]
+    )
+    async def test_rejects_a_malformed_argv_with_400(self, argv):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": argv}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_the_rejection_carries_a_machine_readable_code(self):
+        # The dashboard renders `error` verbatim into a localized UI, so the prose
+        # alone is untranslatable by construction; `code` is the contract.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["./gh"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")):
+            resp = await terminal.api_terminal_complete(req)
+        assert json.loads(resp.text)["code"] == "terminal_invalid_argv"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_argv_never_reaches_the_engine(self):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["./gh"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock()
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal_commands, "complete", engine):
+            await terminal.api_terminal_complete(req)
+        engine.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_path_tier_is_untouched_when_argv_is_absent(self, tmp_path):
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "doc"}, registry={"s1": sess})
+        engine = AsyncMock()
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal_commands, "complete", engine):
+            resp = await terminal.api_terminal_complete(req)
+        engine.assert_not_awaited()
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
+
+    @pytest.mark.asyncio
+    async def test_passes_the_operator_command_map_to_the_engine(self):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["mytool"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=([], "cmd_unknown"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"commands": {"mytool": "cobra"}}}), \
+             patch.object(terminal_commands, "complete", engine):
+            await terminal.api_terminal_complete(req)
+        assert engine.await_args.args[3] == {"mytool": "cobra"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [False, True, "yes", 7, [], None])
+    async def test_a_non_object_completion_config_is_not_an_error(self, value):
+        # config.json is hand-edited: `"completion": false` would make a chained
+        # `.get` raise on a boolean — an HTTP 500 on a keystroke from a typo. A
+        # non-object value means "no operator additions", which is also the default.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=([], "cmd_unknown"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config", return_value={"completion": value}), \
+             patch.object(terminal_commands, "complete", engine):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert engine.await_args.args[3] is None
+
+    @pytest.mark.asyncio
+    async def test_reads_the_config_off_the_event_loop(self):
+        # `_get_config` does a synchronous `read_text()` of config.json and this
+        # route fires per keystroke, so an inline read would stall every gateway
+        # task on a slow home filesystem. Asserts the thread, not the timing.
+        import threading
+        seen = {}
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+
+        def spy(_request):
+            seen["thread"] = threading.current_thread().name
+            return {}
+
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config", spy), \
+             self._complete([], "cmd_unknown"):
+            await terminal.api_terminal_complete(req)
+        assert "thread" in seen, "config was never read"
+        assert seen["thread"] != threading.current_thread().name
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cfg", [False, True, "yes", 7, [], None])
+    async def test_a_non_object_terminal_config_is_not_an_error(self, cfg):
+        # Both levels are type-checked: `"terminal": false` would make
+        # `.get("completion")` raise on a boolean, an HTTP 500 from a typo.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=([], "cmd_unknown"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config", return_value=cfg), \
+             patch.object(terminal_commands, "complete", engine):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert engine.await_args.args[3] is None
+
+    @pytest.mark.asyncio
+    async def test_a_missing_completion_config_is_not_an_error(self):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=([], "cmd_unknown"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config", return_value={}), \
+             patch.object(terminal_commands, "complete", engine):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert engine.await_args.args[3] is None
+
+    # ── Audit ──
+    # The rule for this route is a FIXED, content-free reason vocabulary: it fires
+    # per keystroke, so a reason naming the command or flag would put the user's
+    # command line in the audit trail.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason,outcome", [("cmd_listed", "ok"), ("cmd_none", "ok"), ("cmd_unknown", "ok")],
+    )
+    async def test_audits_each_engine_verdict(self, reason, outcome, sel_log):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "cre", "argv": ["gh", "pr"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             self._complete(self._entries("create") if reason == "cmd_listed" else [], reason):
+            await terminal.api_terminal_complete(req)
+        assert sel_log.call_args.kwargs == {
+            "caller": "testuser",
+            "operation": "terminal.complete",
+            "outcome": outcome,
+            "source": "dashboard",
+            "resources": reason,
+        }
+
+    @pytest.mark.asyncio
+    async def test_audits_a_refused_working_directory_as_denied(self, sel_log):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["gh"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             self._complete([], "sensitive_path"):
+            await terminal.api_terminal_complete(req)
+        assert sel_log.call_args.kwargs["outcome"] == "denied"
+        assert sel_log.call_args.kwargs["resources"] == "sensitive_path"
+
+    @pytest.mark.asyncio
+    async def test_audits_a_malformed_argv(self, sel_log):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["./gh"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")):
+            await terminal.api_terminal_complete(req)
+        assert sel_log.call_args.kwargs["outcome"] == "denied"
+        assert sel_log.call_args.kwargs["resources"] == "invalid_argv"
+
+    @pytest.mark.asyncio
+    async def test_the_audit_never_records_what_was_typed(self, sel_log):
+        # The anti-leak proof, mirroring the path tier's own. Nothing from the
+        # command line — command, subcommand, flag, prefix, or an entry name — may
+        # appear anywhere in the event.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "--secret-flag", "argv": ["gh", "pr", "sneaky"]},
+            registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w/proj")), \
+             self._complete(self._entries("--secret-flag")):
+            await terminal.api_terminal_complete(req)
+        blob = repr(sel_log.call_args.kwargs)
+        for leaked in ("gh", "sneaky", "secret-flag", "/w/proj"):
+            assert leaked not in blob
+        assert sel_log.call_args.kwargs["resources"] == "cmd_listed"
 
 
 class TestApiTerminalDelete:

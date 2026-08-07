@@ -1,0 +1,56 @@
+/*
+ * Panel design tokens.
+ *
+ * A real stylesheet rather than string constants in TypeScript: these are CSS
+ * values, and the i18n gate cannot tell a font stack from a sentence, so holding
+ * them as strings reads as untranslated user-facing text. Declaring them as custom
+ * properties also makes them themeable, which string constants are not.
+ */
+:root {
+  /*
+   * Rounded rather than the system default: the panel is a companion surface, not
+   * a settings dialog.
+   */
+  --cc-panel-font: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --cc-panel-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+}
+
+/*
+ * Open animation (spec: option C — a spring, then a short content cascade). Ported
+ * verbatim from the desktop app's panel.html; timings/easings are unchanged.
+ *
+ * The card owns its own background and radius, so scaling it reveals the desktop
+ * rather than a window rectangle. Its transform-origin is set inline by PanelCard
+ * from the side the panel opened on (`left top` / `right top`), so the card grows
+ * OUT OF the companion. The cubic-bezier overshoots past scale(1); the window's
+ * transparent gutter (PANEL_PAD = 32 in panelPlacement.js) is what keeps that
+ * overshoot from being clipped.
+ */
+.cc-card {
+  animation: ccSpring 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes ccSpring {
+  from { opacity: 0; transform: scale(0.88); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* The four card sections rise in sequence just after the card lands. */
+.cc-cascade > * { animation: ccUp 0.2s ease-out both; }
+.cc-cascade > *:nth-child(1) { animation-delay: 0.06s; }
+.cc-cascade > *:nth-child(2) { animation-delay: 0.11s; }
+.cc-cascade > *:nth-child(3) { animation-delay: 0.15s; }
+.cc-cascade > *:nth-child(4) { animation-delay: 0.19s; }
+@keyframes ccUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Motion is decorative — never let it make the panel unusable. */
+@media (prefers-reduced-motion: reduce) {
+  .cc-card,
+  .cc-cascade > * {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

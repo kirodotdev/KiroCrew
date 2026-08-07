@@ -83,18 +83,26 @@ async def handoff_to_slack(
     title: str = "",
     channel: str | None = None,
     sessions: object | None = None,
+    transcript_key: str = "",
 ) -> str | None:
     """Hand off a dashboard session to a new Slack DM thread.
 
     Links the session via ``set_slack_link`` so bidirectional sync works.
     Returns the thread_ts, or None on failure.
+
+    *transcript_key* is where the conversation is STORED, when that differs from
+    the session it runs on. They differ for an unbound channel tab: it runs under
+    ``dashboard:<stem>`` but its transcript is the channel's own file, so reading
+    the seed messages under *session_key* found nothing and handed off an empty
+    thread. Defaults to *session_key*, which is correct for every other slot.
     """
-    messages = conversation_log.read_messages(session_key)
+    read_key = transcript_key or session_key
+    messages = conversation_log.read_messages(read_key)
     if not messages:
         return None
 
     if not title:
-        meta = conversation_log.get_metadata(session_key)
+        meta = conversation_log.get_metadata(read_key)
         title = meta.get("title", session_key)
 
     preview = ""

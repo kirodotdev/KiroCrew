@@ -21,7 +21,7 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
-    effective_session_key,
+    slot_history_key,
     slot_transcript_key,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
@@ -390,7 +390,22 @@ def _rehydrate_slot_from_history(
     restricted_key = f"dashboard:{slot_name}"
     preexisting_restricted = restricted_key in state._restricted_keys
     try:
-        slot = state.get_or_create_slot(slot_name, app=meta.get("app", ""))
+        slot = state.get_or_create_slot(
+            slot_name,
+            app=meta.get("app", ""),
+            # PERSISTED provenance only. A name is not evidence: main supports a
+            # dashboard slot a caller happened to name ``slack_notes`` (see
+            # test_slack_dashboard_live_sync's "the guard must not be a name
+            # heuristic"), so inferring channel origin from the stem would let a
+            # fresh dashboard conversation adopt a real thread's transcript.
+            # A legacy channel transcript carrying neither marker is surfaced by
+            # ``channel_slot_reconciler`` instead, which sets the flag -- and the
+            # first save then persists it, so later boots need no inference.
+            channel_origin=(
+                bool(meta.get("channel_origin"))
+                or bool(meta.get("linked_session_key"))
+            ),
+        )
         # Title comes from the metadata line we already read above. We deliberately
         # do NOT consult ``list_sessions()`` here: that call globbed + stat'd + read
         # the first line of EVERY session file in the history dir (O(all sessions))
@@ -718,7 +733,13 @@ def _restore_recent_sessions_steps(
         if not has_folder and not has_pin:
             if cutoff is not None and s.get("modified", 0) < cutoff:
                 continue
-        slot = state.get_or_create_slot(slot_name, app=meta.get("app", ""))
+        slot = state.get_or_create_slot(
+            slot_name,
+            app=meta.get("app", ""),
+            # No channel_origin here: this loop `continue`s above for every
+            # non-dashboard key, so a channel-born session never reaches it --
+            # ``channel_slot_reconciler`` owns surfacing those.
+        )
         # Titles can be LLM-generated (auto-title) and are surfaced on the
         # dashboard — apply the same redaction as assistant content. Matches
         # the treatment in _rehydrate_slot_from_history above.
@@ -1400,7 +1421,7 @@ def _save_slot_to_history(
         and not rewrite
     ):
         return
-    history_key = effective_session_key(slot)
+    history_key = slot_history_key(slot)
     try:
         # Hold the SAME per-session cross-process lock that ``append`` /
         # ``append_off_loop`` / rotate / rewrite / metadata mutations take, across
@@ -1493,6 +1514,12 @@ def _save_slot_to_history(
                 # without persisting it the slot rehydrates unbound and
                 # silently reverts to a dashboard-only copy of the thread.
                 meta_line["linked_session_key"] = slot.linked_session_key
+            if getattr(slot, "channel_origin", False):
+                # Durable provenance. Without it the restore has only the slot
+                # name to go on, and a name is not evidence -- persisting the
+                # flag is what lets a later boot know this tab was adopted from
+                # a channel conversation rather than merely named like one.
+                meta_line["channel_origin"] = True
             tab_id = getattr(slot, "_tab_id", None) or existing_meta.get("tab_id")
             if tab_id:
                 meta_line["tab_id"] = tab_id
@@ -1576,7 +1603,7 @@ def _save_slot_to_history(
                     )
 
             _preserve_mtime: float | None = None
-            if closed and slot.linked_session_key:
+            if closed and (slot.linked_session_key or is_channel_session_key(history_key)):
                 # This slot shares its transcript with a channel, and the
                 # reconciler decides whether a close still stands by comparing
                 # the file's mtime against ``closed_at``: activity newer than the
@@ -1585,6 +1612,16 @@ def _save_slot_to_history(
                 # past ``closed_at`` and make the close outrun itself — the tab
                 # would reopen on the next pass. Restore the pre-close mtime so
                 # only a genuine channel append can outrun the close.
+                #
+                # Gated on the TRANSCRIPT, not on ``linked_session_key``: an
+                # UNBOUND channel tab (the session map could not resolve its
+                # stem) writes this very same shared file, so testing the binding
+                # left exactly that tab unprotected — its close bumped the
+                # channel file's mtime and ``_close_stands`` then rejected the
+                # close, resurfacing the tab on the next reconcile. Keeping the
+                # ``linked_session_key`` arm makes this strictly additive for
+                # cron- and workflow-linked slots, whose keys are not channel
+                # keys but which also share a transcript.
                 try:
                     _preserve_mtime = path.stat().st_mtime
                 except OSError:

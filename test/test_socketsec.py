@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tmpdir_helpers import short_tmp_base
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import socketsec
@@ -643,7 +644,7 @@ def test_macos_check_matches_a_socket_we_connected_to_ourselves(
     # Removed at the end: `mkdtemp` registers no finalizer, so this otherwise left a
     # directory in /tmp for good. /tmp (not tmp_path) because an AF_UNIX sun_path is
     # capped at 104 bytes on macOS and a tmp_path under xdist exceeds it.
-    sock_base = Path(tempfile.mkdtemp(dir="/tmp"))
+    sock_base = Path(tempfile.mkdtemp(dir=short_tmp_base()))
     sock = sock_base / "gw.sock"
     transport.prepare_dir(sock)
     outcome: list[PeerCredResult] = []

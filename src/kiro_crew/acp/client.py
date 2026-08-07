@@ -3515,16 +3515,7 @@ class AcpClient:
         await self.ensure_ready()
 
         req_id = await self._send_prompt(message)
-        prev_pct = self.last_prompt_stats.context_pct
-        _prev_used = self.last_prompt_stats.context_used_tokens
-        _prev_window = self.last_prompt_stats.context_window_tokens
-        _prev_from_usage = self.last_prompt_stats.context_tokens_from_usage
-        self.last_prompt_stats = AcpPromptStats(
-            context_pct=prev_pct,
-            context_used_tokens=_prev_used,
-            context_window_tokens=_prev_window,
-            context_tokens_from_usage=_prev_from_usage,
-        )
+        self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
         # aclosing(): _prompt_loop holds _turn_lock and releases it in its
         # finally. Consumers below `return` on "complete" without exhausting the
@@ -3596,16 +3587,7 @@ class AcpClient:
         extract_agent_from_result: bool = False,
     ) -> AsyncIterator[AcpEvent]:
         """Shared event dispatch loop for prompts and commands."""
-        prev_pct = self.last_prompt_stats.context_pct
-        _prev_used = self.last_prompt_stats.context_used_tokens
-        _prev_window = self.last_prompt_stats.context_window_tokens
-        _prev_from_usage = self.last_prompt_stats.context_tokens_from_usage
-        self.last_prompt_stats = AcpPromptStats(
-            context_pct=prev_pct,
-            context_used_tokens=_prev_used,
-            context_window_tokens=_prev_window,
-            context_tokens_from_usage=_prev_from_usage,
-        )
+        self.last_prompt_stats = self.last_prompt_stats.carry_over()
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
         self._tool_call_mcp_server.clear()
@@ -4154,16 +4136,7 @@ class AcpClient:
 
     async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
         output: list[str] = []
-        prev_pct = self.last_prompt_stats.context_pct
-        _prev_used = self.last_prompt_stats.context_used_tokens
-        _prev_window = self.last_prompt_stats.context_window_tokens
-        _prev_from_usage = self.last_prompt_stats.context_tokens_from_usage
-        self.last_prompt_stats = AcpPromptStats(
-            context_pct=prev_pct,
-            context_used_tokens=_prev_used,
-            context_window_tokens=_prev_window,
-            context_tokens_from_usage=_prev_from_usage,
-        )
+        self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
         async for action, msg in self._prompt_loop(req_id, timeout):
             if action == "complete":
@@ -4296,6 +4269,7 @@ class AcpClient:
                 # Mark the counts authoritative so a later metadata
                 # contextUsagePercentage cannot clobber this token-derived pct.
                 self.last_prompt_stats.context_tokens_from_usage = True
+                self.last_prompt_stats.note_pct_reported()
             else:
                 logger.debug("usage_update missing used/size: %s", update)
         elif kind == UPDATE_CONFIG_OPTION:
@@ -5054,6 +5028,7 @@ class AcpClient:
                 # valid JSON). NaN is caught by its self-inequality.
                 pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
                 self.last_prompt_stats.context_pct = pct_f
+                self.last_prompt_stats.note_pct_reported()
                 self._backfill_context_window(pct_f)
             except (TypeError, ValueError):
                 pass

@@ -93,7 +93,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
     if "order" in body:
         try:
             tag["order"] = int(body["order"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     if "status" in body:
         tag["status"] = bool(body["status"])

@@ -1,97 +1,126 @@
-import { type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { PawPrint } from 'lucide-react'
-import { useAppSelector } from '../store'
-import { useUptime } from '../hooks/useUptime'
-import { api } from '../api/client'
-import { useProvider } from '../providers'
-import { fmtSpeed } from '../api/helpers'
-import { StatCard, PageHeader } from '../components/ui'
-import InfoTip from '../components/InfoTip'
-import McpGatewayCard from './McpGatewayCard'
-import SessionMemoryCard from './SessionMemoryCard'
-import type { SystemData } from '../types'
+/**
+ * System — a task manager for this install, in Windows 11's shape.
+ *
+ * Three planes, because the questions they answer are different in kind and mixing
+ * them is what made a single flat page unreadable:
+ *
+ *   Sessions     which session is spending what, right now. One table; every
+ *                resource is a COLUMN, focused by sorting, never a view mode.
+ *   Performance  how the machine as a whole is doing. Pick a resource, get one
+ *                graph and that resource's own numbers. No per-session rows.
+ *   Services     the long-lived things that serve sessions without being one:
+ *                the gateway process, the shared MCP gateway, embeddings, Slack,
+ *                governance.
+ *
+ * The App-history plane deliberately does NOT live here. Cumulative spend is the
+ * Telemetry page's Spend tab, and duplicating it would put the same numbers on
+ * two surfaces with two different windows.
+ */
+import { useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { PageHeader } from '../components/ui'
+import UnderlineTabs, { type UnderlineTab } from '../components/UnderlineTabs'
+import SessionsTab from './system/SessionsTab'
+import PerformanceTab from './system/PerformanceTab'
+import ServicesTab from './system/ServicesTab'
 
 import { i18nT } from '../i18n/t'
-export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
-  const providerAdapter = useProvider()
-  const { data } = useQuery<SystemData>({
-    queryKey: ['system'],
-    queryFn: () => api.system(),
-    refetchInterval: 2000,
-  })
-  const status = useAppSelector(s => s.dashboard.status)
-  const statusUptime = useUptime()
-  const statusSessions = status?.sessions || 0
 
-  const d = data ?? null
-  const mcpLabel = (() => {
-    if (d?.mcp_total == null) return '—'
-    const s = d.mcp_processes?.sandbox ?? 0, k = d.mcp_processes?.kiro_cli ?? 0, m = d.mcp_processes?.builder_mcp ?? 0
-    const providerLabel = providerAdapter.labels.processCountLabel === 'kiro_cli' ? 'kiro' : providerAdapter.labels.processCountLabel
-    const vars = { total: d.mcp_total, sandbox: s, provider: k, providerLabel, mcp: m }
-    return s + k + m > d.mcp_total
-      ? i18nT('pages.systemPage.mcp_process_breakdown_unique', vars)
-      : i18nT('pages.systemPage.mcp_process_breakdown', vars)
-  })()
+export type SystemPlane = 'sessions' | 'performance' | 'services'
+
+const VALID_PLANES: ReadonlySet<string> = new Set(['sessions', 'performance', 'services'])
+
+/**
+ * A FUNCTION, not a module-level array: the labels are translated, and a
+ * module-level constant is evaluated once at import — which would freeze
+ * whichever language was active at boot and leave the rail stale after a
+ * language switch.
+ */
+export function buildPlanes(): Array<UnderlineTab<SystemPlane>> {
+  return [
+    { key: 'sessions', label: i18nT('pages.systemPage.tab_sessions') },
+    { key: 'performance', label: i18nT('pages.systemPage.tab_performance') },
+    { key: 'services', label: i18nT('pages.systemPage.tab_services') },
+  ]
+}
+
+/**
+ * Stored state that survives plane flips. Each plane stores its own state here
+ * before unmounting; on remount the plane reads it back. Kept in a ref so
+ * updates never trigger a re-render of the shell.
+ */
+export interface PlaneState {
+  sessions?: SessionsPlaneState
+  performance?: PerformancePlaneState
+}
+
+export interface SessionsPlaneState {
+  sorting: Array<{ id: string; desc: boolean }>
+  groupBy: string
+  filter: string
+  visibility: Record<string, boolean>
+}
+
+export interface PerformancePlaneState {
+  selected: string
+  /** Samples collected so far. Persisted across plane flips because a graph that
+   *  restarts empty cannot answer "what just happened?" — the only question it
+   *  exists for. */
+  history: unknown[]
+  /** `dataUpdatedAt` of the last sample already folded into `history`.
+   *
+   *  This has to travel WITH the history. It is the de-duplication guard, and a
+   *  component-local ref resets to 0 on remount while the history survives — so
+   *  on the flip back, react-query hands over the still-cached payload, the guard
+   *  no longer recognises it, and the last sample is appended a second time. Two
+   *  halves of one piece of state; persisting only one is what corrupts it. */
+  lastSampleAt: number
+}
+
+export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
+  const [params, setParams] = useSearchParams()
+  const planeStateRef = useRef<PlaneState>({})
+
+  // Read the plane from ?plane= query param, matching the DeveloperPage ?tab=
+  // convention. Fall back to 'sessions' when absent or invalid.
+  const rawPlane = params.get('plane')
+  const plane: SystemPlane = rawPlane && VALID_PLANES.has(rawPlane) ? (rawPlane as SystemPlane) : 'sessions'
+
+  const setPlane = useCallback((p: SystemPlane) => {
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (p === 'sessions') next.delete('plane')
+      else next.set('plane', p)
+      return next
+    }, { replace: true })
+  }, [setParams])
+
   return (
     <>
-      {!embedded && <PageHeader title={i18nT('pages.systemPage.system')} subtitle={i18nT('pages.systemPage.live_system_metrics_refreshes_every_2s')} />}
+      {!embedded && (
+        <PageHeader
+          title={i18nT('pages.systemPage.system')}
+          subtitle={i18nT('pages.systemPage.live_system_metrics')}
+        />
+      )}
       <div className={`${embedded ? '' : 'px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
-        <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
-          {[
-            { label: i18nT('pages.systemPage.cpu'), value: d?.cpu_pct != null ? d.cpu_pct + '%' : '—', accent: true },
-            { label: i18nT('pages.systemPage.memory'), value: d?.mem_used_gb != null ? d.mem_used_gb + ' / ' + d.mem_total_gb + ' GB' : '—' },
-            { label: i18nT('pages.systemPage.network_2'), value: d?.net_rx_kbs != null ? fmtSpeed(d.net_rx_kbs) : '—' },
-            { label: i18nT('pages.systemPage.network_3'), value: d?.net_tx_kbs != null ? fmtSpeed(d.net_tx_kbs) : '—' },
-          ].map(s => (
-            <StatCard key={s.label} label={s.label} value={s.value} accent={s.accent} />
-          ))}
+        <div className="mb-4">
+          <UnderlineTabs<SystemPlane>
+            tabs={buildPlanes()}
+            value={plane}
+            onChange={setPlane}
+            ariaLabel={i18nT('pages.systemPage.system_planes')}
+            layoutId="system-plane"
+          />
         </div>
-        <McpGatewayCard />
-        <SessionMemoryCard />
-        <div className="grid grid-cols-2 gap-4 mb-6 max-[900px]:grid-cols-1">
-          <div className="flex flex-col">
-            <div className="card-glow border border-border border-l-[3px] border-l-accent bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
-              <h3 className="text-sm font-semibold text-accent mb-3.5 flex items-center gap-1.5"><PawPrint className="lucide-inline" /> {i18nT('pages.systemPage.kirocrew_process')} <InfoTip text={i18nT('pages.systemPage.gateway_process_info_pid_uptime_python_version_a')} /></h3>
-              <Info k={i18nT('pages.systemPage.pid')} v={d?.pid} /><Info k={i18nT('pages.systemPage.python')} v={d?.python} /><Info k={i18nT('pages.systemPage.uptime')} v={statusUptime} /><Info k={i18nT('pages.systemPage.sessions')} v={statusSessions} />
-              <Info k={i18nT('pages.systemPage.process_memory_rss')} v={d?.proc_mem_mb ? d.proc_mem_mb + ' MB' : '—'} />
-              <Info k={i18nT('pages.systemPage.child_processes')} v={d?.child_processes} /><Info k={i18nT('pages.systemPage.threads')} v={d?.thread_count} />
-              <Info k={i18nT('pages.systemPage.mcp_processes')} v={mcpLabel} />
-              <Info k={i18nT('pages.systemPage.cpu')} v={d?.proc_cpu_pct != null ? d.proc_cpu_pct + '%' : '—'} /><Info k={i18nT('pages.systemPage.cwd')} v={d?.cwd} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3.5 content-start max-[900px]:grid-cols-1">
-            <SysCard title={i18nT('pages.systemPage.host')}><Info k={i18nT('pages.systemPage.hostname')} v={d?.hostname} /><Info k={i18nT('pages.systemPage.os')} v={d?.os} /><Info k={i18nT('pages.systemPage.arch')} v={d?.arch} /><Info k={i18nT('pages.systemPage.cpus')} v={d?.cpu_count} /><Info k={i18nT('pages.systemPage.load_1_5_15m')} v={d?.load_1m != null ? d.load_1m + ' / ' + d.load_5m + ' / ' + d.load_15m : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.memory')}><Info k={i18nT('pages.systemPage.total')} v={d?.mem_total_gb ? d.mem_total_gb + ' GB' : '—'} /><Info k={i18nT('pages.systemPage.used')} v={d?.mem_used_gb ? d.mem_used_gb + ' GB' : '—'} /><Info k={i18nT('pages.systemPage.free')} v={d?.mem_free_gb ? d.mem_free_gb + ' GB' : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.network')}><Info k={i18nT('pages.systemPage.ip_address')} v={d?.ip} /><Info k={i18nT('pages.systemPage.download')} v={d?.net_rx_kbs != null ? fmtSpeed(d.net_rx_kbs) : '—'} /><Info k={i18nT('pages.systemPage.upload')} v={d?.net_tx_kbs != null ? fmtSpeed(d.net_tx_kbs) : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.storage')}><Info k={i18nT('pages.systemPage.total')} v={d?.disk_total_gb ? d.disk_total_gb + ' GB' : '—'} /><Info k={i18nT('pages.systemPage.free')} v={d?.disk_free_gb ? d.disk_free_gb + ' GB' : '—'} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.ollama')}><Info k={i18nT('pages.systemPage.status')} v={d?.ollama_running ? (d?.ollama_remote ? <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.systemPage.remote')}</> : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--ok)]" /> {i18nT('pages.systemPage.running')}</>) : <><span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--muted)]" /> {i18nT('pages.systemPage.stopped')}</>} />{d?.ollama_running && <><Info k={i18nT('pages.systemPage.pid')} v={d?.ollama_pid} /><Info k={i18nT('pages.systemPage.memory_rss')} v={d?.ollama_mem_mb ? d.ollama_mem_mb + ' MB' : '—'} /></>}</SysCard>
-            <SysCard title={i18nT('pages.systemPage.slack')}><Info k={i18nT('pages.systemPage.status')} v={<span style={{ color: status?.slack_connected ? 'var(--ok)' : 'var(--muted)' }}>{status?.slack_connected ? i18nT('pages.systemPage.connected') : i18nT('pages.systemPage.not_connected')}</span>} /></SysCard>
-            <SysCard title={i18nT('pages.systemPage.governance')}><Info k={i18nT('pages.systemPage.status')} v={<GovernanceStatus value={status?.governance} />} /></SysCard>
-          </div>
-        </div>
+        {/* Mounted one at a time on purpose: each plane polls on its own interval,
+            and keeping all three alive would triple the request rate to sample
+            data nobody is looking at. State is persisted in planeStateRef so it
+            survives the unmount/remount cycle. */}
+        {plane === 'sessions' && <SessionsTab planeStateRef={planeStateRef} />}
+        {plane === 'performance' && <PerformanceTab planeStateRef={planeStateRef} />}
+        {plane === 'services' && <ServicesTab />}
       </div>
     </>
   )
-}
-
-function SysCard({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div className="card-glow border border-border bg-card rounded-lg p-5 animate-rise shadow-sm transition-all"><h3 className="text-sm font-semibold text-text-strong mb-3.5 [overflow-wrap:anywhere]">{title}</h3>{children}</div>
-}
-
-function Info({ k, v }: { k: string; v?: ReactNode }) {
-  return <div className="flex justify-between gap-3 py-2 border-b border-border text-sm last:border-b-0"><span className="text-muted shrink-0">{k}</span><span className="text-text font-medium font-mono text-[13px] break-all text-right">{v ?? '—'}</span></div>
-}
-
-/** Governance enforcement health indicator. Minimal colored text. */
-function GovernanceStatus({ value }: { value?: 'active' | 'degraded' | 'disabled' | 'unknown' }) {
-  const map = {
-    active: { label: i18nT('pages.systemPage.status_active'), color: 'var(--ok)', tip: i18nT('pages.systemPage.governance_is_enforcing_an_admission_policy_no_d') },
-    degraded: { label: i18nT('pages.systemPage.status_degraded'), color: 'var(--danger)', tip: i18nT('pages.systemPage.a_governance_check_failed_closed_an_integrity_mi') },
-    disabled: { label: i18nT('pages.systemPage.status_disabled'), color: 'var(--muted)', tip: i18nT('pages.systemPage.no_enforcing_admission_policy_is_configured_perm') },
-    unknown: { label: i18nT('pages.systemPage.status_unknown'), color: 'var(--muted)', tip: i18nT('pages.systemPage.governance_status_not_yet_determined_this_sessio') },
-  } as const
-  const s = map[value ?? 'unknown'] ?? map.unknown
-  return <span style={{ color: s.color }} className="inline-flex items-center gap-1">{s.label}<InfoTip text={s.tip} /></span>
 }

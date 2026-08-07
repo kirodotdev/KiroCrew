@@ -17,16 +17,38 @@ const msg = (role: string, content = ''): ChatMessage =>
 /** A turn long enough to collapse: needs a working step and > 2 items. */
 const workingTurn = () => [msg('assistant', 'a'), msg('tool', 't'), msg('assistant', 'b')]
 
+/** A sub-agent completion event SubagentCompletionCard can parse. */
+const COMPLETION = [
+  '[Subagent completion event]',
+  'Agent `53e3e5eb` (kirocrew) completed ✅',
+  'Task: map the picker',
+  '',
+  'done',
+].join('\n')
+
 const isTurn = (d: DisplayItem): d is { kind: 'turn'; items: never[]; complete: boolean } =>
   d.kind === 'turn'
 
 describe('groupDisplayItems', () => {
-  it('drops permission and subagent messages from the transcript', () => {
+  it('drops permission messages and unparseable subagent injections from the transcript', () => {
     const { turns } = groupDisplayItems([
       msg('user', 'u'), msg('permission', 'p'), msg('subagent', 's'), msg('assistant', 'a'),
     ])
     const singles = turns.filter(t => t.kind === 'single')
     expect(singles.map(t => (t as { msg: ChatMessage }).msg.role)).toEqual(['user', 'assistant'])
+  })
+
+  it('keeps a subagent completion the card can render, and opens a turn on it', () => {
+    // The event IS the next turn's input, so the agent's reply must group BELOW
+    // the card rather than beside it.
+    const completion = msg('subagent', COMPLETION)
+    const { turns } = groupDisplayItems([
+      msg('user', 'u'), ...workingTurn(), completion, ...workingTurn(),
+    ])
+    const singles = turns.filter(t => t.kind === 'single') as { msg: ChatMessage }[]
+    expect(singles.map(t => t.msg.role)).toEqual(['user', 'subagent'])
+    // Two collapsible turns: one under the user message, one under the card.
+    expect(turns.filter(isTurn)).toHaveLength(2)
   })
 
   it('preserves the original message index on singles', () => {

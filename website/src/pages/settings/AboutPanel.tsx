@@ -301,8 +301,15 @@ export function AboutPanel() {
   // ABSENT (undefined) is a third case, distinct from null: main.js's
   // init-failure fallback reports neither channel field, so fall back to the
   // version string for a packaged build. `null` keeps meaning "dev, no lane".
+  // Desktop reports its own lane through the updater handle; a CLI/wheel
+  // install has no updater handle at all, so the gateway's resolved
+  // `release_channel` is the only source there. Preferring `stampedChannel`
+  // when present keeps the desktop answer authoritative (it knows which FEED
+  // the build tracks, not just how its version reads).
+  const gatewayChannel = useAppSelector(s => s.dashboard.status?.release_channel)
   const isPrerelease = info?.stampedChannel === undefined
-    ? !!info?.packaged && versionLooksPrerelease(info?.version)
+    ? (!!info?.packaged && versionLooksPrerelease(info?.version))
+      || (!isDesktop && !!gatewayChannel && gatewayChannel !== 'stable')
     : !!info.stampedChannel && info.stampedChannel !== 'stable'
 
   // Desktop status line under the Check button (simple states only — the
@@ -674,11 +681,16 @@ export function AboutPanel() {
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>{channel}</Row>
           )
         )}
-        {isDesktop && isPrerelease && (
+        {isPrerelease && (
           // NOT behind the disclosure: a user already running prerelease bytes
           // is exactly who must see the ask, and hiding it behind a click means
           // the people whose bug reports matter most never read it.
           //
+          // NOT gated on `isDesktop` either, which is what it used to be: a
+          // wheel install is a first-class insider/nightly lane (release.yml
+          // publishes to cli/<channel>/), and gating on the desktop shell meant
+          // every CLI prerelease user — the ones with no updater and no app
+          // menu — saw nothing here at all.
           // Deliberately NOT warn-tinted with an alert triangle: a first-time
           // reader took that as "something is wrong with my installation" and
           // was reluctant to click a link inside it. This is a request for help,

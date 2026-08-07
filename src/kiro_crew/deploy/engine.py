@@ -209,12 +209,14 @@ def find_site_by_tag(site_id: str, profile: str, region: str = DEFAULT_REGION) -
 
 # --- create primitives -----------------------------------------------------
 
-def create_private_bucket(bucket: str, region: str, profile: str) -> None:
-    """Create a fully private bucket: BPA on, AES256 SSE, ACLs disabled (§3)."""
-    create = ["s3api", "create-bucket", "--bucket", bucket, "--region", region]
-    if region != "us-east-1":
-        create += ["--create-bucket-configuration", f"LocationConstraint={region}"]
-    _checked(create, profile, action="s3:CreateBucket")
+def _harden_bucket(bucket: str, profile: str, tagset: str) -> None:
+    """Apply every at-rest control for a deploy bucket. Idempotent puts, so this is
+    safe whether the bucket was freshly created or recovered from a partial run.
+
+    Single source of truth on purpose: this ran as two divergent copies before, and
+    a control added to one silently did not apply to the deploy path that actually
+    runs. ``tagset`` is the only per-caller difference.
+    """
     _checked(
         ["s3api", "put-public-access-block", "--bucket", bucket,
          "--public-access-block-configuration",
@@ -233,19 +235,42 @@ def create_private_bucket(bucket: str, region: str, profile: str) -> None:
         profile, action="s3:PutEncryptionConfiguration",
     )
     _checked(
-        ["s3api", "put-bucket-tagging", "--bucket", bucket, "--tagging",
-         f"TagSet=[{{Key={TAG_MANAGED},Value=true}}]"],
+        ["s3api", "put-bucket-tagging", "--bucket", bucket, "--tagging", tagset],
         profile, action="s3:PutBucketTagging",
     )
-    # SAX-06 / CWE-778: enable S3 server access logging for auditing.
-    # Same-bucket with a prefix is AWS-supported: S3 suppresses access-log records
-    # for log-delivery writes themselves, preventing infinite recursion.
-    _checked(
-        ["s3api", "put-bucket-logging", "--bucket", bucket,
-         "--bucket-logging-status",
-         f'{{"LoggingEnabled":{{"TargetBucket":"{bucket}","TargetPrefix":"s3-access/"}}}}'],
-        profile, action="s3:PutBucketLogging",
-    )
+    # Versioning is NOT enabled here, and neither is a noncurrent-version
+    # lifecycle rule, even though the CloudFormation OriginBucket sets both and
+    # sync_dir overwrites in place with `s3 sync --delete`.
+    #
+    # Teardown cannot survive it yet. `empty_bucket` runs `s3 rm --recursive`,
+    # which on a versioned bucket only removes CURRENT versions (it writes delete
+    # markers), so `delete-bucket` in `destroy()` would fail BucketNotEmpty --
+    # after the distribution has already been deleted, leaving a half-destroyed
+    # site and an orphaned bucket. The scheduled reaper takes the same path.
+    #
+    # Turning versioning on therefore requires, together: a version-aware purge
+    # (paginated list-object-versions + batched delete-objects covering delete
+    # markers) in both destroy() and the reaper, plus s3:DeleteObjectVersion and
+    # s3:ListBucketVersions in the generated IAM policy -- which every existing
+    # user would have to re-apply. That is its own change, not a rider on this
+    # one: an unrecoverable-overwrite window is a smaller problem than a teardown
+    # that strands billable infrastructure.
+    #
+    # No put-bucket-logging either. These buckets set ObjectOwnership
+    # BucketOwnerEnforced, which disables the ACL that server access logging
+    # historically relies on, so a log destination has to be granted to
+    # logging.s3.amazonaws.com in the target's BUCKET POLICY instead. That grant
+    # cannot live in this helper: put_oac_bucket_policy writes a complete policy
+    # document after hardening and would overwrite it.
+
+
+def create_private_bucket(bucket: str, region: str, profile: str) -> None:
+    """Create a fully private bucket: BPA on, AES256 SSE, ACLs disabled (§3)."""
+    create = ["s3api", "create-bucket", "--bucket", bucket, "--region", region]
+    if region != "us-east-1":
+        create += ["--create-bucket-configuration", f"LocationConstraint={region}"]
+    _checked(create, profile, action="s3:CreateBucket")
+    _harden_bucket(bucket, profile, f"TagSet=[{{Key={TAG_MANAGED},Value=true}}]")
 
 
 def _oac_name_prefix(site_id: str) -> str:
@@ -431,29 +456,11 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
         if not bucket:
             raise AWSError("could not allocate a unique bucket name after retries")
 
-    # Harden the bucket (BPA / ownership / encryption / tag). Idempotent puts —
-    # safe whether the bucket was freshly created or recovered from a partial run.
-    _checked(
-        ["s3api", "put-public-access-block", "--bucket", bucket,
-         "--public-access-block-configuration",
-         "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"],
-        profile, action="s3:PutBucketPublicAccessBlock",
-    )
-    _checked(
-        ["s3api", "put-bucket-ownership-controls", "--bucket", bucket,
-         "--ownership-controls", "Rules=[{ObjectOwnership=BucketOwnerEnforced}]"],
-        profile, action="s3:PutBucketOwnershipControls",
-    )
-    _checked(
-        ["s3api", "put-bucket-encryption", "--bucket", bucket,
-         "--server-side-encryption-configuration",
-         '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'],
-        profile, action="s3:PutEncryptionConfiguration",
-    )
-    _checked(
-        ["s3api", "put-bucket-tagging", "--bucket", bucket, "--tagging",
-         f"TagSet=[{{Key={TAG_MANAGED},Value=true}},{{Key={TAG_SITE},Value={site_id}}}]"],
-        profile, action="s3:PutBucketTagging",
+    # Harden the bucket (BPA / ownership / encryption / tag / versioning /
+    # lifecycle / access logging) through the one shared helper.
+    _harden_bucket(
+        bucket, profile,
+        f"TagSet=[{{Key={TAG_MANAGED},Value=true}},{{Key={TAG_SITE},Value={site_id}}}]",
     )
 
     oac_id = create_oac(_oac_name(site_id), profile)

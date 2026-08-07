@@ -20,7 +20,16 @@ export default function MemoriesSection({ mem, offline, stale }: {
       right={mem
         ? <span className="cc-muted">{stale
             ? i18nT('apps.crewCompanion.memories.from_last_session')
-            : i18nT('apps.crewCompanion.memories.days_together', { days: calcCompanionDays(mem.stats.firstLaunch) })}</span>
+            /*
+             * `count` (not `days`) — i18next picks the singular/plural form from a
+             * variable named `count`. The mainline version used a single key and read
+             * "1 days together" on the first day; the catalogue now carries proper
+             * per-language plural forms, so this stayed fixed rather than reverting
+             * with the rest of the file.
+             */
+            : i18nT('apps.crewCompanion.memories.days_together', {
+                count: calcCompanionDays(mem.stats.firstLaunch),
+              })}</span>
         : undefined}
     >
       {offline ? (

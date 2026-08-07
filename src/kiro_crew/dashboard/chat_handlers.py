@@ -58,6 +58,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     _sync_dashboard_slots,
     effective_session_key,
+    slot_history_key,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import (
@@ -770,7 +771,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     if limit_raw is None and before is None:
         mem_msgs = list(slot.messages)
         if slot._disk_older_count > 0 and state.conversation_log:
-            history_key = effective_session_key(slot)
+            history_key = slot_history_key(slot)
             try:
                 disk_msgs = state.conversation_log.read_messages_chained(history_key)
             except Exception:
@@ -786,7 +787,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
         limit = min(int(limit_raw or "200"), 500)
-        history_key = effective_session_key(slot)
+        history_key = slot_history_key(slot)
         try:
             all_msgs = (
                 state.conversation_log.read_messages_chained(history_key)
@@ -2804,7 +2805,7 @@ def _resume_session_identity(state: DashboardState, history_key: str) -> str:
     """
     if is_channel_session_key(history_key) and state.sessions:
         real_key = state.sessions.channel_key_for_stem(channel_slot_name(history_key))
-        if real_key:
+        if isinstance(real_key, str) and is_channel_session_key(real_key):
             return real_key
     return _history_key_for(history_key)
 
@@ -2894,7 +2895,14 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             }
         )
 
-    slot = state.get_or_create_slot(name, app=request.get("app", ""))
+    slot = state.get_or_create_slot(
+        name,
+        app=request.get("app", ""),
+        # Resuming an existing channel transcript from History is an adoption of
+        # that conversation, so the tab is channel-origin even when the session
+        # map can no longer name its session.
+        channel_origin=is_channel_session_key(history_key),
+    )
     title = body.get("title", "")
     if title:
         slot.title = title

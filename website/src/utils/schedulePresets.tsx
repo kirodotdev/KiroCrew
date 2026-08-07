@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { ShieldCheck, Moon, AlertTriangle, Sunrise } from 'lucide-react'
+import { ShieldCheck, Moon, AlertTriangle, Sunrise, BookOpenCheck, Brain, Bug, DatabaseZap, FileWarning, FlaskConical, KeyRound, ListChecks, MessageSquareText, Rocket, ScrollText, Shield, Siren, Tag, Wrench } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 
@@ -18,6 +18,13 @@ export interface CronPrefill {
   weekDays?: number[]
   weekTime?: string
   cronExpr?: string
+  /**
+   * Suppress auto-delivery of the run transcript. Set on polling presets whose
+   * prompts say "end silently" -- without it the saved job delivers
+   * "_No response._" on every no-signal run, defeating the silence rule. Those
+   * prompts deliver positive findings via send_message instead.
+   */
+  silent?: boolean
 }
 
 export interface SchedulePreset {
@@ -26,22 +33,47 @@ export interface SchedulePreset {
   title: string
   description: string
   /**
-   * Human-readable cadence shown on the card (mirrors the schedule prefill).
-   *
-   * NOT localised, deliberately. Three of the four values embed a clock time
-   * (`6:00am`) or a weekday (`Mondays`), and baking either into a catalog string
-   * would freeze an en-US time format into every locale — `6:00am` does not
-   * become `06:00` in de-DE just because a translator retyped it. The real fix
-   * is to DERIVE this field from `prefill` through the locale-formatting seam
-   * (`src/i18n/format.ts` — `fmtTimeNumeric` for the clock, `fmtWeekday` for the
-   * day name), which no cadence formatter exists for yet. Left English as one
-   * coherent group rather than localising only `Every 6 hours`: a single
-   * translated card among three English ones reads worse than four consistent
-   * ones, and any key added now is orphaned the moment the formatter lands.
+   * NOTE: there is deliberately no stored `cadence` field. The label is
+   * DERIVED from `prefill` by `formatCadence()` in `./scheduleCadence`, so the
+   * clock and weekday follow the viewer's locale instead of freezing an en-US
+   * rendering into every catalog. See that module for the reasoning.
    */
-  cadence: string
+  /** Gallery section this preset belongs to. */
+  category: PresetCategory
+  /**
+   * Featured presets surface on the Schedule page's empty state (the first
+   * surface a new user sees). INVARIANT: never feature a preset with
+   * `writes: true` -- a one-click unattended automation that pushes branches,
+   * opens PRs, or edits issues does not belong in the highest-trust slot while
+   * its guardrails are prompt text rather than an enforced deny rule. Write-
+   * capable presets stay available in the gallery. A test pins this.
+   */
+  featured?: boolean
+  /**
+   * True when the preset's job writes to the user's repos or issue trackers.
+   * Renders a "Writes to your repos" indicator on the card and an advisory
+   * notice above the seeded create form.
+   */
+  writes?: boolean
   prefill: CronPrefill
 }
+
+/** Grouping for the template gallery. */
+export type PresetCategory = 'hygiene' | 'quality' | 'security' | 'ops' | 'comms' | 'knowledge'
+
+/**
+ * Gallery section order and labels. The ids are stable data keys and are never
+ * shown; the labels are localised through the same getter pattern the presets
+ * use, so a language switch re-resolves them.
+ */
+export const PRESET_CATEGORIES: { id: PresetCategory; label: string }[] = [
+  { id: 'quality', get label() { return i18nT('utils.schedulePresets.category_quality') } },
+  { id: 'hygiene', get label() { return i18nT('utils.schedulePresets.category_hygiene') } },
+  { id: 'security', get label() { return i18nT('utils.schedulePresets.category_security') } },
+  { id: 'ops', get label() { return i18nT('utils.schedulePresets.category_ops') } },
+  { id: 'comms', get label() { return i18nT('utils.schedulePresets.category_comms') } },
+  { id: 'knowledge', get label() { return i18nT('utils.schedulePresets.category_knowledge') } },
+]
 
 const ICON_SIZE = 22
 
@@ -65,10 +97,11 @@ const ICON_SIZE = 22
 export const SCHEDULE_PRESETS: SchedulePreset[] = [
   {
     id: 'dependency-guardian',
+    writes: true,
+    category: 'hygiene',
     icon: <ShieldCheck size={ICON_SIZE} />,
     get title() { return i18nT('utils.schedulePresets.dependency_guardian_title') },
     get description() { return i18nT('utils.schedulePresets.dependency_guardian_description') },
-    cadence: 'Weekly · Mondays 6:00am',
     prefill: {
       name: 'Dependency Guardian',
       get message() { return i18nT('utils.schedulePresets.dependency_guardian_message') },
@@ -79,10 +112,11 @@ export const SCHEDULE_PRESETS: SchedulePreset[] = [
   },
   {
     id: 'nightly-build-watch',
+    category: 'quality',
+    featured: true,
     icon: <Moon size={ICON_SIZE} />,
     get title() { return i18nT('utils.schedulePresets.nightly_build_watch_title') },
     get description() { return i18nT('utils.schedulePresets.nightly_build_watch_description') },
-    cadence: 'Every 24 hours · 2:00am',
     prefill: {
       name: 'Nightly Build Watch',
       get message() { return i18nT('utils.schedulePresets.nightly_build_watch_message') },
@@ -92,10 +126,11 @@ export const SCHEDULE_PRESETS: SchedulePreset[] = [
   },
   {
     id: 'error-digest',
+    category: 'ops',
+    featured: true,
     icon: <AlertTriangle size={ICON_SIZE} />,
     get title() { return i18nT('utils.schedulePresets.error_digest_title') },
     get description() { return i18nT('utils.schedulePresets.error_digest_description') },
-    cadence: 'Every 6 hours',
     prefill: {
       name: 'Error Digest',
       get message() { return i18nT('utils.schedulePresets.error_digest_message') },
@@ -106,15 +141,244 @@ export const SCHEDULE_PRESETS: SchedulePreset[] = [
   },
   {
     id: 'standup-brief',
+    category: 'comms',
+    featured: true,
     icon: <Sunrise size={ICON_SIZE} />,
     get title() { return i18nT('utils.schedulePresets.standup_brief_title') },
     get description() { return i18nT('utils.schedulePresets.standup_brief_description') },
-    cadence: 'Every weekday · 8:45am',
     prefill: {
       name: 'Standup Brief',
       get message() { return i18nT('utils.schedulePresets.standup_brief_message') },
       schedMode: 'cron',
       cronExpr: '45 8 * * 1-5',
+    },
+  },
+  {
+    id: 'ci-failure-triage',
+    writes: true,
+    category: 'quality',
+    icon: <Siren size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.ci_failure_triage_title') },
+    get description() { return i18nT('utils.schedulePresets.ci_failure_triage_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.ci_failure_triage_title') },
+      get message() { return i18nT('utils.schedulePresets.ci_failure_triage_message') },
+      silent: true,
+      schedMode: 'interval',
+      intVal: 30,
+      intUnit: 'minutes',
+    },
+  },
+  {
+    id: 'pr-review-followthrough',
+    category: 'quality',
+    icon: <MessageSquareText size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.pr_review_followthrough_title') },
+    get description() { return i18nT('utils.schedulePresets.pr_review_followthrough_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.pr_review_followthrough_title') },
+      get message() { return i18nT('utils.schedulePresets.pr_review_followthrough_message') },
+      silent: true,
+      schedMode: 'interval',
+      intVal: 30,
+      intUnit: 'minutes',
+    },
+  },
+  {
+    id: 'bug-intake-repro',
+    writes: true,
+    category: 'quality',
+    icon: <Bug size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.bug_intake_repro_title') },
+    get description() { return i18nT('utils.schedulePresets.bug_intake_repro_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.bug_intake_repro_title') },
+      get message() { return i18nT('utils.schedulePresets.bug_intake_repro_message') },
+      silent: true,
+      schedMode: 'interval',
+      intVal: 30,
+      intUnit: 'minutes',
+    },
+  },
+  {
+    id: 'deploy-verification',
+    category: 'ops',
+    featured: true,
+    icon: <Rocket size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.deploy_verification_title') },
+    get description() { return i18nT('utils.schedulePresets.deploy_verification_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.deploy_verification_title') },
+      get message() { return i18nT('utils.schedulePresets.deploy_verification_message') },
+      silent: true,
+      schedMode: 'interval',
+      intVal: 30,
+      intUnit: 'minutes',
+    },
+  },
+  {
+    id: 'stale-issue-triage',
+    writes: true,
+    category: 'hygiene',
+    icon: <Tag size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.stale_issue_triage_title') },
+    get description() { return i18nT('utils.schedulePresets.stale_issue_triage_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.stale_issue_triage_title') },
+      get message() { return i18nT('utils.schedulePresets.stale_issue_triage_message') },
+      silent: true,
+      schedMode: 'cron',
+      cronExpr: '0 8 * * *',
+    },
+  },
+  {
+    id: 'docs-drift',
+    writes: true,
+    category: 'hygiene',
+    icon: <BookOpenCheck size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.docs_drift_title') },
+    get description() { return i18nT('utils.schedulePresets.docs_drift_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.docs_drift_title') },
+      get message() { return i18nT('utils.schedulePresets.docs_drift_message') },
+      silent: true,
+      schedMode: 'weekly',
+      weekDays: [2],
+      weekTime: '10:00',
+    },
+  },
+  {
+    id: 'weekly-changelog',
+    writes: true,
+    category: 'hygiene',
+    icon: <ScrollText size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.weekly_changelog_title') },
+    get description() { return i18nT('utils.schedulePresets.weekly_changelog_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.weekly_changelog_title') },
+      get message() { return i18nT('utils.schedulePresets.weekly_changelog_message') },
+      silent: true,
+      schedMode: 'weekly',
+      weekDays: [5],
+      weekTime: '15:00',
+    },
+  },
+  {
+    id: 'merged-pr-checklist-review',
+    category: 'quality',
+    icon: <ListChecks size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.merged_pr_checklist_review_title') },
+    get description() { return i18nT('utils.schedulePresets.merged_pr_checklist_review_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.merged_pr_checklist_review_title') },
+      get message() { return i18nT('utils.schedulePresets.merged_pr_checklist_review_message') },
+      silent: true,
+      schedMode: 'cron',
+      cronExpr: '30 8 * * *',
+    },
+  },
+  {
+    id: 'test-backfill-coverage',
+    writes: true,
+    category: 'quality',
+    icon: <FlaskConical size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.test_backfill_coverage_title') },
+    get description() { return i18nT('utils.schedulePresets.test_backfill_coverage_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.test_backfill_coverage_title') },
+      get message() { return i18nT('utils.schedulePresets.test_backfill_coverage_message') },
+      silent: true,
+      schedMode: 'weekly',
+      weekDays: [3],
+      weekTime: '09:00',
+    },
+  },
+  {
+    id: 'lint-typecheck-regression',
+    writes: true,
+    category: 'quality',
+    icon: <Wrench size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.lint_typecheck_regression_title') },
+    get description() { return i18nT('utils.schedulePresets.lint_typecheck_regression_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.lint_typecheck_regression_title') },
+      get message() { return i18nT('utils.schedulePresets.lint_typecheck_regression_message') },
+      silent: true,
+      schedMode: 'cron',
+      cronExpr: '0 7 * * *',
+    },
+  },
+  {
+    id: 'weekly-vuln-scan',
+    writes: true,
+    category: 'security',
+    icon: <Shield size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.weekly_vuln_scan_title') },
+    get description() { return i18nT('utils.schedulePresets.weekly_vuln_scan_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.weekly_vuln_scan_title') },
+      get message() { return i18nT('utils.schedulePresets.weekly_vuln_scan_message') },
+      schedMode: 'weekly',
+      weekDays: [1],
+      weekTime: '08:00',
+    },
+  },
+  {
+    id: 'secret-scan',
+    category: 'security',
+    icon: <KeyRound size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.secret_scan_title') },
+    get description() { return i18nT('utils.schedulePresets.secret_scan_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.secret_scan_title') },
+      get message() { return i18nT('utils.schedulePresets.secret_scan_message') },
+      silent: true,
+      schedMode: 'cron',
+      cronExpr: '0 6 * * *',
+    },
+  },
+  {
+    id: 'workflow-failure-autofile',
+    writes: true,
+    category: 'comms',
+    icon: <FileWarning size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.workflow_failure_autofile_title') },
+    get description() { return i18nT('utils.schedulePresets.workflow_failure_autofile_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.workflow_failure_autofile_title') },
+      get message() { return i18nT('utils.schedulePresets.workflow_failure_autofile_message') },
+      silent: true,
+      schedMode: 'interval',
+      intVal: 30,
+      intUnit: 'minutes',
+    },
+  },
+  {
+    id: 'docs-reindex',
+    category: 'knowledge',
+    icon: <DatabaseZap size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.docs_reindex_title') },
+    get description() { return i18nT('utils.schedulePresets.docs_reindex_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.docs_reindex_title') },
+      get message() { return i18nT('utils.schedulePresets.docs_reindex_message') },
+      silent: true,
+      schedMode: 'cron',
+      cronExpr: '0 3 * * *',
+    },
+  },
+  {
+    id: 'session-summary',
+    category: 'knowledge',
+    icon: <Brain size={ICON_SIZE} />,
+    get title() { return i18nT('utils.schedulePresets.session_summary_title') },
+    get description() { return i18nT('utils.schedulePresets.session_summary_description') },
+    prefill: {
+      get name() { return i18nT('utils.schedulePresets.session_summary_title') },
+      get message() { return i18nT('utils.schedulePresets.session_summary_message') },
+      silent: true,
+      schedMode: 'cron',
+      cronExpr: '30 17 * * 1-5',
     },
   },
 ]

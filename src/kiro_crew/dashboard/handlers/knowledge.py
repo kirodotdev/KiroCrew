@@ -36,7 +36,12 @@ from kiro_crew.knowledge.embedder import (
     floats_to_bytes,
 )
 from kiro_crew.knowledge.extractor import EntityExtractor
-from kiro_crew.knowledge.folder_watcher import SOURCE_TYPE_SKIP_DIRS
+from kiro_crew.knowledge.folder_watcher import (
+    estimate_scan_cost,
+    folder_chunk_budget,
+    max_files_prop,
+    walk_filters,
+)
 from kiro_crew.knowledge.ingestion import (
     IngestionPipeline,
     _redact,
@@ -805,11 +810,22 @@ async def add_source(request: web.Request) -> web.Response:
         # Run discovery walk to count files (no ingestion)
         watcher = request.app.get("knowledge_watcher")
         file_count = 0
+        # Scale of the ingestion this source is about to start, so the user sees
+        # the cost before it is spent rather than in a credit balance afterwards.
+        # Zeroed when no watcher is wired: reporting 0 files is honest there,
+        # inventing an estimate is not.
+        cost = {"files": 0, "capped": 0, "chunks": 0, "llm_calls": 0}
+        budget = folder_chunk_budget(properties)
         if watcher:
-            extra_skip = SOURCE_TYPE_SKIP_DIRS.get(source_type, set())
-            ignore_patterns = properties.get("ignore_patterns", [])
-            discovered = await asyncio.to_thread(watcher._folder_watcher._walk, str(folder_path), ignore_patterns, extra_skip)
+            # The same filters the sweep applies, or the count describes a
+            # different file set from the one that gets ingested.
+            discovered = await asyncio.to_thread(
+                watcher._folder_watcher._walk, str(folder_path),
+                **walk_filters(properties, source_type))
             file_count = len(discovered)
+            cost = await asyncio.to_thread(
+                estimate_scan_cost, discovered,
+                max_files=max_files_prop(properties))
 
         # Store with pending_confirmation status
         if isinstance(properties, dict):
@@ -820,7 +836,22 @@ async def add_source(request: web.Request) -> web.Response:
         sid = store.add_source(name=name or uri, source_type=source_type, uri=uri,
                                properties=properties)
         _sel_log("source.add", source_id=sid, source_type=source_type)
-        return web.json_response({"id": sid, "status": "pending_confirmation", "file_count": file_count}, status=201)
+        return web.json_response(
+            {
+                "id": sid,
+                "status": "pending_confirmation",
+                "file_count": file_count,
+                # Files beyond the source's max_files cap, which are discovered
+                # but never ingested.
+                "capped_file_count": cost["capped"],
+                "estimated_chunks": cost["chunks"],
+                # One extraction call per chunk plus one summary call per file.
+                "estimated_llm_calls": cost["llm_calls"],
+                # 0 means unbounded: everything lands in the first sweep.
+                "chunk_budget_per_sweep": budget or 0,
+            },
+            status=201,
+        )
 
     sid = store.add_source(name=name or uri, source_type=source_type, uri=uri,
                            properties=properties)
@@ -1048,7 +1079,12 @@ async def confirm_source(request: web.Request) -> web.Response:
     watcher = request.app.get("knowledge_watcher")
     if watcher:
         source = {"id": source_id, "uri": row["uri"], "source_type": row["source_type"], "properties": json.dumps(props)}
-        task = asyncio.create_task(watcher._folder_watcher.scan_source(source))
+        # Paced like the watcher's own sweeps. This is the burst that costs the
+        # most -- nothing is ingested yet, so every discovered file is new -- so
+        # skipping the budget here would spend the whole folder before the first
+        # sweep ever ran.
+        task = asyncio.create_task(watcher._folder_watcher.scan_source(
+            source, chunk_budget=folder_chunk_budget(props)))
         _track_scan_task(request.app, task)
     return web.json_response({"status": "scanning"})
 
@@ -1094,7 +1130,8 @@ async def resume_source(request: web.Request) -> web.Response:
     watcher = request.app.get("knowledge_watcher")
     if watcher:
         source = {"id": source_id, "uri": row["uri"], "source_type": row["source_type"], "properties": json.dumps(props)}
-        task = asyncio.create_task(watcher._folder_watcher.scan_source(source))
+        task = asyncio.create_task(watcher._folder_watcher.scan_source(
+            source, chunk_budget=folder_chunk_budget(props)))
         _track_scan_task(request.app, task)
     return web.json_response({"status": "scanning"})
 

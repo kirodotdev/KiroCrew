@@ -4,6 +4,7 @@ import {
   extendsWord,
   isPlainWord, isSafeName, shellEscape, commonPrefix, buildInsertion, acceptSuffix,
   unescapeWord,
+  completionMode, commandArgv, commandSuffix, isCommandToken,
 } from '../utils/terminalCompletion'
 
 /* The prompt used across these cases mirrors a real oh-my-zsh (af-magic) line:
@@ -496,5 +497,156 @@ describe('extendsWord', () => {
 
   it('accepts any non-empty candidate when nothing is typed', () => {
     expect(extendsWord('docs', '')).toBe(true)
+  })
+})
+
+describe('completionMode', () => {
+  it('keeps every word the path tier already owned', () => {
+    // The two tiers are disjoint and path wins wherever it applied before, so this
+    // change cannot regress a word that already produced a menu.
+    expect(completionMode('../', 'cd')).toBe('path')
+    expect(completionMode('', 'ls')).toBe('path')
+    expect(completionMode('src/', 'gh')).toBe('path')
+    expect(completionMode('~/w', 'echo')).toBe('path')
+    expect(completionMode('./x', 'anything')).toBe('path')
+  })
+
+  it('routes a non-path word under a non-path command to the command tier', () => {
+    expect(completionMode('', 'gh')).toBe('command')
+    expect(completionMode('cre', 'gh')).toBe('command')
+    expect(completionMode('commit', 'git')).toBe('command')
+  })
+
+  it('routes a flag word to the command tier, which the path tier refuses', () => {
+    expect(shouldComplete('--ti', 'gh')).toBe(false)
+    expect(completionMode('--ti', 'gh')).toBe('command')
+    expect(completionMode('-v', 'docker')).toBe('command')
+  })
+
+  it('leaves a path command on the path tier even where a tool might have answered', () => {
+    // `python ⎸` must keep listing the cwd rather than start probing a tool that
+    // has no completion protocol — the path tier's claim on these words is
+    // stronger than the command tier's, so it is checked first and wins.
+    expect(completionMode('', 'python')).toBe('path')
+    expect(completionMode('foo', 'cat')).toBe('path')
+  })
+
+  it('stays shut with no command word and on shell expansions', () => {
+    expect(completionMode('gh', '')).toBe('none')
+    expect(completionMode('$HO', 'gh')).toBe('none')
+    expect(completionMode('`ls', 'gh')).toBe('none')
+  })
+
+  it('leaves a word with a separator to the path tier, never the command tier', () => {
+    // A word carrying a `/` cannot be a subcommand, so probing for one would
+    // spend a subprocess to answer nothing.
+    expect(completionMode('o/r', 'gh')).toBe('path')
+    expect(completionMode('~/x', 'gh')).toBe('path')
+  })
+})
+
+describe('commandArgv', () => {
+  it('returns the command and the words before the cursor', () => {
+    const line = `${PROMPT}gh pr cre`
+    expect(commandArgv(line, line.length - 3)).toEqual(['gh', 'pr'])
+  })
+
+  it('keeps flag words, which decide where in the tree the cursor is', () => {
+    const line = `${PROMPT}kubectl -n kube-system get `
+    expect(commandArgv(line, line.length)).toEqual(['kubectl', '-n', 'kube-system', 'get'])
+  })
+
+  it('steps past wrappers so the real tool lands at argv[0]', () => {
+    const line = `${PROMPT}sudo docker ps `
+    expect(commandArgv(line, line.length)).toEqual(['docker', 'ps'])
+  })
+
+  it('takes only the last command of a chain', () => {
+    const line = `${PROMPT}make build && gh pr `
+    expect(commandArgv(line, line.length)).toEqual(['gh', 'pr'])
+  })
+
+  it('decodes escapes — argv entries are literal, not shell text', () => {
+    const line = `${PROMPT}gh pr view my\\ branch `
+    expect(commandArgv(line, line.length)).toEqual(['gh', 'pr', 'view', 'my branch'])
+  })
+
+  it('is empty when no command has been typed', () => {
+    const line = `${PROMPT}gh`
+    expect(commandArgv(line, line.length - 2)).toEqual([])
+  })
+})
+
+describe('buildInsertion — path guard is a property of the KIND, not the spelling', () => {
+  it('guards a FILE named like a flag', () => {
+    // `--force` as a filename must be typed `./--force` or the program reads it as
+    // an option.
+    expect(buildInsertion('--f', '--force', ' ')).toEqual({ erase: 3, text: './--force ' })
+  })
+
+  it('does not guard a FLAG named like a flag', () => {
+    // The same characters, offered by the command tier, must be typed verbatim —
+    // `./--force` would be a path that does not exist.
+    expect(buildInsertion('--f', '--force', ' ', false)).toEqual({ erase: 0, text: 'orce ' })
+  })
+
+  it('leaves a colon-bearing subcommand alone', () => {
+    // The `:` guard exists because rsync/scp read `host:path` as a REMOTE target.
+    // An npm-style `run:build` subcommand is argv[1] and not a path at all.
+    expect(buildInsertion('run', 'run:build', ' ', false))
+      .toEqual({ erase: 0, text: ':build ' })
+    expect(buildInsertion('run', 'run:build', ' '))
+      .toEqual({ erase: 3, text: './run:build ' })
+  })
+
+  it('escapes a filename but never a command token', () => {
+    // `=` is escaped in a filename (zsh equals-expansion) but must survive intact
+    // in git's `--message=`, which is the tool asking for the value to follow.
+    expect(buildInsertion('--m', '--message=', '')).toEqual({
+      erase: 3, text: './--message\\=',
+    })
+    expect(buildInsertion('--m', '--message=', '', false)).toEqual({
+      erase: 0, text: 'essage=',
+    })
+  })
+})
+
+describe('isCommandToken', () => {
+  it('accepts real subcommand and flag shapes', () => {
+    expect(isCommandToken('pr', false)).toBe(true)
+    expect(isCommandToken('dry-run', false)).toBe(true)
+    expect(isCommandToken('run:build', false)).toBe(true)
+    expect(isCommandToken('-v', true)).toBe(true)
+    expect(isCommandToken('--dry-run', true)).toBe(true)
+    expect(isCommandToken('--message=', true)).toBe(true)
+  })
+
+  it('refuses anything a shell would reinterpret', () => {
+    // The command tier inserts VERBATIM, so a value needing escaping is not a real
+    // flag and must be refused rather than escaped.
+    expect(isCommandToken('--x; rm -rf ~', true)).toBe(false)
+    expect(isCommandToken('$(id)', false)).toBe(false)
+    expect(isCommandToken('a b', false)).toBe(false)
+    expect(isCommandToken('`id`', false)).toBe(false)
+    expect(isCommandToken('a\nb', false)).toBe(false)
+  })
+
+  it('holds each kind to its own shape', () => {
+    expect(isCommandToken('--repo', false)).toBe(false)  // a flag is not a subcommand
+    expect(isCommandToken('pr', true)).toBe(false)       // and vice versa
+    expect(isCommandToken('', false)).toBe(false)
+    expect(isCommandToken('---', true)).toBe(false)
+  })
+})
+
+describe('commandSuffix', () => {
+  it('separates so the next word can be completed', () => {
+    expect(commandSuffix(false)).toBe(' ')
+  })
+
+  it('adds nothing when the value is deliberately unfinished', () => {
+    // cobra's NoSpace directive and git's `--message=` form both mean "the value
+    // goes here"; a space would strand the cursor past it.
+    expect(commandSuffix(true)).toBe('')
   })
 })

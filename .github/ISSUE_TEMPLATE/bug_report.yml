@@ -29,6 +29,25 @@ body:
       required: true
 
   - type: dropdown
+    id: channel
+    attributes:
+      label: Release channel
+      description: >-
+        Which build are you running? Stable is the default download; Insider is
+        the prerelease lane (any `-insider.N` / `-rc.N` version); Nightly is the
+        untested main-HEAD build (a `-nightly.<stamp>` version). A workflow reads
+        this answer to apply the matching `channel:` label, which is how
+        prerelease reports get looked at first — so pick "Not sure" rather than
+        guessing.
+      options:
+        - Stable
+        - Insider (prerelease)
+        - Nightly
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
     id: install
     attributes:
       label: How is it installed?

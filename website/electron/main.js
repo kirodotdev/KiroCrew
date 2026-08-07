@@ -34,6 +34,7 @@ const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
 const { initMochi, shutdownMochi } = require("./mochi/index");
+const { initCrewCompanion, shutdownCrewCompanion } = require("./crew-companion/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { createBrowserViewManager, isUntrustedContents } = require("./browser-view");
 // chooseControlTransport is exercised by the routing layer (see Stage 6 notes),
@@ -2694,6 +2695,13 @@ app.whenReady().then(async () => {
   // loaded from the gateway origin. Best-effort -- a failure here must never
   // block the dashboard, so everything is inside a catch that only logs.
   initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+  // Same shape and the same best-effort contract: the companion's windows follow
+  // the app's enabled state, and a failure here must never block the dashboard.
+  try {
+    initCrewCompanion({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+  } catch (err) {
+    glog(`crew-companion: init failed — ${err && err.message}`);
+  }
 
   app.on("activate", () => {
     if (!mainWindow?.isVisible()) mainWindow?.show();
@@ -2705,6 +2713,7 @@ app.on("before-quit", () => {
   // Flush the final metrics window before the gateway teardown begins.
   try { if (desktopMetricsRecorder) desktopMetricsRecorder.stop(); } catch { /* best effort */ }
   shutdownMochi();
+  try { shutdownCrewCompanion(); } catch { /* best effort */ }
   stopGateway();
 });
 

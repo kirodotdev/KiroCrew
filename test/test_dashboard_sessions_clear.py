@@ -30,10 +30,24 @@ def _history_key_for(key: str) -> str:
 class _FakeSlot:
     """Minimal stand-in for ``_ChatSlot`` — carries only what the handler reads."""
 
-    def __init__(self, key: str, *, pinned: bool = False, running: bool = False) -> None:
+    def __init__(
+        self,
+        key: str,
+        *,
+        pinned: bool = False,
+        running: bool = False,
+        linked_session_key: str = "",
+        channel_origin: bool = False,
+    ) -> None:
         self.key = key
         self.pinned = pinned
         self._running = running
+        # The handler resolves each slot's TRANSCRIPT via ``slot_history_key``,
+        # which reads these. A channel tab the session map could not resolve
+        # carries no linked key, and its transcript is identified by the
+        # ``channel_origin`` provenance flag plus the slot name.
+        self.linked_session_key = linked_session_key
+        self.channel_origin = channel_origin
 
     @property
     def running(self) -> bool:
@@ -302,3 +316,66 @@ async def test_all_failed_returns_ok_false() -> None:
 
     assert status == 200
     assert body == {"ok": False, "cleared": 0, "skipped": 0, "failed": 2}
+
+
+@pytest.mark.asyncio
+async def test_skips_both_candidate_transcripts_of_a_channel_shaped_slot() -> None:
+    """Clear All must not depend on provenance resolving correctly.
+
+    A legacy channel tab carries no persisted marker, so it restores as an
+    ordinary dashboard slot writing ``dashboard:<stem>`` while the conversation
+    on screen still lives in the channel transcript. Protecting only the write
+    target would delete what the tab is displaying, so BOTH candidates are
+    protected -- the worst case is skipping a transcript nobody is reading.
+    """
+    stem = "slack_1783733803.877979"
+    other = _history_key_for("chat-9-1")
+    sessions = [{"key": stem}, {"key": _history_key_for(stem)}, {"key": other}]
+    slots = {stem: _FakeSlot(stem)}  # no channel_origin, no linked key
+    request, _state, deleted = _make_request(sessions, slots=slots)
+
+    status, _body = await _call_and_parse(request)
+
+    assert status == 200
+    assert stem not in deleted
+    assert deleted == [other]
+
+
+@pytest.mark.asyncio
+async def test_skips_the_transcript_an_unbound_channel_tab_is_reading() -> None:
+    """An open channel tab's transcript must survive Clear All.
+
+    A channel tab the session map could not resolve carries no
+    ``linked_session_key``, so it RUNS under ``dashboard:<stem>`` while its
+    conversation lives in the channel transcript, listed as the bare stem. The
+    protection set used to be built from the session key, which contributed two
+    names matching no file and left the real transcript unprotected — so Clear
+    All permanently deleted the conversation the open tab was displaying.
+    """
+    stem = "slack_1783733803.877979"
+    other = _history_key_for("chat-9-1")
+    sessions = [{"key": stem}, {"key": other}]
+    slots = {stem: _FakeSlot(stem, channel_origin=True)}
+    request, _state, deleted = _make_request(sessions, slots=slots)
+
+    status, body = await _call_and_parse(request)
+
+    assert status == 200
+    assert stem not in deleted
+    assert deleted == [other]
+    assert body == {"ok": True, "cleared": 1, "skipped": 1, "failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_skips_the_transcript_a_bound_channel_tab_is_reading() -> None:
+    """Same protection for the tab that DID resolve — via its linked key's stem."""
+    stem = "slack_1783733803.877979"
+    other = _history_key_for("chat-9-1")
+    sessions = [{"key": stem}, {"key": other}]
+    slots = {stem: _FakeSlot(stem, linked_session_key="slack:1783733803.877979")}
+    request, _state, deleted = _make_request(sessions, slots=slots)
+
+    status, body = await _call_and_parse(request)
+
+    assert status == 200
+    assert deleted == [other]

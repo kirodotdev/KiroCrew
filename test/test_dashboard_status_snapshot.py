@@ -81,6 +81,37 @@ class TestStatusSnapshot:
         assert snap["branch"] == ""
         assert snap["commit"] == ""
 
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("0.1.4", "stable"),
+            ("0.1.4-nightly.20260807t061500", "nightly"),
+            ("0.1.4-insider.2", "insider"),
+            # PEP 440 spellings — what a CLI/wheel install actually reports,
+            # because build-wheel.yml rewrites __version__ to the wheel version.
+            ("0.1.4rc4", "insider"),
+            ("0.1.4.dev20260807061500", "nightly"),
+        ],
+    )
+    def test_ships_the_resolved_release_channel(
+        self, state: DashboardState, monkeypatch, version: str, expected: str
+    ) -> None:
+        """The dashboard is told the LANE, not left to parse the version itself.
+
+        The prerelease bug-report chip in the header keys off this field, so a
+        wrong answer here means a nightly user silently loses their obvious way
+        to report a bug — or a stable user gets an affordance implying the build
+        is expected to break.
+        """
+        monkeypatch.setattr("kiro_crew.release_channel.__version__", version)
+        assert state.status_snapshot()["release_channel"] == expected
+
+    def test_release_channel_is_always_present(self, state: DashboardState) -> None:
+        """Never omitted: the frontend must not have to distinguish absent-from-
+        old-gateway from absent-because-stable within one payload version."""
+        snap = state.status_snapshot()
+        assert snap["release_channel"] in ("nightly", "insider", "stable")
+
     def test_cached_overrides_skip_expensive_calls(self, state: DashboardState) -> None:
         """Passing cron_jobs/lessons skips list_jobs()/load_all()."""
         state.crons.list_jobs.reset_mock()

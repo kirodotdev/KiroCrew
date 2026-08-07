@@ -104,6 +104,7 @@ Set via `kirocrew config set agent.sandbox auto`.
     "auto_register_project_docs": true,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
     "auto_ingest_chunk_budget": 150,
+    "folder_ingest_chunk_budget": 300,
     "dedup_every_n_sweeps": 12
   },
   "auto_update": true,
@@ -216,7 +217,8 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest. `widget` is excluded as UI rather than a document; `svg` is excluded because the file reader has no support for it | `["markdown", "text", "html", "json"]` |
 | `knowledge.auto_add_documents` | Let the agent add documents it reads while working to the Knowledge Library (one aggregate "Auto-added" source). The agent fetches the content with its own tools under your approval; Kiro Crew fetches nothing, so `doc_ingest_hosts` does not apply. Renamed from `auto_ingest_doc_links`, which is still accepted on read | `true` |
 | `knowledge.auto_register_project_docs` | Register the documents of each project you work in as a Knowledge source automatically. Documents only (`.md`/`.pdf`/`.docx`/`.org` above a size floor, excluding agent instructions, generated files and repository boilerplate) — never source code | `true` |
-| `knowledge.auto_ingest_chunk_budget` | Chunks an automatically-registered source may ingest per watcher sweep. Each chunk is one LLM extraction call, so this bounds the cost; newest documents land first and the rest follow on later sweeps. 0 removes the bound. Folders you add by hand are never budgeted | `150` |
+| `knowledge.auto_ingest_chunk_budget` | Chunks an automatically-registered source may ingest per watcher sweep. Each chunk is one LLM extraction call, so this bounds the cost; newest documents land first and the rest follow on later sweeps. 0 removes the bound | `150` |
+| `knowledge.folder_ingest_chunk_budget` | Chunks a folder you add by hand may ingest per watcher sweep, including the first scan started by confirming the source. Nothing is skipped — newest files land first and the rest continue on later sweeps — so this paces spend rather than limiting what is ingested. Higher than the auto-ingest budget because you asked for the folder explicitly. 0 removes the bound; a per-source `chunk_budget` property overrides it for one folder | `300` |
 | `knowledge.dedup_every_n_sweeps` | Run a full duplicate-collapsing pass every Nth watcher sweep (the per-write gate only catches byte-identical documents). 0 disables | `12` |
 | `knowledge.auto_discover_folder` | Watch for a documents folder inside the active workspace and register it as a Knowledge source automatically, so files dropped there become searchable without adding the source by hand. The folder is never created for you, and deleting or pausing the auto-added source persists so it does not reappear on the next sweep. Off by default because ingestion spends LLM extraction on every supported file | `false` |
 | `knowledge.auto_discover_dirname` | Folder name inside the workspace that auto-discovery looks for. A single path segment: separators and traversal are rejected so the source cannot be redirected outside the workspace. Avoid `knowledge`, which is where the Library's own store lives and always exists | `"knowledge-docs"` |

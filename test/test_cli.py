@@ -4232,15 +4232,32 @@ class TestWaitGatewayReady:
         Otherwise the operator is sent looking for a live process that no longer
         exists, with no exit status to explain it.
         """
+        import types
+
         from kiro_crew import cli_server
 
         proc = MagicMock()
         # Alive for the loop's entry poll, exited by the deadline re-poll.
         proc.poll.side_effect = [None, 3]
 
+        # The clock is stubbed on cli_server's OWN attribute rather than through
+        # `cli_server.time.monotonic`: that path resolves to the shared `time`
+        # module, so it would swap the clock for every caller in the process --
+        # including background threads -- and a finite side_effect list them lets
+        # steal a value and raise StopIteration here. This stub is scoped to the
+        # module under test and answers any number of calls: the first reads the
+        # loop's entry time, every later one is past the deadline.
+        calls: list[float] = []
+
+        def clock() -> float:
+            calls.append(0.0)
+            return 0.0 if len(calls) == 1 else 100.0
+
+        fake_time = types.SimpleNamespace(monotonic=clock, sleep=lambda _seconds: None)
+
         with (
             patch("kiro_crew.cli_server._probe_gateway_ready", return_value=503),
-            patch("kiro_crew.cli_server.time.monotonic", side_effect=[0.0, 100.0]),
+            patch.object(cli_server, "time", fake_time),
         ):
             verdict, status = cli_server._wait_gateway_ready(proc, 7777, None, 0.0)
 

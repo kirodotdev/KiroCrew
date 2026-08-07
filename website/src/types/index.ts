@@ -20,6 +20,18 @@ export interface StatusData {
   update_command?: string
   update_progress?: { step: string; detail: string } | null
   version?: string
+  /**
+   * Which release lane these bytes came from. The gateway resolves it (see
+   * `src/kiro_crew/release_channel.py`) rather than leaving the dashboard to
+   * parse `version`: the same release is stamped as SemVer for the desktop app
+   * and PEP 440 for wheels, and neither PEP 440 prerelease spelling
+   * (`1.2.3rc4`, `1.2.3.dev<stamp>`) contains a `-`, so a mirror of the rule
+   * here would drift and quietly call a prerelease build stable.
+   *
+   * Optional because an older gateway does not send it — treat a missing value
+   * as "unknown", never as "stable".
+   */
+  release_channel?: 'nightly' | 'insider' | 'stable'
   branch?: string
   commit?: string
   platform?: string

@@ -474,8 +474,14 @@ async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
-    jobs = state.crons.list_jobs(include_disabled=True)
-    job = next((j for j in jobs if j.id == job_id), None)
+    # Freshness-guaranteed lookup: this endpoint is handed a job id minted by
+    # ANOTHER process (`kirocrew cron add`, the MCP cron_add tool), which writes
+    # crons.json directly. The cache-only `list_jobs()` would not see that job
+    # until the timer tick refreshes the in-memory snapshot (≤_TIMER_POLL_SECS),
+    # so triggering a just-created job 404'd for up to that long. Same rationale
+    # as the GET handler below; the read runs in a worker thread, so the loop is
+    # not blocked.
+    job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
     # Reject if a run is already in flight. Overwriting _running_tasks[job_id]
@@ -483,7 +489,9 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # tracked/cancelled/joined) and allow overlapping duplicate runs. The
     # check-and-set below is atomic: there is no await between the guard and the
     # assignment, so the single-threaded event loop cannot interleave a second
-    # request into this critical section.
+    # request into this critical section. (The lookup above awaits, so two
+    # concurrent requests can both reach the guard — but only one can pass it,
+    # because the guard and the assignment are not separated by an await.)
     if job_id in state.crons._running_tasks or state.crons.is_running(job_id):
         return web.json_response({"error": "job is already running"}, status=409)
     task = asyncio.create_task(state.crons.run_job(job_id))  # type: ignore[arg-type]

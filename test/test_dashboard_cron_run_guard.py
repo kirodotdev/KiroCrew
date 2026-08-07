@@ -8,6 +8,7 @@ must reject with 409 when a run is already in flight.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,7 +40,13 @@ def _make_app(state) -> web.Application:
 def _make_state(job: CronJob | None, *, is_running: bool = False, running_tasks=None):
     state = MagicMock()
     state.crons = MagicMock()
-    state.crons.list_jobs.return_value = [job] if job else []
+    # The handler resolves the job through the freshness-guaranteed async form so
+    # a job written by another process (CLI / MCP `cron add`) is visible
+    # immediately. `list_jobs` is left mocked as an EMPTY cache on purpose: if the
+    # handler ever regresses to the cache-only lookup, every test here goes red
+    # rather than silently passing against a stale snapshot.
+    state.crons.list_jobs.return_value = []
+    state.crons.get_job_async = AsyncMock(return_value=job)
     state.crons.is_running.return_value = is_running
     state.crons._running_tasks = running_tasks if running_tasks is not None else {}
     state.crons.run_job = AsyncMock(return_value=True)
@@ -88,3 +95,52 @@ class TestApiCronRun:
         # The previously-running task reference must be preserved untouched.
         assert state.crons._running_tasks["j1"] is prior
         state.crons.run_job.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_finds_job_absent_from_the_cache_only_snapshot(self) -> None:
+        """A job created by another process must be runnable immediately.
+
+        `kirocrew cron add` and the MCP cron_add tool write crons.json from a
+        separate process. The gateway's in-memory snapshot only picks that up on
+        its timer tick, so resolving the id through the cache-only `list_jobs()`
+        made this endpoint 404 for up to _TIMER_POLL_SECS after creation. The
+        handler must use the freshness-guaranteed lookup instead.
+        """
+        state = _make_state(_make_job("just-created"))
+        # Explicitly model the stale gateway: the cache does not contain it yet.
+        state.crons.list_jobs.return_value = []
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/just-created/run")
+            assert resp.status == 200
+        state.crons.get_job_async.assert_awaited_once_with("just-created")
+        state.crons.run_job.assert_called_once_with("just-created")
+
+    @pytest.mark.asyncio
+    async def test_concurrent_runs_still_yield_one_200_and_one_409(self) -> None:
+        """The added await must not weaken the check-and-set guard.
+
+        Resolving the job is now asynchronous, so two concurrent requests can
+        both get past the lookup — where previously the handler ran straight
+        through to the guard without suspending. Only one may still start a run,
+        because the guard and the `_running_tasks` assignment are not separated
+        by an await.
+        """
+        gate = asyncio.Event()
+
+        async def _blocked_run(_job_id: str) -> bool:
+            await gate.wait()
+            return True
+
+        state = _make_state(_make_job("j1"))
+        state.crons.run_job = AsyncMock(side_effect=_blocked_run)
+        try:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                first, second = await asyncio.gather(
+                    client.post("/api/crons/j1/run"),
+                    client.post("/api/crons/j1/run"),
+                )
+                assert sorted([first.status, second.status]) == [200, 409]
+        finally:
+            gate.set()
+        # Exactly one run was started despite both requests passing the lookup.
+        state.crons.run_job.assert_called_once_with("j1")

@@ -1,0 +1,221 @@
+name: Add Contributor
+
+# Add the authors of merged pull requests to the README Contributors block.
+# main is a protected branch, so this never commits directly -- it stages the
+# README edit on a single rolling feature branch, opens (or updates) one PR, and
+# arms GitHub auto-merge on it, like test-durations.yml. Auto-merge lets the
+# rolling PR land without a manual click once the repo's own required checks +
+# reviews pass; it never bypasses branch protection, so where protection requires
+# a human approval GitHub still waits for it.
+#
+# Why bespoke instead of an off-the-shelf tool (all-contributors bot, a
+# contrib.rocks embed): this repo's block is hand-curated with human display
+# names, credits by PULL-REQUEST-MERGE semantics (not the broader "contribution"
+# an embed counts), preserves maintainer-added entries verbatim, and must honor
+# an opt-out for removal requests. Those constraints are exactly what the generic
+# tools do not give, which is why the ~1k lines here earn their keep -- do not
+# replace this with the one-liner embed without re-checking all four.
+#
+# Trigger choice: a daily cron (plus manual dispatch), NOT pull_request_target.
+# Each run re-derives the complete author set by paginating every merged PR (see
+# below), so a per-merge trigger would do the exact same full sweep only sooner --
+# it buys at most 24h of immediacy while permanently carrying a write token in the
+# trusted base-repo context, where any future edit that touched a PR's title, body,
+# or head ref would inherit that privilege. A once-a-day batch also avoids
+# force-pushing the rolling branch on every merge (which would reset its review
+# approval and keep auto-merge from firing). Cron-only keeps the same result with
+# a smaller, static risk surface.
+#
+# Why the rolling branch is rebuilt from base every run AND we enumerate ALL
+# merged-PR authors: the branch is rebuilt from the protected branch each run so
+# it never drifts or carries a stale conflict. A rebuild is only safe if the
+# collection re-derives the COMPLETE set of authors who should appear, so it
+# paginates every merged PR -- not a recent-days window, which would silently drop
+# an author whose contributors PR stayed open past the window while newer PRs
+# merged. The script dedups against the README (which already holds everyone
+# previously credited), so scanning all merged PRs is cheap in effect: only
+# genuinely-new authors ever change the file.
+
+on:
+  schedule:
+    # Daily: credit the previous day's merged-PR authors.
+    - cron: "37 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write # only to open/update the failure-tracking issue (see last step)
+
+concurrency:
+  # One rolling branch, so serialize every run onto it -- do NOT cancel in
+  # progress, or a run could be aborted mid-push and skip a rebuild.
+  group: add-contributor
+  cancel-in-progress: false
+
+jobs:
+  add:
+    name: Add merged-PR authors to README
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Check out the default branch. github.event.repository is absent on
+      # schedule/workflow_dispatch payloads, so fall back to github.ref_name
+      # (the default branch on both triggers). We only read/write tracked files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Collect merged-PR authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Enumerate EVERY merged PR's author (paginated), not a recent window:
+          # the branch is rebuilt from base each run, so the collection must
+          # re-derive the complete set or an author whose rolling PR outlived a
+          # bounded window would be dropped. The script dedups against the README,
+          # so only genuinely-new authors ever change the file.
+          #
+          # Guard .user != null first: a deleted account returns a null user, and
+          # a bare filter would emit {login: null} and inject a github.com/None
+          # entry. .user.type == "User" then excludes bots (dependabot, renovate,
+          # github-actions, ...), whose type is "Bot". `merged_at != null`
+          # distinguishes a merged PR from one merely closed.
+          gh api --paginate "repos/$REPO/pulls?state=closed&per_page=100&sort=updated&direction=desc" \
+            --jq '.[] | select(.merged_at != null and .user != null and .user.type == "User")
+                      | .user.login' \
+            | sort -u >/tmp/logins.txt
+
+          # A coarse set of logins already mentioned in the README, lowercased.
+          # Used ONLY to skip the display-name lookup for authors already
+          # present, so a steady-state daily run makes ~0 extra API calls while
+          # new entries still get the curated "Full Name" convention. The add/skip
+          # decision itself is the script's job (precise regex); over-matching
+          # here at worst falls a genuinely-new author back to login-as-name, so
+          # this greedy grep needs no repo-link exclusion.
+          grep -oiE 'https?://(www\.)?github\.com/[A-Za-z0-9][A-Za-z0-9-]*' README.md \
+            | sed -E 's#.*/##' | tr '[:upper:]' '[:lower:]' | sort -u >/tmp/known.txt
+
+          # Build records. Name is passed via jq --arg (safe JSON encoding, never
+          # shell-eval'd); the script validates the login and HTML-escapes the
+          # name. `.name // .login` covers users with no display name set.
+          : >/tmp/records.jsonl
+          while IFS= read -r login; do
+            [ -n "$login" ] || continue
+            if grep -qixF "$login" /tmp/known.txt; then
+              name="$login"
+            else
+              name="$(gh api "users/$login" --jq '.name // .login' 2>/dev/null || printf '%s' "$login")"
+            fi
+            jq -cn --arg l "$login" --arg n "$name" '{login: $l, name: $n}' >>/tmp/records.jsonl
+          done </tmp/logins.txt
+          jq -s '.' /tmp/records.jsonl >/tmp/records.json
+
+          echo "Collected $(jq 'length' /tmp/records.json) candidate author(s)."
+
+      - name: Update README
+        id: update
+        run: |
+          set -euo pipefail
+          python3 scripts/update_contributors.py </tmp/records.json
+          if git diff --quiet -- README.md; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the contributors PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BRANCH=chore/add-contributors
+          # Resolve the base from the repo itself, not the event payload -- the
+          # payload's repository object is absent on schedule/dispatch runs, and
+          # `gh pr create --base ""` would then fail.
+          BASE="$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Rebuild the rolling branch from the current base each run so it never
+          # drifts behind the protected branch or carries a stale conflict. The
+          # collection above enumerates all merged authors, so the rebuild is
+          # complete and loses none.
+          git checkout -B "$BRANCH"
+          git add README.md
+          git commit -m "docs: add new contributors to README"
+
+          # Skip the push when the rolling branch's TREE already matches the
+          # remote branch's tip. Without this, rebuilding from a moved base each
+          # day mints a new commit for identical content, and every force-push
+          # dismisses the open PR's stale-review approvals and re-runs CI -- which
+          # can perpetually starve auto-merge where a human approval is required.
+          # Comparing trees (not commit SHAs) ignores the base rebase, so a push
+          # happens only when the README content actually changed. Fetch the
+          # remote branch first (absent on the first-ever run, hence `|| true`).
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          remote_commit="$(git rev-parse --verify --quiet FETCH_HEAD || true)"
+          if [ -n "$remote_commit" ] \
+            && [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "$remote_commit^{tree}")" ]; then
+            echo "Rolling branch tree unchanged; skipping push (no README delta since last run)."
+            exit 0
+          fi
+          git push --force-with-lease origin "$BRANCH"
+
+          if gh pr view "$BRANCH" --repo "$REPO" --json state --jq .state 2>/dev/null | grep -q OPEN; then
+            echo "PR already open for $BRANCH; updated in place."
+          else
+            gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" \
+              --title "docs: add new contributors to README" \
+              --body "Automated update of the README Contributors block for authors of recently merged pull requests. Generated by the Add Contributor workflow (\`.github/workflows/add-contributor.yml\`); entries are inserted in sorted order and existing lines are preserved verbatim."
+          fi
+
+          # Arm GitHub auto-merge so the rolling PR lands ONCE the repo's own
+          # required checks + reviews pass. This never bypasses branch
+          # protection -- GitHub still enforces every required gate. The entries
+          # carry user-chosen display names and avatars, so a HUMAN review is the
+          # safeguard against an offensive name/avatar reaching the front page:
+          # main requires an approving review, so auto-merge waits for it. If a
+          # repo ever drops that requirement, the human look goes with it -- keep
+          # the required review, or drop this auto-merge step so the rolling PR
+          # always waits for a manual merge. Non-fatal: if "Allow auto-merge" is
+          # disabled or a branch rule forbids it, log and continue.
+          if ! gh pr merge "$BRANCH" --repo "$REPO" --auto --squash; then
+            echo "Could not arm auto-merge (allow-auto-merge disabled or blocked by a branch rule); PR remains open for manual merge."
+          fi
+
+      # A scheduled workflow that fails is easy to miss. If any step above failed
+      # (e.g. the script fails loud on a corrupted, non-contiguous block), open or
+      # update a single tracking issue so a human actually sees it. Deduped by a
+      # fixed title so repeated daily failures do not spam new issues.
+      - name: Surface failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Add Contributor workflow is failing"
+          existing="$(gh issue list --repo "$REPO" --state open --search "in:title \"$TITLE\"" \
+            --json number --jq '.[0].number // empty')"
+          body="The scheduled \`add-contributor.yml\` run failed: $RUN_URL
+
+          A common cause is the README Contributors block no longer being a single
+          contiguous run of \`<a>\` entries (the script fails loud rather than
+          corrupt it). Check the run log, fix the block, and re-run."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "$body"
+          fi

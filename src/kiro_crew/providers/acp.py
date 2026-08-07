@@ -1057,6 +1057,9 @@ class AcpProvider(LLMProvider):
     def context_usage_pct(self) -> float:
         return self._client.last_prompt_stats.context_pct
 
+    def context_usage_unknown(self) -> bool:
+        return self._client.last_prompt_stats.context_pct_unknown
+
     def context_window_tokens(self) -> int:
         return self._client.last_prompt_stats.context_window_tokens
 

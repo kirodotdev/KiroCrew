@@ -131,6 +131,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
       weekDays: prefill.weekDays ?? defaults.weekDays,
       weekTime: prefill.weekTime ?? defaults.weekTime,
       cronExpr: prefill.cronExpr ?? defaults.cronExpr,
+      silent: prefill.silent ?? defaults.silent,
     }
     : defaults
   const [name, setName] = useState(init.name)
@@ -146,7 +147,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
   })
   const [channel, setChannel] = useState(defaults.channel)
   const [approvalMode, setApprovalMode] = useState(defaults.approvalMode)
-  const [silent, setSilent] = useState(defaults.silent)
+  const [silent, setSilent] = useState(init.silent)
   const [strictSchedule, setStrictSchedule] = useState(defaults.strictSchedule)
   const [hideInChat, setHideInChat] = useState(defaults.hideInChat)
   const [schedMode, setSchedMode] = useState(init.schedMode)

@@ -7,6 +7,7 @@ import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
+import { useAvailableModels } from '../hooks/useAvailableModels'
 import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import {
@@ -516,10 +517,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // Model list for the per-agent default. Same query key as every other model
   // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
   // obvious choice rather than an absent option.
-  const { data: availableModels } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: () => provider.fetchAvailableModels(),
-  })
+  const availableModels = useAvailableModels()
   const modelOptions = [
     INHERIT_MODEL,
     ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
