@@ -65,6 +65,9 @@ from kiro_crew.cloud import ssm as cloud_ssm
 # be framed by this desktop app on whatever KIROCREW_PORT it runs on (no
 # hardcoded port, no wildcard). See server._extra_frame_ancestors.
 from kiro_crew.config.loader import DASHBOARD_PORT as _LOCAL_DASHBOARD_PORT
+from kiro_crew.instances.constants import (
+    DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
+)
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_INTERVAL
@@ -72,6 +75,9 @@ from kiro_crew.instances.constants import (
     DEFAULT_RECOVER_BACKOFF_MAX_SECS as _RECOVER_BACKOFF_MAX_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
+from kiro_crew.instances.constants import (
+    DEFAULT_SSM_CONNECT_TIMEOUT_SECS as _DEFAULT_SSM_CONNECT_TIMEOUT_SECS,
+)
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REFRESH_FRACTION
 from kiro_crew.instances.constants import (
@@ -107,12 +113,6 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 _LOOPBACK = "127.0.0.1"
-# How long to wait for the local forward port to start accepting connections
-# before declaring the connect attempt failed. SSM's session-manager-plugin
-# needs longer to establish (WebSocket handshake to the SSM service) than a
-# direct ssh TCP connect, so the SSM transport uses a longer timeout below.
-_DEFAULT_CONNECT_TIMEOUT_SECS = 15.0
-_DEFAULT_SSM_CONNECT_TIMEOUT_SECS = 25.0
 # Poll cadence while waiting for the forward to come up.
 _READY_POLL_INTERVAL_SECS = 0.25
 # Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
