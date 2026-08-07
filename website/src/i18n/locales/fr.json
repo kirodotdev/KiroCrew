@@ -9379,7 +9379,10 @@
         "built_in_rules_enforced_note": "{{enabled}} règles intégrées sur {{total}} sont actuellement appliquées, après vos désactivations et les éventuels verrouillages de politique.",
         "custom_patterns_counted_separately": "Vos motifs personnalisés sont comptés séparément dans Commandes refusées.",
         "state_allowed": "Autorisé",
-        "state_blocked": "Bloqué"
+        "state_blocked": "Bloqué",
+        "rail_active": "Actif",
+        "rail_until_time": "Jusqu'à {{time}}",
+        "rail_until_restart": "Jusqu’au redémarrage"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Annuler",

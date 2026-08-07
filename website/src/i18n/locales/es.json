@@ -9460,7 +9460,10 @@
         "built_in_rules_enforced_note": "{{enabled}} de {{total}} reglas integradas están aplicándose ahora mismo, tras tus exclusiones y cualquier fijación por política.",
         "custom_patterns_counted_separately": "Tus patrones personalizados se cuentan por separado en Comandos denegados.",
         "state_allowed": "Permitido",
-        "state_blocked": "Bloqueado"
+        "state_blocked": "Bloqueado",
+        "rail_active": "Activo ahora",
+        "rail_until_time": "Hasta {{time}}",
+        "rail_until_restart": "Hasta reiniciar"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Cancelar",

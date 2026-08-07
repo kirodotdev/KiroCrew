@@ -9369,7 +9369,10 @@
         "built_in_rules_enforced_note": "আপনার অপ্ট-আউট এবং যেকোনো নীতি পিনের পরে, এখন {{total}}টির মধ্যে {{enabled}}টি অন্তর্নির্মিত নিয়ম বলবৎ আছে।",
         "custom_patterns_counted_separately": "আপনার নিজের প্যাটার্নগুলো “প্রত্যাখ্যাত কমান্ড”-এ আলাদাভাবে গণনা করা হয়।",
         "state_allowed": "অনুমোদিত",
-        "state_blocked": "অবরুদ্ধ"
+        "state_blocked": "অবরুদ্ধ",
+        "rail_active": "এখন সক্রিয়",
+        "rail_until_time": "{{time}} পর্যন্ত",
+        "rail_until_restart": "রিস্টার্ট পর্যন্ত"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "বাতিল",

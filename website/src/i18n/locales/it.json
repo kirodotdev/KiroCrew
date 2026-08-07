@@ -9565,7 +9565,10 @@
         "built_in_rules_enforced_note": "{{enabled}} regole integrate su {{total}} sono attualmente applicate, dopo le tue esclusioni e gli eventuali blocchi da criterio.",
         "custom_patterns_counted_separately": "I tuoi pattern personalizzati sono conteggiati separatamente in Comandi negati.",
         "state_allowed": "Consentito",
-        "state_blocked": "Bloccato"
+        "state_blocked": "Bloccato",
+        "rail_active": "Attivo ora",
+        "rail_until_time": "Fino a {{time}}",
+        "rail_until_restart": "Fino al riavvio"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Annulla",

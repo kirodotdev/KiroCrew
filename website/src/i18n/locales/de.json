@@ -9393,7 +9393,10 @@
         "built_in_rules_enforced_note": "{{enabled}} von {{total}} integrierten Regeln sind derzeit aktiv, nach Ihren Abwahlen und etwaigen Richtlinien-Fixierungen.",
         "custom_patterns_counted_separately": "Ihre eigenen Muster werden unter „Verweigerte Befehle“ separat gezählt.",
         "state_allowed": "Erlaubt",
-        "state_blocked": "Blockiert"
+        "state_blocked": "Blockiert",
+        "rail_active": "Jetzt aktiv",
+        "rail_until_time": "Bis {{time}}",
+        "rail_until_restart": "Bis zum Neustart"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Abbrechen",

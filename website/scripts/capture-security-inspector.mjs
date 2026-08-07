@@ -142,7 +142,7 @@ async function main() {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
 
-  async function shoot(name, { width, height, section, theme = 'dark', after }) {
+  async function shoot(name, { width, height, section, theme = 'dark', after, fixtures = {} }) {
     const context = await browser.newContext({
       viewport: { width, height },
       // Settings rows are 12-13px type; a 1x shot renders soft on GitHub.
@@ -152,7 +152,7 @@ async function main() {
     // The theme comes from /api/theme/boot, which the shared DEFAULTS pin to
     // dark — localStorage alone does not flip it, so the light shot has to
     // override the endpoint too.
-    await installApiFixtures(page, { ...FIXTURES, '/api/theme/boot': { mode: theme, theme: '' } })
+    await installApiFixtures(page, { ...FIXTURES, '/api/theme/boot': { mode: theme, theme: '' }, ...fixtures })
     logPageFailures(page)
     await page.addInitScript(t => {
       localStorage.clear()
@@ -199,6 +199,19 @@ async function main() {
     after: async page => {
       await page.fill('input[aria-label="Search rules, patterns, categories…"]', 'private key')
       await page.waitForTimeout(400)
+    },
+  })
+
+  // Auto-approve ACTIVE. The rail's approval summary only says anything
+  // interesting in this state: with no grant it reads "Interactive", so the
+  // default frames above cannot show the expiry line at all.
+  await shoot('approval-active', {
+    width: 1500, height: 980, section: 'approval',
+    fixtures: {
+      '/api/status': {
+        sessions: 0, crons: 0, lessons: 0, uptime: 120, version: '0.5.0',
+        yolo: true, yolo_expires_at: '2026-08-07T18:40:00Z', yolo_until_shutdown: false,
+      },
     },
   })
 

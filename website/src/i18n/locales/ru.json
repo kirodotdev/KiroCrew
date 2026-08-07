@@ -9551,7 +9551,10 @@
         "built_in_rules_enforced_note": "Сейчас применяется {{enabled}} из {{total}} встроенных правил — с учётом ваших отключений и закреплений политикой.",
         "custom_patterns_counted_separately": "Ваши собственные шаблоны учитываются отдельно в разделе «Запрещённые команды».",
         "state_allowed": "Разрешено",
-        "state_blocked": "Заблокировано"
+        "state_blocked": "Заблокировано",
+        "rail_active": "Активно",
+        "rail_until_time": "До {{time}}",
+        "rail_until_restart": "До перезапуска"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Отмена",

@@ -9302,7 +9302,10 @@
         "built_in_rules_enforced_note": "在你的退出选项和任何策略固定之后，当前有 {{total}} 条内置规则中的 {{enabled}} 条正在生效。",
         "custom_patterns_counted_separately": "你的自定义模式在“拒绝的命令”中单独计数。",
         "state_allowed": "已允许",
-        "state_blocked": "已阻止"
+        "state_blocked": "已阻止",
+        "rail_active": "当前生效",
+        "rail_until_time": "至 {{time}}",
+        "rail_until_restart": "至重启"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "取消",

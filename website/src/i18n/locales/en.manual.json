@@ -3487,7 +3487,10 @@
         "built_in_rules_enforced_note": "{{enabled}} of {{total}} built-in rules are currently enforced, after your opt-outs and any policy pins.",
         "custom_patterns_counted_separately": "Your custom patterns are counted separately in Denied Commands.",
         "state_allowed": "Allowed",
-        "state_blocked": "Blocked"
+        "state_blocked": "Blocked",
+        "rail_active": "Active now",
+        "rail_until_time": "Until {{time}}",
+        "rail_until_restart": "Until restart"
       },
       "sharedMcpGatewayToggle": {
         "active_sessions_share_pooled_mcp_backends_see_th": "Active — sessions share pooled MCP backends. See the live pool under Developer > System.",

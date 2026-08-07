@@ -9565,7 +9565,10 @@
         "built_in_rules_enforced_note": "{{enabled}} de {{total}} regras integradas estão em vigor agora, depois das suas exclusões e de eventuais fixações por política.",
         "custom_patterns_counted_separately": "Seus padrões personalizados são contados separadamente em Comandos negados.",
         "state_allowed": "Permitido",
-        "state_blocked": "Bloqueado"
+        "state_blocked": "Bloqueado",
+        "rail_active": "Ativo agora",
+        "rail_until_time": "Até {{time}}",
+        "rail_until_restart": "Até reiniciar"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "Cancelar",

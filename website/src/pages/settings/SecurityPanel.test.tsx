@@ -901,15 +901,89 @@ describe('SecurityPanel — inspector rail', () => {
     })
   })
 
-  it('summarises an ACTIVE auto-approve grant, not the configured duration', async () => {
-    // The state that is currently weakening the install outranks the setting.
+  it('summarises an active grant by WHEN IT ENDS, not by repeating the label', async () => {
+    // The state that is currently weakening the install outranks the setting —
+    // but echoing the section's own label made the rail's most important row
+    // read "YOLO (auto-approve)" twice, stacked. The expiry is the useful fact.
     const store = createTestStore({
-      dashboard: { status: { yolo: true } } as never,
+      dashboard: { status: { yolo: true, yolo_until_shutdown: true } } as never,
     })
     renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
 
+    const row = screen.getByRole('option', { name: /YOLO \(auto-approve\)/ })
+    expect(row).toHaveTextContent('Until restart')
+    // The label appears once, not twice.
+    expect(row.textContent!.match(/YOLO \(auto-approve\)/g)).toHaveLength(1)
+  })
+
+  it('falls back to a bare active marker when no expiry is known', async () => {
+    const store = createTestStore({ dashboard: { status: { yolo: true } } as never })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
+
     expect(screen.getByRole('option', { name: /YOLO \(auto-approve\)/ }))
-      .toHaveTextContent('YOLO (auto-approve)')
+      .toHaveTextContent('Active now')
+  })
+
+  it('falls back to the active marker rather than "Until —" for an unparseable expiry', async () => {
+    // The backend sends ISO-or-empty, so this guards the field's shape rather
+    // than a live path: formatting an unparseable value yields an em-dash
+    // placeholder, and "Until —" would assert a live grant while withholding
+    // the expiry that makes the assertion actionable.
+    const store = createTestStore({
+      dashboard: { status: { yolo: true, yolo_expires_at: 'not-a-timestamp' } } as never,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
+
+    const row = screen.getByRole('option', { name: /YOLO \(auto-approve\)/ })
+    expect(row).toHaveTextContent('Active now')
+    expect(row).not.toHaveTextContent('—')
+  })
+
+  it('shows a same-day expiry as a bare clock time, without seconds', async () => {
+    // The row is an 11px line that truncates, so "11:40:00 AM" spends three
+    // characters on precision no reader acts on. Clock pinned so the assertion
+    // does not depend on the day the suite happens to run.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-07T12:00:00Z'))
+    try {
+      const store = createTestStore({
+        dashboard: {
+          status: { yolo: true, yolo_expires_at: '2026-08-07T18:40:00Z' },
+        } as never,
+      })
+      renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
+
+      const row = screen.getByRole('option', { name: /YOLO \(auto-approve\)/ })
+      expect(row).toHaveTextContent('Until 6:40 PM')
+      expect(row).not.toHaveTextContent('6:40:00')
+      // The label still appears once, not twice.
+      expect(row.textContent!.match(/YOLO \(auto-approve\)/g)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('names the day when the expiry is not today, so it cannot read as already past', async () => {
+    // The offered durations reach 24h. A bare "Until 8:00 AM" on a grant that
+    // ends tomorrow morning reads as a time already gone by — on a security row
+    // that means believing a live grant has expired.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-07T20:00:00Z'))
+    try {
+      const store = createTestStore({
+        dashboard: {
+          status: { yolo: true, yolo_expires_at: '2026-08-08T08:00:00Z' },
+        } as never,
+      })
+      renderWithProviders(<SecurityPanel />, { route: '/?section=posture', store })
+
+      const row = screen.getByRole('option', { name: /YOLO \(auto-approve\)/ })
+      // Saturday 2026-08-08 — the weekday disambiguates it from today.
+      expect(row).toHaveTextContent('Sat')
+      expect(row).toHaveTextContent('8:00 AM')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

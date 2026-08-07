@@ -12,7 +12,7 @@ import { api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRu
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 
 import { i18nT } from '../../i18n/t'
-import { fmtList, fmtTimeNumeric } from '../../i18n/format'
+import { fmtDateFields, fmtList, fmtTime, fmtTimeNumeric, toDate } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 /* ── Security feature registry ──
  *
@@ -1420,6 +1420,32 @@ const TWO_PANE_MIN_WIDTH = 760
  *  page, a badge next to the label truncated the longest names to
  *  "Denied Comman…" and "Defense-in-Dept…". Stacking is what lets the rail reuse
  *  each section's real heading instead of inventing shorter rail-only copy. */
+/**
+ * An auto-approve expiry sized for the RAIL: "11:40 AM" when it lands today,
+ * "Sat, 11:40 AM" once it crosses a day boundary.
+ *
+ * Two deliberate differences from the card's `fmtTimeNumeric`, both driven by
+ * the row being an 11px line that truncates:
+ *
+ * - Seconds are dropped. A grant that ends at 11:40:00 does not end more
+ *   precisely than "11:40" for any decision a reader makes here, so the extra
+ *   characters are noise competing with the label for a truncating line.
+ * - The weekday is added when the expiry is NOT today, because the offered
+ *   durations reach 24 hours. A bare "Until 10:00 AM" on a grant that ends
+ *   tomorrow morning reads as a time that has already passed — on this row
+ *   that means believing a live grant has expired, which is the one misread
+ *   worth spending characters to prevent.
+ */
+function fmtRailExpiry(expiry: Date, now: Date = new Date()): string {
+  const sameDay =
+    expiry.getFullYear() === now.getFullYear() &&
+    expiry.getMonth() === now.getMonth() &&
+    expiry.getDate() === now.getDate()
+  return sameDay
+    ? fmtTime(expiry)
+    : fmtDateFields(expiry, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+}
+
 function SectionRow({ section, active, summary, onSelect, twoPane }: {
   section: SecuritySectionDef
   active: boolean
@@ -1510,7 +1536,27 @@ export function SecurityPanel() {
       case 'approval':
         // An active grant outranks the configured duration: it is the state that
         // is currently weakening the install, so it is what the rail reports.
-        if (status?.yolo) return i18nT('pages.settings.securityPanel.yolo_auto_approve')
+        //
+        // It reports WHEN THE GRANT ENDS, not that it exists. Returning the
+        // section's own label here made the row read "YOLO (auto-approve)" twice
+        // — once as the label, once as a muted 11px echo underneath — spending
+        // the rail's most important row on a duplicate instead of the one fact a
+        // reader needs. The expiry is already in `status`; the card below shows
+        // the same values in full sentences.
+        if (status?.yolo) {
+          if (status.yolo_until_shutdown) return i18nT('pages.settings.securityPanel.rail_until_restart')
+          // Parse before formatting, and fall back to the bare "active" string
+          // when the timestamp will not parse. `fmtRailExpiry` would otherwise
+          // be handed an invalid Date and render an em-dash placeholder, which
+          // would put "Until —" on a row asserting that a grant is live —
+          // announcing a weakened install while withholding the one fact that
+          // makes the claim actionable. The backend sends ISO-or-empty today,
+          // so this is a guard against the field's shape changing.
+          const expiry = toDate(status.yolo_expires_at)
+          return expiry
+            ? i18nT('pages.settings.securityPanel.rail_until_time', { time: fmtRailExpiry(expiry) })
+            : i18nT('pages.settings.securityPanel.rail_active')
+        }
         // `== null`, NOT `=== undefined`: `dashboard.status` is typed
         // `StatusData | null` and initialises to `null`, so an `undefined` check
         // never fires and the rail would claim the safe "Interactive" on every

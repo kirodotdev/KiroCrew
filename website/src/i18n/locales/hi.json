@@ -9369,7 +9369,10 @@
         "built_in_rules_enforced_note": "तुम्हारे ऑप्ट-आउट और किसी भी नीति पिन के बाद, अभी {{total}} में से {{enabled}} अंतर्निहित नियम लागू हैं।",
         "custom_patterns_counted_separately": "तुम्हारे स्वयं के पैटर्न “अस्वीकृत कमांड” में अलग से गिने जाते हैं।",
         "state_allowed": "अनुमत",
-        "state_blocked": "अवरोधित"
+        "state_blocked": "अवरोधित",
+        "rail_active": "अभी सक्रिय",
+        "rail_until_time": "{{time}} तक",
+        "rail_until_restart": "रीस्टार्ट तक"
       },
       "sharedMcpGatewayToggle": {
         "cancel": "रद्द करें",

@@ -9347,7 +9347,10 @@
         "yolo_duration_next_activation_note": "次回自動承認をオンにするときに適用されます。",
         "yolo_duration_title": "自動承認が続く期間",
         "yolo_duration_until_shutdown": "Kiro Crewが再起動されるまで",
-        "your_custom_denies": "カスタム拒否"
+        "your_custom_denies": "カスタム拒否",
+        "rail_active": "現在有効",
+        "rail_until_time": "{{time}} まで",
+        "rail_until_restart": "再起動まで"
       },
       "sharedMcpGatewayToggle": {
         "active_sessions_share_pooled_mcp_backends_see_th": "アクティブ。セッションはプール化された MCP バックエンドを共有します。Developer > System でライブプールを参照してください。",
