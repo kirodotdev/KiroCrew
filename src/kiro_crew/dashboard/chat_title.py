@@ -454,8 +454,6 @@ def _title_text(
     """
     source_was_truncated = len(content) > _TITLE_SOURCE_SCAN_LIMIT
     content = content[:_TITLE_SOURCE_SCAN_LIMIT]
-    if content.startswith("[BROWSE] "):
-        content = content[len("[BROWSE] ") :]
     content = _strip_markdown_images(content, drop_trailing_partial=source_was_truncated)
     content = _strip_attached_file_tokens(
         content,

@@ -18,9 +18,8 @@ from zoneinfo import ZoneInfo
 from kiro_crew import platform_compat
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.browser.setup import (
-    ensure_playwright_installed,
+    browser_mode_enabled,
     generate_playwright_config,
-    is_playwright_installed,
     refresh_storage_state,
     register_playwright_proxy,
 )
@@ -353,33 +352,26 @@ def _setup_impl(agent_only: bool = False, electron_only: bool = False, clean: bo
     _maybe_setup_custom_domain()
 
     # ── Browser (Playwright MCP) ──
+    # Browser Mode is a deliberate, durably-persisted capability the user turns
+    # on from Settings -> Browser (registration = authorization now that there is
+    # no per-message marker). The wizard does NOT auto-register it: doing so would
+    # mount the browser_* tools for an agent whose owner never enabled Browser
+    # Mode. We only refresh the storage state if it is already set up.
     print("\n── Browser (Playwright MCP) ──")
-
-    if is_playwright_installed():
-        print("  Playwright MCP already installed")
-    else:
-        print("  Installing Playwright MCP...")
+    if browser_mode_enabled():
         try:
-            ensure_playwright_installed()
-            print("  Playwright MCP installed")
-        except Exception as exc:
-            print(f"  Playwright install failed: {exc}")
-            print("  Browser features will be unavailable until Playwright is installed")
-
-    # Always regenerate config and register proxy in mcp.json (preserve extension mode)
-    try:
-        generate_playwright_config()
-        refresh_storage_state()
-        # register_playwright_proxy owns the shared mcp.json lock, the
-        # user-entry guard, and the create-when-absent path — the patch
-        # primitives have none of those.
-        _, status = register_playwright_proxy()
-        if status == "kept-user-entry":
-            print("  Kept your existing playwright-mcp entry in mcp.json (left untouched)")
-        else:
-            print("  Browser proxy registered in mcp.json")
-    except Exception:
-        pass  # Non-fatal: browser still works without pre-loaded cookies
+            generate_playwright_config()
+            refresh_storage_state()
+            _, status = register_playwright_proxy()
+            if status == "kept-user-entry":
+                print("  Kept your existing playwright-mcp entry in mcp.json (left untouched)")
+            else:
+                print("  Browser Mode is on — proxy registered in mcp.json")
+        except Exception:
+            pass  # Non-fatal: browser still works without pre-loaded cookies
+    else:
+        print("  Browser Mode is off. Turn it on in Settings -> Browser to let the")
+        print("  agent operate a browser; it downloads Playwright and wires the proxy.")
 
     # 6. Desktop app (macOS only)
     if platform.system() == "Darwin":

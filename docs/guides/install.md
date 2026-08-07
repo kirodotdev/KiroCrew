@@ -252,7 +252,10 @@ in place of `kirocrew`.
 
 The wizard installs the agent config, then walks through the workspace
 directory, Slack credentials, the slash-command name, timezone, dashboard URL,
-the Playwright browser MCP server, and (on macOS) the desktop app.
+and (on macOS) the desktop app. It does NOT install `@playwright/mcp` or register
+the browser proxy: Browser Mode is a durable toggle you turn on later in
+**Settings → Browser**, and enabling it there is what downloads `@playwright/mcp`
+plus the selected engine's browser binary and registers the compression proxy.
 
 **Answering "n" to "Configure Slack tokens?" leaves Slack disabled and gives you
 dashboard-only mode.** The web dashboard is fully functional without any

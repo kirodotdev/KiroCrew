@@ -49,7 +49,14 @@ def _write_mcp(home: Path, servers: dict) -> Path:
 
 
 def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point HOME and the KiroCrew data home at a throwaway tree."""
+    """Point HOME and the Kiro Crew data home at a throwaway tree.
+
+    Also neutralizes the enable-path install side effects (the real
+    ``ensure_playwright_installed`` would shell out to npm/playwright, and
+    ``generate_playwright_config`` is exercised elsewhere), so these tests drive
+    only the mcp.json register/deregister discipline. The proxy register/
+    deregister themselves are NOT stubbed here — they are what these tests pin.
+    """
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
     data_home = tmp_path / "data"
@@ -57,6 +64,12 @@ def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(setup_mod, "config_dir", lambda: data_home)
     monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+    import kiro_crew.dashboard.handlers.messaging as _msg
+
+    monkeypatch.setattr(
+        _msg, "ensure_playwright_installed", lambda engine: {"ok": True, "step": "done", "detail": "", "engine": engine}
+    )
+    monkeypatch.setattr(_msg, "generate_playwright_config", lambda engine=None: data_home / "cfg")
     return home
 
 
@@ -109,7 +122,7 @@ class TestDashboardSaveGuardsUserConfig:
         path = _write_mcp(home, {_CANONICAL: dict(direct)})
         before = path.read_text(encoding="utf-8")
 
-        resp = _save({"extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
+        resp = _save({"enabled": True, "extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
 
         assert path.read_text(encoding="utf-8") == before
         assert json.loads(resp.text)["mcp_status"] == "kept-user-entry"
@@ -121,7 +134,7 @@ class TestDashboardSaveGuardsUserConfig:
         stale = {"command": "kirocrew", "args": ["mcp-playwright-proxy", "--config", "/stale"]}
         path = _write_mcp(home, {_CANONICAL: dict(stale), "other-mcp": {"command": "foo"}})
 
-        resp = _save({"extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
+        resp = _save({"enabled": True, "extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
 
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
         assert servers[_CANONICAL]["args"] != stale["args"]
@@ -137,7 +150,7 @@ class TestDashboardSaveColdInstall:
         path = _mcp_json(home)
         assert not path.exists()
 
-        resp = _save({"extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
+        resp = _save({"enabled": True, "extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
 
         assert path.exists(), "cold install must create the config, not no-op"
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
@@ -162,7 +175,7 @@ class TestWritesHappenUnderTheLock:
             real()
 
         monkeypatch.setattr(setup_mod, "_patch_mcp_for_mode_unlocked", _spy)
-        _save({"extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
+        _save({"enabled": True, "extension_mode": False, "token": ""}, tmp_path / "data", monkeypatch)
 
         assert observed == [False], "write ran without holding the shared mcp.json lock"
 
@@ -250,7 +263,7 @@ class TestDoesNotBlockTheEventLoop:
             req = make_mocked_request("PUT", "/api/browser/config")
 
             async def _json():
-                return {"extension_mode": False, "token": ""}
+                return {"enabled": True, "extension_mode": False, "token": ""}
 
             monkeypatch.setattr(req, "json", _json, raising=False)
             import kiro_crew.config.loader as loader_mod
@@ -334,7 +347,7 @@ class TestFailureIsReportedNotRaised:
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.messaging.register_playwright_proxy", _boom
         )
-        resp = _save({"extension_mode": False, "token": ""}, data_home, monkeypatch)
+        resp = _save({"enabled": True, "extension_mode": False, "token": ""}, data_home, monkeypatch)
 
         body = json.loads(resp.text)
         assert body["ok"] is True
@@ -361,3 +374,97 @@ def test_lock_probe_is_meaningful(tmp_path: Path):
             assert _try_lock_noblock(lock_path) is False
         finally:
             fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+
+
+class TestDashboardEnableInstallAndEngine:
+    """The enable/engine branches of PUT /api/browser/config (added with the
+    default-on Browser Mode revamp): engine validation, install-on-enable, and
+    the install-result payload the handler must surface without 500-ing."""
+
+    def _stub_side_effects(self, monkeypatch: pytest.MonkeyPatch):
+        """Neutralize the real install + proxy write so a test drives only the
+        handler's control flow, never the network or a real subprocess."""
+        import kiro_crew.dashboard.handlers.messaging as msg
+
+        monkeypatch.setattr(msg, "register_playwright_proxy", lambda: (Path("x"), "registered"))
+        monkeypatch.setattr(msg, "deregister_playwright_proxy", lambda: (Path("x"), "deregistered"))
+        monkeypatch.setattr(msg, "generate_playwright_config", lambda engine=None: Path("cfg"))
+        return msg
+
+    def test_invalid_engine_is_rejected_400(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # An engine outside BROWSER_ENGINES must be refused before it can reach
+        # set_browser_engine (which would raise) — a 400 with a machine-readable
+        # code, not a 500.
+        _isolate(tmp_path, monkeypatch)
+        self._stub_side_effects(monkeypatch)
+        resp = _save(
+            {"enabled": True, "engine": "mosaic", "extension_mode": False, "token": ""},
+            tmp_path / "data",
+            monkeypatch,
+        )
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "invalid_engine"
+
+    def test_enable_runs_installer_and_surfaces_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Enabling Browser Mode invokes the installer (off-loop) and the handler
+        # reports its structured result in the body — the path the design comment
+        # says must not 500.
+        _isolate(tmp_path, monkeypatch)
+        msg = self._stub_side_effects(monkeypatch)
+        sentinel = {"ok": True, "step": "done", "detail": "", "engine": "firefox"}
+        called: dict[str, str] = {}
+
+        def _fake_install(engine):
+            called["engine"] = engine
+            return sentinel
+
+        monkeypatch.setattr(msg, "ensure_playwright_installed", _fake_install)
+        resp = _save(
+            {"enabled": True, "engine": "firefox", "extension_mode": False, "token": ""},
+            tmp_path / "data",
+            monkeypatch,
+        )
+        body = json.loads(resp.text)
+        assert body["ok"] is True
+        assert body["enabled"] is True
+        assert body["engine"] == "firefox"
+        assert body["install"] == sentinel
+        assert called["engine"] == "firefox"
+
+    def test_disable_deregisters_and_skips_installer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Turning Browser Mode off must not download anything (no install
+        # payload) and must DEREGISTER the proxy so the browser_* tools disappear
+        # — tool availability is the gate now that there is no [BROWSE] marker.
+        _isolate(tmp_path, monkeypatch)
+        msg = self._stub_side_effects(monkeypatch)
+
+        def _must_not_run(engine):
+            raise AssertionError("installer must not run when disabling")
+
+        def _must_not_register():
+            raise AssertionError("register must not run when disabling")
+
+        dereg_called: dict[str, bool] = {}
+
+        def _dereg():
+            dereg_called["yes"] = True
+            return (Path("x"), "deregistered")
+
+        monkeypatch.setattr(msg, "ensure_playwright_installed", _must_not_run)
+        monkeypatch.setattr(msg, "register_playwright_proxy", _must_not_register)
+        monkeypatch.setattr(msg, "deregister_playwright_proxy", _dereg)
+        resp = _save(
+            {"enabled": False, "engine": "chromium", "extension_mode": False, "token": ""},
+            tmp_path / "data",
+            monkeypatch,
+        )
+        body = json.loads(resp.text)
+        assert body["ok"] is True
+        assert body["enabled"] is False
+        assert "install" not in body
+        assert dereg_called.get("yes") is True
+        assert body["mcp_status"] == "deregistered"

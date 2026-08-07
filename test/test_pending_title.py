@@ -75,10 +75,6 @@ class TestFallbackTitle:
         assert not out[:-1].endswith(" ")
         assert long.startswith(out[:-1])
 
-    def test_strips_browse_marker(self):
-        msgs = [{"role": "user", "content": "[BROWSE] check something"}]
-        assert _fallback_title_from_messages(msgs) == "check something"
-
     def test_strips_image_attachment_and_keeps_user_text(self):
         attachment = f"![image](/Users/example/.kirocrew/uploads/{'b' * 240}.jpg)"
         msgs = [{"role": "user", "content": f"{attachment}\n\nsubagents seem to be failing"}]

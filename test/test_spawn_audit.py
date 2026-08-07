@@ -533,6 +533,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # (apps/dependencies.py::_run_aim removed — App Kit capability deps now
         # resolve through the CapabilityManager seam, so the resolver spawns no
         # subprocess at all and needs no allowlist entry.)
+        # Browser Mode setup/install path, run only from the dashboard settings
+        # save (off the event loop) or the `kirocrew browse setup` CLI. Fixed
+        # argv of trusted node-toolchain tools resolved via find_node_tool
+        # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
+        # where ``engine`` is validated against the fixed BROWSER_ENGINES
+        # allowlist before it can reach argv — never free agent input. Mirrors
+        # cli.py::_ensure_node / env.py::_run below, which shell the same
+        # node/ensure-node toolchain and are benign for the same reason.
+        "browser/setup.py::_resolve_playwright_core_cli",
+        "browser/setup.py::_run",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
@@ -635,6 +645,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/port_reclaim.py::_listeners_on_port",
         "env.py::_run",
         "env.py::activate_mise",
+        # Node bootstrap: runs the bundled ``ensure-node.sh`` (a fixed `bash
+        # <script>` argv, script path derived from KIROCREW_PROJECT_DIR / the
+        # module's own location, never agent input) when no node resolves. Same
+        # class as cli.py::_ensure_node, which invokes the identical script.
+        "env.py::ensure_node",
         # Fixed argv (`npm run build`) in the operator's own checkout. The npm
         # binary and project path arrive from the caller: the Dev Fleet sync
         # resolves npm via its trusted-bin allowlist and the path from the

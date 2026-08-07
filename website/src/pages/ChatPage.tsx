@@ -871,34 +871,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [showHistorySuggestions])
-  // Browse mode is per-session (keyed by slot), not page-global: enabling it in
-  // one session must not bleed into another. ChatPage never remounts on slot
-  // switch, so a single boolean would leak across every session. Kept in-memory
-  // only (resets on reload).
-  const [browseModeBySlot, setBrowseModeBySlot] = useState<Record<string, boolean>>({})
-  const browseMode = activeSlot ? (browseModeBySlot[activeSlot] ?? false) : false
-  const toggleBrowseMode = () => {
-    const slot = activeSlotRef.current
-    if (!slot) return
-    setBrowseModeBySlot(prev => ({ ...prev, [slot]: !(prev[slot] ?? false) }))
-  }
-  // Broadcast the active slot's browse-mode ("Let the agent use the browser") so the Browser
-  // panel's live mirror can show "Let the agent act" only while it's OFF.
-  // (browseModeRef, kept in sync with browseMode below, is reused by the
-  // browse-frame effect to replay state to a late-mounting panel.)
+  // Native-act consent is per-session (keyed by slot), not page-global: granting
+  // it in one session must not bleed into another. ChatPage never remounts on
+  // slot switch, so a single boolean would leak across every session. Kept
+  // in-memory only (resets on reload).
+  //
+  // This gates the DESKTOP native path only: whether the agent may drive the
+  // user's real embedded browser (browser-control.js `canAgentControl`). Reading
+  // and operating a Playwright browser is default-on once Browser Mode is enabled
+  // in Settings; this extra gesture exists because the native path acts on the
+  // user's actual logged-in browser and must not be auto-granted.
+  const [agentActBySlot, setAgentActBySlot] = useState<Record<string, boolean>>({})
+  const agentActEnabled = activeSlot ? (agentActBySlot[activeSlot] ?? false) : false
+  // Broadcast the active slot's native-act consent so the Browser panel's live
+  // mirror shows "Let the agent act" only while it is OFF. (agentActRef, kept in
+  // sync below, is reused by the browse-frame effect to replay state to a
+  // late-mounting panel.)
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseMode } }))
-  }, [browseMode])
-  // The Browser panel's "Let the agent act" button requests turning browse mode
-  // ON for the active slot (idempotent — never toggles it back off).
+    window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: agentActEnabled } }))
+  }, [agentActEnabled])
+  // The Browser panel's "Let the agent act" button requests granting native-act
+  // consent for the active slot (idempotent — never revokes it).
   useEffect(() => {
     const onEnable = (e: Event) => {
       // Prefer the slot carried by the panel (the browsing session whose page is
       // shown); fall back to the active slot only if none was supplied. This
-      // keeps the [BROWSE] grant attributed to the correct session.
+      // keeps the consent attributed to the correct session.
       const slot = (e as CustomEvent<{ slot?: string }>).detail?.slot || activeSlotRef.current
       if (!slot) return
-      setBrowseModeBySlot(prev => (prev[slot] ? prev : { ...prev, [slot]: true }))
+      setAgentActBySlot(prev => (prev[slot] ? prev : { ...prev, [slot]: true }))
     }
     window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
     return () => window.removeEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
@@ -1055,8 +1056,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const inputRef = useRef(input)
   inputRef.current = input
-  const browseModeRef = useRef(browseMode)
-  browseModeRef.current = browseMode
+  const agentActRef = useRef(agentActEnabled)
+  agentActRef.current = agentActEnabled
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
  // forensic attribution. Set on widget pre-fill, consumed
@@ -3077,7 +3078,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // intact so the user bubble can render them as clickable chips.
     const activePastes = pasteBlocksRef.current
     let llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
-    const browsing = browseModeRef.current
     // Prepend knowledge context if pending
     let knowledgeBlock: import('./chat/useKnowledgeFetch').KnowledgeBlock | null = null
     if (knowledgeFetchRef.current.pendingKnowledge) {
@@ -3299,7 +3299,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10_000)
     try {
-      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload, browsing)
+      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload)
       clearTimeout(timeout)
       const body = await r.json().catch(() => ({}))
       if (!body.queued && !body.ok) {
@@ -3669,8 +3669,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         dispatch(openActivityPanel())
         tabsCtlRef.current.openView('browser')
         // A freshly-mounted panel starts with browseOn=false; replay the current
-        // browse-mode so the live mirror shows the right interaction state.
-        window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseModeRef.current } }))
+        // native-act consent so the live mirror shows the right interaction state.
+        window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: agentActRef.current } }))
       }
       browseFrameOpenedRef.current = { key, ts: now }
     }
@@ -5555,8 +5555,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               autoNudgeLoop={autoNudgeLoop}
               autoNudgeOpen={autoNudgeOpen}
               onAutoNudgeChange={setAutoNudgeLoop}
-              browseMode={browseMode}
-              onBrowseToggle={toggleBrowseMode}
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               cleanMode={currentSlot?.clean_mode}

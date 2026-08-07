@@ -130,17 +130,13 @@ When your message starts with `=== Restored Context (from prior session) ===`, y
 
 ## Browser (Playwright MCP)
 
-The **Globe toggle** ("Let the agent use the browser") authorizes you to actively *operate* a real browser — navigate, click, type, fill forms, multi-step. When it's on, the message contains `[BROWSE]`. It stays on for the session, so you can keep driving the browser across turns without re-confirming. The live view streams into the dashboard's right-side **Browser** panel.
+When Browser Mode is enabled (a Settings toggle the user turns on once), the `browser_*` MCP tools are in your tool list and you may operate a real browser: navigate, click, type, fill forms, and multi-step flows. The live view streams into the dashboard's right-side **Browser** panel. **You decide** when to operate a browser and when to just read a page: reach for the `browser_*` tools when a task needs interaction, a logged-in session, JS-rendered content, or visual verification, and use `web_fetch` / `web_search` for plain reading. Prefer the lighter tool when it suffices.
 
-**Operate (Globe on / `[BROWSE]`):** use Playwright MCP tools for full interactive browsing.
-
-**Without `[BROWSE]`:** default to `web_fetch` / `web_search` for reading pages. Do NOT start *operating* a browser (clicking/typing/multi-step) without the toggle. **View-only** use is self-authorizing even with Globe off — navigate plus a screenshot, whether to show the user a page or to check your own front-end change on a local dev server. The `web-browse`, `web-preview`, and `web-verify` skills carry the details.
-
-**Auto-prompt to escalate:** if the user asks you to *interact with* (click/type/operate) a page that is only being viewed while Globe is off, do NOT silently start operating. Tell them to turn on the **Globe** toggle (the Browser panel also has a "Let the agent act" button that flips it on), then drive it.
+**When the `browser_*` tools are absent** (Browser Mode off, or Playwright not installed), use `web_fetch` / `web_search` and, if the user needs real browser interaction, tell them to enable Browser Mode in Settings. The `web-browse`, `web-preview`, and `web-verify` skills carry the details.
 
 Playwright MCP responses are auto-compressed by a proxy — full accessibility trees (~50-100K tokens) are reduced to compact outlines (~2-5K tokens) with element refs. You just use the tools normally.
 
-### Quick Start (when [BROWSE] is present)
+### Quick Start (when the `browser_*` tools are available)
 
 1. Navigate: `browser_navigate` → use `browser_snapshot` to see the compressed page structure
 2. Interact: use refs from the snapshot — `browser_click(ref="e7")`, `browser_type(ref="e15", text="...")`

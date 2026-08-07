@@ -1,11 +1,11 @@
-"""Tests for kiro_crew.browser.setup — Playwright MCP setup (OSS stub).
+"""Tests for kiro_crew.browser.setup — Playwright MCP setup.
 
-The upstream build installed Playwright MCP via an Amazon-internal package
-manager (AIM) and wired an Amazon-auth cookie/storage-state flow. In the
-open-source build those steps are neutralized: ``is_playwright_installed``
-always reports False (no internal package manager) and
-``ensure_playwright_installed`` is a no-op. The generic Netscape cookie
-parsing, Playwright config generation and storage-state refresh still work.
+``is_playwright_installed`` probes whether a launcher resolves (the same
+resolution the proxy uses) and ``ensure_playwright_installed`` performs a real,
+best-effort install of the public ``@playwright/mcp`` package plus the selected
+engine's browser binary, bootstrapping Node when absent. The generic Netscape
+cookie parsing, Playwright config generation and storage-state refresh work
+regardless. The enterprise-SSO cookie/storage-state flow remains OSS-neutralized.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from kiro_crew.browser.setup import (
     _entry_is_playwright_proxy,
     check_playwright_launchable,
     converge_playwright_servers,
+    deregister_playwright_proxy,
     ensure_playwright_installed,
     generate_playwright_config,
     get_playwright_mcp_args,
@@ -56,10 +57,16 @@ sso.example.com\tFALSE\t/\tTRUE\t9999999999\tuser_name\ttestuser
 
 
 class TestIsPlaywrightInstalled:
-    def test_returns_false_in_oss(self):
-        # The Amazon-internal package manager that backed this check is not
-        # shipped in OSS, so the stub always reports the package as not
-        # installed (rather than shelling out to an internal tool).
+    def test_true_when_launcher_resolves(self, monkeypatch):
+        # is_playwright_installed reflects check_playwright_launchable, which
+        # reuses the proxy's own resolution — so a resolvable launcher reads True.
+        monkeypatch.setattr(setup_mod, "check_playwright_launchable", lambda: (True, "/x/npx"))
+        assert is_playwright_installed() is True
+
+    def test_false_when_no_launcher(self, monkeypatch):
+        monkeypatch.setattr(
+            setup_mod, "check_playwright_launchable", lambda: (False, "not found")
+        )
         assert is_playwright_installed() is False
 
 
@@ -67,11 +74,125 @@ class TestIsPlaywrightInstalled:
 
 
 class TestEnsurePlaywrightInstalled:
-    def test_is_noop_in_oss(self):
-        # The upstream flow installed Playwright MCP via an Amazon-internal
-        # package manager; that path is removed in OSS, so this is a no-op
-        # that neither raises nor returns a value.
-        assert ensure_playwright_installed() is None
+    def test_reports_node_missing(self, monkeypatch):
+        # No Node and no bootstrap available -> a structured, non-raising failure
+        # at the "node" step with an actionable hint (never a bare exception).
+        monkeypatch.setattr(setup_mod, "ensure_node", lambda: None)
+        result = ensure_playwright_installed()
+        assert result["ok"] is False
+        assert result["step"] == "node"
+        assert result["engine"] == "chromium"
+
+    def test_unknown_engine_falls_back_to_chromium(self, monkeypatch):
+        monkeypatch.setattr(setup_mod, "ensure_node", lambda: None)
+        result = ensure_playwright_installed("netscape-navigator")
+        assert result["engine"] == "chromium"
+
+    def test_happy_path_installs_package_and_browser(self, monkeypatch):
+        # Node resolves; no standalone launcher binary is present so the npm
+        # install runs, then the browser is installed through the bundled
+        # playwright-core. Both subprocesses are stubbed to succeed.
+        monkeypatch.setattr(setup_mod, "ensure_node", lambda: "/usr/bin/node")
+        monkeypatch.setattr(setup_mod, "_playwright_binary_present", lambda base: False)
+        monkeypatch.setattr(
+            setup_mod, "find_node_tool", lambda name, path=None: f"/usr/bin/{name}"
+        )
+        monkeypatch.setattr(
+            setup_mod, "_resolve_playwright_core_cli", lambda node, env: "/core/cli.js"
+        )
+        calls: list[list[str]] = []
+
+        class _Proc:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        def _fake_run(argv, **kwargs):
+            calls.append(argv)
+            return _Proc()
+
+        monkeypatch.setattr(setup_mod.subprocess, "run", _fake_run)
+        result = ensure_playwright_installed("firefox")
+        assert result["ok"] is True
+        assert result["engine"] == "firefox"
+        # npm install of the package, then playwright-core install of the engine.
+        assert any("install" in c and "-g" in c for c in calls)
+        assert ["/usr/bin/node", "/core/cli.js", "install", "firefox"] in calls
+
+    def test_browser_step_fails_when_core_unresolvable(self, monkeypatch):
+        # If the bundled playwright-core cannot be resolved, fail the browser step
+        # honestly rather than risk a version-mismatched npx install.
+        monkeypatch.setattr(setup_mod, "ensure_node", lambda: "/usr/bin/node")
+        monkeypatch.setattr(setup_mod, "_playwright_binary_present", lambda base: True)
+        monkeypatch.setattr(
+            setup_mod, "find_node_tool", lambda name, path=None: f"/usr/bin/{name}"
+        )
+        monkeypatch.setattr(setup_mod, "_resolve_playwright_core_cli", lambda node, env: None)
+        result = ensure_playwright_installed("chromium")
+        assert result["ok"] is False
+        assert result["step"] == "browser"
+
+    def test_browser_install_uses_bundled_core_when_resolvable(self, monkeypatch):
+        # When the @playwright/mcp-bundled playwright-core CLI resolves, the
+        # browser is provisioned through it (revision-matched with the launcher),
+        # NOT a floating npx playwright@latest.
+        monkeypatch.setattr(setup_mod, "ensure_node", lambda: "/usr/bin/node")
+        # Launcher already present -> skip the npm install; assert only the
+        # browser-install path.
+        monkeypatch.setattr(setup_mod, "_playwright_binary_present", lambda base: True)
+        monkeypatch.setattr(
+            setup_mod, "find_node_tool", lambda name, path=None: f"/usr/bin/{name}"
+        )
+        monkeypatch.setattr(
+            setup_mod, "_resolve_playwright_core_cli", lambda node, env: "/core/cli.js"
+        )
+        calls: list[list[str]] = []
+
+        class _Proc:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        monkeypatch.setattr(
+            setup_mod.subprocess, "run", lambda argv, **k: calls.append(argv) or _Proc()
+        )
+        result = ensure_playwright_installed("chromium")
+        assert result["ok"] is True
+        # Browser install ran node <core cli.js> install chromium, not npx.
+        assert ["/usr/bin/node", "/core/cli.js", "install", "chromium"] in calls
+        assert not any("npx" in c[0] for c in calls)
+
+
+# ── TestBrowserModePersistence ───────────────────────────────────────────────
+
+
+class TestBrowserModePersistence:
+    def test_enable_flag_round_trips(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        assert setup_mod.browser_mode_enabled() is False
+        setup_mod.set_browser_mode_enabled(True)
+        assert setup_mod.browser_mode_enabled() is True
+        setup_mod.set_browser_mode_enabled(False)
+        assert setup_mod.browser_mode_enabled() is False
+
+    def test_engine_defaults_to_chromium(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        assert setup_mod.get_browser_engine() == "chromium"
+
+    def test_engine_round_trips(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        setup_mod.set_browser_engine("webkit")
+        assert setup_mod.get_browser_engine() == "webkit"
+
+    def test_unknown_stored_engine_reads_chromium(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        (tmp_path / "browser-engine").write_text("mosaic")
+        assert setup_mod.get_browser_engine() == "chromium"
+
+    def test_set_unknown_engine_rejected(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        with pytest.raises(ValueError):
+            setup_mod.set_browser_engine("mosaic")
 
 
 # ── TestIsHeaded / TestGetPlaywrightMcpArgs ──────────────────────────────────
@@ -237,6 +358,26 @@ class TestGeneratePlaywrightConfig:
         config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
         assert config["browser"]["launchOptions"]["headless"] is True
 
+    def test_engine_arg_selects_firefox_without_channel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # A non-chromium engine sets browserName and omits ``channel`` entirely —
+        # firefox/webkit are Playwright's own builds and reject a channel.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        config = json.loads(
+            generate_playwright_config("firefox").read_text(encoding="utf-8")
+        )
+        assert config["browser"]["browserName"] == "firefox"
+        assert "channel" not in config["browser"]["launchOptions"]
+
+    def test_engine_none_reads_persisted_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "get_browser_engine", lambda: "webkit")
+        config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
+        assert config["browser"]["browserName"] == "webkit"
+
 
 # ── TestBrowseSetupHelpers (guided one-command setup) ────────────────────────
 
@@ -266,6 +407,7 @@ class TestRegisterPlaywrightProxy:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         mcp_json = tmp_path / ".kiro" / "settings" / "mcp.json"
         assert not mcp_json.exists()
         returned, status = register_playwright_proxy()
@@ -281,6 +423,7 @@ class TestRegisterPlaywrightProxy:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         mcp_json = _write_mcp_json(tmp_path, {"other-mcp": {"command": "foo"}})
         _, status = register_playwright_proxy()
         assert status == "registered"
@@ -298,12 +441,69 @@ class TestRegisterPlaywrightProxy:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         direct = {"command": "npx", "args": ["@playwright/mcp@latest"]}
         mcp_json = _write_mcp_json(tmp_path, {_CANONICAL: dict(direct)})
         before = mcp_json.read_text(encoding="utf-8")
         _, status = register_playwright_proxy()
         assert status == "kept-user-entry"
         assert mcp_json.read_text(encoding="utf-8") == before
+
+
+class TestDeregisterPlaywrightProxy:
+    """Disabling Browser Mode removes the proxy so the browser_* tools disappear
+    (tool availability is the gate now that there is no [BROWSE] marker)."""
+
+    def test_removes_own_proxy_entry(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        proxy = {"command": "kirocrew", "args": ["mcp-playwright-proxy", "--config", "/x"]}
+        mcp_json = _write_mcp_json(tmp_path, {_CANONICAL: dict(proxy), "other": {"command": "f"}})
+        _, status = deregister_playwright_proxy()
+        assert status == "deregistered"
+        servers = json.loads(mcp_json.read_text(encoding="utf-8"))["mcpServers"]
+        assert _CANONICAL not in servers
+        assert servers["other"] == {"command": "f"}, "unrelated server must survive"
+
+    def test_keeps_user_direct_server(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # A user's own non-proxy server under the canonical key is left untouched.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        direct = {"command": "npx", "args": ["@playwright/mcp@latest"]}
+        mcp_json = _write_mcp_json(tmp_path, {_CANONICAL: dict(direct)})
+        before = mcp_json.read_text(encoding="utf-8")
+        _, status = deregister_playwright_proxy()
+        assert status == "kept-user-entry"
+        assert mcp_json.read_text(encoding="utf-8") == before
+
+    def test_absent_when_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        _, status = deregister_playwright_proxy()
+        assert status == "absent"
+
+    def test_remove_playwright_servers_scrubs_config_and_tool_refs(self):
+        # remove_playwright_servers drops the proxy server AND its @<name> tool
+        # references, but leaves other servers/tools intact.
+        cfg = {
+            "mcpServers": {
+                _CANONICAL: {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
+                "other": {"command": "foo"},
+            },
+            "tools": ["@" + _CANONICAL, "@other", "web_fetch"],
+            "allowedTools": ["@" + _CANONICAL],
+        }
+        assert setup_mod.remove_playwright_servers(cfg) is True
+        assert _CANONICAL not in cfg["mcpServers"]
+        assert cfg["mcpServers"]["other"] == {"command": "foo"}
+        assert cfg["tools"] == ["@other", "web_fetch"]
+        assert cfg["allowedTools"] == []
+
+    def test_remove_playwright_servers_keeps_user_direct(self):
+        # A user's own direct (non-proxy) server is not a proxy, so it survives.
+        cfg = {"mcpServers": {_CANONICAL: {"command": "npx", "args": ["@playwright/mcp@latest"]}}}
+        assert setup_mod.remove_playwright_servers(cfg) is False
+        assert _CANONICAL in cfg["mcpServers"]
 
 
 # ── TestRefreshStorageState ──────────────────────────────────────────────────
@@ -563,6 +763,7 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         mcp_json = _write_mcp_json(
             tmp_path,
             {
@@ -587,6 +788,7 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         mcp_json = _write_mcp_json(
             tmp_path,
             {"npm:@playwright/mcp": {"command": "npx", "args": ["@playwright/mcp@latest"]}},
@@ -615,6 +817,7 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         mcp_json = _write_mcp_json(
             tmp_path,
             {
@@ -633,11 +836,34 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         mcp_json = _write_mcp_json(tmp_path, {"some-user-mcp": {"command": "foo"}})
         migrate_owned_playwright_registration()
         servers = _read_servers(mcp_json)
         assert set(servers) == {"some-user-mcp"}
         assert _CANONICAL not in servers
+
+    def test_removes_proxy_on_boot_when_mode_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Browser Mode off at boot: a stale proxy left by a prior enable (or a
+        # pre-upgrade install) must be removed, since registration is the
+        # authorization and there is no [BROWSE] marker to gate it.
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
+        monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: False)
+        mcp_json = _write_mcp_json(
+            tmp_path,
+            {
+                _CANONICAL: {"command": "kirocrew", "args": ["mcp-playwright-proxy", "--config", "x"]},
+                "some-user-mcp": {"command": "foo"},
+            },
+        )
+        migrate_owned_playwright_registration()
+        servers = _read_servers(mcp_json)
+        assert _CANONICAL not in servers
+        assert set(servers) == {"some-user-mcp"}
 
     def test_noop_when_mcp_json_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -690,6 +916,7 @@ class TestMigrateOwnedPlaywrightRegistration:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(setup_mod, "_kirocrew_bin", lambda: "kirocrew")
         monkeypatch.setattr(setup_mod, "has_playwright_extension", lambda: False)
+        monkeypatch.setattr(setup_mod, "browser_mode_enabled", lambda: True)
         direct = {"command": "npx", "args": ["@playwright/mcp@latest"]}
         mcp_json = _write_mcp_json(
             tmp_path,

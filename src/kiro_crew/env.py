@@ -283,6 +283,54 @@ def find_node_tool(name: str, base_path: str | None = None) -> str | None:
     return shutil.which(name, path=node_augmented_path(base))
 
 
+def _ensure_node_script() -> Path | None:
+    """Locate the bundled ``ensure-node.sh``, or ``None`` on a wheel install.
+
+    Search order mirrors :func:`kiro_crew.cli._ensure_node`: the explicit
+    ``KIROCREW_PROJECT_DIR`` first, then the source-tree root two levels above
+    this module. A pip/wheel install ships no shell script, so this returns
+    ``None`` and the caller falls back to whatever Node is already on PATH.
+    """
+    env_dir = os.environ.get("KIROCREW_PROJECT_DIR")
+    candidates = (
+        Path(env_dir) / "ensure-node.sh" if env_dir else None,
+        Path(__file__).resolve().parent.parent.parent / "ensure-node.sh",
+    )
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return candidate
+    return None
+
+
+def ensure_node(timeout: float = 180.0) -> str | None:
+    """Guarantee a usable ``node`` is resolvable, bootstrapping it if needed.
+
+    Returns the absolute ``node`` path when one is (or becomes) available, else
+    ``None``. Resolution: use an already-resolvable Node; otherwise invoke the
+    bundled ``ensure-node.sh`` (mise / nvm / the nodejs glibc-217 tarball on old
+    hosts), which records its bin dir in the ``node-bin-dir`` marker
+    :func:`node_bin_dirs` reads — so a freshly bootstrapped toolchain is found
+    without a restart. On Windows, where the bash installer cannot run, this only
+    reports what is already present.
+
+    Blocking (spawns a subprocess and walks the filesystem) — never call it on
+    the event loop; offload with ``asyncio.to_thread`` / ``run_in_executor``.
+    """
+    node = find_node_tool("node")
+    if node:
+        return node
+    script = _ensure_node_script()
+    if script is None or platform_compat.IS_WINDOWS:
+        return None
+    try:
+        subprocess.run(["bash", str(script)], timeout=timeout, capture_output=True)
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("ensure-node.sh failed: %s", type(exc).__name__)
+        return None
+    node_bin_dirs.cache_clear()  # the marker/bin dir may have just appeared
+    return find_node_tool("node")
+
+
 @functools.lru_cache(maxsize=1)
 def is_toolbox_install() -> bool:
     """Return True if the running kirocrew binary was installed via Toolbox."""

@@ -392,9 +392,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # ── Sweep orphaned permissions from prior turns ──
     _sweep_stale_permissions(slot)
 
-    slot._browse_mode = bool(body.get("browse"))
-    if slot._browse_mode and "[BROWSE]" not in message:
-        message = "[BROWSE] " + message
+    # No per-message browse marker: Browser Mode is a capability, not a per-turn
+    # gate. When it is on the `browser_*` MCP tools are registered and present in
+    # the agent's tool list; when it is off they are not. The agent itself decides
+    # whether to operate a browser or read with web_fetch (the system prompt and
+    # the kirocrew-commands / web-browse skills tell it how), so the backend
+    # injects nothing here.
     slot.append("user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None)
 
     # Note: untitled slots display as "New Session…" via _ChatSlot.display_title

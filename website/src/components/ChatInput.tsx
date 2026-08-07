@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
-import { Toggle } from './ui'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
@@ -364,9 +363,6 @@ interface ChatInputProps {
   knowledgeChip?: React.ReactNode
   /** When this key changes, focus the textarea (e.g. on chat session switch). */
   autoFocusKey?: string | null
-  /** Browse mode — when true, [BROWSE] prefix is prepended to sent messages */
-  browseMode?: boolean
-  onBrowseToggle?: () => void
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
    *  don't track connectivity (e.g. tests, embedded previews) keep working. */
@@ -547,8 +543,6 @@ function ChatInput({
   onPasteBlocksChange,
   knowledgeChip,
   autoFocusKey,
-  browseMode = false,
-  onBrowseToggle,
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
@@ -2472,15 +2466,6 @@ function ChatInput({
                         </div>
                       </button>
                     </div>
-                    {onBrowseToggle && (
-                      <div className="flex items-start justify-between gap-2 mt-2 pt-2.5 border-t border-border">
-                        <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.let_the_agent_use_the_browser')}</div>
-                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.it_can_click_type_and_navigate_pages_not_just_re')}</div>
-                        </div>
-                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.let_the_agent_use_the_browser')} /></div>
-                      </div>
-                    )}
                   </div>,
                   document.body
                 )}

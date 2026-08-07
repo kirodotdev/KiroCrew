@@ -867,4 +867,20 @@ export default [
       'i18next/no-literal-string': 'off',
     },
   },
+
+  // SEARCH-KEYWORD SYNONYMS ONLY: a manual overlay of extra query terms merged
+  // into the Settings search corpus so a query like "dark mode" finds a setting
+  // whose label does not contain those words. Every value is a term matched
+  // against the user's typed query, never rendered — translating one would break
+  // the match in that locale while adding catalog noise for a word the user
+  // typed in their own language anyway. The keys are setting ids (enforced by
+  // settingsKeywords.test.ts). Scoped to this one file for the same reason as the
+  // modules above: a shape rule cannot express "search synonyms, but only here",
+  // and any real copy later added elsewhere still belongs in the catalog.
+  {
+    files: ['src/components/commandPalette/settingsKeywords.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]

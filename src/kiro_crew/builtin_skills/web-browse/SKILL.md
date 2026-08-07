@@ -1,6 +1,6 @@
 ---
 name: web-browse
-description: Render a REAL external web page in KiroCrew's built-in Browser panel (the right-side panel), by opening it with the Playwright browser and screenshotting it so the live view streams into the panel. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server — that's the web-preview skill). View-only: operating the page (clicking, typing, multi-step) requires the Globe toggle ("Let the agent use the browser").
+description: Render a REAL external web page in the built-in Browser panel (the right-side panel), by opening it with the Playwright browser and screenshotting it so the live view streams into the panel. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server, that's the web-preview skill). This skill is narrow: it just renders and shows the page. To operate the page (clicking, typing, multi-step) drive the `browser_*` tools directly.
 triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
 ---
 
@@ -13,8 +13,8 @@ Playwright browser and take one screenshot — the frame streams into the panel
 automatically (via the screencast), so the page appears next to the chat.
 
 This is the **view** path. It is deliberately narrow: open the URL and show it,
-nothing more. It does NOT require the user to turn on the Globe
-toggle — this one screenshot is self-authorizing.
+nothing more. Operating the page is a separate concern handled directly through
+the `browser_*` tools (see below).
 
 ## How the panel works (so you set expectations correctly)
 
@@ -22,9 +22,9 @@ The panel is a **read-only live mirror**: a headless Chromium renders the page
 out of view, each screenshot is streamed into the panel, and the panel paints
 the latest frame. There is **no OS browser window** (headless) and **no input
 channel from the panel back to the page** — clicking or typing in the panel
-image does nothing. To actually *operate* the page, the user turns on **Browser
-use** (the Globe), which authorizes *you* (the agent) to drive Playwright via
-MCP tools; the panel still just shows screenshots of what you do.
+image does nothing. To actually *operate* the page, you (the agent) drive
+Playwright via the `browser_*` MCP tools; the panel still just shows
+screenshots of what you do.
 
 ## Precondition — Playwright must be available (the guard)
 
@@ -51,13 +51,12 @@ come from the external `@playwright/mcp` package, which may not be installed.
 
 ## View vs. operate
 
-- **View** (this skill): open a URL and show it. No Globe toggle needed.
-- **Operate** (click, type, fill forms, multi-step navigation): that's the
-  Globe toggle ("Let the agent use the browser") / `[BROWSE]` mode — it authorizes you to actively
-  drive the browser across turns. If the user asks you to *interact* with a page
-  that's only being viewed (Globe off), don't silently start operating: tell
-  them to flip the **Globe** on (the panel also has a "Let the agent act"
-  button that turns it on), then drive it.
+- **View** (this skill): open a URL and show it.
+- **Operate** (click, type, fill forms, multi-step navigation): drive the
+  `browser_*` tools directly. They are present in your tool list whenever
+  Browser Mode is on, and you decide when a task needs interaction versus a
+  plain read. If the tools are absent, view the page with `web_fetch` and, if
+  the user needs interaction, tell them to enable Browser Mode in Settings.
 
 ## Not this skill
 

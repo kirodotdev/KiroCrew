@@ -4169,6 +4169,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # handler is the only writer and it opens the path directly, not through this
     # gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Browser Mode's durable ENABLE gate. Same class of control as
+    # ``computer_use.json`` directly above: while it is present the browse proxy
+    # is registered and the ``browser_*`` tools are in the agent's tool list,
+    # which lets the agent operate a real browser — and in attach mode that is
+    # the operator's own running, logged-in browser. Presence alone is the
+    # authorization, so a bare ``touch`` of this file would be a prompt-injected
+    # self-grant of browser operation. It gets read+write keystone protection on
+    # both the tool path (``is_sensitive_path``) and the shell forms (``touch``,
+    # ``>``, ``tee``, extraction verbs). The dashboard PUT handler is the only
+    # writer and opens the path directly, not through this gate, so the Settings
+    # toggle still works. The sibling ``browser-engine`` leaf is protected too:
+    # it selects the browser Playwright launches, so an agent-authored value
+    # could steer the launch, and it must not diverge from the enable beside it.
+    "browser-mode-enabled",
+    "browser-engine",
     # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
     # API + application keys). These are live credentials against a user's
     # production incident tooling: a leaked one can acknowledge or resolve real

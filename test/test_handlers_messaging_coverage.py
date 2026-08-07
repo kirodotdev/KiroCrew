@@ -1151,30 +1151,52 @@ class TestBrowserAuthRetry:
 
 
 class TestBrowserConfig:
-    def test_get_reports_extension_mode_and_token_presence(self, monkeypatch) -> None:
+    def test_get_reports_mode_engine_extension_and_install(self, monkeypatch) -> None:
+        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
+        monkeypatch.setattr(mod, "get_browser_engine", lambda: "firefox")
         monkeypatch.setattr(mod, "has_playwright_extension", lambda: True)
         monkeypatch.setattr(mod, "get_extension_token", lambda: "tok")
+        monkeypatch.setattr(mod, "is_playwright_installed", lambda: True)
         resp = _run(mod.api_browser_config_get, _Req(_state()))
-        assert _payload(resp) == {"extension_mode": True, "token": True}
+        assert _payload(resp) == {
+            "enabled": True,
+            "engine": "firefox",
+            "engines": list(mod.BROWSER_ENGINES),
+            "extension_mode": True,
+            "token": True,
+            "installed": True,
+        }
+
+    def _stub_enable_side_effects(self, monkeypatch) -> None:
+        monkeypatch.setattr(mod, "generate_playwright_config", lambda engine=None: None)
+        monkeypatch.setattr(
+            mod, "ensure_playwright_installed", lambda engine: {"ok": True, "step": "done"}
+        )
 
     def test_save_enables_extension_mode_and_writes_the_token(
         self, monkeypatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "written"))
-        body = {"extension_mode": True, "token": "secret-value"}
+        self._stub_enable_side_effects(monkeypatch)
+        monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "registered"))
+        body = {"enabled": True, "extension_mode": True, "token": "secret-value"}
         resp = _run(mod.api_browser_config_save, _Req(_state(), body))
-        assert _payload(resp) == {"ok": True, "mcp_status": "written"}
+        payload = _payload(resp)
+        assert payload["ok"] is True and payload["enabled"] is True
+        assert payload["mcp_status"] == "registered"
         assert (tmp_path / "playwright-extension-mode").exists()
         assert (tmp_path / "playwright-extension-token").read_text() == "secret-value"
 
-    def test_save_disabling_removes_both_files(self, monkeypatch, tmp_path: Path) -> None:
+    def test_save_disabling_deregisters_and_removes_both_files(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
         (tmp_path / "playwright-extension-mode").touch()
         (tmp_path / "playwright-extension-token").write_text("x", encoding="utf-8")
         monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "written"))
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"extension_mode": False}))
+        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "deregistered"))
+        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": False, "extension_mode": False}))
         assert resp.status == 200
+        assert _payload(resp)["mcp_status"] == "deregistered"
         assert not (tmp_path / "playwright-extension-mode").exists()
         assert not (tmp_path / "playwright-extension-token").exists()
 
@@ -1182,13 +1204,85 @@ class TestBrowserConfig:
         self, monkeypatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
+        self._stub_enable_side_effects(monkeypatch)
 
         def _boom() -> tuple[None, str]:
             raise OSError("mcp.json locked")
 
         monkeypatch.setattr(mod, "register_playwright_proxy", _boom)
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"extension_mode": False}))
-        assert _payload(resp) == {"ok": True, "mcp_status": "registration-failed"}
+        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": True, "extension_mode": False}))
+        payload = _payload(resp)
+        assert payload["ok"] is True
+        assert payload["mcp_status"] == "registration-failed"
+
+    def test_app_token_cannot_enable_browser_mode(self, monkeypatch, tmp_path: Path) -> None:
+        # Enabling Browser Mode is a keystone-level grant; an app token (truthy
+        # request["app"]) must be refused with 403 before any state is written.
+        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
+
+        def _must_not_write(_enabled: bool) -> None:
+            raise AssertionError("app token must not reach set_browser_mode_enabled")
+
+        monkeypatch.setattr(mod, "set_browser_mode_enabled", _must_not_write)
+        req = _Req(_state(), {"enabled": True, "extension_mode": False}, extra={"app": "some-app"})
+        resp = _run(mod.api_browser_config_save, req)
+        assert resp.status == 403
+        assert _payload(resp)["code"] == "dashboard_user_required"
+
+    def test_truthy_non_bool_does_not_enable(self, monkeypatch, tmp_path: Path) -> None:
+        # A truthy non-boolean ("false"/1/"off") must NOT enable a security
+        # capability — only a real JSON true does. So it takes the disable path
+        # (deregister), never the installer/register path.
+        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "absent"))
+
+        def _must_not_install(engine: str) -> dict:
+            raise AssertionError('"false" must not trigger the installer')
+
+        monkeypatch.setattr(mod, "ensure_playwright_installed", _must_not_install)
+        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": "false", "extension_mode": False}))
+        payload = _payload(resp)
+        assert payload["ok"] is True
+        assert payload["enabled"] is False
+
+    def test_disabling_revokes_active_sessions(self, monkeypatch, tmp_path: Path) -> None:
+        # Disabling must reset live sessions, or the running ACP session keeps its
+        # cached browser_* tools (kiro-cli caches tools/list for the session's
+        # lifetime) and browsing works while Settings say "off". Fires because
+        # this is a real enable->disable transition.
+        (tmp_path / "browser-mode-enabled").touch()  # currently ENABLED
+        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
+        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "deregistered"))
+        import kiro_crew.dashboard.handlers.sessions as sessions_mod
+
+        calls: list[int] = []
+
+        async def _fake_reset(_req: Any) -> int:
+            calls.append(1)
+            return 2
+
+        monkeypatch.setattr(sessions_mod, "_reset_all_sessions", _fake_reset)
+        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": False, "extension_mode": False}))
+        payload = _payload(resp)
+        assert calls == [1]
+        assert payload["sessions_reset"] == 2
+
+    def test_no_op_resave_does_not_reset_sessions(self, monkeypatch, tmp_path: Path) -> None:
+        # Re-saving the same disabled value is not a transition and must NOT tear
+        # down the user's live session.
+        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: False)
+        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "absent"))
+        import kiro_crew.dashboard.handlers.sessions as sessions_mod
+
+        def _must_not_reset(_req: Any) -> int:
+            raise AssertionError("a no-op re-save must not reset sessions")
+
+        monkeypatch.setattr(sessions_mod, "_reset_all_sessions", _must_not_reset)
+        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": False, "extension_mode": False}))
+        payload = _payload(resp)
+        assert payload["sessions_reset"] == 0
 
 
 # ── small helpers ──

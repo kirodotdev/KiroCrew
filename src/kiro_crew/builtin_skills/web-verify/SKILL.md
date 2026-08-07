@@ -14,7 +14,7 @@ same thing you did.
 
 This is the **self-verification** path: the screenshot is evidence, not
 decoration. It is view-only (navigate + screenshot); clicking and typing through
-a flow still needs the **Globe** toggle ("Let the agent use the browser"). Keep the frame count
+a flow uses the `browser_*` tools directly. Keep the frame count
 bounded (see below) — restraint here is about context cost, not permission.
 
 ## Three ways to capture — name the one you used
@@ -119,7 +119,6 @@ constraint against committing binaries). Capture once, use twice.
 - **Showing the user an external page** → `web-browse` (Playwright, public URL).
 - **Just giving the user a live preview to click** with no verification of your
   own → `web-preview` (loopback iframe, no screenshot).
-- **Driving a multi-step flow** (click, type, submit) → that needs the
-  **Globe** toggle ("Let the agent use the browser"); ask the user to turn it
-  on, then drive it.
+- **Driving a multi-step flow** (click, type, submit) → use the `browser_*`
+  tools directly; they are present whenever Browser Mode is on.
 - **Backend-only changes** → tests are the evidence; don't invent a screenshot.

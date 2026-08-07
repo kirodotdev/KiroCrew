@@ -145,6 +145,36 @@ def test_archive_and_vcs_keystone_writes_blocked(cmd):
     assert security.is_sensitive_bash_command(cmd) is not None
 
 
+# Browser Mode's enable/engine gate is a keystone: presence of the enable file
+# authorizes browser operation (and in attach mode, driving the operator's real
+# logged-in browser), so a prompt-injected agent must not be able to author it.
+_BROWSER_KEYSTONE = (
+    "~/.kiro/crew/browser-mode-enabled",
+    "~/.kiro/crew/browser-engine",
+    "~/.kirocrew/browser-mode-enabled",
+)
+
+
+@pytest.mark.parametrize("path", _BROWSER_KEYSTONE)
+def test_browser_mode_gate_is_sensitive(path):
+    assert security.is_sensitive_path(path)
+    assert validate_file_path(path) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The exact self-grant the review flagged: a bare touch of the enable file.
+        "touch ~/.kiro/crew/browser-mode-enabled",
+        "echo x > ~/.kiro/crew/browser-mode-enabled",
+        "tee ~/.kiro/crew/browser-mode-enabled",
+        "echo firefox > ~/.kiro/crew/browser-engine",
+    ],
+)
+def test_browser_mode_gate_writes_blocked(cmd):
+    assert security.is_sensitive_bash_command(cmd) is not None
+
+
 def test_benign_archive_and_vcs_not_overblocked():
     for cmd in [
         "tar -xf release.tar -C /tmp/build",
