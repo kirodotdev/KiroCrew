@@ -50,7 +50,12 @@ export default function UpdateModal() {
   }
 
   const installMutation = useMutation({ mutationFn: () => getUpdateApi()!.install() })
-  const installing = installMutation.isPending
+  // install() resolves as soon as the install is DISPATCHED — on macOS the
+  // platform installer then works for several seconds before the app quits.
+  // Keying `disabled` on `isPending` alone lets the button re-arm during that
+  // window, so the user sees a clickable "Restart & Update" followed by an
+  // unexplained quit — which reads as a crash.
+  const installing = installMutation.isPending || installMutation.isSuccess
 
   const open = !!update && update.state === 'downloaded' && !dismissed
 
