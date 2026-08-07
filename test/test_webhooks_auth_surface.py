@@ -1,21 +1,28 @@
 """``/api/hooks/agent`` must be reachable by external callers, token-gated only.
 
-The endpoint used to sit in ``server._STRICT_INTERNAL_API_PATHS``, which made the
-auth middleware refuse every non-loopback caller with 403 *before* the handler's
-bearer check ran — the webhook token layer was unreachable, so the documented use
-case (a CI runner calling back) could not work at all. It is now on
-``token_auth._BYPASS_EXACT`` like ``/api/messaging/teams``: a self-authenticating
-external webhook. These tests pin that contract in both directions, plus the
-failed-auth throttle that exposure requires.
+A strict-internal entry would deny every non-loopback caller with 403 *before* the
+handler's bearer check ran, making the webhook token layer unreachable and the
+documented use case (a CI runner calling back) impossible. The endpoint instead
+sits on ``token_auth._BYPASS_EXACT_METHODS`` — the METHOD-SCOPED bypass map —
+alongside ``/api/messaging/teams``: both are self-authenticating external
+webhooks, both POST-only. These tests pin that contract in both directions, plus
+the failed-auth throttle that exposure requires.
+
+The method scope is itself load-bearing. ``agent`` also matches the ``{hook_id}``
+wildcard of the dashboard's hook CRUD routes (PUT/DELETE
+``/api/hooks/{hook_id}``), whose handler authenticates on the dashboard token
+alone, so a path-only bypass would hand those two methods to an anonymous caller.
 """
 
 from __future__ import annotations
 
 import pytest
+from aiohttp import web
 
 from kiro_crew import webhooks
 from kiro_crew.dashboard import token_auth
 from kiro_crew.dashboard.server import _STRICT_INTERNAL_API_PATHS
+from kiro_crew.dashboard.token_auth import token_auth_middleware
 
 HOOK_PATH = "/api/hooks/agent"
 
@@ -26,21 +33,81 @@ class TestAuthSurface:
         assert HOOK_PATH not in _STRICT_INTERNAL_API_PATHS
 
     def test_on_middleware_bypass(self):
-        assert HOOK_PATH in token_auth._BYPASS_EXACT
+        assert token_auth._BYPASS_EXACT_METHODS.get(HOOK_PATH) == frozenset({"POST"})
+
+    def test_not_on_the_path_only_bypass(self):
+        """A path-only entry would also open PUT/DELETE on the same path."""
+        assert HOOK_PATH not in token_auth._BYPASS_EXACT
 
     def test_teams_precedent_still_holds(self):
-        """The bypass entry is justified by matching an existing self-auth webhook."""
-        assert "/api/messaging/teams" in token_auth._BYPASS_EXACT
+        """The bypass entry is justified by matching an existing self-auth webhook.
+
+        Which is method-scoped for the same reason, so the shape a future
+        self-authenticating webhook gets copied from is the safe one.
+        """
+        assert token_auth._BYPASS_EXACT_METHODS.get("/api/messaging/teams") == frozenset({"POST"})
+        assert "/api/messaging/teams" not in token_auth._BYPASS_EXACT
 
     def test_other_mcp_paths_stay_strict(self):
         """Widening one path must not widen the rest of the internal surface."""
         for path in ("/api/send-message", "/api/outbox/notify", "/api/spawn-approve"):
             assert path not in token_auth._BYPASS_EXACT
+            assert path not in token_auth._BYPASS_EXACT_METHODS
 
     def test_bypass_does_not_cover_the_dashboard_api(self):
         """The management endpoints stay dashboard-authed."""
         for path in ("/api/webhooks", "/api/webhooks/tokens", "/api/webhooks/test"):
             assert path not in token_auth._BYPASS_EXACT
+            assert path not in token_auth._BYPASS_EXACT_METHODS
+
+
+class TestBypassIsMethodScoped:
+    """End-to-end through the middleware: only POST may skip the token gate.
+
+    Asserting the constant alone would pass even if the middleware ignored the
+    method scope, so these drive the real middleware with no credential at all.
+    """
+
+    @staticmethod
+    async def _handler(request: web.Request) -> web.Response:
+        return web.Response(text="reached")
+
+    def _request(self, method: str, path: str = HOOK_PATH):
+        from unittest.mock import MagicMock
+
+        req = MagicMock(spec=web.Request)
+        req.path = path
+        req.query = {}
+        req.cookies = {}
+        req.remote = "203.0.113.9"  # non-loopback: an external webhook caller
+        req.headers = {}
+        req.method = method
+        return req
+
+    @pytest.mark.asyncio
+    async def test_post_reaches_the_handler(self):
+        """The webhook's own token check must be allowed to run."""
+        resp = await token_auth_middleware()(self._request("POST"), self._handler)
+        assert resp.status == 200
+        assert resp.text == "reached"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["PUT", "DELETE", "GET", "PATCH"])
+    async def test_other_methods_are_denied(self, method: str):
+        """PUT/DELETE match api_hook_detail via {hook_id}; they need a token."""
+        resp = await token_auth_middleware()(self._request(method), self._handler)
+        assert resp.status != 200
+        assert resp.text != "reached"
+
+    @pytest.mark.asyncio
+    async def test_teams_webhook_is_scoped_the_same_way(self):
+        """The sibling self-auth webhook carries the same scope, POST only."""
+        path = "/api/messaging/teams"
+        resp = await token_auth_middleware()(self._request("POST", path), self._handler)
+        assert resp.status == 200
+        for method in ("PUT", "DELETE", "GET"):
+            resp = await token_auth_middleware()(self._request(method, path), self._handler)
+            assert resp.status != 200, f"{method} {path} bypassed the gate"
 
 
 class TestAuthThrottle:

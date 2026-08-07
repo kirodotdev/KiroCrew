@@ -121,10 +121,15 @@ breaking the others.
 - A token can additionally **require a signed request**, which is the default for
   newly minted tokens. See [Request signing](#request-signing).
 
-`/api/hooks/agent` is on the auth middleware's bypass list, in the same
+`POST /api/hooks/agent` is on the auth middleware's bypass list, in the same
 self-authenticating-external-webhook class as `/api/messaging/teams`. It is not
 a strict internal path: an external caller needs the bearer token and nothing
 else — no dashboard cookie, no gateway IPC secret.
+
+The bypass is scoped to **POST**, and only that method. The literal path also
+matches the `{hook_id}` wildcard of the dashboard's own hook CRUD routes
+(`PUT`/`DELETE /api/hooks/{hook_id}`), which authenticate on the dashboard token
+alone — so every method other than POST stays behind the ordinary gate.
 
 ### What actually limits reach
 

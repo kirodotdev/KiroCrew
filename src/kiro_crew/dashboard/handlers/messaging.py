@@ -3237,9 +3237,9 @@ async def api_teams_activity(request: web.Request) -> web.Response:
     ``TeamsClient.on_activity`` built by ``maybe_start_teams`` once credentials
     are present. Until then (channel disabled/uncredentialed) we return 503.
 
-    This route is exempt from the dashboard cookie gate (see token_auth
-    ``_BYPASS_EXACT``); the delegated handler performs Bot Framework JWT
-    validation itself before doing anything with the payload.
+    This route is exempt from the dashboard cookie gate for POST only (see
+    token_auth ``_BYPASS_EXACT_METHODS``); the delegated handler performs Bot
+    Framework JWT validation itself before doing anything with the payload.
     """
     state: DashboardState = request.app["state"]
     handler = getattr(state, "teams_on_activity", None)

@@ -302,11 +302,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no
         # dashboard cookie and no gateway IPC secret, so a strict-internal entry
-        # denied every real caller with 403 before the handler's own bearer check
-        # ever ran — the webhook token layer was unreachable. It now lives in
-        # token_auth._BYPASS_EXACT alongside /api/messaging/teams: a
-        # self-authenticating external webhook whose handler
-        # (api_hooks_agent -> _verify_hook_token) is the sole auth gate.
+        # denies every real caller with 403 before the handler's own bearer check
+        # can run, leaving the webhook token layer unreachable. It lives in
+        # token_auth._BYPASS_EXACT_METHODS, scoped to POST, alongside the
+        # /api/messaging/teams precedent: a self-authenticating external webhook
+        # whose handler (api_hooks_agent -> _verify_hook_token) is the sole auth
+        # gate. The POST scope matters — PUT/DELETE on that same literal path
+        # match the {hook_id} wildcard of the dashboard-authed CRUD routes.
         "/api/outbox/notify",
         "/api/notifications/agent",  # MCP-only (send_notification tool); no browser caller
         "/api/slack/upload-file",
