@@ -10775,6 +10775,16 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhooks de entrada",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Permite que um sistema externo — um job de CI, um bot de revisão, um script de implantação — inicie um turno do agente enviando uma mensagem via POST com um token de acesso.",
+        "manage_webhooks": "Gerenciar webhooks",
+        "tokens_count_one": "{{count}} token de acesso",
+        "tokens_count_other": "{{count}} tokens de acesso",
+        "tokens_count_many": "{{count}} tokens de acesso",
+        "could_not_read_webhook_status": "Não foi possível ler o status do webhook — verifique se o gateway está em execução"
       }
     },
     "settingsPage": {
@@ -11259,6 +11269,10 @@
       "voice": {
         "description": "Configurações de texto para fala e fala para texto (ditado)",
         "label": "Voz"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Permite que um sistema externo inicie um turno do agente"
       }
     }
   },

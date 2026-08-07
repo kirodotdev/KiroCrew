@@ -10547,6 +10547,14 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "入站 webhook",
+        "endpoint_status": "端点",
+        "lets_an_outside_system_start_one_agent_turn": "让外部系统——CI 任务、审查机器人、部署脚本——通过 POST 发送带访问令牌的消息，启动一次助手轮次。",
+        "manage_webhooks": "管理 webhook",
+        "tokens_count_other": "{{count}} 个访问令牌",
+        "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
       }
     },
     "settingsPage": {
@@ -11017,6 +11025,10 @@
       "voice": {
         "description": "文字转语音与语音转文字（听写）设置",
         "label": "语音"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "让外部系统启动一次助手轮次"
       }
     }
   },

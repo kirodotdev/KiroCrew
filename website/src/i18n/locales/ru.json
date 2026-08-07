@@ -10889,6 +10889,17 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Входящие webhooks",
+        "endpoint_status": "Конечная точка",
+        "lets_an_outside_system_start_one_agent_turn": "Позволяет внешней системе — задаче CI, боту-ревьюеру, скрипту развёртывания — запустить один ход агента, отправив сообщение методом POST с токеном доступа.",
+        "manage_webhooks": "Управление webhooks",
+        "tokens_count_one": "{{count}} токен доступа",
+        "tokens_count_few": "{{count}} токена доступа",
+        "tokens_count_many": "{{count}} токенов доступа",
+        "tokens_count_other": "{{count}} токена доступа",
+        "could_not_read_webhook_status": "Не удалось получить статус webhook — проверь, запущен ли шлюз"
       }
     },
     "settingsPage": {
@@ -11381,6 +11392,10 @@
       "voice": {
         "description": "Настройки синтеза речи и распознавания речи (диктовки)",
         "label": "Голос"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Разрешите внешней системе запустить один ход агента"
       }
     }
   },

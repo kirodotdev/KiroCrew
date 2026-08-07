@@ -7242,6 +7242,15 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Inbound webhooks",
+        "endpoint_status": "Endpoint",
+        "lets_an_outside_system_start_one_agent_turn": "Lets an outside system — a CI job, a review bot, a deploy script — start one agent turn by POSTing a message with an access token.",
+        "manage_webhooks": "Manage webhooks",
+        "tokens_count_one": "{{count}} access token",
+        "tokens_count_other": "{{count}} access tokens",
+        "could_not_read_webhook_status": "Could not read webhook status — check that the gateway is running"
       }
     },
     "settingsPage": {
@@ -7604,5 +7613,13 @@
       "slot_other": "{{count}} slots"
     },
     "sessionMemoryCard": {}
+  },
+  "settings": {
+    "tabs": {
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Let an outside system start one agent turn"
+      }
+    }
   }
 }

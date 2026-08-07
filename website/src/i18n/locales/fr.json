@@ -10775,6 +10775,16 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Webhooks entrants",
+        "endpoint_status": "Point de terminaison",
+        "lets_an_outside_system_start_one_agent_turn": "Permet à un système externe — une tâche CI, un bot de revue, un script de déploiement — de lancer un tour d'agent en envoyant un message en POST avec un jeton d'accès.",
+        "manage_webhooks": "Gérer les webhooks",
+        "tokens_count_one": "{{count}} jeton d'accès",
+        "tokens_count_other": "{{count}} jetons d'accès",
+        "tokens_count_many": "{{count}} jetons d'accès",
+        "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
       }
     },
     "settingsPage": {
@@ -11260,6 +11270,10 @@
       "voice": {
         "description": "Paramètres de synthèse vocale et de reconnaissance vocale (dictée)",
         "label": "Voix"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Permettre à un système externe de lancer un tour d'agent"
       }
     }
   },

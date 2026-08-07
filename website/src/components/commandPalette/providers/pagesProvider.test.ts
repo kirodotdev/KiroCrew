@@ -34,6 +34,7 @@ vi.mock('../../../surfaces/registry', () => ({
 }))
 
 import { createPagesProvider } from './pagesProvider'
+import { PREVIEW_WEBHOOKS } from '../../../utils/previewFlags'
 
 function navigate(): { nav: NavigateFunction; spy: ReturnType<typeof vi.fn> } {
   const spy = vi.fn()
@@ -47,6 +48,10 @@ async function run(p: ReturnType<typeof createPagesProvider>, q: string): Promis
 
 beforeEach(() => {
   getBuiltinSurfaces.mockClear()
+  // `previewFlags` is deliberately NOT mocked — the gate reads real
+  // localStorage, so it has to be cleared or a flag set by one test decides
+  // another test's result.
+  localStorage.removeItem(PREVIEW_WEBHOOKS)
 })
 
 describe('createPagesProvider — identity', () => {
@@ -82,6 +87,34 @@ describe('createPagesProvider — registry + extras', () => {
     expect(hit).toBeDefined()
     hit!.onActivate()
     expect(spy).toHaveBeenCalledWith('/hooks')
+  })
+
+  it('hides the preview-gated Webhooks entry until the flag is on', async () => {
+    // `hiddenFromNav` moved the surface out of `getAdvertisedSurfaces()`, which
+    // is where the preview gate is normally applied — so the EXTRA_PAGES entry
+    // has to carry the gate itself, or hiding it from the rail would smuggle an
+    // unreleased page back in through ⌘K.
+    localStorage.removeItem(PREVIEW_WEBHOOKS)
+    const { nav } = navigate()
+    const p = createPagesProvider(nav)
+
+    const arr = await run(p, 'webhooks')
+    expect(arr.find((r) => r.subtitle === '/webhooks')).toBeUndefined()
+  })
+
+  it('keeps the hiddenFromNav Webhooks surface reachable once the flag is on', async () => {
+    // Regression: `hiddenFromNav: true` drops the surface from
+    // `getBuiltinSurfaces()`, so without an EXTRA_PAGES entry typing "webhooks"
+    // returned nothing and Settings was the only way in.
+    localStorage.setItem(PREVIEW_WEBHOOKS, '1')
+    const { nav, spy } = navigate()
+    const p = createPagesProvider(nav)
+
+    const arr = await run(p, 'webhooks')
+    const hit = arr.find((r) => r.subtitle === '/webhooks')
+    expect(hit).toBeDefined()
+    hit!.onActivate()
+    expect(spy).toHaveBeenCalledWith('/webhooks')
   })
 
   it('dedupes by route with the registry winning over EXTRA_PAGES', async () => {

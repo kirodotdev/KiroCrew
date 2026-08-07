@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Bell, Code, Fingerprint, Globe, History, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer } from 'lucide-react'
+import { Bell, Code, Fingerprint, Globe, History, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -21,9 +21,12 @@ import { AboutPanel } from './settings/AboutPanel'
 import ReleasesPanel from './settings/ReleasesPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
+import { WebhooksPanel } from './settings/WebhooksPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
 
 import { i18nT } from '../i18n/t'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
 // which runs per render — rather than at module load. Translating them at module
@@ -55,6 +58,7 @@ function buildTabs() {
     { key: 'channels', label: i18nT('settings.tabs.channels.label'), icon: <Link2 size={16} />, description: i18nT('settings.tabs.channels.description') },
     { key: 'browser', label: i18nT('settings.tabs.browser.label'), icon: <Globe size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.browser.description') },
     { key: 'computer-use', label: i18nT('settings.tabs.computerUse.label'), icon: <SquareMousePointer className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.computerUse.description') },
+    { key: 'webhooks', label: i18nT('settings.tabs.webhooks.label'), icon: <Webhook size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.webhooks.description') },
     { key: 'instances', label: i18nT('settings.tabs.instances.label'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.instances.description') },
     { key: 'privacy', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
     { key: 'security', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description') },
@@ -105,7 +109,14 @@ export default function SettingsPage() {
   // Update nudge: dot on the About entry while a desktop update is available
   // (mirrored from Electron update-state by useUpdateSubscription).
   const updateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
-  const allTabs = buildTabs()
+  // Inbound webhooks is preview-gated. The rail and the palette apply that gate
+  // through `getAdvertisedSurfaces()`, but this tab is the surface's only
+  // advertised home (it is `hiddenFromNav`), so the gate has to be applied here
+  // or an unreleased page would be listed for everyone. The hook, rather than a
+  // bare `readPreviewFlag`, so toggling it in Developer > Config updates this
+  // rail without a reload.
+  const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
+  const allTabs = buildTabs().filter(t => t.key !== 'webhooks' || webhooksPreview)
   const baseTabs = embedded ? allTabs.filter(t => t.key !== 'instances') : allTabs
   const tabs = updateAvailable ? baseTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : baseTabs
 
@@ -130,6 +141,7 @@ export default function SettingsPage() {
         {tab === 'channels' && <ChannelsPanel />}
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'computer-use' && <ComputerUsePanel />}
+        {tab === 'webhooks' && <WebhooksPanel />}
         {tab === 'instances' && !embedded && <RemoteCrewPanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <SecurityPanel />}

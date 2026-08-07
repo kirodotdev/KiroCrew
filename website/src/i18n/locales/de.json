@@ -10661,6 +10661,15 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "Eingehende Webhooks",
+        "endpoint_status": "Endpunkt",
+        "lets_an_outside_system_start_one_agent_turn": "Ermöglicht es einem externen System – einem CI-Job, einem Review-Bot, einem Deploy-Skript –, einen Agentendurchlauf zu starten, indem es eine Nachricht mit einem Zugriffstoken per POST sendet.",
+        "manage_webhooks": "Webhooks verwalten",
+        "tokens_count_one": "{{count}} Zugriffstoken",
+        "tokens_count_other": "{{count}} Zugriffstoken",
+        "could_not_read_webhook_status": "Webhook-Status konnte nicht gelesen werden — prüfe, ob das Gateway läuft"
       }
     },
     "settingsPage": {
@@ -11138,6 +11147,10 @@
       "voice": {
         "description": "Einstellungen für Text-zu-Sprache und Sprache-zu-Text (Diktat)",
         "label": "Sprache"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "Externes System einen Agentendurchlauf starten lassen"
       }
     }
   },

@@ -10547,6 +10547,14 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "受信 Webhooks",
+        "endpoint_status": "エンドポイント",
+        "lets_an_outside_system_start_one_agent_turn": "CI ジョブ、レビューボット、デプロイスクリプトなどの外部システムが、アクセストークンを添えてメッセージを POST することで、エージェントのターンを 1 回開始できます。",
+        "manage_webhooks": "Webhooks を管理",
+        "tokens_count_other": "アクセストークン {{count}} 個",
+        "could_not_read_webhook_status": "webhook の状態を取得できませんでした — ゲートウェイが起動していない可能性があります"
       }
     },
     "settingsPage": {
@@ -11017,6 +11025,10 @@
       "voice": {
         "description": "テキスト読み上げとスピーチ認識（ディクテーション）の設定",
         "label": "音声"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "外部システムからエージェントのターンを 1 回開始できます"
       }
     }
   },

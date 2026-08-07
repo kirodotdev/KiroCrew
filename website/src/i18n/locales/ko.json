@@ -10547,6 +10547,14 @@
         "start": "Start",
         "start_crew": "Start {{name}}",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+      },
+      "webhooksPanel": {
+        "inbound_webhooks": "인바운드 webhook",
+        "endpoint_status": "엔드포인트",
+        "lets_an_outside_system_start_one_agent_turn": "외부 시스템(CI 작업, 리뷰 봇, 배포 스크립트)이 액세스 토큰과 함께 메시지를 POST하여 에이전트 턴을 한 번 시작할 수 있습니다.",
+        "manage_webhooks": "Webhook 관리",
+        "tokens_count_other": "액세스 토큰 {{count}}개",
+        "could_not_read_webhook_status": "Webhook 상태를 읽을 수 없습니다 — 게이트웨이가 실행 중인지 확인하세요"
       }
     },
     "settingsPage": {
@@ -11017,6 +11025,10 @@
       "releases": {
         "description": "각 버전의 릴리스 노트",
         "label": "릴리스"
+      },
+      "webhooks": {
+        "label": "Webhooks",
+        "description": "외부 시스템이 에이전트 턴을 한 번 시작할 수 있습니다"
       }
     }
   },
