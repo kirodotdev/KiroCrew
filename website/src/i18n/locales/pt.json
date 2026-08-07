@@ -6104,7 +6104,9 @@
       "updated": "atualizado",
       "view_only_clicks_here_don_t_reach_the_page": "Apenas visualização — os cliques aqui não chegam à página",
       "waiting_for_the_browser_to_take_a_screenshot": "Aguardando o navegador tirar uma captura de tela…",
-      "web_preview": "Prévia web"
+      "web_preview": "Prévia web",
+      "can_t_preview_this_dashboard_here": "Não é possível visualizar este painel aqui",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL é o próprio servidor do painel, que não permite ser incorporado. Informe a URL de um servidor de desenvolvimento."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Somente agente — sem contexto do Kiro Crew nem MCP",

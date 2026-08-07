@@ -5934,7 +5934,9 @@
       "updated": "업데이트됨",
       "view_only_clicks_here_don_t_reach_the_page": "보기 전용 — 여기서의 클릭은 페이지에 전달되지 않습니다",
       "waiting_for_the_browser_to_take_a_screenshot": "브라우저가 스크린샷을 찍기를 기다리는 중…",
-      "web_preview": "웹 미리 보기"
+      "web_preview": "웹 미리 보기",
+      "can_t_preview_this_dashboard_here": "이 대시보드는 여기에서 미리 볼 수 없습니다",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "이 URL은 대시보드 자체의 서버이며 삽입이 허용되지 않습니다. 대신 개발 서버 URL을 입력하세요."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "에이전트 전용 — Kiro Crew 컨텍스트나 MCP 없음",

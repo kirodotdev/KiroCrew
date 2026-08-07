@@ -6019,7 +6019,9 @@
       "updated": "अपडेट किया गया",
       "view_only_clicks_here_don_t_reach_the_page": "केवल देखने के लिए — यहाँ क्लिक करने से पेज पर असर नहीं होता",
       "waiting_for_the_browser_to_take_a_screenshot": "ब्राउज़र के स्क्रीनशॉट लेने की प्रतीक्षा…",
-      "web_preview": "वेब पूर्वावलोकन"
+      "web_preview": "वेब पूर्वावलोकन",
+      "can_t_preview_this_dashboard_here": "इस डैशबोर्ड का पूर्वावलोकन यहाँ नहीं किया जा सकता",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "यह URL डैशबोर्ड का ही सर्वर है, जो एम्बेड होने से इनकार करता है। इसके बजाय कोई dev-server URL डालें।"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "केवल एजेंट — कोई Kiro Crew संदर्भ या MCP नहीं",

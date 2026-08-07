@@ -6104,7 +6104,9 @@
       "updated": "aggiornata",
       "view_only_clicks_here_don_t_reach_the_page": "Solo visualizzazione — i clic qui non raggiungono la pagina",
       "waiting_for_the_browser_to_take_a_screenshot": "In attesa che il browser acquisisca uno screenshot…",
-      "web_preview": "Anteprima web"
+      "web_preview": "Anteprima web",
+      "can_t_preview_this_dashboard_here": "Impossibile visualizzare l'anteprima di questa dashboard qui",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Questo URL è il server della dashboard stessa, che rifiuta di essere incorporato. Inserisci invece l'URL di un server di sviluppo."
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Solo agente — nessun contesto Kiro Crew né MCP",

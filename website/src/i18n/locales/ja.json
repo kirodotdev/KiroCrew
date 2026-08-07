@@ -5934,7 +5934,9 @@
       "updated": "更新済み",
       "view_only_clicks_here_don_t_reach_the_page": "表示のみ — ここのクリックはページに到達しません",
       "waiting_for_the_browser_to_take_a_screenshot": "ブラウザーがスクリーンショットを撮るのを待機中…",
-      "web_preview": "ウェブプレビュー"
+      "web_preview": "ウェブプレビュー",
+      "can_t_preview_this_dashboard_here": "このダッシュボードはここでプレビューできません",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "この URL はダッシュボード自身のサーバーであり、埋め込みは許可されていません。代わりに開発サーバーの URL を入力してください。"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "エージェントのみ — Kiro Crew コンテキストまたは MCP なし",
