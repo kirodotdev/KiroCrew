@@ -1827,9 +1827,27 @@ class VectorMemoryStore:
                         )
                     self.db.commit()
 
+        upgrade_key: str | None = None
         for existing in self.get_lessons():
             existing_val = str(json.loads(existing["value_json"]))
             existing_lower = existing_val.lower()
+
+            # Exact-rule UPGRADE: the same rule re-taught WITH a negative the
+            # stored value lacks falls through to the normal write instead of
+            # being skipped as "already covered" — otherwise a record written
+            # before its negative reached the store could never be repaired.
+            # DELIBERATELY no delete here: the write below upserts the
+            # EXISTING row's key — and set_semantic validates BEFORE writing,
+            # so an oversize combined value is rejected with the old row
+            # intact (deleting first turned that rejection into permanent
+            # loss while the API still returned 200). The comparison is
+            # case-insensitive, so the upgrade must reuse the STORED row's
+            # key: hashing the incoming casing ("always x" vs stored
+            # "Always X") would mint a second key and leave duplicate active
+            # records instead of upgrading.
+            if existing_lower == rule_lower and negative:
+                upgrade_key = str(existing["key"])
+                continue
 
             # Substring dedup
             if rule_lower in existing_lower:
@@ -1904,7 +1922,9 @@ class VectorMemoryStore:
         _flush_backfills()
 
         slug = hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
-        key = f"lesson.{slug}"
+        # An exact-rule (case-insensitive) upgrade targets the STORED row's
+        # key — hashing the incoming casing would mint a duplicate record.
+        key = upgrade_key or f"lesson.{slug}"
         value = rule if not negative else f"{rule} — NOT: {negative}"
         confidence = 1.0 if source == "user_explicit" else 0.9
         err = self.set_semantic(key, value, confidence, source)

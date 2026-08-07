@@ -101,16 +101,37 @@ class LessonStore:
         # mtime-based cache: (mtime, lessons)
         self._cache: tuple[float, list[Lesson]] | None = None
 
-    def save(self, lesson: Lesson) -> None:
-        """Append a lesson, skipping near-duplicates and pruning if over limit."""
+    def save(self, lesson: Lesson) -> str:
+        """Append a lesson, skipping near-duplicates and pruning if over limit.
+
+        Returns a small status the caller can act on — ``"written"`` (new
+        record), ``"upgraded"`` (exact-rule duplicate gained the incoming
+        ``negative``), ``"deduped"`` (nothing applied), — so a handler can
+        distinguish "your guidance is stored" from "your guidance was
+        discarded" instead of guessing from a void return (design review on
+        the negative-drop fix: a conflicting re-teach previously got HTTP 200
+        while the new negative was silently dropped).
+
+        Duplicate handling is an UPGRADE, not always a skip: an exact-rule
+        duplicate that arrives carrying a ``negative`` the stored record lacks
+        fills it in (write-through). A stored negative is never OVERWRITTEN by
+        a different one; conflicting guidance is a curation decision, not a
+        silent last-writer-wins.
+        """
         with self._lock:
             existing = self.load_all()
             new_lower = lesson.rule.lower().strip()
+            upgraded = False
             for ex in existing:
                 if ex.rule.lower().strip() == new_lower:
+                    if lesson.negative and not ex.negative:
+                        ex.negative = lesson.negative
+                        upgraded = True
+                        break
                     logger.debug("Skipping duplicate lesson: %s", lesson.rule)
-                    return
-            existing.append(lesson)
+                    return "deduped"
+            if not upgraded:
+                existing.append(lesson)
             if len(existing) > _MAX_LESSONS_TOTAL:
                 existing = existing[-_MAX_LESSONS_TOTAL:]
             self._dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +140,10 @@ class LessonStore:
                 encoding="utf-8",
             )
             self._cache = None  # invalidate
-        logger.info("Saved lesson: %s", lesson.rule)
+        logger.info(
+            "Saved lesson%s: %s", " (negative upgraded)" if upgraded else "", lesson.rule
+        )
+        return "upgraded" if upgraded else "written"
 
     def remove(self, rule_substring: str) -> bool:
         """Remove lessons whose rule contains *rule_substring*. Returns True if any removed."""

@@ -3986,6 +3986,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {_gov_mem}"
         scope = args.get("scope", "global")
         payload: dict[str, str] = {"rule": rule, "category": category, "scope": scope}
+        # Pass through every OTHER schema-known field verbatim instead of
+        # enumerating them by hand: ``negative`` was silently dropped at this
+        # exact hop for some time (schema advertised it, model supplied it,
+        # payload never carried it), and a hand-maintained list would let the
+        # next LEARN_ADD_SCHEMA field recur the same bug. ``workspace`` stays
+        # explicit below — it carries required-when-scope semantics.
+        _handled = {"rule", "category", "scope", "workspace"}
+        for _field in LEARN_ADD_SCHEMA.fields:
+            if _field.name not in _handled and args.get(_field.name):
+                payload[_field.name] = args[_field.name]
         if scope == "workspace":
             ws = args.get("workspace", "")
             if not ws:

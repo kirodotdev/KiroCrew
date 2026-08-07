@@ -800,6 +800,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "rule is required"}, status=400)
     category = cleaned.get("category", "knowledge")
     scope = cleaned.get("scope", "global")
+    negative = cleaned.get("negative") or None
     # Write to vector store if available, else JSONL
     vs = _get_memory(state).vector_store
     if vs:
@@ -821,15 +822,39 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # for a lesson that was actually saved (and re-saved on every retry).
         # Writing first, then sweeping in the background, keeps the slow LLM call
         # off the request path.
-        await asyncio.to_thread(
+        applied = await asyncio.to_thread(
             vs.write_lesson,
             rule,
             category,
-            None,
+            # Forward the caller's "what not to do" — a literal None here
+            # silently discarded the negative on every vector-store write even
+            # though write_lesson has carried the parameter all along.
+            negative,
             "user_explicit",
             rule_emb,
             rule_emb_generation,
         )
+        # write_lesson returning False means NO row was written: either a
+        # benign dedup (the guidance is already covered) or a store rejection
+        # (e.g. the combined value exceeds the size cap). Without a negative
+        # that is the long-standing silent-dedup behavior; WITH a negative the
+        # caller asked to persist information that may now be nowhere, and a
+        # 200 would be a false success (the exact bug class this PR fixes).
+        # The two False causes are not distinguishable from the boolean, so
+        # the response says so honestly instead of guessing.
+        if not applied and negative:
+            return web.json_response(
+                {
+                    "error": (
+                        "lesson not updated: the store applied no write — the "
+                        "guidance may already be covered by an existing lesson, "
+                        "or the combined value was rejected (e.g. size cap). "
+                        "Verify with learn_list."
+                    ),
+                    "code": "lesson_write_not_applied",
+                },
+                status=422,
+            )
         candidates = await asyncio.to_thread(
             vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
         )
@@ -845,12 +870,35 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             state._background_tasks.add(task)
             task.add_done_callback(state._background_tasks.discard)
     else:
-        lesson = Lesson(rule=rule, category=category, ts=datetime.now(timezone.utc).isoformat())
+        lesson = Lesson(
+            rule=rule,
+            category=category,
+            ts=datetime.now(timezone.utc).isoformat(),
+            negative=negative,
+        )
         if scope == "workspace":
             ws = cleaned.get("workspace")
-            _get_lessons(state, ws).save(lesson)
+            outcome = _get_lessons(state, ws).save(lesson)
         else:
-            state.lessons.save(lesson)
+            outcome = state.lessons.save(lesson)
+        # Same false-success guard as the vector branch: "deduped" with a
+        # supplied negative means the caller's guidance was NOT applied (the
+        # stored record already carries a — possibly different — negative);
+        # a 200 would silently discard it (design review: this was the
+        # declared bug class, live on one of the two backends).
+        if outcome == "deduped" and negative:
+            return web.json_response(
+                {
+                    "error": (
+                        "lesson not updated: an existing lesson with this rule "
+                        "already carries a negative, and a stored negative is "
+                        "never overwritten. Remove the old lesson first "
+                        "(learn_remove) if the new guidance should replace it."
+                    ),
+                    "code": "lesson_write_not_applied",
+                },
+                status=422,
+            )
     state.push_refresh("lessons")
     return web.json_response({"ok": True})
 
@@ -1092,7 +1140,21 @@ async def api_lessons(request: web.Request) -> web.Response:
                 rule = json.loads(e["value_json"])
             except (json.JSONDecodeError, TypeError):
                 continue
-            data.append({"rule": rule, "category": "knowledge", "ts": e.get("updated_at", "")})
+            # BACKEND ASYMMETRY, on purpose: write_lesson stores ONE fused
+            # string ("<rule> — NOT: <negative>"), and a read-side split
+            # cannot be faithful — a rule legitimately containing the literal
+            # separator would be truncated with a fabricated negative. Until
+            # the lesson value model is structured (follow-up), the vector
+            # branch returns the fused value as `rule` and `negative: None`;
+            # only the JSONL branch carries a separate negative.
+            data.append(
+                {
+                    "rule": rule,
+                    "category": "knowledge",
+                    "ts": e.get("updated_at", ""),
+                    "negative": None,
+                }
+            )
     else:
         # Merge global + workspace-scoped lessons
         global_lessons = state.lessons.load_all()
@@ -1104,6 +1166,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 if le.rule.lower().strip() not in seen:
                     global_lessons.append(le)
         data = [
-            {"rule": le.rule, "category": le.category, "ts": le.ts} for le in global_lessons[-50:]
+            {"rule": le.rule, "category": le.category, "ts": le.ts, "negative": le.negative}
+            for le in global_lessons[-50:]
         ]
     return web.json_response({"lessons": data})

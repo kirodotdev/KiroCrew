@@ -50,6 +50,32 @@ class TestLessonStore:
         assert "tool-a" in ctx
         assert "Learned corrections" in ctx
 
+    def test_duplicate_with_new_negative_upgrades_the_stored_record(self, tmp_path: Path) -> None:
+        """Re-teaching a rule WITH a negative repairs a record saved without
+        one (e.g. written while the MCP path dropped the field) — instead of
+        being skipped as a duplicate while the caller sees success."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("always X"))  # no negative (pre-fix record)
+        store.save(_make_lesson("always X", negative="never Y"))
+        loaded = store.load_all()
+        assert len(loaded) == 1, "still one record — upgraded, not duplicated"
+        assert loaded[0].negative == "never Y"
+
+    def test_duplicate_never_overwrites_an_existing_negative(self, tmp_path: Path) -> None:
+        """Conflicting guidance is a curation decision, not last-writer-wins."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("always X", negative="never Y"))
+        store.save(_make_lesson("always X", negative="never Z"))
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert loaded[0].negative == "never Y"
+
+    def test_plain_duplicate_still_skipped(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("always X"))
+        store.save(_make_lesson("always X"))
+        assert len(store.load_all()) == 1
+
     def test_load_corrupted_line(self, tmp_path: Path) -> None:
         path = tmp_path / "lessons.jsonl"
         path.write_text("not json\n")
