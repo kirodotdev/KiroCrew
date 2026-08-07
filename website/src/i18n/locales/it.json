@@ -5651,6 +5651,7 @@
       "minimize": "Riduci",
       "open_in_new_tab": "Apri in una nuova scheda",
       "remove_artifact_from_library": "Rimuovi l’artefatto {{name}} dalla libreria",
+      "rendering": "Rendering in corso…",
       "save_failed": "salvataggio non riuscito",
       "star_as_artifact": "Aggiungi ai preferiti come artefatto",
       "starred_as_click_to_remove": "Aggiunto ai preferiti come \"{{name}}\" — clicca per rimuoverlo"

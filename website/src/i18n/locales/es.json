@@ -5651,6 +5651,7 @@
       "minimize": "Minimizar",
       "open_in_new_tab": "Abrir en una pestaña nueva",
       "remove_artifact_from_library": "Quitar el artefacto {{name}} de la biblioteca",
+      "rendering": "Renderizando…",
       "save_failed": "error al guardar",
       "star_as_artifact": "Destacar como artefacto",
       "starred_as_click_to_remove": "Destacado como \"{{name}}\" — haz clic para quitarlo"

@@ -92,6 +92,13 @@ const HEIGHT_REPORT_EPSILON_PX = 2
  * never fires and the reporter goes quiet on the high value. */
 const HEIGHT_REPORT_SHRINK_MS = 200
 
+/** How long the loading indicator waits before uncovering the widget anyway.
+ * This is a HANG backstop, not a compile budget: the indicator normally clears
+ * the moment the Tailwind runtime injects its compiled <style>. Keeping it long
+ * matters — a short value uncovers the widget while it is still unstyled, which
+ * reproduces the blank-widget symptom the indicator exists to prevent. */
+const OVERLAY_HANG_BACKSTOP_MS = 15000
+
 /** Body of the height-reporter script. Defined as a string literal — the only
  * interpolation is the two numeric tuning constants above (never LLM/user
  * content; the LLM `html` never reaches here). Set as a script element via
@@ -501,6 +508,15 @@ interface BuildSrcdocOptions {
    * + scroll/flash) so the parent can offer commenting inside the HTML render.
    * Off by default. */
   enableComments?: boolean
+  /** Cover the widget with a progress indicator until the Tailwind runtime has
+   * injected its compiled CSS. Set for widgets heavy enough that the compile is
+   * perceptible; without it a slow widget renders as a blank box. */
+  showLoadingOverlay?: boolean
+  /** Localized label for that indicator. Required when `showLoadingOverlay` is
+   * set — the iframe cannot reach the parent's i18n catalog, so an untranslated
+   * default here would visibly flip to English mid-load in every non-English
+   * locale. */
+  loadingLabel?: string
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -513,6 +529,8 @@ export function buildSrcdoc({
   mode,
   includeHeightReporter = false,
   enableComments = false,
+  showLoadingOverlay = false,
+  loadingLabel = '',
 }: BuildSrcdocOptions): string {
   // SSR / unit-test fallback: when there's no DOM (Node.js, vitest before
   // jsdom is set up), fall back to a minimal string-builder that does NOT
@@ -554,7 +572,8 @@ export function buildSrcdoc({
   head.appendChild(csp)
 
   // Tailwind v4 dark-mode directives (compiled by the runtime on load). Placed
-  // before the runtime script so the custom variant is registered first.
+  // Directives precede the runtime script so the dark variant registers before
+  // first paint.
   const tailwindCfg = doc.createElement('style')
   tailwindCfg.setAttribute('type', 'text/tailwindcss')
   tailwindCfg.textContent = TAILWIND_V4_DIRECTIVES
@@ -571,6 +590,34 @@ export function buildSrcdoc({
   style.textContent = themeCss ? `${BASE_BODY_CSS} ${themeCss}` : BASE_BODY_CSS
   head.appendChild(style)
 
+  // Loading overlay: shown while Tailwind JIT compiles, hidden once ready or
+  // after a timeout. Only injected when showLoadingOverlay is set.
+  if (showLoadingOverlay) {
+    const overlayStyle = doc.createElement('style')
+    overlayStyle.textContent = [
+      // align-items:flex-start (not center): the iframe body can be far taller
+      // than the visible area, and a centred indicator ends up below the fold —
+      // present in the DOM but invisible, which defeats the purpose.
+      '#mc-tw-loading{position:fixed;inset:0;z-index:2147483647;',
+      'display:flex;align-items:flex-start;justify-content:center;padding-top:24px;',
+      'background:var(--bg,#1a1a2e);color:var(--muted,#888);',
+      'font:500 12px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;',
+      'transition:opacity .3s ease}',
+      '#mc-tw-loading.mc-hidden{opacity:0;pointer-events:none}',
+      '#mc-tw-loading .mc-spinner{width:16px;height:16px;',
+      'border:2px solid var(--border,#333);border-top-color:var(--accent,#6366f1);',
+      'border-radius:50%;animation:mc-spin .8s linear infinite;margin-right:8px}',
+      '@keyframes mc-spin{to{transform:rotate(360deg)}}',
+      // Match the parent indicator's motion-reduce treatment: the iframe has its
+      // own document, so the parent's Tailwind motion-reduce variant cannot
+      // reach this rule.
+      '@media (prefers-reduced-motion: reduce){',
+      '#mc-tw-loading .mc-spinner{animation:none}',
+      '#mc-tw-loading{transition:none}}',
+    ].join('')
+    head.appendChild(overlayStyle)
+  }
+
   // <body class="dark|light">
   body.className = mode
 
@@ -583,6 +630,44 @@ export function buildSrcdoc({
   // Re-clone <script> elements so they execute when the iframe parses srcdoc.
   recloneScripts(fragment, doc)
   body.appendChild(fragment)
+
+  // Progress indicator while the Tailwind runtime compiles. Hidden when the
+  // runtime injects its compiled <style> (MutationObserver on <head>); the
+  // timeout is a HANG backstop only, deliberately far longer than any real
+  // compile. A short timeout would defeat the purpose — it would uncover the
+  // widget while it is still blank, which is exactly the case this exists for.
+  if (showLoadingOverlay) {
+    const overlay = doc.createElement('div')
+    overlay.id = 'mc-tw-loading'
+    // Built with createElement/textContent, never innerHTML: assigning to
+    // innerHTML is prohibited repo-wide (it is an HTML parser sink), and the
+    // label is caller-supplied text that must not be parsed as markup.
+    const spinner = doc.createElement('div')
+    spinner.className = 'mc-spinner'
+    overlay.appendChild(spinner)
+    overlay.appendChild(doc.createTextNode(loadingLabel))
+    body.insertBefore(overlay, body.firstChild)
+
+    const revealScript = doc.createElement('script')
+    revealScript.textContent = `(function(){
+      var el=document.getElementById('mc-tw-loading');
+      if(!el)return;
+      function hide(){el.classList.add('mc-hidden');setTimeout(function(){if(el.parentNode)el.parentNode.removeChild(el)},400);}
+      var done=false;
+      function finish(){if(done)return;done=true;hide();}
+      setTimeout(finish,${OVERLAY_HANG_BACKSTOP_MS});
+      var obs=new MutationObserver(function(muts){
+        for(var i=0;i<muts.length;i++){
+          for(var j=0;j<muts[i].addedNodes.length;j++){
+            var n=muts[i].addedNodes[j];
+            if(n.tagName==='STYLE'&&!n.type){finish();obs.disconnect();return;}
+          }
+        }
+      });
+      obs.observe(document.head,{childList:true});
+    })();`
+    body.appendChild(revealScript)
+  }
 
   // Height reporter (optional). textContent assignment, not template-literal.
   if (includeHeightReporter) {

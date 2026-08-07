@@ -1722,6 +1722,7 @@
       "expand": "Expand",
       "minimize": "Minimize",
       "remove_artifact_from_library": "Remove artifact {{name}} from library",
+      "rendering": "Rendering…",
       "star_as_artifact": "Star as artifact",
       "starred_as_click_to_remove": "Starred as \"{{name}}\" — click to remove"
     },

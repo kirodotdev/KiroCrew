@@ -5589,6 +5589,7 @@
       "minimize": "গুটিয়ে নাও",
       "open_in_new_tab": "নতুন ট্যাবে খুলুন",
       "remove_artifact_from_library": "লাইব্রেরি থেকে {{name}} আর্টিফ্যাক্ট সরাও",
+      "rendering": "রেন্ডার হচ্ছে…",
       "save_failed": "সেভ ব্যর্থ হয়েছে",
       "star_as_artifact": "আর্টিফ্যাক্ট হিসেবে স্টার দাও",
       "starred_as_click_to_remove": "\"{{name}}\" নামে স্টার দেওয়া — সরাতে ক্লিক করো"

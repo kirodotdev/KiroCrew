@@ -5594,6 +5594,7 @@
       "minimize": "समेटें",
       "open_in_new_tab": "नए टैब में खोलें",
       "remove_artifact_from_library": "आर्टिफ़ैक्ट {{name}} को लाइब्रेरी से हटाएँ",
+      "rendering": "रेंडर हो रहा है…",
       "save_failed": "सहेजना विफल",
       "star_as_artifact": "आर्टिफ़ैक्ट के रूप में स्टार करें",
       "starred_as_click_to_remove": "\"{{name}}\" के रूप में स्टार किया गया — हटाने के लिए क्लिक करें"

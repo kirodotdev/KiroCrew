@@ -5446,6 +5446,7 @@
       "minimize": "最小化",
       "open_in_new_tab": "在新标签页打开",
       "remove_artifact_from_library": "从库中移除工件 {{name}}",
+      "rendering": "正在渲染…",
       "save_failed": "保存失败",
       "star_as_artifact": "加星标为工件",
       "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消"

@@ -5575,6 +5575,7 @@
       "minimize": "Réduire",
       "open_in_new_tab": "Ouvrir dans un nouvel onglet",
       "remove_artifact_from_library": "Retirer l’artefact {{name}} de la bibliothèque",
+      "rendering": "Rendu en cours…",
       "save_failed": "échec de l'enregistrement",
       "star_as_artifact": "Ajouter aux favoris comme artefact",
       "starred_as_click_to_remove": "Ajouté aux favoris sous « {{name}} » — clique pour le retirer"

@@ -5513,6 +5513,7 @@
       "minimize": "Minimieren",
       "open_in_new_tab": "In neuem Tab öffnen",
       "remove_artifact_from_library": "Artefakt {{name}} aus der Bibliothek entfernen",
+      "rendering": "Wird gerendert…",
       "save_failed": "Speichern fehlgeschlagen",
       "star_as_artifact": "Als Artefakt markieren",
       "starred_as_click_to_remove": "Markiert als „{{name}}“ — klicken, um die Markierung zu entfernen"

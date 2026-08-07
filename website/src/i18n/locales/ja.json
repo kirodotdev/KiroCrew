@@ -5571,6 +5571,7 @@
       "minimize": "最小化",
       "open_in_new_tab": "新しいタブで開く",
       "remove_artifact_from_library": "アーティファクト {{name}} をライブラリから削除",
+      "rendering": "描画中…",
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
       "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除"
