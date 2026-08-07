@@ -2521,6 +2521,7 @@
       "more_pull_request_in_this_session_other": "{{count}} more pull requests in this session",
       "more_pull_request_or_issue_in_this_session_one": "{{count}} more pull request or issue in this session",
       "more_pull_request_or_issue_in_this_session_other": "{{count}} more pull requests or issues in this session",
+      "open_source_link_in_side_panel": "Open {{url}} in the side panel ({{modifier}} to open it in the browser)",
       "filter_unread": "Unread",
       "filter_unread_description": "Show only sessions with unread messages",
       "filter_running": "In progress",

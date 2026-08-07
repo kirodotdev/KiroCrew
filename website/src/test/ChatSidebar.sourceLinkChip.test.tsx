@@ -1,16 +1,23 @@
 /**
- * Test: the sidebar PR/MR chip is a real link.
+ * Test: the sidebar PR / issue chip opens the pull request IN THE APP.
  *
- * The chip is an <a> that opens the pull request in a new tab, so the PR it
- * names is reachable from the sidebar. Because the session row itself is a
- * click-to-switch button, the anchor must also stop the click from bubbling —
- * otherwise opening the PR would switch sessions at the same time.
+ * The chip used to leave for the provider's website in a new tab. It now
+ * switches to the session it belongs to and asks the consumer to reveal the link
+ * in that session's side panel (`onOpenSource`), so a PR is read without leaving
+ * the dashboard.
+ *
+ * The chip is still a real anchor with a real href, and four cases deliberately
+ * fall through to plain link navigation instead — each pinned below:
+ *   - no `onOpenSource` (a surface with no side panel: the sessions embed)
+ *   - a modifier click (the user explicitly asked for a new tab)
+ *   - offline (the panel loads a PR through the LOCAL provider CLI)
+ * plus the row-switch it must never trigger by bubbling.
  *
  * Mock setup mirrors ChatSidebar.offline.test.tsx: the chat slice's switchSlot
  * thunk is mocked so we can assert whether a click reached the row handler.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, createEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -55,21 +62,36 @@ import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
 const PR_URL = 'https://github.com/kirodotdev/KiroCrew/pull/634'
+const ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/701'
+/** The chip on the session that is ALREADY active. */
+const ACTIVE_PR_URL = 'https://github.com/kirodotdev/KiroCrew/pull/12'
 
 const slots = [
-  { key: 's1', title: 'Other', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z' },
+  {
+    key: 's1', title: 'Active', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
+    source_links: [{ provider: 'github', number: 12, url: ACTIVE_PR_URL, state: 'open', kind: 'change' }],
+    source_links_total: 1,
+  },
   {
     key: 's2', title: 'PR session', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
-    source_links: [{ provider: 'github', number: 634, url: PR_URL, state: 'open', ci: 'passed' }],
-    source_links_total: 1,
+    source_links: [
+      { provider: 'github', number: 634, url: PR_URL, state: 'open', ci: 'passed' },
+      { provider: 'github', number: 701, url: ISSUE_URL, kind: 'issue' },
+    ],
+    source_links_total: 2,
   },
 ] as unknown as ChatSlot[]
 
-function renderSidebar(rows: ChatSlot[] = slots) {
+function renderSidebar(opts: {
+  onOpenSource?: (slot: string, link: { url: string; kind: 'change' | 'issue' }) => boolean
+  connected?: boolean
+  rows?: ChatSlot[]
+} = {}) {
+  const rows = opts.rows ?? slots
   const store = createTestStore({
     dashboard: {
       status: { platform: 'darwin' },
-      connected: true,
+      connected: opts.connected ?? true,
       slots: rows,
       approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -96,6 +118,7 @@ function renderSidebar(rows: ChatSlot[] = slots) {
             <ChatSidebar
               slots={rows} activeSlot={'s1'} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent={'default'} installedAgents={[]}
+              onOpenSource={opts.onOpenSource}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -104,13 +127,28 @@ function renderSidebar(rows: ChatSlot[] = slots) {
   )
 }
 
-const chip = () => screen.getByTitle(`Open ${PR_URL}`)
+/** The chip's title now names the panel and the modifier escape hatch. Built
+ *  here rather than matched loosely, so the tooltip's promise is asserted too.
+ *  `platformShortcut` is deterministic under jsdom: navigator.platform is '',
+ *  so the non-mac branch yields 'Ctrl+click'. */
+const chipTitle = (url: string) => `Open ${url} in the side panel (Ctrl+click to open it in the browser)`
+const chip = (url = PR_URL) => screen.getByTitle(chipTitle(url))
+/** Click and report whether the anchor's own navigation was suppressed. */
+const clickChip = (el: HTMLElement, init?: MouseEventInit): boolean => {
+  const event = createEvent.click(el, init)
+  fireEvent(el, event)
+  return event.defaultPrevented
+}
+/** The consumer took the link (the normal case). */
+const took = () => vi.fn(() => true)
 
-describe('ChatSidebar – PR chip link', () => {
+describe('ChatSidebar – PR chip', () => {
   beforeEach(() => switchSlotMock.mockClear())
 
-  it('renders the chip as an anchor that opens the pull request in a new tab', () => {
-    renderSidebar()
+  it('is still an anchor carrying the provider url', () => {
+    // Link semantics are load-bearing for the fall-through cases below, for
+    // "Copy link address", and for assistive tech.
+    renderSidebar({ onOpenSource: took() })
     const a = chip()
     expect(a.tagName).toBe('A')
     expect(a).toHaveAttribute('href', PR_URL)
@@ -119,17 +157,84 @@ describe('ChatSidebar – PR chip link', () => {
     expect(a).toHaveTextContent('#634')
   })
 
-  it('clicking the chip does NOT switch sessions, while clicking the row still does', () => {
-    renderSidebar()
+  it('switches to the chip\'s session and reveals the pull request in the panel', () => {
+    const onOpenSource = took()
+    renderSidebar({ onOpenSource })
+    expect(clickChip(chip())).toBe(true) // no navigation to github.com
+    expect(switchSlotMock).toHaveBeenCalledWith('s2')
+    expect(onOpenSource).toHaveBeenCalledWith('s2', { url: PR_URL, kind: 'change' })
+  })
+
+  it('reports an issue chip as kind "issue" so the Issues tab is opened', () => {
+    const onOpenSource = took()
+    renderSidebar({ onOpenSource })
+    expect(clickChip(chip(ISSUE_URL))).toBe(true)
+    expect(onOpenSource).toHaveBeenCalledWith('s2', { url: ISSUE_URL, kind: 'issue' })
+  })
+
+  it('does not re-switch when the chip is on the session already open', () => {
+    // Re-dispatching switchSlot for the active slot refetches the transcript and
+    // flashes the loading state for nothing.
+    const onOpenSource = took()
+    renderSidebar({ onOpenSource })
+    expect(clickChip(chip(ACTIVE_PR_URL))).toBe(true)
+    expect(switchSlotMock).not.toHaveBeenCalled()
+    expect(onOpenSource).toHaveBeenCalledWith('s1', { url: ACTIVE_PR_URL, kind: 'change' })
+  })
+
+  it('never lets a chip click reach the row underneath', () => {
+    renderSidebar({ onOpenSource: took() })
     // Positive control first: the row handler IS reachable in this harness, so
     // the negative assertion below is meaningful and not vacuous.
     const row = chip().closest('.session-row') as HTMLElement
     fireEvent.click(row)
     expect(switchSlotMock).toHaveBeenCalledWith('s2')
 
+    // A chip click switches to s2 exactly once — via the chip, not by bubbling
+    // (which would fire the row handler on top of it).
     switchSlotMock.mockClear()
-    fireEvent.click(chip())
+    clickChip(chip())
+    expect(switchSlotMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a modifier click through to the provider in a new tab', () => {
+    const onOpenSource = took()
+    renderSidebar({ onOpenSource })
+    for (const modifier of ['metaKey', 'ctrlKey', 'shiftKey', 'altKey'] as const) {
+      expect(clickChip(chip(), { [modifier]: true })).toBe(false)
+    }
+    expect(onOpenSource).not.toHaveBeenCalled()
     expect(switchSlotMock).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the provider link on a surface with no side panel', () => {
+    // `onOpenSource` omitted — the /embed/sessions list has no panel to reveal into.
+    renderSidebar()
+    expect(clickChip(chip())).toBe(false)
+    expect(switchSlotMock).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the provider link while the gateway is offline', () => {
+    // The panel loads a PR through the local provider CLI, so with the gateway
+    // down the provider's own page is the only thing that can answer.
+    const onOpenSource = took()
+    renderSidebar({ onOpenSource, connected: false })
+    expect(clickChip(chip())).toBe(false)
+    expect(onOpenSource).not.toHaveBeenCalled()
+    expect(switchSlotMock).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the provider link when the panel cannot resolve the url', () => {
+    // The panel re-parses the url against ITS OWN host allowlist, which is loaded
+    // from dashboard config and is empty until that query resolves — so a
+    // self-hosted chip the backend scan accepted can still be unresolvable here.
+    // Suppressing navigation on that path would make the click do nothing at all.
+    const onOpenSource = vi.fn(() => false)
+    renderSidebar({ onOpenSource })
+    expect(clickChip(chip())).toBe(false)
+    // Asked, declined, and handed back to the anchor — not skipped like the
+    // offline/no-panel cases above.
+    expect(onOpenSource).toHaveBeenCalledWith('s2', { url: PR_URL, kind: 'change' })
   })
 })
 
@@ -166,18 +271,18 @@ describe('ChatSidebar – terminal PR chips suppress CI', () => {
   }
 
   const spinner = (n: number) =>
-    screen.getByTitle(`Open ${url(n)}`).querySelector('[aria-label="Checks running"]')
+    chip(url(n)).querySelector('[aria-label="Checks running"]')
 
   it.each([
     ['closed', 993],
     ['merged', 994],
   ])('hides the running-checks spinner on a %s chip', (_state, number) => {
-    renderSidebar(stateRows())
-    expect(spinner(number)).toBeNull()
+    renderSidebar({ rows: stateRows() })
+    expect(spinner(number as number)).toBeNull()
   })
 
   it('still shows the spinner while the PR is live or its state is unknown', () => {
-    renderSidebar(stateRows())
+    renderSidebar({ rows: stateRows() })
     // Positive control: proves the fixture really does carry ci: 'running' and
     // the assertions above are not passing because nothing rendered.
     expect(spinner(995)).not.toBeNull()
@@ -185,10 +290,10 @@ describe('ChatSidebar – terminal PR chips suppress CI', () => {
   })
 
   it('keeps the closed chip\'s own lifecycle label', () => {
-    renderSidebar(stateRows())
+    renderSidebar({ rows: stateRows() })
     // The spinner goes away; the terminal signal must not.
-    expect(screen.getByTitle(`Open ${url(993)}`)).toHaveTextContent('closed')
-    expect(screen.getByTitle(`Open ${url(994)}`).querySelector('[aria-label="Merged"]')).not.toBeNull()
+    expect(chip(url(993))).toHaveTextContent('closed')
+    expect(chip(url(994)).querySelector('[aria-label="Merged"]')).not.toBeNull()
   })
 
   it.each(['passed', 'failed'] as const)('hides a %s CI glyph on a closed chip too', (ci) => {
@@ -200,8 +305,8 @@ describe('ChatSidebar – terminal PR chips suppress CI', () => {
         source_links_total: 1,
       },
     ] as unknown as ChatSlot[]
-    renderSidebar(rows)
-    const chipEl = screen.getByTitle(`Open ${url(993)}`)
+    renderSidebar({ rows })
+    const chipEl = chip(url(993))
     expect(chipEl.querySelector('[aria-label="Checks passed"]')).toBeNull()
     expect(chipEl.querySelector('[aria-label="Checks failed"]')).toBeNull()
   })

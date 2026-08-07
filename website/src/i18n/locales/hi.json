@@ -7442,6 +7442,7 @@
       "older": "इससे पुराने",
       "older_sessions": "पुराने सत्र",
       "older_sessions_2": "पुराने सत्र",
+      "open_source_link_in_side_panel": "{{url}} को साइड पैनल में खोलें (इसे ब्राउज़र में खोलने के लिए {{modifier}})",
       "open_split_view": "स्प्लिट व्यू खोलें",
       "pick_a_model_for_every_session_switching_a_sessi": "हर सत्र के लिए मॉडल चुनें। किसी सत्र को स्विच करने पर",
       "pinned": "पिन किए गए",

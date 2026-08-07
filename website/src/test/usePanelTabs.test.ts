@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
+import { usePanelTabs, openPanelView, __resetPanelTabs } from '../hooks/usePanelTabs'
 
 // The panel-tab store is module-level + localStorage-persisted (so the
 // strip survives ChatPage route unmounts and reloads). Reset it before each
@@ -345,5 +345,39 @@ describe('usePanelTabs — per-slot isolation', () => {
     // Emptying content removes only the pinned view; dynamic tabs untouched.
     act(() => result.current.syncPinned([]))
     expect(result.current.tabs.map(t => t.id)).toEqual(['logs', 'side'])
+  })
+})
+
+/* ── openPanelView: address a strip by slot, with no hook binding ──────────
+ * A sidebar chip switches sessions and opens a panel view in ONE gesture, so at
+ * call time the mounted `usePanelTabs` is still bound to the chat being LEFT.
+ * These pin that the slot argument — not the binding — decides the strip. */
+describe('openPanelView', () => {
+  it('opens the view on the NAMED slot, not the one the hook is bound to', () => {
+    const { result, rerender } = renderHook(({ slot }: { slot: string | null }) => usePanelTabs(slot), {
+      initialProps: { slot: 'chat-a' as string | null },
+    })
+    // Bound to A; ask for B. This is the sidebar's exact situation.
+    act(() => openPanelView('chat-b', 'changes'))
+    expect(result.current.tabs).toEqual([])
+
+    rerender({ slot: 'chat-b' })
+    expect(result.current.tabs.map(t => t.id)).toEqual(['changes'])
+    expect(result.current.activeId).toBe('changes')
+  })
+
+  it('focuses an existing view instead of duplicating it', () => {
+    const { result } = renderHook(() => usePanelTabs('chat-a'))
+    act(() => result.current.openView('files'))
+    act(() => openPanelView('chat-a', 'issues'))
+    act(() => openPanelView('chat-a', 'files'))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['files', 'issues'])
+    expect(result.current.activeId).toBe('files')
+  })
+
+  it('routes a null slot to the same fallback bucket the hook uses', () => {
+    const { result } = renderHook(() => usePanelTabs(null))
+    act(() => openPanelView(null, 'issues'))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['issues'])
   })
 })

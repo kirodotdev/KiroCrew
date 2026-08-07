@@ -7380,6 +7380,7 @@
       "more_pull_request_in_this_session_other": "[{{count}} ɱøŕè þùĺĺ ŕèǫùèşţş ìñ ţĥìş şèşşìøñ ··················]",
       "more_pull_request_or_issue_in_this_session_one": "[{{count}} ɱøŕè þùĺĺ ŕèǫùèşţ øŕ ìşşùè ìñ ţĥìş şèşşìøñ ······················]",
       "more_pull_request_or_issue_in_this_session_other": "[{{count}} ɱøŕè þùĺĺ ŕèǫùèşţş øŕ ìşşùèş ìñ ţĥìş şèşşìøñ ·······················]",
+      "open_source_link_in_side_panel": "[Øþèñ {{url}} ìñ ţĥè şìðè þàñèĺ ({{modifier}} ţø øþèñ ìţ ìñ ţĥè ƀŕøẁşèŕ) ··················]",
       "filter_unread": "[Ùñŕèàð ·········]",
       "filter_unread_description": "[Şĥøẁ øñĺý şèşşìøñş ẁìţĥ ùñŕèàð ɱèşşàğèş ····················]",
       "filter_running": "[Ìñ þŕøğŕèşş ··········]",

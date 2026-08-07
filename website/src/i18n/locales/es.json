@@ -7545,6 +7545,7 @@
       "older": "Anteriores",
       "older_sessions": "Sesiones anteriores",
       "older_sessions_2": "Sesiones anteriores",
+      "open_source_link_in_side_panel": "Abrir {{url}} en el panel lateral ({{modifier}} para abrirlo en el navegador)",
       "open_split_view": "Abrir vista dividida",
       "pick_a_model_for_every_session_switching_a_sessi": "Elige un modelo para cada sesión. Cambiar una sesión",
       "pinned": "Fijadas",

@@ -7442,6 +7442,7 @@
       "older": "Älter",
       "older_sessions": "Ältere Sitzungen",
       "older_sessions_2": "Ältere Sitzungen",
+      "open_source_link_in_side_panel": "{{url}} im Seitenpanel öffnen ({{modifier}} zum Öffnen im Browser)",
       "open_split_view": "Geteilte Ansicht öffnen",
       "pick_a_model_for_every_session_switching_a_sessi": "Wählen Sie ein Modell für jede Sitzung. Das Wechseln einer Sitzung",
       "pinned": "Angepinnt",

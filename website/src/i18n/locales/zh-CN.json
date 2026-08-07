@@ -7339,6 +7339,7 @@
       "older": "更早",
       "older_sessions": "较早的会话",
       "older_sessions_2": "较早的会话",
+      "open_source_link_in_side_panel": "在侧边面板中打开 {{url}} ({{modifier}} 在浏览器中打开)",
       "open_split_view": "打开分屏视图",
       "pick_a_model_for_every_session_switching_a_sessi": "为每个会话选择一个模型。切换会话会",
       "pinned": "已置顶",

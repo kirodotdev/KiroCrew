@@ -1551,6 +1551,18 @@ class _ChatSlot:
         Linear scan (no regex backtracking) validated by the source-provider
         URL parser and cached behind an explicit content revision.
 
+        Ordered MOST RECENTLY MENTIONED FIRST, which is what makes the sidebar's
+        chip budget useful. Only ``_SERIALIZED_SOURCE_LINKS_PER_SLOT`` chips per
+        kind are serialized and the rest collapse into a "+N" pill, so a
+        first-mention order handed those slots to the OLDEST pull requests in the
+        session and hid the one being worked on -- the longer the session ran, the
+        more certain it was to hide the interesting chip. Scanning backwards also
+        means the ``_MAX_SOURCE_LINKS_PER_SLOT`` ceiling keeps the newest links
+        rather than the first 64 ever mentioned.
+
+        Recency is LAST mention, not first: a pull request under active work gets
+        re-mentioned as it progresses, which is exactly the signal wanted here.
+
         Each entry carries a ``kind`` discriminator (``"change"`` for a pull or
         merge request, ``"issue"`` for an issue). Readers that only handle pull
         requests -- the chip-status cache and every path that reaches ``gh pr
@@ -1575,21 +1587,56 @@ class _ChatSlot:
 
         stop_chars = set(" \t\n<>()[]{}\"'")
         found: dict[str, dict] = {}
-        for msg in self.messages:
-            if len(found) >= _MAX_SOURCE_LINKS_PER_SLOT:
+        # Hard ceiling on parse attempts for the WHOLE call, not per message and not
+        # only on success. `len(found)` advances only for a new valid url, so a
+        # message repeating one rejected candidate (or one valid one) never advanced
+        # it and every occurrence reached the parser: a 58 MB accepted body froze the
+        # event loop for ~13.6s, and this runs synchronously inside `to_dict` on
+        # `push_slots_update`. A budget bounds every flood shape at once -- rejected,
+        # repeated and distinct -- which a dedup set could not, because remembering
+        # candidates in order to skip them is itself unbounded memory.
+        #
+        # Sized far above any real transcript: 64 serialized chips come from a
+        # handful of occurrences each, so 4096 attempts is ~64x headroom while
+        # capping worst-case work in the tens of milliseconds. The walk is
+        # newest-first, so a truncated flood keeps the most recent candidates.
+        parse_budget = _MAX_SOURCE_LINKS_PER_SLOT * 64
+        # Newest message first, and newest url first WITHIN a message, so the
+        # dedup below keeps each url's LAST mention and `found` comes out in
+        # descending recency. One message mentioning several urls is ordered by
+        # position in the text, its only available proxy for "later".
+        for msg in reversed(self.messages):
+            if len(found) >= _MAX_SOURCE_LINKS_PER_SLOT or parse_budget <= 0:
                 break
             if not isinstance(msg, dict) or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES:
                 continue
             content = msg.get("content")
             if not isinstance(content, str) or "https://" not in content:
                 continue
-            idx = 0
-            while len(found) < _MAX_SOURCE_LINKS_PER_SLOT:
-                idx = content.find("https://", idx)
+            # Walk this message's urls from the END with `rfind`, so the newest
+            # mention is admitted first and the cap below can stop the walk. An
+            # earlier draft collected the whole message's urls and reversed the
+            # list, which allocated in proportion to the message and parsed every
+            # occurrence before the cap was consulted -- a single message carrying
+            # thousands of urls would stall slot serialization on the event loop.
+            #
+            search_end = len(content)
+            while len(found) < _MAX_SOURCE_LINKS_PER_SLOT and parse_budget > 0:
+                idx = content.rfind("https://", 0, search_end)
                 if idx == -1:
                     break
+                # A candidate ends at the first stop char OR where the NEXT
+                # occurrence begins, whichever comes first. The bound is what keeps
+                # the whole walk linear: without it, content like "https://" repeated
+                # thousands of times has no stop char until the very end, so every
+                # occurrence would rescan the entire tail -- quadratic, on a path
+                # `to_dict` runs synchronously during push_slots_update, which is
+                # enough to trip the event-loop watchdog. Bounded this way each
+                # character is examined once across the whole message.
+                token_limit = search_end
+                search_end = idx
                 end = idx
-                while end < len(content) and content[end] not in stop_chars:
+                while end < token_limit and content[end] not in stop_chars:
                     end += 1
                 # Also strip markdown emphasis (**bold**, *italic*, `code`,
                 # _underscore_, ~~strike~~): agent messages routinely wrap PR
@@ -1597,17 +1644,21 @@ class _ChatSlot:
                 # check. Valid PR/MR URLs end in a number, so these chars can
                 # never belong to a legitimate link tail.
                 candidate = content[idx:end].rstrip(".,!?;:*_~`")
-                idx = end
                 if (
                     "/pull/" not in candidate
                     and "/merge_requests/" not in candidate
                     and "/issues/" not in candidate
                 ):
                     continue
+                # Every attempt is charged, whether it parses or not -- that is
+                # what makes the bound hold on a rejected-candidate flood.
+                parse_budget -= 1
                 try:
                     ref = parse_source_url(candidate)
                 except ValueError:
                     continue
+                # First writer wins, and because the walk is backwards the first
+                # writer IS the most recent mention.
                 if ref.url not in found:
                     found[ref.url] = {
                         "provider": ref.provider,

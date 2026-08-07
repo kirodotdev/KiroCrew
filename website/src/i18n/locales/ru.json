@@ -7648,6 +7648,7 @@
       "older": "Ранее",
       "older_sessions": "Более старые сессии",
       "older_sessions_2": "Более старые сессии",
+      "open_source_link_in_side_panel": "Открыть {{url}} в боковой панели ({{modifier}} — открыть в браузере)",
       "open_split_view": "Открыть разделённый вид",
       "pick_a_model_for_every_session_switching_a_sessi": "Выберите модель для всех сессий. Переключение сессии",
       "pinned": "Закреплено",

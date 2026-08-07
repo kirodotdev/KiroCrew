@@ -64,7 +64,7 @@ export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
-import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
+import { usePanelTabs, openPanelView, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
@@ -126,14 +126,18 @@ import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft }
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
+  commitRevealedSource,
   commitSourceSelection,
   isSourceSelectionKey,
   loadSeenPullRequestLinks,
   loadSourceSelections,
   partitionSourceLinks,
+  parseSourceLinkUrl,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
+  type RevealedSources,
+  loadRevealedSources,
   type SourceLinkKind,
   sourceSelection,
   withSourceSelection,
@@ -1740,10 +1744,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     queryFn: () => api.dashboardConfig(),
     staleTime: 30_000,
   })
+  const sourceHosts = sourceHostCfg?.gitlab_hosts ?? []
+  // Read through a ref by callbacks that must stay identity-stable (they are
+  // handed to the sidebar, which re-renders every session row).
+  const sourceHostsRef = useRef(sourceHosts)
+  sourceHostsRef.current = sourceHosts
   const indexedSourceLinks = sourceLinkIndex.current.update(
     activeSlot,
     messages,
-    sourceHostCfg?.gitlab_hosts ?? [],
+    sourceHosts,
   )
   // One scan, one dedup map, two panels: the extractor returns pull requests and
   // issues together (they share the per-role cap), and the two side-panel tabs
@@ -1771,6 +1780,41 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [sourceSelections, setSourceSelections] = useState(loadSourceSelections)
   const selectedSourceUrl = sourceSelection(sourceSelections, activeSlot, 'change')
   const selectedIssueUrl = sourceSelection(sourceSelections, activeSlot, 'issue')
+  // The links sidebar chips asked to see, per slot and per kind.
+  //
+  // The chips and these panels do NOT scan for links the same way: the backend
+  // chip scan (state.py) keeps every provider url in the transcript, while the
+  // panel's extractor emits only links the AGENT surfaced — a pull request the
+  // USER pasted is deliberately a Resource, not a Change. A chip is also drawn
+  // from the whole server-side transcript, while the extractor sees only the
+  // messages this window has loaded. Either gap would make the chip a dead end
+  // (the panel would normalise straight back to the first link it does know), so
+  // the clicked link is injected into the list for the session it belongs to.
+  //
+  // Keyed by slot AND kind, matching the two selection ledgers below. A single
+  // last-one-wins record could not hold a revealed pull request and a revealed
+  // issue at the same time: revealing an issue evicted the pull request, its
+  // injection vanished from `panelSources`, and the Changes reconciliation then
+  // normalised the selection onto a DIFFERENT pull request behind the user's back.
+  //
+  // Durable, for the same reason. The SELECTION pointing at a revealed link is
+  // already persisted; without persisting the link too, a reload remembered the
+  // url but could no longer produce it, and reconciliation performed that same
+  // silent swap one page load later.
+  const [revealedSources, setRevealedSources] = useState<RevealedSources>(loadRevealedSources)
+  const revealedForSlot = activeSlot ? revealedSources[activeSlot] : undefined
+  const revealedChange = revealedForSlot?.change ?? null
+  const revealedIssue = revealedForSlot?.issue ?? null
+  const panelSources = useMemo(() => (
+    revealedChange && !sourceLinks.some(link => link.url === revealedChange.url)
+      ? [revealedChange, ...sourceLinks]
+      : sourceLinks
+  ), [sourceLinks, revealedChange])
+  const panelIssues = useMemo(() => (
+    revealedIssue && !issueLinks.some(link => link.url === revealedIssue.url)
+      ? [revealedIssue, ...issueLinks]
+      : issueLinks
+  ), [issueLinks, revealedIssue])
   // Fields whose durable write storage REFUSED, per slot. Storage then holds an
   // older url than the user's live choice, so adoption must not take it back
   // (see adoptSourceSelections). A ref, not state: it changes nothing on screen
@@ -1782,8 +1826,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // rather than on every render. Cleared by an explicit pick or a successful
   // restore.
   const provisionalFallbackRef = useRef<Record<string, Partial<Record<SourceLinkKind, number>>>>({})
-  const selectSource = useCallback((kind: SourceLinkKind, url: string) => {
-    const slot = activeSlotRef.current
+  const selectSource = useCallback((kind: SourceLinkKind, url: string, forSlot?: string) => {
+    // `forSlot` is for a pick made on a session that is not on screen yet — a
+    // sidebar chip switches sessions and selects in one gesture, and
+    // activeSlotRef is assigned during RENDER, so at call time it still names the
+    // chat being left.
+    const slot = forSlot ?? activeSlotRef.current
     setSourceSelections(previous => withSourceSelection(previous, slot, kind, url))
     const outcome = commitSourceSelection(slot, kind, url)
     if (!slot) return
@@ -1831,12 +1879,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // were handed the persisting callback, which made their normalize a durable
   // write and defeated the whole in-memory-only rule.
   const reconcileSourceUrl = useCallback(
-    (url: string) => reconcileSelection('change', url, sourceLinks.length),
-    [reconcileSelection, sourceLinks.length],
+    (url: string) => reconcileSelection('change', url, panelSources.length),
+    [reconcileSelection, panelSources.length],
   )
   const reconcileIssueUrl = useCallback(
-    (url: string) => reconcileSelection('issue', url, issueLinks.length),
-    [reconcileSelection, issueLinks.length],
+    (url: string) => reconcileSelection('issue', url, panelIssues.length),
+    [reconcileSelection, panelIssues.length],
   )
 
   // Re-read storage for a slot whose on-screen value is a provisional fallback.
@@ -1884,15 +1932,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // choice. The event's newValue is ignored in favour of a full re-read, so the
   // loader's own validation and bounds apply to whatever a sibling wrote.
   //
-  // The urls THIS window's transcript offers go in with the read: adoption is
+  // The urls THIS window can actually SHOW go in with the read: adoption is
   // conditional on them for the active slot, which is what keeps two windows
   // with divergent transcripts from overwriting each other in a loop (see
-  // adoptSourceSelections). Read through a ref because the listener is
-  // registered once and must see the current transcript at event time.
+  // adoptSourceSelections). The panel lists rather than the raw scan, so a link
+  // revealed from a sidebar chip is not taken back by a sibling's write. Read
+  // through a ref because the listener is registered once and must see the
+  // current lists at event time.
   const availableSourceUrls = useMemo(() => ({
-    change: sourceLinks.map(source => source.url),
-    issue: issueLinks.map(issue => issue.url),
-  }), [sourceLinks, issueLinks])
+    change: panelSources.map(source => source.url),
+    issue: panelIssues.map(issue => issue.url),
+  }), [panelSources, panelIssues])
   const availableSourceUrlsRef = useRef(availableSourceUrls)
   availableSourceUrlsRef.current = availableSourceUrls
   useEffect(() => {
@@ -1934,10 +1984,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // An uncached slot temporarily has no messages while its history hydrates.
     // Preserve the persisted strip until that source-of-truth load settles.
     if (slotLoading) return
+    // Reconciled against the list the PANEL renders, not the raw transcript scan:
+    // a link revealed from a sidebar chip is a real, user-chosen tab, and judging
+    // it against the scan alone would normalise the selection straight off it.
     // A previous provisional render may have fallen back in memory while storage
     // still holds the tab the user chose; look there first once links appear.
-    if (restoreFromStorage('change', sourceLinks)) return
-    if (sourceLinks.length === 0) {
+    if (restoreFromStorage('change', panelSources)) return
+    if (panelSources.length === 0) {
       // Changes is a permanently pinned tab (SidePanel.syncPinned) — never
       // auto-close it here. Just clear the source selection; the tab stays put
       // and renders its empty state until sources are detected again.
@@ -1958,30 +2011,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // First-wins fallback ONLY when the remembered url is gone from the
     // transcript: while it is still present, selectedSourceUrl already carries
     // the restored per-slot choice and this reconciliation leaves it alone.
-    if (!sourceLinks.some(source => source.url === selectedSourceUrl)) {
+    if (!panelSources.some(source => source.url === selectedSourceUrl)) {
       // Storage may still hold the tab the user actually chose — absent from an
       // earlier PROVISIONAL transcript but present now that the fetch landed.
       // Look there once before falling back, gated on the url being in THIS
       // transcript (that gate IS the "the fetch proved it exists" condition).
-      reconcileSelection('change', sourceLinks[0].url, sourceLinks.length)
+      reconcileSelection('change', panelSources[0].url, panelSources.length)
     }
     // reconcileSourceUrl reads the active slot through a ref, so it is stable and
     // this effect reacts only to sources, selection, and hydration state.
-  }, [sourceLinks, selectedSourceUrl, slotLoading, messages.length, reconcileSelection, restoreFromStorage])
+  }, [panelSources, selectedSourceUrl, slotLoading, messages.length, reconcileSelection, restoreFromStorage])
 
   useEffect(() => {
     // Same first-wins / clear-on-empty reconciliation as the Changes selection
     // above, including the loaded-transcript guard on the clear.
     if (slotLoading) return
-    if (restoreFromStorage('issue', issueLinks)) return
-    if (issueLinks.length === 0) {
+    if (restoreFromStorage('issue', panelIssues)) return
+    if (panelIssues.length === 0) {
       if (messages.length && selectedIssueUrl) reconcileSelection('issue', '')
       return
     }
-    if (!issueLinks.some(issue => issue.url === selectedIssueUrl)) {
-      reconcileSelection('issue', issueLinks[0].url, issueLinks.length)
+    if (!panelIssues.some(issue => issue.url === selectedIssueUrl)) {
+      reconcileSelection('issue', panelIssues[0].url, panelIssues.length)
     }
-  }, [issueLinks, selectedIssueUrl, slotLoading, messages.length, reconcileSelection, restoreFromStorage])
+  }, [panelIssues, selectedIssueUrl, slotLoading, messages.length, reconcileSelection, restoreFromStorage])
 
   const addSourceCommentToChat = useCallback((text: string) => {
     setInput(previous => previous.trim() ? `${previous.trimEnd()}\n\n${text}` : text)
@@ -4723,6 +4776,55 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const closeSidebar = useCallback(() => setMobileSessions(false), [])
   useSwipeEdge(chatContainerRef, { enabled: isMobile && !mobileSessions, edge: 'left', edgeZone: 0.35, onSwipe: openSidebar })
   useSwipeEdge(chatContainerRef, { enabled: isMobile && mobileSessions, edge: 'right', threshold: 50, edgeZone: 9999, onSwipe: closeSidebar })
+  /** Reveal a session's pull request / issue in that session's side panel.
+   *
+   *  Fires from a sidebar chip AFTER ChatSidebar has dispatched the slot switch,
+   *  so `switchSlot.pending` has already published the target slot to the store —
+   *  but activeSlotRef is assigned during RENDER and still names the chat being
+   *  left, so `slot` is threaded explicitly through every write below.
+   *
+   *  The url is re-parsed rather than trusted: the chip payload comes from the
+   *  BACKEND's scan, and running it through the panel's own parser is what
+   *  guarantees the injected link matches the shape (and the host allowlist) the
+   *  panels already work with.
+   *
+   *  Returns whether the panel took the link. FALSE hands the click back to the
+   *  chip's own anchor, so a url this parser rejects opens the provider instead
+   *  of doing nothing at all. That is reachable rather than theoretical: the two
+   *  parsers read the self-managed GitLab allowlist from different places, and
+   *  `sourceHosts` is empty until the dashboard-config query resolves (and stays
+   *  empty if it fails), so every self-hosted chip parses to null in that window
+   *  even though the backend scan accepted it. */
+  const revealSourceLink = useCallback((slot: string, chip: { url: string; kind: SourceLinkKind }): boolean => {
+    const link = parseSourceLinkUrl(chip.url, sourceHostsRef.current)
+    if (!link) return false
+    const view = link.kind === 'issue' ? 'issues' : 'changes'
+    // Durable BEFORE the state update, and one key at a time. Writing inside the
+    // updater would both make it impure (React may invoke an updater more than
+    // once) and publish this window's whole map, deleting a sibling window's
+    // reveals — see `commitRevealedSource`.
+    commitRevealedSource(slot, link.kind, link.url)
+    setRevealedSources(previous => ({
+      ...previous,
+      [slot]: { ...previous[slot], [link.kind]: link },
+    }))
+    selectSource(link.kind, link.url, slot)
+    // Addressed by slot, not through tabsCtl: that binding is still the chat
+    // being left, so the tab would open on the wrong strip.
+    openPanelView(slot, view)
+    // The find pane owns the right-hand dock exclusively (shouldMountSidePanel
+    // returns false while it is open), so revealing into a session with search
+    // open would suppress the chip's navigation and then mount nothing at all.
+    // Same reason handleFileOpen / handleOpenDiff close it before opening a dock
+    // panel.
+    search.close()
+    dispatch(openActivityToTab(view))
+    // The mobile session drawer covers the panel it would reveal into. The
+    // activeSlot effect closes it on a real switch, but a chip on the session
+    // already open does not change activeSlot.
+    if (isMobile) setMobileSessions(false)
+    return true
+  }, [dispatch, isMobile, selectSource])
   // Web Preview "focus" (expand) mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list (below) and maximize the side
   // panel (passed to SidePanel), so the preview gets max room and chat shrinks
@@ -4920,6 +5022,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           splitActive={splitMode}
           onOpenSplit={() => enterSplit(activeSlot)}
           onSelectSlot={() => setSplitMode(false)}
+          onOpenSource={revealSourceLink}
         />
       </OverlayDrawer>
       )}
@@ -5737,8 +5840,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
               onArtifactOpen={handleArtifactOpen}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-              sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
-              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
+              sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
+              issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
@@ -5773,8 +5876,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
                 onArtifactOpen={handleArtifactOpen}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
-                sources={sourceLinks} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
-              issues={issueLinks} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
+                sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
+              issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
