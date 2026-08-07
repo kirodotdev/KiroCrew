@@ -274,8 +274,11 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         })()}
       </div>
     )}
+    {/* Where the pointer cannot hover, the footer's descendant overrides grow
+        every action to a 40px touch target (20px icon + 10px padding); pointer
+        devices keep the compact 14px icons untouched. */}
     {!isStreaming && showFooter && (
-      <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300">
+      <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 [@media(hover:none)]:flex-wrap [@media(hover:none)]:[&_button]:p-2.5 [@media(hover:none)]:[&_svg]:h-5 [@media(hover:none)]:[&_svg]:w-5">
         {/* No `font-mono`: a formatted date is prose, and Tailwind's `font-mono`
             pins `var(--mono)` — a token the Font Family setting never writes, so
             it overrode the user's choice and put JetBrains Mono (no CJK

@@ -463,3 +463,23 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(fmtCredits(12.53)).toBe('12.5')
   })
 })
+
+describe('action footer touch sizing', () => {
+  // happy-dom does not evaluate media queries, so the hover-none utility
+  // classes themselves are pinned, the same way the footer reveal is.
+  it('enlarges the actions to 40px touch targets where the pointer cannot hover', () => {
+    render(<AssistantMessage content="Hi" isStreaming={false} slotRunning={false} onRegenerate={() => {}} />)
+    const footer = screen.getByTitle('Regenerate').parentElement!
+    expect(footer.className).toContain('[@media(hover:none)]:[&_button]:p-2.5')
+    expect(footer.className).toContain('[@media(hover:none)]:[&_svg]:h-5')
+    expect(footer.className).toContain('[@media(hover:none)]:[&_svg]:w-5')
+    // The grown row exceeds a phone's width, so it must wrap rather than
+    // crush the timestamp and clip the trailing actions.
+    expect(footer.className).toContain('[@media(hover:none)]:flex-wrap')
+  })
+
+  it('keeps the compact sizing on the buttons for pointer devices', () => {
+    render(<AssistantMessage content="Hi" isStreaming={false} slotRunning={false} onRegenerate={() => {}} />)
+    expect(screen.getByTitle('Regenerate').className).toContain('p-0.5')
+  })
+})
