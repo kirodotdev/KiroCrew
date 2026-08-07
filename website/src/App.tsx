@@ -1047,6 +1047,27 @@ export default function App() {
   // (the native dashboard); a non-null id means a remote instance's embedded
   // dashboard is shown instead, so the Local pane is hidden (not unmounted).
   const activeInstanceId = useAppSelector(s => s.instances.activeId)
+  // Whether the shell's one-shot entrance animation has already played.
+  //
+  // The local pane is HIDDEN, not unmounted, while a remote instance tab is
+  // active (`display:none` below) so its state and websocket survive the
+  // switch. But a CSS *animation* restarts when an element goes from
+  // `display:none` back to displayed — unlike a transition, and unlike
+  // framer-motion's JS-driven animations. Left unguarded, `animate-rise`
+  // therefore replays its 350ms opacity-0 -> 1 + 8px lift over the WHOLE
+  // dashboard every time the user returns to the Local tab, which reads as the
+  // entire UI (side panel included) flashing in again.
+  const [shellEntered, setShellEntered] = useState(false)
+  // Backstop for the latch below. `animationend` does NOT fire when a running
+  // animation is INTERRUPTED — the browser fires `animationcancel`, which React
+  // 18 has no synthetic handler for. Hiding the pane inside the entrance's
+  // 350ms window would therefore leave the class applied and replay it once on
+  // the next return. A timer comfortably past the duration closes that without
+  // a ref + native listener, and cannot cut the entrance short.
+  useEffect(() => {
+    const t = window.setTimeout(() => setShellEntered(true), 600)
+    return () => window.clearTimeout(t)
+  }, [])
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
@@ -1633,7 +1654,15 @@ export default function App() {
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      // Retire the entrance animation once it has played, so re-showing this
+      // pane cannot replay it. Guarded on BOTH the keyframe name and the event
+      // target: `animationend` bubbles, and descendants (banners, cards) use
+      // `animate-rise` too, so an unguarded handler would retire the shell's
+      // entrance from an unrelated child's animation.
+      onAnimationEnd={e => {
+        if (e.target === e.currentTarget && e.animationName === 'rise') setShellEntered(true)
+      }}
       style={{
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
