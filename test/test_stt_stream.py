@@ -1123,3 +1123,112 @@ class TestSttInstallScriptPath:
             env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(tmp_path)},
         )
         assert "FOUND" in out.stdout
+
+
+class TestSttInstallScriptWheels:
+    """The pip fallback must never drop into a source build.
+
+    openai-whisper is a pure-Python sdist, but numpy / numba / llvmlite / torch /
+    triton / tiktoken ship compiled wheels. On a host whose glibc is older than the
+    wheel's tag (Amazon Linux 2 = glibc 2.26, so manylinux_2_17 is the ceiling while
+    current numpy publishes manylinux_2_28) pip falls back to the source tarball and
+    the failure surfaces as a compiler error naming numpy — "GCC >= 9.3",
+    "metadata-generation-failed" — which reads as a numpy bug rather than the
+    wheel-compatibility problem it is.
+    """
+
+    def _pip_section(self):
+        """Return (full script, the pip-fallback section only).
+
+        Scoped deliberately: the brew branch above also mentions
+        ``openai-whisper``, so a whole-script index() would measure the wrong
+        occurrence and the ordering assertions would silently pass.
+        """
+        from kiro_crew.dashboard.handlers import core
+
+        script = core._build_stt_install_script("whisper")
+        marker = "# Fallback: pip install"
+        assert marker in script, "pip fallback section not found"
+        return script, script[script.index(marker) :]
+
+    def _pip_commands(self, section):
+        """Real pip invocations: continuations joined, comments dropped.
+
+        Each command is truncated at its ``||`` recovery clause — the CPU-torch
+        step's fallback ``echo`` mentions openai-whisper, and counting that as an
+        install target would inflate the command list.
+        """
+        joined = section.replace("\\\n", " ")
+        cmds = []
+        for ln in joined.splitlines():
+            stripped = ln.strip()
+            if stripped.startswith("#") or "pip install" not in stripped:
+                continue
+            cmds.append(" ".join(stripped.split()).split("||")[0].strip())
+        return cmds
+
+    def test_compiled_deps_are_wheel_only(self):
+        """Every pip install of the whisper stack constrains source builds."""
+        script, section = self._pip_section()
+        cmds = self._pip_commands(section)
+        assert cmds, "expected at least one pip install command"
+        for cmd in cmds:
+            assert "--only-binary" in cmd, f"unconstrained pip install: {cmd}"
+        # The named set must cover the deps that actually compile.
+        for pkg in ("numpy", "numba", "llvmlite", "torch", "triton", "tiktoken", "regex"):
+            assert pkg in section, f"{pkg} missing from the wheel-only set"
+
+    def test_no_hardcoded_version_ceiling(self):
+        """Wheel-only is the mechanism; a pinned cap would rot.
+
+        ``--only-binary`` drops sdists from the candidate set, so pip backtracks
+        to the newest release that HAS a compatible wheel on its own (glibc 2.26:
+        numpy 2.5.1 -> 2.2.6 manylinux_2_17). Pinning a ceiling instead would go
+        stale as hosts and wheel tags move, and would hold back a modern host.
+        """
+        _, section = self._pip_section()
+        whisper = [c for c in self._pip_commands(section) if "openai-whisper" in c]
+        assert len(whisper) == 1, f"expected one whisper install, got {len(whisper)}"
+        assert "numpy<" not in section, "no hardcoded numpy ceiling"
+        assert "numpy==" not in section, "no hardcoded numpy pin"
+
+    def test_cpu_torch_installed_first_when_no_gpu(self):
+        """A GPU-less Linux host must not pull ~2.5 GB of CUDA wheels."""
+        _, section = self._pip_section()
+        assert "nvidia-smi" in section, "GPU probe missing"
+        assert "download.pytorch.org/whl/cpu" in section
+        # --extra-index-url only ADDS a source; pip would still prefer the
+        # higher-versioned CUDA build, so the CPU index must be the ONLY index.
+        assert "--extra-index-url https://download.pytorch.org/whl/cpu" not in section
+        # torch has to land before the whisper resolve, or it is already satisfied
+        # by the CUDA build and the CPU step is a no-op.
+        assert section.index("download.pytorch.org/whl/cpu") < section.index(
+            "Installing openai-whisper"
+        )
+
+    def test_cpu_torch_failure_is_not_fatal(self):
+        """An unreachable CPU index must not fail an otherwise-fine install."""
+        _, section = self._pip_section()
+        tail = section[
+            section.index("download.pytorch.org/whl/cpu") : section.index(
+                "Installing openai-whisper"
+            )
+        ]
+        # The CPU-torch step recovers with `|| echo`, never `exit 1`.
+        assert "|| echo" in tail
+        assert "exit 1" not in tail
+
+    def test_pip_path_still_targets_system_python(self):
+        """Regression guard on a deliberate design choice, not an accident.
+
+        ``--user`` lands in ``~/.local/bin``, which ``transcribe._find_whisper``
+        probes explicitly via ``_WHISPER_SEARCH_PATHS`` (``_python3_bin_dir``
+        returns the interpreter's OWN prefix bin, not the --user target, so it is
+        not what covers this). Redirecting the install into the gateway's venv
+        would make the binary undiscoverable at runtime, and ``--user`` is
+        rejected outright inside a virtualenv.
+        """
+        script, section = self._pip_section()
+        for cmd in self._pip_commands(section):
+            assert "--user" in cmd, f"pip install must stay a --user install: {cmd}"
+        assert "sys.executable" not in script

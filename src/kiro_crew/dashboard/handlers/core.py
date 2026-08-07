@@ -869,6 +869,14 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
 
     - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
     - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
+
+    The pip fallback deliberately targets a SYSTEM python with ``--user`` (never
+    the gateway's own venv, which is replaced on every upgrade). ``--user`` lands
+    in ``~/.local/bin``, which :func:`kiro_crew.transcribe._find_whisper` probes
+    via its ``_WHISPER_SEARCH_PATHS`` (and via ``shutil.which`` when that dir is
+    on PATH). It also constrains the resolve so pip can never drop into a source
+    build — see the ``BINARY_ONLY`` comment in the script for why an incompatible
+    wheel otherwise reports itself as a compiler error.
     """
     prelude = _stt_install_path_prelude()
     if provider == "mlx":
@@ -929,8 +937,41 @@ if [ -z "$PY" ]; then
 fi
 echo "Using: $PY ($($PY --version))"
 
+# openai-whisper itself is a pure-Python sdist, but its dependency tree is not:
+# numpy / numba / llvmlite / torch / triton / tiktoken all ship COMPILED wheels.
+# When pip finds no wheel matching the host it silently falls back to the source
+# tarball and starts a compile — which is why a wheel-compatibility problem
+# surfaces as a toolchain error ("GCC >= 9.3", "metadata-generation-failed")
+# that names numpy and looks unrelated to the missing wheel. Amazon Linux 2 ships
+# glibc 2.26, so pip accepts at most manylinux_2_17, while current numpy publishes
+# manylinux_2_28 only — the default resolve therefore fetches numpy-2.5.1.tar.gz
+# and dies on the system GCC (7.3 on AL2).
+#
+# --only-binary removes sdists from the candidate set for exactly these packages,
+# so the resolver BACKTRACKS to the newest version that does have a compatible
+# wheel instead of compiling (verified on glibc 2.26: numpy 2.5.1 -> 2.2.6
+# manylinux_2_17, exit 0). Deliberately NO pinned version ceiling: a hardcoded cap
+# would rot as hosts and wheel tags move, while letting pip choose the newest
+# wheel-compatible release stays correct on both old and current hosts.
+BINARY_ONLY="numpy,numba,llvmlite,torch,triton,tiktoken,regex"
+
+# torch's default Linux wheels are the CUDA builds, so a plain resolve drags ~2.5 GB
+# of nvidia-* packages onto a machine that has no GPU to use them. --extra-index-url
+# would not help: it only ADDS a source, and pip still prefers the higher-versioned
+# default build. So the CPU wheel gets its own step from the CPU-only index, and the
+# whisper resolve below then sees torch already satisfied and leaves it alone.
+# Non-fatal: if the CPU index is unreachable, fall through and let whisper resolve
+# torch itself rather than failing an install that would otherwise succeed.
+if [ "$(uname -s)" = "Linux" ] && ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "No NVIDIA GPU detected, installing CPU-only torch..."
+    "$PY" -m pip install -q --user --only-binary=torch \
+        --index-url https://download.pytorch.org/whl/cpu torch 2>&1 \
+        || echo "CPU-only torch unavailable; letting openai-whisper resolve torch"
+fi
+
 echo "Installing openai-whisper..."
-"$PY" -m pip install -q --user openai-whisper || { echo "ERROR: pip install openai-whisper failed"; exit 1; }
+"$PY" -m pip install -q --user --only-binary="$BINARY_ONLY" openai-whisper 2>&1 \
+    || { echo "ERROR: pip install openai-whisper failed"; exit 1; }
 
 echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
