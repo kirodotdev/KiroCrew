@@ -29,6 +29,17 @@ HARD_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
                   "dist", "build", "out", "target"}
 DEFAULT_MAX_FILES = 5000
 
+# How many times a file left in 'scanning' is retried before its row is retired to
+# 'failed'. The marker means "an attempt started and never reached a terminal state",
+# so retrying it is the whole point of crash recovery -- but a retry is not free: it
+# re-chunks the file and pays for one model extraction call per chunk plus a document
+# summary. A file that interrupts the sweep every time (an input the reader hangs or
+# dies on, a kill that always lands in the same place) would therefore be billed
+# again on every sweep, forever, with nothing recording that it keeps losing. The cap
+# turns that unbounded loop into a bounded one and leaves a 'failed' row the user can
+# see and act on.
+MAX_SCAN_ATTEMPTS = 3
+
 # How many discovered files a scan processes between ``scan_paused`` re-reads.
 # The check used to run per file, i.e. one on-loop sqlite SELECT against
 # ``sources`` for every discovered file (up to ``max_files``). Re-reading on this
@@ -246,6 +257,41 @@ class FolderWatcher:
                 stats["skipped"] += 1
                 continue
 
+            # A row still holding 'scanning' belongs to an attempt that never reached
+            # a terminal state -- the sweep was interrupted (process exit, task
+            # cancellation) between the marker below and the write that would have
+            # replaced it. Retrying is correct, but each retry re-ingests the file at
+            # full cost, so the retries are counted and the row is retired once the
+            # budget is spent.
+            #
+            # The budget belongs to the VERSION that kept failing, not to the path:
+            # the hash on the interrupted row identifies what was being ingested.
+            # Equal hashes mean the same attempt is about to be repeated, so the cap
+            # applies. A DIFFERENT hash is a document that has never been tried, and
+            # it starts with a full budget -- retiring it would strand new content
+            # behind a retirement earned by content the user has already replaced.
+            # This is why the hash is read first: the decision cannot be made without
+            # it, and it costs one read on the single sweep that retires the row
+            # (later sweeps take the 'failed' gate above and read nothing).
+            prior_attempts = int(state.get("attempts") or 0) if state else 0
+            if state and state.get("status") == "scanning":
+                if content_hash != state.get("content_hash"):
+                    prior_attempts = 0
+                elif prior_attempts >= MAX_SCAN_ATTEMPTS:
+                    # Retirement is terminal, so it clears the count like every other
+                    # terminal write: what keeps the file out of later sweeps is the
+                    # 'failed' gate above, not a spent budget. Carrying the exhausted
+                    # count onto the row would make the user's retry -- which clears
+                    # the status but not the count -- re-enter the scan already over
+                    # budget and be retired again by the very next sweep.
+                    self._update_state(
+                        source_id, file_path, content_hash, mtime,
+                        state.get("item_ids", "[]") or "[]", now, "failed",
+                        f"ingestion did not complete after {MAX_SCAN_ATTEMPTS} attempts",
+                        commit=False)
+                    stats["failed"] += 1
+                    continue
+
             if state and state.get("status") == "done" and content_hash == state.get("content_hash"):
                 # Touched but content unchanged
                 self._update_state(source_id, file_path, content_hash, mtime, state.get("item_ids", "[]"), now, "done", commit=False)
@@ -269,13 +315,28 @@ class FolderWatcher:
                 if not state:
                     stats["new"] += 1
 
-            # Mark scanning before processing (crash recovery: scanning = interrupted)
-            self._update_state(source_id, file_path, content_hash, mtime, json.dumps(old_ids), now, "scanning")
+            # Mark scanning before processing (crash recovery: scanning = interrupted).
+            # The incremented attempt count rides along, so the row itself carries how
+            # much of its retry budget is left even though nothing else in this sweep
+            # survives an abrupt exit.
+            self._update_state(source_id, file_path, content_hash, mtime,
+                               json.dumps(old_ids), now, "scanning",
+                               attempts=prior_attempts + 1)
 
             item_ids, outcome = await self._ingest_file(
                 file_path, source_id, namespace, props, old_ids, root=uri)
             if item_ids is None:
-                # Ingestion failed
+                # Ingestion failed. The 'scanning' marker above is only a crash hint,
+                # so it has to be replaced with a terminal status here rather than
+                # left to whichever branch inside _ingest_file returned: a row that
+                # keeps the marker is re-ingested, at full cost, on every later sweep.
+                # Writing it from the caller also restores the content hash and mtime
+                # the marker carried, which is what lets the UI say WHICH version of
+                # the file failed. The reason recorded by _ingest_file is preserved.
+                self._update_state(
+                    source_id, file_path, content_hash, mtime, json.dumps(old_ids),
+                    now, "failed", self._current_error(source_id, file_path),
+                    commit=False)
                 stats["failed"] += 1
             elif outcome == "deduped":
                 # Refused by the pre-ingest gate: this exact content is already in
@@ -393,11 +454,23 @@ class FolderWatcher:
     def _load_state(self, source_id: str) -> dict[str, dict]:
         """Load folder_file_state rows for this source."""
         rows = self.store.db.execute(
-            "SELECT file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message FROM folder_file_state WHERE source_id = ?",
+            "SELECT file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts FROM folder_file_state WHERE source_id = ?",
             (source_id,)).fetchall()
         return {r["file_path"]: dict(r) for r in rows}
 
-    def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, commit: bool = True):
+    def _current_error(self, source_id: str, file_path: str) -> str | None:
+        """The reason already recorded on this row, if any.
+
+        The failure branches inside ``_ingest_file`` write the specific cause; the
+        caller then re-writes the row to make the status transition terminal, and
+        reads the cause back so replacing the row does not discard it.
+        """
+        row = self.store.db.execute(
+            "SELECT error_message FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, file_path)).fetchone()
+        return row["error_message"] if row else None
+
+    def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, commit: bool = True):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
         # lookups have to relate this row to items, and items are keyed by the text
         # hash -- for a PDF or HTML file that is a different string from the bytes
@@ -432,9 +505,13 @@ class FolderWatcher:
             # coalesces to content_hash for such a row, which is the right answer
             # wherever it can be reached: the gate can only have refused a plaintext
             # file in that situation, and for plaintext the two hashes are equal.
+        # ``attempts`` defaults to 0, so every terminal write ('done', 'deduped',
+        # 'failed') clears the retry budget as a side effect of not passing it: the
+        # count only ever accumulates across consecutive 'scanning' markers, which is
+        # what it is meant to bound.
         self.store.db.execute(
-            "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message))
+            "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message, attempts))
         if commit:
             self.store.db.commit()
 
