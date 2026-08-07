@@ -1015,6 +1015,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_delete,
         api_autonudge_get,
         api_autonudge_list,
+        api_autonudge_run_gate,
         api_autonudge_start,
         api_autonudge_update,
     )
@@ -1024,6 +1025,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/autonudge/slot/{slot_key}", api_autonudge_get)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
+    # USER-run exit-gate verification — the only path that executes a gate
+    # (the agent's autonudge_stop only reads the result it records).
+    app.router.add_post("/api/autonudge/{loop_id}/gate", api_autonudge_run_gate)
 
     # Agent questions — blocking question-card round-trip for the ask_question
     # MCP tool. The POST holds open until the user answers, so it must not be

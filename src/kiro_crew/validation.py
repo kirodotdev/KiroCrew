@@ -1067,6 +1067,12 @@ MONITOR_START_SCHEMA = ToolSchema(
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
         FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        # NOTE deliberately NO exit_gate_cmd field: gates are USER-armed only
+        # (dashboard / REST — vetted by vet_exit_gate_cmd in the authz
+        # chokepoint). The MCP tools run on the agent's own auto-approved
+        # directives, so an agent-supplied gate would be an unreviewed shell
+        # command reaching execution with no human in the loop; a stale client
+        # passing it gets the unknown-field ValidationError.
     ],
 )
 
@@ -1081,6 +1087,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
         FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        # No exit_gate_cmd — see MONITOR_START_SCHEMA.
     ],
 )
 

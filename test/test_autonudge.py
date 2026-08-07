@@ -437,6 +437,189 @@ async def test_update_changes_runtime_budget(svc):
 
 
 @pytest.mark.asyncio
+async def test_exit_gate_cmd_persists_across_restart(tmp_path):
+    """The gate must survive a gateway restart — it is part of the loop's
+    contract, not session state."""
+    svc1 = AutoNudgeService(base_dir=tmp_path)
+    await svc1.start()
+    loop = await svc1.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, exit_gate_cmd="pytest -q"
+    )
+    svc1.stop()
+
+    svc2 = AutoNudgeService(base_dir=tmp_path)
+    await svc2.start()
+    assert svc2._loops[loop.id].exit_gate_cmd == "pytest -q"
+    svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_sets_and_clears_exit_gate(svc):
+    """update() replaces the gate, '' clears it, omission leaves it alone."""
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    assert loop.exit_gate_cmd == ""
+    updated = await svc.update(loop.id, exit_gate_cmd="make test")
+    assert updated is not None and updated.exit_gate_cmd == "make test"
+    updated = await svc.update(loop.id, message="still going")  # omitted → unchanged
+    assert updated is not None and updated.exit_gate_cmd == "make test"
+    updated = await svc.update(loop.id, exit_gate_cmd="")  # "" → cleared
+    assert updated is not None and updated.exit_gate_cmd == ""
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_changing_the_gate_invalidates_recorded_verification(svc):
+    """A user-run pass vouches for the COMMAND it ran — replacing or clearing
+    the gate must reset gate_last_status/gate_last_ts so the old pass can't
+    vouch for a new command."""
+    await svc.start()
+    loop = await svc.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, exit_gate_cmd="make test"
+    )
+    updated = await svc.update(loop.id, gate_last_status="pass", gate_last_ts=123.0)
+    assert updated is not None and updated.gate_last_status == "pass"
+    assert updated.gate_last_ts == 123.0
+    # Same command re-sent → record survives.
+    updated = await svc.update(loop.id, exit_gate_cmd="make test")
+    assert updated is not None and updated.gate_last_status == "pass"
+    # Different command → record reset.
+    updated = await svc.update(loop.id, exit_gate_cmd="pytest -q")
+    assert updated is not None and updated.gate_last_status == ""
+    assert updated.gate_last_ts == 0.0
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_record_gate_result_atomic_guards(svc):
+    """record_gate_result only attaches a result to the exact state the gate
+    ran against: command drift or a mid-run fire → 'stale' (nothing
+    recorded); a pass on a gate_pending pause → 'closed' (loop removed);
+    missing loop → 'gone' (GPT round 14)."""
+    await svc.start()
+    loop = await svc.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, exit_gate_cmd="make test"
+    )
+    fire0 = loop.last_fire_ts
+
+    # Happy path: unchanged state → recorded.
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="make test", fire_ts=fire0
+    )
+    assert res == "recorded"
+    assert svc._loops[loop.id].gate_last_status == "pass"
+
+    # Command drifted mid-run → stale, record untouched.
+    await svc.update(loop.id, exit_gate_cmd="pytest -q")  # also resets record
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="make test", fire_ts=fire0
+    )
+    assert res == "stale"
+    assert svc._loops[loop.id].gate_last_status == ""
+
+    # Fire advanced mid-run → stale.
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="pytest -q", fire_ts=fire0 + 99.0
+    )
+    assert res == "stale"
+
+    # Pass on a gate_pending pause → closed (loop removed) — but ONLY with
+    # the matching pending-generation snapshot (round 19: a run that began
+    # before the pause must not close it).
+    await svc.update(loop.id, active=False, stopped_reason="gate_pending")
+    gen = svc._loops[loop.id].gate_pause_gen
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="pytest -q", fire_ts=fire0,
+        pending_gen=None,  # run started while the loop was still ACTIVE
+    )
+    assert res == "recorded", "a pre-pause run records but must not close"
+    assert loop.id in svc._loops
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="pytest -q", fire_ts=fire0,
+        pending_gen=gen - 1,  # an EARLIER pause's generation
+    )
+    assert res == "recorded"
+    assert loop.id in svc._loops
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="pytest -q", fire_ts=fire0,
+        pending_gen=gen,
+    )
+    assert res == "closed"
+    assert loop.id not in svc._loops
+
+    # Gone loop → gone.
+    res = await svc.record_gate_result(
+        loop.id, status="pass", gate_cmd="pytest -q", fire_ts=fire0,
+        pending_gen=gen,
+    )
+    assert res == "gone"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_record_gate_result_persist_failure_leaves_state_untouched(svc):
+    """PERSIST-THEN-COMMIT (GPT round 15): a failed store write must leave
+    live state unmutated — otherwise a restart restores a loop whose
+    recorded verification (or verified removal) silently vanished."""
+    await svc.start()
+    loop = await svc.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, exit_gate_cmd="make test"
+    )
+    await svc.update(loop.id, active=False, stopped_reason="gate_pending")
+
+    def _boom(payload):
+        raise OSError(30, "Read-only file system")
+
+    original = svc._write_state
+    svc._write_state = _boom
+    try:
+        with pytest.raises(OSError):
+            await svc.record_gate_result(
+                loop.id, status="pass", gate_cmd="make test",
+                fire_ts=loop.last_fire_ts,
+            )
+    finally:
+        svc._write_state = original
+    # Nothing committed: result not recorded, loop not removed.
+    assert loop.id in svc._loops
+    assert svc._loops[loop.id].gate_last_status == ""
+    assert svc._loops[loop.id].gate_last_ts == 0.0
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_persist_failure_rolls_back_gate_clear(svc):
+    """ROLLBACK on failed persist (GPT round 20): a gate-clear PATCH whose
+    store write fails must not leave the LIVE loop ungated — the agent
+    could then stop without verification while the store still holds the
+    gate. The update propagates the error and restores every mutated
+    field."""
+    await svc.start()
+    loop = await svc.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, exit_gate_cmd="make test"
+    )
+
+    def _boom(payload):
+        raise OSError(28, "No space left on device")
+
+    original = svc._write_state
+    svc._write_state = _boom
+    try:
+        with pytest.raises(OSError):
+            await svc.update(loop.id, exit_gate_cmd="", message="changed")
+    finally:
+        svc._write_state = original
+    live = svc._loops[loop.id]
+    assert live.exit_gate_cmd == "make test", "gate-clear must roll back"
+    assert live.message == "go", "all mutated fields roll back"
+    # And the loop still works after a successful retry.
+    updated = await svc.update(loop.id, message="second try")
+    assert updated is not None and updated.message == "second try"
+    assert updated.exit_gate_cmd == "make test"
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
     import kiro_crew.autonudge as _an
 

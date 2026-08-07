@@ -262,6 +262,34 @@ class NudgeLoop:
     # indistinguishable from a budget-stopped one, and a budget raise would
     # resume unattended execution against the user's explicit pause.
     stopped_reason: str = ""
+    # Optional exit quality gate: a shell command that must exit 0 before the
+    # AGENT can end this loop via ``autonudge_stop`` ("" = no gate). Agents
+    # routinely declare "done" without proof; the gate makes the exit condition
+    # executable (run the tests, curl the health check) instead of taken on
+    # faith. Vetted at arm time by the same storage-time guards as cron
+    # commands; EXECUTED only by the USER via POST /api/autonudge/{id}/gate —
+    # the agent's autonudge_stop reads the recorded result, never executes.
+    # Deliberately NOT enforced on the user's own stops (REST DELETE, cycle
+    # caps), so a bad gate can never make a loop unstoppable by its owner.
+    # A GATED loop carries NO stop sentinel: the sentinel path is disclosed
+    # to the agent and its terminal is ungated, so it would be an
+    # agent-writable verification bypass — the authz chokepoint clears it
+    # whenever a gate is armed.
+    exit_gate_cmd: str = ""
+    # Result of the most recent USER-run gate execution ("" = never run,
+    # "pass", or "fail") and when it ran. Recorded ONLY by the user-facing
+    # gate endpoint — the agent's own autonudge_stop never executes the gate,
+    # it only READS this record and compares gate_last_ts against
+    # last_fire_ts for freshness (a pass recorded before the agent's latest
+    # turn verified older work, not the current claim of done).
+    gate_last_status: str = ""
+    gate_last_ts: float = 0.0
+    # Monotonic count of transitions INTO stopped_reason="gate_pending".
+    # A user-run gate result may CLOSE a paused loop only when the run
+    # STARTED during the same pending generation it is trying to close —
+    # a run started while the loop was still active (or during an earlier
+    # pause) verified pre-pause work and must not consume a later pause.
+    gate_pause_gen: int = 0
 
 
 def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:
@@ -477,6 +505,7 @@ class AutoNudgeService:
         max_cycles: int = 0,
         stop_sentinel_path: str = "",
         max_runtime_secs: int = 0,
+        exit_gate_cmd: str = "",
     ) -> NudgeLoop:
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
@@ -498,6 +527,7 @@ class AutoNudgeService:
                 max_cycles=max_cycles,
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max_runtime_secs,
+                exit_gate_cmd=exit_gate_cmd,
             )
         )
         self._inflight_adds.add(inner)
@@ -519,6 +549,7 @@ class AutoNudgeService:
         max_cycles: int,
         stop_sentinel_path: str,
         max_runtime_secs: int = 0,
+        exit_gate_cmd: str = "",
     ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
@@ -537,6 +568,7 @@ class AutoNudgeService:
                 created_ts=time.time(),
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max(0, int(max_runtime_secs)),
+                exit_gate_cmd=str(exit_gate_cmd or ""),
             )
             self._loops[loop.id] = loop
             # Persist WITHOUT blocking the event loop (no-blocking-call rule:
@@ -582,6 +614,10 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        exit_gate_cmd: str | None = None,
+        gate_last_status: str | None = None,
+        gate_last_ts: float | None = None,
+        stop_sentinel_path: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -597,6 +633,10 @@ class AutoNudgeService:
                 active=active,
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
+                exit_gate_cmd=exit_gate_cmd,
+                gate_last_status=gate_last_status,
+                gate_last_ts=gate_last_ts,
+                stop_sentinel_path=stop_sentinel_path,
             )
         )
         self._inflight_adds.add(inner)
@@ -619,11 +659,38 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        exit_gate_cmd: str | None = None,
+        gate_last_status: str | None = None,
+        gate_last_ts: float | None = None,
+        stop_sentinel_path: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
             if not loop:
                 return None
+            # ROLLBACK SNAPSHOT (GPT review): mutations below are applied to
+            # live state before the store write. A failed write must not
+            # leave memory diverged from the store — e.g. a gate-clear PATCH
+            # whose persist fails would leave the LIVE loop ungated (agent
+            # stops skip verification) while the store still has the gate.
+            # On write failure every mutated field is restored and the error
+            # propagates.
+            _rollback = {
+                f: getattr(loop, f)
+                for f in (
+                    "message",
+                    "idle_secs",
+                    "max_cycles",
+                    "max_runtime_secs",
+                    "exit_gate_cmd",
+                    "gate_last_status",
+                    "gate_last_ts",
+                    "gate_pause_gen",
+                    "stop_sentinel_path",
+                    "active",
+                    "stopped_reason",
+                )
+            }
             if message is not None:
                 loop.message = message
             if idle_secs is not None:
@@ -632,6 +699,23 @@ class AutoNudgeService:
                 loop.max_cycles = max(0, int(max_cycles))
             if max_runtime_secs is not None:
                 loop.max_runtime_secs = max(0, int(max_runtime_secs))
+            if exit_gate_cmd is not None:
+                # "" clears the gate; None leaves it untouched. Clearing or
+                # changing the gate invalidates any recorded verification —
+                # a pass for the OLD command must not vouch for a new one.
+                if str(exit_gate_cmd) != loop.exit_gate_cmd:
+                    loop.gate_last_status = ""
+                    loop.gate_last_ts = 0.0
+                loop.exit_gate_cmd = str(exit_gate_cmd)
+            if gate_last_status is not None:
+                loop.gate_last_status = str(gate_last_status)
+            if gate_last_ts is not None:
+                loop.gate_last_ts = float(gate_last_ts)
+            if stop_sentinel_path is not None:
+                # "" removes the kill-switch file path (used when a gate is
+                # armed on an existing loop: the sentinel is agent-disclosed
+                # and its terminal is ungated — see the authz chokepoint).
+                loop.stop_sentinel_path = str(stop_sentinel_path)
             if active is not None:
                 # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
                 # (stopped_reason supplied — the _timer's cycle_cap /
@@ -665,14 +749,43 @@ class AutoNudgeService:
                     if loop.active:
                         loop.stopped_reason = ""
                     else:
+                        entering_pending = (
+                            (stopped_reason or "manual") == "gate_pending"
+                            and loop.stopped_reason != "gate_pending"
+                        )
                         loop.stopped_reason = stopped_reason or "manual"
+                        if entering_pending:
+                            # New pending generation: results from gate runs
+                            # started before this pause may record, but must
+                            # not close it (see gate_pause_gen field doc).
+                            loop.gate_pause_gen += 1
             # Persist WITHOUT blocking the event loop — _write_state fsyncs, and
             # a wedged disk must not freeze chat/heartbeat/liveness. Snapshot
             # under THIS lock hold (mutation safety + serialization vs the
             # post-fire write) and await the offloaded write so a persistence
-            # failure still reaches the caller. Same contract as _add_locked.
+            # failure still reaches the caller. Same contract as _add_locked —
+            # plus ROLLBACK: a failed write restores the pre-update field
+            # values (see _rollback above), and a caller cancelled mid-write
+            # drains the un-cancellable executor write first (remove()'s
+            # contract) so memory matches whatever the store ends up holding.
+
+            def _restore() -> None:
+                for _k, _v in _rollback.items():
+                    setattr(loop, _k, _v)
+
             payload = self._serialize_state()
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(fut)
+                except Exception:  # noqa: BLE001 - drained write failed
+                    _restore()
+                raise
+            except Exception:
+                _restore()
+                raise
             # Re-arm the timer with the new settings — but NEVER while its
             # callback is mid-fire. Cancelling a firing timer cancels the
             # in-flight turn itself (channel loops run the turn inline in
@@ -737,6 +850,94 @@ class AutoNudgeService:
 
     def get_by_slot(self, slot_key: str) -> NudgeLoop | None:
         return self._find_by_slot(slot_key)
+
+    async def record_gate_result(
+        self,
+        loop_id: str,
+        *,
+        status: str,
+        gate_cmd: str,
+        fire_ts: float,
+        pending_gen: int | None = None,
+    ) -> str:
+        """Atomically record a USER-run gate result, guarded against drift.
+
+        The gate runs for up to 120s outside the service lock; the loop can
+        change underneath it (a PATCH replacing the command, a fire advancing
+        ``last_fire_ts``). Recording a result produced for the OLD state as
+        if it verified the NEW one would let an unverified loop close (GPT
+        review). Callers snapshot the command and ``last_fire_ts`` BEFORE the
+        run and pass them here; under the lock the snapshot is compared
+        against live state and the result is recorded — and a ``gate_pending``
+        loop removed as a verified closure — only when nothing drifted.
+
+        Returns ``"recorded"``, ``"closed"`` (pass consumed a ``gate_pending``
+        pause), ``"stale"`` (state drifted; NOTHING recorded — re-run), or
+        ``"gone"`` (loop no longer exists).
+        """
+        async with self._lock:
+            loop = self._loops.get(loop_id)
+            if loop is None:
+                return "gone"
+            if (
+                loop.exit_gate_cmd != gate_cmd
+                or float(loop.last_fire_ts or 0.0) != float(fire_ts or 0.0)
+            ):
+                return "stale"
+            now = time.time()
+            # CLOSE only within one unchanged pending generation (GPT round
+            # 19): ``pending_gen`` is the generation the caller observed
+            # BEFORE starting the run (None = the loop was not paused then).
+            # A run started while the loop was still active — or during an
+            # earlier pause — verified pre-pause work; recording it is fine,
+            # closing a pause it predates is not.
+            closed = (
+                status == "pass"
+                and pending_gen is not None
+                and not loop.active
+                and loop.stopped_reason == "gate_pending"
+                and int(loop.gate_pause_gen) == int(pending_gen)
+            )
+            # PERSIST-THEN-COMMIT (GPT review): stage the result into the
+            # serialized payload WITHOUT touching live state, write it, and
+            # only then mutate memory. Mutate-first would let a failed write
+            # (read-only or full disk) leave the store stale — a restart
+            # would restore a loop whose recorded verification (or removal)
+            # silently vanished.
+            payload = self._serialize_state()
+            if closed:
+                payload["loops"] = [
+                    d for d in payload["loops"] if d.get("id") != loop_id
+                ]
+            else:
+                for d in payload["loops"]:
+                    if d.get("id") == loop_id:
+                        d["gate_last_status"] = str(status)
+                        d["gate_last_ts"] = now
+                        break
+
+            def _commit() -> None:
+                loop.gate_last_status = str(status)
+                loop.gate_last_ts = now
+                if closed:
+                    # Verified closure of a paused loop — inline removal,
+                    # same shape as remove() (already persisted above).
+                    self.remove_sync(loop_id, persist=False)
+
+            fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            try:
+                await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                # Same drain-before-release contract as remove(): the executor
+                # write cannot be cancelled and releasing _lock mid-write
+                # would let a later os.replace() be clobbered. Drain; if the
+                # write landed, COMMIT so memory matches the store the next
+                # boot will read; then propagate.
+                await asyncio.shield(fut)
+                _commit()
+                raise
+            _commit()
+            return "closed" if closed else "recorded"
 
     def list_all(self) -> list[NudgeLoop]:
         return list(self._loops.values())

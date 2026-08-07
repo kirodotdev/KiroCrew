@@ -3534,6 +3534,14 @@ class GatewayOrchestrator:
                             "cycle_count": loop.cycle_count,
                             "active": loop.active,
                             "last_fire_ts": loop.last_fire_ts,
+                            # Vetting refuses redaction-unstable gates at arm
+                            # time, but rows stored BEFORE that rule (or via a
+                            # future vet gap) must still never broadcast a
+                            # secret to every dashboard client — scrub on the
+                            # way out like every other client-bound string.
+                            "exit_gate_cmd": redact_credentials(
+                                redact_exfiltration_urls(loop.exit_gate_cmd)[0]
+                            )[0],
                         },
                     },
                 )
@@ -3588,6 +3596,18 @@ class GatewayOrchestrator:
                     f"{loop.max_cycles} cycles without reporting done, so its "
                     "goal may still be unmet. Reopen the goal popover to raise "
                     "the cap or restart it."
+                )
+            if str(getattr(loop, "exit_gate_cmd", "") or "").strip():
+                # A gated loop that expires at EITHER terminal bound exited
+                # WITHOUT its gate ever passing — the cap/budget paths
+                # deliberately never run the gate (so a bad gate cannot trap
+                # the loop), which makes these the terminals where
+                # verification silently didn't happen. Say so as loudly as
+                # the fail-open path does.
+                body += (
+                    " NOTE: this loop had an exit gate, and it was NOT "
+                    "verified — a terminal bound ends a loop without running "
+                    "the gate."
                 )
             self.dashboard_state.notify("agent", title, body, meta=meta)
         except Exception:

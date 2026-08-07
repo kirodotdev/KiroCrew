@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -62,6 +63,136 @@ def resolve_stop_sentinel(slot_key: str, workspace: str = "default") -> str:
 # too covers the REST and workflow paths, which do not pass through those
 # schemas (GPT review on #2116: REST accepted 604801 unchanged).
 MAX_RUNTIME_SECS_CEILING = 604800
+# Exit-gate commands are one-liners like `pytest -q tests/` or
+# `curl -fsS localhost:8080/health` — the cron `command` cap (2000) fits.
+_EXIT_GATE_MAX_LEN = 2000
+
+
+def _governance_session_key(binding_key: str) -> str:
+    """Re-namespace a loop binding key for governance evaluation.
+
+    Dashboard loops bind on the BARE slot key (``chat-N-TS`` — the
+    ``dashboard:`` prefix is stripped by ``binding_key_for``), but governance
+    profiles classify surfaces by the namespaced session key; a bare key would
+    be misclassified (GPT review: a command denied by a dashboard-bound
+    profile but permitted elsewhere would slip through). Channel keys
+    (``slack:``/``discord:``…) already carry their namespace.
+    """
+    if not binding_key or is_channel_key(binding_key):
+        return binding_key
+    return f"dashboard:{binding_key}"
+
+
+def vet_exit_gate_cmd(cmd: str, session_key: str = "") -> str | None:
+    """Storage-time vetting for a loop's exit-gate shell command.
+
+    The gate is model-supplied via ``monitor_start``/``monitor_update`` (or the
+    REST API), persisted, and later executed by the gateway via ``sh -c`` in
+    the STRICT command sandbox — the same low-trust exec shape as a cron
+    ``command``, and like it entirely outside the kiro-cli ACP permission/hook
+    flow. So it gets the SAME storage-time guards (``mcp_cron._vet_shell_command``:
+    deny-list, sensitive paths, exfiltration URLs, credential-path references,
+    no command substitution / runtime composition), plus a control-character
+    refusal — an embedded newline would smuggle a second line past guards that
+    reason about a one-liner.
+
+    ``session_key`` is the ARMING session's identity: ``_vet_shell_command``
+    evaluates governance against the *cron* surface (``cron:_vet``), so a
+    command an enterprise profile denies for this caller but allows for cron
+    would slip through it. The additional check here applies the caller's own
+    governance ceiling; both apply (intersection). Best-effort in the same way
+    as cron's own governance vet: a governance-machinery failure degrades with
+    an audit rather than refusing, while a composition failure propagates
+    (fail-closed CPP invariant).
+
+    Vetting cannot see INSIDE a referenced interpreter script
+    (``python3 /tmp/gate.py``); the exec-time strict sandbox is the control
+    that bounds such a script (it hides credential dirs including ``~/.ssh``)
+    — executed only via the user-facing gate endpoint (``run_exit_gate_for_user``).
+
+    Returns a human-readable refusal, or ``None`` when the command is clean.
+    The always-on checks FAIL CLOSED: if ``_vet_shell_command`` itself errors,
+    the command is refused — an unvetted gate must never be stored.
+    """
+    if len(cmd) > _EXIT_GATE_MAX_LEN:
+        return f"exit_gate_cmd too long (max {_EXIT_GATE_MAX_LEN} chars)"
+    if any(ord(c) < 32 or ord(c) == 127 for c in cmd):
+        return "exit_gate_cmd must not contain control characters or newlines"
+    # REDACTION STABILITY (GPT review): the stored command is broadcast
+    # verbatim to every dashboard client in the autonudge WS payload and
+    # echoed in arm/refusal messages, so a credential-bearing gate
+    # (`curl -H "Authorization: Bearer sk-..."` ) would expose the secret on
+    # every surface that renders the loop. Refuse any command the credential
+    # or exfiltration redactors would alter — a gate must be safe to display
+    # exactly as stored. (Storing a REDACTED form instead would corrupt the
+    # command, and executing an unredacted secret while displaying a redacted
+    # one would hide what actually runs.)
+    for _redact in (redact_credentials, redact_exfiltration_urls):
+        _changed, _hits = _redact(cmd)
+        if _changed != cmd:
+            return (
+                "exit_gate_cmd must not embed credentials or exfiltration "
+                "URLs — the stored command is displayed verbatim on loop "
+                "surfaces. Read secrets from the environment or a config "
+                "file inside the gate instead."
+            )
+    try:
+        # DELIBERATELY function-local, documented exception to the
+        # top-level-imports rule: this module is on the dashboard package's
+        # import path (dashboard/server.py imports it), and the dashboard
+        # import is contractually a LEAF (test_perf_boot_path
+        # TestDashboardImportIsLeaf) — a top-level import here drags
+        # mcp_cron → mcp_core (the whole MCP tool tree) into dashboard boot.
+        # The deferred-import failure mode the rule guards against is already
+        # handled: the except below FAILS CLOSED, refusing the gate rather
+        # than storing it unvetted.
+        from kiro_crew.mcp_cron import _vet_shell_command
+
+        err = _vet_shell_command(cmd)
+    except Exception:  # noqa: BLE001 - fail closed: unvetted ⇒ refused
+        logger.warning("exit_gate_cmd vetting failed — refusing the gate", exc_info=True)
+        return "exit_gate_cmd could not be vetted — gate refused"
+    if err:
+        # _vet_shell_command returns "Error: cron command blocked: ..." —
+        # re-frame for this surface without losing the reason.
+        return err.removeprefix("Error: ").replace("cron command", "exit_gate_cmd", 1)
+    if session_key:
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        try:
+            # Late import mirrors mcp_cron._vet_command_governance: the
+            # governance machinery is optional platform composition, and its
+            # absence must degrade (audited), not break standalone installs.
+            from kiro_crew.platform.governance_profiles import governance_permits
+
+            decision = governance_permits(
+                "commands",
+                cmd,
+                session_key=session_key,
+                log_warning=False,
+                # Fail CLOSED (GPT review): a gate is a stored shell command;
+                # a governance evaluation error must deny storage, not
+                # authorize it. Missing `permitted` likewise defaults DENY.
+                fail_closed=True,
+            )
+            if not bool(getattr(decision, "permitted", False)):
+                reason = str(getattr(decision, "reason", "") or "")
+                reason, _ = redact_exfiltration_urls(reason)
+                reason, _ = redact_credentials(reason)
+                return f"exit_gate_cmd blocked by governance policy: {reason}"
+        except PlatformCompositionError:
+            raise
+        except Exception:  # noqa: BLE001 - degrade like cron's governance vet
+            try:
+                from kiro_crew.platform.governance_profiles import audit_governance_degraded
+
+                audit_governance_degraded(
+                    "exit_gate_cmd", session_key=session_key, scope="commands",
+                    log_warning=False,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    return None
 
 
 async def authorize_and_update_nudge(
@@ -73,6 +204,7 @@ async def authorize_and_update_nudge(
     max_cycles: Any = None,
     active: Any = None,
     max_runtime_secs: Any = None,
+    exit_gate_cmd: Any = None,
     source: str,
     caller: str = "",
 ) -> tuple[Any | None, str | None, int]:
@@ -158,6 +290,40 @@ async def authorize_and_update_nudge(
     # unattended.
     if active is not None and not isinstance(active, bool):
         return _deny("active must be a boolean", 400)
+    if exit_gate_cmd is not None:
+        if not isinstance(exit_gate_cmd, str):
+            return _deny("exit_gate_cmd must be a string", 400)
+        exit_gate_cmd = exit_gate_cmd.strip()
+        # USER-ARMED GATES ONLY at the chokepoint (design review, mirroring
+        # the add path): setting, changing, AND clearing ("") a gate are all
+        # user actions — an agent/workflow caller that could clear a gate
+        # would disarm the very control that constrains it. There is no
+        # inheritance case on the update path (updates never replace loops),
+        # so any non-dashboard exit_gate_cmd is denied outright.
+        if source != "dashboard":
+            return _deny(
+                "exit_gate_cmd can only be set, changed, or removed by the "
+                f"user (dashboard or REST) — not by {source} callers",
+                403,
+            )
+        # "" clears the gate and needs no vetting; a non-empty replacement is
+        # vetted exactly like the arm path, so an update can never install a
+        # gate that monitor_start/POST would have refused. Governance is
+        # evaluated against the loop's own bound session (looked up by id),
+        # matching what the arm path enforces.
+        if exit_gate_cmd:
+            target = next((lp for lp in svc.list_all() if lp.id == loop_id), None)
+            # Offloaded: vetting reads governance profiles / policy files from
+            # disk (via _vet_shell_command -> governance), and this coroutine
+            # runs on the gateway event loop — a slow home mount would freeze
+            # every session (GPT review).
+            gate_err = await asyncio.to_thread(
+                vet_exit_gate_cmd,
+                exit_gate_cmd,
+                _governance_session_key(str(getattr(target, "slot_key", "") or "")),
+            )
+            if gate_err:
+                return _deny(gate_err, 400)
 
     def _critical_invoked_audit() -> None:
         sel().log_tool_invocation(
@@ -176,6 +342,7 @@ async def authorize_and_update_nudge(
                         ("max_cycles", max_cycles),
                         ("max_runtime_secs", max_runtime_secs),
                         ("active", active),
+                        ("exit_gate_cmd", exit_gate_cmd),
                     )
                     if v is not None
                 ),
@@ -196,6 +363,13 @@ async def authorize_and_update_nudge(
             max_cycles=max_cycles,
             active=active,
             max_runtime_secs=max_runtime_secs,
+            exit_gate_cmd=exit_gate_cmd,
+            # Arming a gate REMOVES the loop's stop sentinel (GPT review):
+            # the sentinel path is agent-disclosed and its terminal is
+            # deliberately ungated, so on a gated loop it would be an
+            # agent-writable file that ends the loop with no pause, no
+            # notification, and no verification (mirrors the add path).
+            stop_sentinel_path="" if exit_gate_cmd else None,
         )
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.update failed: {type(exc).__name__}")
@@ -216,6 +390,7 @@ async def authorize_and_add_nudge(
     max_cycles: int = 0,
     stop_sentinel_path: str = "",
     max_runtime_secs: int = 0,
+    exit_gate_cmd: str = "",
     source: str,
     caller: str = "",
 ) -> tuple[Any | None, str | None, int]:
@@ -324,12 +499,102 @@ async def authorize_and_add_nudge(
         return _deny(f"unknown slot {slot_key}", 404)
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
+    exit_gate_cmd = str(exit_gate_cmd or "").strip()
+    # USER-ARMED GATES ONLY, enforced AT THE CHOKEPOINT (design review):
+    # the transport edges (MCP schemas, directive applier) already refuse
+    # agent-supplied gates, but this module's own doctrine is that policy
+    # lives here so no future non-HTTP caller can bypass it — e.g. the
+    # LLM-authored workflow ``ctx.nudge`` port growing an exit_gate_cmd
+    # field would otherwise arm agent-authored shell silently. Only the
+    # user surface (source="dashboard") may AUTHOR a gate. For every other
+    # caller the slot's EXISTING gate is authoritative (GPT review): an add
+    # replaces the slot's loop, so a non-dashboard add that OMITS the field
+    # would otherwise silently discard a user-armed gate — the omitted gate
+    # is inherited here, and a non-verbatim replacement is rejected. All
+    # verified against the store, never trusted from a caller-supplied flag.
+    if source != "dashboard":
+        existing = svc.get_by_slot(slot_key)
+        existing_gate = (
+            str(getattr(existing, "exit_gate_cmd", "") or "").strip()
+            if existing
+            else ""
+        )
+        if not exit_gate_cmd and existing_gate:
+            # Omitted -> inherit. The applier already does this for
+            # mcp-directives; enforcing it here covers every other
+            # non-dashboard caller (workflow ctx.nudge, future ports).
+            exit_gate_cmd = existing_gate
+        elif exit_gate_cmd and exit_gate_cmd != existing_gate:
+            return _deny(
+                "exit_gate_cmd can only be armed by the user (dashboard "
+                f"or REST) — {source} callers cannot author a gate; an "
+                "existing gate is inherited automatically on replace",
+                403,
+            )
+        if exit_gate_cmd and existing is not None:
+            # TERMINAL-BOUND CLAMPS travel WITH the inheritance (GPT review):
+            # an inherited gate with a tiny cap/budget expires the replacement
+            # through a deliberately-ungated terminal — e.g. workflow
+            # ctx.nudge(max_cycles=1) — the same indirect disarm the applier
+            # clamps for mcp-directives. Enforced here so every non-dashboard
+            # caller gets identical protection: each bound floors at the
+            # replaced loop's remaining allowance; an unlimited replaced
+            # bound forces an unlimited replacement bound.
+            replaced_cap = int(getattr(existing, "max_cycles", 0) or 0)
+            if replaced_cap == 0:
+                max_cycles = 0
+            else:
+                remaining_cycles = max(
+                    replaced_cap - int(getattr(existing, "cycle_count", 0) or 0), 1
+                )
+                if max_cycles and max_cycles < remaining_cycles:
+                    max_cycles = remaining_cycles
+            replaced_budget = int(getattr(existing, "max_runtime_secs", 0) or 0)
+            if replaced_budget == 0:
+                max_runtime_secs = 0
+            else:
+                created = float(getattr(existing, "created_ts", 0.0) or 0.0)
+                elapsed = int(time.time() - created) if created else 0
+                remaining_budget = max(replaced_budget - elapsed, 1)
+                if max_runtime_secs and max_runtime_secs < remaining_budget:
+                    max_runtime_secs = remaining_budget
+    if exit_gate_cmd:
+        # Offloaded for the same reason as the update path: vetting reads
+        # governance/policy files from disk and this runs on the event loop.
+        gate_err = await asyncio.to_thread(
+            vet_exit_gate_cmd, exit_gate_cmd, _governance_session_key(slot_key)
+        )
+        if gate_err:
+            return _deny(gate_err, 400)
+        # ANCHOR CHECK at arm time (GPT review): the default workspace dir
+        # lives under the data home the gate sandbox masks, so a gate armed
+        # on an unscoped slot (or an unsurfaced channel loop) would return
+        # not_run on every execution — arming a gate that can never verify
+        # anything is a footgun, refuse it with an actionable message.
+        from kiro_crew.dashboard.session_directive_apply import _gate_anchor_masked
+
+        if await asyncio.to_thread(_gate_anchor_masked, state, slot_key):
+            return _deny(
+                "exit_gate_cmd requires a usable working directory: the "
+                "loop's session resolves to a directory inside the Kiro "
+                "Crew data home, which the gate sandbox masks — set the "
+                "slot's project directory to your working tree first",
+                400,
+            )
     stop_sentinel_path = (stop_sentinel_path or "").strip()
     if stop_sentinel_path and is_sensitive_path(stop_sentinel_path):
         return _deny("stop_sentinel_path points to a sensitive location", 400)
+    if exit_gate_cmd:
+        # GATED loops get NO stop sentinel (GPT review): the sentinel path is
+        # DISCLOSED to the agent (templated into the nudge message) and the
+        # sentinel terminal is deliberately ungated — so on a gated loop it
+        # would be an agent-writable file that ends the loop with no pause,
+        # no notification, and no verification. The user's ungated stops
+        # (REST DELETE, cycle caps) remain untouched.
+        stop_sentinel_path = ""
     # Auto-default: per-session sentinel so multiple loops don't clash. The
     # unlink is filesystem I/O — offloaded (no-blocking-call-on-event-loop).
-    if not stop_sentinel_path:
+    if not stop_sentinel_path and not exit_gate_cmd:
         if is_channel_key(slot_key):
             stop_sentinel_path = resolve_stop_sentinel(slot_key)
         else:
@@ -367,6 +632,7 @@ async def authorize_and_add_nudge(
                 "idle_secs": int(idle_secs),
                 "max_cycles": int(max_cycles),
                 "max_runtime_secs": int(max_runtime_secs),
+                "has_exit_gate": bool(exit_gate_cmd),
                 "caller": caller,
             },
         )
@@ -384,6 +650,7 @@ async def authorize_and_add_nudge(
             max_cycles=int(max_cycles),
             stop_sentinel_path=stop_sentinel_path,
             max_runtime_secs=int(max_runtime_secs),
+            exit_gate_cmd=exit_gate_cmd,
         )
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.add failed: {type(exc).__name__}")
