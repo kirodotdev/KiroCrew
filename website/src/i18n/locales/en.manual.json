@@ -2211,7 +2211,6 @@
       "remove_artifact_confirm": "Remove artifact \"{{slug}}\" from your library?\n\nThis deletes the artifact entry and its version history. If this artifact came from a file on disk or a chat widget, the original is NOT touched — you can re-add it later.",
       "remove_star_from_artifact": "Remove star from artifact",
       "star_artifact": "Star artifact",
-      "star_save_to_library": "Star (save to library)",
       "starred_click_to_unstar": "Starred — click to unstar",
       "start_a_new_blank_document_in_the_library": "Start a new blank document in the library",
       "table": "Table",

@@ -1444,7 +1444,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   ? 'bg-accent/10 border-accent text-accent'
                   : 'bg-bg-elevated border-border text-muted hover:text-accent hover:border-accent'
               }`}
-              title={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_save_to_library')}
+              title={artifact.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}
               aria-label={artifact.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
               aria-pressed={!!artifact.pinned}
             >
