@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import QuestionCard from './QuestionCard'
 import { useAppDispatch, useAppSelector } from '../store'
-import { clearQuestionCard, pendingQuestionFor, resolveQuestionCard } from '../store/chatSlice'
+import { clearQuestionCard, pendingQuestionFor, resolveQuestionCard, setQuestionDraft } from '../store/chatSlice'
 import { api, ApiError } from '../api/client'
 
 interface PendingQuestionCardProps {
@@ -109,6 +109,10 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
       key={askId ?? cardSlot}
       questions={pending.questions}
       busy={busy}
+      // Draft protection: while a custom answer is non-empty, the store
+      // refuses to auto-retire this card (dropStaleStatelessQuestion), so a
+      // nudge frame landing mid-typing cannot destroy the user's work.
+      onDraftChange={(active) => dispatch(setQuestionDraft({ slot: cardSlot, active }))}
       // Always offered. A blocked card resolves the wait with no answer; a
       // legacy card blocks nothing, so dismiss just takes it off screen —
       // withholding the control there left a card that could ONLY be answered,

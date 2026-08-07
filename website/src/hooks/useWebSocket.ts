@@ -744,7 +744,11 @@ export function useWebSocket() {
             dispatch(sseMcpAppRender(data as Parameters<typeof sseMcpAppRender>[0]))
             break
           case 'question_card':
-            dispatch(setQuestionCard(data as Parameters<typeof setQuestionCard>[0]))
+            // `fresh` marks a LIVE ask delivery: even if its payload repeats
+            // the identical question, it must get its own delivery identity
+            // (cardId) — unlike the reconnect re-sync above, which re-dispatches
+            // a still-pending card and must keep the existing entry.
+            dispatch(setQuestionCard({ ...(data as Parameters<typeof setQuestionCard>[0]), fresh: true }))
             break
           case 'question_card_resolved': {
             const ask = data as { ask_id: string }
