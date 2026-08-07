@@ -800,6 +800,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "rule is required"}, status=400)
     category = cleaned.get("category", "knowledge")
     scope = cleaned.get("scope", "global")
+    negative = cleaned.get("negative") or None
+    evidence = cleaned.get("evidence") or None
     # Write to vector store if available, else JSONL
     vs = _get_memory(state).vector_store
     if vs:
@@ -825,11 +827,23 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             vs.write_lesson,
             rule,
             category,
-            None,
+            # Forward the caller's "what not to do" — a literal None here
+            # silently discarded the negative on every vector-store write even
+            # though write_lesson has carried the parameter all along.
+            negative,
             "user_explicit",
             rule_emb,
             rule_emb_generation,
         )
+        # The semantic_memory schema has no metadata column, so ``evidence``
+        # has no durable home on this path yet (follow-up: metadata column /
+        # structured lesson values). Keep a trace in SEL so the provenance is
+        # at least recoverable from the audit log instead of vanishing.
+        if evidence:
+            _sel().log_api_access(
+                caller=sk, operation="learn_add", outcome="allowed",
+                source="dashboard", resources=f"evidence:{evidence[:200]}",
+            )
         candidates = await asyncio.to_thread(
             vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
         )
@@ -845,7 +859,13 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             state._background_tasks.add(task)
             task.add_done_callback(state._background_tasks.discard)
     else:
-        lesson = Lesson(rule=rule, category=category, ts=datetime.now(timezone.utc).isoformat())
+        lesson = Lesson(
+            rule=rule,
+            category=category,
+            ts=datetime.now(timezone.utc).isoformat(),
+            negative=negative,
+            evidence=evidence,
+        )
         if scope == "workspace":
             ws = cleaned.get("workspace")
             _get_lessons(state, ws).save(lesson)
@@ -1104,6 +1124,13 @@ async def api_lessons(request: web.Request) -> web.Response:
                 if le.rule.lower().strip() not in seen:
                     global_lessons.append(le)
         data = [
-            {"rule": le.rule, "category": le.category, "ts": le.ts} for le in global_lessons[-50:]
+            {
+                "rule": le.rule,
+                "category": le.category,
+                "ts": le.ts,
+                "negative": le.negative,
+                "evidence": le.evidence,
+            }
+            for le in global_lessons[-50:]
         ]
     return web.json_response({"lessons": data})

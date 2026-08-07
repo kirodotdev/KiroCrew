@@ -138,6 +138,10 @@ would stall heartbeats, Slack, and the dashboard.
 
 The history consolidation prompt includes a `"lessons"` key that extracts only implicit correction patterns — corrections the user made without explicitly saying "remember" (those are already saved immediately via `learn_add`). All lesson writes go through `write_lesson()` which provides substring dedup and topic-overlap dedup (>50% keyword overlap → newer replaces older). When vector memory is not active, falls back to `lessons.jsonl` via `LessonStore.save()`.
 
+### Lesson provenance (`evidence`) and the `negative` pass-through
+
+A `Lesson` record carries two optional fields beyond the rule: `negative` (what NOT to do — injected into context alongside the rule) and `evidence` (WHY the lesson exists — what went wrong or what the user said when it was learned, with a concrete anchor). `evidence` is provenance for later review/refinement and is deliberately **never injected into session context** (`get_context` renders rule + negative only), so it costs nothing per session. It flows from the `learn_add` MCP tool / `kirocrew learn add --evidence` / `POST /api/lessons` into the JSONL store (`Lesson.evidence`) and back out through `GET /api/lessons` and `learn_list`. The vector-store path has no metadata column yet, so there `evidence` is traced via a SEL event instead of persisted on the row (follow-up: metadata column or structured lesson values). NOTE: the MCP `learn_add` payload previously dropped `negative` entirely (the tool advertised it, the handler never forwarded it, and the REST vector path passed a literal `None`); both halves now pass through end-to-end.
+
 ### Configuration
 
 `~/.kiro/crew/config.json` → `"memory"` section:

@@ -630,6 +630,18 @@ def _list_tools() -> list[dict[str, Any]]:
                             "characters — rejected if exceeded."
                         ),
                     },
+                    "evidence": {
+                        "type": "string",
+                        "maxLength": _neg_max,
+                        "description": (
+                            "WHY this lesson exists (optional, one line): what "
+                            "went wrong or what the user said that triggered it, "
+                            "with a concrete anchor (a PR, file, or error). "
+                            "Stored as provenance for later review — never "
+                            "injected into context, so it costs nothing per "
+                            f"session. HARD LIMIT {_neg_max} characters."
+                        ),
+                    },
                     "scope": {
                         "type": "string",
                         "enum": ["global", "workspace"],
@@ -3986,6 +3998,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {_gov_mem}"
         scope = args.get("scope", "global")
         payload: dict[str, str] = {"rule": rule, "category": category, "scope": scope}
+        # Forward the optional record fields. ``negative`` was silently DROPPED
+        # here before — the tool schema advertised it, the model supplied it,
+        # and the payload never carried it, so every MCP-written lesson lost
+        # its "what not to do" half (the CLI path kept it, masking the bug).
+        if args.get("negative"):
+            payload["negative"] = args["negative"]
+        if args.get("evidence"):
+            payload["evidence"] = args["evidence"]
         if scope == "workspace":
             ws = args.get("workspace", "")
             if not ws:
@@ -4033,7 +4053,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return "No lessons saved."
         lines = []
         for le in lessons:
-            lines.append(f"[{le.get('category', '?')}] {le['rule']}")
+            entry = f"[{le.get('category', '?')}] {le['rule']}"
+            if le.get("negative"):
+                entry += f" — NOT: {le['negative']}"
+            if le.get("evidence"):
+                entry += f" (learned: {le['evidence']})"
+            lines.append(entry)
         return "\n".join(lines)
 
     if name == "learn_remove":

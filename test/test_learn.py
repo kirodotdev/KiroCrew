@@ -50,6 +50,40 @@ class TestLessonStore:
         assert "tool-a" in ctx
         assert "Learned corrections" in ctx
 
+    def test_evidence_round_trips_but_stays_out_of_context(self, tmp_path: Path) -> None:
+        """Evidence is provenance: persisted and reloadable, but never injected
+        into session context — the rule/negative are the actionable parts."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(
+            Lesson(
+                ts="2026-01-01T00:00:00Z",
+                rule="PR descriptions must be self-contained",
+                category="preference",
+                negative="Do not cite private research",
+                evidence="user corrected PR #2126: 'the reader can't see the research'",
+            )
+        )
+        loaded = store.load_all()
+        assert loaded[0].evidence == (
+            "user corrected PR #2126: 'the reader can't see the research'"
+        )
+        ctx = store.get_context()
+        assert "self-contained" in ctx
+        assert "can't see the research" not in ctx, "evidence must not cost context tokens"
+
+    def test_lessons_without_evidence_field_still_load(self, tmp_path: Path) -> None:
+        """Pre-existing JSONL rows (no evidence key) load with evidence=None."""
+        path = tmp_path / "lessons.jsonl"
+        path.write_text(
+            '{"ts": "2026-01-01T00:00:00Z", "rule": "old rule", "category": "tool"}\n',
+            encoding="utf-8",
+        )
+        store = LessonStore(base_dir=tmp_path)
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert loaded[0].rule == "old rule"
+        assert loaded[0].evidence is None
+
     def test_load_corrupted_line(self, tmp_path: Path) -> None:
         path = tmp_path / "lessons.jsonl"
         path.write_text("not json\n")

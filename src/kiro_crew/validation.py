@@ -969,6 +969,9 @@ LEARN_ADD_SCHEMA = ToolSchema(
         FieldSpec("rule", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("category", str, allowed=ALLOWED_LESSON_CATEGORIES, default="knowledge"),
         FieldSpec("negative", str, max_len=MAX_SHORT_STRING),
+        # Provenance: why/where the lesson was learned (one line). Stored on the
+        # lesson record for later review; never injected into session context.
+        FieldSpec("evidence", str, max_len=MAX_SHORT_STRING),
         # scope/workspace: the learn_add MCP tool (mcp_core.py) and the
         # /api/lessons handler support workspace-scoped lessons. The "workspace
         # required when scope='workspace'" rule is enforced in the handler.

@@ -1626,6 +1626,10 @@ Examples:
         help="Lesson category (default: knowledge)",
     )
     learn_add.add_argument("--negative", help="What NOT to do (optional)")
+    learn_add.add_argument(
+        "--evidence",
+        help="Why the lesson exists — what went wrong when it was learned (optional, one line)",
+    )
     learn_sub.add_parser("list", help="List all lessons")
     learn_rm = learn_sub.add_parser("remove", help="Remove lessons matching a substring")
     learn_rm.add_argument("query", help="Substring to match against lesson rules")

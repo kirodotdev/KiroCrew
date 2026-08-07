@@ -1304,6 +1304,7 @@ def _learn(args: argparse.Namespace) -> None:
             rule = args.rule
             category = args.category
             negative = getattr(args, "negative", None)
+            evidence = getattr(args, "evidence", None)
             if vs.write_lesson(rule, category, negative):
                 neg = f" ({negative})" if negative else ""
                 print(f"Saved: {rule}{neg} [{category}]")
@@ -1313,6 +1314,7 @@ def _learn(args: argparse.Namespace) -> None:
                     rule=rule,
                     category=category,
                     negative=negative,
+                    evidence=evidence,
                 )
                 jsonl_store.save(lesson)
                 neg = f" ({lesson.negative})" if lesson.negative else ""

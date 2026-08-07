@@ -133,6 +133,62 @@ class TestLessonsCreateTypeValidation:
             resp = await api_lessons_create(request)
         assert resp.status == 400
 
+
+class TestLessonsCreateFieldForwarding:
+    """negative/evidence must survive the write, not be silently dropped.
+
+    Regression coverage: the vector path passed a literal ``None`` for
+    negative (discarding the caller's "what not to do"), and the JSONL path
+    constructed the Lesson without negative at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_vector_path_forwards_negative(self):
+        request = _lessons_request(
+            {"rule": "always X", "category": "tool", "negative": "never Y"}
+        )
+        state = request.app["state"]
+        vs = state.memory.vector_store  # MagicMock chain from _lessons_request
+        vs.write_lesson = MagicMock(return_value=True)
+        vs.find_contradiction_candidates = MagicMock(return_value=[])
+        vs.embed_lesson = MagicMock(return_value=[0.0])
+        with (
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._get_memory", return_value=state.memory),
+        ):
+            resp = await api_lessons_create(request)
+        assert resp.status == 200
+        args = vs.write_lesson.call_args.args
+        assert args[0] == "always X"
+        assert args[2] == "never Y", "negative must reach write_lesson, not a literal None"
+
+    @pytest.mark.asyncio
+    async def test_jsonl_path_persists_negative_and_evidence(self):
+        request = _lessons_request(
+            {
+                "rule": "always X",
+                "category": "tool",
+                "negative": "never Y",
+                "evidence": "user corrected this in review",
+            }
+        )
+        state = request.app["state"]
+        saved = []
+        state.lessons.save = MagicMock(side_effect=saved.append)
+        memory = MagicMock()
+        memory.vector_store = None  # force the JSONL fallback path
+        with (
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
+            patch("kiro_crew.dashboard.handlers.cron._get_memory", return_value=memory),
+        ):
+            resp = await api_lessons_create(request)
+        assert resp.status == 200
+        assert len(saved) == 1
+        assert saved[0].negative == "never Y"
+        assert saved[0].evidence == "user corrected this in review"
+
     @pytest.mark.asyncio
     async def test_non_object_body_returns_400(self):
         request = _lessons_request(["not", "an", "object"])

@@ -49,6 +49,12 @@ class Lesson:
     rule: str
     category: str  # "tool", "preference", "knowledge"
     negative: str | None = None
+    # WHY the lesson exists — what went wrong, or what the user said, when it
+    # was learned (one line, e.g. "user corrected PR #2126's description: it
+    # referenced private research"). Provenance for later review/refinement;
+    # deliberately NOT injected into session context (get_context) — the rule
+    # and negative are the actionable parts, the evidence is the audit trail.
+    evidence: str | None = None
 
 
 # ── Storage ──
@@ -159,6 +165,7 @@ class LessonStore:
                         rule=data.get("rule", ""),
                         category=data.get("category", "knowledge"),
                         negative=data.get("negative"),
+                        evidence=data.get("evidence"),
                     )
                 )
             except (json.JSONDecodeError, KeyError):
