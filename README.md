@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/103032" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/103032/daily?language=Python" alt="Kiro Crew on Trendshift" width="250" height="55"></a>
+</p>
+
+<p align="center">
   Kiro Crew is an open source development workspace that runs locally or remotely on
   your hardware. It is persistent, self-learning, and self-evolving. Work with it
   from the desktop app, web dashboard, and CLI, or continue the same work through
