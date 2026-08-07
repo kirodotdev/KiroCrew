@@ -382,6 +382,153 @@ All write paths emit SEL audit events (`config_get`, `config_set`, `config_set_f
 - Exit: `exit`, `quit`, `/exit`, `/quit`, `:q`, Ctrl+D
 - Streaming output printed as chunks arrive
 
+### Tool permission requests
+
+A backend that routes tool decisions over ACP holds the turn open until it gets
+an answer, so the stream consumer must respond — an ignored request is not a
+missed prompt, it is a turn that never ends.
+
+Answering one is an **authorization decision**, so the CLI is a security
+surface, not just a prompt. Every request runs the same ladder, in this order:
+
+```
+permission_request
+  → HookManager.on_tool_call        (sensitive paths, denied commands, ceiling ∩ profile)
+      deny → SEL "denied" → reject_tool → stderr notice          [not overridable]
+  → may this invocation ask?        (command mode AND both streams a TTY)
+      no   → SEL "denied" → reject_tool → stderr notice
+  → prompt the human
+      exactly "a" → SEL "allowed" → approve_tool(always=False)
+      anything else → SEL "denied" → reject_tool
+```
+
+The gate is fed the event's non-model-authored fields (`tool_kind`,
+`raw_tool_params`, `shell_command`, `is_shell`, `mcp_server_name`, `tool_name`),
+not just `title`: for a shell tool the title may be an LLM-authored
+description, so a dangerous command behind a benign label is exactly what
+keying on the title alone lets through. The CLI identifies itself as
+`session_key="cli_chat"` (SEL source `cli`) with the resolved agent, which is
+what lets the gate resolve `ceiling ∩ profile` rather than the ceiling alone.
+No second copy of the sensitive-path or denied-command rules lives in the CLI.
+
+The hook result is used as a **deny ceiling only**: `TOOL_DENY` rejects, and
+both `TOOL_ALLOW` and `TOOL_AUTO_APPROVE` still ask the human. This consumer
+answers permission requests; it does not carry the dashboard's trust and
+auto-approval semantics, and honouring `TOOL_AUTO_APPROVE` here would add a
+second execution path with no human confirmation. Asking more often than the
+dashboard is the safe direction.
+
+| Mode | stdin+stdout TTY | Behaviour |
+|---|---|---|
+| interactive REPL | yes | Prompt. Exactly `a` allows once; anything else denies. |
+| interactive REPL | no | Deny automatically, notice on stderr, stdin untouched. |
+| `-m` single message | either | Deny automatically, notice on stderr, stdin untouched. |
+
+Both conditions are required, and neither implies the other. `-m` is documented
+as `Single message (non-interactive)`, so a terminal does not license a prompt
+there — a script wrapped in a pty would otherwise block on a question nobody is
+watching for. And a prompt nobody can see is a hang, not consent, so the REPL
+still needs a real terminal on both ends. The mode is passed explicitly rather
+than inferred from a TTY check, because only the caller knows which mode runs.
+
+A shell call shows the command it is asking about:
+
+```
+Permission required: Run a helpful script
+Command: git status --short
+   [a] allow once  [d] deny (default):
+```
+
+`title` is LLM-authored prose, so approving on it alone is consent to a
+description rather than to what runs — the same reason the gate keys on
+`shell_command`. The command is redacted with the two `security` helpers,
+collapsed to one line, and capped with an explicit `... [truncated]`. Local
+paths are deliberately **not** redacted here: this is the operator's own
+terminal, and seeing the real path is part of the consent. Only the command is
+shown, never the whole tool input — this is the question, not a detail panel.
+
+**Terminal controls are neutralised on this surface.** Every untrusted string
+the permission UI prints — the title, the command, and a gate reason — goes
+through `_for_consent`, which redacts as above and then replaces ESC, the C0 set
+(`U+0000`–`U+001F`), DEL (`U+007F`), and the C1 set (`U+0080`–`U+009F`) with
+spaces before collapsing whitespace, so the result is always a single line. This
+is an authorization surface: OSC 52 writes the clipboard, and CSI can move the
+cursor and erase what is drawn, so a model-authored title could otherwise
+repaint the question a human is answering and hide what is being approved.
+Scope is the permission prompt only — ordinary streamed model output is printed
+raw by `_send_and_print` and is unchanged, which is a surface-wide rendering
+question rather than part of answering a permission request.
+
+**There is no "always allow".** A persistent approval asks the backend to stop
+sending permission requests for matching calls, and a request that is never sent
+is a call this ladder never runs and never audits. The dashboard offers it
+because its tool pipeline re-gates every call; this consumer does not.
+
+The answer is matched **exactly**, not by first letter: a prefix match reads
+`abort` as an allow. Blank line, EOF, and any unrecognised word all deny.
+
+Denial is **not** an error: the request is answered, the turn runs to completion,
+and the exit code is unchanged. Only the existing transport failures
+(`AcpTimeoutError`, `AcpError`) exit non-zero.
+
+Every decision is written to the SEL log **before** the matching
+`approve_tool`/`reject_tool`, so a transport failure cannot erase a decision
+already made:
+
+| decision | `outcome` | `error` |
+|---|---|---|
+| gate denied | `denied` | `hook_deny` |
+| nobody to ask | `denied` | `noninteractive` |
+| user allowed | `allowed` | — |
+| user denied / blank / EOF / unrecognised | `denied` | `user_denied` |
+| session cancelled with the question open | `denied` | `session_aborted` |
+
+`error` is a stable machine code, never the gate's reason: a reason names the
+path or command that triggered it, and an audit record must not restate the
+thing it protects (`log_tool_invocation` does not redact for its callers). The
+audited `tool_name` is the canonical `_meta.kiro` identity when the backend
+supplies one, falling back to a redacted `title` — an audit trail keyed on prose
+the model wrote can be steered by the model being audited.
+
+Responses go through `provider.approve_tool()` / `provider.reject_tool()`. The
+CLI never reads the advertised `options`: those ids are backend-specific and the
+ACP layer owns the mapping.
+
+#### stdin ownership
+
+The prompt is read on an owned daemon thread through a private duplicate of the
+stdin descriptor, not on the event loop and not through `sys.stdin`. The turn is
+parked inside an active stream — the ACP runtime holds a reader task on the
+backend's stdout and a drain task on its stderr — so a read on the loop thread
+would stop draining those pipes until the human answers.
+
+**A cancelled prompt ends the session.** A blocking terminal read cannot be
+retracted: cancelling the await frees the coroutine, not the thread, and that
+reader stays parked and takes the next line the user types. So cancellation
+marks stdin poisoned and propagates; `_require_usable_stdin` then refuses at
+every later entry point — a second permission prompt and the REPL's own `you>`
+alike — rather than racing the abandoned reader for keystrokes. There is no
+input broker and no recovery path: the abandoned reader can only outlive the
+session, never compete with a live prompt.
+
+Teardown **must not await the backend.** The request in flight is left
+unanswered and audited as `session_aborted`, because answering it means awaiting
+a transport: `CancelledError` has already been raised once and nothing
+re-delivers it, so a wedged `reject_tool` would leave the Ctrl-C that asked for
+the teardown unable to land. The provider is shut down with the session, so the
+unanswered request dies with it. `StdinPoisonedError` carries the same rule.
+
+That last sentence is a guarantee, not an expectation: `provider.start()` hands
+back a live backend process, so `_chat` runs the whole message/REPL lifecycle
+under `try` and calls `provider.shutdown()` from `finally`. A normal return, an
+exception, and a cancellation raised through a permission prompt all tear the
+backend down; without it a Ctrl-C at the prompt would exit leaving the backend
+running with nothing owning it. Cleanup never swallows the cancellation — a
+failing `shutdown()` is logged rather than raised, because replacing the
+exception already propagating would discard the very `CancelledError` the
+teardown exists to clean up after — and `gc.collect()` is nested inside its own
+`finally` so a raising shutdown cannot skip it.
+
 ### Context Tracking
 
 After each message, checks `provider.context_usage_pct()`:

@@ -633,6 +633,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # registered sinks.
         "apps/builtins/mochi/redact.py",
         "autonudge_authz.py",
+        # The tool-permission prompt and its SEL record. Neither crosses a
+        # machine boundary: the prompt is written to the operator's OWN terminal
+        # in their own process, and the audit line goes to the local SEL log. The
+        # scrubbing there is targeted hygiene — a credential the model echoed
+        # into a tool title must not be copied into the audit record, and
+        # `log_tool_invocation` does not redact for its callers — not an egress
+        # pass. Local paths are deliberately NOT redacted in the prompt, because
+        # seeing the real path is part of what the operator is consenting to.
+        "cli_chat.py",
         "acp/_dispatch.py",
         "acp/client.py",
         "acp/session_handle.py",
