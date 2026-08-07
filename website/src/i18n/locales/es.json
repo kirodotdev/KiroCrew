@@ -7070,7 +7070,9 @@
         "turn_took_cost": "El turno tardó {{elapsed}} ({{cost}} de coste de API)",
         "turn_took_credits": "El turno tardó {{elapsed}} y consumió {{credits}} créditos",
         "turn_took_credits_cost": "El turno tardó {{elapsed}} y consumió {{credits}} créditos ({{cost}} de coste de API)",
-        "use_as_plan_count": "Usar como plan ({{count}} pasos)"
+        "use_as_plan_count": "Usar como plan ({{count}} pasos)",
+        "pin_message": "Fijar mensaje",
+        "unpin_message": "Desfijar mensaje"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -7310,9 +7312,9 @@
         "aria_awaiting_approval": "Esperando la aprobación de la herramienta: {{label}}",
         "aria_hide_details": "Ocultar los detalles de la herramienta: {{label}}",
         "aria_show_details": "Mostrar los detalles de la herramienta: {{label}}",
-        "blocked_by_security_policy": "Bloqueado por política de seguridad",
         "open_in_side_panel": "Abrir {{path}} en el panel lateral",
-        "opened_in_the_side_panel": "Abierto en el panel lateral"
+        "opened_in_the_side_panel": "Abierto en el panel lateral",
+        "blocked_by_security_policy": "Bloqueado por política de seguridad"
       },
       "toolDetails": {
         "auto": "Automático",
@@ -7333,7 +7335,9 @@
         "edit_resend": "Editar y reenviar",
         "send": "Enviar",
         "send_enter": "Enviar (Enter)",
-        "steered_into_the_running_turn": "Redirigido al turno en curso"
+        "steered_into_the_running_turn": "Redirigido al turno en curso",
+        "pin_message": "Fijar mensaje",
+        "unpin_message": "Desfijar mensaje"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar el resultado",
@@ -7351,6 +7355,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "No se pudo cargar la instantánea:",
         "events": "eventos"
+      },
+      "pins": {
+        "pinned_messages": "Mensajes fijados",
+        "close_panel": "Cerrar panel de mensajes fijados",
+        "loading": "Cargando…",
+        "no_pinned_messages": "Aún no hay mensajes fijados. Fija mensajes importantes del chat para encontrarlos rápidamente.",
+        "message_unavailable": "Este mensaje fijado ya no está disponible en el historial cargado.",
+        "pin_failed": "No se pudo fijar el mensaje. Inténtalo de nuevo.",
+        "unpin_failed": "No se pudo desfijar el mensaje. Inténtalo de nuevo.",
+        "you": "Tú",
+        "assistant": "Asistente",
+        "just_now": "Ahora mismo",
+        "minutes_ago": "hace {{count}} min",
+        "hours_ago": "hace {{count}} h",
+        "days_ago": "hace {{count}} d",
+        "copy_preview": "Copiar texto",
+        "copy_link": "Copiar enlace al mensaje",
+        "unpin": "Desfijar",
+        "open_pinned_messages": "Abrir mensajes fijados",
+        "jump_to_message": "Ir al mensaje"
       }
     },
     "chatPage": {

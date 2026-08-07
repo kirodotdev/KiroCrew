@@ -7070,7 +7070,9 @@
         "turn_took_cost": "O turno levou {{elapsed}} ({{cost}} de custo de API)",
         "turn_took_credits": "O turno levou {{elapsed}} e consumiu {{credits}} créditos",
         "turn_took_credits_cost": "O turno levou {{elapsed}} e consumiu {{credits}} créditos ({{cost}} de custo de API)",
-        "use_as_plan_count": "Usar como plano ({{count}} etapas)"
+        "use_as_plan_count": "Usar como plano ({{count}} etapas)",
+        "pin_message": "Fixar mensagem",
+        "unpin_message": "Desafixar mensagem"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -7310,9 +7312,9 @@
         "aria_awaiting_approval": "Aguardando aprovação da ferramenta: {{label}}",
         "aria_hide_details": "Ocultar detalhes da ferramenta: {{label}}",
         "aria_show_details": "Mostrar detalhes da ferramenta: {{label}}",
-        "blocked_by_security_policy": "Bloqueado pela política de segurança",
         "open_in_side_panel": "Abrir {{path}} no painel lateral",
-        "opened_in_the_side_panel": "Aberto no painel lateral"
+        "opened_in_the_side_panel": "Aberto no painel lateral",
+        "blocked_by_security_policy": "Bloqueado pela política de segurança"
       },
       "toolDetails": {
         "auto": "Auto",
@@ -7333,7 +7335,9 @@
         "edit_resend": "Editar e reenviar",
         "send": "Enviar",
         "send_enter": "Enviar (Enter)",
-        "steered_into_the_running_turn": "Direcionado para o turno em andamento"
+        "steered_into_the_running_turn": "Direcionado para o turno em andamento",
+        "pin_message": "Fixar mensagem",
+        "unpin_message": "Desafixar mensagem"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar resultado",
@@ -7351,6 +7355,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Não foi possível carregar o snapshot:",
         "events": "eventos"
+      },
+      "pins": {
+        "pinned_messages": "Mensagens fixadas",
+        "close_panel": "Fechar painel de mensagens fixadas",
+        "loading": "Carregando…",
+        "no_pinned_messages": "Nenhuma mensagem fixada ainda. Fixe mensagens importantes do chat para encontrá-las rapidamente.",
+        "message_unavailable": "Esta mensagem fixada não está mais disponível no histórico carregado.",
+        "pin_failed": "Não foi possível fixar a mensagem. Tente novamente.",
+        "unpin_failed": "Não foi possível desafixar a mensagem. Tente novamente.",
+        "you": "Você",
+        "assistant": "Assistente",
+        "just_now": "Agora mesmo",
+        "minutes_ago": "há {{count}} min",
+        "hours_ago": "há {{count}} h",
+        "days_ago": "há {{count}} d",
+        "copy_preview": "Copiar texto",
+        "copy_link": "Copiar link da mensagem",
+        "unpin": "Desafixar",
+        "open_pinned_messages": "Abrir mensagens fixadas",
+        "jump_to_message": "Ir para a mensagem"
       }
     },
     "chatPage": {

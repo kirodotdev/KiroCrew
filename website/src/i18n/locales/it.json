@@ -7070,7 +7070,9 @@
         "turn_took_cost": "Il turno ha richiesto {{elapsed}} ({{cost}} di costo API)",
         "turn_took_credits": "Il turno ha richiesto {{elapsed}} e ha consumato {{credits}} crediti",
         "turn_took_credits_cost": "Il turno ha richiesto {{elapsed}} e ha consumato {{credits}} crediti ({{cost}} di costo API)",
-        "use_as_plan_count": "Usa come piano ({{count}} passaggi)"
+        "use_as_plan_count": "Usa come piano ({{count}} passaggi)",
+        "pin_message": "Fissa messaggio",
+        "unpin_message": "Rimuovi fissaggio"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -7310,9 +7312,9 @@
         "aria_awaiting_approval": "In attesa di approvazione per lo strumento: {{label}}",
         "aria_hide_details": "Nascondi i dettagli per lo strumento: {{label}}",
         "aria_show_details": "Mostra i dettagli per lo strumento: {{label}}",
-        "blocked_by_security_policy": "Bloccato dalla policy di sicurezza",
         "open_in_side_panel": "Apri {{path}} nel pannello laterale",
-        "opened_in_the_side_panel": "Aperto nel pannello laterale"
+        "opened_in_the_side_panel": "Aperto nel pannello laterale",
+        "blocked_by_security_policy": "Bloccato dalla policy di sicurezza"
       },
       "toolDetails": {
         "auto": "Automatico",
@@ -7333,7 +7335,9 @@
         "edit_resend": "Modifica e invia di nuovo",
         "send": "Invia",
         "send_enter": "Invia (Invio)",
-        "steered_into_the_running_turn": "Indirizzato nel turno in corso"
+        "steered_into_the_running_turn": "Indirizzato nel turno in corso",
+        "pin_message": "Fissa messaggio",
+        "unpin_message": "Rimuovi fissaggio"
       },
       "workflowCompletionCard": {
         "hide_result": "Nascondi il risultato",
@@ -7351,6 +7355,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossibile caricare lo snapshot:",
         "events": "eventi"
+      },
+      "pins": {
+        "pinned_messages": "Messaggi fissati",
+        "close_panel": "Chiudi pannello messaggi fissati",
+        "loading": "Caricamento…",
+        "no_pinned_messages": "Nessun messaggio fissato. Fissa messaggi importanti dalla chat per trovarli rapidamente.",
+        "message_unavailable": "Questo messaggio fissato non è più disponibile nella cronologia caricata.",
+        "pin_failed": "Impossibile fissare il messaggio. Riprova.",
+        "unpin_failed": "Impossibile rimuovere il messaggio fissato. Riprova.",
+        "you": "Tu",
+        "assistant": "Assistente",
+        "just_now": "Proprio ora",
+        "minutes_ago": "{{count}} min fa",
+        "hours_ago": "{{count}} ore fa",
+        "days_ago": "{{count}} g fa",
+        "copy_preview": "Copia testo",
+        "copy_link": "Copia link al messaggio",
+        "unpin": "Rimuovi",
+        "open_pinned_messages": "Apri messaggi fissati",
+        "jump_to_message": "Vai al messaggio"
       }
     },
     "chatPage": {

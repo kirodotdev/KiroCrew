@@ -7167,7 +7167,9 @@
         "turn_took_cost": "Ход занял {{elapsed}} (стоимость API: {{cost}})",
         "turn_took_credits": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов",
         "turn_took_credits_cost": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов (стоимость API: {{cost}})",
-        "use_as_plan_count": "Использовать как план (шагов: {{count}})"
+        "use_as_plan_count": "Использовать как план (шагов: {{count}})",
+        "pin_message": "Закрепить сообщение",
+        "unpin_message": "Открепить сообщение"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -7409,9 +7411,9 @@
         "aria_awaiting_approval": "Ожидание одобрения инструмента: {{label}}",
         "aria_hide_details": "Скрыть подробности инструмента: {{label}}",
         "aria_show_details": "Показать подробности инструмента: {{label}}",
-        "blocked_by_security_policy": "Заблокировано политикой безопасности",
         "open_in_side_panel": "Открыть {{path}} в боковой панели",
-        "opened_in_the_side_panel": "Открыто в боковой панели"
+        "opened_in_the_side_panel": "Открыто в боковой панели",
+        "blocked_by_security_policy": "Заблокировано политикой безопасности"
       },
       "toolDetails": {
         "auto": "Авто",
@@ -7432,7 +7434,9 @@
         "edit_resend": "Изменить и отправить",
         "send": "Отправить",
         "send_enter": "Отправить (Enter)",
-        "steered_into_the_running_turn": "Направлено в выполняющийся ход"
+        "steered_into_the_running_turn": "Направлено в выполняющийся ход",
+        "pin_message": "Закрепить сообщение",
+        "unpin_message": "Открепить сообщение"
       },
       "workflowCompletionCard": {
         "hide_result": "Скрыть результат",
@@ -7450,6 +7454,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Не удалось загрузить снимок:",
         "events": "событий"
+      },
+      "pins": {
+        "pinned_messages": "Закреплённые сообщения",
+        "close_panel": "Закрыть панель закреплённых сообщений",
+        "loading": "Загрузка…",
+        "no_pinned_messages": "Закреплённых сообщений пока нет. Закрепляйте важные сообщения, чтобы быстро их находить.",
+        "message_unavailable": "Это закреплённое сообщение больше недоступно в загруженной истории.",
+        "pin_failed": "Не удалось закрепить сообщение. Повторите попытку.",
+        "unpin_failed": "Не удалось открепить сообщение. Повторите попытку.",
+        "you": "Вы",
+        "assistant": "Ассистент",
+        "just_now": "Только что",
+        "minutes_ago": "{{count}} мин назад",
+        "hours_ago": "{{count}} ч назад",
+        "days_ago": "{{count}} дн назад",
+        "copy_preview": "Копировать текст",
+        "copy_link": "Копировать ссылку на сообщение",
+        "unpin": "Открепить",
+        "open_pinned_messages": "Открыть закреплённые сообщения",
+        "jump_to_message": "Перейти к сообщению"
       }
     },
     "chatPage": {

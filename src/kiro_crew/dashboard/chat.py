@@ -94,6 +94,11 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     restore_recent_sessions_async,
     save_all_slots_to_history,
 )
+from kiro_crew.dashboard.chat_pins import (  # noqa: F401
+    api_chat_pins_create,
+    api_chat_pins_delete,
+    api_chat_pins_list,
+)
 from kiro_crew.dashboard.chat_regenerate import (  # noqa: F401
     _MAX_VARIANTS,
     api_chat_slot_edit_resend,

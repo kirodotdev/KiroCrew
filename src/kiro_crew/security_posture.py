@@ -105,6 +105,15 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Chat pin previews",
+        "dashboard/chat_pins.py",
+        "Message previews submitted to POST /api/chat/pins are persisted to "
+        "chat_pins.json and re-rendered by the pinned-messages panel, so the "
+        "preview is an output boundary; credentials and exfiltration URLs are "
+        "redacted before storage and on every response path (list and "
+        "idempotent duplicate-create) via _redacted_pin.",
+    ),
+    (
         "Skill context budget",
         "dashboard/handlers/skill_budget.py",
         "Skill display names served by `GET /api/skills/-/budget`. An auto-skill's "

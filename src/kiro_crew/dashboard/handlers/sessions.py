@@ -227,9 +227,11 @@ def _cache_without_scrape(api_usage: object, identity: dict[str, object]) -> Non
     if _usage_cache.get("credits_plan") is not None and _same_identity(_usage_cache, identity):
         _usage_cache = {**_usage_cache, "stale": True}
     else:
-        partial = {k: _redact_strings(v) for k, v in api_usage.items()} if (
-            isinstance(api_usage, dict)
-        ) else {}
+        partial = (
+            {k: _redact_strings(v) for k, v in api_usage.items()}
+            if (isinstance(api_usage, dict))
+            else {}
+        )
         partial.pop("_profile_arn", None)
         _usage_cache = {**partial, "available": False}
     _usage_cache_ts = time.time()
@@ -375,6 +377,7 @@ def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bo
     same-email-different-org case — without it, preserving the prior cache would
     leak the previous account's data.
     """
+
     def _red(v: object) -> object:
         return _redact_strings(v) if isinstance(v, str) else v
 
@@ -423,16 +426,16 @@ def _text_scrape_regresses_api_value(
     prev_resets = prev.get("resets")
     new_resets = new.get("resets")
     if not (
-        isinstance(prev_resets, str) and prev_resets
-        and isinstance(new_resets, str) and new_resets
+        isinstance(prev_resets, str)
+        and prev_resets
+        and isinstance(new_resets, str)
+        and new_resets
         and prev_resets == new_resets
     ):
         return False
     prev_used = prev.get("credits_used")
     new_used = new.get("credits_used")
-    if not isinstance(prev_used, (int, float)) or not isinstance(
-        new_used, (int, float)
-    ):
+    if not isinstance(prev_used, (int, float)) or not isinstance(new_used, (int, float)):
         return False
     return prev_used > new_used
 
@@ -577,11 +580,7 @@ def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> b
     identity is a cosmetic gap; mislabelling whose overage bill this is, is not.
     """
     whoami_arn = identity.get("_profile_arn")
-    return (
-        isinstance(api_arn, str)
-        and isinstance(whoami_arn, str)
-        and api_arn == whoami_arn
-    )
+    return isinstance(api_arn, str) and isinstance(whoami_arn, str) and api_arn == whoami_arn
 
 
 async def _fetch_usage_bg() -> None:
@@ -646,11 +645,7 @@ async def _fetch_usage_bg() -> None:
             # still carries the no-ARN (Builder ID) case on its own.
             if identity and _identity_matches_account(api_arn, identity):
                 api_usage.update(
-                    {
-                        k: _redact_strings(v)
-                        for k, v in identity.items()
-                        if not k.startswith("_")
-                    }
+                    {k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")}
                 )
             _usage_cache = api_usage
             _usage_cache_ts = time.time()
@@ -736,11 +731,7 @@ async def _fetch_usage_bg() -> None:
             # identity's ARN mismatch the accepted credential's and the email is
             # simply dropped.
             parsed.update(
-                {
-                    k: _redact_strings(v)
-                    for k, v in fresh_identity.items()
-                    if not k.startswith("_")
-                }
+                {k: _redact_strings(v) for k, v in fresh_identity.items() if not k.startswith("_")}
             )
             _usage_cache = parsed
             _usage_cache_ts = time.time()
@@ -864,7 +855,9 @@ async def api_sessions(request: web.Request) -> web.Response:
 _SUMMARIZE_MAX_SESSIONS = 8  # bound cost/latency: only the top-N get an LLM pass
 _SUMMARIZE_MODEL = "auto"  # inherit the governed default; a hardcoded id 400s where unavailable
 _SUMMARIZE_MSG_LIMIT = 12  # messages fed to the summarizer per session
-_SUMMARIZE_TIMEOUT_SECS = 30  # per-session deadline so one stalled prompt can't pin the shared _bg session
+_SUMMARIZE_TIMEOUT_SECS = (
+    30  # per-session deadline so one stalled prompt can't pin the shared _bg session
+)
 _SUMMARIZE_PROMPT = (
     "Summarize the following conversation in ONE terse line (max 18 words), "
     "describing what the user and assistant are working on. No preamble, no "
@@ -1071,13 +1064,16 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     """
     from kiro_crew.dashboard.state import _normalize_slot_key
 
+    stripped = key
+    if stripped.startswith("dashboard:"):
+        stripped = stripped[len("dashboard:") :]
+    while stripped.startswith("dashboard_"):
+        stripped = stripped[len("dashboard_") :]
+    normalized = _normalize_slot_key(key)
+    pin_slot_keys = {key, stripped, "dashboard_" + key, normalized}
+
     slot = state._slots.pop(key, None)
     if not slot:
-        stripped = key
-        if stripped.startswith("dashboard:"):
-            stripped = stripped[len("dashboard:") :]
-        while stripped.startswith("dashboard_"):
-            stripped = stripped[len("dashboard_") :]
         slot = state._slots.pop(stripped, None)
     if not slot:
         # Reverse: history key has no prefix, but slot was stored with one
@@ -1087,7 +1083,13 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         # charset, which none of the prefix probes above produce. Without
         # this the slot outlives its deleted history and keeps a kiro-cli
         # process alive.
-        slot = state._slots.pop(_normalize_slot_key(key), None)
+        slot = state._slots.pop(normalized, None)
+    if slot:
+        pin_slot_keys.add(slot.key)
+    try:
+        await state.remove_chat_pins_for_slots(pin_slot_keys)
+    except Exception:
+        logger.warning("History delete: pin cleanup failed for %s", key, exc_info=True)
     if slot:
         # A pending ask_question is owned by the slot's running turn, but its
         # future lives in DashboardState rather than on slot.task. History
@@ -1288,14 +1290,14 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
 
     # Dashboard slot
     if session_key.startswith("dashboard:"):
-        slot_key = session_key[len("dashboard:"):]
+        slot_key = session_key[len("dashboard:") :]
         slot = state.get_slot(slot_key)
         if slot:
             agent_name = slot.agent
     # Subagent — look up in SubagentManager
     elif session_key.startswith("subagent:"):
         if state.subagents:
-            subagent_id = session_key[len("subagent:"):]
+            subagent_id = session_key[len("subagent:") :]
             info = state.subagents.get(subagent_id)
             if info:
                 agent_name = info.agent
@@ -1380,7 +1382,8 @@ async def _reset_all_sessions(request: web.Request) -> int:
     if count > 0 or pool_providers:
         logger.info(
             "Reset %d session(s) + %d pool process(es) after config change",
-            count, len(pool_providers),
+            count,
+            len(pool_providers),
         )
 
     state.broadcast_ws("sessions_restarting", {"status": "restarting"})
@@ -1526,7 +1529,5 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
         logger.warning("Failed to read archive %s: %s", name, exc)
         return web.json_response({"error": "unreadable archive"}, status=422)
     # Archives contain LLM output; redact credentials and exfiltration URLs before serving.
-    redacted = await asyncio.to_thread(
-        lambda: redact(raw)
-    )
+    redacted = await asyncio.to_thread(lambda: redact(raw))
     return web.Response(text=redacted, content_type="application/x-ndjson")

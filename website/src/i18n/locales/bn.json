@@ -6973,7 +6973,9 @@
         "turn_took_cost": "টার্নে সময় লেগেছে {{elapsed}} ({{cost}} API ব্যয়)",
         "turn_took_credits": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট",
         "turn_took_credits_cost": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট ({{cost}} API ব্যয়)",
-        "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)"
+        "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)",
+        "pin_message": "বার্তা পিন করুন",
+        "unpin_message": "বার্তা আনপিন করুন"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -7211,9 +7213,9 @@
         "aria_awaiting_approval": "টুলের অনুমোদনের অপেক্ষায়: {{label}}",
         "aria_hide_details": "টুলের বিস্তারিত লুকাও: {{label}}",
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",
-        "blocked_by_security_policy": "নিরাপত্তা নীতি দ্বারা অবরুদ্ধ",
         "open_in_side_panel": "{{path}} সাইড প্যানেলে খোলো",
-        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে"
+        "opened_in_the_side_panel": "সাইড প্যানেলে খোলা হয়েছে",
+        "blocked_by_security_policy": "নিরাপত্তা নীতি দ্বারা অবরুদ্ধ"
       },
       "toolDetails": {
         "auto": "স্বয়ংক্রিয়",
@@ -7234,7 +7236,9 @@
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
         "send": "পাঠান",
         "send_enter": "পাঠান (Enter)",
-        "steered_into_the_running_turn": "চলমান টার্নে স্টিয়ার করা হয়েছে"
+        "steered_into_the_running_turn": "চলমান টার্নে স্টিয়ার করা হয়েছে",
+        "pin_message": "বার্তা পিন করুন",
+        "unpin_message": "বার্তা আনপিন করুন"
       },
       "workflowCompletionCard": {
         "hide_result": "ফলাফল লুকাও",
@@ -7252,6 +7256,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "স্ন্যাপশট লোড করা যায়নি:",
         "events": "ইভেন্ট"
+      },
+      "pins": {
+        "pinned_messages": "পিন করা বার্তা",
+        "close_panel": "পিন করা বার্তা প্যানেল বন্ধ করুন",
+        "loading": "লোড হচ্ছে…",
+        "no_pinned_messages": "এখনও কোনো পিন করা বার্তা নেই। গুরুত্বপূর্ণ বার্তা দ্রুত খুঁজে পেতে পিন করুন।",
+        "message_unavailable": "পিন করা বার্তাটি লোড করা ইতিহাসে আর পাওয়া যাচ্ছে না।",
+        "pin_failed": "বার্তাটি পিন করা যায়নি। আবার চেষ্টা করুন।",
+        "unpin_failed": "বার্তাটির পিন সরানো যায়নি। আবার চেষ্টা করুন।",
+        "you": "আপনি",
+        "assistant": "সহকারী",
+        "just_now": "এইমাত্র",
+        "minutes_ago": "{{count}} মিনিট আগে",
+        "hours_ago": "{{count}} ঘন্টা আগে",
+        "days_ago": "{{count}} দিন আগে",
+        "copy_preview": "টেক্সট কপি করুন",
+        "copy_link": "বার্তার লিঙ্ক কপি করুন",
+        "unpin": "আনপিন",
+        "open_pinned_messages": "পিন করা বার্তা খুলুন",
+        "jump_to_message": "বার্তায় যান"
       }
     },
     "chatPage": {

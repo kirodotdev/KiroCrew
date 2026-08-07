@@ -2014,6 +2014,8 @@ async def start_dashboard(
     # Off-loop: a large cron_folders.json would otherwise block the event
     # loop with synchronous file I/O + JSON parsing during startup.
     await asyncio.to_thread(state.load_cron_folders)
+    # Off-loop: a large chat_pins.json must not block the event loop at startup.
+    await asyncio.to_thread(state.load_chat_pins)
     state.load_tags()
     app["port"] = port
 
@@ -2291,12 +2293,8 @@ async def start_dashboard(
     app.router.add_post("/api/source/pull-request/comment", api_pull_request_comment)
     app.router.add_post("/api/source/pull-request/auto-merge", api_pull_request_auto_merge)
     app.router.add_post("/api/source/pull-request/ready", api_pull_request_ready)
-    app.router.add_post(
-        "/api/source/pull-request/pending-review", api_pull_request_pending_review
-    )
-    app.router.add_post(
-        "/api/source/pull-request/submit-review", api_pull_request_submit_review
-    )
+    app.router.add_post("/api/source/pull-request/pending-review", api_pull_request_pending_review)
+    app.router.add_post("/api/source/pull-request/submit-review", api_pull_request_submit_review)
     app.router.add_post("/api/source/issue", api_issue_source)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
@@ -2390,6 +2388,10 @@ async def start_dashboard(
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
     app.router.add_patch("/api/chat/slots/{slot}/mode", chat.api_chat_slot_mode)
+    # Message pins
+    app.router.add_get("/api/chat/pins", chat.api_chat_pins_list)
+    app.router.add_post("/api/chat/pins", chat.api_chat_pins_create)
+    app.router.add_delete("/api/chat/pins/{id}", chat.api_chat_pins_delete)
     # Tags
     app.router.add_get("/api/chat/tags", chat.api_chat_tags)
     app.router.add_post("/api/chat/tags", chat.api_chat_tag_create)
@@ -3465,9 +3467,7 @@ async def start_api_server(
     # reached through the task runner. Logged on a miss rather than silently
     # recording nothing, since a route that credits no reads is the bias this
     # observer exists to remove.
-    if not register_skill_read_observer(
-        state.context_builder, getattr(task_runner, "_ctx", None)
-    ):
+    if not register_skill_read_observer(state.context_builder, getattr(task_runner, "_ctx", None)):
         logger.info("skill-read observer not registered: no skills loader reachable")
 
     # Wire script hooks into subagent tool execution path
@@ -3500,6 +3500,8 @@ async def start_api_server(
     # Off-loop: a large cron_folders.json would otherwise block the event
     # loop with synchronous file I/O + JSON parsing during startup.
     await asyncio.to_thread(state.load_cron_folders)
+    # Off-loop: a large chat_pins.json must not block the event loop at startup.
+    await asyncio.to_thread(state.load_chat_pins)
     state.load_tags()
     app["port"] = port
 

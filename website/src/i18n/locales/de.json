@@ -6973,7 +6973,9 @@
         "turn_took_cost": "Zug dauerte {{elapsed}} ({{cost}} API-Kosten)",
         "turn_took_credits": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits",
         "turn_took_credits_cost": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits ({{cost}} API-Kosten)",
-        "use_as_plan_count": "Als Plan verwenden ({{count}} Schritte)"
+        "use_as_plan_count": "Als Plan verwenden ({{count}} Schritte)",
+        "pin_message": "Nachricht anheften",
+        "unpin_message": "Nachricht loslösen"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -7211,9 +7213,9 @@
         "aria_awaiting_approval": "Warten auf Genehmigung für Werkzeug {{label}}",
         "aria_hide_details": "Details für Werkzeug {{label}} ausblenden",
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",
-        "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert",
         "open_in_side_panel": "{{path}} im Seitenpanel öffnen",
-        "opened_in_the_side_panel": "Im Seitenbereich geöffnet"
+        "opened_in_the_side_panel": "Im Seitenbereich geöffnet",
+        "blocked_by_security_policy": "Durch Sicherheitsrichtlinie blockiert"
       },
       "toolDetails": {
         "auto": "Automatisch",
@@ -7234,7 +7236,9 @@
         "edit_resend": "Bearbeiten & erneut senden",
         "send": "Senden",
         "send_enter": "Senden (Enter)",
-        "steered_into_the_running_turn": "In den laufenden Zug eingesteuert"
+        "steered_into_the_running_turn": "In den laufenden Zug eingesteuert",
+        "pin_message": "Nachricht anheften",
+        "unpin_message": "Nachricht loslösen"
       },
       "workflowCompletionCard": {
         "hide_result": "Ergebnis ausblenden",
@@ -7252,6 +7256,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Snapshot konnte nicht geladen werden:",
         "events": "Ereignisse"
+      },
+      "pins": {
+        "pinned_messages": "Angeheftete Nachrichten",
+        "close_panel": "Panel für angeheftete Nachrichten schließen",
+        "loading": "Wird geladen…",
+        "no_pinned_messages": "Noch keine angehefteten Nachrichten. Hefte wichtige Nachrichten an, um sie schnell wiederzufinden.",
+        "message_unavailable": "Diese angeheftete Nachricht ist im geladenen Verlauf nicht mehr verfügbar.",
+        "pin_failed": "Die Nachricht konnte nicht angeheftet werden. Versuche es erneut.",
+        "unpin_failed": "Die Nachricht konnte nicht gelöst werden. Versuche es erneut.",
+        "you": "Du",
+        "assistant": "Assistent",
+        "just_now": "Gerade eben",
+        "minutes_ago": "vor {{count}} Min.",
+        "hours_ago": "vor {{count}} Std.",
+        "days_ago": "vor {{count}} T.",
+        "copy_preview": "Text kopieren",
+        "copy_link": "Link zur Nachricht kopieren",
+        "unpin": "Loslösen",
+        "open_pinned_messages": "Angeheftete Nachrichten öffnen",
+        "jump_to_message": "Zur Nachricht springen"
       }
     },
     "chatPage": {

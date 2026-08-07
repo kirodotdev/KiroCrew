@@ -6876,7 +6876,9 @@
         "turn_took_cost": "ターンに {{elapsed}} かかりました({{cost}} の API コスト)",
         "turn_took_credits": "ターンに {{elapsed}} かかり {{credits}} クレジットを使用しました",
         "turn_took_credits_cost": "ターンに {{elapsed}} かかり {{credits}} クレジットを使用しました({{cost}} の API コスト)",
-        "use_as_plan_count": "プランとして使用({{count}} ステップ)"
+        "use_as_plan_count": "プランとして使用({{count}} ステップ)",
+        "pin_message": "メッセージをピン留め",
+        "unpin_message": "メッセージのピン留めを解除"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -7135,7 +7137,9 @@
         "edit_resend": "編集して再送信",
         "send": "送信",
         "send_enter": "送信 (Enter)",
-        "steered_into_the_running_turn": "実行中のターンに追加しました"
+        "steered_into_the_running_turn": "実行中のターンに追加しました",
+        "pin_message": "メッセージをピン留め",
+        "unpin_message": "メッセージのピン留めを解除"
       },
       "workflowCompletionCard": {
         "hide_result": "結果を非表示",
@@ -7153,6 +7157,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "スナップショットを読み込めませんでした:",
         "events": "イベント"
+      },
+      "pins": {
+        "pinned_messages": "ピン留めされたメッセージ",
+        "close_panel": "ピン留めメッセージパネルを閉じる",
+        "loading": "読み込み中…",
+        "no_pinned_messages": "ピン留めされたメッセージはまだありません。重要なメッセージをピン留めしてすぐに見つけられるようにしましょう。",
+        "message_unavailable": "このピン留めメッセージは読み込まれた履歴では利用できなくなりました。",
+        "pin_failed": "メッセージをピン留めできませんでした。もう一度お試しください。",
+        "unpin_failed": "メッセージのピン留めを解除できませんでした。もう一度お試しください。",
+        "you": "あなた",
+        "assistant": "アシスタント",
+        "just_now": "たった今",
+        "minutes_ago": "{{count}}分前",
+        "hours_ago": "{{count}}時間前",
+        "days_ago": "{{count}}日前",
+        "copy_preview": "テキストをコピー",
+        "copy_link": "メッセージへのリンクをコピー",
+        "unpin": "ピン留めを解除",
+        "open_pinned_messages": "ピン留めされたメッセージを開く",
+        "jump_to_message": "メッセージに移動"
       }
     },
     "chatPage": {

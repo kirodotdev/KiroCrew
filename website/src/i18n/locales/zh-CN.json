@@ -6876,7 +6876,9 @@
         "turn_took_cost": "本轮次耗时 {{elapsed}}（API 成本 {{cost}}）",
         "turn_took_credits": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度",
         "turn_took_credits_cost": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度（API 成本 {{cost}}）",
-        "use_as_plan_count": "用作计划（{{count}} 个步骤）"
+        "use_as_plan_count": "用作计划（{{count}} 个步骤）",
+        "pin_message": "置顶消息",
+        "unpin_message": "取消置顶"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -7112,9 +7114,9 @@
         "aria_awaiting_approval": "等待批准工具：{{label}}",
         "aria_hide_details": "隐藏工具详情：{{label}}",
         "aria_show_details": "展开工具详情：{{label}}",
-        "blocked_by_security_policy": "已被安全策略阻止",
         "open_in_side_panel": "在侧边面板中打开 {{path}}",
-        "opened_in_the_side_panel": "已在侧边栏中打开"
+        "opened_in_the_side_panel": "已在侧边栏中打开",
+        "blocked_by_security_policy": "已被安全策略阻止"
       },
       "toolDetails": {
         "auto": "自动",
@@ -7135,7 +7137,9 @@
         "edit_resend": "编辑并重发",
         "send": "发送",
         "send_enter": "发送 (Enter)",
-        "steered_into_the_running_turn": "已引导到正在运行的这一轮"
+        "steered_into_the_running_turn": "已引导到正在运行的这一轮",
+        "pin_message": "置顶消息",
+        "unpin_message": "取消置顶"
       },
       "workflowCompletionCard": {
         "hide_result": "隐藏结果",
@@ -7153,6 +7157,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "无法加载快照：",
         "events": "个事件"
+      },
+      "pins": {
+        "pinned_messages": "已置顶消息",
+        "close_panel": "关闭置顶消息面板",
+        "loading": "加载中…",
+        "no_pinned_messages": "暂无置顶消息。置顶重要消息以便快速查找。",
+        "message_unavailable": "此置顶消息在已加载的历史记录中不再可用。",
+        "pin_failed": "无法置顶消息，请重试。",
+        "unpin_failed": "无法取消置顶消息，请重试。",
+        "you": "你",
+        "assistant": "助手",
+        "just_now": "刚刚",
+        "minutes_ago": "{{count}}分钟前",
+        "hours_ago": "{{count}}小时前",
+        "days_ago": "{{count}}天前",
+        "copy_preview": "复制文本",
+        "copy_link": "复制消息链接",
+        "unpin": "取消置顶",
+        "open_pinned_messages": "打开置顶消息",
+        "jump_to_message": "跳转到消息"
       }
     },
     "chatPage": {
