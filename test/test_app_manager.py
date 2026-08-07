@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import shutil
 
 import pytest
@@ -1599,6 +1600,650 @@ class TestBuiltinDoesNotClobberUserInstall:
         )
         assert _builtin_owns_install(ours)
         assert not _builtin_owns_install(theirs)
+
+
+_SUPERSEDED_EXTERNALS_URL = "https://github.com/michellemxm/kc-app-design-tweak"
+
+
+class TestGraduatedExternalAppIsSuperseded:
+    """The one exception to the stand-down: an external app this package graduates.
+
+    ``design-tweak`` shipped as the external app ``kc-app-design-tweak`` before it
+    became a builtin, so the users being graduated are exactly the ones whose
+    ``apps/design-tweak/`` is occupied by a user install -- and the stand-down
+    above meant they would silently never receive the builtin. Identity is
+    checked against the manifest's ``repository`` so an unrelated app sharing the
+    id is still left alone, and the old install is MOVED, never deleted.
+    """
+
+    GRADUATED = "design-tweak"
+
+    def _register_only(self, monkeypatch, apps):
+        from kiro_crew.apps import manager
+
+        monkeypatch.setattr(manager, "_BUILTIN_APPS", [])
+        monkeypatch.setattr(manager, "discover_builtin_apps", lambda *a, **k: apps)
+        monkeypatch.setattr(manager, "_edition_builtin_apps", lambda: [])
+        manager.register_builtin_apps()
+
+    def _builtin(self):
+        return {
+            "name": self.GRADUATED,
+            "version": "9.9.9",
+            "displayName": "Design Tweak",
+            "description": "the bundled builtin that graduates the external app",
+            "author": "kirocrew",
+            "defaultEnabled": False,
+        }
+
+    def _seed_external_install(self, repository, version="0.10.0"):
+        """Write the app dir the way install_app() would for an external app."""
+        import json
+
+        from kiro_crew.apps.manager import (
+            APP_MANIFEST_FILENAME,
+            InstalledApp,
+            _now_iso,
+            _write_installed,
+            app_dir,
+        )
+
+        d = app_dir(self.GRADUATED)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": self.GRADUATED,
+                    "version": version,
+                    "displayName": "Design Tweak (external)",
+                    "repository": repository,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        queue = d / "data" / "queue"
+        queue.mkdir(parents=True, exist_ok=True)
+        (queue / "1720560000000-a1b2c3.json").write_text("{}", encoding="utf-8")
+        _write_installed(
+            self.GRADUATED,
+            InstalledApp(
+                name=self.GRADUATED,
+                version=version,
+                displayName="Design Tweak (external)",
+                enabled=True,
+                installedAt=_now_iso(),
+                source="/Users/someone/Developer/kc-app-design-tweak",
+                origin="external",
+                lifecycle="gateway",
+            ),
+        )
+        return d
+
+    def _reinstall_external(self, repository, version="0.10.0"):
+        """Simulate a deliberate reinstall of the external app after graduation.
+
+        ``install_app`` refuses while an ``installed.json`` is present, so the app
+        dir is removed first and then written fresh from the source manifest --
+        which is exactly why an in-app-dir marker could not survive this.
+        """
+        from kiro_crew.apps.manager import app_dir
+
+        shutil.rmtree(app_dir(self.GRADUATED))
+        return self._seed_external_install(repository, version=version)
+
+    def _archive_dirs(self, app_home):
+        from kiro_crew.apps.manager import _SUPERSEDED_ARCHIVE_DIRNAME
+
+        root = app_home / _SUPERSEDED_ARCHIVE_DIRNAME
+        if not root.is_dir():
+            return []
+        return sorted(p for p in root.iterdir() if p.is_dir())
+
+    def test_design_tweak_is_declared_graduated(self):
+        """Pins the entry itself: without it the graduated users get nothing."""
+        from kiro_crew.apps.manager import _SUPERSEDED_EXTERNALS
+
+        assert _SUPERSEDED_EXTERNALS[self.GRADUATED] == (
+            "https://github.com/michellemxm/kc-app-design-tweak"
+        )
+
+    def test_external_install_is_superseded_and_archived(self, tmp_path, app_home, monkeypatch):
+        """FAILS before the fix: registration stood down and the builtin never landed."""
+        from kiro_crew.apps.manager import (
+            _read_installed,
+            _superseded_receipt_path,
+            app_dir,
+        )
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.source == "builtin", "the builtin did not take over"
+        assert meta.version == "9.9.9"
+        assert meta.enabled is True, "the user's enabled state was silently dropped"
+
+        # Nothing deleted: the previous install is recoverable, outside apps/.
+        archives = self._archive_dirs(app_home)
+        assert len(archives) == 1, f"expected one archived install, got {archives}"
+        kept = json.loads((archives[0] / "app.json").read_text(encoding="utf-8"))
+        assert kept["displayName"] == "Design Tweak (external)"
+
+        # The takeover is recorded so it can never run a second time.
+        assert _superseded_receipt_path(self.GRADUATED).is_file()
+
+        # data/ is carried forward -- pending edit requests survive graduation.
+        carried = app_dir(self.GRADUATED) / "data" / "queue" / "1720560000000-a1b2c3.json"
+        assert carried.is_file(), "the user's queued requests were left behind"
+
+    def test_archive_is_not_enumerated_as_an_installed_app(self, tmp_path, app_home, monkeypatch):
+        """The archive must not show up as a second app in the App Store."""
+        from kiro_crew.apps.manager import list_apps
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        names = [a["name"] for a in list_apps()]
+        assert names.count(self.GRADUATED) == 1, names
+
+    def test_unrelated_app_sharing_the_id_is_left_alone(self, tmp_path, app_home, monkeypatch):
+        """Identity is the repository, not the name: someone else's app is untouched."""
+        from kiro_crew.apps.manager import (
+            _SUPERSEDED_ARCHIVE_DIRNAME,
+            _read_installed,
+        )
+
+        self._seed_external_install("https://github.com/someone-else/my-design-tweak")
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external", "an unrelated user install was taken over"
+        assert meta.version == "0.10.0"
+        assert not (app_home / _SUPERSEDED_ARCHIVE_DIRNAME).exists()
+
+    def test_missing_repository_stands_down(self, tmp_path, app_home, monkeypatch):
+        """An unreadable/absent repository field cannot confirm identity -- keep."""
+        from kiro_crew.apps.manager import _read_installed
+
+        self._seed_external_install("")
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external"
+
+    def test_repository_url_spellings_match(self):
+        """``.git``, a trailing slash and case must not defeat the identity check."""
+        from kiro_crew.apps.manager import _normalize_repo_url
+
+        canonical = _normalize_repo_url(_SUPERSEDED_EXTERNALS_URL)
+        for variant in (
+            _SUPERSEDED_EXTERNALS_URL + ".git",
+            _SUPERSEDED_EXTERNALS_URL + "/",
+            _SUPERSEDED_EXTERNALS_URL.upper(),
+        ):
+            assert _normalize_repo_url(variant) == canonical
+
+    def test_symlinked_app_dir_is_never_moved(self, tmp_path, app_home, monkeypatch):
+        """A symlinked app dir points outside apps/ -- moving it would relocate
+        data we do not own, so registration stands down instead."""
+        from kiro_crew.apps.manager import (
+            _SUPERSEDED_ARCHIVE_DIRNAME,
+            _read_installed,
+            app_dir,
+            apps_dir,
+        )
+
+        real = self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        outside = tmp_path / "elsewhere" / self.GRADUATED
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(real), str(outside))
+        apps_dir().mkdir(parents=True, exist_ok=True)
+        app_dir(self.GRADUATED).symlink_to(outside, target_is_directory=True)
+
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external", "a symlinked user install was taken over"
+        assert not (app_home / _SUPERSEDED_ARCHIVE_DIRNAME).exists()
+        assert outside.is_dir()
+
+    # -- one-time-ness -----------------------------------------------------
+
+    def test_a_failed_move_falls_back_to_copying_data(self, tmp_path, app_home, monkeypatch):
+        """A rename that cannot move data/ must not silently strand it.
+
+        The app's own backend creates `data/queue` at import, so the moment the
+        builtin registers there is a live `data/` again — and
+        `_finish_interrupted_supersede` refuses to clobber a live `data/`. A
+        "non-fatal" failure here would therefore hide the archived pending queue
+        permanently, not just for one boot.
+        """
+        from kiro_crew.apps.manager import (
+            _SUPERSEDED_ARCHIVE_DIRNAME,
+            _read_installed,
+            app_dir,
+        )
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+
+        real_rename = os.rename
+
+        def _rename_fails_on_data(a, b, *args, **kw):
+            # ONLY the archive's data/ carry-forward, so an unrelated rename
+            # during registration is not collateral damage.
+            if os.path.basename(str(a)) == "data" and _SUPERSEDED_ARCHIVE_DIRNAME in str(a):
+                raise OSError(18, "Invalid cross-device link")
+            return real_rename(a, b, *args, **kw)
+
+        monkeypatch.setattr(os, "rename", _rename_fails_on_data)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        # The builtin still took over, and the queue arrived by COPY.
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None and meta.source == "builtin"
+        carried = app_dir(self.GRADUATED) / "data" / "queue" / "1720560000000-a1b2c3.json"
+        assert carried.is_file(), "data/ was neither moved nor copied"
+        # A copy leaves the original in place, so the user has both.
+        archives = self._archive_dirs(app_home)
+        assert (archives[0] / "data" / "queue").is_dir()
+
+    def test_when_neither_move_nor_copy_works_the_takeover_is_rolled_back(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """Leave the user exactly as they were rather than stranding their data."""
+        from kiro_crew.apps.manager import (
+            _SUPERSEDED_ARCHIVE_DIRNAME,
+            _read_installed,
+            _superseded_receipt_path,
+            app_dir,
+        )
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        real_rename = os.rename
+
+        def _rename_fails_on_data(a, b, *args, **kw):
+            if os.path.basename(str(a)) == "data" and _SUPERSEDED_ARCHIVE_DIRNAME in str(a):
+                raise OSError(18, "Invalid cross-device link")
+            return real_rename(a, b, *args, **kw)
+
+        def _copy_fails(*a, **kw):
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr(os, "rename", _rename_fails_on_data)
+        monkeypatch.setattr(shutil, "copytree", _copy_fails)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        # The user's external install is back, with its data intact.
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external", "the builtin registered despite stranded data"
+        assert meta.version == "0.10.0"
+        live = app_dir(self.GRADUATED)
+        assert (live / "data" / "queue" / "1720560000000-a1b2c3.json").is_file()
+        # No archive and no receipt left behind, so a later boot can retry.
+        assert not list((app_home / _SUPERSEDED_ARCHIVE_DIRNAME).glob(f"{self.GRADUATED}-*"))
+        assert not _superseded_receipt_path(self.GRADUATED).is_file()
+
+    def test_a_partial_copy_is_removed_so_recovery_is_not_blocked(self, tmp_path, app_home):
+        """A half-written data/ both loses requests AND looks like a live install."""
+        from kiro_crew.apps.manager import _copy_data_forward
+
+        archive = tmp_path / "archive"
+        (archive / "data" / "queue").mkdir(parents=True)
+        (archive / "data" / "queue" / "r1.json").write_text("{}", encoding="utf-8")
+        src = tmp_path / "live"
+        src.mkdir()
+
+        import kiro_crew.apps.manager as mgr
+
+        real_copytree = shutil.copytree
+
+        def _partial(a, b, *args, **kw):
+            # Create the destination, then fail — the partial-copy shape.
+            pathlib.Path(b).mkdir(parents=True, exist_ok=True)
+            (pathlib.Path(b) / "half.json").write_text("{", encoding="utf-8")
+            raise OSError(28, "No space left on device")
+
+        try:
+            mgr.shutil.copytree = _partial  # type: ignore[assignment]
+            assert _copy_data_forward("design-tweak", archive, src) is False
+        finally:
+            mgr.shutil.copytree = real_copytree  # type: ignore[assignment]
+
+        assert not (src / "data").exists(), "the partial copy was left in place"
+        assert (archive / "data" / "queue" / "r1.json").is_file(), "the original was lost"
+
+    def test_an_interrupted_metadata_write_does_not_spend_the_enabled_flag(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """The receipt must be spent only AFTER the installed record is durable.
+
+        The flag can be spent once. Marking it before `_write_installed()` meant an
+        interrupted write left the next boot with no record AND no flag, so the
+        builtin registered at `defaultEnabled: false` and the user's enabled app was
+        off for good. Spending it after the write makes the failure retryable.
+        """
+        from kiro_crew.apps.manager import (
+            _archive_superseded_install,
+            _peek_superseded_enabled,
+            _read_installed,
+            _superseded_receipt_path,
+        )
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        assert _archive_superseded_install(self.GRADUATED, "9.9.9") is True
+        assert _read_installed(self.GRADUATED) is None  # the interrupted state
+
+        # First boot after the crash: the metadata write itself fails.
+        import kiro_crew.apps.manager as mgr
+
+        real_write = mgr._write_installed
+
+        def _write_fails(name, meta):
+            if name == self.GRADUATED:
+                raise OSError(28, "No space left on device")
+            return real_write(name, meta)
+
+        monkeypatch.setattr(mgr, "_write_installed", _write_fails)
+        try:
+            self._register_only(monkeypatch, [self._builtin()])
+        except OSError:
+            pass  # registration blew up mid-write, which is the scenario
+        monkeypatch.setattr(mgr, "_write_installed", real_write)
+
+        # The flag survived, so the enabled state is still recoverable.
+        receipt = json.loads(_superseded_receipt_path(self.GRADUATED).read_text())
+        assert not receipt.get("enabledApplied"), "flag was spent before the write landed"
+        assert _peek_superseded_enabled(self.GRADUATED) is True
+
+        # Second boot succeeds and the user gets their app back, enabled.
+        self._register_only(monkeypatch, [self._builtin()])
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None and meta.enabled is True
+        spent = json.loads(_superseded_receipt_path(self.GRADUATED).read_text())
+        assert spent["enabledApplied"] is True, "flag not spent after a successful write"
+
+    def test_recovery_restores_the_enabled_state_from_the_receipt(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """An interrupted takeover must not silently switch the app off.
+
+        The enabled state is normally handed across in-process, but a takeover
+        that dies after the archive rename and before the metadata write leaves
+        the next boot with NO installed record to read it from — so the builtin
+        would register at its `defaultEnabled: false` and a feature the user had
+        turned on comes back off. The receipt carries it instead.
+        """
+        from kiro_crew.apps.manager import (
+            _read_installed,
+            _superseded_receipt_path,
+            app_dir,
+        )
+
+        # The seeded external install is enabled.
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        assert _read_installed(self.GRADUATED).enabled is True
+
+        # First boot: archive + receipt, then die before the metadata write.
+        from kiro_crew.apps.manager import _archive_superseded_install
+
+        assert _archive_superseded_install(self.GRADUATED, "9.9.9") is True
+        receipt = json.loads(_superseded_receipt_path(self.GRADUATED).read_text())
+        assert receipt["enabled"] is True, "the receipt did not capture enabled"
+        assert _read_installed(self.GRADUATED) is None, "simulating the interrupted write"
+
+        # Next boot.
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None and meta.source == "builtin"
+        assert meta.enabled is True, "the user's enabled state was dropped by recovery"
+        assert (app_dir(self.GRADUATED) / "data" / "queue").is_dir()
+
+    def test_the_enabled_restore_is_one_time(self, tmp_path, app_home, monkeypatch):
+        """A user who later DISABLES the builtin must not have it switched back on."""
+        from kiro_crew.apps.manager import (
+            _archive_superseded_install,
+            _read_installed,
+            _superseded_receipt_path,
+            _write_installed,
+        )
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        assert _archive_superseded_install(self.GRADUATED, "9.9.9") is True
+        self._register_only(monkeypatch, [self._builtin()])
+        assert _read_installed(self.GRADUATED).enabled is True
+        applied = json.loads(_superseded_receipt_path(self.GRADUATED).read_text())
+        assert applied["enabledApplied"] is True
+
+        # The user turns it off, then restarts twice.
+        meta = _read_installed(self.GRADUATED)
+        meta.enabled = False
+        _write_installed(self.GRADUATED, meta)
+        self._register_only(monkeypatch, [self._builtin()])
+        self._register_only(monkeypatch, [self._builtin()])
+
+        assert _read_installed(self.GRADUATED).enabled is False, "re-enabled behind the user"
+
+    def test_a_disabled_app_is_not_enabled_by_recovery(self, tmp_path, app_home, monkeypatch):
+        """The receipt records the real state, so a disabled app stays disabled."""
+        from kiro_crew.apps.manager import (
+            _archive_superseded_install,
+            _read_installed,
+            _superseded_receipt_path,
+            _write_installed,
+        )
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        meta = _read_installed(self.GRADUATED)
+        meta.enabled = False
+        _write_installed(self.GRADUATED, meta)
+
+        assert _archive_superseded_install(self.GRADUATED, "9.9.9") is True
+        assert json.loads(_superseded_receipt_path(self.GRADUATED).read_text())["enabled"] is False
+
+        self._register_only(monkeypatch, [self._builtin()])
+        assert _read_installed(self.GRADUATED).enabled is False
+
+    def test_an_interrupted_takeover_is_finished_on_the_next_start(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A kill BETWEEN the two renames must not strand the user's requests.
+
+        The graduation archives the old install and then moves its ``data/``
+        across -- two renames, so a gateway kill in between leaves the queue in
+        the archive. The archive is also the "already ran" marker, so without a
+        recovery pass the migration never comes back to finish and the user's
+        pending edit requests are silently lost.
+        """
+        from kiro_crew.apps.manager import _read_installed, app_dir
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        live = app_dir(self.GRADUATED)
+        archives = self._archive_dirs(app_home)
+        assert len(archives) == 1
+
+        # Rewind to the half-finished state: data/ back in the archive, none live.
+        os.rename(live / "data", archives[0] / "data")
+        assert not (live / "data").exists()
+        assert (archives[0] / "data" / "queue").is_dir()
+
+        # Next gateway start.
+        self._register_only(monkeypatch, [self._builtin()])
+
+        carried = live / "data" / "queue" / "1720560000000-a1b2c3.json"
+        assert carried.is_file(), "the interrupted migration was never finished"
+        assert not (archives[0] / "data").exists(), "data/ was copied, not moved"
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None and meta.source == "builtin"
+        assert len(self._archive_dirs(app_home)) == 1, "recovery archived a second time"
+
+    def test_recovery_never_clobbers_a_live_data_dir(self, tmp_path, app_home, monkeypatch):
+        """A deliberate reinstall owns its data/ — recovery must not overwrite it."""
+        from kiro_crew.apps.manager import app_dir
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        archives = self._archive_dirs(app_home)
+        # Contrive the dangerous shape: BOTH the archive and the live dir hold data.
+        (archives[0] / "data" / "queue").mkdir(parents=True, exist_ok=True)
+        (archives[0] / "data" / "queue" / "stale.json").write_text("{}", encoding="utf-8")
+        live_marker = app_dir(self.GRADUATED) / "data" / "queue" / "mine.json"
+        live_marker.parent.mkdir(parents=True, exist_ok=True)
+        live_marker.write_text('{"mine": true}', encoding="utf-8")
+
+        self._register_only(monkeypatch, [self._builtin()])
+
+        assert live_marker.read_text(encoding="utf-8") == '{"mine": true}'
+        assert (archives[0] / "data" / "queue" / "stale.json").is_file(), "archive was raided"
+
+    def test_recovery_is_a_noop_after_a_clean_takeover(self, tmp_path, app_home, monkeypatch):
+        """The common path must not be perturbed by the recovery pass."""
+        from kiro_crew.apps.manager import app_dir
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+        self._register_only(monkeypatch, [self._builtin()])
+        self._register_only(monkeypatch, [self._builtin()])
+
+        carried = app_dir(self.GRADUATED) / "data" / "queue" / "1720560000000-a1b2c3.json"
+        assert carried.is_file()
+        assert len(self._archive_dirs(app_home)) == 1
+
+    def test_recovery_ignores_an_unrelated_apps_archive(self, tmp_path, app_home, monkeypatch):
+        """Only `<name>-<stamp>` is ours: a decoy must never donate its data."""
+        from kiro_crew.apps.manager import (
+            _SUPERSEDED_ARCHIVE_DIRNAME,
+            _finish_interrupted_supersede,
+            app_dir,
+        )
+
+        decoy = app_home / _SUPERSEDED_ARCHIVE_DIRNAME / f"{self.GRADUATED}-pro-20260101T000000"
+        (decoy / "data" / "queue").mkdir(parents=True, exist_ok=True)
+        (decoy / "data" / "queue" / "theirs.json").write_text("{}", encoding="utf-8")
+
+        assert _finish_interrupted_supersede(self.GRADUATED) is False
+        assert (decoy / "data" / "queue" / "theirs.json").is_file()
+        assert not (app_dir(self.GRADUATED) / "data").exists()
+
+    def test_a_deliberate_reinstall_is_never_superseded_again(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """The takeover has memory: the user's re-decision sticks.
+
+        FAILS before the fix -- identity was repository-only, so every gateway
+        start archived the reinstalled external app again and the user could
+        never keep it.
+        """
+        from kiro_crew.apps.manager import _read_installed
+
+        # First start: graduate the user.
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+        assert len(self._archive_dirs(app_home)) == 1
+
+        # The user deliberately puts the external app back...
+        self._reinstall_external(_SUPERSEDED_EXTERNALS_URL)
+        # ...and restarts the gateway twice for good measure.
+        self._register_only(monkeypatch, [self._builtin()])
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external", "the user's reinstall was taken over again"
+        assert meta.version == "0.10.0"
+        assert len(self._archive_dirs(app_home)) == 1, "the install was archived twice"
+
+    def test_the_archive_alone_stands_the_takeover_down(self, tmp_path, app_home, monkeypatch):
+        """A lost receipt (e.g. a failed write) must not buy a second takeover."""
+        from kiro_crew.apps.manager import _read_installed, _superseded_receipt_path
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+        _superseded_receipt_path(self.GRADUATED).unlink()
+
+        self._reinstall_external(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external"
+        assert len(self._archive_dirs(app_home)) == 1
+
+    def test_a_similarly_named_archive_is_not_our_marker(self, tmp_path, app_home, monkeypatch):
+        """``design-tweak-pro-<stamp>`` belongs to another app -- keep graduating."""
+        from kiro_crew.apps.manager import _SUPERSEDED_ARCHIVE_DIRNAME, _read_installed
+
+        decoy = app_home / _SUPERSEDED_ARCHIVE_DIRNAME / f"{self.GRADUATED}-pro-20260101T000000"
+        decoy.mkdir(parents=True)
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL)
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.source == "builtin", "a decoy archive name blocked the graduation"
+
+    # -- version awareness -------------------------------------------------
+
+    def test_a_newer_external_version_is_left_alone(self, tmp_path, app_home, monkeypatch):
+        """Never a downgrade: a newer external/fork install keeps the app id.
+
+        FAILS before the fix -- the older bundled builtin superseded it.
+        """
+        from kiro_crew.apps.manager import _read_installed
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL, version="10.0.0")
+        self._register_only(monkeypatch, [self._builtin()])  # builtin is 9.9.9
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external", "a newer install was downgraded to the builtin"
+        assert meta.version == "10.0.0"
+        assert self._archive_dirs(app_home) == []
+
+    def test_an_equal_version_still_graduates(self, tmp_path, app_home, monkeypatch):
+        """Same version is not a downgrade -- the builtin still takes over."""
+        from kiro_crew.apps.manager import _read_installed
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL, version="9.9.9")
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.source == "builtin"
+        assert len(self._archive_dirs(app_home)) == 1
+
+    def test_an_uncomparable_version_stands_down(self, tmp_path, app_home, monkeypatch):
+        """Inconclusive comparison resolves in the user's favour, not ours."""
+        from kiro_crew.apps.manager import _read_installed
+
+        self._seed_external_install(_SUPERSEDED_EXTERNALS_URL, version="nightly")
+        self._register_only(monkeypatch, [self._builtin()])
+
+        meta = _read_installed(self.GRADUATED)
+        assert meta is not None
+        assert meta.origin == "external", "an unparseable version was taken over anyway"
+        assert self._archive_dirs(app_home) == []
+
+    def test_version_comparator_is_conservative(self):
+        """The helper itself: ordering where decidable, None where not."""
+        from kiro_crew.apps.manager import _compare_app_versions
+
+        assert _compare_app_versions("1.2.3", "1.2.4") == -1
+        assert _compare_app_versions("1.2.0", "1.2") == 0
+        assert _compare_app_versions("10.0.0", "9.9.9") == 1
+        assert _compare_app_versions("1.2.0-rc.1", "1.2.0") == 0
+        for undecidable in (("", "1.0.0"), ("1.0.0", ""), ("nightly", "1.0.0"), ("1.x", "1.0.0")):
+            assert _compare_app_versions(*undecidable) is None, undecidable
 
 
 class TestMalformedMcpUrlIsSkippedNotFatal:

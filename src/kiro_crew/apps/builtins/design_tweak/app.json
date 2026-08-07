@@ -1,0 +1,54 @@
+{
+  "name": "design-tweak",
+  "version": "0.10.0",
+  "repository": "https://github.com/michellemxm/kc-app-design-tweak",
+  "displayName": "Design Tweak",
+  "iconUrl": "/app-assets/design-tweak/icon.svg",
+  "description": "Visually select elements in your live app preview and turn them into scoped, source-mapped edit requests for the agent — like Figma comments, but for code.",
+  "author": "mxiaomen",
+  "license": "MIT",
+  "tags": [
+    "design",
+    "frontend",
+    "preview",
+    "visual-editing",
+    "productivity"
+  ],
+  "defaultEnabled": false,
+  "minKiroCrewVersion": "0.1.0",
+  "skills": [
+    "skills/visual-edit"
+  ],
+  "permissions": {
+    "api": [
+      "/apps/design-tweak/api",
+      "/apps/design-tweak/api/*"
+    ],
+    "events": [
+      "visual-edit:request"
+    ],
+    "storage": true,
+    "network": true,
+    "cron": true
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/design-tweak",
+        "label": "Design Tweak",
+        "icon": "Paintbrush"
+      }
+    ]
+  },
+  "backend": {
+    "entryPoint": "kiro_crew.apps.builtins.design_tweak.backend.server",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
+  "platform": {
+    "os": [
+      "macos",
+      "linux"
+    ]
+  }
+}

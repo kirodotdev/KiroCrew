@@ -46,6 +46,19 @@ operator-configured rather than agent-selected in the finding's sense):
 ``apps/builtins/code_reviewer/git.py`` git against a locally-checked-out CR
 repo, and ``sync/*`` push/pull. Routing these would also need their real-git
 unit tests to tolerate the sandbox wrapper.
+
+The Design Tweak builtin (``apps/builtins/design_tweak/backend/server.py``)
+adds three spawns in the same non-agent-selected categories:
+``_lsof_fields`` (fixed-argv ``lsof`` on numeric pids the backend discovered —
+a system probe like the sysctl/ps ones above), ``_h_pick_folder`` (fixed-argv
+``osascript`` running a hardcoded AppleScript for the macOS folder picker — a
+desktop-UI spawn), and ``_start_dev_proc`` (the user's OWN registered project
+dev server: cwd is the user-selected project dir and the argv is that project's
+package-manager dev script — operator/user-configured, reached only via the
+HMAC-signed gateway proxy, not agent-prompt-selected). ``_start_dev_proc`` is
+directly analogous to ``code_reviewer/git.py`` and is a follow-up sandbox-routing
+candidate; routing a long-lived dev server would need the resource/filesystem
+wrapper not to starve it.
 """
 
 from __future__ import annotations
@@ -490,6 +503,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         #     body (--input -), never argv.
         # No binary or cwd is agent-selected.
         "apps/builtins/issue_radar/backend/gitlab_client.py::_glab_run",
+        "apps/builtins/design_tweak/backend/server.py::_h_pick_folder",
+        "apps/builtins/design_tweak/backend/server.py::_lsof_fields",
+        "apps/builtins/design_tweak/backend/server.py::_start_dev_proc",
         "apps/builtins/workflows/server.py::handle_run",
         # _start_run's worker spawns argv that is ALWAYS pre-wrapped by its
         # callers through sandboxed_spawn_argv (sync wraps each step with

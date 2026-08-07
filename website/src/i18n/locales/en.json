@@ -392,6 +392,13 @@
         "page_label": "Design Critique"
       }
     },
+    "designTweak": {
+      "manifest": {
+        "description": "Visually select elements in your live app preview and turn them into scoped, source-mapped edit requests for the agent — like Figma comments, but for code.",
+        "display_name": "Design Tweak",
+        "page_label": "Design Tweak"
+      }
+    },
     "fileExplorer": {
       "fileExplorerPage": {
         "backend_not_reachable": "Backend not reachable:",

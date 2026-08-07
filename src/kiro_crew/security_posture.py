@@ -682,6 +682,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "workflows/runner.py",
         "workflows/store.py",
         "apps/event_bus.py",
+        # Redacts agent progress text INBOUND, before it is persisted into the
+        # app's own queue JSON (`/thread`). Because the stored copy is already
+        # scrubbed, every later read of it — the panel's own `/queue`, and the
+        # thread rendered beside a pin — serves clean data, so there is no
+        # separate egress boundary to register.
+        "apps/builtins/design_tweak/backend/server.py",
         "sync_bridge.py",
         "suggestions.py",
         "tips.py",

@@ -30,6 +30,7 @@ from kiro_crew.apps.execution import (
     shipped_builtin_app_root,
 )
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.version import check_min_version, parse_version
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.platform import current_context, safe_context_call
@@ -281,8 +282,6 @@ def _validate_source_path(source: Path) -> list[str]:
 
 def _check_min_version(min_version: str) -> str | None:
     """Return error string if current KiroCrew version is too old, else None."""
-    from kiro_crew.apps.version import check_min_version
-
     return check_min_version(min_version)
 
 
@@ -1566,6 +1565,483 @@ def builtin_owns_installed(name: str) -> bool:
     return existing is not None and _builtin_owns_install(existing)
 
 
+# Apps this package now ships as a BUILTIN, but which users may already have
+# installed as an EXTERNAL app under the same id.  Value = the upstream
+# repository that external app is published from.
+#
+# Why an identity check and not just a name: ``register_builtin_apps()`` stands
+# down whenever a name is occupied by a user-installed app, which is exactly
+# right in the general case (that install may hold the user's own code) but
+# means the very users being graduated would never receive the builtin.  The
+# takeover therefore happens ONLY when the on-disk manifest names this exact
+# repository, so an unrelated app that merely shares the id is still left alone.
+#
+# ``_escalated`` above cannot express this: it only removes directories whose
+# ``installed.json`` says ``origin="builtin"``, and a user-installed external
+# app is ``origin`` registry/local/external — so listing a graduated external
+# app there is a no-op.
+_SUPERSEDED_EXTERNALS: dict[str, str] = {
+    "design-tweak": "https://github.com/michellemxm/kc-app-design-tweak",
+}
+
+_SUPERSEDED_ARCHIVE_DIRNAME = "apps-superseded"
+
+# The takeover is a ONE-TIME migration, not a standing policy.  A receipt is
+# written beside the archive the first time it runs and stands the takeover down
+# forever after, so a user who deliberately REINSTALLS the external app
+# afterwards keeps it (and the takeover cannot re-run on every gateway start).
+#
+# Why the receipt lives here and not in the app's own ``installed.json``:
+# reinstalling the external app necessarily REPLACES ``apps/<name>/`` --
+# ``install_app`` refuses while an ``installed.json`` is present, so the dir is
+# removed first, and the install then writes a fresh ``installed.json`` from the
+# source manifest.  A marker stored inside the app dir would therefore be
+# destroyed by the exact act it has to survive.  ``apps-superseded/`` is state
+# this feature already owns, outside ``apps/`` and never enumerated as an app,
+# which makes it the durable home -- no new top-level file is introduced.
+_SUPERSEDED_RECEIPT_SUFFIX = ".superseded.json"
+
+# The ``-<UTC stamp>`` (plus optional collision suffix) that
+# ``_archive_superseded_install`` appends to an archived install's dir name.
+_SUPERSEDED_ARCHIVE_STAMP_RE = re.compile(r"-\d{8}T\d{6}(?:-\d+)?")
+
+
+def _normalize_repo_url(url: str) -> str:
+    """Canonical form for comparing two git remote spellings."""
+    cleaned = url.strip().lower().rstrip("/")
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[: -len(".git")]
+    return cleaned
+
+
+def _compare_app_versions(left: str, right: str) -> int | None:
+    """Compare two app version strings, or None when the answer is undecidable.
+
+    Returns -1/0/1 like a classic comparator.  ``None`` means at least one side
+    is not a parseable semver-ish string (``""``, ``"nightly"``, ``"1.x"``), and
+    callers MUST treat that as "do not know" rather than as any ordering.
+    """
+    try:
+        a, b = parse_version(left), parse_version(right)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return (a > b) - (a < b)
+
+
+def _superseded_receipt_path(name: str) -> Path:
+    """Durable one-time marker recording that *name* was already superseded."""
+    return config_dir() / _SUPERSEDED_ARCHIVE_DIRNAME / f"{name}{_SUPERSEDED_RECEIPT_SUFFIX}"
+
+
+def _already_superseded(name: str) -> bool:
+    """Whether the graduation takeover has already run once for *name*.
+
+    The receipt is the record.  An archived install for the same name counts as
+    a fallback marker so that a failed receipt WRITE (full disk, read-only home)
+    cannot hand the user a second takeover — the archive is the proof it ran.
+    """
+    if _superseded_receipt_path(name).is_file():
+        return True
+    archive_root = config_dir() / _SUPERSEDED_ARCHIVE_DIRNAME
+    try:
+        entries = list(archive_root.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.startswith(name):
+            continue
+        # Only "<name>-<stamp>" is ours: a different app whose id merely starts
+        # with this one ("design-tweak-pro-...") must not count as a marker.
+        if _SUPERSEDED_ARCHIVE_STAMP_RE.fullmatch(entry.name[len(name):]) and entry.is_dir():
+            return True
+    return False
+
+
+def _record_superseded(
+    name: str, archive: Path, builtin_version: str, enabled: bool = False
+) -> None:
+    """Write the one-time receipt.  Non-fatal: the archive itself also marks it.
+
+    ``enabled`` records whether the SUPERSEDED external app was enabled. The
+    registration path normally carries that across in-process, but a takeover
+    interrupted before the metadata write leaves the next boot with no installed
+    record to read it from — so without it here, a recovery boot would silently
+    re-register the app DISABLED (builtins default to ``defaultEnabled: false``)
+    and the user would find a feature they had turned on switched off.
+    """
+    receipt = _superseded_receipt_path(name)
+    try:
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(
+            receipt,
+            json.dumps(
+                {
+                    "name": name,
+                    "supersededAt": _now_iso(),
+                    "archive": str(archive),
+                    "builtinVersion": builtin_version,
+                    "enabled": bool(enabled),
+                    "note": (
+                        "The bundled builtin took over this app id once. Reinstalling "
+                        "the external app is honoured from here on: delete this file "
+                        "only if you want the one-time takeover to be able to re-run."
+                    ),
+                },
+                indent=2,
+            )
+            + "\n",
+        )
+    except OSError as exc:
+        logger.warning(
+            "Superseded %r but could not write the one-time receipt %s: %s",
+            name,
+            receipt,
+            exc,
+        )
+
+
+def _superseding_external_install(name: str, builtin_version: str) -> bool:
+    """Whether the app dir holds the external app this builtin graduates.
+
+    Reads the manifest already on disk and requires its ``repository`` to be the
+    one recorded in :data:`_SUPERSEDED_EXTERNALS`.  Any other app under this
+    name -- or a manifest we cannot read -- answers False, so the caller stands
+    down exactly as before.
+
+    Two further refusals keep the takeover honest:
+
+    * it has ALREADY run once on this host (see :func:`_already_superseded`), so
+      a deliberate reinstall of the external app is the user's decision to keep;
+    * the installed external app is NEWER than the bundled builtin, or the two
+      versions cannot be compared at all -- taking over would be a downgrade,
+      and an undecidable comparison resolves to leaving the user alone.
+    """
+    expected = _SUPERSEDED_EXTERNALS.get(name)
+    if not expected:
+        return False
+    if _already_superseded(name):
+        logger.info(
+            "Not superseding %r: the one-time graduation already ran on this host "
+            "(%s). This install is the user's own choice and is kept.",
+            name,
+            _superseded_receipt_path(name),
+        )
+        return False
+    manifest_path = app_dir(name) / APP_MANIFEST_FILENAME
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.info(
+            "Not superseding %r: cannot read its manifest to confirm identity: %s",
+            name,
+            exc,
+        )
+        return False
+    repo = raw.get("repository") if isinstance(raw, dict) else None
+    if not isinstance(repo, str) or _normalize_repo_url(repo) != _normalize_repo_url(expected):
+        logger.info(
+            "Not superseding %r: manifest repository %r is not the graduated app %r",
+            name,
+            repo,
+            expected,
+        )
+        return False
+    installed_version = raw.get("version") if isinstance(raw, dict) else None
+    ordering = _compare_app_versions(
+        installed_version if isinstance(installed_version, str) else "",
+        builtin_version,
+    )
+    if ordering is None:
+        logger.warning(
+            "Not superseding %r: cannot compare the installed version %r with the "
+            "bundled builtin version %r, so the user's install is left in place.",
+            name,
+            installed_version,
+            builtin_version,
+        )
+        return False
+    if ordering > 0:
+        logger.warning(
+            "Not superseding %r: the installed external app v%s is NEWER than the "
+            "bundled builtin v%s — taking over would downgrade it. Leaving the "
+            "user's install in place.",
+            name,
+            installed_version,
+            builtin_version,
+        )
+        return False
+    return True
+
+
+def _finish_interrupted_supersede(name: str) -> bool:
+    """Carry ``data/`` forward for a takeover that died between its two renames.
+
+    :func:`_archive_superseded_install` does the graduation in two steps: rename
+    the old install to the archive, then rename its ``data/`` into the fresh app
+    dir.  Those cannot be one atomic operation (they are separate directories),
+    so a gateway kill or power loss in between leaves the user's pending edit
+    requests sitting in the archive while the builtin registers with no
+    ``data/`` at all.
+
+    That state does not heal itself, which is what makes it worth a recovery
+    pass rather than a log line: the archive doubles as the "already superseded"
+    fallback marker in :func:`_already_superseded`, so the takeover deliberately
+    refuses to run a second time and would never come back to finish the move.
+
+    Runs on every registration pass and is a **no-op** unless it finds that
+    exact half-finished shape -- an archive for *name* still holding ``data/``
+    while the live app dir has none:
+
+    * a takeover that completed left no ``data/`` in the archive (it was renamed
+      away), so there is nothing to do;
+    * a user who deliberately REINSTALLED the external app afterwards has a live
+      ``data/``, which is never touched or overwritten.
+
+    Returns True only when data was actually carried forward.
+    """
+    if name not in _SUPERSEDED_EXTERNALS:
+        return False
+    archive_root = config_dir() / _SUPERSEDED_ARCHIVE_DIRNAME
+    try:
+        entries = sorted(archive_root.iterdir())
+    except OSError:
+        return False
+
+    live = app_dir(name)
+    live_data = live / "data"
+    if live_data.is_dir() or live_data.is_symlink():
+        return False  # the live install owns its data — never clobber it
+
+    for entry in reversed(entries):  # newest stamp first
+        if not entry.name.startswith(name):
+            continue
+        if not _SUPERSEDED_ARCHIVE_STAMP_RE.fullmatch(entry.name[len(name) :]):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        stranded = entry / "data"
+        if not (stranded.is_dir() or stranded.is_symlink()):
+            continue
+        try:
+            live.mkdir(parents=True, exist_ok=True)
+            os.rename(stranded, live_data)
+        except OSError as exc:
+            logger.warning(
+                "Could not finish the interrupted takeover of %r: data/ is still "
+                "in %s and was left there: %s",
+                name,
+                entry,
+                exc,
+            )
+            return False
+        logger.warning(
+            "Finished an interrupted takeover of %r: carried data/ forward from %s "
+            "into %s. Pending requests from the previous install are available again.",
+            name,
+            entry,
+            live,
+        )
+        return True
+    return False
+
+
+def _peek_superseded_enabled(name: str) -> bool:
+    """Whether the receipt says the superseded external app was ENABLED.
+
+    READ-ONLY on purpose. The caller must apply the value, persist the installed
+    record, and only THEN call :func:`_mark_superseded_enabled_applied`. Consuming
+    the receipt here instead would reintroduce the very bug this restore exists to
+    fix: if `_write_installed()` is interrupted after the flag was marked applied,
+    the next boot finds no installed record AND a spent receipt, so the builtin
+    registers at its `defaultEnabled: false` and the user's enabled app comes back
+    off — permanently, because the receipt can only be spent once.
+
+    Needed at all because a takeover interrupted after the archive rename but
+    before the metadata write leaves the next boot with no installed record: the
+    in-process hand-off (`superseded_enabled`) is gone.
+    """
+    receipt = _superseded_receipt_path(name)
+    try:
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or data.get("enabledApplied"):
+        return False
+    return bool(data.get("enabled"))
+
+
+def _mark_superseded_enabled_applied(name: str) -> None:
+    """Spend the receipt's enabled flag, AFTER the installed record is persisted.
+
+    Marked consumed rather than honoured on every boot: otherwise a user who later
+    DISABLES the builtin would have it switched back on at the next start, which is
+    the same class of surprise in the opposite direction.
+
+    A failure here is non-fatal and only logged. The record was already written, so
+    the next boot takes the `existing is not None` path and never consults the
+    receipt — the flag is a backstop, and leaving it unspent cannot re-enable an app
+    the user still has installed.
+    """
+    receipt = _superseded_receipt_path(name)
+    try:
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        data["enabledApplied"] = True
+        atomic_write(receipt, json.dumps(data, indent=2) + "\n")
+    except (OSError, ValueError) as exc:
+        logger.warning("Restored %r enabled but could not spend its receipt: %s", name, exc)
+        return
+    logger.warning(
+        "Restored the enabled state for %r from its supersede receipt: the takeover "
+        "was interrupted before the app metadata was written.",
+        name,
+    )
+
+
+def _archive_superseded_install(name: str, builtin_version: str = "") -> bool:
+    """Move a graduated external install aside so the builtin can register.
+
+    Nothing is deleted: the whole directory is *renamed* to
+    ``~/.kiro/crew/apps-superseded/<name>-<timestamp>``, which keeps the user's
+    copy (and its secrets) recoverable, and sits outside ``apps/`` so it is not
+    enumerated as an installed app.  ``data/`` is then moved back into the fresh
+    app dir, because the builtin reads the same
+    ``apps/<name>/data`` path -- that is what carries the user's pending edit
+    requests across the graduation.
+
+    Returns True only when the app dir was actually moved aside.
+    """
+    src = app_dir(name)
+    # Read the user's enabled state BEFORE the rename takes installed.json out of
+    # reach — it goes into the receipt so a recovery boot can restore it.
+    _pre = _read_installed(name)
+    was_enabled = bool(_pre.enabled) if _pre is not None else False
+    # Never rename a symlinked app dir: the link target lives outside the apps
+    # tree and moving it would relocate data we do not own.
+    if src.is_symlink() or not src.is_dir():
+        logger.warning("Not superseding %r: app dir is a symlink or missing", name)
+        return False
+    try:
+        if not src.resolve().is_relative_to(apps_dir().resolve()):
+            logger.warning("Not superseding %r: resolves outside the apps dir", name)
+            return False
+    except OSError as exc:
+        logger.warning("Not superseding %r: %s", name, exc)
+        return False
+
+    archive_root = config_dir() / _SUPERSEDED_ARCHIVE_DIRNAME
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    try:
+        archive_root.mkdir(parents=True, exist_ok=True)
+        archive = archive_root / f"{name}-{stamp}"
+        suffix = 1
+        while archive.exists():
+            archive = archive_root / f"{name}-{stamp}-{suffix}"
+            suffix += 1
+        os.rename(src, archive)
+    except OSError as exc:
+        logger.warning(
+            "Not superseding %r: could not move the existing install aside: %s",
+            name,
+            exc,
+        )
+        return False
+
+    logger.warning(
+        "Superseding user-installed %r with the bundled builtin. The previous "
+        "install was moved to %s (nothing was deleted); its data/ is carried "
+        "over into %s.",
+        name,
+        archive,
+        src,
+    )
+    # Record the takeover so it can never run twice: a later, deliberate
+    # reinstall of the external app is the user's choice and must stick.
+    _record_superseded(name, archive, builtin_version, enabled=was_enabled)
+    # Carry data/ forward.  This must SUCCEED or be fully undone -- it cannot be
+    # "non-fatal".  A read-only or cross-device archive makes the rename fail,
+    # and the app's own backend creates ``data/queue`` at import (see
+    # ``design_tweak/backend/server.py``), so the moment the builtin registers
+    # there IS a live ``data/`` again.  ``_finish_interrupted_supersede`` refuses
+    # to clobber a live ``data/``, so the recovery pass would then skip forever
+    # and the archived pending queue would be invisible to the user for good.
+    try:
+        src.mkdir(parents=True, exist_ok=True)
+        old_data = archive / "data"
+        if old_data.is_dir() or old_data.is_symlink():
+            os.rename(old_data, src / "data")
+    except OSError as exc:
+        logger.warning(
+            "Superseding %r: could not MOVE data/ forward from %s (%s); copying instead.",
+            name,
+            archive,
+            exc,
+        )
+        if not _copy_data_forward(name, archive, src):
+            # Neither move nor copy worked. Leave the user exactly as they were
+            # rather than registering a builtin whose data is stranded.
+            _restore_superseded_install(name, archive, src)
+            return False
+    return True
+
+
+def _copy_data_forward(name: str, archive: Path, src: Path) -> bool:
+    """Copy ``<archive>/data`` to ``<src>/data`` when the rename could not move it.
+
+    A copy leaves the archive's copy intact, so the user still has the original
+    even in the degraded case. A PARTIAL copy is removed before returning False:
+    a half-written ``data/`` is worse than none, because it both loses requests
+    and looks like a live install to :func:`_finish_interrupted_supersede`.
+    """
+    old_data = archive / "data"
+    if not (old_data.is_dir() or old_data.is_symlink()):
+        return True  # nothing to carry
+    dest = src / "data"
+    try:
+        shutil.copytree(old_data, dest, symlinks=True, dirs_exist_ok=True)
+    except (OSError, shutil.Error) as exc:
+        logger.warning("Could not copy data/ forward for %r from %s: %s", name, archive, exc)
+        shutil.rmtree(dest, ignore_errors=True)
+        return False
+    logger.warning(
+        "Carried data/ forward for %r by COPY; the original remains in %s.", name, archive
+    )
+    return True
+
+
+def _restore_superseded_install(name: str, archive: Path, src: Path) -> None:
+    """Undo a takeover whose data could neither be moved nor copied.
+
+    Puts the user's install back where it was and removes the one-time receipt,
+    so a later boot can retry rather than leaving the app permanently half
+    migrated. Best-effort by necessity -- it runs because the filesystem is
+    already refusing operations -- so every failure is logged loudly with the
+    archive path, which is where the user's data still is.
+    """
+    try:
+        shutil.rmtree(src, ignore_errors=True)  # the empty/partial dir we created
+        os.rename(archive, src)
+    except OSError as exc:
+        logger.error(
+            "Could not restore %r after a failed takeover: its install is still at "
+            "%s and must be moved back by hand. Error: %s",
+            name,
+            archive,
+            exc,
+        )
+        return
+    try:
+        _superseded_receipt_path(name).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Restored %r but could not remove its supersede receipt: %s", name, exc)
+    logger.warning(
+        "Rolled back the takeover of %r: data/ could not be carried forward, so the "
+        "user's install was put back and the builtin was NOT registered.",
+        name,
+    )
+
+
 def _app_declares_backend(app_data: dict[str, Any]) -> bool:
     """Whether a manifest declares a backend the gateway proxy can reach.
 
@@ -1818,14 +2294,40 @@ def register_builtin_apps() -> int:
         # they installed an app that happens to share this builtin's name. Taking
         # it over is unrecoverable -- see _builtin_owns_install() -- so stand down
         # entirely and leave their install exactly as it is.
+        #
+        # The ONE exception is an app this package graduates: the external app is
+        # positively identified by its manifest repository, moved aside intact
+        # (never deleted) and its data/ carried forward, so the graduated user
+        # receives the builtin instead of silently keeping the retired external
+        # copy forever. It is a ONE-TIME migration and never a downgrade -- see
+        # _superseding_external_install().
+        superseded_enabled = False
+        # Before deciding anything, heal a takeover that died between its two
+        # renames — the archive is also the "already ran" marker, so the
+        # migration would otherwise never come back to finish itself and the
+        # user's pending requests would stay stranded. No-op in every other
+        # state, including a deliberate reinstall (which has a live data/).
+        _finish_interrupted_supersede(name)
+        if existing is None:
+            # No installed record: either a first install, or a takeover that died
+            # before the metadata write. In the latter case the receipt still knows
+            # the user had this app ENABLED, so honour it once.
+            superseded_enabled = _peek_superseded_enabled(name)
         if existing and not _builtin_owns_install(existing):
-            logger.warning(
-                "Not registering builtin %r: a user-installed app already occupies "
-                "%s (source=%r, origin=%r). Leaving its manifest and metadata "
-                "untouched; the builtin is not registered on this host.",
-                name, app_dir(name), existing.source, existing.origin,
-            )
-            continue
+            builtin_version = str(app_data["version"])
+            if _superseding_external_install(name, builtin_version) and (
+                _archive_superseded_install(name, builtin_version)
+            ):
+                superseded_enabled = existing.enabled
+                existing = None
+            else:
+                logger.warning(
+                    "Not registering builtin %r: a user-installed app already occupies "
+                    "%s (source=%r, origin=%r). Leaving its manifest and metadata "
+                    "untouched; the builtin is not registered on this host.",
+                    name, app_dir(name), existing.source, existing.origin,
+                )
+                continue
 
         if existing:
             # Only update version + displayName, preserve user state
@@ -1842,6 +2344,11 @@ def register_builtin_apps() -> int:
         else:
             # Use defaultEnabled from definition (defaults to True for backward compat)
             default_enabled = app_data.get("defaultEnabled", True)
+            # A superseded external install keeps the user's enabled state: they
+            # had the app switched on, and graduating it must not silently turn
+            # it off. It still passes the governance gate below.
+            if superseded_enabled:
+                default_enabled = True
             # Governance chokepoint. enable_app() normally enforces the ``apps``
             # activation allowlist, but a *default-enabled* builtin is persisted
             # here on first registration and never routes through enable_app() —
@@ -1863,6 +2370,12 @@ def register_builtin_apps() -> int:
                 migratedTo=_effective_migrated_to(app_data),
             )
             _write_installed(name, meta)
+            # Spend the receipt ONLY now that the record is durable. Marking it
+            # before this write is what let an interrupted write lose the user's
+            # enabled state for good — the flag can be spent once, so the next
+            # boot would have found no record AND no flag, and defaulted to off.
+            if superseded_enabled:
+                _mark_superseded_enabled_applied(name)
 
         # Persist manifest so dashboard can show full info
         atomic_write(
