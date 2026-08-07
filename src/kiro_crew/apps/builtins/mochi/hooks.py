@@ -214,6 +214,16 @@ class MochiRuntime:
         # recent-15 scan depth; the TIME window comes from the user's
         # `quietPeriodMins` setting at push time.
         self._recent_chat_pushes: deque[tuple[str, int]] = deque()
+        # Foreground chat-turn awareness for the conversation-interleave gate
+        # (see note_chat_lifecycle / _push_to_chat). An ambient pet push must
+        # not land between a user's message and the agent's reply, so a
+        # non-critical push is deferred while a turn is in flight (or within a
+        # short grace window after the last user input) and flushed when the
+        # turn ends. Fed by the /pet-event route — the SAME foreground-only
+        # signal that already drives the pet's thinking/working animation.
+        self._chat_turn_active = False
+        self._last_user_input_ms = 0
+        self._deferred_chat_pushes: list[dict[str, Any]] = []
         # Budget is re-resolved on every read so a tier change in Settings
         # takes effect on the next poll — same live-read contract as
         # silentSubagents. The ledger is the budget's persisted memory AND
@@ -344,6 +354,13 @@ class MochiRuntime:
             try:
                 # Cheap deadline-based ticks first (pure in-memory).
                 self.poller.tick(now)
+                # Time-based backstop for the conversation-interleave gate:
+                # deliver any chat push stranded past the busy window (a push
+                # buffered after the terminal flush, or a turn whose flag aged
+                # out with no terminal event). Runs every wake, ungated by shell
+                # presence — a deferred push must still drain when Mochi is not
+                # on screen. Pure in-memory unless there is a backlog to flush.
+                self._drain_deferred_chat_pushes(now)
                 # The pinned-file and watchlist ticks below each do blocking
                 # filesystem work — an os.stat per watched path, plus an
                 # atomic_write when a debounce fires — under a cross-process lock,
@@ -634,6 +651,25 @@ class MochiRuntime:
     #: original's `chatHistory.getRecent(15)` scan depth.
     _CHAT_PUSH_SCAN_DEPTH = 15
 
+    #: Grace window after the last user input during which a non-critical chat
+    #: push is still deferred, so a rapid back-and-forth reads as one live
+    #: conversation rather than a gap the pet can barge into. The observed
+    #: interleave landed ~4s before the next user turn began, inside exactly
+    #: such a gap — an "in-flight only" check would have missed it.
+    _CHAT_ACTIVE_GRACE_MS = 8_000
+
+    #: Hard ceiling on how long a single ``user_input`` keeps the turn "active".
+    #: ``_chat_turn_active`` is set by ``user_input`` and cleared only by a
+    #: terminal chat event on ``/pet-event`` (posted from the panel's WebSocket
+    #: chat_done handler). If the panel closes mid-turn or the socket drops
+    #: before chat_done, that terminal event never arrives and the flag would
+    #: wedge True for the runtime's lifetime — every non-critical push then
+    #: defers forever and the capped buffer silently discards the oldest. Bound
+    #: it by the timestamp already recorded: past this age the turn is treated
+    #: as ended even with the flag still set, so the drain can deliver the
+    #: backlog. Ten minutes comfortably exceeds any real single agent turn.
+    _CHAT_TURN_MAX_MS = 600_000
+
     def set_quiet(self, minutes: int) -> int:
         """Enter (minutes > 0) or leave (0) quiet mode. Returns silent-until ms.
 
@@ -687,11 +723,127 @@ class MochiRuntime:
         if isinstance(mood, str) and mood:
             self.state_manager.set_mood(mood, _now_ms())
 
+    def note_chat_lifecycle(self, event: str, now_ms: int) -> None:
+        """Track foreground chat-turn activity for the interleave gate.
+
+        Fed by the ``/pet-event`` route — the SAME signal that drives the pet's
+        thinking/working animation. That route carries only FOREGROUND chat
+        events (background spawns reach the state manager by another path, via
+        ``watch_spawn_completion``), which is exactly why it is the right seam:
+        it isolates the user's live turn, so a background check can't falsely
+        gate an ambient push.
+
+        ``user_input`` opens a turn; the terminal events (``task_complete``,
+        ``error``) close it and flush anything deferred while it was open.
+        ``approval_rejected`` is deliberately NOT terminal: unlike
+        ``task_complete``/``error`` (slot-filtered to the pet's own turn on the
+        panel WebSocket), the ``approval_resolved`` frame it derives from is
+        gateway-level and slotless, so a rejection answered on ANOTHER chat
+        surface would otherwise clear THIS turn's gate mid-conversation. A
+        rejected pet-slot turn still ends with a ``chat_done`` → ``task_complete``,
+        and the ``_CHAT_TURN_MAX_MS`` ceiling backstops any turn that ends with
+        no terminal frame at all. Other chat events (``tool_call``,
+        ``task_start``, ``approval_required``/``approval_granted``) neither open
+        nor close a turn — they occur mid-turn, when it is already active.
+        """
+        if event == "user_input":
+            self._chat_turn_active = True
+            self._last_user_input_ms = now_ms
+        elif event in ("task_complete", "error"):
+            self._chat_turn_active = False
+            self._flush_deferred_chat_pushes()
+
+    def _chat_turn_busy(self, now_ms: int) -> bool:
+        """True while a foreground chat turn is in flight, or within the grace
+        window after the last user input (rapid back-and-forth counts as one
+        live conversation).
+
+        The active flag is bounded by ``_CHAT_TURN_MAX_MS``: past that age a
+        turn whose terminal event never arrived (panel closed / socket dropped)
+        no longer counts as busy, so the drain can release its backlog rather
+        than deferring forever."""
+        if self._chat_turn_active and now_ms - self._last_user_input_ms < self._CHAT_TURN_MAX_MS:
+            return True
+        return now_ms - self._last_user_input_ms < self._CHAT_ACTIVE_GRACE_MS
+
+    def _drain_deferred_chat_pushes(self, now_ms: int) -> None:
+        """Time-based backstop that delivers deferred pushes with no further
+        pet-event.
+
+        The terminal chat events flush on turn end, but two paths strand a
+        deferred push with nothing left to release it:
+
+        * a push that arrives AFTER the terminal event but inside the grace
+          window — it is buffered after the only flush already ran; and
+        * a turn whose panel closed / socket dropped before any terminal frame
+          — the ``_chat_turn_active`` flag ages out via ``_CHAT_TURN_MAX_MS``
+          but no event fires to flush.
+
+        Driven by the owner loop's 1s cadence (see ``_loop``): once the busy
+        window has closed it clears any stale wedged flag and delivers the
+        backlog through the SAME dedup as a live push. Piggybacking on the
+        existing loop — rather than arming a per-push ``asyncio`` task from
+        ``notify_user`` — is the cleaner seam: it needs no task lifecycle
+        (arm/refresh/cancel) and sidesteps having to prove which loop
+        ``notify_user`` runs on, since the loop is unconditionally the gateway's.
+        Delivery is bounded by the grace/ceiling window plus at most one poll
+        interval, with no dependency on another pet-event arriving.
+        """
+        if not self._deferred_chat_pushes and not self._chat_turn_active:
+            return
+        if self._chat_turn_busy(now_ms):
+            return
+        # The window has closed (terminal event, grace expiry, or the ceiling
+        # aging out a wedged flag). Clear the flag so state stays honest, then
+        # deliver any backlog (a no-op when empty).
+        self._chat_turn_active = False
+        self._flush_deferred_chat_pushes()
+
+    def _flush_deferred_chat_pushes(self) -> None:
+        """Deliver pushes deferred during a chat turn, in arrival order.
+
+        Each goes through the SAME dedup as a live push (``_deliver_chat_push``),
+        so a deferred greeting that now duplicates the agent's own reply — or an
+        earlier accepted push — is still dropped rather than double-posted.
+        """
+        if not self._deferred_chat_pushes:
+            return
+        deferred, self._deferred_chat_pushes = self._deferred_chat_pushes, []
+        for action in deferred:
+            self._deliver_chat_push(action)
+
     def _push_to_chat(self, action: dict[str, Any]) -> None:
-        """Append a pet message to the panel transcript, deduplicated.
+        """Append a pet message to the panel transcript, gated and deduplicated.
 
         Content is `chatMessage` (detailed, no length limit) falling back to
         the bubble summary — the original's `action.chatMessage || summary`.
+
+        THE INTERLEAVE GATE. An ambient pet push (a scheduled greeting, a watch
+        result) must not land between the user's message and the agent's reply —
+        the reported bug was a "Good evening!" greeting injected mid-turn. While
+        a foreground chat turn is in flight, or within the grace window after the
+        last user input, a non-critical push is DEFERRED (buffered, capped at the
+        scan depth) and flushed when the turn ends (see note_chat_lifecycle).
+        `critical` priority (e.g. a "meeting in 5 minutes" reminder) bypasses the
+        gate and lands immediately. Deferring, not dropping, preserves the push,
+        and the durable activity-log entry `notify_user` writes is unaffected —
+        so an ambient message deferred right at the end of a conversation (no
+        following turn to flush it) is still recorded there immediately.
+
+        Delivery below the gate is unchanged — see `_deliver_chat_push`.
+        """
+        content = action.get("chatMessage") or action.get("summary")
+        if not isinstance(content, str) or not content:
+            return
+        if action.get("priority") != "critical" and self._chat_turn_busy(_now_ms()):
+            self._deferred_chat_pushes.append(action)
+            while len(self._deferred_chat_pushes) > self._CHAT_PUSH_SCAN_DEPTH:
+                self._deferred_chat_pushes.pop(0)
+            return
+        self._deliver_chat_push(action)
+
+    def _deliver_chat_push(self, action: dict[str, Any]) -> None:
+        """Dedup against recent accepted pushes, then broadcast `mochi:chat-push`.
 
         THE GUARD IS THE POINT. Watch-check agents are independent spawns and
         cannot see each other's output, so without it every poll cycle would

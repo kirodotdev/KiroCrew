@@ -277,6 +277,188 @@ class TestChatPush:
             assert len(self._pushes(seen)) == 2
 
 
+class TestChatPushConversationGate:
+    """notify_user's pushToChat must not interleave into a live chat turn.
+
+    The reported bug: a scheduled "Good evening! All quiet…" greeting from the
+    background planner landed between the user's message and the agent's reply,
+    because the chat-push path had no awareness of an in-flight (or just-ended)
+    foreground turn. The gate defers a non-critical push while a turn is active
+    or within a short grace window, and flushes it — through the SAME dedup — on
+    the terminal chat event. `critical` priority still lands immediately.
+    """
+
+    def _pushes(self, seen):
+        return [d for ch, d in seen if ch == "mochi:chat-push"]
+
+    @pytest.mark.asyncio
+    async def test_push_suppressed_while_turn_active(self, tmp_path):
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            # A user turn is in flight (reported over the same /pet-event seam
+            # that animates the pet).
+            await routes._handle_pet_event(_post({"event": "user_input"}))
+            runtime.notify_user({"summary": "Good evening! All quiet 🌙", "pushToChat": True})
+            assert self._pushes(seen) == []
+
+    @pytest.mark.asyncio
+    async def test_deferred_push_flushes_once_on_task_complete(self, tmp_path):
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            await routes._handle_pet_event(_post({"event": "user_input"}))
+            runtime.notify_user({"summary": "Good evening! All quiet 🌙", "pushToChat": True})
+            assert self._pushes(seen) == []
+            # The turn ends: the deferred greeting is delivered exactly once.
+            await routes._handle_pet_event(_post({"event": "task_complete"}))
+            pushed = self._pushes(seen)
+            assert len(pushed) == 1
+            assert pushed[0]["content"] == "Good evening! All quiet 🌙"
+
+    @pytest.mark.asyncio
+    async def test_grace_window_defers_then_delivers_after_expiry(self, tmp_path, monkeypatch):
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            clock = {"now": 1_000_000}
+            monkeypatch.setattr(hooks, "_now_ms", lambda: clock["now"])
+            # A turn runs and completes; the grace window is now open.
+            runtime.note_chat_lifecycle("user_input", clock["now"])
+            runtime.note_chat_lifecycle("task_complete", clock["now"])
+            # A push arriving inside the grace window is still deferred — the gap
+            # before the next user message is where the real interleave landed.
+            runtime.notify_user({"summary": "Good evening! All quiet 🌙", "pushToChat": True})
+            assert self._pushes(seen) == []
+            # Past the grace window, a fresh push is delivered immediately.
+            clock["now"] += runtime._CHAT_ACTIVE_GRACE_MS + 1
+            runtime.notify_user({"summary": "Your build finished", "pushToChat": True})
+            pushed = self._pushes(seen)
+            assert len(pushed) == 1
+            assert pushed[0]["content"] == "Your build finished"
+
+    @pytest.mark.asyncio
+    async def test_critical_push_bypasses_the_gate(self, tmp_path):
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            runtime.note_chat_lifecycle("user_input", hooks._now_ms())  # turn active
+            runtime.notify_user(
+                {"summary": "Meeting in 5 minutes", "pushToChat": True, "priority": "critical"}
+            )
+            assert len(self._pushes(seen)) == 1
+
+    @pytest.mark.asyncio
+    async def test_idle_path_delivers_immediately(self, tmp_path, monkeypatch):
+        """Regression guard for the common case: with no turn ever reported and
+        the clock well past any grace, a push is delivered without deferral."""
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            clock = {"now": 5_000_000}
+            monkeypatch.setattr(hooks, "_now_ms", lambda: clock["now"])
+            runtime.notify_user({"summary": "Heads up: pipeline is green", "pushToChat": True})
+            assert len(self._pushes(seen)) == 1
+
+    @pytest.mark.asyncio
+    async def test_dedup_still_applies_on_flush(self, tmp_path, monkeypatch):
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            clock = {"now": 2_000_000}
+            monkeypatch.setattr(hooks, "_now_ms", lambda: clock["now"])
+            # An identical push is accepted while idle (recorded in the guard).
+            runtime.notify_user({"summary": "CR-123 still pending review", "pushToChat": True})
+            assert len(self._pushes(seen)) == 1
+            # A turn starts; a duplicate arrives mid-turn and is deferred.
+            runtime.note_chat_lifecycle("user_input", clock["now"])
+            runtime.notify_user({"summary": "CR-123 still pending review", "pushToChat": True})
+            assert len(self._pushes(seen)) == 1
+            # The turn ends: the flush runs the SAME dedup, so the duplicate is
+            # dropped rather than double-posted.
+            runtime.note_chat_lifecycle("task_complete", clock["now"])
+            assert len(self._pushes(seen)) == 1
+
+    @pytest.mark.asyncio
+    async def test_wedged_turn_ages_out_via_ceiling(self, tmp_path, monkeypatch):
+        """Blocker 1: a turn whose terminal event never arrives (panel closed /
+        socket dropped) must not wedge the gate forever. Past the staleness
+        ceiling the flag ages out and the drain delivers the backlog — with NO
+        further pet-event. Pre-fix there was no ceiling (busy stayed True while
+        active) and no drain, so this could not pass."""
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            clock = {"now": 3_000_000}
+            monkeypatch.setattr(hooks, "_now_ms", lambda: clock["now"])
+            # A turn opens; the terminal event never arrives.
+            runtime.note_chat_lifecycle("user_input", clock["now"])
+            runtime.notify_user({"summary": "Good evening! All quiet 🌙", "pushToChat": True})
+            assert self._pushes(seen) == []  # deferred: turn still "active"
+            assert runtime._chat_turn_active is True
+            # Advance past the ceiling and run the owner-loop drain directly
+            # (deterministic — no real sleep). The wedged flag ages out and the
+            # backlog is delivered exactly once.
+            clock["now"] += runtime._CHAT_TURN_MAX_MS + 1
+            runtime._drain_deferred_chat_pushes(clock["now"])
+            pushed = self._pushes(seen)
+            assert len(pushed) == 1
+            assert pushed[0]["content"] == "Good evening! All quiet 🌙"
+            # State is honest again after the age-out.
+            assert runtime._chat_turn_active is False
+
+    @pytest.mark.asyncio
+    async def test_stranded_push_after_terminal_drains_within_bound(self, tmp_path, monkeypatch):
+        """Blocker 2: a non-critical push that lands AFTER the terminal flush but
+        inside the grace window is buffered with nothing left to release it. The
+        time-based drain delivers it once the window closes, with no further
+        pet-event. Pre-fix the terminal flush was the sole flush, so this push
+        stranded until the next user_input."""
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            clock = {"now": 4_000_000}
+            monkeypatch.setattr(hooks, "_now_ms", lambda: clock["now"])
+            runtime.note_chat_lifecycle("user_input", clock["now"])
+            runtime.note_chat_lifecycle("task_complete", clock["now"])  # flush runs (empty)
+            # Push arrives inside the grace window — deferred, but the only flush
+            # already ran.
+            runtime.notify_user({"summary": "Your build finished", "pushToChat": True})
+            assert self._pushes(seen) == []
+            # No further pet-event. Advance past the grace window and drain.
+            clock["now"] += runtime._CHAT_ACTIVE_GRACE_MS + 1
+            runtime._drain_deferred_chat_pushes(clock["now"])
+            pushed = self._pushes(seen)
+            assert len(pushed) == 1
+            assert pushed[0]["content"] == "Your build finished"
+            # Idempotent: a second drain with nothing newly deferred is a no-op.
+            runtime._drain_deferred_chat_pushes(clock["now"])
+            assert len(self._pushes(seen)) == 1
+
+    @pytest.mark.asyncio
+    async def test_approval_rejected_does_not_clear_the_gate(self, tmp_path):
+        """Finding 3: approval_rejected derives from a slotless, gateway-level
+        frame — a rejection answered on ANOTHER surface must not clear THIS
+        turn's gate. Only a real terminal event (task_complete/error) for this
+        turn releases the deferred backlog. Pre-fix approval_rejected was
+        terminal, so it flushed mid-turn."""
+        async with _live_runtime(tmp_path) as runtime:
+            seen: list[tuple[str, dict]] = []
+            runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
+            runtime.note_chat_lifecycle("user_input", hooks._now_ms())
+            runtime.notify_user({"summary": "Good evening! All quiet 🌙", "pushToChat": True})
+            assert self._pushes(seen) == []
+            # A rejection from another surface arrives; it must NOT release us.
+            runtime.note_chat_lifecycle("approval_rejected", hooks._now_ms())
+            assert self._pushes(seen) == []
+            assert runtime._chat_turn_active is True
+            # A genuine terminal event for this turn releases the backlog.
+            runtime.note_chat_lifecycle("task_complete", hooks._now_ms())
+            pushed = self._pushes(seen)
+            assert len(pushed) == 1
+            assert pushed[0]["content"] == "Good evening! All quiet 🌙"
+
+
 class TestManifestDeclaresEveryPublishedEvent:
     """``permissions.events`` must cover every event name the backend publishes.
 
