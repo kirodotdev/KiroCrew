@@ -347,7 +347,8 @@ it is reachable only by an authenticated owner driving the API directly.
   `ExitOnForwardFailure=yes` so a forward that cannot bind is a detected failure
   rather than a silent hang. `-N` without `-f` is deliberate: `-f` would fork ssh
   into the background and leave the gateway unable to supervise or kill the real
-  forwarder.
+  forwarder. The multiplexing pins in §9 close the same hole from the
+  ssh_config side.
 - **No local shell.** `ssh` is always spawned with an argv list, so `ssh_host`
   cannot inject local shell syntax; `ssh_host`/`remote_bin` are
   injection-validated immediately before every command line is built (§11).
@@ -411,10 +412,32 @@ it is reachable only by an authenticated owner driving the API directly.
 The only thing that varies per remote is the **SSH host** you configure: the hub
 always runs a fixed `ssh <ssh_host> ...` argv (`BatchMode=yes`,
 `ExitOnForwardFailure=yes`, `ServerAliveInterval=30`, `ServerAliveCountMax=3`,
-`AddressFamily=inet`, `-L`/`-N`, plus `-C` when compression is on). Anything
-`ssh` can reach **non-interactively** works. `ssh_host` accepts `host`,
-`host.fqdn`, an `~/.ssh/config` alias, or `user@host`, and rejects any segment
-starting with `-` (ssh option-injection guard).
+`AddressFamily=inet`, `ControlPath=none`, `ControlMaster=no`, `-L`/`-N`, plus `-C` <!-- wokeignore:rule=master -->
+when compression is on). Anything `ssh` can reach **non-interactively** works.
+`ssh_host` accepts `host`, `host.fqdn`, an `~/.ssh/config` alias, or
+`user@host`, and rejects any segment starting with `-` (ssh option-injection
+guard).
+
+**Multiplexing is pinned off; everything else is inherited.** A tunnel is a
+supervised foreground child, and a forward the gateway cannot supervise or kill
+reports as `ssh exited with code 0` while it is in fact still serving. A
+multiplexed session does exactly that — ssh hands the forward to an existing
+shared connection and exits. `ControlPath=none` is the enforcement: with no path
+resolved there is no socket to join. `ControlMaster=no` states the policy, and <!-- wokeignore:rule=master -->
+is not sufficient alone — an inherited `ControlPath` still routes into a shared
+connection.
+
+Everything else per-host — `User`, `IdentityFile`, `Port`, `ProxyJump`,
+`ProxyCommand` — is still inherited from `~/.ssh/config`; the registry carries no
+inline equivalents and depends on that. **Pinning a directive the user may also
+set is not free**: ssh takes the first value obtained and reads the command line
+first, so a pinned `-o` silently discards theirs. The two multiplexing pins are
+safe because a supervised tunnel must never share a connection, but the same
+move on, say, `IgnoreUnknown` would drop the pattern a cross-platform config
+relies on and turn a working setup into `Bad configuration option`.
+
+The diagnostics probes are a different case and are left alone: they are
+one-shot commands whose exit status is the whole result, with no forward to own.
 
 ### Dev host / home server (primary)
 
