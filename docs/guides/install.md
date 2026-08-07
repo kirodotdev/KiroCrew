@@ -120,6 +120,12 @@ Both targets bootstrap their toolchain first (`ensure-node.sh`,
 backend target refuses to build a venv from an interpreter older than 3.10
 rather than letting the install backtrack forever.
 
+After the backend target runs, `bin/kirocrew` resolves its real install root,
+sets `KIROCREW_PROJECT_DIR`, and delegates to `.venv/bin/kirocrew`. That console
+script comes from the editable package metadata (`kiro_crew._bootstrap:main`),
+so the virtual environment makes `src/kiro_crew` importable without the wrapper
+modifying `PYTHONPATH`; caller-provided entries pass through unchanged.
+
 Any CLI subcommand works the same way, for example
 `PYTHONPATH=src python -m kiro_crew setup` or `... doctor`.
 
@@ -156,7 +162,7 @@ Installed console script:
 
 | Command | Entry point |
 |---------|-------------|
-| `kirocrew` | `kiro_crew.cli:main` |
+| `kirocrew` | `kiro_crew._bootstrap:main` |
 
 `pyproject.toml`'s `[project.scripts]` declares `kirocrew` and nothing else.
 Because a `[project]` table exists, setuptools reads the entry points from

@@ -4,6 +4,18 @@
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
+## Source Checkout Launcher
+
+The POSIX wrapper at `bin/kirocrew` resolves symlinks to find the real checkout,
+sets `KIROCREW_PROJECT_DIR` to that checkout unless the caller already supplied
+one, and delegates every argument to `.venv/bin/kirocrew`. The virtualenv entry
+point comes from the editable install created by the setup scripts, so it makes
+`src/kiro_crew` importable without adding the source tree to `PYTHONPATH`. Any
+caller-provided `PYTHONPATH` is inherited unchanged.
+
+If `.venv/bin/kirocrew` is unavailable, the wrapper exits with source-install
+guidance instead of falling through to a different Python environment.
+
 ## Standalone Wheel Installer Trust Contract
 
 `cli.sh` installs channel or pinned-version wheels only from an authenticated
@@ -392,7 +404,7 @@ CLI compaction is blocking (single-user, acceptable).
 
 ## Entry Point
 
-`console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew.cli:main`.
+`console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew._bootstrap:main`.
 
 ### Gateway asyncio child watcher
 

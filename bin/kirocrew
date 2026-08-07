@@ -20,11 +20,11 @@ if [ -x "$SCRIPT_DIR/.venv/bin/kirocrew" ]; then
     exec "$SCRIPT_DIR/.venv/bin/kirocrew" "$@"
 fi
 
-# No venv found. The OSS build runs entirely from a pip venv created by
-# install.sh / setup.sh / minimal_install.sh, so this is almost always a
-# missing or incomplete install rather than a Brazil workspace.
-echo "❌ KiroCrew venv not found at $SCRIPT_DIR/.venv" >&2
-echo "   The OSS build runs from a Python venv — set one up with:" >&2
-echo "       cd $SCRIPT_DIR && bash minimal_install.sh" >&2
-echo "   (brazil not found — Brazil workspaces are not used in the OSS build)" >&2
+# No venv found. Source checkouts run from a pip venv created by
+# install.sh / setup.sh / minimal_install.sh, so this is a missing or
+# incomplete install.
+echo "❌ Kiro Crew virtual environment not found at $SCRIPT_DIR/.venv" >&2
+echo "   Set up the source checkout with:" >&2
+printf '       cd "%s" && bash minimal_install.sh\n' "$SCRIPT_DIR" >&2
+echo "   Source checkouts run from their own Python virtual environment." >&2
 exit 1
