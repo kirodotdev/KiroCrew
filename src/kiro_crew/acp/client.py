@@ -780,6 +780,35 @@ _RE_5XX_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:50[0234]|529)\b",
 # a transport envelope, not a signal about the failure inside it; classification
 # now reads the inner detail (see _provider_detail).
 _RE_5XX_HINT = re.compile(r"(please try again)", re.IGNORECASE)
+# Session expiry, by HTTP status. An expired session is rejected with 401/403,
+# and nothing else in this module recognised those codes: the error fell through
+# to the 5xx family (a co-occurring DispatchFailure/ConnectionReset from the
+# aborted request is enough to match) and the user was told to retry or switch
+# models, neither of which can succeed against an expired login. Status is the
+# primary signal because the rejection carries no explanatory wording.
+_RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.IGNORECASE)
+# Session expiry, by wording. Complements the status match for backends that
+# describe the expiry in prose without a machine-readable code. Deliberately
+# excludes Bedrock's named exceptions, which _RE_AUTH already owns.
+_RE_SESSION_EXPIRED = re.compile(
+    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
+    r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
+    r"|not\s+logged\s+in|not\s+authenticated"
+    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_session_expired(haystack: str) -> bool:
+    """True when the failure is an expired session rather than a backend fault.
+
+    Both signals are terminal: retrying cannot refresh a login. Checked before
+    the 5xx family so an aborted request's transport error does not shadow the
+    real cause.
+    """
+    return bool(_RE_AUTH_STATUS.search(haystack) or _RE_SESSION_EXPIRED.search(haystack))
+
+
 # Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a
 # throttle clears in seconds and a retry is the right move, whereas a spent
 # monthly allowance does not come back until it resets, so retrying only adds
@@ -901,6 +930,9 @@ def _is_transient_raw_error(
         return True
     if _RE_AUTH.search(haystack):
         # Auth is terminal — a retry can't fix an expired/denied credential.
+        return False
+    if _is_session_expired(haystack):
+        # Session expiry is terminal — retrying can't refresh an expired login.
         return False
     return bool(
         _RE_5XX_NAMED.search(haystack)
@@ -1093,6 +1125,17 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
                 "(e.g. re-run your SSO/login or 'aws sso login'), then retry. If "
                 "the failure persists, check that the configured AWS profile has "
                 "Bedrock InvokeModel access."
+                f"{req_id_suffix}"
+            )
+        elif _is_session_expired(haystack):
+            # Session expiry (401/403, or prose saying as much) — distinct from
+            # the Bedrock credential errors above. Retrying or switching models
+            # cannot succeed, so the message must not suggest either.
+            formatted = (
+                "Your session has expired. Run `kiro-cli login` in your "
+                "terminal to sign back in, then start a new chat. "
+                "Retrying or switching models will not help — this is a "
+                "sign-in issue, not a backend error."
                 f"{req_id_suffix}"
             )
         elif (
