@@ -116,7 +116,10 @@ test.describe('Knowledge Page E2E Tests', () => {
   })
 
   test('help dialog opens and closes', async ({ page }) => {
-    await expect(page.getByText('Knowledge Library')).toBeVisible({ timeout: 10000 })
+    // exact: true — the onboarding heading also contains "Knowledge Library"
+    // ("Welcome to the Knowledge Library"), so a substring match resolves to two
+    // elements and trips strict mode (see the same guard above).
+    await expect(page.getByText('Knowledge Library', { exact: true })).toBeVisible({ timeout: 10000 })
 
     // Click the Help button
     await page.getByRole('button', { name: /Help/i }).click()
