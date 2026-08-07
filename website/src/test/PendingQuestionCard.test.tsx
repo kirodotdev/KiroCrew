@@ -476,3 +476,36 @@ describe('resolvedSince + reconcileQuestions — resolution for a never-held car
     expect(resolvedSince(log, 3)).toEqual([])
   })
 })
+
+/**
+ * Reconnect re-dispatch must not churn the card. syncPendingQuestions
+ * re-dispatches the SAME still-pending card with a freshly parsed
+ * (structurally equal, referentially new) payload on every websocket
+ * reconnect; the reducer keeps the entry and QuestionCard compares the
+ * serialized payload, so the user's typed custom answer survives on screen.
+ */
+describe('reconnect re-dispatch', () => {
+  const typeCustomAnswer = (text: string) => {
+    const input = screen.getByPlaceholderText(/type a custom answer/i)
+    fireEvent.change(input, { target: { value: text } })
+  }
+
+  it('a reconnect re-dispatch of the same card keeps the typed text on screen', () => {
+    const store = withCard()
+    renderCard(store)
+    typeCustomAnswer('still typing')
+    act(() => {
+      store.dispatch(setQuestionCard({ slot: 'chat-1', questions: JSON.parse(JSON.stringify(QUESTIONS)) }))
+    })
+    expect(store.getState().chat.pendingQuestions['chat-1']).toBeDefined()
+    expect(screen.getByDisplayValue('still typing')).toBeTruthy()
+  })
+
+  it('user dismiss removes the card', () => {
+    const store = withCard() // stateless card — dismiss is a pure local clear
+    renderCard(store)
+    typeCustomAnswer('abandoned on purpose')
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(store.getState().chat.pendingQuestions['chat-1']).toBeUndefined()
+  })
+})

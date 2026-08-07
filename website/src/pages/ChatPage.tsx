@@ -23,7 +23,8 @@ import {
   toggleActivity, openActivityPanel, openActivityToTab,
   selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
-  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
+  requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
+  retireStatelessQuestion,
   mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
@@ -3183,6 +3184,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // clear, and (below) the send target.
     const uiSlot = activeSlotRef.current
 
+    // Capture the stateless card pending at ENTRY — before the first await
+    // below. This send consumes the answer channel of the card the user saw
+    // when they hit send; captured after an await, the card-submit flow can
+    // clear the card (or a newer one can land) in the gap, and the capture
+    // would compare against the wrong baseline (fork GPT review, 995718f).
+    const entrySendSlot = targetSlot ?? uiSlot
+    const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, entrySendSlot)
+
     // Slash command interception (e.g. /side): runs before knowledge so a
     // bare prefix like /side returns immediately without touching input parse.
     const slashResult = await interceptSlashCommand(raw, uiSlot, dispatch)
@@ -3538,6 +3547,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // The server explicitly accepted neither (`ok` nor `queued`), so nothing
         // was sent — recovering the composer cannot duplicate a delivered turn.
         restoreComposerAfterFailedSend()
+      } else if (cardAtSend && slot === entrySendSlot) {
+        // Confirmed delivery (ok or queued): the message consumed the slot's
+        // next-turn channel, so the card captured at entry is now stale. The
+        // slot-identity guard covers forceNew rerouting the send into a
+        // freshly created session — that send answers nothing in the entry
+        // slot, whose card must stay. Deliberately NOT done on the optimistic
+        // append (a failed send must keep the card) nor on the abort-timeout
+        // path below (delivery unconfirmed — a wrongly kept card is
+        // dismissible, a wrongly deleted one is not recoverable).
+        dispatch(retireStatelessQuestion({ slot, expected: cardAtSend }))
       }
     } catch (e: unknown) {
       clearTimeout(timeout)

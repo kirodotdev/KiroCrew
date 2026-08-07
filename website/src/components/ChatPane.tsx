@@ -20,8 +20,8 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
-import { useAppSelector, useAppDispatch } from '../store'
-import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { useAppSelector, useAppDispatch, store } from '../store'
+import { retireStatelessQuestion, captureStatelessCard, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { displayModel } from '../lib/model'
@@ -208,6 +208,13 @@ export default function ChatPane({
   const doSend = useCallback(() => {
     const text = input.trim()
     if (!text && !pendingFiles.length) return
+    // Capture the stateless card pending at ENTRY (before any state updates
+    // or yields): this send consumes the answer channel of the card the user
+    // saw when they hit send. Retired only after the server confirms it
+    // accepted the message (ok or queued) — the optimistic append below must
+    // not do it, or a failed send (offline, 5xx) deletes the card while the
+    // session never moved on.
+    const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, slotKey)
     setInput('')
     const files = pendingFiles
     setPendingFiles([])
@@ -221,7 +228,13 @@ export default function ChatPane({
       }))
     }
     const meta = files.length ? { files } : undefined
-    api.sendChat(text, slotKey, undefined, undefined, meta).catch(() => undefined)
+    api.sendChat(text, slotKey, undefined, undefined, meta)
+      .then(async (r) => {
+        if (!cardAtSend) return
+        const body = await r.json().catch(() => ({}))
+        if (body.ok || body.queued) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
+      })
+      .catch(() => undefined)
   }, [input, pendingFiles, busy, slotKey, dispatch])
 
   const onStop = useCallback(() => { dispatch(requestStop({ slotId: slotKey, force: false })) }, [dispatch, slotKey])

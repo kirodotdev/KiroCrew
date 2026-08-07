@@ -91,6 +91,54 @@ function isRedeliveredMessage(
   return false
 }
 
+/** Frame roles that retire a slot's pending STATELESS question card.
+ *
+ *  Deliberately NARROWER than "every role that starts a turn". The card's
+ *  contract is "the user's answer arrives as the next message", and the roles
+ *  here are the ones where that answer channel is genuinely gone:
+ *
+ *  - `user` — the human spoke (composer answer, or something else entirely);
+ *    either way the next-message channel was consumed by its owner.
+ *  - `nudge` — an auto-nudge cycle deliberately moved the session on past the
+ *    question; the loop's instruction, not the answer, became the next turn.
+ *
+ *  `inject` (cron notifications, recovery resumes) and `subagent` (completion
+ *  events) also start turns, but they interleave with a question the agent may
+ *  STILL be waiting on: an agent that spawns work, asks the user a question,
+ *  and ends its turn will absorb completion events while the question remains
+ *  genuinely open — clearing the card on those frames would delete the user's
+ *  only UI for answering a live question. If a session moves on for real, its
+ *  next user/nudge frame still retires the card. Extending coverage is a data
+ *  edit here, not a code change (per Design Review on PR #2131). */
+const QUESTION_RETIRING_ROLES = new Set(['user', 'nudge'])
+
+/** Drop a slot's pending STATELESS question card (no ``ask_id``) when a
+ *  turn-consuming frame lands on that slot.
+ *
+ *  A stateless card's contract is "the user's answer arrives as the next
+ *  message" (the agent ended its turn on it — `post_question_card`, no
+ *  server-side wait). So the frame that STARTS the slot's next turn consumes
+ *  the card's answer channel and makes it stale. Without this, a monitored
+ *  session that asked a question and was then nudged onward parks the card
+ *  above the composer FOREVER — it invites an answer no turn is waiting for.
+ *
+ *  Server-owned cards (with `ask_id`) are exempt: their lifecycle is the
+ *  `question_card_resolved` broadcast (answered / timed out / cancelled /
+ *  slot stop), and a blocked wait can legitimately outlive a mid-turn steer
+ *  frame — clearing on it would strand the blocked tool call with no card.
+ *
+ *  Shared by the two hand-synced frame appliers (active `sseChatMessage` and
+ *  background `applyNonActiveFrame`) so the paths cannot drift; both call it
+ *  AFTER their redelivery guard so a replayed old frame cannot wipe a new
+ *  card. */
+const dropStaleStatelessQuestion = (state: ChatState, slot: string, role: string): void => {
+  if (!QUESTION_RETIRING_ROLES.has(role)) return
+  const card = state.pendingQuestions?.[safeKey(slot)]
+  if (card && !card.ask_id) {
+    delete state.pendingQuestions[safeKey(slot)]
+  }
+}
+
 /** Finalize the most recent live `streaming` message in place (streaming →
  *  assistant), or drop it entirely when its content is a trivial placeholder
  *  the model emits before tool calls ("...", "…", "---", ". . .", etc.).
@@ -177,6 +225,24 @@ export const pendingQuestionFor = (
 ): ChatState['pendingQuestions'][string] | null => {
   if (!slot || !map || isUnsafeKey(slot)) return null
   return Object.prototype.hasOwnProperty.call(map, slot) ? map[slot] : null
+}
+
+/** Serialize a slot's pending STATELESS card for send-time capture (the
+ *  `expected` payload of retireStatelessQuestion). Call SYNCHRONOUSLY at the
+ *  send path's ENTRY — before its first await — so the capture is the card
+ *  the user saw when they hit send. Captured any later, an await gap lets
+ *  the card-submit flow clear the card (capture reads null and the retire is
+ *  skipped) or a newer card land (capture reads a card this send never
+ *  answered, and success would retire it) — either way the expected-payload
+ *  guard compares against the wrong baseline. Shared by the two send sites
+ *  (ChatPage.send / ChatPane.doSend) so their capture logic cannot drift.
+ *  Returns null when no stateless card is pending: dispatch nothing then. */
+export const captureStatelessCard = (
+  map: ChatState['pendingQuestions'] | undefined,
+  slot: string | null | undefined,
+): string | null => {
+  const c = pendingQuestionFor(map, slot)
+  return c && !c.ask_id ? JSON.stringify(c.questions) : null
 }
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
@@ -586,6 +652,10 @@ function applyNonActiveFrame(
   // is the point: each of those branches creates or mutates a row and returns,
   // so a guard placed after any of them is a guard some frame slips past.
   if (isRedeliveredMessage(msgs, effectiveMeta)) { state._redeliveredFramesDropped += 1; return }
+  // A turn-consuming frame makes a pending stateless question card stale —
+  // placed after the redelivery guard so a replayed frame cannot clear a
+  // live card (see dropStaleStatelessQuestion).
+  dropStaleStatelessQuestion(state, slot, role)
   if (role === 'tool') {
     run.state = 'tool_running'
     let insertIdx = msgs.length
@@ -1353,7 +1423,43 @@ const chatSlice = createSlice({
       // otherwise make a READ return an inherited value that is truthy but has
       // no `questions`, crashing QuestionCard on render.
       if (isUnsafeKey(action.payload.slot)) return
-      state.pendingQuestions[safeKey(action.payload.slot)] = action.payload
+      const key = safeKey(action.payload.slot)
+      const prev = state.pendingQuestions[key]
+      if (prev) {
+        // Payload comparison, not reference: a websocket reconnect re-dispatches
+        // the SAME still-pending card with a freshly parsed questions array
+        // (syncPendingQuestions). That is not a new ask — keep the existing
+        // entry so the mounted card is not churned. A genuinely different ask
+        // replaces the card.
+        const same = prev.ask_id === action.payload.ask_id &&
+          JSON.stringify(prev.questions) === JSON.stringify(action.payload.questions)
+        if (same) return
+      }
+      state.pendingQuestions[key] = action.payload
+    },
+    /** Confirmed-delivery retirement of the sender's OWN answer to a
+     *  stateless card. The composer's user frame is never echoed back over
+     *  the wire (slot.append skips the broadcast for `user` rows the sender
+     *  already rendered optimistically), so the frame appliers can never
+     *  retire the card for the device that sent the answer — the send path
+     *  must do it. Dispatched by the send call sites ONLY after the server
+     *  accepted the message (ok or queued): retiring on the optimistic
+     *  append instead would delete the card on a FAILED send (offline, 5xx)
+     *  even though the session never moved on.
+     *
+     *  `expected` is the serialized questions payload of the card that was
+     *  pending WHEN THE SEND STARTED. A slow POST response can race a new
+     *  turn that posts a DIFFERENT stateless card into the slot; an
+     *  unqualified retirement would delete that live card and permanently
+     *  lose its question UI. Comparing payloads (same convention as
+     *  setQuestionCard's re-dispatch check) makes the stale completion a
+     *  no-op instead. */
+    retireStatelessQuestion(state, action: PayloadAction<{ slot: string; expected: string }>) {
+      if (isUnsafeKey(action.payload.slot)) return
+      const card = state.pendingQuestions?.[safeKey(action.payload.slot)]
+      if (!card || card.ask_id) return
+      if (JSON.stringify(card.questions) !== action.payload.expected) return
+      delete state.pendingQuestions[safeKey(action.payload.slot)]
     },
     clearQuestionCard(state, action: PayloadAction<{ slot: string }>) {
       if (isUnsafeKey(action.payload.slot)) return
@@ -1453,6 +1559,10 @@ const chatSlice = createSlice({
       // _run_chat's steer segment cut), so the frozen order matches the
       // persisted transcript and the chat_done refresh doesn't reorder it.
       const m = action.payload
+      // Retiring the slot's stateless question card on this OPTIMISTIC append
+      // is deliberately NOT done here: the send can still fail (offline, 5xx),
+      // and the card must survive a failed send. The send path dispatches
+      // retireStatelessQuestion after the server confirms delivery.
       if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreaming(state.messages)
       state.messages.push(ensureMsgId(m))
     },
@@ -1462,6 +1572,9 @@ const chatSlice = createSlice({
     appendSlotMessage(state, action: PayloadAction<{ slot: string; message: ChatMessage }>) {
       const { slot, message } = action.payload
       if (isUnsafeKey(slot)) return
+      // Same reasoning as appendMessage: no card retirement on an optimistic
+      // append — the pane's send path dispatches retireStatelessQuestion once
+      // the server confirms delivery.
       const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
       // Reconcile a steer echo (server 'steer_push', meta.steer, no optimistic
       // flag) against the optimistic bubble that steer() added client-side
@@ -2279,6 +2392,10 @@ const chatSlice = createSlice({
       // trailing `streaming` row, so a late redelivery of an OLD assistant frame
       // would clobber the live content of a NEW segment already streaming.
       if (isRedeliveredMessage(state.messages, effectiveMeta)) { state._redeliveredFramesDropped += 1; return }
+      // A turn-consuming frame makes a pending stateless question card stale —
+      // placed after the redelivery guard so a replayed frame cannot clear a
+      // live card (see dropStaleStatelessQuestion).
+      dropStaleStatelessQuestion(state, slot, role)
       // Tool call — update state, insert before streaming message
       if (role === 'tool') {
         state.slotState = 'tool_running'
@@ -2753,7 +2870,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, retireStatelessQuestion, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
