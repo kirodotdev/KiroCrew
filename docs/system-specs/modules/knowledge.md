@@ -193,11 +193,25 @@ so `knowledge.doc_ingest_hosts` — whose default is `[]` = deny-all — must NO
 path, or the feature would ingest nothing on a default config while its toggle read on.
 
 **Chunk budget.** `folder_watcher._do_scan` orders discovered files newest-first
-unconditionally and stops once a sweep has ingested `knowledge.auto_ingest_chunk_budget`
-chunks. Files not reached keep (or lack) their `folder_file_state` row, so the next sweep
-resumes from them — the existing `status` column already carries the resume point.
-Applied only to auto-registered sources: a folder the user added by hand is a folder they
-asked for in full.
+unconditionally and stops once a sweep has ingested its budget of chunks. Files not
+reached keep (or lack) their `folder_file_state` row, so the next sweep resumes from
+them — the existing `status` column already carries the resume point. Every folder
+source is budgeted: `knowledge.auto_ingest_chunk_budget` for an auto-registered one,
+`knowledge.folder_ingest_chunk_budget` (resolved by `folder_watcher.folder_chunk_budget`,
+overridable per source via a `chunk_budget` property, 0 = unbounded) for one the user
+added by hand. A hand-added folder still gets ingested in full; the budget only decides
+how fast. It applies to the confirm- and resume-triggered scans as well as the sweep,
+because the confirm scan is the largest burst — nothing is ingested yet, so every
+discovered file is new.
+
+**Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
+anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
+`estimated_llm_calls` and `chunk_budget_per_sweep` alongside the
+`pending_confirmation` status. The walk uses `folder_watcher.walk_filters`, the same
+filter set the sweep applies, so the count describes the files that would actually be
+ingested. The chunk figure is derived from the chunker's target size and file bytes
+(`_estimated_chunks`), never measured: it exists to show order of magnitude before the
+user confirms, and no code path treats it as a bound.
 
 ## 3. LLMPool workers (`llm_pool.py`)
 

@@ -1362,6 +1362,7 @@
         "auto_add_documents": true,
         "auto_register_project_docs": true,
         "auto_ingest_chunk_budget": 150,
+        "folder_ingest_chunk_budget": 300,
         "dedup_every_n_sweeps": 12,
         "doc_ingest_hosts": [],
         "auto_discover_folder": false,
@@ -1508,10 +1509,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto-Ingest Chunk Budget",
-      "help": "Chunks an automatically-registered source may ingest per watcher sweep. Each chunk costs one LLM extraction call, so this is what actually bounds the cost of auto-registration -- file filters bound pollution, not spend. Newest documents land first and the rest trickle in on later sweeps, so a new project never arrives as a burst. 0 removes the bound. Folders you add by hand are never budgeted: you asked for the whole folder.",
+      "help": "Chunks an automatically-registered source may ingest per watcher sweep. Each chunk costs one LLM extraction call, so this is what actually bounds the cost of auto-registration -- file filters bound pollution, not spend. Newest documents land first and the rest trickle in on later sweeps, so a new project never arrives as a burst. 0 removes the bound.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 150
+    },
+    {
+      "path": "knowledge.folder_ingest_chunk_budget",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Folder Ingest Chunk Budget",
+      "help": "Chunks a folder you add by hand may ingest per watcher sweep. Adding a source-code repository discovers thousands of files, and each chunk costs an LLM extraction call on a pool of billed sessions, so an unpaced first scan can spend a large amount unattended. Nothing is skipped: newest files land first and the rest continue on later sweeps. Higher than the auto-ingest budget because you asked for the folder explicitly. 0 removes the bound; a per-source chunk_budget property overrides it for one folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300
     },
     {
       "path": "knowledge.dedup_every_n_sweeps",
@@ -1621,7 +1636,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Triggered",
-      "help": "Maximum number of skills to load per message (≥0). Defaults to 0 (disabled); set to a positive integer to re-enable per-turn trigger matching.",
+      "help": "Maximum number of skills a single message may flag as relevant (≥0). Each match injects that skill's full content, unless the skill sets inject_on_trigger: false (pointer-only; requires max_triggered > 0 to have any effect). Defaults to 0 (disabled): the agent discovers skills from the Available Skills index and reads them on demand via cat, $skillname, or skill_search. Set to a positive integer to re-enable per-turn word-overlap trigger matching.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0

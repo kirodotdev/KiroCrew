@@ -1584,8 +1584,21 @@ class KnowledgeConfig:
             "actually bounds the cost of auto-registration -- file filters bound "
             "pollution, not spend. Newest documents land first and the rest "
             "trickle in on later sweeps, so a new project never arrives as a "
-            "burst. 0 removes the bound. Folders you add by hand are never "
-            "budgeted: you asked for the whole folder.",
+            "burst. 0 removes the bound.",
+        ),
+    )
+    folder_ingest_chunk_budget: int = field(
+        default=300,
+        metadata=_meta(
+            "Folder Ingest Chunk Budget",
+            "Chunks a folder you add by hand may ingest per watcher sweep. Adding "
+            "a source-code repository discovers thousands of files, and each "
+            "chunk costs an LLM extraction call on a pool of billed sessions, so "
+            "an unpaced first scan can spend a large amount unattended. Nothing "
+            "is skipped: newest files land first and the rest continue on later "
+            "sweeps. Higher than the auto-ingest budget because you asked for the "
+            "folder explicitly. 0 removes the bound; a per-source chunk_budget "
+            "property overrides it for one folder.",
         ),
     )
     dedup_every_n_sweeps: int = field(
@@ -4746,6 +4759,8 @@ class KiroCrewConfig:
                     knowledge_data.get("auto_register_project_docs", True)),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
                     knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
+                folder_ingest_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("folder_ingest_chunk_budget", 300), 300),
                 dedup_every_n_sweeps=_safe_nonnegative_int(
                     knowledge_data.get("dedup_every_n_sweeps", 12), 12),
                 doc_ingest_hosts=[

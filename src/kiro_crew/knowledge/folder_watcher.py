@@ -6,14 +6,17 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
+from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
 from .ingestion import DUPLICATE_JOB_STATUS
 from .readers import FileReader
@@ -116,10 +119,133 @@ def _within(candidate: str, base: str) -> bool:
 
 
 def _prop_int(value: object) -> int:
-    """Coerce a non-negative integer source property; 0 when absent or unusable."""
+    """Coerce a non-negative integer source property; 0 when absent or unusable.
+
+    Floats are accepted because a source may already carry one, but a non-finite
+    one is not: ``inf`` (which is what ``1e309`` parses to) survives a ``> 0``
+    test and then raises in ``int()``.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
     return int(value) if value > 0 else 0
+
+
+#: Per-source property that overrides the configured folder budget. Separate from
+#: the config knob so one oversized folder can be paced harder (or, at 0, let run
+#: unbounded) without changing the default every other folder gets.
+CHUNK_BUDGET_PROP = "chunk_budget"
+
+
+def walk_filters(props: dict, source_type: str = "local_folder") -> dict:
+    """``FolderWatcher._walk`` keyword arguments for a source's properties.
+
+    Shared with any caller that walks a folder outside a scan -- the add-source
+    preview does -- so the files it counts are the files a sweep would take. A
+    looser set there reports a count for files the scan then skips.
+    """
+    return {
+        "ignore_patterns": props.get("ignore_patterns", []),
+        "extra_skip_dirs": (SOURCE_TYPE_SKIP_DIRS.get(source_type, set())
+                            | _prop_str_set(props.get("extra_skip_dirs"))),
+        "include_extensions": _prop_extensions(props.get("include_extensions")),
+        "min_size": _prop_int(props.get("min_file_bytes")),
+        "confine_to_root": bool(props.get("confine_to_root")),
+    }
+
+
+def folder_chunk_budget(props: dict) -> int | None:
+    """Chunks a hand-added folder source may ingest in one sweep; ``None`` = unbounded.
+
+    Ingestion costs one LLM extraction call per chunk plus one summary call per
+    file, on a pool of billed sessions, so an unpaced first scan of a source-code
+    repository spends real money in minutes with nobody watching. The budget does
+    not drop any file: the scan takes newest-first until the budget is reached and
+    the rest resume on the next sweep from their ``folder_file_state`` rows.
+
+    A per-source ``chunk_budget`` of 0 means "no bound" -- the explicit opt-out for
+    a user who does want the whole folder in one burst. Absent, the configured
+    default applies, and a configured 0 likewise removes the bound.
+
+    ``properties`` is user-editable JSON reachable from the add-source request
+    body, so an override of any other shape -- a float (``1e309`` parses to
+    ``inf``, whose ``int()`` raises), a bool (an ``int`` subclass, so ``True``
+    would read as a budget of 1), a string, a negative -- means "use the
+    configured default" rather than an error. Nothing here may raise: this runs
+    inside a request handler and inside a sweep, where a raise is a 500 or a
+    skipped scan instead of a paced one.
+    """
+    override = props.get(CHUNK_BUDGET_PROP)
+    if isinstance(override, int) and not isinstance(override, bool) and override >= 0:
+        return override or None
+    try:
+        configured = int(KiroCrewConfig.load().knowledge.folder_ingest_chunk_budget)
+    except Exception:
+        # Read per call so the knob is live, matching the rest of the watcher.
+        logger.debug("Could not read folder_ingest_chunk_budget", exc_info=True)
+        return None
+    return max(0, configured) or None
+
+
+#: Average bytes per whitespace-separated word, including the separator.
+_BYTES_PER_WORD = 6
+
+
+def _estimated_chunks(size: int) -> int:
+    """Chunks the chunker would produce for a file of *size* bytes.
+
+    Derived from the chunker's own target rather than measured: a chunk targets
+    ``CHUNK_TOKEN_SIZE`` tokens, ``_word_count`` approximates 1.3 tokens per word,
+    and prose averages roughly ``_BYTES_PER_WORD`` bytes per word including its
+    separator. Reading and chunking every file to be exact would cost the walk
+    what the scan itself costs, and this number exists to show a user the order of
+    magnitude before they commit -- so it is an estimate, never a bound the scan
+    enforces.
+    """
+    words_per_chunk = max(1, int(CHUNK_TOKEN_SIZE / 1.3))
+    chunks = -(-max(size, 1) // (words_per_chunk * _BYTES_PER_WORD))
+    return min(chunks, MAX_CHUNKS_PER_FILE)
+
+
+def max_files_prop(props: dict) -> int:
+    """A source's ``max_files`` cap, falling back to :data:`DEFAULT_MAX_FILES`.
+
+    Coerced because ``properties`` is user-editable JSON and the value is used in
+    arithmetic; a non-positive, non-numeric or non-finite entry means "unset", not
+    "cap at 0". ``inf`` has to be excluded explicitly -- it passes a ``> 0`` test
+    and then raises in ``int()``.
+    """
+    value = props.get("max_files", DEFAULT_MAX_FILES)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return DEFAULT_MAX_FILES
+    if isinstance(value, float) and not math.isfinite(value):
+        return DEFAULT_MAX_FILES
+    return int(value)
+
+
+def estimate_scan_cost(discovered: list[tuple[str, float]], *,
+                       max_files: int = DEFAULT_MAX_FILES) -> dict:
+    """What a first full scan of *discovered* would cost, in files and LLM calls.
+
+    Mirrors the sweep's own newest-first ordering and file cap so the numbers
+    describe the files that would actually be ingested, not everything the walk
+    saw. ``llm_calls`` counts one extraction call per chunk plus the per-file
+    source-summary call.
+    """
+    ordered = sorted(discovered, key=lambda f: f[1], reverse=True)
+    capped = max(0, len(ordered) - max_files)
+    ordered = ordered[:max_files]
+    chunks = 0
+    for path, _ in ordered:
+        try:
+            chunks += _estimated_chunks(os.path.getsize(path))
+        except OSError:
+            # A file that vanished between the walk and this stat contributes
+            # nothing; the scan will not find it either.
+            continue
+    return {"files": len(ordered), "capped": capped, "chunks": chunks,
+            "llm_calls": chunks + len(ordered)}
 
 
 class FolderWatcher:
@@ -134,9 +260,9 @@ class FolderWatcher:
         """Scan a folder source. Returns {new, changed, deleted, skipped, capped}.
 
         ``chunk_budget`` stops the scan once that many chunks have been ingested
-        in THIS sweep, leaving the rest for later sweeps. It is passed only for
-        auto-registered sources: a folder the user added by hand is a folder they
-        asked for in full, so it keeps the unbounded behaviour.
+        in THIS sweep, leaving the rest for later sweeps. ``None`` is unbounded.
+        Callers resolve the value: :func:`folder_chunk_budget` for a hand-added
+        folder, ``knowledge.auto_ingest_chunk_budget`` for an auto-registered one.
         """
         source_id = source["id"]
         if source_id not in self._locks:
@@ -155,18 +281,11 @@ class FolderWatcher:
             return {"error": f"Directory not found: {uri}"}
 
         max_files = props.get("max_files", DEFAULT_MAX_FILES)
-        ignore_patterns = props.get("ignore_patterns", [])
         source_type = source.get("source_type", "local_folder")
-        extra_skip_dirs = SOURCE_TYPE_SKIP_DIRS.get(source_type, set()) | _prop_str_set(
-            props.get("extra_skip_dirs"))
-        include_extensions = _prop_extensions(props.get("include_extensions"))
-        min_file_bytes = _prop_int(props.get("min_file_bytes"))
-        confine_to_root = bool(props.get("confine_to_root"))
+        filters = walk_filters(props, source_type)
 
         # 1. Discover files
-        discovered = await asyncio.to_thread(
-            self._walk, uri, ignore_patterns, extra_skip_dirs,
-            include_extensions, min_file_bytes, confine_to_root)
+        discovered = await asyncio.to_thread(self._walk, uri, **filters)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}

@@ -23,8 +23,9 @@ pins the two against each other so they cannot drift.
 Measured on the Kiro Crew tree: 2706 walked files, 277 with a document
 extension, 165 after the full filter -- 147 of those in the design/spec/
 reference corpus. File filters control POLLUTION; only a chunk budget controls
-COST (see ``knowledge.auto_ingest_chunk_budget``), because a handful of large
-documents dominate the chunk count.
+COST (``knowledge.auto_ingest_chunk_budget`` here,
+``knowledge.folder_ingest_chunk_budget`` for a folder the user adds by hand),
+because a handful of large documents dominate the chunk count.
 """
 
 from __future__ import annotations

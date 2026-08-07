@@ -1427,6 +1427,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_register_project_docs": {"type": "bool"},
     "knowledge.auto_ingest_artifacts": {"type": "bool"},
     "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
