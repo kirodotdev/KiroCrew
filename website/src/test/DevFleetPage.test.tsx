@@ -737,6 +737,84 @@ describe('DevFleetPage', () => {
     expect(menu.style.top).toBe('')
   })
 
+  /* ─── Pull+Build confirm popover: portal + flip ─── */
+  // The confirm popover used to be position:absolute inside the row, so the
+  // Worktrees Card's `.card-glow { overflow: hidden }` clipped it. It is now
+  // portaled to <body> with fixed positioning, like the row-actions menu.
+  async function openPullBuildConfirm() {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    fireEvent.click(trigger)
+    return { trigger, pop: await screen.findByRole('dialog') }
+  }
+
+  it('renders the Pull+Build confirm popover in a portal on document.body (escapes Card overflow)', async () => {
+    const { pop } = await openPullBuildConfirm()
+    // Portaled: a direct child of <body>, not nested inside the row Card whose
+    // overflow:hidden previously cut the popover off mid-render.
+    expect(pop.parentElement).toBe(document.body)
+    expect(pop.getAttribute('aria-label')).toBe('Pull + Build main')
+    expect(within(pop).getByText('Pulls main and rebuilds (~6 min). Does NOT restart.')).toBeInTheDocument()
+  })
+
+  it('Start inside the portaled confirm popover still fires the sync request', async () => {
+    const { pop } = await openPullBuildConfirm()
+    // The outside-click guard must exclude the portaled popover itself, or the
+    // mousedown preceding this click would close it before the click lands.
+    fireEvent.click(within(pop).getByText('Start'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      const urls = calls.map((c) => (typeof c[0] === 'string' ? c[0] : (c[0] as Request).url))
+      expect(urls.some((u) => u.includes('/sync'))).toBe(true)
+    })
+  })
+
+  it('outside-click and Escape close the portaled confirm popover', async () => {
+    const { trigger } = await openPullBuildConfirm()
+    fireEvent.mouseDown(document.body)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(trigger)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('confirm popover opens downward when there is room below', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: 100, bottom: 120, left: 400, right: 440, width: 40, height: 20, x: 400, y: 100, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const pop = await screen.findByRole('dialog') as HTMLElement
+    expect(pop.getAttribute('data-placement')).toBe('down')
+    expect(pop.style.position).toBe('fixed')
+    expect(pop.style.top).not.toBe('')
+    expect(pop.style.bottom).toBe('')
+  })
+
+  it('confirm popover flips upward when near the viewport bottom', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    // A row a few px above the bottom edge is exactly the case in the bug
+    // report: no room below, so the popover must flip up instead of being cut.
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: window.innerHeight - 8, bottom: window.innerHeight - 4, left: 400, right: 440, width: 40, height: 20, x: 400, y: window.innerHeight - 8, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const pop = await screen.findByRole('dialog') as HTMLElement
+    expect(pop.getAttribute('data-placement')).toBe('up')
+    expect(pop.style.bottom).not.toBe('')
+    expect(pop.style.top).toBe('')
+  })
+
   /* ─── Provision progress: expandable log panel + failure persistence ─── */
   // 'unprov' is the only non-main has_dist:false row, so it renders the single
   // "Provision" button. Provision polling uses real 2s sleeps, hence the
