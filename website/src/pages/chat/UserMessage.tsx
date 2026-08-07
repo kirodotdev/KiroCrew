@@ -209,7 +209,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           </motion.div>
         </>
       ) : bubble}
-      <div className="flex items-center gap-1.5 px-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300">
+      {/* Where the pointer cannot hover the footer is always visible and its
+          descendant overrides grow every action to a 40px touch target (20px
+          icon + 10px padding); hover-capable pointers keep the reveal-on-hover
+          behavior and the compact 14px icons untouched. */}
+      <div className="flex items-center gap-1.5 px-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 [@media(hover:none)]:opacity-100 [@media(hover:none)]:flex-wrap [@media(hover:none)]:[&_button]:p-2.5 [@media(hover:none)]:[&_svg]:h-5 [@media(hover:none)]:[&_svg]:w-5">
         <button
           onClick={() => {
             const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
