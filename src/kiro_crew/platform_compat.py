@@ -469,6 +469,101 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Process introspection
+# ---------------------------------------------------------------------------
+
+# Byte layout of the macOS ``proc_vnodepathinfo`` struct filled by
+# ``proc_pidinfo(PROC_PIDVNODEPATHINFO)``: two ``vnode_info_path`` records (the
+# process's cwd, then its root), each a fixed-size ``vnode_info`` header
+# followed by a NUL-terminated path of up to ``MAXPATHLEN``. Only the header
+# size matters to us, since it is the offset the cwd path starts at.
+_DARWIN_PROC_PIDVNODEPATHINFO = 9
+_DARWIN_VNODE_INFO_SIZE = 152
+_DARWIN_MAXPATHLEN = 1024
+_DARWIN_VNODE_INFO_PATH_SIZE = _DARWIN_VNODE_INFO_SIZE + _DARWIN_MAXPATHLEN
+_DARWIN_PROC_VNODEPATHINFO_SIZE = 2 * _DARWIN_VNODE_INFO_PATH_SIZE
+
+_darwin_libproc: Any = None
+_darwin_libproc_loaded = False
+
+
+def _darwin_libproc_handle() -> Any:
+    """Cached ``libproc`` handle, or None when it cannot be loaded.
+
+    Cached rather than opened per call because the cwd probe runs on a poll
+    cadence per open terminal, and a fresh ``CDLL`` would dlopen every time.
+    """
+    global _darwin_libproc, _darwin_libproc_loaded
+    if _darwin_libproc_loaded:
+        return _darwin_libproc
+    _darwin_libproc_loaded = True
+    try:
+        path = ctypes.util.find_library("proc")
+        if path is None:
+            return None
+        lib = ctypes.CDLL(path)
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        _darwin_libproc = lib
+    except Exception:
+        _darwin_libproc = None
+    return _darwin_libproc
+
+
+def _darwin_process_cwd(pid: int) -> str | None:
+    """macOS cwd of *pid* via ``libproc``, or None when it cannot be read.
+
+    Requires no entitlement for a same-uid process. The kernel reports how many
+    bytes it filled; anything other than the exact struct size means the layout
+    assumed by the offsets above no longer matches, so the answer is refused
+    rather than sliced out of the wrong place.
+    """
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_VNODEPATHINFO_SIZE)
+        filled = lib.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDVNODEPATHINFO,
+            0,
+            buf,
+            _DARWIN_PROC_VNODEPATHINFO_SIZE,
+        )
+        if filled != _DARWIN_PROC_VNODEPATHINFO_SIZE:
+            return None
+        raw = buf.raw[_DARWIN_VNODE_INFO_SIZE:_DARWIN_VNODE_INFO_PATH_SIZE]
+        cwd = raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+        return cwd or None
+    except Exception:
+        return None
+
+
+def process_cwd(pid: int) -> str | None:
+    """Current working directory of *pid*, or None when no source can answer.
+
+    Never spawns a subprocess. Callers poll this per open terminal, where a
+    fork+exec of the whole gateway costs orders of magnitude more than the
+    answer is worth. ``/proc`` serves Linux; macOS goes to ``libproc``. Windows
+    and any host with neither source get None, leaving the caller to decide
+    whether a costlier fallback is warranted.
+    """
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    if sys.platform == "darwin":
+        return _darwin_process_cwd(pid)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Process termination / existence
 # ---------------------------------------------------------------------------
 

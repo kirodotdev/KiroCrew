@@ -150,6 +150,85 @@ class TestProcessHelpers:
         assert pc.process_matches(2_000_000_000, ("kiro-cli", "claude")) is False
 
 
+class TestProcessCwd:
+    """``process_cwd`` is polled per open terminal, so its contract is that it
+    answers from ``/proc`` or ``libproc`` and NEVER spawns a subprocess. The
+    macOS branch is exercised on every platform by faking the ``libproc``
+    handle, since the byte offsets it slices with are the risky part."""
+
+    def test_returns_own_cwd(self):
+        cwd = pc.process_cwd(os.getpid())
+        if cwd is None:
+            pytest.skip("no /proc and no libproc on this host")
+        assert os.path.samefile(cwd, os.getcwd())
+
+    def test_returns_none_for_unused_pid(self):
+        assert pc.process_cwd(2_000_000_000) is None
+
+    def test_never_spawns_a_subprocess(self, monkeypatch):
+        # The whole point of this helper: a fork+exec of the gateway per poll is
+        # what it exists to avoid, so a regression that reintroduces one here
+        # must fail loudly rather than just get slower.
+        def explode(*a, **k):
+            raise AssertionError("process_cwd must not spawn a subprocess")
+
+        monkeypatch.setattr(subprocess, "run", explode)
+        monkeypatch.setattr(subprocess, "Popen", explode)
+        pc.process_cwd(os.getpid())
+        pc.process_cwd(2_000_000_000)
+
+    @staticmethod
+    def _fake_libproc(path: bytes, *, filled: int | None = None):
+        """A libproc stand-in whose proc_pidinfo writes *path* at the cwd offset."""
+        size = pc._DARWIN_PROC_VNODEPATHINFO_SIZE
+
+        class _Lib:
+            def proc_pidinfo(self, pid, flavor, arg, buf, buffersize):
+                buf.raw = (
+                    b"\0" * pc._DARWIN_VNODE_INFO_SIZE
+                    + path
+                    + b"\0" * (size - pc._DARWIN_VNODE_INFO_SIZE - len(path))
+                )
+                return size if filled is None else filled
+
+        return _Lib()
+
+    def test_darwin_reads_the_path_at_the_cwd_offset(self, monkeypatch):
+        monkeypatch.setattr(
+            pc, "_darwin_libproc_handle", lambda: self._fake_libproc(b"/Users/u/proj"),
+        )
+        assert pc._darwin_process_cwd(4242) == "/Users/u/proj"
+
+    def test_darwin_refuses_a_short_write(self, monkeypatch):
+        # A byte count other than the exact struct size means the layout the
+        # offsets assume no longer matches the kernel's, so the path cannot be
+        # sliced out safely — the caller falls back instead of getting garbage.
+        monkeypatch.setattr(
+            pc,
+            "_darwin_libproc_handle",
+            lambda: self._fake_libproc(b"/Users/u/proj", filled=64),
+        )
+        assert pc._darwin_process_cwd(4242) is None
+
+    def test_darwin_refuses_an_error_return(self, monkeypatch):
+        monkeypatch.setattr(
+            pc, "_darwin_libproc_handle", lambda: self._fake_libproc(b"/x", filled=-1),
+        )
+        assert pc._darwin_process_cwd(4242) is None
+
+    def test_darwin_returns_none_without_libproc(self, monkeypatch):
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: None)
+        assert pc._darwin_process_cwd(4242) is None
+
+    def test_darwin_swallows_a_throwing_libproc(self, monkeypatch):
+        class _Boom:
+            def proc_pidinfo(self, *a):
+                raise OSError("nope")
+
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _Boom())
+        assert pc._darwin_process_cwd(4242) is None
+
+
 class TestFindListeningPids:
     def test_returns_list_of_ints_for_unused_port(self):
         # A very-high port nothing is bound to → empty list, never raises, on any OS.

@@ -2047,8 +2047,9 @@ class TestTerminalWsIntegration:
     @pytest.mark.asyncio
     async def test_submitted_line_invalidates_the_cwd_memo(self, monkeypatch, tmp_path):
         """A submitted line may be a `cd`, so it drops the completion route's cwd
-        memo; a keystroke that submits nothing leaves the memo intact (otherwise
-        every character typed would force a fresh cwd probe)."""
+        memo and re-arms the title poller; a keystroke that submits nothing
+        leaves the memo intact (otherwise every character typed would force a
+        fresh cwd probe)."""
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
@@ -2081,6 +2082,18 @@ class TestTerminalWsIntegration:
                 await ws.send_bytes(b"d /tmp\r")
                 await _drain_to_pong(ws)
                 assert sess.cwd_probe is None
+
+                # The submitted line is the one input that can change the cwd,
+                # so it re-arms the title poller directly rather than relying on
+                # the shell's echo to do it. Stop the PTY reader first, since
+                # that echo would otherwise re-arm the session either way and
+                # the assertion would prove nothing.
+                if sess.reader_task is not None:
+                    sess.reader_task.cancel()
+                sess.frames_dirty = False
+                await ws.send_bytes(b"cd /tmp\r")
+                await _drain_to_pong(ws)
+                assert sess.frames_dirty is True
 
                 await ws.close()
 
@@ -2550,6 +2563,50 @@ class TestSessionTitle:
             assert terminal._session_title(self._sess()) is None
 
 
+# ── one cwd probe per poll tick ──
+
+
+@pytest.mark.skipif(
+    terminal.platform_compat.IS_WINDOWS,
+    reason="the cwd/title probes are POSIX-only (os.tcgetpgrp, /proc, libproc); "
+    "both helpers return None on Windows",
+)
+class TestCwdProbeSharing:
+    """The title label and the cwd frame are two consumers of ONE answer: with no
+    foreground command the title is just the cwd's basename. On a host where
+    _proc_cwd has to fork lsof — no /proc and no libproc — asking twice per tick
+    is the entire cost of an otherwise idle terminal, so the session memo has to
+    collapse them into one probe."""
+
+    def test_memoizes_within_the_ttl(self):
+        sess = _make_session()
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal, "_proc_cwd", return_value="/tmp/a") as probe:
+            assert terminal._session_cwd(sess) == "/tmp/a"
+            assert terminal._session_cwd(sess) == "/tmp/a"
+        assert probe.call_count == 1
+
+    def test_reprobes_once_the_ttl_expires(self):
+        # The memo must not outlive one tick, or a `cd` would take two polls to
+        # show up in the tab title.
+        sess = _make_session()
+        sess.cwd_probe = (time.monotonic() - terminal._CWD_PROBE_TTL_S - 1, "/tmp/old")
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal, "_proc_cwd", return_value="/tmp/new") as probe:
+            assert terminal._session_cwd(sess) == "/tmp/new"
+        assert probe.call_count == 1
+
+    def test_title_and_cwd_frame_share_one_probe(self):
+        # Exactly the pair of calls one poll tick makes, in order.
+        sess = _make_session()
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch("os.tcgetpgrp", return_value=12345), \
+             patch.object(terminal, "_proc_cwd", return_value="/home/u/proj") as probe:
+            assert terminal._session_title(sess) == "proj"
+            assert terminal._session_cwd(sess) == "/home/u/proj"
+        assert probe.call_count == 1
+
+
 # ── poll_terminal_titles ──
 
 
@@ -2606,6 +2663,55 @@ class TestPollTerminalTitles:
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
             await terminal.poll_terminal_titles(self._app(sess))
         mock_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_does_not_probe_a_session_with_no_new_output(self):
+        # A shell cannot change directory or start a command without writing to
+        # the PTY, so a session that has produced nothing since its last probe
+        # cannot have gone stale. Probing it anyway is what made an idle
+        # terminal cost a forked lsof every second on hosts with no /proc.
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        sess.frames_dirty = False
+        with patch.object(terminal, "_session_title") as title, \
+             patch.object(terminal, "_session_cwd") as cwd, \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        title.assert_not_called()
+        cwd.assert_not_called()
+        ws.send_str.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disarms_itself_after_probing(self):
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+        with patch.object(terminal, "_session_title", return_value="vim"), \
+             patch.object(terminal, "_session_cwd", return_value="/tmp/x"), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        assert sess.frames_dirty is False
+
+    @pytest.mark.asyncio
+    async def test_output_landing_mid_probe_re_arms_the_session(self):
+        # The flag is cleared BEFORE the probe, so a write that lands while the
+        # probe is in flight is picked up on the next tick. Clearing it after the
+        # probe would swallow that write and freeze the title until some later,
+        # unrelated output happened to re-arm it.
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s1", ws=ws)
+
+        def output_lands_mid_probe(s):
+            s.frames_dirty = True  # what read_pty does on every PTY read
+            return "vim"
+
+        with patch.object(terminal, "_session_title", side_effect=output_lands_mid_probe), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles(self._app(sess))
+        assert sess.frames_dirty is True
 
     @pytest.mark.asyncio
     async def test_swallows_send_error(self):

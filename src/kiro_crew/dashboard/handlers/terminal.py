@@ -123,6 +123,15 @@ class _TerminalSession:
     # _session_cwd_cached). Cleared as soon as the client submits a line, since
     # that line may be the `cd` the memo would otherwise hide.
     cwd_probe: tuple[float, str | None] | None = None
+    # Whether the title/cwd poller still has anything to recompute. A shell
+    # cannot change directory, or start or finish a command, without writing to
+    # the PTY — so a session that has produced no output since the last probe
+    # cannot have gone stale, and probing it again would spend a process
+    # introspection call (a forked `lsof` where nothing cheaper answers) to
+    # re-derive a label it already has. Set on PTY output, on a submitted line,
+    # and on (re)connect, where the dedup markers are cleared and both frames
+    # must be pushed again.
+    frames_dirty: bool = True
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -193,14 +202,16 @@ _LSOF_PATHS = ("/usr/sbin/lsof", "/usr/bin/lsof")
 
 
 def _proc_cwd(pid: int) -> str | None:
-    """Current working directory of a process. Linux /proc first; on hosts
-    without /proc (macOS/BSD) falls back to `lsof -d cwd`, whose ``-Fn`` output
-    carries the path on an ``n``-prefixed line. Blocking (subprocess) — callers
-    must run this off the event loop (the title poller already does)."""
-    try:
-        return os.readlink(f"/proc/{pid}/cwd")
-    except OSError:
-        pass
+    """Current working directory of a process, or None if it cannot be read.
+
+    Prefers the subprocess-free sources (``/proc`` on Linux, ``libproc`` on
+    macOS) and only falls back to ``lsof -d cwd`` — whose ``-Fn`` output carries
+    the path on an ``n``-prefixed line — on a host where neither answers. That
+    fallback forks, so callers must still run this off the event loop.
+    """
+    cwd = platform_compat.process_cwd(pid)
+    if cwd is not None:
+        return cwd
     lsof = next((p for p in _LSOF_PATHS if os.path.isfile(p)), None)
     if not lsof:
         return None  # fail closed rather than resolve via PATH
@@ -217,22 +228,36 @@ def _proc_cwd(pid: int) -> str | None:
     return None
 
 
-def _session_cwd(sess: "_TerminalSession") -> str | None:
-    """Full current working directory of the session's shell, or None."""
-    if not platform_compat.IS_POSIX or sess.proc is None:
-        return None
-    return _proc_cwd(sess.proc.pid)
-
-
-# How long a completion request may reuse the previous cwd probe. Short enough
-# that `cd foo` followed immediately by a completion sees the new directory,
-# long enough that holding a key down does not spawn an lsof per keystroke
-# (_proc_cwd shells out on macOS, where there is no /proc).
+# How long a cwd probe may be reused. Short enough that `cd foo` followed
+# immediately by a completion sees the new directory, long enough that one poll
+# tick — which needs the cwd for both the title and the cwd frame — probes the
+# shell once rather than twice, and that holding a key down does not re-probe
+# per keystroke.
 _CWD_PROBE_TTL_S = 0.4
 
 
+def _session_cwd(sess: "_TerminalSession") -> str | None:
+    """Full current working directory of the session's shell, or None.
+
+    Memoized on the session for :data:`_CWD_PROBE_TTL_S`, because the answer has
+    two consumers a fraction of a millisecond apart (the title label and the cwd
+    frame) and on a host where ``_proc_cwd`` has to fork ``lsof`` the probe, not
+    the polling, is the cost that matters.
+    """
+    if not platform_compat.IS_POSIX or sess.proc is None:
+        return None
+    now = time.monotonic()
+    probe = sess.cwd_probe
+    if probe is not None and now - probe[0] < _CWD_PROBE_TTL_S:
+        return probe[1]
+    cwd = _proc_cwd(sess.proc.pid)
+    sess.cwd_probe = (now, cwd)
+    return cwd
+
+
 async def _session_cwd_cached(sess: "_TerminalSession") -> str | None:
-    """``_session_cwd`` with a short TTL memo, probed off the event loop.
+    """``_session_cwd`` probed off the event loop, skipping the executor hop
+    entirely on a memo hit.
 
     The title poller's ``sess.last_cwd`` is deliberately NOT reused here: it is
     refreshed on a 1 s cadence, so a completion issued right after a ``cd``
@@ -245,15 +270,21 @@ async def _session_cwd_cached(sess: "_TerminalSession") -> str | None:
         return probe[1]
     loop = asyncio.get_running_loop()
     cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+    # _session_cwd memoizes its own probes; this covers the branches where it
+    # returns without probing (no shell, non-POSIX host) so those do not re-hop
+    # to the executor on every keystroke.
     sess.cwd_probe = (now, cwd)
     return cwd
 
 
 def _session_title(sess: "_TerminalSession") -> str | None:
     """Best-effort "what is this terminal doing" label: the foreground command
-    name while one runs, else the shell's cwd basename. Linux /proc based;
-    returns None when it can't tell (client keeps its current title, so on
-    non-Linux hosts the tab simply stays at its cwd default)."""
+    name while one runs, else the shell's cwd basename. Returns None when it
+    can't tell (client keeps its current title, so a host that can resolve
+    neither source simply stays at the tab's cwd default).
+
+    The cwd goes through :func:`_session_cwd` rather than :func:`_proc_cwd` so
+    that deriving this label shares one probe with the poller's cwd frame."""
     if not platform_compat.IS_POSIX or sess.master_fd < 0 or sess.proc is None:  # wokeignore:rule=master
         return None
     try:
@@ -266,7 +297,7 @@ def _session_title(sess: "_TerminalSession") -> str | None:
         name = _proc_comm(fg)
         if name:
             return name
-    cwd = _proc_cwd(sess.proc.pid)
+    cwd = _session_cwd(sess)
     if cwd:
         return os.path.basename(cwd.rstrip("/")) or cwd
     return None
@@ -492,6 +523,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # markers so the next poll re-pushes both frames even when unchanged.
         existing.last_title = None
         existing.last_cwd = None
+        existing.frames_dirty = True
         sess = existing
         _sel().log_api_access(
             caller=caller,
@@ -633,6 +665,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 if not data:
                     break
                 sess.scrollback.extend(data)
+                sess.frames_dirty = True
                 if len(sess.scrollback) > _SCROLLBACK_MAX:
                     sess.scrollback = sess.scrollback[-_SCROLLBACK_MAX:]
                 if sess.ws and not sess.ws.closed:
@@ -668,6 +701,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 # the memo's TTL alone leaves a window where it would.
                 if b"\r" in msg.data or b"\n" in msg.data:
                     sess.cwd_probe = None
+                    sess.frames_dirty = True
             elif msg.type == web.WSMsgType.TEXT:
                 try:
                     ctrl = json.loads(msg.data)
@@ -1431,9 +1465,13 @@ async def reap_orphaned_terminals(app: web.Application) -> None:
 
 async def poll_terminal_titles(app: web.Application) -> None:
     """Background task: push a per-session title (foreground command name while
-    one runs, else the shell's cwd basename) to each connected terminal ~1/s,
-    and only when it changes. Fast commands that finish within the poll interval
-    never flip the title, so there's no flicker at the prompt."""
+    one runs, else the shell's cwd basename) and the shell's full cwd to each
+    connected terminal, on change only. Fast commands that finish within the
+    poll interval never flip the title, so there's no flicker at the prompt.
+
+    The cadence is an upper bound, not a rate: a session is only probed when it
+    has written to the PTY since its last probe, so a terminal idling at a
+    prompt costs nothing at all."""
     try:
         while True:
             await asyncio.sleep(1.0)
@@ -1445,11 +1483,19 @@ async def poll_terminal_titles(app: web.Application) -> None:
             for sess in list(registry.values()):
                 if sess is None or sess.ws is None or sess.ws.closed:
                     continue
+                if not sess.frames_dirty:
+                    continue
+                # Cleared BEFORE probing, never after: output landing while a
+                # probe is in flight must re-dirty the session so the next tick
+                # picks up the change instead of the flag swallowing it.
+                sess.frames_dirty = False
                 # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
-                # ioctl, /proc reads, lsof on macOS) that can wedge on a D-state
-                # process or a stuck fs; run them off the loop on the subprocess
-                # pool (same rationale as the os.close offload in _kill_session)
-                # so one stuck read can never freeze the gateway event loop.
+                # ioctl, /proc reads, lsof where nothing cheaper answers) that
+                # can wedge on a D-state process or a stuck fs; run them off the
+                # loop on the subprocess pool (same rationale as the os.close
+                # offload in _kill_session) so one stuck read can never freeze
+                # the gateway event loop. Both probes share one cwd lookup via
+                # the session's memo.
                 # The WS can detach (sess.ws = None) while an executor probe is
                 # in flight — capture + revalidate the socket after EACH hop so
                 # a disconnect can never AttributeError the singleton poller.
