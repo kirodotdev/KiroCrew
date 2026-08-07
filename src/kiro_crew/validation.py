@@ -1025,13 +1025,16 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
 # monitor_start creates an AutoNudge loop bound to the calling session (the
 # agent-facing "babysit this PR" primitive). message caps match the REST
 # endpoint's 8000-char limit; interval bounds mirror autonudge's
-# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp.
+# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. max_runtime_secs is the wall-clock
+# budget (0 = unlimited); the 7-day ceiling keeps a typo like 6e9 from arming
+# an effectively-unbounded loop while still covering week-long babysits.
 MONITOR_START_SCHEMA = ToolSchema(
     tool_name="monitor_start",
     fields=[
         FieldSpec("message", str, required=True, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
     ],
 )
 
@@ -1045,6 +1048,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("message", str, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
     ],
 )
 

@@ -54,7 +54,7 @@ async def api_autonudge_get(request: web.Request) -> web.Response:
 async def api_autonudge_start(request: web.Request) -> web.Response:
     """POST /api/autonudge — start or replace a loop on a slot.
 
-    Body: { slot_key, message, idle_secs?, max_cycles?, stop_sentinel_path? }
+    Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?, stop_sentinel_path? }
     """
     svc = _autonudge_get()
     if svc is None:
@@ -66,16 +66,28 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    # idle_secs/max_cycles come straight from the request body: int() raises
-    # ValueError on "abc" and TypeError on null/list, which would surface as a
-    # 500 instead of a 400. Coerce up front and reject bad input, matching the
-    # sibling handlers_instances.api_instances_add guard on the same pattern.
+    # idle_secs/max_cycles/max_runtime_secs come straight from the request
+    # body: int() raises ValueError on "abc", TypeError on null/list, and
+    # OverflowError on float("inf") (1e309 is legal JSON in aiohttp's parser),
+    # any of which would surface as a 500 instead of a 400. Non-integral
+    # floats are rejected rather than silently truncated (int(1.5) -> 1 would
+    # store a value the caller never asked for). Coerce up front and reject
+    # bad input, matching the sibling handlers_instances.api_instances_add
+    # guard on the same pattern.
     try:
+        for _name in ("idle_secs", "max_cycles", "max_runtime_secs"):
+            _val = body.get(_name)
+            if isinstance(_val, float) and not _val.is_integer():
+                return web.json_response(
+                    {"error": f"{_name} must be a whole number", "code": "not_a_whole_number"},
+                    status=400,
+                )
         idle_secs = int(body.get("idle_secs", 60))
         max_cycles = int(body.get("max_cycles", 0))
-    except (TypeError, ValueError):
+        max_runtime_secs = int(body.get("max_runtime_secs", 0))
+    except (TypeError, ValueError, OverflowError):
         return web.json_response(
-            {"error": "idle_secs and max_cycles must be integers"}, status=400
+            {"error": "idle_secs, max_cycles and max_runtime_secs must be integers"}, status=400
         )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
@@ -85,6 +97,7 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         idle_secs=idle_secs,
         max_cycles=max_cycles,
         stop_sentinel_path=(body.get("stop_sentinel_path") or ""),
+        max_runtime_secs=max_runtime_secs,
         source="dashboard",
         caller=request.remote or "",
     )
@@ -116,6 +129,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         idle_secs=body.get("idle_secs"),
         max_cycles=body.get("max_cycles"),
         active=body.get("active"),
+        max_runtime_secs=body.get("max_runtime_secs"),
         source="dashboard",
         caller=request.remote or "",
     )

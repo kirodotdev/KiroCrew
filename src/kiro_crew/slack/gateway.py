@@ -52,6 +52,7 @@ from kiro_crew.autonudge import (
 from kiro_crew.autonudge import enabled as autonudge_enabled
 from kiro_crew.autonudge import (
     is_channel_key,
+    runtime_budget_exceeded,
 )
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config import KiroCrewConfig
@@ -3301,6 +3302,7 @@ class GatewayOrchestrator:
                             "message": loop.message,
                             "idle_secs": loop.idle_secs,
                             "max_cycles": loop.max_cycles,
+                            "max_runtime_secs": loop.max_runtime_secs,
                             "cycle_count": loop.cycle_count,
                             "active": loop.active,
                             "last_fire_ts": loop.last_fire_ts,
@@ -3313,14 +3315,17 @@ class GatewayOrchestrator:
         await self.autonudge_svc.start()
 
     def _notify_nudge_expired(self, loop: NudgeLoop) -> None:
-        """Notify the user that a monitoring loop stopped at its cycle cap.
+        """Notify the user that a monitoring loop stopped at a terminal bound.
 
-        Reaching ``max_cycles`` is a runaway backstop, not a finish line: the
-        loop stopped with its goal possibly unmet. Without this the only
-        signals were a log line and an ``active=False`` state change that looks
-        identical to a manual Stop, so a loop that ran out of cycles was
-        indistinguishable from the agent stopping on its own — the most
-        confusing failure mode of the babysit feature.
+        Reaching ``max_cycles`` or spending ``max_runtime_secs`` is a runaway
+        backstop, not a finish line: the loop stopped with its goal possibly
+        unmet. Without this the only signals were a log line and an
+        ``active=False`` state change that looks identical to a manual Stop, so
+        a loop that ran out of cycles was indistinguishable from the agent
+        stopping on its own — the most confusing failure mode of the babysit
+        feature. The wording distinguishes WHICH bound fired via the same
+        ``runtime_budget_exceeded`` predicate ``_timer`` enforces with; when
+        both are exhausted the cycle cap wins, matching the enforcement order.
 
         Best-effort by construction: ``notify()`` never raises (it swallows
         validation errors and logs), and the whole call is wrapped anyway
@@ -3338,17 +3343,25 @@ class GatewayOrchestrator:
             # Dashboard loops bind on the BARE slot key, so re-qualify those to
             # get a working jump-to-source slot link.
             meta = None if is_channel_key(key) else self._notif_meta(f"dashboard:{key}")
-            self.dashboard_state.notify(
-                "agent",
-                "Monitoring loop hit its cycle cap",
-                (
+            capped_out = loop.max_cycles and loop.cycle_count >= loop.max_cycles
+            if not capped_out and runtime_budget_exceeded(loop):
+                title = "Monitoring loop spent its time budget"
+                body = (
+                    f"The loop stopped after {loop.cycle_count} cycles because "
+                    f"its {loop.max_runtime_secs}s wall-clock budget ran out "
+                    "without it reporting done, so its goal may still be "
+                    "unmet. Restart it from the goal popover, or ask the agent "
+                    "to raise the budget (monitor_update)."
+                )
+            else:
+                title = "Monitoring loop hit its cycle cap"
+                body = (
                     f"The loop stopped after {loop.cycle_count} of "
                     f"{loop.max_cycles} cycles without reporting done, so its "
                     "goal may still be unmet. Reopen the goal popover to raise "
                     "the cap or restart it."
-                ),
-                meta=meta,
-            )
+                )
+            self.dashboard_state.notify("agent", title, body, meta=meta)
         except Exception:
             logger.debug("AutoNudge expiry notification failed", exc_info=True)
 

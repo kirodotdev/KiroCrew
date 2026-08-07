@@ -148,6 +148,7 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         return "monitor_start is not supported from this session type."
     idle_secs = int(args.get("idle_secs") or 300)
     max_cycles = int(args.get("max_cycles") or 0)
+    max_runtime_secs = int(args.get("max_runtime_secs") or 0)
     loop, error, _status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
@@ -156,12 +157,15 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         idle_secs=idle_secs,
         max_cycles=max_cycles,
         stop_sentinel_path="",
+        max_runtime_secs=max_runtime_secs,
         source="mcp-directive",
         caller="session-directive",
     )
     if error is not None:
         return f"Failed to start monitor loop: {error}"
     cap = f", stopping after {max_cycles} cycles" if max_cycles else ", with NO cycle cap"
+    if max_runtime_secs:
+        cap += f", wall-clock budget {max_runtime_secs}s"
     return (
         f"Monitor loop {getattr(loop, 'id', '?')} started on this session: the "
         f"message re-injects {idle_secs}s after each turn ENDS (idle gap){cap}. "
@@ -195,22 +199,63 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
             f"delivered cycle count ({cycle_count}), so it would deactivate "
             "without firing again. Pass a larger cap, or 0 for unlimited."
         )
+    # Spent-budget guard, same shape as the cycle-cap one: a wall-clock budget
+    # at/below the loop's elapsed age deactivates it on the next timer without
+    # another fire — refuse rather than promise a wake that never comes.
+    if "max_runtime_secs" in patch:
+        new_budget = int(patch["max_runtime_secs"] or 0)
+        created_ts = float(getattr(loop, "created_ts", 0.0) or 0.0)
+        elapsed = int(time.time() - created_ts) if created_ts else 0
+        if new_budget and created_ts and elapsed >= new_budget:
+            raise _DirectiveDenied(
+                f"monitor_update: max_runtime_secs={new_budget} is at or below "
+                f"this loop's elapsed runtime ({elapsed}s since it was armed), "
+                "so it would deactivate without firing again. Pass a larger "
+                "budget, or 0 for unlimited."
+            )
     revived = False
     # Paused-loop protection: never silently resume unattended execution as a
-    # side effect of a metadata edit — revive ONLY a cap-stopped loop whose cap
-    # is actually being raised.
+    # side effect of a metadata edit — revive ONLY a loop stopped by one of its
+    # own terminal bounds whose stopping bound is actually being raised. Keyed
+    # on the PERSISTED ``stopped_reason`` recorded at deactivation time: the
+    # cycle-count heuristic stays only as a legacy fallback for stores written
+    # before the field existed, and the budget side has NO heuristic at all —
+    # elapsed time keeps growing after a manual pause, so "budget looks spent"
+    # cannot distinguish a pause from an expiry (GPT review on #2116: a
+    # budget raise must never resume a loop the user paused).
     if not getattr(loop, "active", True):
-        stopped_at_cap = current_cap > 0 and cycle_count >= current_cap
+        reason = str(getattr(loop, "stopped_reason", "") or "")
+        stopped_at_cap = reason == "cycle_cap" or (
+            not reason and current_cap > 0 and cycle_count >= current_cap
+        )
         raising_cap = "max_cycles" in patch and (new_cap == 0 or new_cap > current_cap)
+        stopped_at_budget = reason == "runtime_budget"
+        # A budget-raise passed the spent-budget guard above, so any budget in
+        # the patch here is beyond the loop's elapsed age (or 0 = unlimited).
+        raising_budget = "max_runtime_secs" in patch
         if stopped_at_cap and raising_cap:
             patch["active"] = True
             revived = True
+        elif stopped_at_budget and raising_budget:
+            patch["active"] = True
+            revived = True
         else:
+            # Name the bound that actually stopped the loop, so the remedy in
+            # the message is the one that will work.
+            if stopped_at_budget:
+                bound = (
+                    f"its {int(getattr(loop, 'max_runtime_secs', 0) or 0)}s wall-clock "
+                    "budget ran out; raise max_runtime_secs above the loop's age "
+                    "(or pass 0)"
+                )
+            elif stopped_at_cap:
+                bound = "it hit its cycle cap; raise max_cycles above the cap (or pass 0)"
+            else:
+                bound = "it was paused manually; ask the user, or use monitor_start"
             raise _DirectiveDenied(
                 f"Monitor loop {loop.id} is PAUSED (cycle {cycle_count}"
                 + (f" of {current_cap}" if current_cap else ", no cap")
-                + "). monitor_update will not resume a paused loop as a side "
-                "effect: raise max_cycles above the cap, or use monitor_start."
+                + f"). monitor_update will not resume it as a side effect: {bound}."
             )
     _new_loop, error, _status = await authorize_and_update_nudge(
         svc=svc,
@@ -219,6 +264,7 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
         idle_secs=patch.get("idle_secs"),
         max_cycles=patch.get("max_cycles"),
         active=patch.get("active"),
+        max_runtime_secs=patch.get("max_runtime_secs"),
         source="mcp-directive",
         caller="session-directive",
     )
@@ -227,7 +273,7 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
     fields = ", ".join(sorted(k for k in patch if k != "active"))
     return (
         f"Monitor loop {loop.id} updated on this session ({fields})."
-        + (" The cap-stopped loop has been re-armed." if revived else "")
+        + (" The stopped loop has been re-armed." if revived else "")
     )
 
 

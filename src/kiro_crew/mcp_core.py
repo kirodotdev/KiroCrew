@@ -1635,6 +1635,22 @@ def _list_tools() -> list[dict[str, Any]]:
                             "condition is never recognised runs forever"
                         ),
                     },
+                    "max_runtime_secs": {
+                        "type": "integer",
+                        "description": (
+                            "Wall-clock budget in seconds, measured from when "
+                            "the loop is armed (0 = unlimited, the default; "
+                            "max 604800 = 7 days). Unlike max_cycles this "
+                            "bounds elapsed TIME, so a loop with slow turns or "
+                            "a long idle gap still stops on schedule. The "
+                            "budget gates when turns START and re-checks the "
+                            "moment a turn ends — an already-running turn is "
+                            "never cancelled, so the loop can overshoot by at "
+                            "most one turn (itself bounded by the per-turn "
+                            "transport timeout). When the budget is spent the "
+                            "loop deactivates and the user is notified"
+                        ),
+                    },
                 },
                 "required": ["message"],
             },
@@ -1675,6 +1691,14 @@ def _list_tools() -> list[dict[str, Any]]:
                             "New cap on delivered cycles; raise it when a loop "
                             "is close to its cap but the work is still live. "
                             "Omit to leave unchanged"
+                        ),
+                    },
+                    "max_runtime_secs": {
+                        "type": "integer",
+                        "description": (
+                            "New wall-clock budget in seconds, measured from "
+                            "when the loop was first armed (0 = unlimited, max "
+                            "604800 = 7 days). Omit to leave unchanged"
                         ),
                     },
                 },
@@ -5478,9 +5502,18 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # (explicit unlimited) is still honoured for callers that mean it.
         raw_max = args.get("max_cycles")
         max_cycles = _MONITOR_DEFAULT_MAX_CYCLES if raw_max is None else int(raw_max)
+        # Wall-clock budget: opt-in (0 = unlimited). The cycle-cap default is
+        # the runaway backstop; the runtime budget is for callers that need a
+        # hard TIME bound (e.g. "babysit this for at most 2 hours").
+        max_runtime_secs = int(args.get("max_runtime_secs") or 0)
         return session_directive.encode(
             "monitor_start",
-            {"message": message, "idle_secs": interval_secs, "max_cycles": max_cycles},
+            {
+                "message": message,
+                "idle_secs": interval_secs,
+                "max_cycles": max_cycles,
+                "max_runtime_secs": max_runtime_secs,
+            },
             (
                 "Monitor loop requested on this session: the message will "
                 f"re-inject {interval_secs}s after each turn ENDS (idle gap)"
@@ -5488,6 +5521,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     f", stopping after {max_cycles} cycles"
                     if max_cycles
                     else ", with NO cycle cap"
+                )
+                + (
+                    f", wall-clock budget {max_runtime_secs}s"
+                    if max_runtime_secs
+                    else ""
                 )
                 + ". End your turn now; once the loop is armed it wakes you on "
                 "that idle gap — but arming happens when this turn's result is "
@@ -5522,13 +5560,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             patch["idle_secs"] = int(args["interval_secs"])
         if args.get("max_cycles") is not None:
             patch["max_cycles"] = int(args["max_cycles"])
+        if args.get("max_runtime_secs") is not None:
+            patch["max_runtime_secs"] = int(args["max_runtime_secs"])
         if not patch:
             sel().log_tool_invocation(
                 session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
             )
             return (
                 "monitor_update: nothing to change — pass at least one of "
-                "message, interval_secs, max_cycles."
+                "message, interval_secs, max_cycles, max_runtime_secs."
             )
         return session_directive.encode(
             "monitor_update",

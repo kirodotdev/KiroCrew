@@ -192,6 +192,250 @@ async def test_unlimited_loop_never_expires(svc, monkeypatch):
     assert svc._loops[loop.id].active is True
 
 
+def test_runtime_budget_exceeded_predicate():
+    """Direct contract of the shared predicate: 0 = unlimited, missing
+    created_ts never trips (no anchor to measure from), boundary is >=."""
+    from kiro_crew.autonudge import runtime_budget_exceeded
+
+    base = NudgeLoop(id="x", slot_key="s", message="m", created_ts=1000.0)
+    # No budget → never exceeded, however old the loop is.
+    base.max_runtime_secs = 0
+    assert runtime_budget_exceeded(base, now=1e12) is False
+    # Budget set, not yet elapsed.
+    base.max_runtime_secs = 100
+    assert runtime_budget_exceeded(base, now=1099.9) is False
+    # Boundary: exactly spent counts as exceeded.
+    assert runtime_budget_exceeded(base, now=1100.0) is True
+    assert runtime_budget_exceeded(base, now=5000.0) is True
+    # Malformed/legacy entry with no created_ts must never trip — guessing an
+    # anchor could kill a healthy loop on its first post-upgrade cycle.
+    orphan = NudgeLoop(id="y", slot_key="s", message="m", created_ts=0.0, max_runtime_secs=1)
+    assert runtime_budget_exceeded(orphan, now=1e12) is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_budget_deactivates_and_emits_expired(svc, monkeypatch):
+    """A spent wall-clock budget stops the loop BEFORE it buys another turn,
+    with the same terminal treatment as the cycle cap: deactivate (not
+    remove) + ``expired`` so the user-visible notification fires."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
+    await svc.start()
+    # _on_fire stays None during add() so the initially-armed (no-op sleep)
+    # timer delivers nothing; drain it before wiring the counting callback.
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=60)
+    await svc._timers[loop.id]
+    svc._on_fire = on_fire
+    loop.created_ts = loop.created_ts - 120  # backdate: budget already spent
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert ("expired", loop.id) in events, f"no expired event emitted; got {events}"
+    refreshed = svc._loops[loop.id]
+    assert not refreshed.active
+    assert fired == [], "a spent budget must not buy one more unattended turn"
+
+
+@pytest.mark.asyncio
+async def test_runtime_budget_unspent_fires_normally(svc, monkeypatch):
+    """A loop within its budget behaves exactly like an unbudgeted one."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    svc._on_fire = on_fire
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    await svc.start()
+    loop = await svc.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=86400
+    )
+    await svc._timers[loop.id]
+    assert len(fired) == 1
+    assert "expired" not in events
+    assert svc._loops[loop.id].active is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_budget_zero_is_unlimited(svc, monkeypatch):
+    """max_runtime_secs=0 means unlimited — an arbitrarily old loop still fires."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    await svc.start()
+    # _on_fire stays None during add() so the initially-armed (no-op sleep)
+    # timer delivers nothing; drain it before wiring the counting callback.
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=0)
+    await svc._timers[loop.id]
+    svc._on_fire = on_fire
+    loop.created_ts = 1.0  # epoch-old loop
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert len(fired) == 1
+    assert svc._loops[loop.id].active is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_budget_persists_across_restart(tmp_path):
+    """The budget must survive a gateway restart WITHOUT resetting its clock:
+    both max_runtime_secs and the created_ts anchor round-trip the store."""
+    svc1 = AutoNudgeService(base_dir=tmp_path)
+    await svc1.start()
+    loop = await svc1.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=3600
+    )
+    created = svc1._loops[loop.id].created_ts
+    svc1.stop()
+
+    svc2 = AutoNudgeService(base_dir=tmp_path)
+    await svc2.start()
+    restored = svc2._loops[loop.id]
+    assert restored.max_runtime_secs == 3600
+    assert restored.created_ts == created
+    svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_stopped_reason_records_why_and_clears_on_revival(svc, monkeypatch):
+    """The store records WHY a loop deactivated: _timer's terminal bounds tag
+    'cycle_cap'/'runtime_budget', a plain update(active=False) tags 'manual',
+    and any revival clears the tag. This is what lets revival logic refuse to
+    resume a manual pause whose budget has since elapsed (GPT P1 on #2116)."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+    await svc.start()
+    # runtime_budget: backdated loop trips the budget in _timer.
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=60)
+    await svc._timers[loop.id]
+    svc._on_fire = None
+    loop.created_ts -= 120
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    assert svc._loops[loop.id].stopped_reason == "runtime_budget"
+    # Revival clears the tag (budget lifted in the same update so the re-armed
+    # timer does not immediately re-trip under the no-op sleep).
+    await svc.update(loop.id, active=True, max_runtime_secs=0)
+    assert svc._loops[loop.id].stopped_reason == ""
+    # Manual pause tags 'manual'.
+    await svc.update(loop.id, active=False)
+    assert svc._loops[loop.id].stopped_reason == "manual"
+    # cycle_cap: cap-stopped loop tags 'cycle_cap'.
+    loop2 = await svc.add(slot_key="chat-2-456", message="go", idle_secs=15, max_cycles=1)
+    loop2.cycle_count = 1
+    svc._cancel_timer(loop2.id)
+    await svc._timer(loop2)
+    assert svc._loops[loop2.id].stopped_reason == "cycle_cap"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_bound_deactivation_never_overwrites_a_manual_pause(svc):
+    """RACE (GPT P1 on #2116): user pauses right after the timer detects
+    expiry — the timer's in-flight bound-tagged update must degrade to a
+    no-op, not stamp 'runtime_budget' over the user's 'manual' (which would
+    make the paused loop budget-revivable)."""
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    # User pause lands first.
+    await svc.update(loop.id, active=False)
+    assert svc._loops[loop.id].stopped_reason == "manual"
+    # The timer's shielded update arrives second with the bound tag.
+    await svc.update(loop.id, active=False, stopped_reason="runtime_budget")
+    assert svc._loops[loop.id].stopped_reason == "manual", (
+        "a terminal bound must never overwrite an existing deactivation"
+    )
+    assert svc._loops[loop.id].active is False
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_budget_expiring_mid_turn_deactivates_post_delivery(svc, monkeypatch):
+    """GPT P1 on #2116: the budget gates turn STARTS and must not cancel an
+    in-flight turn — but once a slow turn ENDS with the budget spent, the loop
+    deactivates immediately (tagged runtime_budget, expired emitted) instead
+    of arming another idle cycle. Channel loops must not self-re-arm."""
+    import kiro_crew.autonudge as _an
+
+    async def _nosleep(_secs):
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _nosleep)
+
+    async def on_fire(loop):
+        # Simulate a turn so slow the budget expires while it runs.
+        loop.created_ts -= 120
+        return True
+
+    events: list[str] = []
+    svc.subscribe(lambda ev, lp: events.append(ev))
+    await svc.start()
+    # Channel-bound loop: exercises the self-re-arm path, which must be
+    # skipped after the post-delivery deactivation.
+    loop = await svc.add(
+        slot_key="slack:1700000000.1", message="go", idle_secs=15, max_runtime_secs=60
+    )
+    svc._on_fire = on_fire
+    svc._cancel_timer(loop.id)
+    await svc._timer(loop)
+    refreshed = svc._loops[loop.id]
+    assert refreshed.cycle_count == 1, "the in-flight turn itself is never cancelled"
+    assert refreshed.active is False, "spent budget takes effect the moment the turn ends"
+    assert refreshed.stopped_reason == "runtime_budget"
+    assert "expired" in events
+    assert loop.id not in svc._timers, "no further cycle may be armed"
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_changes_runtime_budget(svc):
+    """update() sets the budget, clamps negatives to 0, and leaves it
+    untouched when omitted."""
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    assert loop.max_runtime_secs == 0
+    updated = await svc.update(loop.id, max_runtime_secs=7200)
+    assert updated is not None and updated.max_runtime_secs == 7200
+    # Omitted → unchanged.
+    updated = await svc.update(loop.id, message="still going")
+    assert updated is not None and updated.max_runtime_secs == 7200
+    # Negative input clamps to 0 (unlimited), matching max_cycles semantics.
+    updated = await svc.update(loop.id, max_runtime_secs=-5)
+    assert updated is not None and updated.max_runtime_secs == 0
+    svc.stop()
+
+
 @pytest.mark.asyncio
 async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
     import kiro_crew.autonudge as _an
@@ -683,6 +927,46 @@ class TestAutonudgeStartIntCoercion:
                     json={"slot_key": "chat-1-123", "message": "go", "idle_secs": bad},
                 )
                 assert resp.status == 400, f"idle_secs={bad!r} gave {resp.status}"
+        fake_svc.add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_overflowing_budget_is_400_not_500(self, monkeypatch):
+        """1e309 is legal JSON that parses to float('inf'); int(inf) raises
+        OverflowError, which must map to 400 like every other bad number."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        fake_svc = MagicMock()
+        fake_svc.add = AsyncMock()
+        app = self._app(monkeypatch, fake_svc)
+        async with TestClient(TestServer(app)) as client:
+            for field in ("max_runtime_secs", "idle_secs", "max_cycles"):
+                resp = await client.post(
+                    "/api/autonudge",
+                    json={"slot_key": "chat-1-123", "message": "go", field: 1e309},
+                )
+                assert resp.status == 400, f"{field}=1e309 gave {resp.status}"
+        fake_svc.add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_budget_bounds_enforced_not_truncated(self, monkeypatch):
+        """The declared contract is 0..604800 and whole numbers: 604801 must be
+        refused (not stored), and 1.5 must be refused (not truncated to 1)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        fake_svc = MagicMock()
+        fake_svc.add = AsyncMock()
+        app = self._app(monkeypatch, fake_svc)
+        async with TestClient(TestServer(app)) as client:
+            for bad in (604801, -1, 1.5):
+                resp = await client.post(
+                    "/api/autonudge",
+                    json={"slot_key": "chat-1-123", "message": "go", "max_runtime_secs": bad},
+                )
+                assert resp.status == 400, f"max_runtime_secs={bad!r} gave {resp.status}"
         fake_svc.add.assert_not_awaited()
 
     @pytest.mark.asyncio
