@@ -1321,6 +1321,29 @@ Examples:
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)
+    tn_parser = sub.add_parser(
+        "tailnet", help="Publish this dashboard on your tailnet (Tailscale)"
+    )
+    tn_sub = tn_parser.add_subparsers(dest="tailnet_action")
+    for _tn_name, _tn_help in (
+        ("status", "Show whether the dashboard is published and trusted on your tailnet"),
+        ("up", "Publish the dashboard on your tailnet and trust its origin"),
+        ("down", "Stop publishing the dashboard on your tailnet"),
+    ):
+        _tn = tn_sub.add_parser(_tn_name, help=_tn_help)
+        # The escape hatch for when discovery cannot decide. Publishing has to front
+        # the port the gateway is ACTUALLY on: if the run marker is unreadable (or
+        # several gateways are up, where it deliberately refuses) the fallback is the
+        # configured port -- which, if the gateway moved because that port was taken,
+        # now belongs to some OTHER local service that would get exposed. Naming the
+        # port outranks every heuristic.
+        _tn.add_argument(
+            "--port",
+            type=int,
+            default=None,
+            help="Dashboard port to publish (default: discover the running gateway)",
+        )
+
     tel_parser = sub.add_parser("telemetry", help="Inspect or disable anonymous usage telemetry")
     tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
     tel_sub.add_parser(
@@ -2237,6 +2260,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         asyncio.run(_run_eval(args))
     elif args.command == "security":
         _security(args)
+    elif args.command == "tailnet":
+        _tailnet(args)
     elif args.command == "telemetry":
         _telemetry(args)
     elif args.command == "policy":
@@ -2320,6 +2345,7 @@ from kiro_crew.cli_commands import (  # noqa: E402
     _run_eval,
     _security,
     _spawn,
+    _tailnet,
     _telemetry,
 )
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
