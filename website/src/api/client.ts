@@ -839,6 +839,7 @@ export interface KiroPrerequisiteStatus {
    * a translated command cannot be typed.
    */
   login_command: string
+  sso_login_command: string
   setup_allowed: boolean
   /**
    * True when the CLI binary is present and executable but could not be

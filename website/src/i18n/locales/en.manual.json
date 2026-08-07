@@ -216,6 +216,7 @@
         },
         "prList": {
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Closed/merged PRs are capped at the 100 most recently updated — turn on a \"me\" filter for a complete, repo-wide search",
+          "loading_the_rest": "Loading the rest…",
           "re_fetch_from": "Re-fetch {{label}} from {{provider}}",
           "refresh": "Refresh {{label}}",
           "resolved_by_github_search_across_the_whole_repo": "Resolved by GitHub search across the whole repo — not limited to the 100 most recent",
@@ -1028,6 +1029,10 @@
       "required": "Required",
       "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "Run this on the gateway host for a full prerequisite report, including which sandbox step failed.",
       "sandbox_unavailable": "Sandbox unavailable",
+      "sign_in_method_note": "Both open a browser to finish signing in. Pick the one that matches your plan — the sign-in page offers a personal Builder ID alongside organization SSO, and a Builder ID carries a smaller set of models.",
+      "sign_in_personal_label": "Personal account — Builder ID, Google, or GitHub",
+      "sign_in_sso_hint": "Prompts for your organization's start URL and region.",
+      "sign_in_sso_label": "Organization SSO — IAM Identity Center",
       "sign_in_with_kiro_cli_on_the_gateway_host": "Sign in with Kiro CLI on the gateway host, then check again. Kiro CLI manages the sign-in and keeps the credentials.",
       "technical_detail": "Technical detail",
       "the_check_hit_a_temporary_limit_and_was_not_cach": "The check hit a temporary resource limit. Try again — do not disable the sandbox.",

@@ -649,8 +649,10 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    CLI is needed on the browser machine;
 2. links out to Kiro's official setup page (`OFFICIAL_INSTALL_DOCS_URL`,
    `https://kiro.dev/cli/`) — a link, never a button;
-3. once a viable CLI is found, names the command the USER runs to sign in
-   (`KIRO_CLI_LOGIN_COMMAND`, `kiro-cli login`) and offers **Check again**;
+3. once a viable CLI is found, names the commands the USER runs to sign in
+   (`KIRO_CLI_LOGIN_COMMAND`, `kiro-cli login`, for a personal account, and
+   `KIRO_CLI_SSO_LOGIN_COMMAND`, `kiro-cli login --use-device-flow --license pro`,
+   for organization SSO) and offers **Check again**;
 4. records first-run completion when `ready=true`.
 
 **Kiro Crew performs neither setup step, and there is no code path that could.**
@@ -684,12 +686,18 @@ What remains is detection only. `_run_process` no longer accepts `sandboxed=`,
 into an interpreter or scraped out of a child's stdout.
 `TestKiroCrewNeverSetsUpKiroCli` pins the absence of each symbol.
 
-The sign-in card therefore shows the command in a `<code>` element, rendered
-verbatim from the backend-supplied `login_command`. It is a **code constant, not
-a catalog value** — a translated command cannot be typed (see
-`website/docs/i18n-catalog.md`). The card's only control is Check again, which is
-also why the screen no longer carries a second Check again button in its
-footer.
+The sign-in card therefore shows the commands in `<code>` elements, rendered
+verbatim from the backend-supplied `login_command` and `sso_login_command`. They
+are **code constants, not catalog values** — a translated command cannot be typed
+(see `website/docs/i18n-catalog.md`). Both tiers are labelled and offered
+together because the browser portal `kiro-cli login` opens presents a free
+Builder ID as a peer of organization SSO: a user on an SSO plan who picks the
+wrong one authenticates successfully and only discovers the mismatch later, as
+models missing from their account. Kiro Crew does not detect which tier applies —
+that would mean inspecting the host's identity configuration — so the card
+describes the choice and the user makes it. The card's only control is Check
+again, which is also why the screen no longer carries a second Check again button
+in its footer.
 
 `repair_required` therefore has ONE producer now, the missing-agent-spec overlay.
 A missing CLI is not a repair: the user obtains it from Kiro, so the gateway reports

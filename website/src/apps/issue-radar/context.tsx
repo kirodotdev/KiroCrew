@@ -117,6 +117,9 @@ export interface IssueRadarContextValue {
   // ── pull requests ──
   pulls: PullRequest[]
   pullsLoading: boolean
+  /** True when `pulls` holds only the cold-open first page (un-enriched) while
+   * the full enriched list loads behind it — the PR twin of `issuesPartial`. */
+  pullsPartial: boolean
   pullsError: Error | null
   refreshPulls: () => void
   pullsRefreshing: boolean
@@ -520,6 +523,28 @@ export function IssueRadarProvider({
       queryClient.setQueryData(['issue-radar', 'pulls', scopeKey, prFetchState], data)
     },
   })
+  // Progressive first paint for PRs — the same shape as `firstPageQuery` for
+  // issues, and the larger win: a cold `pullsQuery` blocks on BOTH the full
+  // pagination AND the GraphQL enrichment before it resolves, so the PR pane is
+  // the app's slowest cold open. This fetches only the newest page (one request,
+  // un-enriched) and feeds it to `pulls` until the authoritative list lands.
+  //
+  // Gated to the exact cold window: open state, no person filter (search owns
+  // that path and is already whole-repo), the PR surface actually in use (so we
+  // never spend a request on a pane the user has not opened — same gate as
+  // `pullsQuery`), and the full query has produced nothing for this key yet
+  // (`data === undefined` covers first load and a cross-repo switch). It never
+  // feeds `pullsQuery.isSuccess`, so nothing keyed on "the PRs are loaded" is
+  // satisfied by a partial page. Once the full list resolves it disables and its
+  // rows are ignored below, so it costs exactly one extra request per cold open.
+  const pullsFirstPageQuery = useQuery({
+    queryKey: ['issue-radar', 'pulls-first-page', scopeKey],
+    queryFn: () => issueRadarApi.pullsFirstPage(active),
+    enabled: prSurfaceActive && prStateFilter === 'open'
+      && !prPersonFilterRequested && pullsQuery.data === undefined,
+    staleTime: Infinity,
+    gcTime: 0,
+  })
 
   const prSearchArgs = {
     state: prStateFilter,
@@ -745,12 +770,22 @@ export function IssueRadarProvider({
 
   // ── pull requests: derived list (parallels the issue derivations) ──
   // Source depends on whether a person filter is active (see prPersonFilterActive).
+  // On a cold open the authoritative `pullsQuery` is still undefined, so fall back
+  // to the first-page rows (open state only — the fast path never runs off open, so
+  // its lingering data must not leak into the closed tab, exactly as `firstPageQuery`
+  // is gated for issues). The full set ALWAYS wins the moment it lands.
   const pulls = useMemo(
     () => prPersonFilterActive
       ? asArray<PullRequest>(pullsSearchQuery.data?.pulls)
-      : asArray<PullRequest>(pullsQuery.data?.pulls),
-    [prPersonFilterActive, pullsSearchQuery.data, pullsQuery.data],
+      : asArray<PullRequest>(
+        (pullsQuery.data ?? (prStateFilter === 'open' ? pullsFirstPageQuery.data : undefined))?.pulls,
+      ),
+    [prPersonFilterActive, pullsSearchQuery.data, pullsQuery.data, pullsFirstPageQuery.data, prStateFilter],
   )
+  // True while `pulls` holds only the un-enriched first page: open state, no person
+  // filter, the full query has produced nothing yet, and the first page said partial.
+  const pullsPartial = !prPersonFilterActive && prStateFilter === 'open'
+    && pullsQuery.data === undefined && !!pullsFirstPageQuery.data?.partial
 
   const countByPrLabel = useMemo(() => {
     const m = new Map<string, number>()
@@ -961,9 +996,13 @@ export function IssueRadarProvider({
     // skeleton every time a persisted person filter is restored. Keyed on
     // meQuery.isLoading rather than `me` being falsy so a FAILED /me falls
     // through to the empty state instead of spinning forever.
+    // `&& pulls.length === 0` so the cold-open first page drops the skeleton the
+    // moment it paints (the full fetch is still in flight but there are rows to
+    // show) — the PR twin of `issuesLoading`.
     pullsLoading: prPersonFilterRequested
       ? (prSurfaceActive && (meQuery.isLoading || pullsSearchQuery.isLoading))
-      : pullsQuery.isLoading,
+      : (pullsQuery.isLoading && pulls.length === 0),
+    pullsPartial,
     // A manual refresh goes through refreshPullsMutation, so its failure has to be
     // reported here too — otherwise the spinner just stops and the stale rows stay
     // on screen as if the refresh had worked.
@@ -1015,6 +1054,7 @@ export function IssueRadarProvider({
     pullsQuery.isLoading, prPersonFilterActive, pullsSearchQuery.error, pullsQuery.error,
     refreshPullsMutation.error, refreshPulls, pullsSearchQuery.isFetching, refreshPullsMutation.isPending,
     pullsSearchQuery.dataUpdatedAt, pullsQuery.dataUpdatedAt, pullsSearchQuery.data, pullsQuery.data,
+    pullsPartial, pullsFirstPageQuery.data,
     refreshPrefs, setRefreshPrefs, countByPrLabel, prQuery, setPrQuery,
     prSelectedLabels, togglePrLabel, prAuthoredByMe, togglePrAuthoredByMe,
     prAssignedToMe, togglePrAssignedToMe, prReviewRequestedByMe, togglePrReviewRequestedByMe,

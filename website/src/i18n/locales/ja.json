@@ -1050,6 +1050,7 @@
         "prList": {
           "clear_search": "検索をクリア",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "閉じられた/マージ済みPRは最後に更新された100件に限定されます。完全にリポジトリ全体を検索するには「me」フィルターをオンにしてください",
+          "loading_the_rest": "残りを読み込んでいます…",
           "pr_other": "{{count}}個のPR",
           "re_fetch_from": "{{label}} を {{provider}} から再取得",
           "refresh": "{{label}} を更新",
@@ -4213,6 +4214,10 @@
       "set_up_kiro": "Kiro をセットアップする",
       "setup": "セットアップ",
       "setup_check_unavailable": "セットアップチェックは利用できません",
+      "sign_in_method_note": "どちらもブラウザーを開いてサインインを完了します。ご利用のプランに合うものを選んでください。サインインページでは個人用の Builder ID が組織の SSO と並んで表示され、Builder ID で使えるモデルは少なくなります。",
+      "sign_in_personal_label": "個人アカウント — Builder ID、Google、または GitHub",
+      "sign_in_sso_hint": "組織の開始 URL とリージョンの入力を求められます。",
+      "sign_in_sso_label": "組織の SSO — IAM Identity Center",
       "sign_in_to_kiro": "Kiro にサインイン",
       "sign_in_with_kiro_cli_on_the_gateway_host": "ゲートウェイホストで Kiro CLI にサインインしてから、もう一度確認します。サインインの管理と認証情報の保持は Kiro CLI が担います。",
       "technical_detail": "技術的な詳細",
@@ -4572,7 +4577,8 @@
     "pastedChip": {
       "collapse_paste": "ペーストを折りたたむ",
       "expand_paste": "ペーストを展開",
-      "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]"
+      "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
+      "preview_more_lines_other": "… 他 {{count}} 行"
     },
     "privacyChapter": {
       "continue": "続行",

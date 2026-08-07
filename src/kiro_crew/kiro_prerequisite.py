@@ -74,6 +74,16 @@ OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
 # a catalog value"). Served in the status payload so the UI has one source of
 # truth for it rather than hardcoding a second copy that can drift.
 KIRO_CLI_LOGIN_COMMAND = "kiro-cli login"
+# The organization-SSO counterpart, served alongside the bare command so the gate
+# can offer both instead of one ambiguous line. Both flags are load-bearing:
+# ``--use-device-flow`` is what makes the others take effect at all (kiro-cli
+# discards every login flag unless the environment is remote OR that flag is set,
+# falling back to a browser portal), and ``--license pro`` then selects Identity
+# Center directly. The pair cannot yield a Builder ID session, which is the
+# failure this exists to prevent: on the portal, a free Builder ID sits as a
+# visual peer of organization SSO, so a user on an SSO plan can sign in to the
+# wrong tier and only discover it when models are missing.
+KIRO_CLI_SSO_LOGIN_COMMAND = "kiro-cli login --use-device-flow --license pro"
 # Compatibility shim, not live state. Nothing performs an operation any more, but a
 # dashboard loaded BEFORE this change reads ``status.operation.status``
 # unconditionally in its refetch-interval callback — the optional chain there
@@ -240,6 +250,10 @@ class PrerequisiteStatus:
     docs_url: str = OFFICIAL_INSTALL_DOCS_URL
     # What the user runs to sign in. Kiro Crew never runs it for them.
     login_command: str = KIRO_CLI_LOGIN_COMMAND
+    # The organization-SSO alternative, offered next to ``login_command`` so the
+    # tier is an explicit choice rather than whichever option the sign-in page
+    # happens to make prominent.
+    sso_login_command: str = KIRO_CLI_SSO_LOGIN_COMMAND
     # A Kiro CLI binary that is present and executable but could not be VERIFIED
     # (verification runs the binary inside the sandbox) is a categorically
     # different condition from a missing binary, and a failed sandbox build

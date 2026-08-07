@@ -1002,6 +1002,7 @@
         "prList": {
           "clear_search": "Effacer la recherche",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Les PR fermées/fusionnées sont limitées aux 100 mises à jour le plus récemment — activez un filtre « moi » pour une recherche complète sur tout le dépôt",
+          "loading_the_rest": "Chargement du reste…",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PR",
@@ -4228,6 +4229,10 @@
       "set_up_kiro": "Configurer Kiro",
       "setup": "Configuration",
       "setup_check_unavailable": "Vérification de la configuration indisponible",
+      "sign_in_method_note": "Les deux ouvrent un navigateur pour terminer la connexion. Choisissez celle qui correspond à votre forfait : la page de connexion propose une Builder ID personnelle à côté du SSO de l'organisation, et une Builder ID donne accès à moins de modèles.",
+      "sign_in_personal_label": "Compte personnel — Builder ID, Google ou GitHub",
+      "sign_in_sso_hint": "Demande l'URL de départ et la région de votre organisation.",
+      "sign_in_sso_label": "SSO de l'organisation — IAM Identity Center",
       "sign_in_to_kiro": "Se connecter à Kiro",
       "sign_in_with_kiro_cli_on_the_gateway_host": "Connectez-vous avec Kiro CLI sur l'hôte de la passerelle, puis vérifiez à nouveau. Kiro CLI gère la connexion et conserve les identifiants.",
       "technical_detail": "Détail technique",

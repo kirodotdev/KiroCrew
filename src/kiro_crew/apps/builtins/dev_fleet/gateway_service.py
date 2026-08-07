@@ -22,9 +22,10 @@ concern              systemd                                     launchd
 ===================  ==========================================  ==================================================
 manageable           ``systemctl --user cat <unit>`` rc == 0      ``launchctl print gui/<uid>/<label>`` rc == 0
 start identity       ``ExecMainStartTimestampMonotonic``          the job's PID (launchd exposes no monotonic stamp)
-detached restart     ``systemd-run --user --collect systemctl     ``launchctl stop <label>`` returns immediately;
-                     --user restart <unit>``                      ``KeepAlive`` respawns after graceful SIGTERM,
-                                                                  with ``ExitTimeOut`` as the SIGKILL ceiling
+detached restart     ``systemd-run --user --collect systemctl     ``launchctl kill TERM gui/<uid>/<label>`` returns
+                     --user restart <unit>``                      immediately; ``KeepAlive`` respawns after the
+                                                                  graceful SIGTERM, with ``ExitTimeOut`` as the
+                                                                  SIGKILL ceiling
 stage a new target   a drop-in overriding ExecStart,             atomically rewrite the ``live-gateway`` launcher
                      WorkingDirectory and PATH, then             script the agent's ProgramArguments executes
                      ``daemon-reload``
@@ -38,7 +39,7 @@ definition and never re-reads the file). ``bootout`` kills us, so the
 ``bootstrap`` half would never run: the gateway would stop and never come back.
 
 So the plist never changes. It points permanently at a generated launcher script
-and staging is an atomic rewrite of that script plus ``launchctl stop``.
+and staging is an atomic rewrite of that script plus a restart request.
 launchd owns the stop and respawn; rollback restores the previous script if the
 restart request is rejected.
 
@@ -334,9 +335,9 @@ class SystemdBackend:
 class LaunchdBackend:
     """``launchctl`` backend for the per-user gateway LaunchAgent.
 
-    Uses ``print`` for state and launchd's non-blocking ``stop`` transaction for
-    restart. ``unload`` + ``load`` is unsafe because unload can terminate the
-    process that would issue load.
+    Uses ``print`` for state and a domain-targeted ``kill TERM`` for the
+    non-blocking restart transaction. ``unload`` + ``load`` is unsafe because
+    unload can terminate the process that would issue load.
     """
 
     kind = "launchd"
@@ -451,7 +452,22 @@ class LaunchdBackend:
         return None if rc != 0 else self._parse_pid(out)
 
     async def restart_detached(self) -> tuple[bool, str]:
-        """Schedule a bounded graceful restart through launchd."""
+        """Schedule a bounded graceful restart through launchd.
+
+        Addresses the job by its ``gui/<uid>/<label>`` service target rather
+        than through launchctl's legacy label-only ``stop``. That is a hard
+        requirement, not a style preference: every Dev Fleet spawn is wrapped in
+        ``sandbox-exec`` (see ``server._run_cmd``), and launchd refuses the
+        legacy stop routine for a sandboxed caller with "Not privileged to stop
+        service." regardless of the seatbelt profile's contents. The
+        domain-targeted verbs are unaffected.
+
+        ``kill TERM`` — not ``kickstart -k`` — because the restart must stay
+        graceful: launchd delivers SIGTERM, the gateway runs its shutdown, and
+        ``KeepAlive`` respawns it, with ``ExitTimeOut`` bounding how long the
+        SIGTERM has before SIGKILL. This is safe to call from inside the process
+        being restarted, since launchd performs both the signal and the respawn.
+        """
         if not restart_contract_current(self.plist_path()):
             return False, (
                 "launchd agent restart contract is outdated; re-run "
@@ -466,9 +482,9 @@ class LaunchdBackend:
                 "`kirocrew service install`"
             )
         rc, _out, stderr = await self._run(
-            ["launchctl", "stop", self._label()], timeout=10
+            ["launchctl", "kill", "TERM", self.target()], timeout=10
         )
-        return (rc == 0, "" if rc == 0 else (stderr.strip()[:200] or "launchctl stop failed"))
+        return (rc == 0, "" if rc == 0 else (stderr.strip()[:200] or "launchctl kill failed"))
 
     # -- staging --
     def plan(self, worktree: Path, kcbin: Path) -> dict:

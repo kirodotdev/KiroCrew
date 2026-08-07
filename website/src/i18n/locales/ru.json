@@ -849,6 +849,7 @@
         "prList": {
           "clear_search": "Очистить поиск",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Закрытые и влитые PR ограничены 100 последними обновлёнными — включи фильтр «я» для полного поиска по всему репозиторию",
+          "loading_the_rest": "Загрузка остального…",
           "pr_few": "{{count}} PR",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
@@ -4364,6 +4365,10 @@
       "set_up_kiro": "Настроить Kiro",
       "setup": "Настройка",
       "setup_check_unavailable": "Проверка настройки недоступна",
+      "sign_in_method_note": "Оба варианта открывают браузер для завершения входа. Выберите тот, который соответствует вашему плану: на странице входа личный Builder ID предлагается рядом с SSO организации, а Builder ID даёт доступ к меньшему набору моделей.",
+      "sign_in_personal_label": "Личная учётная запись — Builder ID, Google или GitHub",
+      "sign_in_sso_hint": "Запрашивает начальный URL и регион вашей организации.",
+      "sign_in_sso_label": "SSO организации — IAM Identity Center",
       "sign_in_to_kiro": "Войти в Kiro",
       "sign_in_with_kiro_cli_on_the_gateway_host": "Войдите через Kiro CLI на хосте шлюза, затем проверьте снова. Вход выполняет Kiro CLI, и учётные данные хранит тоже он.",
       "technical_detail": "Технические сведения",

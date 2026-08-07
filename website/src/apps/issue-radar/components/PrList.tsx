@@ -121,7 +121,7 @@ function ChecksDot({ state }: { state: PullRequest['checks_state'] }) {
  * the card text on every pointer move — see IssueList. */
 export default function PrList({ resizing = false }: { resizing?: boolean }) {
   const {
-    filteredPulls, sortedPulls, pullsLoading, pullsError,
+    filteredPulls, sortedPulls, pullsLoading, pullsError, pullsPartial,
     prStateFilter, colorByName,
     selectedPull, setSelectedPull, refreshPulls, pullsRefreshing,
     prQuery, setPrQuery, pullsUpdatedAt, prPersonFilterActive, prSearchTruncatedAt,
@@ -351,6 +351,15 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           {i18nT('apps.issueRadar.components.prList.pr', { count: filteredPulls.length })}
           {prSearchTruncatedAt ? '+' : ''}
         </span>
+        {/* Cold-start: these are only the newest page (un-enriched) while the full
+            list loads behind them. Say so, so the count does not read as the whole
+            repo — the PR twin of IssueList's hint. */}
+        {pullsPartial && (
+          <span className="inline-flex items-center gap-1 text-muted opacity-70">
+            <RefreshCw size={11} className="animate-spin" />
+            {i18nT('apps.issueRadar.components.prList.loading_the_rest')}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (
             <span className="tabular-nums" title={i18nT('apps.issueRadar.components.prList.time_since_the_pr_list_was_last_fetched_from_git')}>

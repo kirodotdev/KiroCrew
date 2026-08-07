@@ -147,6 +147,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     rewrite_agents,
 )
 from kiro_crew.memory import MemoryStore
+from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
@@ -1768,6 +1769,38 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron command invoked path", exc_info=True
                         )
+                    # Re-run governance at fire time, not just at cron_add authoring
+                    # time. A job vetted when it was scheduled can outlive a later
+                    # policy tightening: mcp_cron._vet_cron_capability_governance and
+                    # _vet_command_governance only run once, at authoring, so a
+                    # ceiling change has no effect on an already-scheduled job until
+                    # someone notices and re-authors it. Denial here does not delete
+                    # the job, so a later policy loosening lets it resume on its own.
+                    from kiro_crew.mcp_cron import (
+                        _vet_command_governance,
+                        _vet_cron_capability_governance,
+                    )
+
+                    gate_reason = _vet_cron_capability_governance() or _vet_command_governance(
+                        job.command
+                    )
+                    if gate_reason:
+                        job.last_status = "error"
+                        job.last_error = redact(gate_reason)
+                        job.record_failure()
+                        try:
+                            sel().log_tool_invocation(
+                                session_key=f"cron:{job.id}",
+                                tool_name="cron_command_exec",
+                                tool_kind="cron_command",
+                                outcome="denied",
+                            )
+                        except Exception:
+                            logger.debug(
+                                "SEL logging failed in cron command fire-time deny path",
+                                exc_info=True,
+                            )
+                        return None
                     cmd_timeout = job.timeout or 300
                     result = await asyncio.wait_for(
                         asyncio.get_running_loop().run_in_executor(
@@ -2110,6 +2143,18 @@ class GatewayOrchestrator:
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
+                        # Publish this turn's session identity so managed MCP
+                        # tools resolve their parent session. The cron path was
+                        # the ONE turn-running surface that skipped this (every
+                        # other surface publishes — see messaging.identity), and
+                        # under session sharing the runtime env carries no
+                        # KIROCREW_SESSION_KEY and macOS sets no
+                        # KIROCREW_HOST_PID, so the ancestor PID-walk over the
+                        # per-turn pidfile mapping is the only identity source
+                        # left. Without the publish, spawn_run resolved an
+                        # empty parent ("notification only (parent=)") unless an
+                        # unrelated surface happened to be mid-turn.
+                        await publish_turn_identity(self.sessions, agent_session_key)
                         # Off-loop: build_message embeds the episodic query.
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
@@ -2170,9 +2215,33 @@ class GatewayOrchestrator:
                     finally:
                         if _acq:
                             self.sessions.release(agent_session_key)
-                            await self.sessions.reset(agent_session_key)
-                            if self.cron_svc is not None:
-                                self.cron_svc.clear_active_session_key(job.id)
+                            # Mirror the single-agent finally below: defer the
+                            # reset when this agent's sub-agents are still
+                            # running, QUEUED behind the concurrency/stagger
+                            # gate, or mid-injection — _subagent_done resets
+                            # after the last one. Now that this path publishes
+                            # turn identity, a non-final agent's spawn_run
+                            # resolves a REAL parent key, so an unconditional
+                            # reset here would tear down the session a pending
+                            # completion is about to inject into (cold-starting
+                            # a context-free replacement) and the completion's
+                            # own cleanup would clear the reaper registration
+                            # for the NEXT agent's still-in-flight turn.
+                            _has_pending = bool(
+                                self.subagent_mgr
+                                and self.subagent_mgr.has_pending_work_for(agent_session_key)
+                            )
+                            _has_injecting = self._cron_injecting.get(agent_session_key, 0) > 0
+                            if _has_pending or _has_injecting:
+                                logger.info(
+                                    "Cron '%s': deferring reset of %s, subagents pending",
+                                    job.name,
+                                    agent_session_key,
+                                )
+                            else:
+                                await self.sessions.reset(agent_session_key)
+                                if self.cron_svc is not None:
+                                    self.cron_svc.clear_active_session_key(job.id)
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
                 job.last_result = result_text
@@ -2192,6 +2261,10 @@ class GatewayOrchestrator:
                     session_key, job.agent_id or None
                 )
                 _acquired = True
+                # Same identity publish as the sequential site above — the
+                # single-agent cron turn must publish its pidfile mapping or
+                # spawn_run's parent resolution has no source to walk to.
+                await publish_turn_identity(self.sessions, session_key)
                 if job.acked_items:
                     msg += (
                         "\n\n[User has seen and acknowledged ALL of the following — "
@@ -2620,10 +2693,12 @@ class GatewayOrchestrator:
                 assert self.sessions is not None
                 if _acquired:
                     self.sessions.release(session_key)
-                    # Defer session reset if subagents are still running or
+                    # Defer session reset if subagents are still running,
+                    # queued behind the concurrency/stagger gate, or
                     # mid-injection — _subagent_done will reset after the last one.
-                    has_pending = self.subagent_mgr and any(
-                        a.parent_session_key == session_key for a in self.subagent_mgr.running
+                    has_pending = bool(
+                        self.subagent_mgr
+                        and self.subagent_mgr.has_pending_work_for(session_key)
                     )
                     has_injecting = self._cron_injecting.get(session_key, 0) > 0
                     if has_pending or has_injecting:
@@ -4513,10 +4588,17 @@ class GatewayOrchestrator:
                             "Subagent %s: failed to deliver cron response to Slack",
                             info.id,
                         )
-                # Reset only when no subagents running AND no injections pending
-                still_running = self.subagent_mgr and any(
-                    a.parent_session_key == parent_key and a.id != info.id
-                    for a in self.subagent_mgr.running
+                # Reset only when no subagents running or QUEUED AND no
+                # injections pending. Queued spawns (behind the concurrency /
+                # stagger gate) have no SubagentInfo in `running` yet — a
+                # sibling completing while the rest of the wave is still
+                # queued must not reset the parent out from under them.
+                still_running = self.subagent_mgr and (
+                    any(
+                        a.parent_session_key == parent_key and a.id != info.id
+                        for a in self.subagent_mgr.running
+                    )
+                    or self.subagent_mgr.queued_count_for(parent_key) > 0
                 )
                 still_injecting = self._cron_injecting.get(parent_key, 0) > 0
                 if not still_running and not still_injecting:
@@ -4531,11 +4613,20 @@ class GatewayOrchestrator:
                         # still be alive — reaper must be able to target it).
                         # parent_key is "cron:{job_id}" (persistent) or
                         # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
-                        # second colon-separated segment in both cases.
+                        # second colon-separated segment in both cases. Clear
+                        # ONLY when the registration still points at the session
+                        # just reset: an agent-sequence job re-registers the
+                        # NEXT agent's key (cron:{job_id}:{agent}) while a prior
+                        # agent's deferred reset is still pending, and an
+                        # unconditional clear here would strip the reaper's
+                        # handle on that still-in-flight turn.
                         cron_svc = getattr(self, "cron_svc", None)
                         if cron_svc is not None:
                             parts = parent_key.split(":", 2)
-                            if len(parts) >= 2:
+                            if (
+                                len(parts) >= 2
+                                and cron_svc.get_active_session_key(parts[1]) == parent_key
+                            ):
                                 cron_svc.clear_active_session_key(parts[1])
                     except Exception:
                         logger.exception(

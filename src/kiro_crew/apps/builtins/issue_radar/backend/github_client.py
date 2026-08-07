@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlparse
 
@@ -1188,6 +1189,25 @@ def list_open_pulls(owner: str, repo: str, *, timeout: float = GH_PAGINATE_TIMEO
     return _list_pulls(owner, repo, "open", timeout=timeout, paginate=True)
 
 
+def list_open_pulls_first_page(
+    owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest ``per_page=100`` open PRs in ONE request (no pagination).
+
+    Serves the progressive first paint on a COLD cache, exactly as
+    ``list_open_issues_first_page`` does for issues: ``list_open_pulls``
+    paginates every page (tens of requests on a large repo) AND the route then
+    runs the GraphQL enrichment before a single byte can render, so the first
+    open of a busy repo blocks for seconds. This is the same first page the full
+    fetch would return anyway — PRs are sorted most-recently-updated first — so
+    the full set appends behind it with no reordering. Uses the ordinary
+    ``GH_TIMEOUT_SEC``, not the paginate budget: it is a single page by
+    construction. The rows are UN-enriched (no diff size / check state); the
+    first-paint route returns them as-is and the authoritative fetch enriches.
+    """
+    return _list_pulls(owner, repo, "open", timeout=timeout, paginate=False)
+
+
 def list_closed_pulls(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> list[dict]:
     """The 100 most-recently-updated CLOSED pull requests (bounded — includes
     both merged and closed-unmerged; the frontend splits them on ``merged_at``)."""
@@ -1936,20 +1956,16 @@ def summarize_checks(checks: list[dict]) -> dict:
     return {"checks_counts": counts, "checks_state": state, "checks_truncated": False}
 
 
-def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[dict]:
-    """Merge :func:`fetch_pr_summaries` into REST list rows, in place-ish.
+def _enrich_summaries(owner: str, repo: str, pulls: list[dict], state: str) -> dict[int, dict]:
+    """The card-summary family: the state-scoped query plus its by-number top-up.
 
     The state-scoped GraphQL query returns at most 100 PRs while the REST list
     paginates ALL of them, so any row beyond that window is topped up by a
     by-number lookup. Without it those rows would report ``0`` additions and no
     checks — unavailable data rendered as a confident "no diff, no checks".
 
-    BOTH calls are topped up that way, the card summaries and the separate merge
-    readiness, since both are capped at the same window while the list is not.
-
-    Best effort by design: on any failure the affected rows report ``None`` for
-    diff size and check state (unknown, not "nothing"), so the list still renders
-    and the route declines to cache the incomplete rows.
+    Best effort: on failure the affected rows are simply absent from the map and
+    :func:`_apply_summaries` records them as ``None`` (unknown, not "nothing").
     """
     try:
         summaries = fetch_pr_summaries(owner, repo, state)
@@ -1964,24 +1980,34 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
             summaries.update(fetch_pr_summaries_by_number(owner, repo, missing))
         except GhCliError:
             pass
-    # Merge readiness is a SECOND, lean call — it cannot ride on the card selection
-    # without 502ing it (see `_PR_READINESS_SELECTION`). Independently failable: losing
-    # it costs the bulk bar's arm/merge split, not the whole card payload.
+    return summaries
+
+
+def _enrich_readiness(owner: str, repo: str, pulls: list[dict], state: str) -> dict[int, str | None]:
+    """The merge-readiness family: the state-scoped query plus its by-number top-up.
+
+    A SECOND, lean call — it cannot ride on the card selection without 502ing it
+    (see ``_PR_READINESS_SELECTION``). Independently failable: losing it costs the
+    bulk bar's arm/merge split, not the whole card payload.
+
+    Topped up by number for the same reason the summaries are: the state-scoped
+    query is capped at ``first:100`` while the REST list paginates ALL open PRs, so
+    on a repo with more than 100 the tail came back with no readiness at all.
+    Unknown readiness is offered NEITHER merge verb, so those rows were silently
+    unactionable in the bulk bar, precisely on the large repos bulk actions exist
+    for.
+
+    Membership, NOT truthiness. ``UNKNOWN`` is a legitimate ANSWER, not an absent
+    one: GitHub computes mergeability asynchronously and roughly half a cold page
+    comes back that way, and ``_parse_readiness_rows`` records it as the string
+    ``'unknown'``. So the key IS present, and testing the value instead would
+    re-request every such row on every fetch: a guaranteed extra query per list
+    load that answers ``UNKNOWN`` again.
+    """
     try:
         readiness = fetch_pr_readiness(owner, repo, state)
     except GhCliError:
         readiness = {}
-    # Topped up by number for the same reason the summaries are: the state-scoped query
-    # is capped at `first:100` while the REST list paginates ALL open PRs, so on a repo
-    # with more than 100 the tail came back with no readiness at all. Unknown readiness
-    # is offered NEITHER merge verb, so those rows were silently unactionable in the
-    # bulk bar, precisely on the large repos bulk actions exist for.
-    #
-    # Membership, NOT truthiness. `UNKNOWN` is a legitimate ANSWER, not an absent one:
-    # GitHub computes mergeability asynchronously and roughly half a cold page comes back
-    # that way, and `_parse_readiness_rows` records it as the string `'unknown'`. So the
-    # key IS present, and testing the value instead would re-request every such row on
-    # every fetch: a guaranteed extra query per list load that answers `UNKNOWN` again.
     missing_readiness = [
         n for n in (pr.get("number") for pr in pulls)
         if isinstance(n, int) and n not in readiness
@@ -1991,6 +2017,29 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
             readiness.update(fetch_pr_readiness_by_number(owner, repo, missing_readiness))
         except GhCliError:
             pass
+    return readiness
+
+
+def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[dict]:
+    """Merge :func:`fetch_pr_summaries` into REST list rows, in place-ish.
+
+    The card summaries and the separate merge readiness are two INDEPENDENT
+    GraphQL families (they must stay two calls — readiness cannot ride on the
+    card selection without 502ing it), and neither derives from the other, so
+    they run CONCURRENTLY on two threads rather than back-to-back. Each family is
+    blocking ``gh`` subprocess I/O, so a thread apiece overlaps the two round
+    trips and the enrichment leg costs the slower family instead of their sum.
+
+    Best effort by design: on any failure the affected rows report ``None`` for
+    diff size and check state (unknown, not "nothing"), so the list still renders
+    and the route declines to cache the incomplete rows. Each family swallows its
+    own ``GhCliError`` internally, so one failing does not sink the other.
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        summaries_f = pool.submit(_enrich_summaries, owner, repo, pulls, state)
+        readiness_f = pool.submit(_enrich_readiness, owner, repo, pulls, state)
+        summaries = summaries_f.result()
+        readiness = readiness_f.result()
     return _apply_summaries(pulls, summaries, readiness)
 
 

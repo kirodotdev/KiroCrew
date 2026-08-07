@@ -198,6 +198,75 @@ class TestContextBuilder:
         assert "[Skills:]" in ctx
         assert "Do stuff." in ctx
 
+    def _reinject_builder(self, tmp_path):
+        """Builder with one on-demand skill, so the index has real content."""
+        skills_dir = tmp_path / "skills" / "widget-maker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: widget-maker\ndescription: Build a widget.\n---\n# WidgetMaker\nBody.",
+            encoding="utf-8",
+        )
+        return ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+
+    def test_reinjection_adds_the_skills_index_after_compaction(self, tmp_path):
+        """With the flag set on a continuing session, the index comes back
+        wrapped in the marker so the model can still discover skills."""
+        builder = self._reinject_builder(tmp_path)
+        msg, _ = builder.build_message(
+            "carry on", is_new_session=False, needs_reinjection=True
+        )
+        assert "[REINJECTED AFTER COMPACTION" in msg
+        assert "[END REINJECTED]" in msg
+        assert "widget-maker" in msg, "the re-injected block must carry the skill index"
+
+    def test_no_reinjection_when_the_flag_is_absent(self, tmp_path):
+        """The default path is unchanged — no marker, no index re-injection."""
+        builder = self._reinject_builder(tmp_path)
+        msg, _ = builder.build_message("carry on", is_new_session=False)
+        assert "[REINJECTED AFTER COMPACTION" not in msg
+
+    def test_no_reinjection_on_a_new_session(self, tmp_path):
+        """A new session already gets the index from the session context;
+        re-injecting would duplicate it in the same prompt."""
+        builder = self._reinject_builder(tmp_path)
+        msg, _ = builder.build_message(
+            "first turn", is_new_session=True, needs_reinjection=True
+        )
+        assert "[REINJECTED AFTER COMPACTION" not in msg
+
+    def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path):
+        """Mirrors the session-start gate (`inject_skills = ... not is_custom`).
+
+        A custom agent's session-start context deliberately carries no skills
+        block, so re-injecting one would ADD context rather than restore what
+        compaction dropped.
+        """
+        builder = self._reinject_builder(tmp_path)
+        msg, _ = builder.build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            agent="some-custom-agent",
+        )
+        assert "[REINJECTED AFTER COMPACTION" not in msg
+        assert "widget-maker" not in msg
+
+    def test_reinjection_still_fires_for_the_default_agent(self, tmp_path):
+        """The gate must not over-block: the unmapped default agent is exactly
+        the case the re-injection exists for."""
+        builder = self._reinject_builder(tmp_path)
+        msg, _ = builder.build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            agent="kirocrew",
+        )
+        assert "[REINJECTED AFTER COMPACTION" in msg
+        assert "widget-maker" in msg
+
     def test_build_message_new_session(self, tmp_path):
         ws = tmp_path / "ws"
         store = MemoryStore(workspace=ws)

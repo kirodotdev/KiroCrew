@@ -650,8 +650,14 @@ read-your-writes should add it deliberately, with its own tests.
   is authoritative; KiroCrew does not regenerate `~/.kiro/agents/*.json`.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
-  cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`
-  (at `cron_add`); the sandbox ordinal floor is clamped in `sandbox.wrap_argv`;
+  cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`.
+  Both run at `cron_add` (authoring) AND again at fire time, in
+  `slack.gateway._cron_callback`, immediately before the sandboxed subprocess
+  is spawned — a policy tightened after a job was scheduled denies that job's
+  next run instead of only affecting jobs authored after the change. Denial at
+  fire time marks the run `last_status="error"` and does not delete or pause
+  the job, so a later policy loosening lets it resume on its own; the sandbox
+  ordinal floor is clamped in `sandbox.wrap_argv`;
   spawn in `subagent._vet_spawn_governance`; outbound messaging in
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check
   in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
@@ -935,6 +941,22 @@ denials leave the same forensic trail.
   relevant `commands` patterns. This is the same plane split the rest of the
   model uses (a shell command is a `commands` item, never re-parsed into its
   sub-effects).
+  [`docs/guides/assets/security-policy.example.json`](../../guides/assets/security-policy.example.json)
+  shows both scopes set together, but read it as **egress defense-in-depth,
+  not a bounded egress guarantee**: a `commands` deny list is a finite set of
+  known patterns, not an allow-shaped ceiling, so it cannot enumerate every
+  network-capable tool (`python`, `ssh`, `git`, `pip`, `openssl s_client`, a
+  `curl` invocation with no `://` in it, or a piped/absolute-path
+  invocation of any of the above), and it says nothing about the web terminal
+  PTY, which is an ungoverned plane by design (see below). A deployment that
+  needs an actual bound on where the host can reach should treat the example
+  as a starting point for defense-in-depth, not as sufficient on its own.
+  Separately: once a `commands` deny pattern is adopted into policy, it
+  becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
+  pins, union not override) — a user cannot locally opt out of a pinned rule
+  the way they can an unpinned one, so an operator copying the example should
+  expect its deny rows to be effectively permanent for anyone bound by that
+  policy, not something end users can narrow per-rule.
 - **Per-app profile binding via MCP chokepoints is best-effort.** The managed
   `kirocrew-core` MCP server is spawned by kiro-cli, not by an app backend, so
   `KIROCREW_APP_NAME` is absent there — `learn_add`/`send_message` resolve the

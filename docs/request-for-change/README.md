@@ -10,8 +10,8 @@ that, read the code, or the `status` field described below.
 Last audited **2026-08-03** against main `0ab6ed48`. Every status below was
 verified against the code (definitions *and* callers) and against merged/open PR
 history, not taken from the document's own claims. The `rfc-tailnet-dashboard-access`
-row was added later and verified separately against `caa0dca7`; the other twelve
-rows have not been re-audited since 2026-08-03.
+row was added later and re-verified against `429cbad8`; the other twelve rows have
+not been re-audited since 2026-08-03.
 
 | Document | Status | What is actually on main |
 |---|---|---|
@@ -27,7 +27,7 @@ rows have not been re-audited since 2026-08-03.
 | [rfc-tips-kit.md](rfc-tips-kit.md) | `draft` | Nothing. T1 was built and **retracted** ([#775](https://github.com/kirodotdev/KiroCrew/pull/775)); the design section needs revising first |
 | [rfc-update-architecture.md](rfc-update-architecture.md) | `draft` | Nothing — zero of three phases |
 | [rfc-app-sandbox-isolation.md](rfc-app-sandbox-isolation.md) | `draft` | Nothing. Apps still run in-process with full privileges (see `src/kiro_crew/docs/app-platform-trust-model.md`); no isolation code exists |
-| [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md) | `draft` | Nothing yet — Phase 1 is in open PR [#1761](https://github.com/kirodotdev/KiroCrew/pull/1761) (reports the pin's real scope; does not fix it). Phases 2–4 unstarted; the pin repair is tracked as [#1762](https://github.com/kirodotdev/KiroCrew/issues/1762) |
+| [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md) | `partial` | Phase 1 landed ([#1761](https://github.com/kirodotdev/KiroCrew/pull/1761), `f8afcff7`) — reports the pin's real scope, does not fix it. Phases 2–4 unstarted; the pin repair is tracked as [#1762](https://github.com/kirodotdev/KiroCrew/issues/1762) |
 | [version-compliance-framework.md](version-compliance-framework.md) | `draft` | Nothing. Framework doc, not an RFC; premise is pre-fork and stale |
 
 Nothing in this directory is `implemented` or `superseded` today.
