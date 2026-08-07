@@ -5,7 +5,7 @@ import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import { BrowserPanel } from './settings/BrowserPanel'
-import { InstancesPanel } from './settings/InstancesPanel'
+import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
@@ -117,7 +117,7 @@ export default function SettingsPage() {
         {tab === 'channels' && <ChannelsPanel />}
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'computer-use' && <ComputerUsePanel />}
-        {tab === 'instances' && !embedded && <InstancesPanel />}
+        {tab === 'instances' && !embedded && <RemoteCrewPanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <SecurityPanel />}
         {tab === 'developer' && <DeveloperPanel />}
