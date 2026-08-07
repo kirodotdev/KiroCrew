@@ -262,6 +262,16 @@ class NudgeLoop:
     # indistinguishable from a budget-stopped one, and a budget raise would
     # resume unattended execution against the user's explicit pause.
     stopped_reason: str = ""
+    # Optional exit quality gate: a shell command that must exit 0 before the
+    # AGENT can end this loop via ``autonudge_stop`` ("" = no gate). Agents
+    # routinely declare "done" without proof; the gate makes the exit condition
+    # executable (run the tests, curl the health check) instead of taken on
+    # faith. Vetted at arm time by the same storage-time guards as cron
+    # commands and executed sandboxed at stop time — see
+    # ``session_directive_apply._autonudge_stop``. Deliberately NOT enforced on
+    # user-facing stops (REST DELETE, the STOP sentinel, cycle caps), so a bad
+    # gate can never make a loop unstoppable by its owner.
+    exit_gate_cmd: str = ""
 
 
 def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:
@@ -477,6 +487,7 @@ class AutoNudgeService:
         max_cycles: int = 0,
         stop_sentinel_path: str = "",
         max_runtime_secs: int = 0,
+        exit_gate_cmd: str = "",
     ) -> NudgeLoop:
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
@@ -498,6 +509,7 @@ class AutoNudgeService:
                 max_cycles=max_cycles,
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max_runtime_secs,
+                exit_gate_cmd=exit_gate_cmd,
             )
         )
         self._inflight_adds.add(inner)
@@ -519,6 +531,7 @@ class AutoNudgeService:
         max_cycles: int,
         stop_sentinel_path: str,
         max_runtime_secs: int = 0,
+        exit_gate_cmd: str = "",
     ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
@@ -537,6 +550,7 @@ class AutoNudgeService:
                 created_ts=time.time(),
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max(0, int(max_runtime_secs)),
+                exit_gate_cmd=str(exit_gate_cmd or ""),
             )
             self._loops[loop.id] = loop
             # Persist WITHOUT blocking the event loop (no-blocking-call rule:
@@ -582,6 +596,7 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        exit_gate_cmd: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -597,6 +612,7 @@ class AutoNudgeService:
                 active=active,
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
+                exit_gate_cmd=exit_gate_cmd,
             )
         )
         self._inflight_adds.add(inner)
@@ -619,6 +635,7 @@ class AutoNudgeService:
         active: bool | None = None,
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
+        exit_gate_cmd: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -632,6 +649,9 @@ class AutoNudgeService:
                 loop.max_cycles = max(0, int(max_cycles))
             if max_runtime_secs is not None:
                 loop.max_runtime_secs = max(0, int(max_runtime_secs))
+            if exit_gate_cmd is not None:
+                # "" clears the gate; None leaves it untouched.
+                loop.exit_gate_cmd = str(exit_gate_cmd)
             if active is not None:
                 # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
                 # (stopped_reason supplied — the _timer's cycle_cap /

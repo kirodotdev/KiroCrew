@@ -98,6 +98,7 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         max_cycles=max_cycles,
         stop_sentinel_path=(body.get("stop_sentinel_path") or ""),
         max_runtime_secs=max_runtime_secs,
+        exit_gate_cmd=(body.get("exit_gate_cmd") or ""),
         source="dashboard",
         caller=request.remote or "",
     )
@@ -130,6 +131,7 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         max_cycles=body.get("max_cycles"),
         active=body.get("active"),
         max_runtime_secs=body.get("max_runtime_secs"),
+        exit_gate_cmd=body.get("exit_gate_cmd"),
         source="dashboard",
         caller=request.remote or "",
     )

@@ -295,20 +295,20 @@ async def test_autonudge_add_survives_caller_cancellation(tmp_path, monkeypatch)
 
 
 class FakeNudgeSvc:
-    def __init__(self) -> None:
+    def __init__(self, existing_loop=None) -> None:
         self.added: list[tuple] = []
+        # What get_by_slot returns — the chokepoint's user-armed-only rule
+        # looks up the slot's existing loop to allow verbatim gate INHERITANCE.
+        self._existing = existing_loop
+
+    def get_by_slot(self, slot_key):
+        return self._existing
 
     async def add(
-        self,
-        *,
-        slot_key,
-        message,
-        idle_secs=60,
-        max_cycles=0,
-        stop_sentinel_path="",
-        max_runtime_secs=0,
+        self, *, slot_key, message, idle_secs=60, max_cycles=0, stop_sentinel_path="",
+        max_runtime_secs=0, exit_gate_cmd="",
     ):
-        self.added.append((slot_key, message, idle_secs, max_cycles))
+        self.added.append((slot_key, message, idle_secs, max_cycles, exit_gate_cmd, max_runtime_secs))
         return SimpleNamespace(id="loop1", slot_key=slot_key, idle_secs=idle_secs, max_cycles=max_cycles)
 
 
@@ -409,6 +409,247 @@ async def test_authz_arms_valid_dashboard_slot_and_audits(monkeypatch) -> None:
     assert [a["outcome"] for a in audits] == ["invoked", "success"]
     assert audits[0]["critical"] is True
     assert all(a["source"] == "workflow" for a in audits)
+
+
+async def test_authz_exit_gate_clean_command_passes_through(monkeypatch) -> None:
+    """A vetted exit-gate command from the USER surface is stored on the loop."""
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    svc = FakeNudgeSvc()
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        exit_gate_cmd="pytest -q tests/test_feature.py",
+        source="dashboard",
+    )
+    assert error is None and status == 200
+    assert svc.added[0][4] == "pytest -q tests/test_feature.py"
+
+
+async def test_authz_non_dashboard_caller_cannot_author_a_gate(monkeypatch) -> None:
+    """USER-ARMED ONLY at the chokepoint (design review): a workflow or
+    mcp-directive caller supplying a NEW gate is denied 403 — otherwise a
+    future non-HTTP caller (e.g. the LLM-authored ctx.nudge port growing the
+    field) could arm agent-authored shell silently."""
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    for src in ("workflow", "mcp-directive"):
+        svc = FakeNudgeSvc()  # no existing loop on the slot
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+            slot_key="chat-1-1",
+            message="watch",
+            exit_gate_cmd="pytest -q",
+            source=src,
+        )
+        assert loop is None and status == 403, f"{src} must not author a gate"
+        assert not svc.added
+
+
+async def test_authz_non_dashboard_caller_may_carry_the_inherited_gate(monkeypatch) -> None:
+    """The replace/inheritance path stays legal: a non-dashboard caller whose
+    gate VERBATIM matches the slot's existing gate (verified against the
+    store) is allowed — that is the applier re-arming with the user's gate."""
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    existing = SimpleNamespace(id="old", slot_key="chat-1-1", exit_gate_cmd="pytest -q")
+    svc = FakeNudgeSvc(existing_loop=existing)
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="keep watching",
+        exit_gate_cmd="pytest -q",
+        source="mcp-directive",
+    )
+    assert error is None and status == 200
+    assert svc.added[0][4] == "pytest -q"
+    # A DIFFERENT gate from the same caller is still denied.
+    svc2 = FakeNudgeSvc(existing_loop=existing)
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc2,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        exit_gate_cmd="true",
+        source="mcp-directive",
+    )
+    assert loop is None and status == 403
+    assert not svc2.added
+
+
+async def test_authz_omitted_gate_is_inherited_on_non_dashboard_replace(monkeypatch) -> None:
+    """OMITTED ≠ cleared (GPT review): an add REPLACES the slot's loop, so a
+    non-dashboard caller that simply omits exit_gate_cmd (the workflow
+    ctx.nudge port passes no gate today) must not silently discard a
+    user-armed gate — the chokepoint inherits it onto the replacement."""
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    existing = SimpleNamespace(id="old", slot_key="chat-1-1", exit_gate_cmd="pytest -q")
+    svc = FakeNudgeSvc(existing_loop=existing)
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="workflow re-arm with no gate field",
+        source="workflow",
+    )
+    assert error is None and status == 200
+    assert svc.added[0][4] == "pytest -q", "omitted gate must inherit, not clear"
+    # The dashboard surface can still clear by replacing (user action).
+    svc2 = FakeNudgeSvc(existing_loop=existing)
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc2,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="user re-arm ungated",
+        source="dashboard",
+    )
+    assert error is None and status == 200
+    assert svc2.added[0][4] == ""
+
+
+async def test_authz_inherited_gate_clamps_terminal_bounds_at_chokepoint(monkeypatch) -> None:
+    """CLAMPS TRAVEL WITH INHERITANCE (GPT review): a workflow re-arm of a
+    gated slot with a tiny cap (ctx.nudge(max_cycles=1)) would expire the
+    inherited gate through the deliberately-ungated cap terminal. The
+    chokepoint clamps BOTH bounds to the replaced loop's remaining allowance
+    for every non-dashboard caller."""
+    import time as _time
+
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    existing = SimpleNamespace(
+        id="old", slot_key="chat-1-1", exit_gate_cmd="pytest -q",
+        max_cycles=24, cycle_count=4,
+        max_runtime_secs=3600, created_ts=_time.time() - 600,
+    )
+    svc = FakeNudgeSvc(existing_loop=existing)
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="workflow re-arm tiny bounds",
+        max_cycles=1,
+        max_runtime_secs=60,
+        source="workflow",
+    )
+    assert error is None and status == 200
+    slot_key, message, idle, cap, gate, budget = svc.added[0]
+    assert gate == "pytest -q", "gate inherited"
+    assert cap == 20, "cap clamps to remaining cycles (24-4)"
+    assert 2900 <= budget <= 3000, "budget clamps to remaining seconds"
+    # Unlimited replaced bounds force unlimited replacement bounds.
+    existing2 = SimpleNamespace(
+        id="old2", slot_key="chat-1-1", exit_gate_cmd="pytest -q",
+        max_cycles=0, cycle_count=9, max_runtime_secs=0, created_ts=_time.time() - 600,
+    )
+    svc2 = FakeNudgeSvc(existing_loop=existing2)
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc2,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="workflow re-arm vs unlimited",
+        max_cycles=2,
+        max_runtime_secs=120,
+        source="workflow",
+    )
+    assert error is None and status == 200
+    assert svc2.added[0][3] == 0 and svc2.added[0][5] == 0
+
+
+@pytest.mark.parametrize(
+    "bad_gate",
+    [
+        "cat ~/.ssh/id_rsa",  # credential path — storage-time deny
+        'echo "$(whoami)" && true',  # command substitution — runtime composition
+        "ok\nrm -rf /tmp/x",  # embedded newline — control-character refusal
+        "x" * 2001,  # over the length cap
+        # REDACTION STABILITY (GPT review): the stored command is broadcast
+        # verbatim in the autonudge WS payload and echoed on loop surfaces —
+        # anything the credential redactor would alter is refused at arm time.
+        "curl -H 'Authorization: Bearer sk-ant-" + "a" * 20 + "' localhost/health",
+        "AWS_KEY=AKIA" + "Z" * 16 + " ./gate.sh",  # AWS access-key shape
+    ],
+)
+async def test_authz_exit_gate_bad_command_denied_400(monkeypatch, bad_gate) -> None:
+    """A gate that the cron storage-time guards (or the gate's own control-char
+    / length rules) would refuse is DENIED at arm time — never stored."""
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    svc = FakeNudgeSvc()
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        slot_key="chat-1-1",
+        message="watch",
+        exit_gate_cmd=bad_gate,
+        source="dashboard",
+    )
+    assert loop is None and status == 400
+    assert not svc.added, "a refused gate must never reach svc.add"
+
+
+async def test_authz_update_vets_replacement_gate_but_allows_clearing(monkeypatch) -> None:
+    """monitor_update cannot install a gate the arm path would refuse; an empty
+    string (clear the gate) needs no vetting and passes through — both on the
+    USER surface. A non-dashboard caller may not touch the field at all."""
+    monkeypatch.setattr(
+        autonudge_authz,
+        "sel",
+        lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None),
+    )
+    updates: list[dict] = []
+
+    class _Svc:
+        def list_all(self):
+            return []  # governance lookup: no loop found → vet runs identity-less
+
+        async def update(self, loop_id, **kwargs):
+            updates.append(kwargs)
+            return SimpleNamespace(id=loop_id, slot_key="chat-1-1")
+
+    from kiro_crew.autonudge_authz import authorize_and_update_nudge
+
+    # Bad replacement → denied, no mutation.
+    loop, error, status = await authorize_and_update_nudge(
+        svc=_Svc(), loop_id="l1", exit_gate_cmd="cat ~/.aws/credentials", source="dashboard"
+    )
+    assert loop is None and status == 400 and not updates
+    # Clearing passes without vetting (user surface).
+    loop, error, status = await authorize_and_update_nudge(
+        svc=_Svc(), loop_id="l1", exit_gate_cmd="", source="dashboard"
+    )
+    assert error is None and status == 200
+    assert updates[-1]["exit_gate_cmd"] == ""
+    # Non-dashboard callers may not set, change, or clear — even "" is 403
+    # (clearing disarms the control that constrains the agent).
+    for val in ("pytest -q", ""):
+        loop, error, status = await authorize_and_update_nudge(
+            svc=_Svc(), loop_id="l1", exit_gate_cmd=val, source="workflow"
+        )
+        assert loop is None and status == 403
 
 
 async def test_authz_denies_arm_when_audit_unavailable(monkeypatch) -> None:

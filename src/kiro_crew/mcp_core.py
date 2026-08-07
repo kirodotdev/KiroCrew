@@ -1548,7 +1548,11 @@ def _list_tools() -> list[dict[str, Any]]:
                 "blocked on user input, or a STOP sentinel file indicates shutdown). "
                 "Removes the loop from the AutoNudgeService so no further nudges "
                 "fire into this session. Safe to call even if no loop is active — "
-                "returns a no-op message."
+                "returns a no-op message. If the USER armed the loop with an exit "
+                "gate (a verification command; gates are user-armed only), the "
+                "gate runs first: exit 0 stops the "
+                "loop; anything else REFUSES the stop and returns the gate's "
+                "output — finish the work it checks for, then call this again."
             ),
             "inputSchema": {
                 "type": "object",

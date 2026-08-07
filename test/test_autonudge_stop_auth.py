@@ -83,6 +83,24 @@ def test_monitor_start_runtime_budget_passes_through(default_install):
     assert "7200s" in result
 
 
+def test_monitor_start_refuses_agent_supplied_exit_gate(default_install):
+    """Gates are USER-armed only (GPT review): the MCP schema no longer carries
+    exit_gate_cmd, so an agent supplying one gets the unknown-field validation
+    error instead of a directive that would execute an unreviewed command."""
+    with pytest.raises(ValidationError, match="exit_gate_cmd"):
+        _call_tool_inner(
+            "monitor_start",
+            {"message": "watch CI", "exit_gate_cmd": "pytest -q tests/"},
+        )
+
+
+def test_monitor_update_refuses_agent_supplied_exit_gate(default_install):
+    """Same user-armed-only contract on the update tool: neither adding,
+    changing, nor clearing ('' was previously meaningful) is accepted."""
+    with pytest.raises(ValidationError, match="exit_gate_cmd"):
+        _call_tool_inner("monitor_update", {"exit_gate_cmd": ""})
+
+
 def test_monitor_start_defaults_interval_300_and_bounded_cap(default_install):
     """Omitting interval_secs defaults to 300; omitting max_cycles defaults to a
     BOUNDED cap (24) — never an unbounded loop."""
@@ -222,7 +240,7 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch):
 class _FakeLoop:
     def __init__(
         self, loop_id, *, cycle_count=0, max_cycles=0, active=True, created_ts=0.0,
-        max_runtime_secs=0, stopped_reason="",
+        max_runtime_secs=0, stopped_reason="", exit_gate_cmd="",
     ):
         self.id = loop_id
         self.cycle_count = cycle_count
@@ -231,6 +249,7 @@ class _FakeLoop:
         self.created_ts = created_ts
         self.max_runtime_secs = max_runtime_secs
         self.stopped_reason = stopped_reason
+        self.exit_gate_cmd = exit_gate_cmd
 
 
 class _FakeSvc:
@@ -548,3 +567,503 @@ def test_applier_autonudge_stop_no_loop_is_a_clean_noop(monkeypatch):
     )
     assert "nothing to stop" in result.lower()
     assert svc.removed == []
+
+
+# ── exit quality gate ──
+
+
+def _install_gate_runner(monkeypatch, result: dict):
+    """Stub the sandboxed gate runner (lazily imported by _run_exit_gate)."""
+    calls: list[dict] = []
+
+    # **kwargs on purpose: fixed-signature stubs of this runner have broken
+    # twice when the real signature grew (extra_hidden_dirs, cwd) — tolerate
+    # future kwargs and record the ones the tests assert on.
+    def _fake(command, timeout=300, **kwargs):
+        calls.append(
+            {
+                "command": command,
+                "timeout": timeout,
+                "mode": kwargs.get("sandbox_mode", "cc"),
+                "hidden": kwargs.get("extra_hidden_dirs", ()),
+                "cwd": kwargs.get("cwd"),
+            }
+        )
+        return result
+
+    monkeypatch.setattr("kiro_crew.cron_script.run_command_sandboxed", _fake)
+    return calls
+
+
+def test_applier_stop_gate_pass_allows_the_stop(monkeypatch):
+    """Exit 0 from the gate → the stop proceeds and says the gate passed.
+    The gate must run in the STRICT sandbox (no ~/.ssh), not cron's 'cc'."""
+    svc = _FakeSvc(_FakeLoop("loop-g1", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    calls = _install_gate_runner(
+        monkeypatch, {"status": "ok", "output": "42 passed", "exit_code": 0, "error_kind": None}
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {"reason": "green"}
+        )
+    )
+    assert calls and calls[0]["command"] == "pytest -q"
+    assert calls[0]["mode"] == "strict", "exit gates must not inherit cc's ~/.ssh exposure"
+    assert svc.removed == ["loop-g1"]
+    assert "gate passed" in result.lower()
+
+
+def test_applier_stop_revets_gate_and_skips_execution_when_policy_tightened(monkeypatch):
+    """TOCTOU REVALIDATION (GPT review): the gate was vetted at ARM time, but
+    governance can tighten between arm and stop — a stored command the current
+    policy forbids must NOT execute on yesterday's approval. Execution is
+    skipped (fail closed for exec), the stop still proceeds (refusing would
+    force the forbidden execution on retry), and the note is loudly
+    unverified."""
+    svc = _FakeSvc(_FakeLoop("loop-g20", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    calls = _install_gate_runner(
+        monkeypatch, {"status": "ok", "output": "", "exit_code": 0, "error_kind": None}
+    )
+    monkeypatch.setattr(
+        "kiro_crew.autonudge_authz.vet_exit_gate_cmd",
+        lambda cmd, session_key="": "blocked by governance policy: tightened",
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {}
+        )
+    )
+    assert not calls, "a gate that no longer vets clean must never execute"
+    assert svc.removed == ["loop-g20"], "the stop itself still proceeds"
+    assert "NOT run" in result and "NOT verified" in result
+
+
+def test_applier_stop_gate_failure_refuses_the_stop_with_output(monkeypatch):
+    """QUALITY GATE: a non-zero gate exit refuses the stop, keeps the loop, and
+    feeds the agent the (bounded) gate output so it can finish and retry."""
+    svc = _FakeSvc(_FakeLoop("loop-g2", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    long_output = "FAILED test_x - AssertionError\n" + ("y" * 5000)
+    _install_gate_runner(
+        monkeypatch,
+        {"status": "error", "output": long_output, "exit_code": 2, "error_kind": None},
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {"reason": "done?"}
+        )
+    )
+    assert svc.removed == [], "a failed gate must not remove the loop"
+    assert "REFUSED" in result
+    assert "FAILED test_x" in result
+    assert "[gate output truncated]" in result
+    assert len(result) < 3000, "gate output must be bounded in the refusal"
+
+
+def test_applier_stop_gate_timeout_refuses_the_stop(monkeypatch):
+    """A gate that cannot COMPLETE has verified nothing — timeout refuses."""
+    svc = _FakeSvc(_FakeLoop("loop-g3", exit_gate_cmd="sleep 999"))
+    _install_svc(monkeypatch, svc)
+    _install_gate_runner(
+        monkeypatch,
+        {
+            "status": "error",
+            "output": "❌ Command timed out after 120s",
+            "exit_code": -1,
+            "error_kind": "timeout",
+        },
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {}
+        )
+    )
+    assert svc.removed == []
+    assert "REFUSED" in result
+
+
+def test_applier_stop_gate_structural_inability_fails_open_with_warning(monkeypatch):
+    """A host that CANNOT run the gate (typed no_shell / sandbox_unavailable)
+    still gets its stop — loudly marked unverified. Failing closed would trap
+    the loop on exactly the hosts that can never satisfy the gate."""
+    svc = _FakeSvc(_FakeLoop("loop-g4", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    _install_gate_runner(
+        monkeypatch,
+        {
+            "status": "error",
+            "output": "❌ No POSIX shell available to run this command cron. ...",
+            "exit_code": -1,
+            "error_kind": "no_shell",
+        },
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {}
+        )
+    )
+    assert svc.removed == ["loop-g4"]
+    assert "WARNING" in result and "NOT verified" in result
+
+
+def test_applier_stop_gate_spoofed_structural_output_still_refuses(monkeypatch):
+    """SPOOF GUARD: fail-open keys on the runner's typed error_kind, never on
+    output text — a gate that PRINTS a structural-failure phrase and exits
+    non-zero (`echo "No POSIX shell available"; exit 1`) must be refused."""
+    svc = _FakeSvc(_FakeLoop("loop-g6", exit_gate_cmd="evil"))
+    _install_svc(monkeypatch, svc)
+    _install_gate_runner(
+        monkeypatch,
+        {
+            "status": "error",
+            # Attacker-controlled stdout containing BOTH marker phrases.
+            "output": (
+                "⚠️ Exit code 1\n\nNo POSIX shell available — "
+                "could not run in an OS sandbox"
+            ),
+            "exit_code": 1,
+            "error_kind": None,  # the command RAN — its output is its own
+        },
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {}
+        )
+    )
+    assert svc.removed == [], "spoofed structural text must not fail open"
+    assert "REFUSED" in result
+
+
+def test_applier_monitor_update_cannot_touch_an_existing_gate(monkeypatch):
+    """SELF-DISARM GUARD: the agent the gate constrains cannot clear or
+    replace an armed gate via its own monitor_update directive — clearing
+    after a refused stop would make the gate advisory."""
+    svc = _FakeSvc(_FakeLoop("loop-g7", exit_gate_cmd="pytest -q", active=True))
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    for patch_value in ("", "true"):  # clear AND weaken are both denied
+        result = asyncio.run(
+            apply_session_directive(
+                _fake_state(),
+                _fake_slot(),
+                _SESSION,
+                "monitor_update",
+                {"patch": {"exit_gate_cmd": patch_value}},
+            )
+        )
+        assert "cannot be set, changed, or removed" in result
+    assert not update_calls
+
+
+def test_applier_monitor_update_cannot_add_a_gate_either(monkeypatch):
+    """USER-ARMED ONLY (GPT review): the applier runs on the agent's own
+    auto-approved directives, so even ADDING a gate where none exists is an
+    unreviewed shell command reaching execution — refused. (Previously
+    allowed as 'self-discipline'.)"""
+    svc = _FakeSvc(_FakeLoop("loop-g8", exit_gate_cmd=""))
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"exit_gate_cmd": "pytest -q"}},
+        )
+    )
+    assert "user-armed" in result
+    assert not update_calls
+
+
+def test_applier_monitor_update_cannot_lower_the_cap_on_a_gated_loop(monkeypatch):
+    """CAP-LOWERING ESCAPE (design review): shrinking max_cycles on a gated
+    loop expires it through the ungated cap path — an indirect self-disarm.
+    Raising (or 0 = unlimited) stays allowed."""
+    svc = _FakeSvc(_FakeLoop("loop-g9", cycle_count=3, max_cycles=24, exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    # Lowering (24 -> 4) is denied.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_update",
+            {"patch": {"max_cycles": 4}},
+        )
+    )
+    assert "expire ungated" in result
+    assert not update_calls
+    # Raising (24 -> 40) passes.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_update",
+            {"patch": {"max_cycles": 40}},
+        )
+    )
+    assert len(update_calls) == 1 and update_calls[0]["max_cycles"] == 40
+
+
+def test_applier_monitor_update_cannot_lower_the_budget_on_a_gated_loop(monkeypatch):
+    """BUDGET-LOWERING ESCAPE (GPT review on the merged result): the wall-clock
+    budget is the SECOND deliberately-ungated terminal — shrinking
+    max_runtime_secs on a gated loop expires it without its gate ever running,
+    the same indirect self-disarm the cap guard denies. Raising (or 0) stays
+    allowed."""
+    import time as _time
+
+    svc = _FakeSvc(
+        _FakeLoop(
+            "loop-g16", created_ts=_time.time() - 60, max_runtime_secs=86400,
+            exit_gate_cmd="pytest -q",
+        )
+    )
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    # Lowering (86400 -> 120) is denied.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_update",
+            {"patch": {"max_runtime_secs": 120}},
+        )
+    )
+    assert "expire ungated" in result
+    assert not update_calls
+    # Raising (86400 -> 172800) passes.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_update",
+            {"patch": {"max_runtime_secs": 172800}},
+        )
+    )
+    assert len(update_calls) == 1 and update_calls[0]["max_runtime_secs"] == 172800
+
+
+def test_applier_monitor_start_inherits_an_existing_gate(monkeypatch):
+    """RE-ARM ESCAPE (design review): replacing a gated loop via the agent's
+    own monitor_start directive must carry the gate onto the replacement —
+    otherwise stop-refused → re-arm ungated → stop succeeds unverified."""
+    svc = _FakeSvc(_FakeLoop("loop-g10", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    add_calls = _record_add(monkeypatch)
+    # Directive tries to re-arm with NO gate.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_start",
+            {"message": "keep watching", "idle_secs": 300, "max_cycles": 5},
+        )
+    )
+    assert len(add_calls) == 1
+    assert add_calls[0]["exit_gate_cmd"] == "pytest -q", "gate must be inherited"
+    assert "INHERITED" in result
+    # Directive tries to re-arm SUPPLYING a gate (even a weaker one) — the
+    # whole arm is refused now: gates are user-armed only.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_start",
+            {"message": "watch", "exit_gate_cmd": "true"},
+        )
+    )
+    assert "user" in result and "exit_gate_cmd" in result
+    assert len(add_calls) == 1, "an arm supplying a gate must not reach svc.add"
+
+
+def test_applier_monitor_start_clamps_cap_when_inheriting_a_gate(monkeypatch):
+    """CAP CLAMP (design review): re-arming a gated loop with a tiny cap would
+    expire the replacement through the deliberately-UNGATED cap path in one
+    cycle — the same indirect disarm monitor_update's cap guard denies. The
+    replacement's cap is clamped to the replaced loop's remaining cycles."""
+    # Replaced loop: cap 24, 4 delivered -> 20 remaining.
+    svc = _FakeSvc(_FakeLoop("loop-g12", cycle_count=4, max_cycles=24, exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    add_calls = _record_add(monkeypatch)
+    asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_start",
+            {"message": "keep watching", "max_cycles": 1},
+        )
+    )
+    assert add_calls[0]["max_cycles"] == 20, "tiny cap must clamp to remaining cycles"
+    # An UNCAPPED replaced loop forces an uncapped replacement (0): any finite
+    # cap would introduce an ungated terminal the replaced loop did not have.
+    svc2 = _FakeSvc(_FakeLoop("loop-g13", cycle_count=7, max_cycles=0, exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc2)
+    add_calls2 = _record_add(monkeypatch)
+    asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_start",
+            {"message": "watch more", "max_cycles": 3},
+        )
+    )
+    assert add_calls2[0]["max_cycles"] == 0
+
+
+def test_applier_monitor_start_clamps_budget_when_inheriting_a_gate(monkeypatch):
+    """BUDGET CLAMP (GPT review on the merged result): re-arming a gated loop
+    with a tiny wall-clock budget expires the replacement through the
+    deliberately-UNGATED budget terminal — same escape as the cycle cap, one
+    bound over. The replacement's budget clamps to the replaced loop's
+    REMAINING seconds (created_ts resets on the replacement), and an
+    unlimited replaced budget forces an unlimited replacement."""
+    import time as _time
+
+    # Replaced loop: 3600s budget, ~600s elapsed -> ~3000s remaining.
+    svc = _FakeSvc(
+        _FakeLoop(
+            "loop-g17", created_ts=_time.time() - 600, max_runtime_secs=3600,
+            exit_gate_cmd="pytest -q",
+        )
+    )
+    _install_svc(monkeypatch, svc)
+    add_calls = _record_add(monkeypatch)
+    asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_start",
+            {"message": "keep watching", "max_runtime_secs": 60},
+        )
+    )
+    assert 2900 <= add_calls[0]["max_runtime_secs"] <= 3000, "tiny budget must clamp to remaining"
+    # An UNLIMITED replaced budget forces an unlimited replacement budget.
+    svc2 = _FakeSvc(
+        _FakeLoop(
+            "loop-g18", created_ts=_time.time() - 600, max_runtime_secs=0,
+            exit_gate_cmd="pytest -q",
+        )
+    )
+    _install_svc(monkeypatch, svc2)
+    add_calls2 = _record_add(monkeypatch)
+    asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_start",
+            {"message": "watch more", "max_runtime_secs": 120},
+        )
+    )
+    assert add_calls2[0]["max_runtime_secs"] == 0
+
+
+def test_applier_stop_gate_output_is_redacted(monkeypatch):
+    """Gate stdout flows into transcript/dashboard/channel surfaces — a
+    credential-shaped value in a failing gate's output must be scrubbed."""
+    svc = _FakeSvc(_FakeLoop("loop-g11", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    secret = "AKIA" + "ZZZZZZZZZZZZZZZZ"  # AWS access key shape
+    _install_gate_runner(
+        monkeypatch,
+        {
+            "status": "error",
+            "output": f"boom: leaked {secret} in env dump",
+            "exit_code": 1,
+            "error_kind": None,
+        },
+    )
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {}
+        )
+    )
+    assert "REFUSED" in result
+    assert secret not in result, "credential-shaped gate output must be redacted"
+
+
+def test_applier_gate_runs_with_data_home_hidden(monkeypatch):
+    """The Kiro Crew data home is the keystone (security policy, loop store);
+    the gate's sandbox must hide it — text vetting cannot see inside a
+    referenced interpreter script."""
+    svc = _FakeSvc(_FakeLoop("loop-g12", exit_gate_cmd="pytest -q"))
+    _install_svc(monkeypatch, svc)
+    calls: list[dict] = []
+
+    def _fake(command, timeout=300, **kwargs):
+        calls.append(
+            {"mode": kwargs.get("sandbox_mode", "cc"), "hidden": kwargs.get("extra_hidden_dirs", ())}
+        )
+        return {"status": "ok", "output": "", "exit_code": 0, "error_kind": None}
+
+    monkeypatch.setattr("kiro_crew.cron_script.run_command_sandboxed", _fake)
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.config_dir", lambda: __import__("pathlib").Path("/data/home")
+    )
+    asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {}
+        )
+    )
+    assert calls and calls[0]["mode"] == "strict"
+    # Compare via pathlib so the assertion is separator-correct on Windows
+    # (str(Path("/data/home")) is "\\data\\home" there, not "/data/home").
+    expected = str(__import__("pathlib").Path("/data/home"))
+    assert expected in calls[0]["hidden"]
+
+
+def test_applier_gate_runs_anchored_to_the_slots_project_dir(monkeypatch, tmp_path):
+    """CWD ANCHORING (design review): without an anchor the gate inherits the
+    gateway DAEMON's cwd, so a relative-path gate (`pytest -q tests/` — the
+    former schema's own example) fails for reasons unrelated to work quality
+    and every stop is refused. The gate must run in the slot's project dir."""
+    svc = _FakeSvc(_FakeLoop("loop-g14", exit_gate_cmd="pytest -q tests/"))
+    _install_svc(monkeypatch, svc)
+    calls = _install_gate_runner(
+        monkeypatch, {"status": "ok", "output": "", "exit_code": 0, "error_kind": None}
+    )
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+
+    class _Slot:
+        key = "chat-3-1700000000"
+        # The REAL attribute on dashboard slots (state.py) — the regression
+        # this locks in: reading only a nonexistent `project_dir` made the
+        # anchor always fall through to the workspace dir.
+        project = str(proj_dir)
+        workspace = "default"
+
+    class _State:
+        _slots = {"chat-3-1700000000": _Slot()}
+
+    asyncio.run(
+        apply_session_directive(_State(), _Slot(), _SESSION, "autonudge_stop", {})
+    )
+    assert calls and calls[0]["cwd"] == str(proj_dir)
+
+
+def test_applier_gate_cwd_falls_back_to_workspace_dir(monkeypatch, tmp_path):
+    """No project dir on the slot → the gate anchors to the slot's WORKSPACE
+    directory (never the daemon cwd)."""
+    svc = _FakeSvc(_FakeLoop("loop-g15", exit_gate_cmd="true"))
+    _install_svc(monkeypatch, svc)
+    calls = _install_gate_runner(
+        monkeypatch, {"status": "ok", "output": "", "exit_code": 0, "error_kind": None}
+    )
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.workspace_dir_for", lambda ws=None: ws_dir
+    )
+
+    class _Slot:
+        key = "chat-3-1700000000"
+        project = ""
+        workspace = "default"
+
+    class _State:
+        _slots = {"chat-3-1700000000": _Slot()}
+
+    asyncio.run(
+        apply_session_directive(_State(), _Slot(), _SESSION, "autonudge_stop", {})
+    )
+    assert calls and calls[0]["cwd"] == str(ws_dir)
+
+
+def test_applier_stop_without_gate_never_runs_a_command(monkeypatch):
+    """No gate on the loop → the runner is never imported/invoked (legacy
+    behavior byte-for-byte)."""
+    svc = _FakeSvc(_FakeLoop("loop-g5"))
+    _install_svc(monkeypatch, svc)
+    calls = _install_gate_runner(monkeypatch, {"status": "ok", "output": "", "exit_code": 0})
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "autonudge_stop", {"reason": "done"}
+        )
+    )
+    assert calls == []
+    assert svc.removed == ["loop-g5"]
+    assert "stopped" in result.lower()

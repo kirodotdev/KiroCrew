@@ -32,6 +32,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from kiro_crew.session_surface import has_dashboard_surface
@@ -101,7 +102,7 @@ async def apply_session_directive(
         elif kind == "monitor_update":
             result = await _monitor_update(session_key, args)
         elif kind == "autonudge_stop":
-            result = await _autonudge_stop(session_key, args)
+            result = await _autonudge_stop(state, session_key, args)
         elif kind == "set_project":
             result = await _set_project(state, slot, args)
         elif kind == "suggest_followup":
@@ -149,6 +150,59 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
     idle_secs = int(args.get("idle_secs") or 300)
     max_cycles = int(args.get("max_cycles") or 0)
     max_runtime_secs = int(args.get("max_runtime_secs") or 0)
+    # USER-ARMED GATES ONLY (GPT review P1): this applier runs on the agent's
+    # own AUTO-APPROVED directives, so an agent-supplied gate command is
+    # unreviewed code reaching a shell with no human in the loop — the exact
+    # execution path the review flagged. Arming a gate is therefore a user
+    # action (dashboard goal popover / REST), never an agent directive. The
+    # stop-time ENFORCEMENT below is unchanged — the gate still constrains the
+    # agent; the agent just cannot author what gets executed.
+    if str(args.get("exit_gate_cmd") or "").strip():
+        raise _DirectiveDenied(
+            "monitor_start: exit_gate_cmd cannot be set from an agent "
+            "directive — a gate is a shell command, and this surface is "
+            "auto-approved. Ask the user to arm one (dashboard goal popover "
+            "or POST /api/autonudge)."
+        )
+    exit_gate_cmd = ""
+    # GATE INHERITANCE (design review): arming replaces any existing loop on
+    # the slot, so without this an agent whose stop was refused could re-arm
+    # UNGATED and then stop unverified — the same self-disarm the
+    # monitor_update guard closes, one tool over. An existing (user-armed)
+    # gate is carried onto the replacement loop verbatim.
+    inherited_gate = False
+    existing = svc.get_by_slot(binding)
+    existing_gate = str(getattr(existing, "exit_gate_cmd", "") or "").strip() if existing else ""
+    if existing_gate:
+        exit_gate_cmd = existing_gate
+        inherited_gate = True
+        # TERMINAL-BOUND CLAMPS (design review + GPT on the merged result):
+        # without these, re-arming with a tiny cap (max_cycles=1) or a tiny
+        # wall-clock budget expires the replacement through a deliberately
+        # UNGATED terminal — the same indirect disarm that monitor_update's
+        # lowering guards deny. The replacement must not expire sooner than
+        # the replaced loop would have: clamp each bound to at least the
+        # replaced loop's remaining allowance (an unlimited replaced bound
+        # forces an unlimited replacement bound).
+        replaced_cap = int(getattr(existing, "max_cycles", 0) or 0)
+        if replaced_cap == 0:
+            max_cycles = 0
+        else:
+            remaining = max(replaced_cap - int(getattr(existing, "cycle_count", 0) or 0), 1)
+            if max_cycles != 0 and max_cycles < remaining:
+                max_cycles = remaining
+        replaced_budget = int(getattr(existing, "max_runtime_secs", 0) or 0)
+        if replaced_budget == 0:
+            max_runtime_secs = 0
+        else:
+            # The budget anchors on created_ts, which RESETS on the
+            # replacement loop — so the replaced loop's remaining seconds is
+            # the floor for the new budget.
+            created = float(getattr(existing, "created_ts", 0.0) or 0.0)
+            elapsed = int(time.time() - created) if created else 0
+            remaining_budget = max(replaced_budget - elapsed, 1)
+            if max_runtime_secs != 0 and max_runtime_secs < remaining_budget:
+                max_runtime_secs = remaining_budget
     loop, error, _status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
@@ -158,6 +212,7 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         max_cycles=max_cycles,
         stop_sentinel_path="",
         max_runtime_secs=max_runtime_secs,
+        exit_gate_cmd=exit_gate_cmd,
         source="mcp-directive",
         caller="session-directive",
     )
@@ -166,6 +221,18 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
     cap = f", stopping after {max_cycles} cycles" if max_cycles else ", with NO cycle cap"
     if max_runtime_secs:
         cap += f", wall-clock budget {max_runtime_secs}s"
+    if exit_gate_cmd:
+        cap += (
+            f". EXIT GATE armed: autonudge_stop will only succeed once "
+            f"`{exit_gate_cmd}` exits 0"
+        )
+        if inherited_gate:
+            cap += (
+                " (INHERITED from the replaced loop — an agent-initiated re-arm "
+                "cannot drop or change an existing gate, and the replacement's "
+                "cycle cap is clamped so it cannot expire ungated sooner than "
+                "the replaced loop would have; ask the user to alter the gate)"
+            )
     return (
         f"Monitor loop {getattr(loop, 'id', '?')} started on this session: the "
         f"message re-injects {idle_secs}s after each turn ENDS (idle gap){cap}. "
@@ -188,6 +255,53 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
     if not loop:
         return "No active monitor loop on this session to update."
     patch = dict(args.get("patch") or {})
+    # USER-ARMED GATES ONLY (GPT review P1 + the earlier self-disarm guard,
+    # unified): the exit gate is a shell command and this applier runs on the
+    # agent's own AUTO-APPROVED directives, so the agent may neither arm,
+    # change, nor remove one — any exit_gate_cmd here is refused. Arming and
+    # altering gates is a user action (dashboard / REST PATCH), which never
+    # routes through this applier. (Previously an agent could ADD a gate
+    # where none existed; that was the unreviewed-command execution path the
+    # GPT review flagged, closed along with monitor_start's.)
+    if "exit_gate_cmd" in patch:
+        raise _DirectiveDenied(
+            f"monitor_update: exit_gate_cmd cannot be set, changed, or removed "
+            f"from an agent directive (loop {loop.id}) — gates are user-armed. "
+            "Ask the user — the dashboard goal popover or "
+            "PATCH /api/autonudge/{loop_id} can."
+        )
+    # Terminal-bound lowering escape (design review + GPT on the merged
+    # result): BOTH terminal bounds — the cycle cap AND the wall-clock budget
+    # — are deliberately ungated, so on a GATED loop shrinking either one
+    # expires the loop without its gate ever running: an indirect
+    # self-disarm. Raising (or 0 = unlimited) keeps working; only lowering is
+    # a user action on a gated loop.
+    if str(getattr(loop, "exit_gate_cmd", "") or "").strip():
+        new_cap_val = patch.get("max_cycles")
+        current_cap_val = int(getattr(loop, "max_cycles", 0) or 0)
+        if (
+            new_cap_val is not None
+            and int(new_cap_val) != 0
+            and (current_cap_val == 0 or int(new_cap_val) < current_cap_val)
+        ):
+            raise _DirectiveDenied(
+                f"monitor_update: loop {loop.id} has an exit gate, and lowering "
+                "its cycle cap would let the loop expire ungated (the cap path "
+                "does not run the gate). Raise the cap, pass 0, or ask the user."
+            )
+        new_budget_val = patch.get("max_runtime_secs")
+        current_budget_val = int(getattr(loop, "max_runtime_secs", 0) or 0)
+        if (
+            new_budget_val is not None
+            and int(new_budget_val) != 0
+            and (current_budget_val == 0 or int(new_budget_val) < current_budget_val)
+        ):
+            raise _DirectiveDenied(
+                f"monitor_update: loop {loop.id} has an exit gate, and lowering "
+                "its wall-clock budget would let the loop expire ungated (the "
+                "budget path does not run the gate). Raise the budget, pass 0, "
+                "or ask the user."
+            )
     cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
     current_cap = int(getattr(loop, "max_cycles", 0) or 0)
     new_cap = patch.get("max_cycles", current_cap)
@@ -265,6 +379,7 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
         max_cycles=patch.get("max_cycles"),
         active=patch.get("active"),
         max_runtime_secs=patch.get("max_runtime_secs"),
+        exit_gate_cmd=patch.get("exit_gate_cmd"),
         source="mcp-directive",
         caller="session-directive",
     )
@@ -277,7 +392,7 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
     )
 
 
-async def _autonudge_stop(session_key: str, args: dict[str, Any]) -> str:
+async def _autonudge_stop(state: Any, session_key: str, args: dict[str, Any]) -> str:
     from kiro_crew.autonudge import get_instance
 
     svc = get_instance()
@@ -290,12 +405,194 @@ async def _autonudge_stop(session_key: str, args: dict[str, Any]) -> str:
     if not loop:
         return "No active auto-nudge loop on this session — nothing to stop."
     loop_id = loop.id
+    gate_note = ""
+    gate = str(getattr(loop, "exit_gate_cmd", "") or "").strip()
+    if gate:
+        # REVALIDATE before execution (GPT review): the gate was vetted at
+        # ARM time, but governance policy can tighten between arm and stop —
+        # a stored command the current policy forbids must not execute on
+        # yesterday's approval. Same vet as the arm path (deny-list,
+        # credential paths, redaction stability, caller-identity governance),
+        # off-thread because it reads policy files from disk. A gate that no
+        # longer vets clean fails CLOSED for execution but does NOT block the
+        # stop: executing a now-forbidden command is the risk being managed,
+        # and refusing the stop would force exactly that execution on retry.
+        # The loud unverified warning keeps the exit honest.
+        from kiro_crew.autonudge_authz import (
+            _governance_session_key,
+            vet_exit_gate_cmd,
+        )
+
+        revet_err = await asyncio.to_thread(
+            vet_exit_gate_cmd, gate, _governance_session_key(binding)
+        )
+        if revet_err:
+            logger.warning(
+                "AutoNudge exit gate for loop %s no longer passes vetting — "
+                "skipping execution (%s)",
+                loop_id,
+                revet_err,
+            )
+            gate_note = (
+                " WARNING: this loop's exit gate was NOT run — the stored "
+                f"command no longer passes storage-time vetting ({revet_err}). "
+                "The exit condition is NOT verified."
+            )
+        else:
+            # Offloaded: _gate_cwd stats directories (Path.is_dir on a
+            # possibly network-mounted project dir) and reads config for the
+            # workspace fallback — filesystem work that must not run on the
+            # event loop (GPT review: a slow mount would freeze the gateway).
+            gate_cwd = await asyncio.to_thread(_gate_cwd, state, binding)
+            gate_note = await _run_exit_gate(loop_id, gate, cwd=gate_cwd)
     await svc.remove(loop_id)
     reason = str(args.get("reason") or "").strip()
     return (
         f"Auto-nudge loop {loop_id} stopped on this session"
         + (f" (reason: {reason})" if reason else "")
-        + ". No further nudges will fire."
+        + "."
+        + gate_note
+        + " No further nudges will fire."
+    )
+
+
+# Exit-gate execution bounds. The timeout is sized for a real verification
+# command (a focused test run, a health-check curl) while keeping a hung gate
+# from parking the stop indefinitely; the output cap keeps a chatty gate from
+# flooding the refusing turn's context.
+_EXIT_GATE_TIMEOUT_SECS = 120
+_EXIT_GATE_MAX_OUTPUT = 2000
+
+# error_kind values (cron_script.run_command_sandboxed) that mean the gate
+# COULD NOT RUN on this host at all — as opposed to ran-and-failed. Only these
+# fail OPEN. Typed on purpose: an earlier revision substring-matched the
+# human-readable output, which a gate command could spoof
+# (`echo "No POSIX shell available"; exit 1`) to fail open, and which a
+# harmless reword in cron_script.py would silently flip to fail-closed.
+_GATE_STRUCTURAL_ERROR_KINDS = frozenset({"no_shell", "sandbox_unavailable"})
+
+
+def _gate_cwd(state: Any, binding: str) -> str | None:
+    """Resolve the directory a loop's exit gate should execute in.
+
+    Without an anchor the gate inherits the gateway DAEMON's cwd (design
+    review): a relative-path gate like ``pytest -q tests/`` — the schema's own
+    flagship example — would run from the wrong directory and fail for reasons
+    unrelated to work quality, refusing every stop until the loop burns to its
+    cap. Anchor precedence: the slot's project directory (where the agent's
+    own file work is scoped) → the slot's workspace directory → the default
+    workspace directory (channel keys have no slot). Returns ``None`` only if
+    even that resolution fails, in which case the runner falls back to the
+    daemon cwd (pre-existing behavior).
+    """
+    from kiro_crew.config.loader import workspace_dir_for
+
+    slot = None
+    try:
+        slot = state._slots.get(binding) if state is not None else None
+    except Exception:  # noqa: BLE001 - a state fake without _slots
+        slot = None
+    # Real dashboard slots store their working directory in ``slot.project``
+    # (state.py); ``project_dir`` is kept as a fallback for structural fakes
+    # that predate this fix (GPT review: reading only project_dir meant the
+    # anchor ALWAYS fell through to the workspace dir on real slots).
+    project = ""
+    if slot is not None:
+        project = str(
+            getattr(slot, "project", "") or getattr(slot, "project_dir", "") or ""
+        ).strip()
+    if project and Path(project).is_dir():
+        return project
+    try:
+        return str(workspace_dir_for(getattr(slot, "workspace", "default") if slot else "default"))
+    except Exception:  # noqa: BLE001 - fall back to daemon cwd
+        return None
+
+
+async def _run_exit_gate(loop_id: str, gate: str, cwd: str | None = None) -> str:
+    """Execute a loop's exit gate; return a result note or REFUSE the stop.
+
+    The gate runs in the STRICT command sandbox (``run_command_sandboxed`` with
+    ``sandbox_mode="strict"``, which additionally hides ``~/.ssh``) — the
+    command was vetted at arm time by the same storage-time guards as a cron
+    ``command``, but unlike a cron job an exit gate has no legitimate SSH use
+    (it verifies work: run tests, curl a health check), so the wider "cc"
+    profile's deliberate ``~/.ssh`` exposure is not inherited. Text-only
+    vetting cannot see inside a referenced script (``python3 /tmp/gate.py``),
+    so the exec-time sandbox is what bounds a model-written script here.
+    Offloaded to the executor: the runner blocks on the subprocess.
+
+    Outcome policy, keyed on the runner's MACHINE-READABLE ``error_kind``
+    (never on output text, which contains attacker-influenced stdout):
+
+    * **ran, exit 0** → note "gate passed"; the stop proceeds.
+    * **ran and failed** (non-zero exit, timeout — an unfinished verification
+      has verified nothing) → the stop is REFUSED via ``_DirectiveDenied``
+      with the bounded gate output, so the agent gets the evidence it needs
+      to actually finish the job and retry.
+    * **structurally unable to run** (``no_shell`` / ``sandbox_unavailable``)
+      → fail OPEN with a loud warning in the note. This is a QUALITY gate,
+      not a security boundary — failing closed on a structural inability
+      would trap the loop until its caps on exactly the hosts that can never
+      satisfy it.
+
+    A refused stop leaves the loop untouched; the user-facing stops (REST
+    DELETE, STOP sentinel, cycle caps) never run the gate, so a broken gate
+    cannot make a loop unstoppable by its owner.
+    """
+    from kiro_crew.config.loader import config_dir
+    from kiro_crew.cron_script import run_command_sandboxed
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+    # Hide the ENTIRE Kiro Crew data home from the gate. Text vetting cannot
+    # see inside a referenced interpreter script, and the data home is the
+    # keystone: a script that rewrites security_policy.json (or the loop
+    # store, or lessons) is rewriting the agent's own ceiling. No legitimate
+    # verification command needs to touch it. Offloaded: config_dir() reads
+    # (and may create) the config directory — filesystem work that must not
+    # run on the event loop.
+    try:
+        hidden: tuple[str, ...] = (str(await asyncio.to_thread(config_dir)),)
+    except Exception:  # noqa: BLE001 - fall back to profile-only hiding
+        hidden = ()
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        lambda: run_command_sandboxed(
+            gate,
+            timeout=_EXIT_GATE_TIMEOUT_SECS,
+            sandbox_mode="strict",
+            extra_hidden_dirs=hidden,
+            # Anchor to the slot's project/workspace dir (see _gate_cwd) so a
+            # relative-path gate verifies THE loop's work, not the daemon cwd.
+            cwd=cwd,
+        ),
+    )
+    output = str(result.get("output") or "")
+    if len(output) > _EXIT_GATE_MAX_OUTPUT:
+        output = output[:_EXIT_GATE_MAX_OUTPUT] + "\n[gate output truncated]"
+    # Gate stdout is attacker-influenceable runtime text that flows into the
+    # transcript / dashboard / channel surfaces — scrub credential patterns
+    # and exfiltration URLs like every other LLM-visible output path
+    # (backend-security-controls).
+    output, _ = redact_exfiltration_urls(output)
+    output, _ = redact_credentials(output)
+    if result.get("status") == "ok":
+        return " Exit gate passed (exit 0)."
+    if result.get("error_kind") in _GATE_STRUCTURAL_ERROR_KINDS:
+        logger.warning(
+            "AutoNudge exit gate for loop %s could not execute (%s) — allowing the stop",
+            loop_id,
+            result.get("error_kind"),
+        )
+        return (
+            " WARNING: the exit gate could not be executed on this host, so the "
+            "exit condition was NOT verified:\n" + output
+        )
+    raise _DirectiveDenied(
+        f"autonudge_stop REFUSED: this loop's exit gate did not pass "
+        f"(exit_code={result.get('exit_code')}). The loop stays active — finish "
+        "the work the gate checks for, then call autonudge_stop again. Gate "
+        f"command: `{gate}`\nGate output:\n{output}"
     )
 
 

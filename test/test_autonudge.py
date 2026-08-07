@@ -437,6 +437,38 @@ async def test_update_changes_runtime_budget(svc):
 
 
 @pytest.mark.asyncio
+async def test_exit_gate_cmd_persists_across_restart(tmp_path):
+    """The gate must survive a gateway restart — it is part of the loop's
+    contract, not session state."""
+    svc1 = AutoNudgeService(base_dir=tmp_path)
+    await svc1.start()
+    loop = await svc1.add(
+        slot_key="chat-1-123", message="go", idle_secs=15, exit_gate_cmd="pytest -q"
+    )
+    svc1.stop()
+
+    svc2 = AutoNudgeService(base_dir=tmp_path)
+    await svc2.start()
+    assert svc2._loops[loop.id].exit_gate_cmd == "pytest -q"
+    svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_sets_and_clears_exit_gate(svc):
+    """update() replaces the gate, '' clears it, omission leaves it alone."""
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15)
+    assert loop.exit_gate_cmd == ""
+    updated = await svc.update(loop.id, exit_gate_cmd="make test")
+    assert updated is not None and updated.exit_gate_cmd == "make test"
+    updated = await svc.update(loop.id, message="still going")  # omitted → unchanged
+    assert updated is not None and updated.exit_gate_cmd == "make test"
+    updated = await svc.update(loop.id, exit_gate_cmd="")  # "" → cleared
+    assert updated is not None and updated.exit_gate_cmd == ""
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_sentinel_removes_loop(svc, tmp_path, monkeypatch):
     import kiro_crew.autonudge as _an
 
