@@ -25,6 +25,7 @@ from typing import Any
 
 import aiohttp
 from aiohttp import web
+import yarl
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.backend import (
@@ -2322,13 +2323,15 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=502,
         )
 
-    # Build target URL — preserve the `/api/` prefix from the route so the
-    # backend sees its own `/api/...` routes without needing any path-
-    # rewriting middleware.  The route captures `path` after `/api/`, so we
-    # explicitly re-add `/api/` here.
-    target = f"{backend_url}/api/{path}"
-    if request.query_string:
-        target += f"?{request.query_string}"
+    # Build target URL — preserve the exact wire encoding of path and query
+    # params so the gateway's HMAC signature matches what the backend sees on
+    # self.path. `request.query_string` is DECODED by aiohttp, so signing it causes
+    # HMAC verification to fail closed (401) whenever query parameters contain
+    # percent-encodable characters like spaces, non-ASCII, or '+'.
+    raw_qs = request.rel_url.raw_query_string
+    target_path = f"/api/{path}" + (f"?{raw_qs}" if raw_qs else "")
+    target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
+    wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
     headers: dict[str, str] = {}
@@ -2355,10 +2358,7 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             )
         ts = str(int(time.time()))
         body_hash = hashlib.sha256(body or b"").hexdigest()
-        msg = f"{ts}:{request.method}:/api/{path}"
-        if request.query_string:
-            msg += f"?{request.query_string}"
-        msg += f":{body_hash}"
+        msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
         sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
         headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
     except OSError as exc:
@@ -2377,7 +2377,7 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         try:
             async with session.request(
                 method=request.method,
-                url=target,
+                url=target_url,
                 headers=headers,
                 data=body,
                 timeout=timeout,
