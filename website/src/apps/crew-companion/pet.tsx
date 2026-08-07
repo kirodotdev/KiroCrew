@@ -53,7 +53,7 @@ import { useEdgeHide } from './useEdgeHide'
 import { useWalking } from './useWalking'
 import { useIdleFidget } from './useIdleFidget'
 import { useRandomClips, type RandomBehaviors } from './useRandomClips'
-import { activeAnimFor, CELEBRATE_MS, CELEBRATE_PROP_HOLD_MS } from './petAnim'
+import { activeAnimFor, CELEBRATE_MS, CELEBRATE_PROP_HOLD_MS, type PetAnim } from './petAnim'
 import { ALL_MOODS } from './appearanceTypes'
 
 /** Well inside the backend's 90s presence TTL, so one dropped request is harmless. */
@@ -338,9 +338,24 @@ function Companion() {
   const [petState, setPetState] = useState<PetState>('idle')
   const stateTimer = useRef<number | null>(null)
 
+  /**
+   * A per-reaction counter, bumped every time a fresh reaction is triggered.
+   *
+   * Handed to PetAvatar, which folds it into the animated span's React key. Without
+   * it the span is keyed only on the motion NAME, so a reaction that repeats the same
+   * motion — a second completion is `celebrate` again, and a `happy` mood already
+   * resolves to `celebrate` — reuses the same DOM node and never re-fires the CSS
+   * keyframes, so the hop is silently skipped. Bumping this forces the remount that
+   * replays the keyframes on every finish (and every error shake).
+   */
+  const [reactionEpoch, setReactionEpoch] = useState(0)
+  const bumpReaction = useCallback(() => setReactionEpoch((n) => n + 1), [])
+
   /** Show a reaction, then return to idle. */
   const react = useCallback((next: PetState, holdMs: number) => {
     if (stateTimer.current !== null) window.clearTimeout(stateTimer.current)
+    // A fresh reaction always replays its keyframes, even if it repeats the last one.
+    setReactionEpoch((n) => n + 1)
     setPetState(next)
     stateTimer.current = window.setTimeout(() => setPetState('idle'), holdMs)
   }, [])
@@ -673,6 +688,7 @@ function Companion() {
         text: result.show,
       })
       // Curious, not alarmed: activeAnimFor turns a curious mood into the head-cock.
+      bumpReaction()
       setMood('curious')
     },
     /*
@@ -686,7 +702,7 @@ function Companion() {
       if (slotRef.current?.sticky) slotRef.current = null
       setBubble((b) => (b && isSticky(b.kind) ? null : b))
     },
-  }), [react, setMood, celebrateWithProp])
+  }), [react, setMood, celebrateWithProp, bumpReaction])
 
   /** Presence: silence is read as "nobody is there", so this must not stop. */  useEffect(() => {
     void post(PRESENCE_PATH)
@@ -847,6 +863,7 @@ function Companion() {
            * the head instead — curious, not alarmed — and the mood is what drives it,
            * so no `react` here: `activeAnimFor` turns a curious mood into the head-cock.
            */
+          bumpReaction()
           setMood('curious')
         } else {
           react('done', 2_400)
@@ -910,11 +927,36 @@ function Companion() {
     menuAt === null && !reducedMotion
 
   // Built-in ghost: small in-place hop / brief mood flicker.
+  /*
+   * The idle fidget currently playing, if any.
+   *
+   * Held in state rather than derived, because a fidget is something the companion
+   * DECIDED to do at a random moment -- nothing about the current state or mood
+   * implies it. It clears itself after the motion's own length so the companion
+   * returns to still without needing another signal.
+   */
+  const [idleAnim, setIdleAnim] = useState<PetAnim>(null)
+  const idleAnimTimer = useRef<number | null>(null)
+
+  const playFidget = useCallback((anim: PetAnim, holdMs: number) => {
+    if (idleAnimTimer.current !== null) window.clearTimeout(idleAnimTimer.current)
+    // Same epoch bump as a reaction: without it, drawing the SAME fidget twice in a
+    // row would reuse the DOM node and the keyframes would never restart.
+    bumpReaction()
+    setIdleAnim(anim)
+    idleAnimTimer.current = window.setTimeout(() => setIdleAnim(null), holdMs)
+  }, [bumpReaction])
+
+  useEffect(() => () => {
+    if (idleAnimTimer.current !== null) window.clearTimeout(idleAnimTimer.current)
+  }, [])
+
   useIdleFidget({
     enabled: isDefaultPack && settled,
     getPos: () => pos,
     walkPath,
     setMood,
+    playFidget,
   })
 
   // Custom packs: only the random content the pack itself ships.
@@ -962,6 +1004,7 @@ function Companion() {
     mood,
     docked: hideEdge !== null,
     walking: isWalking,
+    idleAnim,
   })
 
   return (
@@ -992,7 +1035,6 @@ function Companion() {
           <Bubble
             text={bubble.text}
             kind={bubble.kind}
-            arrowLeft={placement?.arrowX}
             onDismiss={dismiss}
             onAction={(action) => {
               // The breathing nudge's CTA opens the exercise, which is the whole
@@ -1113,6 +1155,7 @@ function Companion() {
             mood={mood}
             docked={hideEdge !== null}
             anim={activeAnim}
+            animEpoch={reactionEpoch}
             trackCursor
             flipX={facingRight}
             accessory={celebrateProp ?? savedProp}

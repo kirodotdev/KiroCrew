@@ -51,17 +51,26 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
     setClampedY(newY)
   }, [x, y])
 
-  // Report menu hitbox to main process (overlay only)
+  // Report the menu's interactive region to the main process (overlay only).
+  //
+  // The overlay window is click-through everywhere EXCEPT the rects it reports: the
+  // main process polls the cursor and only lets the page accept a click when the
+  // cursor is inside one of them. While the menu is open we report the WHOLE
+  // viewport, not just the menu's own box — a menu is a modal moment, so it is
+  // legitimate for the overlay to capture every click until it closes. Reporting
+  // only the menu box (the previous behaviour) meant a click just OUTSIDE it was
+  // forwarded to the desktop and never reached this page, so the close-on-outside
+  // listener below could never fire and the menu could not be dismissed by clicking
+  // away. The cleanup clears the rect the instant the menu closes, so the overlay
+  // returns to click-through and no stale full-screen hitbox is left capturing the
+  // user's screen.
   useEffect(() => {
     if (!reportHitbox) return
-    const el = menuRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    api?.setMenuHitbox?.({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })
+    api?.setMenuHitbox?.({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight })
     return () => { api?.setMenuHitbox?.(null) }
-  }, [clampedX, clampedY, reportHitbox])
+  }, [reportHitbox])
 
-  // Close on click outside, Escape, or window losing focus
+  // Close on click outside, Escape, or window losing focus.
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose()
@@ -69,8 +78,8 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     const handleBlur = () => onClose()
 
-    // Tell main process to capture clicks on all overlays (like drag does)
-
+    // Deferred one tick so the click that OPENED the menu does not immediately
+    // close it again.
     const timer = setTimeout(() => {
       window.addEventListener('mousedown', handleClick, true)
       window.addEventListener('keydown', handleKey, true)
@@ -81,10 +90,8 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
       window.removeEventListener('mousedown', handleClick, true)
       window.removeEventListener('keydown', handleKey, true)
       window.removeEventListener('blur', handleBlur)
-      if (reportHitbox) {
-      }
     }
-  }, [onClose, reportHitbox])
+  }, [onClose])
 
   const handleAction = useCallback((action: string) => {
     onClose()
@@ -92,12 +99,50 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
   }, [onClose, onAction])
 
   return (
-    <div
-      ref={menuRef}
-      style={{
-        position: 'fixed', left: clampedX, top: clampedY, zIndex: 99999,
-        background: 'var(--bg-elevated)',
-        border: '1px solid var(--border)',
+    <>
+      {reportHitbox ? (
+        <div
+          className="cc-menu-backdrop"
+          onMouseDown={onClose}
+          style={{
+            // A transparent, full-viewport catcher that sits just UNDER the menu.
+            //
+            // The overlay's html and body are `pointer-events: none`, so a click on
+            // an empty region of the desktop hits no element and dispatches no DOM
+            // event — the window-level "click outside closes me" listener could never
+            // fire there. This backdrop is a real element under the cursor, so an
+            // outside click lands on it and dismisses the menu. Paired with the
+            // full-viewport hitbox above (which is what makes the overlay accept the
+            // click at all), it is what restores click-anywhere-to-dismiss. Rendered
+            // only in the overlay (`reportHitbox`); the chat window's menu keeps its
+            // ordinary click-outside behaviour untouched.
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99998,
+            pointerEvents: 'auto',
+            background: 'transparent',
+          }}
+        />
+      ) : null}
+      <div
+        ref={menuRef}
+        style={{
+          position: 'fixed', left: clampedX, top: clampedY, zIndex: 99999,
+        /*
+         * Every themed colour here carries a fallback, and that is load-bearing.
+         *
+         * This menu renders in the pet's OVERLAY window, which has no stylesheet of
+         * its own — `adoptDashboardTheme` injects the dashboard's, so the variables
+         * arrive late and, if that injection does not take, never. A `var(--x)` with
+         * no fallback is then an INVALID value, which for `background` means fully
+         * transparent: the menu became the desktop with text floating on it. The
+         * giveaway was that `--text` and `--danger` rendered fine here while these
+         * three did not — the difference was only the fallback.
+         *
+         * The values match the app this was ported from, which never dropped them.
+         */
+        background: 'var(--bg-elevated, #2a2a2a)',
+        border: '1px solid var(--border, rgba(255,255,255,0.15))',
         borderRadius: 6, padding: '4px 0',
         boxShadow: '0 4px 12px var(--shadow, rgba(0,0,0,0.5))',
         minWidth: MENU_MIN_W,
@@ -105,7 +150,7 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
     >
       {items.map((entry, i) => {
         if ('separator' in entry && entry.separator) {
-          return <div key={`sep-${i}`} style={{ height: 1, background: 'var(--border)', margin: '2px 0' }} />
+          return <div key={`sep-${i}`} style={{ height: 1, background: 'var(--border, rgba(255,255,255,0.15))', margin: '2px 0' }} />
         }
         const item = entry as ContextMenuItem
         return (
@@ -122,13 +167,14 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
              * assume a dark menu, so `rgba(255,255,255,0.1)` read as a highlight there;
              * on the light theme it is white on white and the hover state vanished.
              */
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover, rgba(255,255,255,0.1))' }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
           >
             {item.label}
           </div>
         )
       })}
-    </div>
+      </div>
+    </>
   )
 }

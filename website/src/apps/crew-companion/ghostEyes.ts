@@ -21,9 +21,26 @@ export const GHOST_EYE_INK = '#1a1526'
 
 export const GHOST_EYE_MAP: Record<string, EyeSpec[]> = {
   primary: [{ x: 54.33, y: 38.79, w: 8.98, h: 12.37 }, { x: 69.82, y: 38.79, w: 8.98, h: 12.37 }],
-  '2nd':   [{ x: 60.62, y: 33.77, w: 7.62, h: 10.9 },  { x: 73.68, y: 34.56, w: 7.62, h: 10.9 }],
+  /*
+   * '2nd' and '4th' are pulled LEFT from the values the desktop app ships, and that
+   * divergence is deliberate.
+   *
+   * Those numbers were authored against posed body footage, where each pose has its
+   * own silhouette. The built-in ghost here has only ONE body (`kiro_idle.svg`,
+   * byte-identical to the app's) — the pose changes the eyes and nothing else. So the
+   * '4th' pair landed where the 4th pose's head USED to be: measured against the idle
+   * art, its right eye's centre sat at 82.3% while the head's right edge is at 80.3%,
+   * i.e. the whole eye hung outside the silhouette, straddling the black outline.
+   * '2nd' was the milder version of the same thing, pressed against the edge.
+   *
+   * Each pair was slid horizontally — spacing and vertical position untouched — until
+   * both eyes clear the outline with ~1.5% of margin, so the pose still reads as the
+   * same glance direction. The three poses that already landed correctly are
+   * unchanged. `GhostEyePoses.test.ts` pins this against the head bounds.
+   */
+  '2nd':   [{ x: 58.93, y: 33.77, w: 7.62, h: 10.9 },  { x: 71.99, y: 34.56, w: 7.62, h: 10.9 }],
   '3rd':   [{ x: 47.38, y: 33.7,  w: 6.46, h: 12.39 }, { x: 58.42, y: 32.69, w: 6.46, h: 12.39 }],
-  '4th':   [{ x: 70.74, y: 40.37, w: 6.76, h: 13.95 }, { x: 82.27, y: 39.16, w: 6.76, h: 13.95 }],
+  '4th':   [{ x: 61.93, y: 40.37, w: 6.76, h: 13.95 }, { x: 73.46, y: 39.16, w: 6.76, h: 13.95 }],
   // Docked pose (Figma 10:335). Derived from the baked eye paths (Vector_2/3)
   // mapped through the 232.201×247.245 viewBox → 128px pet box (xMidYMid meet).
   docked:  [{ x: 46.4, y: 22.9, w: 9, h: 13 }, { x: 61.9, y: 22.6, w: 9, h: 13 }],

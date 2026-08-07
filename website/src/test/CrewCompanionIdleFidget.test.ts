@@ -6,9 +6,10 @@
  * from the desktop app.
  *
  * The hook is timer- and clock-driven, so time is faked and Math.random is stubbed to
- * a constant to pick the branch deterministically: 0.9 forces the hop branch (>=0.35)
- * with a 66px rightward nudge; 0.1 forces the mood branch (<0.35) and index 0 of the
- * pool.
+ * a constant to pick deterministically from the flat action pool. By day the pool is
+ * [mood, hop, ...4 body motions] picked uniformly, so index = floor(r * 6): r=0.25
+ * lands on the hop (index 1) and also gives a 40px nudge; r=0.1 lands on the mood
+ * (index 0) and picks index 0 of the mood pool. At night the pool is [mood, hop] only.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -25,10 +26,11 @@ const NIGHT_BASE = 600_000
 function mount(enabled: boolean) {
   const walkPath = vi.fn()
   const setMood = vi.fn()
+  const playFidget = vi.fn()
   const view = renderHook(() =>
-    useIdleFidget({ enabled, getPos: () => HOME, walkPath, setMood }),
+    useIdleFidget({ enabled, getPos: () => HOME, walkPath, setMood, playFidget }),
   )
-  return { walkPath, setMood, ...view }
+  return { walkPath, setMood, playFidget, ...view }
 }
 
 beforeEach(() => {
@@ -46,7 +48,7 @@ afterEach(() => {
 describe('useIdleFidget gating', () => {
   it('does nothing at all while disabled, however long it waits', () => {
     vi.setSystemTime(DAY)
-    vi.spyOn(Math, 'random').mockReturnValue(0.9) // would be a hop if enabled
+    vi.spyOn(Math, 'random').mockReturnValue(0.25) // would be a hop if enabled
     const { walkPath, setMood } = mount(false)
     act(() => { vi.advanceTimersByTime(DAY_MAX_DELAY * 3) })
     expect(walkPath).not.toHaveBeenCalled()
@@ -55,7 +57,7 @@ describe('useIdleFidget gating', () => {
 
   it('when enabled, a tick fires within the day cadence window', () => {
     vi.setSystemTime(DAY)
-    vi.spyOn(Math, 'random').mockReturnValue(0.9)
+    vi.spyOn(Math, 'random').mockReturnValue(0.25)
     const { walkPath } = mount(true)
     act(() => { vi.advanceTimersByTime(DAY_MAX_DELAY) })
     expect(walkPath).toHaveBeenCalledTimes(1)
@@ -65,8 +67,8 @@ describe('useIdleFidget gating', () => {
 describe('useIdleFidget hop geometry', () => {
   it('hops out and comes straight back home, staying on-screen and clear of the Dock', () => {
     vi.setSystemTime(DAY)
-    // 0.9: branch=hop; angle=0.9*2π; dist=30+0.9*40=66.
-    vi.spyOn(Math, 'random').mockReturnValue(0.9)
+    // 0.25 -> index 1 = hop; angle=0.25*2π; dist=30+0.25*40=40.
+    vi.spyOn(Math, 'random').mockReturnValue(0.25)
     const { walkPath, setMood } = mount(true)
     act(() => { vi.advanceTimersByTime(DAY_MAX_DELAY) })
 
@@ -85,7 +87,7 @@ describe('useIdleFidget hop geometry', () => {
 
   it('the hop distance stays inside the 30–70px "nearby" band', () => {
     vi.setSystemTime(DAY)
-    vi.spyOn(Math, 'random').mockReturnValue(0.9)
+    vi.spyOn(Math, 'random').mockReturnValue(0.25)
     const { walkPath } = mount(true)
     act(() => { vi.advanceTimersByTime(DAY_MAX_DELAY) })
     const points = walkPath.mock.calls[0][0] as Array<{ x: number; y: number }>

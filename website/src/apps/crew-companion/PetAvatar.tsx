@@ -132,11 +132,26 @@ export interface PetAvatarProps {
    * still; omit it to let the state decide.
    */
   anim?: PetAnim
+  /**
+   * A monotonically increasing "a fresh reaction just happened" counter.
+   *
+   * The animated span is keyed off the motion NAME so a change of motion restarts the
+   * keyframes. But a reaction can repeat WITHOUT the name changing — two completions in
+   * a row are both `celebrate`, and because a `happy` mood also resolves to `celebrate`
+   * the companion is often already in celebrate-continuity when the next finish lands.
+   * With a name-only key React reuses the same DOM node, the CSS animation is never
+   * re-triggered, and the hop is silently skipped. Folding this counter into the key
+   * forces a remount on every fresh reaction, so each celebration actually hops (and
+   * each error actually shakes) even when the previous one was the same motion.
+   *
+   * The live pet bumps it once per discrete reaction; static previews leave it at 0.
+   */
+  animEpoch?: number
   className?: string
 }
 
 export const PetAvatar: React.FC<PetAvatarProps> = ({
-  size, state = 'idle', mood, docked = false, eyeDx = 0, eyeDy = 0, trackCursor = false, flipX = false, anim, className,
+  size, state = 'idle', mood, docked = false, eyeDx = 0, eyeDy = 0, trackCursor = false, flipX = false, anim, animEpoch = 0, className,
   accessory = 'none',
 }) => {
   /**
@@ -260,10 +275,12 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
       style={{ display: 'inline-flex', lineHeight: 0 }}
       aria-hidden="true"
     >
-      {/* Motions are keyed off the resolved animation, so a fresh reaction restarts
-          the keyframes instead of inheriting a half-played one. */}
+      {/* Motions are keyed off the resolved animation AND a per-reaction epoch, so a
+          fresh reaction restarts the keyframes instead of inheriting a half-played one
+          — even when it repeats the SAME motion (a second celebrate hop, a second
+          error shake), which a name-only key silently swallowed. */}
       <span
-        key={animName ?? state}
+        key={`${animName ?? state}#${animEpoch}`}
         className={animClassFor(animName)}
         style={{ position: 'relative', width: size, height: size, display: 'block' }}
       >
