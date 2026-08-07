@@ -717,6 +717,69 @@ def _invalidate_toolchain_cache() -> None:
 _SANDBOX_ERR_MAX = 900
 
 
+# ─── Windows registry-based binary discovery ───
+# Maps tool names to (HKLM registry key, value name, subdirectory) tuples.
+# These registry entries are written by official installers and live in the
+# MACHINE hive (HKLM), which requires admin to write — not agent-writable.
+_WIN_REGISTRY_HINTS: dict[str, list[tuple[str, str, str]]] = {
+    "git": [
+        (r"SOFTWARE\GitForWindows", "InstallPath", "cmd"),
+        (r"SOFTWARE\GitForWindows", "InstallPath", "bin"),
+    ],
+    "gh": [
+        (r"SOFTWARE\GitHub CLI", "InstallPath", ""),
+    ],
+}
+
+
+def _win_registry_bin(name: str) -> str | None:
+    """Resolve *name* via HKLM registry keys written by official installers.
+
+    Returns the first existing, executable candidate whose resolved path is
+    NOT under $HOME and NOT writable by this process. Returns None if no
+    registry hint exists for *name* or no candidate qualifies.
+    """
+    try:
+        import winreg  # type: ignore[import-not-found]  # Windows-only
+    except ImportError:
+        return None
+    hints = _WIN_REGISTRY_HINTS.get(name)
+    if not hints:
+        return None
+    suffixes = (".exe", ".cmd", "")
+    home_prefix = str(Path.home().resolve()) + os.sep
+    for reg_key, reg_value, subdir in hints:
+        for hive_flag in (winreg.KEY_READ | winreg.KEY_WOW64_64KEY,  # type: ignore[attr-defined]
+                          winreg.KEY_READ | winreg.KEY_WOW64_32KEY):  # type: ignore[attr-defined]
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_key, 0, hive_flag) as key:  # type: ignore[attr-defined]
+                    install_path, _ = winreg.QueryValueEx(key, reg_value)  # type: ignore[attr-defined]
+            except OSError:
+                continue
+            base = Path(install_path)
+            if subdir:
+                base = base / subdir
+            for suffix in suffixes:
+                cand = base / (name + suffix)
+                try:
+                    if not (cand.is_file() and os.access(cand, os.X_OK)):
+                        continue
+                    real = cand.resolve()
+                    # Reject if under user's home (same guard as the main loop)
+                    if str(real).startswith(home_prefix):
+                        continue
+                    # Trust is derived from the HKLM registry origin: writing
+                    # to HKLM requires admin, so the install path itself is
+                    # operator-attested. No additional writability check —
+                    # os.access(W_OK) is bypassable on Windows (read-only
+                    # attribute is user-clearable) and DACL inspection is
+                    # out of scope for this discovery helper.
+                    return str(real)
+                except OSError:
+                    continue
+    return None
+
+
 def _trusted_bin(name: str) -> str | None:
     """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
 
@@ -772,6 +835,14 @@ def _trusted_bin(name: str) -> str | None:
                 continue
         if resolved:
             break
+    # Windows fallback: discover install paths from the MACHINE registry
+    # (HKLM), which is operator-owned and not writable by the agent process.
+    # This covers tools installed outside Program Files (e.g.
+    # D:\software\Git\cmd\git.exe) without trusting the inherited PATH (which
+    # includes agent-writable worktree venvs — the exact vector _trusted_bin
+    # is designed to close).
+    if resolved is None and platform_compat.IS_WINDOWS:
+        resolved = _win_registry_bin(name)
     _TRUSTED_BIN_CACHE[name] = resolved
     return resolved
 

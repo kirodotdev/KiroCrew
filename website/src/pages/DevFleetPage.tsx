@@ -346,19 +346,65 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
 interface ConfirmBtnProps { title: string; desc: string; confirmLabel?: string; onConfirm: () => void; btn?: Record<string, unknown>; children: ReactNode }
 function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: ConfirmBtnProps) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLSpanElement>(null)
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    // Focus the Cancel button so keyboard users land inside the popover
+    requestAnimationFrame(() => cancelRef.current?.focus())
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!triggerRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); triggerRef.current?.focus() } }
+    const onScrollOrResize = () => setOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScrollOrResize, true)
+      window.removeEventListener('resize', onScrollOrResize)
+    }
+  }, [open])
+
+  const toggle = () => {
+    if (!open && triggerRef.current) setRect(triggerRef.current.getBoundingClientRect())
+    setOpen((o) => !o)
+  }
+
+  // Open below the trigger, right-aligned; flip up if no room below.
+  const popH = 130 // approximate popover height
+  const spaceBelow = rect ? window.innerHeight - rect.bottom - MENU_GAP : 0
+  const openUp = !!rect && spaceBelow < popH + MENU_MARGIN && rect.top > spaceBelow
+  const posStyle: CSSProperties = rect
+    ? {
+        position: 'fixed',
+        right: Math.max(MENU_MARGIN, window.innerWidth - rect.right),
+        ...(openUp
+          ? { bottom: window.innerHeight - rect.top + MENU_GAP }
+          : { top: rect.bottom + MENU_GAP }),
+      }
+    : { position: 'fixed' }
+
   return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-flex' } as CSSProperties}>
-      <Btn {...(btn || {})} onClick={() => setOpen(!open)}>{children}</Btn>
-      {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 1200, background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', width: 264, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', textAlign: 'left' as const } as CSSProperties}>
+    <span style={{ display: 'inline-flex' } as CSSProperties}>
+      <Btn ref={triggerRef} {...(btn || {})} onClick={toggle} aria-haspopup="dialog" aria-expanded={open}>{children}</Btn>
+      {open && rect && createPortal(
+        <div ref={popRef} role="dialog" aria-label={title} style={{ ...posStyle, zIndex: 4000, background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', width: 264, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', textAlign: 'left' as const } as CSSProperties}>
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{title}</div>
           <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>{desc}</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' } as CSSProperties}>
-            <Btn onClick={() => setOpen(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn>
+            <Btn ref={cancelRef} onClick={() => setOpen(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn>
             <Btn primary onClick={() => { setOpen(false); onConfirm() }}>{confirmLabel || i18nT('pages.devFleetPage.start')}</Btn>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </span>
   )
