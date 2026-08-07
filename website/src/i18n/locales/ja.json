@@ -3724,6 +3724,8 @@
       "search_everywhere": "すべてから検索",
       "search_for_anything": "何でも検索",
       "search_scope": "{{scope}}を検索…",
+      "retry": "再試行",
+      "search_failed": "検索に失敗しました",
       "searching": "検索中…",
       "tab": "tab"
     },

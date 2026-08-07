@@ -766,7 +766,9 @@
         }
       },
       "search_for_anything": "Search for anything",
-      "search_scope": "Search {{scope}}…"
+      "search_scope": "Search {{scope}}…",
+      "retry": "Retry",
+      "search_failed": "Search failed"
     },
     "commentsSidebar": {
       "agent": "Agent",

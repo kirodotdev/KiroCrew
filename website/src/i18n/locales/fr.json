@@ -3732,6 +3732,8 @@
       "search_everywhere": "Rechercher partout",
       "search_for_anything": "Rechercher n’importe quoi",
       "search_scope": "Rechercher dans {{scope}}…",
+      "retry": "Réessayer",
+      "search_failed": "Échec de la recherche",
       "searching": "Recherche…",
       "tab": "tab"
     },

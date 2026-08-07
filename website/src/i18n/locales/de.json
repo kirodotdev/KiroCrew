@@ -3685,6 +3685,8 @@
       "search_everywhere": "Überall suchen",
       "search_for_anything": "Nach allem suchen",
       "search_scope": "{{scope}} durchsuchen…",
+      "retry": "Wiederholen",
+      "search_failed": "Suche fehlgeschlagen",
       "searching": "Wird gesucht…",
       "tab": "Tab"
     },
