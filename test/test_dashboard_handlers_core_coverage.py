@@ -650,7 +650,12 @@ class TestSttConfigEndpoint:
         # Streaming capability is served from the backend's own set so the
         # Settings UI gates on a CAPABILITY rather than a provider name.
         assert body["streaming_providers"] == ["transcribe", "apple"]
-        assert body["models"] == {"turbo": "~1.6 GB"}
+        # Tracks _STT_MODEL_SIZES (the PUT allowlist) rather than pinning one
+        # literal: the faster-whisper work widened the enum from `turbo` alone
+        # to the full Whisper size ladder, and a test pinned to yesterday's
+        # ladder fails on every legitimate widening.
+        assert body["models"] == core_mod._STT_MODEL_SIZES
+        assert "turbo" in body["models"]
         assert body["language_codes"][0] == "en-US"
         assert body["available"] is False
         assert body["prereqs"] == []

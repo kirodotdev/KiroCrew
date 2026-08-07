@@ -7,6 +7,7 @@ AWS Transcribe is supported as an optional extra (``pip install 'kirocrew[voice]
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import re
@@ -14,10 +15,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.executors import subprocess_executor
 
 # Transcribe-path deps are an OPTIONAL 'aws' extra (amazon-transcribe + boto3).
 # The module MUST stay importable when they're absent (default install, partial
@@ -34,7 +37,161 @@ except ImportError:  # pragma: no cover — covered by cli_doctor tests
     CredentialResolver = object  # type: ignore[assignment,misc]
     Credentials = None  # type: ignore[assignment,misc]
 
+# faster-whisper is an optional runtime installed on demand via /api/stt/install,
+# NOT a declared extra. The module MUST stay importable when it is absent so the
+# Gateway starts without the library and ``cli_doctor`` can report the gap.
+try:
+    from faster_whisper import WhisperModel as _FasterWhisperModel
+except ImportError:  # pragma: no cover — optional runtime, installed on demand
+    _FasterWhisperModel = None  # type: ignore[assignment,misc]
+
+
+def _faster_whisper_model() -> Any:
+    """Return the faster-whisper ``WhisperModel`` class, or ``None`` if absent.
+
+    Retries the import when the module-load attempt found nothing: the library is
+    installed on demand from Settings into this interpreter's environment, so a
+    gateway that booted before the install must be able to pick it up without a
+    restart. The successful import is cached back into the module global, so the
+    retry costs one failed-import per call only while the library is absent.
+
+    NEVER call on the event loop: importing faster_whisper loads CTranslate2's
+    native extension synchronously (hundreds of ms of disk and dynamic linking),
+    which would stall every gateway task. Call sites are the subprocess-executor
+    thread (:func:`_run_faster_whisper_sync`), the install handler's
+    ``asyncio.to_thread`` warm-up, and ``cli_doctor`` (its own process, no loop).
+    Loop-side availability checks read the cached ``_FasterWhisperModel`` global
+    instead.
+    """
+    global _FasterWhisperModel
+    if _FasterWhisperModel is None:
+        try:
+            _FasterWhisperModel = importlib.import_module("faster_whisper").WhisperModel
+        except ImportError:
+            return None
+    return _FasterWhisperModel
+
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Hallucination filter — suppress Whisper-family transcription artefacts.
+#
+# Whisper models fed silence or low-energy audio produce two recognisable
+# artefacts, and both are worse than an empty transcript in this app: the text
+# goes to agents, so a hallucinated sign-off becomes a meeting note, and a phrase
+# repeated forty times becomes forty note lines.
+#
+#  1. One phrase repeating ("Thank you. Thank you. Thank you. …")
+#  2. Boilerplate unrelated to the audio — subtitle credits, sign-offs, stock
+#     phrases memorised from the training set's video captions.
+#
+# Pure text logic, language-independent, applied to every Whisper-family
+# provider. AWS Transcribe uses a different decoder and does not produce these,
+# so it is deliberately excluded rather than filtered "just in case" — running
+# the filter there could only ever delete genuine speech.
+# ---------------------------------------------------------------------------
+
+# Boilerplate phrases Whisper hallucinates on silence. Compared case-insensitively.
+# LIST DISCIPLINE: every entry must be implausible as a complete DICTATED
+# utterance. Phrases that are also ordinary speech ("goodbye", "copyright",
+# "thanks for listening", "thanks for joining", "see you next time", "all
+# rights reserved") were removed after review: a filter entry that matches a
+# plausible real sentence deletes genuine speech on the normal path, which is
+# worse than letting one artefact line through. Video-caption phrasing
+# ("watching", "subscribe", subtitle credits) stays — nobody dictates those
+# into a voice memo.
+_WHISPER_BOILERPLATE: tuple[str, ...] = (
+    "thank you for watching",
+    "thanks for watching",
+    "please subscribe",
+    "like and subscribe",
+    "see you in the next video",
+    "subtitles by",
+    "subtitles by amara.org",
+    "subtitles by the amara.org community",
+    "subtitles created by",
+    "subtitled by",
+    "translated by",
+    "transcribed by",
+    "captioned by",
+    "amara.org",
+    "www.mooji.org",
+    "please like and subscribe",
+    "don't forget to subscribe",
+    "hit the bell",
+    "click the subscribe button",
+)
+
+# How many consecutive identical sentences count as a repetition artefact rather
+# than emphasis. Humans genuinely say a sentence two, three, even five times
+# ("No. No. No.", a counted beat, an insistent refusal), so a low threshold
+# rewrites real speech. The Whisper failure mode this targets repeats a phrase
+# for the remainder of the decode window — typically dozens of times — so six
+# is still far below the artefact and comfortably above plausible emphasis.
+_REPEAT_THRESHOLD = 6
+
+# Boilerplate matches the WHOLE sentence only, never a substring and never a
+# word-count neighbourhood. Anything looser deletes real speech: a bare
+# substring rule drops "Thanks for joining today's standup, let's start", and
+# even a one-word slack drops "Thanks for joining, everyone." — a normal
+# meeting opener. This filter runs on every Whisper-family transcript, so a
+# false positive is silent loss of genuine speech; a false negative is one
+# stray boilerplate line, which the repetition collapse usually removes anyway.
+# Known multi-word artefact shapes ("Subtitles by Amara.org") are covered by
+# listing the full phrase in _WHISPER_BOILERPLATE, not by loosening the match.
+
+
+def _is_boilerplate_line(line: str) -> bool:
+    """Return True if *line* is exactly (case/punctuation aside) known boilerplate."""
+    stripped = line.strip().rstrip(".!?,;:").strip().lower()
+    if not stripped:
+        return False
+    return stripped in _WHISPER_BOILERPLATE
+
+
+def _collapse_repeated_phrases(text: str) -> str:
+    """Collapse runs of >= :data:`_REPEAT_THRESHOLD` identical sentences to one.
+
+    Splits on sentence boundaries, keeping each sentence's trailing punctuation.
+    Only CONSECUTIVE runs collapse: the same sentence recurring later in a
+    meeting is ordinary speech, not an artefact.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if len(sentences) <= 1:
+        return text
+    output: list[str] = []
+    i = 0
+    while i < len(sentences):
+        current_norm = sentences[i].strip().lower()
+        j = i + 1
+        while j < len(sentences) and sentences[j].strip().lower() == current_norm:
+            j += 1
+        if j - i >= _REPEAT_THRESHOLD:
+            output.append(sentences[i])
+        else:
+            output.extend(sentences[i:j])
+        i = j
+    return " ".join(output)
+
+
+def filter_hallucinations(text: str) -> str:
+    """Remove Whisper hallucination artefacts from a transcript.
+
+    May return ``""`` when the whole transcript was hallucinated — which is the
+    honest answer for a recording of silence, and is why callers treat an empty
+    result as "no transcript" rather than passing it on.
+    """
+    if not text:
+        return text
+    text = _collapse_repeated_phrases(text)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(s for s in sentences if not _is_boilerplate_line(s)).strip()
+
+
+#: Providers whose output passes through :func:`filter_hallucinations`.
+_WHISPER_FAMILY_PROVIDERS = frozenset(("whisper", "mlx", "faster"))
 
 
 def _ffmpeg_candidate_dirs() -> list[str]:
@@ -293,6 +450,15 @@ def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
         if not shutil.which("ffmpeg"):
             logger.warning("ffmpeg not found; .webm transcription will be unavailable")
         return True
+    if provider == "faster":
+        # No ffmpeg probe: faster-whisper decodes audio itself through PyAV's
+        # bundled FFmpeg, so the system binary the CLI providers need is irrelevant.
+        # CACHED READ ONLY — this function runs on the event loop (config GET,
+        # Slack voice), and a lazy import here would load a native library
+        # synchronously on the loop. The cache is populated at module load, by
+        # the install handler's off-loop warm-up, or by the executor-thread
+        # retry in _run_faster_whisper_sync.
+        return _FasterWhisperModel is not None
     if provider == "mlx":
         ensure_ffmpeg_in_path()
         return _find_mlx_whisper() is not None
@@ -347,6 +513,9 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
     provider = stt_config.provider
     if provider == "transcribe":
         result = await _transcribe_aws(audio_path, stt_config)
+    elif provider == "faster":
+        # No ensure_ffmpeg_in_path: faster-whisper decodes in-process via PyAV.
+        result = await _transcribe_faster(audio_path, stt_config)
     elif provider == "mlx":
         await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_mlx(audio_path, stt_config)
@@ -357,6 +526,13 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         result = await _transcribe_native(audio_path, stt_config)
 
     if result:
+        # Before redaction, and before the caller sees anything: a transcript that
+        # is entirely hallucinated must come back as None, not as boilerplate for
+        # an agent to write into the notes.
+        if provider in _WHISPER_FAMILY_PROVIDERS:
+            result = await asyncio.to_thread(filter_hallucinations, result)
+            if not result:
+                return None
         result = await asyncio.to_thread(_redact_transcript, result)
     return result
 
@@ -716,6 +892,90 @@ async def _run_whisper_cli(
 # Constrain it to a HuggingFace ``owner/repo`` id (single slash, no path
 # traversal — the owner segment forbids dots) before use.
 _MLX_MODEL_RE = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9._-]+$")
+
+
+#: The one constructed WhisperModel, stored with its ``(model, device)`` key.
+#: Loading a model re-reads and re-quantizes the weights (tens of MB for
+#: ``tiny`` up to ~GBs for ``large-v3``), so constructing one per recording adds
+#: multi-second latency — and CONCURRENT recordings would each hold a full
+#: copy, compounding to RAM exhaustion on the 8-thread executor pool. The cache
+#: is deliberately SINGLE-SLOT: the gateway serves one configured model at a
+#: time, so switching sizes evicts the previous instance instead of keeping
+#: every size ever selected resident (which would itself OOM a small host).
+#: The lock serializes construction only; ``WhisperModel.transcribe`` is safe
+#: to call from multiple threads on one instance.
+_FW_MODEL_CACHE: dict[tuple[str, str], Any] = {}
+_FW_MODEL_LOCK = threading.Lock()
+
+
+def _cached_fw_model(model_cls: Any, model: str, device: str) -> Any:
+    """Return the shared WhisperModel for ``(model, device)``, single-slot."""
+    key = (model, device)
+    with _FW_MODEL_LOCK:
+        fw_model = _FW_MODEL_CACHE.get(key)
+        if fw_model is None:
+            # Evict any other-size instance BEFORE constructing the new one, so
+            # peak residency during a switch is one model plus the one being
+            # built, never an unbounded accumulation of every size selected.
+            _FW_MODEL_CACHE.clear()
+            fw_model = model_cls(model, device=device, compute_type="int8")
+            _FW_MODEL_CACHE[key] = fw_model
+        return fw_model
+
+
+def _run_faster_whisper_sync(audio_path: str, model: str, device: str) -> str | None:
+    """Run faster-whisper inference synchronously. NEVER call on the event loop.
+
+    ``compute_type="int8"`` is what makes CPU inference practical — the models are
+    quantised on load, trading a little accuracy for the several-fold speedup that
+    keeps a meeting-length recording from taking longer than the meeting.
+    """
+    model_cls = _faster_whisper_model()
+    if model_cls is None:
+        logger.error("faster-whisper not available — install: pip install faster-whisper")
+        return None
+    try:
+        fw_model = _cached_fw_model(model_cls, model, device)
+        segments, _info = fw_model.transcribe(audio_path, beam_size=5)
+        # `segments` is a GENERATOR: inference happens as it is consumed, which is
+        # precisely why this whole function belongs off the loop.
+        parts = [text for segment in segments if (text := segment.text.strip())]
+        return " ".join(parts).strip() or None
+    except Exception:
+        # Same contract as every other provider here: log and return None rather
+        # than raise, so one bad recording cannot take a caller down.
+        logger.exception("faster-whisper transcription failed")
+        return None
+
+
+async def _transcribe_faster(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """Transcribe with faster-whisper (CTranslate2), in-process.
+
+    Unlike the ``whisper`` and ``mlx`` providers there is no subprocess and no
+    system ffmpeg: faster-whisper links CTranslate2 and decodes audio through
+    PyAV's bundled FFmpeg. That removes the whole binary-discovery problem, and is
+    why this provider is worth having on machines where installing the CLI
+    toolchain is the hard part.
+
+    The model name needs no regex guard of the kind ``_MLX_MODEL_RE`` provides:
+    nothing is passed to a shell here, and faster-whisper resolves an unknown name
+    to a download or an error rather than executing it.
+    """
+    # No availability guard HERE: this coroutine runs on the event loop, and the
+    # lazy import retry loads a native library. _run_faster_whisper_sync performs
+    # the same check (with the retry) inside the executor thread and returns
+    # None with a log line when the library is absent.
+    loop = asyncio.get_running_loop()
+    # The subprocess executor, not asyncio.to_thread: inference is CPU-bound, so it
+    # belongs on the pool sized for that rather than competing with the default
+    # thread pool that short filesystem hops use.
+    return await loop.run_in_executor(
+        subprocess_executor(),
+        _run_faster_whisper_sync,
+        audio_path,
+        stt_config.model,
+        stt_config.device,
+    )
 
 
 async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
