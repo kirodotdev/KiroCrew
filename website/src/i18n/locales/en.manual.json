@@ -3576,7 +3576,11 @@
         "step_installing_whisper": "Installing whisper (~1.6 GB)…",
         "step_installing_xcode": "Installing Xcode CLI Tools…",
         "step_pulling": "Pulling Docker image…",
-        "step_starting": "Starting…"
+        "step_starting": "Starting…",
+        "provider_faster": "faster-whisper (local — no separate ffmpeg install)",
+        "install_faster_whisper": "Install faster-whisper",
+        "installs_faster_whisper_no_ffmpeg_needed": "Installs faster-whisper via pip. No separate ffmpeg install: it decodes audio in-process through PyAV's bundled FFmpeg. Not available on Windows on ARM.",
+        "step_installing_faster": "Installing faster-whisper…"
       },
       "teamsPanel": {
         "microsoft_app_id": "Microsoft App ID",

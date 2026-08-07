@@ -2058,7 +2058,8 @@
         "whisper",
         "mlx",
         "apple",
-        "transcribe"
+        "transcribe",
+        "faster"
       ],
       "defaultValue": "whisper"
     },
@@ -2085,9 +2086,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Model",
-      "help": "Whisper model size.",
+      "help": "Whisper model size (whisper and faster providers).",
       "hasChildren": false,
       "enumValues": [
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large-v3",
         "turbo"
       ],
       "defaultValue": "turbo"
