@@ -270,9 +270,15 @@ the same and the difference is the whole security story:
   governed by your tailnet ACLs. This is the better answer for the phone case:
   ```bash
   tailscale serve --bg --https 443 http://127.0.0.1:5476
+  kirocrew config set dashboard.tailscale.enabled true
+  kirocrew restart
   ```
-  Then set `dashboard.url` to `https://<machine>.<tailnet>.ts.net` (below) so the
-  origin allowlist and the `Host` barrier accept it.
+  `dashboard.tailscale.enabled` reads your own MagicDNS name from the local
+  Tailscale daemon once at startup and trusts `https://<that name>` as an origin,
+  so you do **not** have to look the name up and hand-write `dashboard.url`. If
+  Tailscale is absent, stopped, or MagicDNS is off it contributes nothing and the
+  dashboard starts exactly as before. It does not widen the network bind and does
+  not change authentication — every request still needs a dashboard session.
 - [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) does the opposite: it
   puts the service **on the public internet**, like cloudflared and ngrok. Use it
   only if you actually want public ingress.
@@ -280,7 +286,8 @@ the same and the difference is the whole security story:
 A shared corporate tailnet is not a private network — every member who can reach
 the Serve endpoint is inside your trust boundary, so keep the ACL narrow.
 
-Then set the URL in `~/.kiro/crew/config.json` and restart:
+For the tunnel providers above (cloudflared / ngrok / Funnel) set the URL in
+`~/.kiro/crew/config.json` and restart:
 
 ```json
 {

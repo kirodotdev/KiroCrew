@@ -44,7 +44,7 @@ LABELS = [
     {"name": "duplicate", "description": "Already exists"},
     {"name": "wontfix", "description": "Will not be worked on"},
     {"name": "release-blocker", "description": "Blocks the next release"},
-    {"name": "defer-longterm", "description": "Formally defer arbiter items"},
+    {"name": "follow-up", "description": "Deferred work split out of a merged PR"},
     {"name": "readiness: passed", "description": "Validation passed"},
     {"name": "blocked", "description": "Blocked on a dependency"},
     {"name": "area: dashboard", "description": "Dashboard UI"},
@@ -243,7 +243,7 @@ def test_process_labels_are_not_selectable(runner: Runner) -> None:
             model_reply=json.dumps(
                 {
                     "type": "release-blocker",
-                    "areas": ["readiness: passed", "defer-longterm"],
+                    "areas": ["readiness: passed", "follow-up"],
                     "platforms": ["wontfix"],
                     "reason": "attacker-supplied",
                 }

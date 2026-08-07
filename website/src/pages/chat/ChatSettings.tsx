@@ -95,7 +95,7 @@ export interface DashboardConfig {
   restore_window_minutes: number
   merge_queued_messages: boolean
   widget_density: 'more' | 'less'
-  verbosity: 'default' | 'concise'
+  verbosity: 'default' | 'concise' | 'ultra'
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean

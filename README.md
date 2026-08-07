@@ -59,6 +59,35 @@ remote Gateway over an SSH tunnel. See the
 - **Linux**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
 - **Windows**: no desktop build yet, so run the Gateway from a [source install](#build-from-source) and open the dashboard in your browser
 
+Take Stable unless you have a reason not to — the table below says who each
+channel is for.
+
+### Release channels
+
+Every install path — desktop app, CLI, Docker image — offers the same three
+channels. Pick by how much churn you can absorb, not by version number:
+
+| Channel | Who it's for | Built from | Cadence |
+|---------|--------------|------------|---------|
+| **Stable** | Everyone. The default on every install path. | The Insider build that baked long enough to be promoted | On promotion, no calendar commitment |
+| **Insider** | Power users who want features days to weeks early and accept the new bugs that come with them | Release-branch release-candidate tags | Every RC |
+| **Nightly** | Us and contributors. Untested `main` HEAD — expect breakage. | `main`, 06:00 UTC daily | Daily |
+
+Stable and Insider are two update lanes of the **same** app. The desktop app
+switches between them in Settings → About, a CLI install switches by re-running
+the installer with `--channel`, and a container switches by pulling a different
+tag. Either way, the other lane's current version then arrives as an ordinary
+update.
+
+Nightly is a separate app with its own name and icon, so it installs *alongside*
+a Stable or Insider one rather than replacing it. It is not a sandbox, though: it
+reads the same `~/.kiro/crew` data home unless you point it elsewhere with
+`KIROCREW_HOME`.
+
+Running Insider or Nightly is a real contribution. When something looks wrong,
+please [open an issue](https://github.com/kirodotdev/KiroCrew/issues) so it gets
+fixed before it reaches Stable.
+
 ### One-line install
 
 Install the prebuilt, SHA-256-verified wheel from the release CDN without
@@ -70,7 +99,8 @@ Stable, the default:
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 ```
 
-Track a faster channel, `insider` or `nightly`:
+Track a faster channel, `insider` or `nightly` (see
+[Release channels](#release-channels) for who each one is for):
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider

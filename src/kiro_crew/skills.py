@@ -61,8 +61,13 @@ def _matches_any(path: str, globs: list[str]) -> bool:
 # affords a bounded slice of the context budget, so on-demand skills are ranked
 # by usage and summarized top-down; the tail is discoverable via `skill_search`.
 # Per-skill description is truncated to this many chars in the summary line so a
-# few verbose descriptions can't dominate the block.
-_SHORT_DESC_CHARS = 160
+# few verbose descriptions can't dominate the block. Sized as a guardrail against
+# a pathological description rather than a routine trim: the description is the
+# only signal the model has for deciding whether to load a skill, so the cap sits
+# above the typical length (~290 chars across the built-in set) and bites only the
+# outliers. Descriptions also arrive from the public registry, where their length
+# is not ours to control — hence a cap rather than hand-trimming.
+_SHORT_DESC_CHARS = 300
 # A skill whose file mtime is within this window gets a recency boost in the
 # ranking so a freshly-added, never-used skill still surfaces instead of being
 # starved by the rich-get-richer usage ordering.
@@ -619,6 +624,12 @@ class SkillsLoader:
         cached = self._fm_cache.get(key)
         if cached and cached[0] == mtime:
             return cached[1]
+        # Failures PROPAGATE deliberately. Not every caller is a reader:
+        # ``update_auto_skill`` reads this to carry ``created_at``, ``version``,
+        # ``pinned`` and ``inject_on_trigger`` across a rewrite, so degrading an
+        # unreadable file to "no metadata" here would make it silently drop those
+        # and clobber a version snapshot. A reader that would rather show a row
+        # than fail catches this at ITS call site instead.
         meta = self._parse_frontmatter(path)
         self._fm_cache[key] = (mtime, meta)
         return meta
@@ -697,6 +708,105 @@ class SkillsLoader:
             return skill_file.is_relative_to(self._dir)
         except (OSError, ValueError):
             return False
+
+    def resolve_ledger_aliases(self) -> dict[str, list[str]]:
+        """Map served skill keys to ledger keys that resolve to the same file.
+
+        Returns ``{served_key: [alias_key, ...]}`` — only entries with at least
+        one alias appear. Unresolvable ledger keys (no SKILL.md on disk) are
+        dropped silently.
+
+        The result is NOT cached. It depends on what each served path currently
+        resolves to, so any sound cache key would have to resolve every served
+        file — the same work the cache would save. `_iter()` has its own TTL, so
+        repeat calls (e.g. dashboard refreshes) do not re-walk the skills tree.
+
+        This is the public seam for *alias resolution* specifically — the budget
+        endpoint no longer builds the map itself. It still reads other loader
+        internals to assemble its rows, so this is one step out of that coupling,
+        not the end of it. It deliberately does NOT live inside ``list_skills()``
+        — that method guarantees one stat per skill and runs on the hot path
+        during context assembly; filesystem resolution here is acceptable only
+        at dashboard-refresh frequency.
+        """
+        if self._usage is None:
+            return {}
+
+        snapshot = self._usage.snapshot()
+        if not snapshot:
+            return {}
+
+        # NOT cached, deliberately. The map is a function of the ledger's keys
+        # AND of what each served path currently RESOLVES to, so a sound cache key
+        # has to resolve every served file — exactly the work a cache would be
+        # there to avoid. Keying on names alone was demonstrably unsound: deleting
+        # an alias, or retargeting a served symlink, changes no name, so a hit
+        # kept crediting deliveries to the wrong skill. A cache that is only
+        # correct when nothing moved is worse than no cache, and `_iter()` already
+        # carries its own TTL, so repeat calls do not re-walk the tree.
+        skill_pairs = self._iter()
+
+        # Group served keys by resolved path. Two served keys CAN name the same
+        # file: a file-level symlink (`old/SKILL.md` -> `new/SKILL.md`) leaves
+        # both directories real, so `_iter()` yields both. Treating each as its
+        # own skill splits one file's cost across two rows, which is the very
+        # thing this fold exists to prevent — so one key per file is canonical
+        # and the rest are aliases.
+        by_realpath: dict[str, list[tuple[str, Path]]] = {}
+        for key, skill_file in skill_pairs:
+            try:
+                rp = str(skill_file.resolve())
+            except (OSError, RuntimeError):
+                # A cyclic symlink raises RuntimeError("Symlink loop from ..."),
+                # NOT OSError, so it must be caught explicitly or one bad link
+                # takes the whole endpoint down with a 500.
+                continue
+            by_realpath.setdefault(rp, []).append((key, skill_file))
+
+        realpath_to_served: dict[str, str] = {}
+        alias_map: dict[str, list[str]] = {}
+        for rp, pairs in by_realpath.items():
+            # The real file's key beats a symlink's, then alphabetical — so the
+            # winner does not depend on directory iteration order.
+            canonical, _ = min(pairs, key=lambda p: (p[1].is_symlink(), p[0]))
+            realpath_to_served[rp] = canonical
+            for key, _ in pairs:
+                if key != canonical:
+                    alias_map.setdefault(canonical, []).append(key)
+
+        # Roots to resolve a ledger key against. `_iter()` serves the main skills
+        # dir AND every extra path (an installed app's own skills dir), and each
+        # names its skills relative to its OWN root — so an app skill's alias key
+        # only resolves under that app's root. Resolving against `_dir` alone
+        # silently drops every app-skill alias.
+        roots = [self._dir, *self._extra_paths]
+
+        # A ledger key that no longer names a served skill: resolve it on disk and
+        # fold it into whichever served key shares its file.
+        for ledger_key in snapshot:
+            if ledger_key in realpath_to_served.values():
+                continue  # Already the canonical key for its file.
+            if any(ledger_key in a for a in alias_map.values()):
+                continue  # Already folded as a served alias above.
+            for root in roots:
+                candidate = root / ledger_key / "SKILL.md"
+                try:
+                    rp = str(candidate.resolve())
+                except (OSError, RuntimeError):
+                    continue  # Unresolvable or a symlink loop — try the next root.
+                if not Path(rp).exists():
+                    continue
+                served_key = realpath_to_served.get(rp)
+                if served_key is None:
+                    continue
+                if ledger_key != served_key:
+                    alias_map.setdefault(served_key, []).append(ledger_key)
+                break  # First root that resolves wins; a key names one file.
+
+        for aliases in alias_map.values():
+            aliases.sort()
+
+        return alias_map
 
     def _delivery_count(self, key: str) -> int | None:
         """Body deliveries recorded for *key*, or ``None`` when untracked.
@@ -2534,12 +2644,9 @@ class SkillsLoader:
             if skill_file is None:
                 continue
             meta = self._cached_frontmatter(skill_file)
-            desc = (meta.get("description", "") or name).strip()
-            if len(desc) > _SHORT_DESC_CHARS:
-                desc = desc[:_SHORT_DESC_CHARS].rstrip() + "…"
+            desc = self._short_desc(meta.get("description", "") or name, suffix="…")
             lines.append(
-                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}` "
-                f"(dir: `{skill_file.parent}`)"
+                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}`"
             )
         if not lines:
             return ""
@@ -2647,7 +2754,7 @@ class SkillsLoader:
             for s in ranked:
                 line = (
                     f"- **{s['name']}**: {self._short_desc(s['description'])} "
-                    f"-> `{s['path']}` (dir: `{s['dir']}`)"
+                    f"-> `{s['path']}`"
                 )
                 if (
                     budget is not None
@@ -2701,12 +2808,12 @@ class SkillsLoader:
                 "",
                 "If a user request relates to any skill below, read the full "
                 "skill file first with `cat <path>` before responding.",
-                "To run a skill's scripts, `cd` into its directory first.",
+                "To run a skill's scripts, `cd` into the directory containing its `SKILL.md`.",
                 "",
             ]
             for s in on_demand:
                 summary_lines.append(
-                    f"- **{s['name']}**: {s['description']} → `{s['path']}` (dir: `{s['dir']}`)"
+                    f"- **{s['name']}**: {self._short_desc(s['description'])} → `{s['path']}`"
                 )
             parts.append("\n".join(summary_lines))
         return "[Skills:]\n" + "\n\n---\n\n".join(parts) + "\n[End of skills]\n\n"
@@ -2739,12 +2846,21 @@ class SkillsLoader:
         return self._usage.score(s["key"], recency_boost=boost)
 
     @staticmethod
-    def _short_desc(desc: str) -> str:
-        """Collapse whitespace and truncate a description for the summary line."""
+    def _short_desc(desc: str, suffix: str = "...") -> str:
+        """Collapse whitespace and truncate a description for the summary line.
+
+        Cuts on a word boundary when one falls in the last fifth of the budget so
+        the line ends on a readable word instead of mid-token; a description with
+        no such boundary (one very long token) is cut hard.
+        """
         d = " ".join((desc or "").split())
-        if len(d) > _SHORT_DESC_CHARS:
-            return d[:_SHORT_DESC_CHARS].rstrip() + "..."
-        return d
+        if len(d) <= _SHORT_DESC_CHARS:
+            return d
+        cut = d[:_SHORT_DESC_CHARS]
+        space = cut.rfind(" ")
+        if space >= _SHORT_DESC_CHARS * 4 // 5:
+            cut = cut[:space]
+        return cut.rstrip() + suffix
 
     def search_skills(self, query: str, limit: int = 20) -> list[dict]:
         """Grep skills by keyword for on-demand discovery (the skill_search tool).

@@ -21,6 +21,7 @@ const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({
 vi.mock('../api/client', () => ({
   api: {
     crons: vi.fn(),
+    cronFolders: vi.fn().mockResolvedValue([]),
     deleteCron: vi.fn(),
     batchDeleteCron: vi.fn(),
     createCron: vi.fn().mockResolvedValue({}),

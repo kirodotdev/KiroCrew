@@ -57,9 +57,12 @@ def in_trash(path: str) -> bool:
 
 
 # Seconds before a git invocation is abandoned. Network operations (clone,
-# fetch, push) get the longer budget.
-GIT_TIMEOUT_SEC = 30
-GIT_NETWORK_TIMEOUT_SEC = 180
+# fetch, push) get the longer budget. Overridable via environment for hosts
+# where subprocess spawn and filesystem latency are slow or highly variable
+# (e.g. shared Windows CI runners) — mirrors FE_GIT_TIMEOUT_SEC in the
+# file_explorer app.
+GIT_TIMEOUT_SEC = int(os.environ.get("MDNB_GIT_TIMEOUT_SEC", 30))
+GIT_NETWORK_TIMEOUT_SEC = int(os.environ.get("MDNB_GIT_NETWORK_TIMEOUT_SEC", 180))
 
 
 class GitError(RuntimeError):

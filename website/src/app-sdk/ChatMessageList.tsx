@@ -23,7 +23,7 @@ import PastedChip from '../components/PastedChip'
 import { type PasteBlock, findTokenRanges, recollapsePastes } from '../utils/pasteTokens'
 import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
-import { fmtDateFields } from '../i18n/format'
+import { fmtMessageTime, fmtMessageTimeFull } from '../pages/chat/messageTime'
 
 // ── Types ──
 
@@ -82,9 +82,15 @@ function renderUserContent(content: string, meta: Record<string, unknown> | unde
 
 const GROUPABLE = new Set(['thinking', 'permission'])
 
+/**
+ * Delegates to the shared footer formatter so an embedded app's transcript reads
+ * IDENTICALLY to the main chat's. This was a second, hardcoded copy that never
+ * printed a year at all — so an app showing a message from a previous year dated
+ * it to the current one. `fmtMessageTime` elides the year only when it is safe.
+ */
 function formatTs(ts?: string): string | undefined {
   if (!ts) return undefined
-  return fmtDateFields(ts, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return fmtMessageTime(ts) || undefined
 }
 
 function msgKey(m: ChatMessage, i: number): string {
@@ -273,7 +279,7 @@ const ChatMessageList = memo(function ChatMessageList({
 
     if (m.role === 'user') {
       return wrapper(
-        <UserMessage content={m.content} meta={m.meta} timestamp={formatTs(m.ts)} renderContent={renderUserContent} />,
+        <UserMessage content={m.content} meta={m.meta} timestamp={formatTs(m.ts)} timestampTitle={fmtMessageTimeFull(m.ts)} renderContent={renderUserContent} />,
         true
       )
     }
@@ -295,6 +301,7 @@ const ChatMessageList = memo(function ChatMessageList({
             content={m.content}
             isStreaming={isStreaming}
             timestamp={formatTs(m.ts)}
+            timestampTitle={fmtMessageTimeFull(m.ts)}
             showFooter={showFooter}
             slotRunning={running}
             onFileOpen={onFileOpen}

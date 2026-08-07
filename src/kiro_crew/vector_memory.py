@@ -130,12 +130,27 @@ _MMR_MAX_POOL = 1000
 _SEMANTIC_VECTOR_WEIGHT = 0.6  # weight for vector score in hybrid semantic retrieval
 _SEMANTIC_KEYWORD_WEIGHT = 0.4  # weight for keyword score in hybrid semantic retrieval
 
-_snowball = _snowball_stemmer("english")
+# snowballstemmer's pure-Python stemmers keep the word being stemmed as
+# mutable instance state (set_current() -> _stem() -> get_current()), so a
+# single shared instance is NOT thread-safe: concurrent context builds
+# (parallel subagent spawns via run_in_embed_pool) interleave their cursor
+# state and crash with IndexError("string index out of range") — or silently
+# return the wrong stem. One instance per thread; construction is trivial
+# (~0.1 µs once the language module is imported).
+_snowball_local = threading.local()
+
+
+def _get_snowball():
+    stemmer = getattr(_snowball_local, "stemmer", None)
+    if stemmer is None:
+        stemmer = _snowball_stemmer("english")
+        _snowball_local.stemmer = stemmer
+    return stemmer
 
 
 def _stem_words(words: set[str]) -> set[str]:
     """Stem a set of words, returning both original and stemmed forms."""
-    return words | set(_snowball.stemWords(list(words)))
+    return words | set(_get_snowball().stemWords(list(words)))
 
 
 _BUILTIN_PREFIXES = [
@@ -828,10 +843,20 @@ class VectorMemoryStore:
             query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
             query_embedding = self._try_embed(query_text) if self.embed_fn else None
 
-            all_rows = self.db.execute(
-                "SELECT key, value_json, updated_at FROM semantic_memory "
-                "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
-            ).fetchall()
+            # Context assembly runs on executor threads (subagent context builds,
+            # run_in_embed_pool) concurrent with writers on worker threads. The
+            # shared connection's statement cache is not safe for unsynchronized
+            # cross-thread use — an unlocked SELECT racing a writer's implicit
+            # BEGIN surfaces as sqlite3.InterfaceError ("bad parameter or other
+            # API misuse"), and context.py does not guard this call, so the
+            # whole subagent run dies. Lock ONLY the fetch: fetchall()
+            # materializes the rows, and the scoring loop below issues blocking
+            # per-row embed calls that must never run under _db_lock.
+            with self._db_lock:
+                all_rows = self.db.execute(
+                    "SELECT key, value_json, updated_at FROM semantic_memory "
+                    "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
+                ).fetchall()
 
             scored_rows: list[tuple[float, dict]] = []
             for r in all_rows:
@@ -868,12 +893,14 @@ class VectorMemoryStore:
             scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"]))
             rows = [r[1] for r in scored_rows[:max_rows]]
         else:
-            # No query: recent entries
-            rows = self.db.execute(
-                "SELECT key, value_json FROM semantic_memory WHERE is_deleted = 0 "
-                "AND key NOT LIKE 'lesson.%' ORDER BY updated_at DESC LIMIT ?",
-                (max_rows,),
-            ).fetchall()
+            # No query: recent entries. Same serialization requirement as the
+            # query path above.
+            with self._db_lock:
+                rows = self.db.execute(
+                    "SELECT key, value_json FROM semantic_memory WHERE is_deleted = 0 "
+                    "AND key NOT LIKE 'lesson.%' ORDER BY updated_at DESC LIMIT ?",
+                    (max_rows,),
+                ).fetchall()
 
         if not rows:
             return ""
@@ -1989,11 +2016,18 @@ class VectorMemoryStore:
             "WHERE is_deleted = 0 AND key LIKE 'lesson.%' "
             "ORDER BY updated_at DESC"
         )
+        # On the same concurrent context-injection path as get_semantic_context
+        # (get_lessons_context runs on executor threads while lesson writes are
+        # offloaded to workers), so the fetch must be serialized on the shared
+        # connection. _db_lock is reentrant, so callers that already hold it
+        # remain safe.
         if limit is not None and limit > 0:
             sql += " LIMIT ?"
-            rows = self.db.execute(sql, (limit,)).fetchall()
+            with self._db_lock:
+                rows = self.db.execute(sql, (limit,)).fetchall()
         else:
-            rows = self.db.execute(sql).fetchall()
+            with self._db_lock:
+                rows = self.db.execute(sql).fetchall()
         return [dict(r) for r in rows]
 
     def delete_lesson(self, rule_substring: str) -> bool:

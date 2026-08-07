@@ -74,6 +74,54 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 #: 1568px pre-upload downscale, which only ever covers dashboard uploads.
 MAX_IMAGE_EDGE_PX = 2000
 
+#: Longest base64-encoded payload (bytes) allowed for a single inlined image.
+#: The dimension cap above is not sufficient: a raster can sit well inside 2000px
+#: and still encode past the backend's per-image byte ceiling.
+#:
+#: 5 MiB is the value the backend itself reports. It is not derived from which
+#: provider kiro-cli happens to route through, which we treat as opaque, but read
+#: straight out of its rejection, which names the limit in bytes:
+#:
+#:     image exceeds 5 MB maximum: 6714372 bytes > 5242880
+#:
+#: 5242880 is exactly 5 * 1024 * 1024. (Anthropic's published per-image ceiling
+#: for Bedrock and Google Cloud agrees, which is corroboration rather than the
+#: basis.) base64 inflates by 4/3, so a ~3.9 MiB raster already exceeds it while
+#: passing every pre-encode check.
+#:
+#: Note this is a DIFFERENT quantity from the limit kiro-cli documents. Its docs
+#: state "images must be under 10MB in size" -- a FILE-size rule, which
+#: ``MAX_IMAGE_BYTES`` implements -- and say nothing about the encoded payload.
+#: Both hold at once: a 5.04 MiB file is under 10 MB yet encodes to 6.71 MiB and
+#: is refused. So the encoded ceiling is undocumented but enforced, which is why
+#: it has to be observed rather than looked up.
+#:
+#: Being wrong here is safe in one direction only, which is why the cap is set to
+#: the observed value rather than a guess: too LOW merely ships a smaller image,
+#: while too HIGH ships a payload the backend refuses. Callers can override it
+#: via ``build_prompt_blocks(max_image_b64_bytes=...)`` if a backend ever reports
+#: a different number.
+#:
+#: This is enforced on the ENCODED payload, after any downscale, because that is
+#: the only quantity the backend measures: ``MAX_IMAGE_BYTES`` reads the file
+#: size before the re-encode and cannot see the encoding overhead. Getting this
+#: wrong is not a one-turn error -- a rejected image sits at a fixed history
+#: index that kiro-cli replays on every subsequent turn, so one oversized
+#: attachment wedges the session permanently.
+MAX_IMAGE_B64_BYTES = 5 * 1024 * 1024
+
+#: Floor for the encoded-budget shrink loop. Below ~200px Claude's own guidance
+#: says accuracy degrades badly, so an image that still will not fit is dropped
+#: to a path reference instead of being shrunk into uselessness.
+MIN_IMAGE_EDGE_PX = 256
+
+#: Per-attempt edge multiplier and attempt cap for the encoded-budget shrink.
+#: Encoded size falls roughly with area, so 0.8 on the edge sheds ~36% per pass
+#: and 6 passes span a 4x linear reduction -- enough to bring any image that the
+#: dimension cap admitted under a 5 MiB encoding.
+_ENCODE_SHRINK_FACTOR = 0.8
+_MAX_ENCODE_ATTEMPTS = 6
+
 #: mime -> Pillow save format for a re-encoded downscale. GIF collapses to a PNG
 #: first frame: vision models read frame 0 only (animation is invisible to them)
 #: and rescaling a palette image is lossy, so a lossless still is faithful.
@@ -202,12 +250,75 @@ def _downscale_within_limits(raw_bytes: bytes, mime: str, max_edge: int) -> tupl
         return None
 
 
+def _b64_len(raw_len: int) -> int:
+    """Exact base64 length for *raw_len* bytes (4 chars per 3-byte group, padded)."""
+    return 4 * ((raw_len + 2) // 3)
+
+
+def _long_edge(raw_bytes: bytes) -> int | None:
+    """Longest edge of *raw_bytes* in px, or ``None`` if it cannot be read.
+
+    Header-only read -- no decompression -- so this is cheap enough to call on
+    the shrink path without paying for a decode.
+    """
+    if not _HAS_PIL:
+        return None
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            return max(img.width, img.height)
+    except Exception:
+        return None
+
+
+def _fit_encoded_budget(
+    raw_bytes: bytes, mime: str, max_edge: int, max_b64_bytes: int
+) -> tuple[bytes, str] | None:
+    """Render *raw_bytes* so it obeys BOTH the dimension and encoded-size caps.
+
+    Applies the dimension cap first, then keeps shrinking while the base64
+    encoding still exceeds *max_b64_bytes*. Returns the ``(bytes, mime)`` pair to
+    inline, or ``None`` when no compliant rendition exists -- the caller must then
+    leave the path as text, since inlining a payload the backend rejects poisons
+    every later turn in the session.
+
+    The shrink target is derived from the rendition's OWN long edge rather than
+    from *max_edge*: :func:`_downscale_within_limits` is a deliberate no-op for an
+    image already inside the cap, so an oversized-but-small-dimension file (the
+    exact case that trips the 5 MiB ceiling) would otherwise loop without ever
+    making progress.
+    """
+    fitted = _downscale_within_limits(raw_bytes, mime, max_edge)
+    if fitted is None:
+        return None
+    out_bytes, out_mime = fitted
+    if max_b64_bytes <= 0 or _b64_len(len(out_bytes)) <= max_b64_bytes:
+        return out_bytes, out_mime
+
+    edge = _long_edge(out_bytes)
+    if edge is None:
+        # Dimensions unknown (no Pillow, or an undecodable raster): the encoded
+        # size is known to be over budget and cannot be reduced, so fail closed.
+        return None
+    for _ in range(_MAX_ENCODE_ATTEMPTS):
+        edge = max(MIN_IMAGE_EDGE_PX, int(edge * _ENCODE_SHRINK_FACTOR))
+        fitted = _downscale_within_limits(raw_bytes, mime, edge)
+        if fitted is None:
+            return None
+        out_bytes, out_mime = fitted
+        if _b64_len(len(out_bytes)) <= max_b64_bytes:
+            return out_bytes, out_mime
+        if edge <= MIN_IMAGE_EDGE_PX:
+            break
+    return None
+
+
 def build_prompt_blocks(
     message: str,
     *,
     allow_image: bool = True,
     max_image_bytes: int = MAX_IMAGE_BYTES,
     max_image_edge: int = MAX_IMAGE_EDGE_PX,
+    max_image_b64_bytes: int = MAX_IMAGE_B64_BYTES,
 ) -> list[dict]:
     """Return ACP prompt blocks for *message*.
 
@@ -224,7 +335,9 @@ def build_prompt_blocks(
     Inlined images are downscaled so their longest edge is at most
     ``max_image_edge`` px -- the server-side backstop for Anthropic's many-image
     dimension limit, applied for EVERY channel here regardless of any
-    client-side resize that was skipped or bypassed.
+    client-side resize that was skipped or bypassed -- and then shrunk further if
+    needed so the base64 payload stays within ``max_image_b64_bytes``, the
+    backend's per-image byte ceiling.
     """
     text = message
     images: list[dict] = []
@@ -265,14 +378,17 @@ def build_prompt_blocks(
                 # stays in the text; it is NOT inlined.
                 logger.warning("acp prompt: image read refused for %s", path.name)
                 continue
-            downscaled = _downscale_within_limits(raw_bytes, mime, max_image_edge)
+            downscaled = _fit_encoded_budget(
+                raw_bytes, mime, max_image_edge, max_image_b64_bytes
+            )
             if downscaled is None:
-                # Oversized and un-shrinkable (decompression-bomb / undecodable):
-                # leave the path as text rather than inline a >2000px payload that
-                # would poison the session. A tool-capable agent can still open it.
+                # Oversized and un-shrinkable (decompression-bomb / undecodable /
+                # still over the encoded ceiling at the minimum edge): leave the
+                # path as text rather than inline a payload the backend rejects on
+                # this and every later turn. A tool-capable agent can still open it.
                 logger.warning(
-                    "acp prompt: image %s exceeds the dimension cap and could not be "
-                    "downscaled - sending path, not inline",
+                    "acp prompt: image %s could not be rendered within the "
+                    "dimension and encoded-size caps - sending path, not inline",
                     path.name,
                 )
                 continue

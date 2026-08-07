@@ -1,13 +1,19 @@
 /**
  * Screenshot harness for the chat chrome typeface.
  *
- * Three surfaces render UI chrome in a HARDCODED `font-mono` (Tailwind
+ * Four surfaces render UI chrome in a HARDCODED `font-mono` (Tailwind
  * `font-mono` → `var(--mono)` → JetBrains Mono), so Settings → Display → Font
  * Family — which only writes `--font-body` — cannot reach them:
  *
  *   1. the tool-call pills in the transcript   (ToolCallLine)
  *   2. the sub-agent wave chip above the input (SubagentProgressBar)
  *   3. the composer shelf + approval pill      (ChatInput / ApprovalModePicker)
+ *   4. the per-message footer                  (AssistantMessage / UserMessage)
+ *
+ * Surface 4 is captured under BOTH font settings, because "does not hardcode
+ * mono" and "follows the setting" are different claims and only the pair proves
+ * the second: the sans pass must render sans and the mono pass must render mono,
+ * from the same markup.
  *
  * Runs the REAL built SPA (website/dist) behind the shared loopback static
  * server with every /api/** call and the /api/ws websocket answered from
@@ -19,10 +25,12 @@
  * JetBrains Mono carries no Han glyphs, so mono chrome falls to a system
  * fallback and mixes two sets of metrics in one row):
  *
- *   <lang>-01-tool-lines.png   transcript tool pills
- *   <lang>-02-wave-chip.png    sub-agent chip + composer + shelf
- *   <lang>-03-shelf.png        shelf alone (agent · project — model · effort)
- *   <lang>-04-full.png         whole window, all three surfaces at once
+ *   <lang>-01-tool-lines.png       transcript tool pills
+ *   <lang>-02-wave-chip.png        sub-agent chip + composer + shelf
+ *   <lang>-03-shelf.png            shelf alone (agent · project — model · effort)
+ *   <lang>-04-full.png             whole window, all three surfaces at once
+ *   <lang>-05-footer-sans.png      message footer, Font Family = Sans
+ *   <lang>-05-footer-mono.png      message footer, Font Family = Mono
  *
  * Usage: node scripts/capture-chrome-font.mjs [outDir]
  */
@@ -107,6 +115,10 @@ const detail = {
       role: 'assistant',
       ts: now - 200,
       content: 'Spawned 2 agents to audit the mono sites. Waiting for results before changing anything.',
+      // `turn_stats` is what the backend attaches to the LAST assistant message
+      // of a finished turn (chat_runner._attach_turn_stats), and it is the only
+      // thing that makes the footer's billed line exist at all.
+      meta: { turn_stats: { elapsed_ms: 59_000, credits: 1.98 } },
     },
   ],
 }
@@ -173,9 +185,9 @@ async function main() {
   page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
   page.on('console', msg => { if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300)) })
 
-  async function load(language) {
+  async function load(language, family = 'sans') {
     scene.language = language
-    await page.addInitScript(([slot, lang]) => {
+    await page.addInitScript(([slot, lang, fam]) => {
       localStorage.clear()
       localStorage.setItem('mc-theme', 'light')
       localStorage.setItem('mc-onboarded', '1')
@@ -183,13 +195,18 @@ async function main() {
       localStorage.setItem('mc-active-slot-chat', slot)
       // Boot fast-path so the FIRST paint is already in-language.
       localStorage.setItem('mc-lang', lang)
-      // The default family. Nothing here is asking for mono — which is the
-      // whole point: the three surfaces render mono anyway.
-      localStorage.setItem('mc-font-family', 'sans')
+      // The family under test. 'sans' is the DEFAULT — nothing here is asking
+      // for mono, which is the whole point: the surfaces above render mono
+      // anyway. The footer pass re-runs with 'mono' to prove it follows.
+      localStorage.setItem('mc-font-family', fam)
+      // The footer is opt-in twice over: the timestamp needs `showTimestamps`
+      // and the credits/elapsed line needs `showTurnStats`. Both default true,
+      // but pinning them makes the crop independent of the shipped defaults.
+      localStorage.setItem('mc-chat-config', JSON.stringify({ showTimestamps: true, showTurnStats: true, collapseAllSteps: true }))
       // Pre-ack YOLO so the pill can show the mode the report screenshotted
       // without the confirm gate opening over it.
       localStorage.setItem('mc-yolo-ack', '1')
-    }, [SLOT, language])
+    }, [SLOT, language, family])
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(3200)
   }
@@ -293,6 +310,7 @@ async function main() {
     await page.screenshot({ path: `${OUT}/${lang}-04-full.png` })
     console.log('wrote', `${OUT}/${lang}-04-full.png`)
 
+
     // Report what the surfaces actually resolved to, so a silently-empty crop
     // is obvious in the log instead of only in the PNG.
     const fonts = await page.evaluate(() => {
@@ -309,6 +327,46 @@ async function main() {
       }
     })
     console.log(`${lang} computed first-family:`, JSON.stringify(fonts))
+
+    // 4. The per-message footer, once per font setting. The billed line is
+    //    always visible; the timestamp row is hover-revealed (opacity-0 until
+    //    group-hover/msg), so the message is hovered before the crop or the
+    //    date is invisible in the PNG even though it is in the DOM.
+    for (const family of ['sans', 'mono']) {
+      await load(lang, family)
+      const stats = page.getByTestId('turn-stats').first()
+      if (!(await stats.count())) {
+        console.log('WARN: no turn-stats footer for', lang, family)
+        continue
+      }
+      await stats.hover()
+      await page.waitForTimeout(700)
+      await crop(`${lang}-05-footer-${family}`, stats, { x: 24, y: 30, w: 560, h: 96 })
+
+      // The claim under test, read off the live DOM rather than the PNG: the
+      // footer's family must TRACK the setting, and the two passes must differ.
+      const seen = await page.evaluate(() => {
+        const first = el => (el ? getComputedStyle(el).fontFamily.split(',')[0].replace(/['"]/g, '') : '<absent>')
+        const statsEl = document.querySelector('[data-testid="turn-stats"]')
+        // The timestamp is the tabular-nums span in the hover row beneath.
+        const stampEl = [...document.querySelectorAll('span.tabular-nums')]
+          .find(e => /\d{1,2}:\d{2}/.test(e.textContent || ''))
+        return {
+          billed: first(statsEl),
+          timestamp: first(stampEl),
+          timestampText: stampEl?.textContent || '<absent>',
+          timestampTitle: stampEl?.getAttribute('title') || '<none>',
+          body: first(document.body),
+        }
+      })
+      console.log(`${lang} footer @ family=${family}:`, JSON.stringify(seen))
+      if (seen.billed !== seen.body) {
+        console.log(`  FAIL: footer family ${seen.billed} does not match body ${seen.body}`)
+      }
+      if (/\b(19|20)\d\d\b/.test(seen.timestampText)) {
+        console.log(`  FAIL: footer timestamp still prints a year: ${seen.timestampText}`)
+      }
+    }
   }
 
   await browser.close()

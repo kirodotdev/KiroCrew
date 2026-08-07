@@ -212,6 +212,10 @@ export const handlers = [
   }),
   
   // Cron endpoints
+  http.get('/api/cron-folders', () => {
+    return HttpResponse.json([])
+  }),
+
   http.get('/api/crons', () => {
     return HttpResponse.json({ jobs: mockCrons })
   }),

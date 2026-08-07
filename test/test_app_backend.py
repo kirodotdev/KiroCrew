@@ -1392,3 +1392,53 @@ class TestHealthGatedMcpRegistration:
         finally:
             with bmod._lock:
                 bmod._processes.clear()
+
+
+# =============================================================================
+# KIROCREW_DEVFLEET_REPO forwarding (silent-empty-fleet fix)
+# =============================================================================
+
+
+def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
+    """The documented dev-fleet repo override must be ABLE to reach the backend.
+
+    The dev-fleet backend runs as a separate process started with
+    ``apps.registry.minimal_env()``, which passes only a fixed safe-key set.
+    ``KIROCREW_DEVFLEET_REPO`` is dev-fleet's highest-priority repo discovery
+    hint, but until it is added to the explicit platform extras the allowlist
+    strips it — the operator sets the documented override, the backend never
+    sees it, and the fleet silently renders empty (the remaining hints are
+    ``KIROCREW_PROJECT_DIR``, which packaged installs point at the app bundle
+    with no ``.git``, and a hardcoded ``~/kirocrew`` fallback).
+    """
+    from pathlib import Path
+
+    import kiro_crew.apps.backend as bmod
+    from kiro_crew.apps.registry import minimal_env
+
+    monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/opt/checkouts/kirocrew")
+    # The generic allowlist does NOT carry it — that is the trap this guards.
+    assert "KIROCREW_DEVFLEET_REPO" not in minimal_env()
+
+    # apps/backend.py must therefore add it to the explicit platform extras
+    # (same mechanism that carries KIROCREW_PROJECT_DIR and the
+    # KIROCREW_DEVFLEET_BIN_* trusted-binary overrides).
+    body = Path(bmod.__file__).read_text()
+    assert '_platform_extra["KIROCREW_DEVFLEET_REPO"]' in body, \
+        "the KIROCREW_DEVFLEET_REPO override no longer reaches app backends"
+
+
+def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
+    """dev-fleet honors the forwarded override ahead of every other hint."""
+    from kiro_crew.apps.builtins.dev_fleet import server as dfmod
+
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/opt/checkouts/kirocrew")
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+    assert dfmod._default_main_repo() == "/opt/checkouts/kirocrew"
+
+    # Without the override the chain falls through to PROJECT_DIR (with .git),
+    # and then to the ~/kirocrew fallback — the packaged-install trap.
+    monkeypatch.delenv("KIROCREW_DEVFLEET_REPO")
+    assert dfmod._default_main_repo() == str(proj)

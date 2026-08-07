@@ -685,6 +685,7 @@
         },
         "issueList": {
           "clear_search": "清除搜索",
+          "loading_the_rest": "正在加载其余内容…",
           "closed_issues_are_capped_at_the_100_most_recentl": "已关闭的 issue 最多显示最近更新的 100 个",
           "issue_other": "{{count}} 个 issue",
           "issues": "Issues",
@@ -1213,6 +1214,9 @@
         "resize_sidebar": "调整侧边栏大小",
         "select_a": "选择一个",
         "select_an_issue_to_see_its_details": "选择一个 issue 查看其详情。",
+        "selected_issue_hidden_by_filters": "所选 issue 已被当前筛选条件隐藏。",
+        "selected_change_hidden_by_filters": "所选 {{subject}} 已被当前筛选条件隐藏。",
+        "clear_filters": "清除筛选",
         "to_see_its_details": "以查看其详情。"
       },
       "api": {
@@ -3127,6 +3131,30 @@
         "description": "在 Kiro Crew 内进行 spec 驱动开发：借助内嵌代理把一个功能想法变成需求 → 设计 → 任务，在应用内审阅 markdown，然后把已通过的方案交给一个自主执行会话去完成。",
         "page_label": "Spec Builder"
       }
+    },
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "构建",
+        "collects": "收集",
+        "green": "GREEN",
+        "lint": "检查",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "先度量 GitHub 仓库，再改动它。先设计一个经过校准的性能指标，也就是标尺；再用一个已知改进来证明该指标可信。随后运行“保留或回滚”改进循环：每个候选修复都写在独立 worktree 中，要通过可编辑文件白名单以及仓库自身测试，只有当实测收益超过噪声带时才会保留。留下来的结果会拟为 GitHub 草稿拉取请求，由你自己审阅并发布。",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "先证明自己的指标——标尺不可信时，运行会拒绝开始",
+        "highlight_2": "每个候选都做 A/B 度量，缺陷修复则用 RED/GREEN，而不是只凭“看起来对”",
+        "highlight_3": "只有当收益超过实测噪声带时才保留改动",
+        "highlight_4": "拟写 GitHub 拉取请求——仅为草稿，绝不代你发布或合并",
+        "highlight_5": "在禁止 push 的克隆上运行，任何东西都不会未经审阅离开沙箱",
+        "highlight_6": "每个拉取请求、每项发现、每次运行各有一个可续接的聊天会话",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
     }
   },
   "components": {
@@ -3605,6 +3633,10 @@
         },
         "skillsProvider": {
           "skills": "技能"
+        },
+        "appsProvider": {
+          "apps": "应用",
+          "needs_migration": "需要迁移"
         }
       },
       "search_everywhere": "全局搜索",
@@ -4434,7 +4466,8 @@
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
       "expand_paste": "展开粘贴内容",
-      "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]"
+      "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
+      "preview_more_lines_other": "… 还有 {{count}} 行"
     },
     "projectPicker": {
       "back": "返回",
@@ -4868,6 +4901,7 @@
       "screen_capture_drag_the_area_you_want_it_attache": "屏幕截图 — 拖出你想要的区域；松开后自动附加"
     },
     "tagManagerList": {
+      "change_color": "更改{{name}}的颜色",
       "delete_tag": "删除标签“{{name}}”",
       "delete_tag_2": "删除标签 {{name}}",
       "filter_by_tag": "按标签筛选",
@@ -4877,6 +4911,7 @@
       "new_tag": "新标签… ↵",
       "remove_status_flag_from": "移除 {{name}} 的状态标记",
       "rename_tag": "重命名标签 {{name}}",
+      "set_color_to_name": "将颜色设为{{name}}",
       "status_tag_mutually_exclusive_on_cards_click_to": "状态标签（在卡片上互斥）— 点击改为普通标签"
     },
     "terminalCompletion": {
@@ -5081,9 +5116,9 @@
       "can_t_embed_an_http_page_here": "无法在此嵌入 http:// 页面",
       "dismiss": "忽略",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "在上方输入你的开发服务器 URL（例如运行在 localhost 上的 Vite 或静态服务器），\n              即可预览你正在开发的站点 — 编辑时会实时重新加载。",
-      "exit_expanded_preview": "退出展开预览",
+      "exit_expanded_preview": "折叠",
       "expand_preview": "展开预览",
-      "expand_preview_hide_nav_sessions": "展开预览（隐藏导航和会话）",
+      "expand_preview_hide_nav_sessions": "展开（隐藏导航和会话）",
       "forward": "前进",
       "http": "http://",
       "let_the_agent_act": "允许智能体操作",
@@ -7680,7 +7715,29 @@
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "工作区",
         "no_skills_yet": "暂无技能",
-        "empty_subtitle": "技能教会代理可重复使用的流程。浏览注册表添加一个。"
+        "empty_subtitle": "技能教会代理可重复使用的流程。浏览注册表添加一个。",
+        "budget_doorway_static": "上下文预算 →",
+        "budget_back": "技能",
+        "budget_title": "上下文预算",
+        "budget_subtitle": "触发器触发时每个技能的成本。按开销排序，非按名称。",
+        "budget_header": "<total>{{total}}</total> 字符 · 最近 30 天 · 前三名 = <pct>{{pct}}</pct>",
+        "budget_sort": "排序",
+        "budget_sort_cost": "最大成本",
+        "budget_sort_size": "最大文件",
+        "budget_sort_recent": "最近使用",
+        "budget_group_counting": "计入上下文",
+        "budget_group_counting_detail": "{{count}} 个技能 · {{pct}}% 占比",
+        "budget_group_cold": "30天内未触发",
+        "budget_group_cold_detail": "{{count}} 个技能 · {{size}} 闲置",
+        "budget_group_frozen": "已设为指针模式",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} 曾在消耗",
+        "budget_chars": "字符",
+        "budget_if_fires": "{{size}} 如果触发",
+        "budget_every_turn": "每轮 {{size}}",
+        "budget_renamed": "(已重命名)",
+        "budget_footnote": "固定（always: true）或包管理的技能会显示成本但没有开关。",
+        "budget_empty_title": "暂无预算数据",
+        "budget_empty_subtitle": "尚未安装任何 skill。"
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -8089,7 +8146,7 @@
       "script_python": "脚本 · python",
       "select": "选择 {{name}}",
       "select_all_jobs": "选择所有任务",
-      "select_deselect_all_jobs_matching_the_current_fi": "选择 / 取消选择符合当前筛选条件的所有任务",
+      "select_deselect_all_jobs_matching_the_current_fi": "选择 / 取消选择所有可见任务（已折叠文件夹除外）",
       "selected": "已选择",
       "start_from_a_pre_made_schedule": "从预设计划开始",
       "status": "状态",
@@ -8103,7 +8160,23 @@
       "view": "查看",
       "view_last_result": "查看最近一次结果",
       "you_can_also_create_schedules_by_chatting_try": "你也可以通过聊天创建计划 — 试试",
-      "jobs_noun": "任务"
+      "jobs_noun": "任务",
+      "cronFolders": {
+        "batch_move_failed_other": "{{total}} 个任务中有 {{count}} 个无法移动",
+        "collapse_folder": "折叠文件夹",
+        "confirm_delete_folder": "删除 \"{{name}}\"？任务将变为未分组。",
+        "create": "创建",
+        "delete_folder": "删除文件夹",
+        "delete_folder_named": "删除\"{{name}}\"",
+        "expand_folder": "展开文件夹",
+        "folder_actions": "文件夹操作",
+        "job_count_other": "{{count}} 个任务",
+        "move_to_folder": "移动到文件夹",
+        "new_folder": "新建文件夹",
+        "new_folder_name": "新文件夹名称",
+        "rename": "重命名",
+        "ungrouped": "未分组"
+      }
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "模糊筛选（子串匹配）",
@@ -8288,7 +8361,11 @@
         "completion_event_characters_2": "完成事件字符数",
         "completion_event_truncation": "完成事件截断",
         "composer": "输入框",
-        "concise_responses": "简洁回复",
+        "response_verbosity": "回复详细程度",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "控制助手行文简洁程度。“极简”面向容易分心的读者：结论必须在开头三句话内给出，随后细节要用易于扫读的要点，而非成段文字。代码、命令和错误信息始终保持原样；安全警告和多步骤操作说明在任何级别下都保留完整细节。",
+        "default_normal_length": "默认 — 正常长度",
+        "concise_trim_filler": "简洁 — 去掉铺垫和过程叙述",
+        "ultra_concise_3_sentences": "极简 — 3 句话给出结论，再附易扫读的细节",
         "confirm_before_closing_session": "关闭会话前确认",
         "content_width": "内容宽度",
         "context": "上下文",
@@ -8344,7 +8421,6 @@
         "technical_comfort": "技术熟悉度",
         "text_streaming_style": "文本流式风格",
         "time_window_for_session_restoration": "会话恢复的时间窗口",
-        "trim_filler_and_over_narration_lead_with_the_ans": "去掉冗词与过度叙述：先给答案，进度说明保持概要。代码、命令与错误字符串保持原样；安全警告与多步操作说明保留完整细节。",
         "when_enabled_inline_tool_pills_show_simplified_t": "启用后，内联工具标签显示简化的工具用途，而不是实际执行的命令",
         "which_model_new_sessions_start_with_pick_a_model": "代理未指定模型时，新会话默认使用的模型。可在“代理能力 → Crew”中为每个代理单独设置模型，或在会话内选择模型以就地覆盖。",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "将子代理的完成事件注入父会话时，保留其输出流的哪一部分。头部保留开头（默认，与旧行为一致）。尾部保留最终摘要。两端则各保留一段，中间加分隔标记。",
@@ -9859,5 +9935,86 @@
       "medium": "中",
       "xhigh": "超高"
     }
+  },
+  "autoImprovement": {
+    "activityDiscovered": "(发现 {{discovered}} 项，新增 {{fresh}} 项)",
+    "autocommitHint": "将每项已验证的改动直接推送到基础分支。受保护的分支始终回退为拉取请求草稿。",
+    "autocommitLabel": "直接提交到分支（不创建拉取请求）",
+    "band": "噪声带",
+    "base": "基准",
+    "branchDefault": "仓库默认分支",
+    "branchLabel": "基础分支",
+    "calibrated": "已校准",
+    "changesHeading": "拉取请求草稿",
+    "cloneBtn": "连接",
+    "colActions": "操作",
+    "colChange": "改动",
+    "colChecks": "检查",
+    "colPr": "拉取请求",
+    "colVerdict": "状态",
+    "commitConfirm": "将此更改提交到 {{branch}} 并推送？已发布的提交无法撤回。",
+    "commitFailed": "提交被拒绝。",
+    "commitFinding": "提交到分支",
+    "currentRepo": "正在处理",
+    "cycle": "轮次",
+    "defectHeading": "缺陷",
+    "delta": "实测差值",
+    "detailUnavailable": "此发现项没有可用的详细信息。",
+    "discussFinding": "讨论此发现项",
+    "discussPr": "讨论此拉取请求",
+    "discussRuler": "讨论标尺",
+    "draftPr": "草稿",
+    "findingTitlePrefix": "发现项",
+    "findingsHeading": "发现项台账",
+    "findingsStat": "发现项",
+    "findingsTruncated": "正在显示 {{total}} 项发现中最近的 {{shown}} 项。",
+    "fingerprint": "指纹",
+    "gateHeading": "验证关卡",
+    "gateNote": "关卡备注",
+    "historyHeading": "状态历史",
+    "hypothesisHeading": "复现假设",
+    "idleStatus": "空闲 — 启动一次运行以查找改进并起草拉取请求。",
+    "intro": "在改动仓库之前先度量它：先校准并验证指标，再以保留或回退的方式逐轮迭代，把胜出改动起草为拉取请求草稿，交由你审阅。",
+    "keptStat": "已保留",
+    "loadingDetail": "正在加载详细信息…",
+    "noFindings": "尚未记录任何发现项。",
+    "noPrs": "尚未起草任何拉取请求。",
+    "prStat": "拉取请求",
+    "prTitlePrefix": "拉取请求",
+    "pushDisabled": "推送已禁用",
+    "queuedOnly": "仅在本地排队，尚未创建",
+    "refreshPr": "刷新拉取请求状态",
+    "regressed": "回退的测试：{{tests}}",
+    "repoLabel": "要改进的 GitHub 仓库",
+    "reproTest": "复现测试",
+    "rulerHeading": "标尺",
+    "rulerNotReady": "标尺尚未校准，因此不会运行任何改进轮次。校准会先证明该指标能够检测出一个已知的改进，然后才开始优化。",
+    "rulerReady": "标尺已校准并就绪",
+    "rulerSessionTitle": "标尺审阅",
+    "rulerStat": "标尺",
+    "runBtn": "开始运行",
+    "runError": "运行因错误而停止。",
+    "runningStatus": "正在运行 — 第 {{cycle}} 轮，已保留 {{kept}} 项，已起草 {{drafted}} 个拉取请求。",
+    "setupHeading": "仓库",
+    "showDiff": "显示改动",
+    "showPrBody": "显示拉取请求描述",
+    "statusCommitted": "已提交到分支",
+    "statusDiscardedNoise": "低于噪声带",
+    "statusDuplicate": "重复",
+    "statusError": "工具错误",
+    "statusFailedGate": "被验证关卡拒绝",
+    "statusFailedVerify": "修复未通过验证",
+    "statusFiled": "已草拟拉取请求",
+    "statusNoDefect": "未发现缺陷",
+    "statusPurged": "已由操作者删除",
+    "statusSeen": "已发现",
+    "statusUnavailable": "不可用",
+    "stopBtn": "停止运行",
+    "title": "自动改进",
+    "toggleDetail": "显示发现项详情",
+    "truncated": "已截断",
+    "uncalibrated": "未校准",
+    "viewCommit": "查看提交",
+    "viewPr": "拉取请求"
   }
 }

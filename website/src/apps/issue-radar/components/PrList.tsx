@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
+import { Virtuoso } from 'react-virtuoso'
 import {
   RefreshCw, Search, X, GitPullRequest, GitMerge, GitPullRequestClosed, GitPullRequestDraft,
   CheckCircle2, XCircle, CircleSlash, Loader2, FileDiff,
@@ -265,30 +266,62 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
       <PrBulkBar />
 
       <div className="relative flex-1 min-h-0">
-        <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
-          {pullsLoading && <ListSkeleton />}
-          {pullsError && <div className="px-1 py-2 text-[14px] text-danger">{pullsError.message}</div>}
-          {!pullsLoading && filteredPulls.length === 0 && (
+        {pullsLoading && (
+          <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+            <ListSkeleton />
+          </div>
+        )}
+        {pullsError && <div className="px-3 py-2 text-[14px] text-danger">{pullsError.message}</div>}
+        {!pullsLoading && filteredPulls.length === 0 && (
+          <div className="px-2 pb-2">
             <ListEmptyState searching={Boolean(prQuery.trim())} label={terms.changeRequestPluralTitle} />
-          )}
-          {animate ? (
-            <AnimatePresence initial={false} mode="popLayout">
-              {sortedPulls.map((pr) => (
-                <motion.div
-                  key={pr.number}
-                  // 'position' (not the default size+position): a size-animating
-                  // layout pass distorts the card's text with a scale transform
-                  // whenever the column rewraps. Off entirely mid-resize.
-                  layout={resizing ? false : 'position'}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.97 }}
-                  transition={{
-                    layout: { type: 'spring', stiffness: 550, damping: 40 },
-                    duration: 0.18,
-                    ease: [0.16, 1, 0.3, 1],
-                  }}
-                >
+          </div>
+        )}
+        {!pullsLoading && sortedPulls.length > 0 && (
+          animate ? (
+            // Small list: plain animated flow (see IssueList — deliberately not
+            // virtualized, AnimatePresence needs all siblings mounted; ANIM_CAP-bounded).
+            <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+              <AnimatePresence initial={false} mode="popLayout">
+                {sortedPulls.map((pr) => (
+                  <motion.div
+                    key={pr.number}
+                    // 'position' (not the default size+position): a size-animating
+                    // layout pass distorts the card's text with a scale transform
+                    // whenever the column rewraps. Off entirely mid-resize.
+                    layout={resizing ? false : 'position'}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.97 }}
+                    transition={{
+                      layout: { type: 'spring', stiffness: 550, damping: 40 },
+                      duration: 0.18,
+                      ease: [0.16, 1, 0.3, 1],
+                    }}
+                  >
+                    {row(pr, (
+                      <button
+                        onClick={() => setSelectedPull(pr.number)}
+                        className={cardClass(selectedPull === pr.number)}
+                      >
+                        {cardInner(pr)}
+                      </button>
+                    ))}
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          ) : (
+            // Large list: virtualize so only visible rows are DOM nodes. Row gap is
+            // a per-row bottom padding (Virtuoso positions rows absolutely, so a
+            // container flex `gap` does not apply).
+            <Virtuoso
+              className="absolute inset-0 scrollbar-none px-2"
+              style={{ scrollbarWidth: 'none' }}
+              data={sortedPulls}
+              computeItemKey={(_i, pr) => pr.number}
+              itemContent={(_i, pr) => (
+                <div className="pb-2">
                   {row(pr, (
                     <button
                       onClick={() => setSelectedPull(pr.number)}
@@ -297,24 +330,11 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
                       {cardInner(pr)}
                     </button>
                   ))}
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          ) : (
-            sortedPulls.map((pr) => (
-              <div key={pr.number}>
-                {row(pr, (
-                  <button
-                    onClick={() => setSelectedPull(pr.number)}
-                    className={cardClass(selectedPull === pr.number)}
-                  >
-                    {cardInner(pr)}
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
+                </div>
+              )}
+            />
+          )
+        )}
         <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-bg to-transparent" />
       </div>
 
