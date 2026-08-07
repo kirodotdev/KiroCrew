@@ -4,7 +4,7 @@ import { Hourglass, Package } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
-import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints, reportIfMicDenied } from '../../hooks/mic'
+import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -127,7 +127,7 @@ export default function SttSettings() {
   const micsNeedGrant = mics.length > 0 && mics.every(d => !d.label)
   const grantMicAccess = async () => {
     try {
-      const s = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+      const s = await acquireMicStream()
       s.getTracks().forEach(t => t.stop())
       refreshMics()
     } catch (e) {

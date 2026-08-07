@@ -8,6 +8,13 @@ import { getPreferredMicId, listMicrophones } from '../hooks/mic'
 interface Props {
   /** Label of the device actually capturing, for the trigger text. */
   deviceLabel?: string
+  /**
+   * deviceId of the track actually capturing (from `activeDeviceId(stream)`),
+   * `''`/absent when unknown. While recording, the checkmark keys on THIS —
+   * the saved preference is an intent, not a fact, and the two diverge
+   * whenever acquisition fell back (chosen device gone or busy).
+   */
+  activeDeviceId?: string
   /** Called with a deviceId, or `''` for "system default". */
   onSelect: (deviceId: string) => void
   /**
@@ -38,7 +45,7 @@ interface Props {
  * populated once mic permission has been granted, and a device can be plugged
  * in at any moment, so an open menu should reflect the hardware as it is now.
  */
-export default function MicSourceMenu({ deviceLabel, onSelect, recording, liveSwitch, triggerClass = '' }: Props) {
+export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, recording, liveSwitch, triggerClass = '' }: Props) {
   const [open, setOpen] = useState(false)
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [preferred, setPreferred] = useState(getPreferredMicId())
@@ -106,9 +113,28 @@ export default function MicSourceMenu({ deviceLabel, onSelect, recording, liveSw
   }, [open])
 
   // The saved device is gone (unplugged, or its permission-scoped id rotated).
-  // getUserMedia's `ideal` constraint would silently fall back to the default,
-  // so say so instead of rendering a checkmark next to a device that is not there.
+  // Session-start acquisition falls back to the default in that case, so say so
+  // instead of rendering a checkmark next to a device that is not there.
   const savedMissing = !!preferred && devices.length > 0 && !devices.some(d => d.deviceId === preferred)
+
+  // Which row gets the checkmark. While capturing, the mark is DATA-DRIVEN: it
+  // reports the device that is actually live (track deviceId, or its label when
+  // the id is permission-redacted), never the saved preference — so a switch
+  // that did not really land is visible as the mark staying put. When no truth
+  // is available mid-capture, no row is marked rather than marking a guess.
+  // Idle, there is no live track; the mark shows the intent (what the NEXT
+  // capture will request).
+  const isChecked = (d: MediaDeviceInfo): boolean => {
+    if (recording) {
+      if (activeDeviceId) return d.deviceId === activeDeviceId
+      if (deviceLabel) return d.label === deviceLabel
+      return false
+    }
+    return d.deviceId === preferred
+  }
+  // "System default" is an intent, not a device: mid-capture the concrete
+  // device row carries the truth, so the default row is never marked then.
+  const defaultChecked = recording ? false : !preferred
 
   return (
     <span ref={wrapRef} className="relative flex-1 min-w-0 flex items-center">
@@ -162,12 +188,18 @@ export default function MicSourceMenu({ deviceLabel, onSelect, recording, liveSw
             <button
               key={d.deviceId}
               type="button"
-              role="menuitem"
+              // menuitemradio, not menuitem: this is a single-select group, and
+              // the checkmark is the ONLY signal of which device is live. As a
+              // plain menuitem that state reached assistive tech not at all —
+              // the tick is an aria-hidden svg and the rest is colour. Same
+              // shape as the repo's other single-select rows (ChatSidebar).
+              role="menuitemradio"
+              aria-checked={isChecked(d)}
               onClick={() => pick(d.deviceId)}
-              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-left bg-transparent border-none cursor-pointer hover:bg-bg-hover ${d.deviceId === preferred ? 'text-accent' : 'text-text'}`}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-left bg-transparent border-none cursor-pointer hover:bg-bg-hover ${isChecked(d) ? 'text-accent' : 'text-text'}`}
             >
               <span className="w-3 shrink-0">
-                {d.deviceId === preferred && <Check size={12} aria-hidden="true" />}
+                {isChecked(d) && <Check size={12} aria-hidden="true" />}
               </span>
               <span className="truncate">{d.label || i18nT('components.micSourceMenu.unnamed_input')}</span>
             </button>
@@ -175,11 +207,12 @@ export default function MicSourceMenu({ deviceLabel, onSelect, recording, liveSw
           <div className="h-px bg-border my-1" />
           <button
             type="button"
-            role="menuitem"
+            role="menuitemradio"
+            aria-checked={defaultChecked}
             onClick={() => pick('')}
-            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-left bg-transparent border-none cursor-pointer hover:bg-bg-hover ${preferred ? 'text-text' : 'text-accent'}`}
+            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-left bg-transparent border-none cursor-pointer hover:bg-bg-hover ${defaultChecked ? 'text-accent' : 'text-text'}`}
           >
-            <span className="w-3 shrink-0">{!preferred && <Check size={12} aria-hidden="true" />}</span>
+            <span className="w-3 shrink-0">{defaultChecked && <Check size={12} aria-hidden="true" />}</span>
             <span className="truncate">{i18nT('components.micSourceMenu.system_default')}</span>
           </button>
           {savedMissing && (

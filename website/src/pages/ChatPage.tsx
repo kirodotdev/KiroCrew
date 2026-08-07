@@ -6008,6 +6008,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               voiceError={voice.error}
               voiceLevel={voiceOwned ? voice.level : 0}
               voiceDeviceLabel={voiceOwned ? voice.deviceLabel : ''}
+              voiceDeviceId={voiceOwned ? voice.deviceId : ''}
               onSelectVoiceDevice={voice.switchDevice}
               voiceDeviceSwitchIsLive={voiceOwned && voice.deviceSwitchIsLive}
               onClearVoiceError={voice.clearError}

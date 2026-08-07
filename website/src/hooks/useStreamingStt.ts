@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { micAudioConstraints, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
+import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
 import type { AudioSample } from './mic'
 import { i18nT } from '../i18n/t'
 
@@ -28,8 +28,11 @@ interface Opts {
   onError?: (msg: string) => void
   /** Live input level in [0,1] for the recording meter. */
   onLevel?: (v: number) => void
-  /** Active capture device label (e.g. "MacBook Pro Microphone"). */
-  onDevice?: (label: string) => void
+  /** Active capture device: human label + the live track's deviceId. The id is
+   *  what makes the source picker data-driven (checkmark on the device that is
+   *  ACTUALLY capturing); it may be `''` when permission-scoped redaction hides
+   *  it, in which case consumers fall back to the label. */
+  onDevice?: (label: string, id: string) => void
   /** Fired when the backend semantic endpointer judges the utterance complete. */
   onEndpoint?: () => void
   /** Unthrottled per-frame audio features for canvas consumers (see mic.ts). */
@@ -80,7 +83,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     try { ctxRef.current?.close() } catch { /* ignore */ }
     ctxRef.current = null
     onLevelRef.current?.(0)
-    onDeviceRef.current?.('')
+    onDeviceRef.current?.('', '')
     setRecording(false)
   }, [])
 
@@ -99,7 +102,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     sessionRef.current = session
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+      stream = await acquireMicStream()
     } catch (e) {
       // Only the still-current start surfaces the error; a superseded one is moot.
       if (sessionRef.current === session) onErrorRef.current?.(humanizeMicError(e))
@@ -112,7 +115,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
       return
     }
     streamRef.current = stream
-    onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '')
+    onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '', activeDeviceId(stream))
     levelStopRef.current = createLevelMeter(stream, v => onLevelRef.current?.(v), sampleRef)
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -312,8 +315,9 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
 
     // Nothing to do when we are ALREADY capturing from that device. Decided here,
     // not in the menu: the menu only knows the saved preference, and re-picking the
-    // checked entry is meaningful precisely when the `ideal` constraint silently
-    // fell back — that tap is the user's retry. Keying on the live track makes it a
+    // checked entry is meaningful precisely when the session STARTED on a fallback
+    // device (start()'s acquire falls back when the saved one is gone or busy) —
+    // that tap is the user's retry. Keying on the live track makes it a
     // no-op only when it truly is one, so a redundant tap costs no audio and a
     // corrective tap still re-acquires.
     //
@@ -335,7 +339,11 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
 
     let next: MediaStream
     try {
-      next = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+      // EXPLICIT pick ⇒ `exact`, no fallback (see acquireMicStream): a switch
+      // that cannot be honored fails loudly here and the old source keeps
+      // running, instead of `ideal` silently handing back the previous device
+      // while the picker claimed the switch happened.
+      next = await acquireMicStream(deviceId)
     } catch (e) {
       // Keep the old source running — a failed switch must not end the session.
       // Only the newest attempt owns the error surface; a superseded one is moot.
@@ -359,14 +367,14 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     source.connect(worklet)
     sourceRef.current = source
     streamRef.current = next
-    // Report the ACTUAL device: the `ideal` constraint falls back silently, so the
-    // trigger label must come from the live track rather than from what was asked
-    // for. The saved preference is deliberately NOT rewritten to the fallback — a
-    // device that enumerates but cannot be opened right now (busy, held by another
-    // app) would otherwise have the user's explicit pick permanently replaced by
-    // whatever answered instead, so it would never be tried again once free. The
-    // pick stays; the label tells the truth about this session.
-    onDeviceRef.current?.(next.getAudioTracks()[0]?.label || '')
+    // Report the ACTUAL device off the live track. With `exact` acquisition a
+    // success genuinely IS the requested device, but the session-start fallback
+    // path can still land elsewhere, so the track stays the single source of
+    // truth. The saved preference is deliberately NOT rewritten on failure — a
+    // device that enumerates but cannot be opened right now (busy, held by
+    // another app) would otherwise have the user's explicit pick permanently
+    // replaced, so it would never be tried again once free.
+    onDeviceRef.current?.(next.getAudioTracks()[0]?.label || '', activeDeviceId(next))
     levelStopRef.current = createLevelMeter(next, v => onLevelRef.current?.(v), sampleRef)
     // Stop the old tracks LAST: releasing them before the replacement is live
     // would surrender the mic and can drop the device's hardware clock.

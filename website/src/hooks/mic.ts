@@ -29,16 +29,74 @@ export function setPreferredMicId(id: string): void {
 }
 
 /**
- * getUserMedia audio constraints honoring the saved device. Uses `ideal`
- * (not `exact`) so an unplugged/removed device falls back to the default
- * instead of throwing OverconstrainedError.
+ * True when a getUserMedia rejection means "this specific device could not be
+ * opened", as opposed to "the user or OS refused the microphone".
  *
- * Because the fallback is SILENT, never infer the live device from what was
- * requested — read it off the track with {@link activeDeviceId}.
+ * Session start falls back to the system default on these; a permission denial
+ * is never laundered into a second attempt. Must stay in step with
+ * {@link humanizeMicError}, which classifies the same names — they drifted once
+ * (AbortError missing here while humanizeMicError already grouped it with
+ * NotReadableError), which made a saved device that merely failed to OPEN
+ * unstartable instead of degrading to the default. `mic.acquire.test.ts` pins
+ * the two together behaviourally, which is the guard that actually holds; a
+ * shared table would not, and a module-level one is a new ALL-CAPS string table
+ * the i18n strict gate rejects at zero tolerance.
+ *
+ * A switch rather than a Set for that last reason: the same shape
+ * `humanizeMicError` below already uses.
  */
-export function micAudioConstraints(): MediaStreamConstraints {
-  const id = getPreferredMicId()
-  return { audio: id ? { deviceId: { ideal: id } } : true }
+function isDeviceUnavailable(name: string): boolean {
+  switch (name) {
+    case 'OverconstrainedError': // constraints unsatisfiable — device gone
+    case 'NotFoundError':        // no such device
+    case 'NotReadableError':     // held by another app
+    case 'AbortError':           // driver / hardware failure while opening
+      return true
+    default:
+      return false
+  }
+}
+
+/**
+ * Acquire the microphone stream, honoring the device choice with `exact`
+ * semantics so a chosen device is either truly opened or the failure is
+ * visible — `ideal` was tried first and silently handed back the previous
+ * device, which made the picker a lie (the dropdown moved, the audio didn't).
+ *
+ * Two calling modes:
+ *
+ * - `acquireMicStream()` — session start. Requests the SAVED preference with
+ *   `exact`; when that device is gone (unplugged: OverconstrainedError /
+ *   NotFoundError) or cannot be opened (held by another app, or a driver /
+ *   hardware failure: NotReadableError / AbortError), falls back to the
+ *   system default so voice input still works. That fallback set is exactly
+ *   the one `humanizeMicError` treats as "not a permission problem" — keeping
+ *   the two in step is what stops a saved device that merely failed to OPEN
+ *   from making voice input unstartable until the user clears the preference.
+ *   The fallback is no longer silent in effect: callers report the live
+ *   track's device (see {@link activeDeviceId}) and the picker renders THAT,
+ *   so a fallback shows up as the checkmark staying off the saved device.
+ * - `acquireMicStream(deviceId)` — an EXPLICIT user pick (device switch).
+ *   `exact`, no fallback: if the pick cannot be honored the caller keeps the
+ *   old stream and surfaces the error, instead of pretending the switch
+ *   happened. `''` means "system default".
+ *
+ * Permission errors (NotAllowedError/SecurityError) always propagate — a
+ * denial must never be retried into a different constraint.
+ */
+export async function acquireMicStream(exactId?: string): Promise<MediaStream> {
+  const explicit = exactId !== undefined
+  const id = explicit ? exactId : getPreferredMicId()
+  if (!id) return navigator.mediaDevices.getUserMedia({ audio: true })
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: id } } })
+  } catch (e) {
+    if (explicit) throw e
+    if (isDeviceUnavailable((e as { name?: string } | null)?.name || '')) {
+      return navigator.mediaDevices.getUserMedia({ audio: true })
+    }
+    throw e
+  }
 }
 
 /**
@@ -79,8 +137,9 @@ export function reportIfMicDenied(e: unknown): void {
  * The deviceId a live stream is ACTUALLY capturing from, or `''` when unknown.
  *
  * This is the only trustworthy answer to "which mic am I recording?": the
- * `ideal` constraint above degrades to the default device without raising, so a
- * stream acquired while asking for device B may well be on device A. Comparing
+ * session-start path in {@link acquireMicStream} still falls back to the
+ * default device when the saved one is gone or busy, so a stream acquired
+ * while asking for device B may well be on device A. Comparing
  * this against {@link getPreferredMicId} is what detects both a stale saved id
  * and a pre-warmed stream that predates the user's choice.
  */
@@ -120,6 +179,9 @@ export function humanizeMicError(e: unknown): string {
       return i18nT('hooks.mic.no_microphone_found_connect_one_or_pick_a_differ')
     case 'NotReadableError':
     case 'AbortError':
+      // Same pair as isDeviceUnavailable above — if you add a name to one,
+      // add it to the other, or a device that failed to open stops degrading
+      // to the default. mic.acquire.test.ts fails if they diverge.
       return i18nT('hooks.mic.microphone_is_unavailable_another_app_may_be_usi')
     default:
       return i18nT('hooks.mic.could_not_start_the_microphone')
