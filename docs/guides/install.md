@@ -82,6 +82,13 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
+`stable` suits everyone, `insider` is for power users who want features days to
+weeks early and accept the new bugs that arrive with them, and `nightly` is
+untested `main` HEAD for us and contributors. The
+[Release channels](../../README.md#release-channels) table has the full
+comparison; re-running the installer with a different `--channel` is how a CLI
+install moves between lanes.
+
 The installer verifies the wheel's digest against the signed manifest and
 refuses to install on a mismatch; there is no checksum-only fallback. It uses
 `pipx` when available, otherwise it creates a managed venv **beside** the data

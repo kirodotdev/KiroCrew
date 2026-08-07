@@ -199,6 +199,10 @@ nightlies sort above what just shipped, and **merge the branch's fixes back into
 Nightly installs **side by side** as its own app. Insider and stable are two
 update lanes of **one** production app, switchable in Settings.
 
+The user-facing version of this table — same audiences, more detail on
+switching — is [Release channels](README.md#release-channels) in the README.
+Keep the two in step.
+
 ### Cutting a release
 
 ```bash
