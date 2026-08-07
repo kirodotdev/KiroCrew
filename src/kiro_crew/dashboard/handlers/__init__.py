@@ -339,6 +339,8 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_close,
     api_side_open,
+    api_side_queue_cancel,
+    api_side_queue_edit,
     api_side_turn,
 )
 

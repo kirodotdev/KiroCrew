@@ -141,7 +141,7 @@ function EditInput({ initial, onCommit, onCancel }: {
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true, pendingIds }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
@@ -149,6 +149,11 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
   /** Move a queued message one step toward the front (`next`) or the back
    *  (`later`) of the run order. Index 0 runs first. */
   onReorder?: (queueId: string, direction: 'next' | 'later') => void
+  /** Queue ids whose cancel/edit is in flight. Their controls are disabled so a
+   *  second click cannot fire a duplicate request — on a surface where the card
+   *  is only retired once the server confirms, that second request races the
+   *  first and comes back 404, reporting a failure for an action that worked. */
+  pendingIds?: ReadonlySet<string>
   /** When true (default) the front collapsed card fuses into the surface directly
    *  below it (the input box) via a negative bottom margin + a flat, borderless bottom
    *  edge. Set false when a non-fusable element sits between the queue and the input box
@@ -271,6 +276,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
             const fused = isFrontCollapsed && fuseBelow
             const queueId = m.meta?.queueId as string | undefined
             const isEditing = !!queueId && editingId === queueId
+            const isPending = !!queueId && !!pendingIds?.has(queueId)
             // Per-card actions show on the front single card or when expanded.
             const showActions = (expanded || messages.length === 1) && !!queueId
 
@@ -339,9 +345,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                       )}
                       {onEdit && showActions && (
                         <button
-                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
+                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}
                           aria-label={i18nT('components.queueStack.edit_queued_message')}
+                          disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); setEditingId(queueId!) }}
                         >
                           <Pencil size={13} />
@@ -349,9 +356,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                       )}
                       {onInterrupt && showActions && (
                         <button
-                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors text-white"
+                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors text-white disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.interrupt_current_turn_and_send_this_now')}
                           aria-label={i18nT('components.queueStack.send_now')}
+                          disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); onInterrupt(queueId!) }}
                         >
                           <Zap size={13} fill="currentColor" />
@@ -359,9 +367,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                       )}
                       {onCancel && showActions && (
                         <button
-                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
+                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.cancel_and_move_back_to_input')}
                           aria-label={i18nT('components.queueStack.cancel_queued_message')}
+                          disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); onCancel(queueId!) }}
                         >
                           <X size={13} />
@@ -391,6 +400,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
 export default memo(QueueStackInner, (prev, next) =>
   prev.messages.length === next.messages.length &&
   prev.fuseBelow === next.fuseBelow &&
+  prev.pendingIds === next.pendingIds &&
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&

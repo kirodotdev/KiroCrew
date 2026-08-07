@@ -5065,6 +5065,8 @@
         "context_from": "Context from",
         "copy": "Copy",
         "refresh_context": "Refresh context",
+        "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
+        "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
         "send": "Send",
         "thinking": "Thinking…",
         "turn_one": "{{count}} turn",

@@ -15,7 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
-from kiro_crew.acp.types import TurnUsage
+from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -441,6 +441,7 @@ async def stream_and_collect(
     hooks: HookManager | None = None,
     on_chunk: Callable[[str], None] | None = None,
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
+    on_steer_consumed: Callable[[str], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -459,6 +460,11 @@ async def stream_and_collect(
         hooks: HookManager for HOOK_BASED approval policy.
         on_chunk: Optional callback invoked with each text chunk (for progress).
         on_tool_approval: Optional async callback for interactive approval.
+        on_steer_consumed: Optional callback invoked with the backend's
+            ``steering_consumed`` echo text. A mid-turn steer is a
+            fire-and-forget write, so this echo is the ONLY authoritative signal
+            that the backend injected it; a caller that steers must observe this
+            to know which of its steers to requeue when the turn ends.
         retry_transient: When True (default), transient backend errors are
             retried in-place with bounded backoff. Set False from callers that
             already own an outer transient-retry loop, so the inner arm doesn't
@@ -488,6 +494,14 @@ async def stream_and_collect(
     while True:
         result_text = ""
         tool_call_count = 0
+        # Consumption is committed on every exit EXCEPT a retry. A retry re-sends the
+        # original message without the steer, so committing there would mark a steer
+        # delivered that the model never saw. Every other exit — success or failure — is
+        # terminal for this steer: the backend already consumed it, and `consumed` is what
+        # suppresses the requeue, so dropping the acknowledgement makes the cleanup hand an
+        # already-answered question back and ask it twice. Re-initialised per attempt.
+        consumed_this_attempt: list[str] = []
+        retrying = False
         try:
             async for event in provider.stream(message):
                 if event.kind == EVENT_TEXT_CHUNK:
@@ -537,6 +551,8 @@ async def stream_and_collect(
                         event.title,
                         event.tool_input,
                     )
+                elif event.kind == EVENT_STEER_CONSUMED:
+                    consumed_this_attempt.append(event.text or "")
                 elif event.kind == EVENT_COMPLETE:
                     break
             return result_text
@@ -580,6 +596,7 @@ async def stream_and_collect(
                     logger.debug("Cancel before retry failed", exc_info=True)
                 await asyncio.sleep(_PROMPT_BUSY_DELAY * (2**attempt))
                 attempt += 1
+                retrying = True
                 continue
 
             # ── Case 2: transient backend (Bedrock 5xx / throttle / stream) ──
@@ -611,10 +628,18 @@ async def stream_and_collect(
                     exc,
                 )
                 await asyncio.sleep(delay)
+                retrying = True
                 continue
 
             # ── Case 3: fatal (auth, validation, exhausted retries) — propagate. ──
             raise
+        finally:
+            # Runs before the value reaches the caller on success, and before the exception
+            # propagates on failure, so the acknowledgement always precedes the cleanup that
+            # would otherwise requeue the question.
+            if not retrying and on_steer_consumed:
+                for consumed_text in consumed_this_attempt:
+                    on_steer_consumed(consumed_text)
 
 
 async def stream_and_collect_json(

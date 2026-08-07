@@ -2352,6 +2352,14 @@ async def start_dashboard(
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/close", handlers.api_side_close)
+    app.router.add_delete(
+        "/api/chat/slots/{slot}/side/queue/{queue_id}",
+        handlers.api_side_queue_cancel,
+    )
+    app.router.add_patch(
+        "/api/chat/slots/{slot}/side/queue/{queue_id}",
+        handlers.api_side_queue_edit,
+    )
     # Workspaces
     app.router.add_get("/api/workspaces", handlers.api_workspaces)
     app.router.add_post("/api/workspaces", handlers.api_workspaces_create)

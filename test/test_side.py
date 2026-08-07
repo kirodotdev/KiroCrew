@@ -73,7 +73,14 @@ def _make_side_app(
 
 def _capture_broadcasts(state) -> list[tuple[str, Any]]:
     events: list[tuple[str, Any]] = []
-    state.broadcast_ws = lambda msg_type, data: events.append((msg_type, data))
+
+    def _record(msg_type, data):
+        events.append((msg_type, data))
+
+    # Both channels: side frames are owner-only while main chat events go to every client,
+    # and these tests discriminate by event type rather than by audience.
+    state.broadcast_ws = _record
+    state.broadcast_ws_owners = _record
     return events
 
 

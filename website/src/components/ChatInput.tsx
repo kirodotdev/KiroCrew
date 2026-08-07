@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
@@ -26,7 +26,7 @@ import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import BusySendButton, { useBusySendMode } from './BusySendButton'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ContextBar, { contextTip, contextPctClamped, contextColor } from './ContextBar'
@@ -89,40 +89,6 @@ const FILE_PREVIEW_H = 81 // h-16 (64px) + py-2 (16px) + border-t (1px)
 const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
-
-// Send behavior while the composer is BUSY — a running turn, or background
-// sub-agents still running for the slot. 'steer' (default) acts on the text
-// immediately (injecting into a live turn, or starting one); 'queue' defers it.
-// The user picks via the split send button's dropdown; choice persists.
-const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
-type BusySendMode = 'steer' | 'queue'
-/**
- * Catalog KEYS for the two busy-send modes' menu copy.
- *
- * Keys, not strings: `BUSY_SEND_MODES` is built at module load, so an `i18nT()`
- * call in it would freeze whatever language was active at boot and never
- * re-resolve on a language switch. The lookups happen in the menu's render.
- *
- * Held apart from `BUSY_SEND_MODES` and shaped as flat `Record`s of full literal
- * keys, indexed inline at the `i18nT()` call, because that is the only form
- * `scripts/check-i18n-keys.mjs` can resolve statically — nested in the array and
- * read as `i18nT(m.labelKey)` the gate cannot see the key at all.
- *
- * `steer` reuses the label the split button's `aria-label` already ships rather
- * than sending a duplicate English string to ten locales.
- */
-const BUSY_SEND_MODE_LABEL_KEY: Record<BusySendMode, string> = {
-  steer: 'components.chatInput.steer',
-  queue: 'components.chatInput.queue',
-}
-const BUSY_SEND_MODE_DESC_KEY: Record<BusySendMode, string> = {
-  steer: 'components.chatInput.steer_desc',
-  queue: 'components.chatInput.queue_desc',
-}
-const BUSY_SEND_MODES: Array<{ mode: BusySendMode; icon: React.ReactNode }> = [
-  { mode: 'steer', icon: <Target size={15} /> },
-  { mode: 'queue', icon: <ArrowUpFromLine size={15} /> },
-]
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
 // programmatic value reset (send-clear, ↑/↓ history recall, prompt optimize)
@@ -958,55 +924,9 @@ function ChatInput({
     el.click()
     setPlusOpen(false)
   }
-  // Split send button (running turn): 'steer' (default) vs 'queue', chosen via
-  // the chevron dropdown and persisted so the preference sticks across sessions.
-  const [busySendMode, setBusySendMode] = useState<BusySendMode>(() => {
-    try { return localStorage.getItem(BUSY_SEND_MODE_LS_KEY) === 'queue' ? 'queue' : 'steer' } catch { return 'steer' }
-  })
-  const [busyMenuOpen, setBusyMenuOpen] = useState(false)
-  const [busyMenuRect, setBusyMenuRect] = useState<DOMRect | null>(null)
-  const busySplitRef = useRef<HTMLDivElement>(null)
-  const busyMenuRef = useRef<HTMLDivElement>(null)
-  const busyCaretRef = useRef<HTMLButtonElement>(null)
-  // This menu has no filter input; the ref stays null so useListboxKeyboard
-  // treats ArrowUp from the first option as a no-op instead of a focus jump.
-  const busyNoInputRef = useRef<HTMLElement | null>(null)
-  const closeBusyMenuToTrigger = useCallback(() => {
-    setBusyMenuOpen(false)
-    busyCaretRef.current?.focus()
-  }, [])
-  // Keyboard operability for the portaled menu (WAI-ARIA menu pattern):
-  // focus moves into the first option on open, ArrowUp/Down + Home/End roam,
-  // Escape/Tab close and return focus to the caret trigger.
-  const { onListKeyDown: onBusyMenuKeyDown } = useListboxKeyboard({
-    open: busyMenuOpen,
-    dropdownRef: busyMenuRef,
-    inputRef: busyNoInputRef,
-    hasFilterInput: false,
-    filteredCount: BUSY_SEND_MODES.length,
-    onEnterSingleMatch: () => {},
-    closeToTrigger: closeBusyMenuToTrigger,
-  })
-  useEffect(() => {
-    if (!busyMenuOpen) return
-    // Menu is portaled to <body> (escapes the input's overflow-hidden), so the
-    // outside-click guard must exclude both the split button and the menu.
-    const h = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!busySplitRef.current?.contains(t) && !busyMenuRef.current?.contains(t)) setBusyMenuOpen(false)
-    }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [busyMenuOpen])
-  const toggleBusyMenu = () => {
-    if (!busyMenuOpen && busySplitRef.current) setBusyMenuRect(busySplitRef.current.getBoundingClientRect())
-    setBusyMenuOpen(o => !o)
-  }
-  const selectBusyMode = (m: BusySendMode) => {
-    setBusySendMode(m)
-    safeSetItem(BUSY_SEND_MODE_LS_KEY, m)
-    closeBusyMenuToTrigger()
-  }
+  // Split send button while the composer is BUSY: 'steer' (default) vs 'queue'.
+  // The mode is a shared, persisted preference — see BusySendButton.
+  const [busySendMode, setBusySendMode] = useBusySendMode()
   // Steer is the active Enter/send action only while the composer is busy and
   // not stopping, on a steer-capable slot, and the user hasn't switched the
   // split button to Queue. Everywhere else the composer falls back to onSend
@@ -2632,66 +2552,12 @@ function ChatInput({
               // waits for the turn to end and rides the idle send button.
               value.trim() || pendingFiles.length ? (
                 canSteer && onSteer ? (
-                  /* Split send button (mock: [ action | ▾ ]) — main area fires the
-                   * selected busy-send mode (steer by default, same as Enter);
-                   * the chevron opens a dropdown to switch modes (persisted). */
-                  <div className="relative flex items-center" ref={busySplitRef}>
-                    <div className={`flex items-stretch h-8 rounded-full overflow-hidden transition-colors ${busySendMode === 'steer' ? 'bg-accent text-accent-fg' : 'bg-warn text-warn-fg'}`}>
-                      <button
-                        className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
-                        onClick={fireComposer}
-                        disabled={disabled}
-                        title={busySendMode === 'steer' ? i18nT('components.chatInput.steer_inject_into_the_running_turn_enter') : i18nT('components.chatInput.queue_run_after_the_current_turn_finishes_enter')}
-                        aria-label={busySendMode === 'steer' ? i18nT('components.chatInput.steer') : i18nT('components.chatInput.queue_message')}
-                        data-testid="busy-send-button"
-                      >
-                        {busySendMode === 'steer' ? <Target size={16} /> : <ArrowUpFromLine size={16} />}
-                      </button>
-                      <div className="w-px my-1.5 bg-current opacity-40" aria-hidden="true" />
-                      <button
-                        ref={busyCaretRef}
-                        className="w-6 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
-                        onClick={toggleBusyMenu}
-                        aria-haspopup="menu"
-                        aria-expanded={busyMenuOpen}
-                        aria-label={i18nT('components.chatInput.send_options')}
-                        title={i18nT('components.chatInput.send_options')}
-                        data-testid="busy-send-caret"
-                      >
-                        <ChevronDown size={14} className={`transition-transform ${busyMenuOpen ? 'rotate-180' : ''}`} />
-                      </button>
-                    </div>
-                    {busyMenuOpen && busyMenuRect && createPortal(
-                      <div
-                        ref={busyMenuRef}
-                        role="menu"
-                        onKeyDown={onBusyMenuKeyDown}
-                        className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
-                        style={{ left: Math.max(8, Math.min(busyMenuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - busyMenuRect.top + 8 }}
-                      >
-                        {BUSY_SEND_MODES.map(({ mode, icon }) => (
-                          <button
-                            key={mode}
-                            role="menuitemradio"
-                            aria-checked={busySendMode === mode}
-                            data-option=""
-                            tabIndex={-1}
-                            onClick={() => selectBusyMode(mode)}
-                            className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors cursor-pointer text-left border-none"
-                            data-testid={`busy-send-mode-${mode}`}
-                          >
-                            <span className={`shrink-0 ${mode === 'steer' ? 'text-accent' : 'text-warn'}`}>{icon}</span>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[12px] font-medium text-text">{i18nT(BUSY_SEND_MODE_LABEL_KEY[mode])}</div>
-                              <div className="text-[11px] text-muted leading-snug">{i18nT(BUSY_SEND_MODE_DESC_KEY[mode])}</div>
-                            </div>
-                            {busySendMode === mode && <Check size={14} className="text-accent shrink-0" />}
-                          </button>
-                        ))}
-                      </div>,
-                      document.body
-                    )}
-                  </div>
+                  <BusySendButton
+                    mode={busySendMode}
+                    onModeChange={setBusySendMode}
+                    onFire={fireComposer}
+                    disabled={disabled}
+                  />
                 ) : (
                   <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
                     <ArrowUpFromLine size={18} />

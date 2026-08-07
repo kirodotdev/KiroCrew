@@ -686,6 +686,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # message with and without redaction, so a raw comparison would keep both
         # copies — nothing redacted here is ever written or shown.
         "channel_transcript_migration.py",
+        # Comparison-only, same shape: the steer settler redacts BOTH the pending
+        # text and the backend's echo purely to compute a match identity. The ACP
+        # layer already redacted the echo on the way in, so comparing it against
+        # raw pending text never matched and the consumed steer got requeued and
+        # run twice. Nothing redacted here is written or shown — the ledger and
+        # the transcript keep the original text.
+        "dashboard/steer_settle.py",
         # DETECTOR, not a redactor: the pre-push content scan calls both scanners only
         # to COUNT findings and then refuses the push. It deliberately discards the
         # cleaned text — rewriting a code diff would corrupt the very fix the gate
