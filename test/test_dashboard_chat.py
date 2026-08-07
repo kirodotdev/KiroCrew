@@ -11017,9 +11017,77 @@ class TestRunChatTransientRetry:
 
         # Initial attempt + TRANSIENT_RETRIES re-prompts, then it gives up.
         assert call_count == TRANSIENT_RETRIES + 1
-        assert slot._transient_5xx_retries == TRANSIENT_RETRIES
         # Clean error surfaced; session left resumable (no reset).
         assert any(t.startswith("❌") for t in self._err_texts(slot))
+        state.sessions.reset.assert_not_awaited()
+        # The terminal ❌ ENDS the cycle, so the budget is refreshed for the
+        # next one — the Continue press the error message invites must get the
+        # full ladder again, not inherit an exhausted counter.
+        assert slot._transient_5xx_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_transient_budget_refreshed_after_terminal_error(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: a cycle that EXHAUSTS the transient budget and surfaces
+        the terminal ❌ must refresh the budget for the NEXT cycle. The
+        happy-path reset only runs when a cycle COMPLETES, so before the fix
+        the exhausted counter leaked into every later cycle: the very next
+        5xx — e.g. right after the Continue press the ❌ message itself
+        invites ("retry in a moment") — failed instantly with ZERO retries
+        until some turn happened to finish cleanly."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        # ── Cycle 1: persistent 5xx exhausts the budget → terminal ❌. ──
+        async def _always_fail(msg):
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_always_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "first question")
+            await self._drain_bg(state)
+
+        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert slot._transient_5xx_retries == 0
+        n_before = len(slot.messages)
+
+        # ── Cycle 2: a 5xx on the next turn retries again (fresh budget). ──
+        call_count = 0
+
+        async def _fail_once_then_ok(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client.stream = _fail_once_then_ok
+        client.stream_command = _fail_once_then_ok
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "second question")
+            await self._drain_bg(state)
+
+        # Before the fix: 3 < TRANSIENT_RETRIES was False on the first 5xx, so
+        # cycle 2 died instantly (call_count == 1, a second ❌, no answer).
+        assert call_count == 2
+        tail = slot.messages[n_before:]
+        tail_errs = [m["content"] for m in tail if m.get("role") == "error"]
+        tail_answers = [m["content"] for m in tail if m.get("role") == "assistant"]
+        assert any("Backend hiccup" in t for t in tail_errs)
+        assert not any(t.startswith("❌") for t in tail_errs)
+        assert any("ok-result" in t for t in tail_answers)
+        # Completed cycle → budget back to 0 via the happy-path reset.
+        assert slot._transient_5xx_retries == 0
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio

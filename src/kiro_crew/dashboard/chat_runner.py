@@ -5588,6 +5588,21 @@ async def _run_chat(
                 f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
                 "msg msg-err",
             )
+            # This branch ENDS the retry cycle: the error is terminal and
+            # nothing is re-queued. Refresh the transient-5xx budget now so the
+            # NEXT cycle — the Continue press this very error message invites
+            # ("retry in a moment"), or a new user message — gets the designed
+            # TRANSIENT_RETRIES fresh attempts. Without this, the budget
+            # consumed by a failed cycle leaks into every later cycle (the
+            # happy-path reset only runs when a cycle COMPLETES), so after one
+            # exhaustion ❌ a single further 5xx fails instantly with zero
+            # retries until some turn happens to finish cleanly. Loop safety is
+            # unchanged: the reset happens only on a NO-REQUEUE exit, so a new
+            # budget always requires a new user- or system-initiated cycle —
+            # automatic retry chains within a cycle stay bounded at
+            # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
+            # here: it is already refreshed at genuine-turn start.)
+            slot._transient_5xx_retries = 0
     except Exception as exc:
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))
