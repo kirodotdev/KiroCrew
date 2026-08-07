@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,32 @@ def ensure_ffmpeg_in_path() -> None:
             path_parts.insert(0, d)
 
 
+def _own_scripts_dir() -> str:
+    """Scripts dir of the interpreter THIS process is running under.
+
+    Where ``pip install openai-whisper`` (or ``mlx-whisper``) lands its console
+    script when the app is installed in a virtualenv — which is how the gateway
+    normally runs. Nothing else in the search order looks there:
+
+    * ``shutil.which`` only sees ``PATH``, and a venv is on ``PATH`` only after
+      ``activate``. The gateway is launched as ``<venv>/bin/kirocrew``, which does
+      not modify ``PATH``, so the venv's own ``bin/`` is invisible to it.
+    * :func:`_python3_bin_dir` deliberately asks the SYSTEM python3 (via
+      ``find_python_interpreter``), so it reports the system scripts dir even when
+      we are running inside a venv.
+
+    The result was that installing Whisper into the app's own environment — the
+    obvious thing to do — left ``is_available()`` reporting False, with the only
+    workarounds being to set ``stt.whisper_path`` by hand or install it a second
+    time somewhere else.
+
+    Uses ``sys.prefix`` rather than ``sysconfig.get_path('scripts')`` because the
+    latter can be redirected by an active ``--user`` scheme or a posix_prefix
+    override, while the console script always sits beside the running interpreter.
+    """
+    return os.path.dirname(os.path.abspath(sys.executable))
+
+
 def _python3_bin_dir() -> str:
     """Return the bin dir of the system python3 (where pip installs scripts)."""
     try:
@@ -142,6 +169,15 @@ def _find_whisper(configured_path: str = "") -> str | None:
     found = shutil.which("whisper")
     if found:
         return found
+    # This interpreter's own scripts dir FIRST of the directory probes: when the
+    # app runs from a venv, that is where `pip install openai-whisper` put the
+    # console script, and it is the only candidate guaranteed to match the
+    # environment the caller actually installed into.
+    own_bin = _own_scripts_dir()
+    if own_bin:
+        found_own = _find_script_in_dir(own_bin, "whisper")
+        if found_own:
+            return found_own
     # Check system python3's scripts dir (pip install target)
     py3_bin = _python3_bin_dir()
     if py3_bin:
@@ -218,6 +254,12 @@ def _find_mlx_whisper() -> str | None:
     found = shutil.which("mlx_whisper")
     if found:
         return found
+    # Same venv gap as `_find_whisper` — see `_own_scripts_dir`.
+    own_bin = _own_scripts_dir()
+    if own_bin:
+        found_own = _find_script_in_dir(own_bin, "mlx_whisper")
+        if found_own:
+            return found_own
     py3_bin = _python3_bin_dir()
     if py3_bin:
         found_script = _find_script_in_dir(py3_bin, "mlx_whisper")

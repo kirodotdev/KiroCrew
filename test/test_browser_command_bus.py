@@ -261,8 +261,47 @@ async def test_handlers_reject_loopback_cookie_caller(fresh_bus) -> None:
 
 @pytest.mark.asyncio
 async def test_handler_command_missing_fields_400(fresh_bus) -> None:
-    resp = await msg.api_browser_command(_req({"op": "navigate"}))
+    # ``op`` is the only hard-required field now; a missing session identity is a
+    # graceful 503 (below), not a 400.
+    resp = await msg.api_browser_command(_req({"session_key": "s1"}))
     assert resp.status == 400
+    assert _body(resp)["code"] == "op_required"
+
+
+@pytest.mark.asyncio
+async def test_handler_command_no_session_identity_is_503_not_400(fresh_bus) -> None:
+    """op present but no resolvable session (no host_pid, empty fallback) ->
+    answer like no-panel (503) so the proxy falls back to Playwright, rather than
+    surfacing a hard 400 MCP error to the agent."""
+    resp = await msg.api_browser_command(_req({"op": "navigate", "args": {}}))
+    assert resp.status == 503
+    assert _body(resp)["error"] == "no-native-panel"
+
+
+@pytest.mark.asyncio
+async def test_handler_command_resolves_session_from_host_pid(fresh_bus, monkeypatch) -> None:
+    """The gateway resolves the authoritative key from host_pid, OVERRIDING the
+    proxy's empty frozen-env fallback, and strips the "dashboard:" prefix to
+    match the bare slot key the Electron panel registers via command-drain."""
+    monkeypatch.setattr(msg, "_resolve_browse_session_key", lambda _pid: "dashboard:chat-9")
+    # Panel registers under the BARE slot key (what Electron's listPanelIds yields).
+    drain_task = asyncio.create_task(
+        msg.api_browser_command_drain(_req({"session_keys": ["chat-9"], "wait_ms": 2000}))
+    )
+    await _wait_registered(fresh_bus, "chat-9")
+    # Warm-pool proxy: empty session_key, but host_pid resolves to chat-9.
+    submit_task = asyncio.create_task(
+        msg.api_browser_command(
+            _req({"session_key": "", "host_pid": 4242, "op": "navigate", "args": {"url": "http://x"}})
+        )
+    )
+    drain_resp = await drain_task
+    assert drain_resp.status == 200
+    assert _body(drain_resp)["session_key"] == "chat-9", "resolved+stripped key drives the panel"
+    await msg.api_browser_command_result(_req({"id": _body(drain_resp)["id"], "ok": True, "result": "ok"}))
+    submit_resp = await submit_task
+    assert submit_resp.status == 200
+    assert _body(submit_resp)["ok"] is True
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,18 @@ class SkillUsageLedger:
             last_seen = self._last_seen.get(key, 0.0)
         return (float(hits), max(last_seen, recency_boost))
 
+    def snapshot(self) -> dict[str, tuple[int, float]]:
+        """Return a thread-safe copy of ``{key: (hits, last_seen)}`` for all live entries.
+
+        Used by the budget endpoint to compute cross-key alias folds without
+        holding the lock for the duration of the filesystem resolution pass.
+        """
+        with self._lock:
+            return {
+                k: (self._hits[k], self._last_seen.get(k, 0.0))
+                for k in self._hits
+            }
+
     # --- write path (used by body-delivery in context builder / resolve_dollar_skills) ----------
 
     def record(self, key: str) -> None:

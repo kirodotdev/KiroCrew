@@ -173,13 +173,21 @@ class TestUrlBoundary:
         # ratio assertion catches that where a wall-clock budget loose enough for a
         # loaded runner would not.
         #
+        # We only need to separate two regimes: a linear scan doubles the input for
+        # ~2x the time, while a quadratic one (slice/rescan the whole line per
+        # match) costs ~4x AND with a far larger constant that blows well past 4x
+        # at these sizes. The bound sits between them with headroom for a noisy
+        # runner, so real regressions are still caught.
+        #
         # Each size is measured as the MIN of N repetitions (the first call also
         # warms up caches). min() is the standard noise-robust estimator: scheduler
-        # preemptions only ever ADD time, so the minimum converges on the true cost
-        # while a genuinely quadratic _hits still blows past the bound on every
-        # repetition. Single-shot timing flaked twice on Windows CI at ~60ms base
-        # durations where one GC pause skewed the ratio past 3.0.
-        _REPS = 3
+        # preemptions and GC pauses only ever ADD time, so the minimum converges on
+        # the true cost while a genuinely quadratic _hits still blows past the
+        # bound. The base size is large enough that one fixed pause is a small
+        # fraction of it -- min-of-3 at a ~50ms/20k-match base was not, and flaked
+        # on Windows CI when a single pause skewed the ratio of two small timings
+        # past 3.0 (base 47ms / doubled 141ms == 3.0x on a linear scan).
+        _REPS = 5
 
         def best_of(count: int) -> tuple[float, int]:
             line = "!KiroCrew" * count
@@ -191,10 +199,10 @@ class TestUrlBoundary:
                 times.append(time.monotonic() - began)
             return min(times), found
 
-        base, base_found = best_of(20_000)
-        doubled, doubled_found = best_of(40_000)
-        assert (base_found, doubled_found) == (20_000, 40_000)
-        assert doubled / base < 3.0, f"doubling the input cost {doubled / base:.1f}x, want ~2x"
+        base, base_found = best_of(50_000)
+        doubled, doubled_found = best_of(100_000)
+        assert (base_found, doubled_found) == (50_000, 100_000)
+        assert doubled / base < 3.5, f"doubling the input cost {doubled / base:.1f}x, want ~2x"
 
     def test_many_backticks_stay_linear(self) -> None:
         line = "`x`" * 30_000 + " KiroCrew"

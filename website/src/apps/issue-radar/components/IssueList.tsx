@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
+import { Virtuoso } from 'react-virtuoso'
 import { RefreshCw, Search, X } from 'lucide-react'
 import { useIssueRadar } from '../context'
 import { relativeTimeOrDate, relativeTime } from '../lib/format'
@@ -9,10 +10,14 @@ import ListSkeleton from './ListSkeleton'
 import ListEmptyState from './ListEmptyState'
 
 import { i18nT } from '../../../i18n/t'
-/** Above this many rendered rows we skip the per-card layout/enter animation:
- * Framer's layout pass measures every node, which janks on large repos (Kiro
- * has thousands of open issues and the list isn't virtualized yet). Typing a
- * search that narrows the list back under the cap re-enables the animation. */
+/** Above this many rendered rows the per-card layout/enter animation is dropped
+ * AND the list switches to a virtualized scroller: Framer's layout pass measures
+ * every node, and mounting thousands of card DOM nodes at once janks on large
+ * repos (Kiro has thousands of open issues). Under the cap the list is a plain
+ * flow of animated cards — cheap, and the reorder/enter animation is worth it;
+ * over it, only the visible rows exist and the animation would fight the
+ * virtualizer anyway. Typing a search that narrows the list back under the cap
+ * re-enables both. */
 const ANIM_CAP = 200
 
 /** Middle column: a search box, the filtered + sorted issue list (cards
@@ -25,7 +30,7 @@ const ANIM_CAP = 200
  * move. Dropped from the drag, the cards simply re-wrap. */
 export default function IssueList({ resizing = false }: { resizing?: boolean }) {
   const {
-    filteredIssues, sortedIssues, issuesLoading, issuesError,
+    filteredIssues, sortedIssues, issuesLoading, issuesError, issuesPartial,
     stateFilter, issues, colorByName,
     selectedIssue, setSelectedIssue, refresh, refreshing,
     query, setQuery, issuesUpdatedAt,
@@ -98,48 +103,70 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
 
       {/* Card list — a bottom gradient fades the last cards out. */}
       <div className="relative flex-1 min-h-0">
-        <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
-          {issuesLoading && <ListSkeleton />}
-          {issuesError && <div className="px-1 py-2 text-[14px] text-danger">{issuesError.message}</div>}
-          {!issuesLoading && filteredIssues.length === 0 && (
+        {issuesLoading && (
+          <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+            <ListSkeleton />
+          </div>
+        )}
+        {issuesError && <div className="px-3 py-2 text-[14px] text-danger">{issuesError.message}</div>}
+        {!issuesLoading && filteredIssues.length === 0 && (
+          <div className="px-2 pb-2">
             <ListEmptyState searching={Boolean(query.trim())} label={i18nT('apps.issueRadar.components.issueList.issues')} />
-          )}
-          {animate ? (
-            <AnimatePresence initial={false} mode="popLayout">
-              {sortedIssues.map((iss) => (
-                <motion.button
-                  key={iss.number}
-                  // 'position' (not the default size+position): a size-animating
-                  // layout pass distorts the card's text with a scale transform
-                  // whenever the column rewraps. Off entirely mid-resize.
-                  layout={resizing ? false : 'position'}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.97 }}
-                  transition={{
-                    layout: { type: 'spring', stiffness: 550, damping: 40 },
-                    duration: 0.18,
-                    ease: [0.16, 1, 0.3, 1],
-                  }}
-                  onClick={() => setSelectedIssue(iss.number)}
-                  className={cardClass(selectedIssue === iss.number)}
-                >
-                  {cardInner(iss)}
-                </motion.button>
-              ))}
-            </AnimatePresence>
+          </div>
+        )}
+        {!issuesLoading && sortedIssues.length > 0 && (
+          animate ? (
+            // Small list: a plain animated flow. Cheap, and the reorder/enter
+            // animation is worth it. AnimatePresence needs all siblings mounted, so
+            // this path is deliberately NOT virtualized (bounded by ANIM_CAP).
+            <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+              <AnimatePresence initial={false} mode="popLayout">
+                {sortedIssues.map((iss) => (
+                  <motion.button
+                    key={iss.number}
+                    // 'position' (not the default size+position): a size-animating
+                    // layout pass distorts the card's text with a scale transform
+                    // whenever the column rewraps. Off entirely mid-resize.
+                    layout={resizing ? false : 'position'}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.97 }}
+                    transition={{
+                      layout: { type: 'spring', stiffness: 550, damping: 40 },
+                      duration: 0.18,
+                      ease: [0.16, 1, 0.3, 1],
+                    }}
+                    onClick={() => setSelectedIssue(iss.number)}
+                    className={cardClass(selectedIssue === iss.number)}
+                  >
+                    {cardInner(iss)}
+                  </motion.button>
+                ))}
+              </AnimatePresence>
+            </div>
           ) : (
-            sortedIssues.map((iss) => (
-              <button
-                key={iss.number}
-                onClick={() => setSelectedIssue(iss.number)}
-                className={cardClass(selectedIssue === iss.number)}
-              >
-                {cardInner(iss)}
-              </button>
-            ))
-          )}
-        </div>
+            // Large list: virtualize so only the visible rows exist as DOM nodes,
+            // instead of mounting thousands of cards on a big repo. Row gap is a
+            // per-row bottom padding (Virtuoso lays rows out absolutely, so a flex
+            // `gap` on the container does not apply).
+            <Virtuoso
+              className="absolute inset-0 scrollbar-none px-2"
+              style={{ scrollbarWidth: 'none' }}
+              data={sortedIssues}
+              computeItemKey={(_i, iss) => iss.number}
+              itemContent={(_i, iss) => (
+                <div className="pb-2">
+                  <button
+                    onClick={() => setSelectedIssue(iss.number)}
+                    className={cardClass(selectedIssue === iss.number)}
+                  >
+                    {cardInner(iss)}
+                  </button>
+                </div>
+              )}
+            />
+          )
+        )}
         {/* Bottom fade — the last cards dissolve toward the footer instead of a
             hard divider. Fades to --bg (the panel background behind the list). */}
         <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-bg to-transparent" />
@@ -150,6 +177,14 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
         <span title={stateFilter === 'closed' && issues.length >= 100 ? i18nT('apps.issueRadar.components.issueList.closed_issues_are_capped_at_the_100_most_recentl') : undefined}>
           {i18nT('apps.issueRadar.components.issueList.issue', { count: filteredIssues.length })}
         </span>
+        {/* Cold-start: these are only the newest page while the full list loads
+            behind them. Say so, so the count does not read as the whole repo. */}
+        {issuesPartial && (
+          <span className="inline-flex items-center gap-1 text-muted opacity-70">
+            <RefreshCw size={11} className="animate-spin" />
+            {i18nT('apps.issueRadar.components.issueList.loading_the_rest')}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (
             <span className="tabular-nums" title={i18nT('apps.issueRadar.components.issueList.time_since_the_issue_list_was_last_fetched_from')}>

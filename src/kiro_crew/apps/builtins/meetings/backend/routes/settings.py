@@ -39,10 +39,18 @@ logger = logging.getLogger("kirocrew.app.meetings")
 _MAX_AGENTS = 12
 _MAX_PRESETS = 30
 _MAX_PROMPT = 8000
-# An agent's ``agent`` field names an installed agent spec. App agents are
-# registered namespaced (``meetings/meetings-note-taker`` → the symlink
-# ``meetings--meetings-note-taker.json``), so the charset must allow the slash
-# while still refusing path traversal and separators.
+# An agent's ``agent`` field names an installed agent spec by its DECLARED name
+# (``meetings-note-taker``) — that is the dispatchable identifier, and what
+# kiro-cli enumerates. The namespaced form (``meetings/meetings-note-taker``) is a
+# display/tracking id and is NOT resolvable; asking for it yields
+# ``Mode '…' not found``.
+#
+# The slash is still accepted by the charset below, deliberately: a config written
+# by an older build may carry the namespaced value, and refusing it here would turn
+# a stale setting into a validation error on an unrelated save. Such a value is not
+# left to fail at dispatch — that failure reaches only the Gateway log, never the
+# UI — so ``store.read_config`` strips the namespace from builtin rows on read.
+# Path traversal and separators stay refused.
 _AGENT_REF_MAX = 128
 
 

@@ -34,6 +34,6 @@
   ],
   "readiness": {
     "status_context": "PR Readiness",
-    "defer_label": "defer-longterm"
+    "defer_label": null
   }
 }

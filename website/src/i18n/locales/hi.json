@@ -121,6 +121,30 @@
     }
   },
   "apps": {
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "बिल्ड",
+        "collects": "संग्रह",
+        "green": "GREEN",
+        "lint": "लिंट",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "किसी GitHub रिपॉज़िटरी को बदलने से पहले उसे मापता है। एक कैलिब्रेटेड प्रदर्शन मीट्रिक (पैमाना) तैयार करता है, किसी ज्ञात सुधार के मुक़ाबले साबित करता है कि मीट्रिक भरोसेमंद है, और फिर रखें-या-पलटें सुधार चक्र चलाता है: हर संभावित सुधार एक अलग worktree में लिखा जाता है, संपादन-अनुमति सूची और रिपॉज़िटरी के अपने परीक्षणों से जाँचा जाता है, और तभी रखा जाता है जब मापा गया लाभ शोर-पट्टी से ऊपर हो। बचे हुए सुधार GitHub पुल रिक्वेस्ट के ड्राफ़्ट के रूप में तैयार होते हैं, जिन्हें तुम स्वयं देखकर प्रकाशित करते हो।",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "पहले अपना ही पैमाना साबित करता है — भरोसेमंद न हो तो रन शुरू ही नहीं होता",
+        "highlight_2": "हर उम्मीदवार A/B में मापा जाता है, बग-फ़िक्स के लिए RED/GREEN — केवल «ठीक लगता है» पर नहीं",
+        "highlight_3": "बदलाव तभी रखता है जब लाभ मापी गई शोर-पट्टी से ऊपर हो",
+        "highlight_4": "GitHub पुल रिक्वेस्ट तैयार करता है — केवल ड्राफ़्ट, तुम्हारे लिए कभी प्रकाशित या मर्ज नहीं",
+        "highlight_5": "push-रहित क्लोन पर चलता है, इसलिए कुछ भी बिना समीक्षा सैंडबॉक्स से बाहर नहीं जाता",
+        "highlight_6": "हर पुल रिक्वेस्ट, हर निष्कर्ष और हर रन के लिए एक फिर-से-शुरू होने वाला चैट सत्र",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "स्वीकारें",
@@ -562,6 +586,7 @@
         },
         "issueList": {
           "clear_search": "खोज साफ़ करें",
+          "loading_the_rest": "बाकी लोड हो रहा है…",
           "closed_issues_are_capped_at_the_100_most_recentl": "बंद इश्यू सबसे हाल में अपडेट हुए 100 तक सीमित हैं",
           "issue_one": "{{count}} इश्यू",
           "issue_other": "{{count}} इश्यू",
@@ -1101,6 +1126,9 @@
         "resize_sidebar": "साइडबार का आकार बदलें",
         "select_a": "एक",
         "select_an_issue_to_see_its_details": "विवरण देखने के लिए एक इश्यू चुनें।",
+        "selected_issue_hidden_by_filters": "चयनित इश्यू सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
+        "selected_change_hidden_by_filters": "चयनित {{subject}} सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
+        "clear_filters": "फ़िल्टर साफ़ करें",
         "to_see_its_details": "चुनें ताकि उसका विवरण दिखे।"
       },
       "api": {
@@ -3167,6 +3195,87 @@
       }
     }
   },
+  "autoImprovement": {
+    "activityDiscovered": "(खोजे गए {{discovered}}, नए {{fresh}})",
+    "autocommitHint": "हर सत्यापित बदलाव को सीधे बेस ब्रांच में पुश करें। संरक्षित ब्रांच हमेशा ड्राफ़्ट PR पर वापस आ जाती हैं।",
+    "autocommitLabel": "सीधे ब्रांच में कमिट करें (कोई पुल रिक्वेस्ट नहीं)",
+    "band": "बैंड",
+    "base": "आधार",
+    "branchDefault": "रिपॉज़िटरी डिफ़ॉल्ट",
+    "branchLabel": "बेस ब्रांच",
+    "calibrated": "कैलिब्रेट किया गया",
+    "changesHeading": "ड्राफ़्ट पुल रिक्वेस्ट",
+    "cloneBtn": "कनेक्ट करें",
+    "colActions": "क्रियाएँ",
+    "colChange": "बदलाव",
+    "colChecks": "जाँच",
+    "colPr": "पुल रिक्वेस्ट",
+    "colVerdict": "स्थिति",
+    "commitConfirm": "यह बदलाव {{branch}} में कमिट करके पुश करें? प्रकाशित कमिट वापस नहीं लिया जा सकता।",
+    "commitFailed": "कमिट अस्वीकार कर दिया गया।",
+    "commitFinding": "ब्रांच में कमिट करें",
+    "currentRepo": "इस पर काम हो रहा है",
+    "cycle": "चक्र",
+    "defectHeading": "दोष",
+    "delta": "मापा गया अंतर",
+    "detailUnavailable": "इस निष्कर्ष के लिए विवरण उपलब्ध नहीं है।",
+    "discussFinding": "इस निष्कर्ष पर चर्चा करें",
+    "discussPr": "इस पुल रिक्वेस्ट पर चर्चा करें",
+    "discussRuler": "मापक पर चर्चा करें",
+    "draftPr": "ड्राफ़्ट",
+    "findingTitlePrefix": "निष्कर्ष",
+    "findingsHeading": "निष्कर्ष बही",
+    "findingsStat": "निष्कर्ष",
+    "findingsTruncated": "{{total}} निष्कर्षों में से {{shown}} सबसे नए दिखाए जा रहे हैं।",
+    "fingerprint": "फ़िंगरप्रिंट",
+    "gateHeading": "सत्यापन जाँच",
+    "gateNote": "जाँच टिप्पणी",
+    "historyHeading": "स्थिति इतिहास",
+    "hypothesisHeading": "पुनरुत्पादन परिकल्पना",
+    "idleStatus": "निष्क्रिय — सुधार खोजने और पुल रिक्वेस्ट तैयार करने के लिए रन शुरू करें।",
+    "intro": "बदलाव से पहले मापता है: पहले मीट्रिक को कैलिब्रेट और प्रमाणित किया जाता है, फिर रखें-या-वापस-लें चक्र बचे हुए बदलावों को ड्राफ़्ट पुल रिक्वेस्ट के रूप में तैयार करते हैं।",
+    "keptStat": "रखे गए",
+    "loadingDetail": "विवरण लोड हो रहा है…",
+    "noFindings": "अभी कोई निष्कर्ष दर्ज नहीं है।",
+    "noPrs": "अभी कोई पुल रिक्वेस्ट तैयार नहीं की गई।",
+    "prStat": "पुल रिक्वेस्ट",
+    "prTitlePrefix": "पीआर",
+    "pushDisabled": "पुश अक्षम",
+    "queuedOnly": "स्थानीय रूप से कतारबद्ध, खोला नहीं गया",
+    "refreshPr": "पुल रिक्वेस्ट स्थिति ताज़ा करें",
+    "regressed": "प्रभावित परीक्षण: {{tests}}",
+    "repoLabel": "सुधारने के लिए GitHub रिपॉज़िटरी",
+    "reproTest": "पुनरुत्पादन परीक्षण",
+    "rulerHeading": "मापक",
+    "rulerNotReady": "मापक अभी कैलिब्रेट नहीं है, इसलिए कोई सुधार चक्र नहीं चलेगा। कैलिब्रेशन यह प्रमाणित करता है कि मीट्रिक किसी ज्ञात सुधार को पहचान सकता है।",
+    "rulerReady": "मापक कैलिब्रेट और तैयार है",
+    "rulerSessionTitle": "मापक समीक्षा",
+    "rulerStat": "मापक",
+    "runBtn": "रन शुरू करें",
+    "runError": "रन एक त्रुटि के साथ रुक गया।",
+    "runningStatus": "चल रहा है — चक्र {{cycle}}, {{kept}} रखे गए, {{drafted}} पुल रिक्वेस्ट तैयार।",
+    "setupHeading": "रिपॉज़िटरी",
+    "showDiff": "बदलाव देखें",
+    "showPrBody": "पुल रिक्वेस्ट विवरण देखें",
+    "statusCommitted": "ब्रांच में कमिट हुआ",
+    "statusDiscardedNoise": "शोर बैंड से नीचे",
+    "statusDuplicate": "डुप्लिकेट",
+    "statusError": "टूलिंग त्रुटि",
+    "statusFailedGate": "गेट द्वारा अस्वीकृत",
+    "statusFailedVerify": "सुधार सत्यापित नहीं हुआ",
+    "statusFiled": "पुल रिक्वेस्ट का ड्राफ़्ट बना",
+    "statusNoDefect": "कोई दोष नहीं मिला",
+    "statusPurged": "ऑपरेटर द्वारा हटाया गया",
+    "statusSeen": "देखा गया",
+    "statusUnavailable": "अनुपलब्ध",
+    "stopBtn": "रन रोकें",
+    "title": "स्वतः सुधार",
+    "toggleDetail": "निष्कर्ष विवरण दिखाएँ",
+    "truncated": "संक्षिप्त",
+    "uncalibrated": "कैलिब्रेट नहीं है",
+    "viewCommit": "कमिट देखें",
+    "viewPr": "पुल रिक्वेस्ट"
+  },
   "components": {
     "agentDropdownList": {
       "active_in_this_session": "इस सत्र में सक्रिय",
@@ -3652,6 +3761,10 @@
         },
         "skillsProvider": {
           "skills": "स्किल"
+        },
+        "appsProvider": {
+          "apps": "ऐप्स",
+          "needs_migration": "माइग्रेशन आवश्यक"
         }
       },
       "search_everywhere": "हर जगह खोजें",
@@ -4490,7 +4603,9 @@
       "collapse_paste": "पेस्ट समेटें",
       "expand_paste": "पेस्ट फैलाएँ",
       "paste_lines_one": "[ पेस्ट #{{seq}} · {{count}} पंक्ति ]",
-      "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]"
+      "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]",
+      "preview_more_lines_one": "… {{count}} और पंक्ति",
+      "preview_more_lines_other": "… {{count}} और पंक्तियाँ"
     },
     "projectPicker": {
       "back": "वापस",
@@ -4928,6 +5043,7 @@
       "screen_capture_drag_the_area_you_want_it_attache": "स्क्रीन कैप्चर — जो क्षेत्र चाहिए उसे ड्रैग करें; छोड़ने पर यह स्वतः अटैच हो जाता है"
     },
     "tagManagerList": {
+      "change_color": "{{name}} का रंग बदलें",
       "delete_tag": "टैग \"{{name}}\" हटाएँ",
       "delete_tag_2": "टैग {{name}} हटाएँ",
       "filter_by_tag": "टैग से फ़िल्टर करें",
@@ -4937,6 +5053,7 @@
       "new_tag": "नया टैग… ↵",
       "remove_status_flag_from": "{{name}} से स्टेटस फ़्लैग हटाएँ",
       "rename_tag": "टैग {{name}} का नाम बदलें",
+      "set_color_to_name": "रंग {{name}} पर सेट करें",
       "status_tag_mutually_exclusive_on_cards_click_to": "स्टेटस टैग (कार्ड पर एक समय में एक ही) — सामान्य बनाने के लिए क्लिक करें"
     },
     "terminalCompletion": {
@@ -5141,9 +5258,9 @@
       "can_t_embed_an_http_page_here": "http:// पेज को यहाँ एम्बेड नहीं किया जा सकता",
       "dismiss": "खारिज करें",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "ऊपर अपना dev-server URL डालें (उदा. localhost पर चल रहा Vite या स्टैटिक सर्वर) ताकि\n              आप जिस साइट पर काम कर रहे हैं उसका पूर्वावलोकन देख सकें — संपादन करते ही यह लाइव-रीलोड होती है।",
-      "exit_expanded_preview": "विस्तृत प्रीव्यू से बाहर निकलें",
+      "exit_expanded_preview": "समेटें",
       "expand_preview": "प्रीव्यू फैलाएँ",
-      "expand_preview_hide_nav_sessions": "प्रीव्यू फैलाएँ (नेव और सेशन छिपाएँ)",
+      "expand_preview_hide_nav_sessions": "फैलाएँ (नेव और सेशन छिपाएँ)",
       "forward": "आगे",
       "http": "http://",
       "let_the_agent_act": "एजेंट को कार्रवाई करने दें",
@@ -7761,7 +7878,29 @@
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "वर्कस्पेस",
         "no_skills_yet": "अभी तक कोई कौशल नहीं",
-        "empty_subtitle": "कौशल एजेंट को पुन: प्रयोज्य प्रक्रियाएं सिखाते हैं। एक जोड़ने के लिए रजिस्ट्री ब्राउज़ करें।"
+        "empty_subtitle": "कौशल एजेंट को पुन: प्रयोज्य प्रक्रियाएं सिखाते हैं। एक जोड़ने के लिए रजिस्ट्री ब्राउज़ करें।",
+        "budget_doorway_static": "कॉन्टेक्स्ट बजट →",
+        "budget_back": "स्किल्स",
+        "budget_title": "कॉन्टेक्स्ट बजट",
+        "budget_subtitle": "ट्रिगर चलने पर हर स्किल की लागत। नाम से नहीं, खर्च से क्रमबद्ध।",
+        "budget_header": "<total>{{total}}</total> वर्ण · पिछले 30 दिन · शीर्ष 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "क्रमबद्ध करें",
+        "budget_sort_cost": "सबसे अधिक लागत",
+        "budget_sort_size": "सबसे बड़ी फ़ाइल",
+        "budget_sort_recent": "हाल में उपयोग किया",
+        "budget_group_counting": "कॉन्टेक्स्ट में गिना जा रहा",
+        "budget_group_counting_detail": "{{count}} स्किल्स · खर्च का {{pct}} %",
+        "budget_group_cold": "30 दिनों में कभी नहीं चला",
+        "budget_group_cold_detail": "{{count}} स्किल्स · {{size}} निष्क्रिय",
+        "budget_group_frozen": "पहले से केवल पॉइंटर",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} खर्च हो रहे थे",
+        "budget_chars": "वर्ण",
+        "budget_if_fires": "चलने पर {{size}}",
+        "budget_every_turn": "हर टर्न {{size}}",
+        "budget_renamed": "(नाम बदला)",
+        "budget_footnote": "पिन किया गया (always: true) या पैकेज-स्वामित्व वाला स्किल अपनी लागत दिखाता है पर उसका स्विच नहीं होता।",
+        "budget_empty_title": "अभी कोई बजट डेटा नहीं",
+        "budget_empty_subtitle": "अभी कोई स्किल इंस्टॉल नहीं है।"
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -8171,7 +8310,7 @@
       "script_python": "script · python",
       "select": "{{name}} चुनो",
       "select_all_jobs": "सभी जॉब चुनें",
-      "select_deselect_all_jobs_matching_the_current_fi": "वर्तमान फ़िल्टर से मेल खाने वाले सभी जॉब चुनें / अचयनित करें",
+      "select_deselect_all_jobs_matching_the_current_fi": "सभी दृश्यमान जॉब चुनें / अचयनित करें (संक्षिप्त फ़ोल्डर बाहर)",
       "selected": "चयनित",
       "start_from_a_pre_made_schedule": "पहले से बने शेड्यूल से शुरू करें",
       "status": "स्थिति",
@@ -8186,7 +8325,25 @@
       "view": "देखें",
       "view_last_result": "पिछला परिणाम देखें",
       "you_can_also_create_schedules_by_chatting_try": "आप चैट करके भी शेड्यूल बना सकते हैं — आज़माएँ",
-      "jobs_noun": "जॉब"
+      "jobs_noun": "जॉब",
+      "cronFolders": {
+        "batch_move_failed_one": "{{total}} में से {{count}} कार्य स्थानांतरित नहीं किया जा सका",
+        "batch_move_failed_other": "{{total}} में से {{count}} कार्य स्थानांतरित नहीं किए जा सके",
+        "collapse_folder": "फ़ोल्डर समेटें",
+        "confirm_delete_folder": "\"{{name}}\" हटाएँ? कार्य बिना समूह के हो जाएँगे।",
+        "create": "बनाएँ",
+        "delete_folder": "फ़ोल्डर हटाएँ",
+        "delete_folder_named": "\"{{name}}\" हटाएं",
+        "expand_folder": "फ़ोल्डर फैलाएँ",
+        "folder_actions": "फ़ोल्डर क्रियाएँ",
+        "job_count_one": "{{count}} कार्य",
+        "job_count_other": "{{count}} कार्य",
+        "move_to_folder": "फ़ोल्डर में ले जाएँ",
+        "new_folder": "नया फ़ोल्डर",
+        "new_folder_name": "नए फ़ोल्डर का नाम",
+        "rename": "नाम बदलें",
+        "ungrouped": "बिना समूह"
+      }
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "फ़ज़ी फ़िल्टर (सबस्ट्रिंग मैच)",
@@ -8371,7 +8528,11 @@
         "completion_event_characters_2": "कंप्लीशन इवेंट के वर्ण",
         "completion_event_truncation": "कंप्लीशन इवेंट की कटाई",
         "composer": "कंपोज़र",
-        "concise_responses": "संक्षिप्त उत्तर",
+        "response_verbosity": "उत्तर की विस्तार-मात्रा",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "एजेंट की भाषा कितनी संक्षिप्त हो। अति-संक्षिप्त उस पाठक के लिए है जिसका ध्यान जल्दी भटकता है: उत्तर पहले तीन वाक्यों में आता है, और उसके बाद का विवरण गद्य नहीं बल्कि स्कैन करने योग्य बिंदुओं में होता है। कोड, कमांड और त्रुटि-संदेश अक्षरश: रहते हैं; सुरक्षा चेतावनियाँ और बहु-चरणीय निर्देश हर स्तर पर पूरे विस्तार से रहते हैं।",
+        "default_normal_length": "डिफ़ॉल्ट — सामान्य लंबाई",
+        "concise_trim_filler": "संक्षिप्त — भराव और विवरण हटाएँ",
+        "ultra_concise_3_sentences": "अति-संक्षिप्त — 3 वाक्यों में उत्तर, फिर स्कैन करने योग्य विवरण",
         "confirm_before_closing_session": "सेशन बंद करने से पहले पुष्टि करें",
         "content_width": "कॉन्टेंट की चौड़ाई",
         "context": "कॉन्टेक्स्ट",
@@ -8427,7 +8588,6 @@
         "technical_comfort": "तकनीकी सहजता",
         "text_streaming_style": "टेक्स्ट स्ट्रीमिंग शैली",
         "time_window_for_session_restoration": "सेशन पुनर्स्थापना के लिए समय-अवधि",
-        "trim_filler_and_over_narration_lead_with_the_ans": "भराव और अत्यधिक वर्णन हटाएँ: उत्तर से शुरुआत करें, प्रगति नोट्स को उच्च-स्तरीय रखें। कोड, कमांड और एरर स्ट्रिंग्स अक्षरशः रहते हैं; सुरक्षा चेतावनियाँ और बहु-चरणीय निर्देश पूरे विवरण के साथ रहते हैं।",
         "when_enabled_inline_tool_pills_show_simplified_t": "सक्षम होने पर, इनलाइन टूल पिल्स चल रहे सटीक कमांड के बजाय टूल उपयोग का सरलीकृत उद्देश्य दिखाते हैं",
         "which_model_new_sessions_start_with_pick_a_model": "जब किसी एजेंट का अपना कोई मॉडल तय न हो, तो नए सेशन किस मॉडल से शुरू होते हैं। हर एजेंट के लिए मॉडल क्षमताएँ → Crews में सेट करो, या किसी सेशन के भीतर मॉडल चुनकर वहाँ इसे बदल दो।",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "पैरेंट सेशन में सबएजेंट का कंप्लीशन इवेंट डालते समय उसकी स्ट्रीम का कौन-सा हिस्सा रखा जाए। Head शुरुआत को बनाए रखता है (डिफ़ॉल्ट, पुराने व्यवहार के अनुरूप)। Tail अंतिम सारांश को बनाए रखता है। Both दोनों सिरों से एक-एक हिस्सा रखता है और उनके बीच एक मार्कर लगाता है।",

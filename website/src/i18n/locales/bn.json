@@ -121,6 +121,30 @@
     }
   },
   "apps": {
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "বিল্ড",
+        "collects": "সংগ্রহ",
+        "green": "GREEN",
+        "lint": "লিন্ট",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "কোনো GitHub রিপোজিটরি বদলানোর আগে তা মেপে নেয়। একটি ক্যালিব্রেট করা পারফরম্যান্স মেট্রিক (মাপকাঠি) তৈরি করে, জানা একটি উন্নতির বিপরীতে প্রমাণ করে যে মেট্রিকটি নির্ভরযোগ্য, তারপর রাখা-বা-ফিরিয়ে-নেওয়ার উন্নতিচক্র চালায়: প্রতিটি সম্ভাব্য সংশোধন আলাদা worktree-তে লেখা হয়, সম্পাদনের অনুমোদিত তালিকা ও রিপোজিটরির নিজস্ব পরীক্ষার মধ্য দিয়ে যায়, এবং কেবল তখনই রাখা হয় যখন মাপা লাভ নয়েজ-ব্যান্ড ছাড়িয়ে যায়। টিকে যাওয়া সংশোধনগুলো GitHub পুল রিকোয়েস্টের খসড়া হিসেবে তৈরি হয়, যা আপনি নিজে দেখে প্রকাশ করেন।",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "আগে নিজের মাপকাঠিই প্রমাণ করে — অবিশ্বস্ত মাপকাঠিতে রান শুরুই হয় না",
+        "highlight_2": "প্রতিটি প্রার্থী A/B-তে মাপা হয়, বাগ সংশোধনে RED/GREEN — শুধু «দেখে ঠিক লাগছে» নয়",
+        "highlight_3": "লাভ মাপা নয়েজ-ব্যান্ড ছাড়ালেই কেবল পরিবর্তন রাখা হয়",
+        "highlight_4": "GitHub পুল রিকোয়েস্ট তৈরি করে — কেবল খসড়া, আপনার হয়ে কখনও প্রকাশ বা মার্জ নয়",
+        "highlight_5": "push-বিহীন ক্লোনে চলে, তাই পর্যালোচনা ছাড়া কিছুই স্যান্ডবক্স ছাড়ে না",
+        "highlight_6": "প্রতিটি পুল রিকোয়েস্ট, ফলাফল ও রানের জন্য একটি পুনরারম্ভযোগ্য চ্যাট সেশন",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "গ্রহণ করুন",
@@ -562,6 +586,7 @@
         },
         "issueList": {
           "clear_search": "সার্চ সাফ করুন",
+          "loading_the_rest": "বাকিটা লোড হচ্ছে…",
           "closed_issues_are_capped_at_the_100_most_recentl": "বন্ধ ইস্যু সর্বশেষ আপডেট হওয়া 100টিতে সীমিত",
           "issue_one": "{{count}}টি ইস্যু",
           "issue_other": "{{count}}টি ইস্যু",
@@ -1101,6 +1126,9 @@
         "resize_sidebar": "সাইডবারের আকার বদলান",
         "select_a": "বেছে নিন একটি",
         "select_an_issue_to_see_its_details": "বিবরণ দেখতে একটি ইস্যু বেছে নিন।",
+        "selected_issue_hidden_by_filters": "নির্বাচিত ইস্যুটি সক্রিয় ফিল্টার দ্বারা লুকানো রয়েছে।",
+        "selected_change_hidden_by_filters": "নির্বাচিত {{subject}} সক্রিয় ফিল্টার দ্বারা লুকানো রয়েছে।",
+        "clear_filters": "ফিল্টার সাফ করুন",
         "to_see_its_details": "— এর বিবরণ দেখতে।"
       },
       "api": {
@@ -3167,6 +3195,87 @@
       }
     }
   },
+  "autoImprovement": {
+    "activityDiscovered": "(আবিষ্কৃত {{discovered}}, নতুন {{fresh}})",
+    "autocommitHint": "প্রতিটি যাচাই করা পরিবর্তন সরাসরি বেস ব্রাঞ্চে পুশ করুন। সুরক্ষিত ব্রাঞ্চ সবসময় খসড়া পুল রিকোয়েস্টে ফিরে যায়।",
+    "autocommitLabel": "সরাসরি ব্রাঞ্চে কমিট করুন (কোনো পুল রিকোয়েস্ট নয়)",
+    "band": "ব্যান্ড",
+    "base": "ভিত্তি",
+    "branchDefault": "রিপোজিটরি ডিফল্ট",
+    "branchLabel": "বেস ব্রাঞ্চ",
+    "calibrated": "ক্যালিব্রেট করা",
+    "changesHeading": "খসড়া পুল রিকোয়েস্ট",
+    "cloneBtn": "সংযুক্ত করুন",
+    "colActions": "ক্রিয়া",
+    "colChange": "পরিবর্তন",
+    "colChecks": "পরীক্ষা",
+    "colPr": "পুল রিকোয়েস্ট",
+    "colVerdict": "অবস্থা",
+    "commitConfirm": "এই পরিবর্তন {{branch}}-এ কমিট করে পুশ করবেন? প্রকাশিত কমিট ফিরিয়ে নেওয়া যায় না।",
+    "commitFailed": "কমিট প্রত্যাখ্যান করা হয়েছে।",
+    "commitFinding": "ব্রাঞ্চে কমিট করুন",
+    "currentRepo": "কাজ চলছে",
+    "cycle": "চক্র",
+    "defectHeading": "ত্রুটি",
+    "delta": "মাপা পার্থক্য",
+    "detailUnavailable": "এই প্রাপ্তির জন্য বিবরণ নেই।",
+    "discussFinding": "এই প্রাপ্তি নিয়ে আলোচনা করুন",
+    "discussPr": "এই পুল রিকোয়েস্ট নিয়ে আলোচনা করুন",
+    "discussRuler": "মাপনী নিয়ে আলোচনা করুন",
+    "draftPr": "খসড়া",
+    "findingTitlePrefix": "প্রাপ্তি",
+    "findingsHeading": "প্রাপ্তির খাতা",
+    "findingsStat": "প্রাপ্তি",
+    "findingsTruncated": "{{total}}টি প্রাপ্তির মধ্যে সাম্প্রতিক {{shown}}টি দেখানো হচ্ছে।",
+    "fingerprint": "ফিঙ্গারপ্রিন্ট",
+    "gateHeading": "যাচাই ধাপ",
+    "gateNote": "ধাপের নোট",
+    "historyHeading": "অবস্থার ইতিহাস",
+    "hypothesisHeading": "পুনরুৎপাদন অনুমান",
+    "idleStatus": "নিষ্ক্রিয় — উন্নতি খুঁজতে এবং পুল রিকোয়েস্ট তৈরি করতে একটি রান শুরু করুন।",
+    "intro": "পরিবর্তনের আগে মাপে: প্রথমে মেট্রিক ক্যালিব্রেট ও প্রমাণ করা হয়, তারপর রাখা-বা-ফিরিয়ে-নেওয়া চক্র টিকে যাওয়া পরিবর্তনগুলোকে খসড়া পুল রিকোয়েস্ট হিসেবে তৈরি করে।",
+    "keptStat": "রাখা হয়েছে",
+    "loadingDetail": "বিবরণ লোড হচ্ছে…",
+    "noFindings": "এখনও কোনো প্রাপ্তি নথিভুক্ত হয়নি।",
+    "noPrs": "এখনও কোনো পুল রিকোয়েস্ট তৈরি হয়নি।",
+    "prStat": "পুল রিকোয়েস্ট",
+    "prTitlePrefix": "পিআর",
+    "pushDisabled": "পুশ নিষ্ক্রিয়",
+    "queuedOnly": "স্থানীয়ভাবে সারিবদ্ধ, খোলা হয়নি",
+    "refreshPr": "পুল রিকোয়েস্টের অবস্থা রিফ্রেশ করুন",
+    "regressed": "ক্ষতিগ্রস্ত পরীক্ষা: {{tests}}",
+    "repoLabel": "উন্নত করার জন্য GitHub রিপোজিটরি",
+    "reproTest": "পুনরুৎপাদন পরীক্ষা",
+    "rulerHeading": "মাপনী",
+    "rulerNotReady": "মাপনী এখনও ক্যালিব্রেট করা হয়নি, তাই কোনো উন্নতি চক্র চলবে না। ক্যালিব্রেশন প্রমাণ করে যে মেট্রিক একটি পরিচিত উন্নতি শনাক্ত করতে পারে।",
+    "rulerReady": "মাপনী ক্যালিব্রেট ও প্রস্তুত",
+    "rulerSessionTitle": "মাপনী পর্যালোচনা",
+    "rulerStat": "মাপনী",
+    "runBtn": "রান শুরু করুন",
+    "runError": "রান একটি ত্রুটি নিয়ে থেমে গেছে।",
+    "runningStatus": "চলছে — চক্র {{cycle}}, {{kept}} রাখা হয়েছে, {{drafted}} পুল রিকোয়েস্ট তৈরি।",
+    "setupHeading": "রিপোজিটরি",
+    "showDiff": "পরিবর্তন দেখুন",
+    "showPrBody": "পুল রিকোয়েস্টের বিবরণ দেখুন",
+    "statusCommitted": "ব্রাঞ্চে কমিট হয়েছে",
+    "statusDiscardedNoise": "নয়েজ ব্যান্ডের নিচে",
+    "statusDuplicate": "সদৃশ",
+    "statusError": "টুলিং ত্রুটি",
+    "statusFailedGate": "গেট প্রত্যাখ্যান করেছে",
+    "statusFailedVerify": "সংশোধন যাচাই হয়নি",
+    "statusFiled": "পুল রিকোয়েস্টের খসড়া হয়েছে",
+    "statusNoDefect": "কোনো ত্রুটি পাওয়া যায়নি",
+    "statusPurged": "অপারেটর মুছে দিয়েছেন",
+    "statusSeen": "দেখা হয়েছে",
+    "statusUnavailable": "অনুপলব্ধ",
+    "stopBtn": "রান থামান",
+    "title": "স্বয়ংক্রিয় উন্নতি",
+    "toggleDetail": "প্রাপ্তির বিবরণ দেখান",
+    "truncated": "সংক্ষিপ্ত",
+    "uncalibrated": "ক্যালিব্রেট করা নয়",
+    "viewCommit": "কমিট দেখুন",
+    "viewPr": "পুল রিকোয়েস্ট"
+  },
   "components": {
     "agentDropdownList": {
       "active_in_this_session": "এই সেশনে সক্রিয়",
@@ -3652,6 +3761,10 @@
         },
         "skillsProvider": {
           "skills": "স্কিল"
+        },
+        "appsProvider": {
+          "apps": "অ্যাপ",
+          "needs_migration": "মাইগ্রেশন প্রয়োজন"
         }
       },
       "search_everywhere": "সর্বত্র অনুসন্ধান করুন",
@@ -4490,7 +4603,9 @@
       "collapse_paste": "পেস্ট সংকুচিত করো",
       "expand_paste": "পেস্ট প্রসারিত করো",
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
-      "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]"
+      "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
+      "preview_more_lines_one": "… আরও {{count}} লাইন",
+      "preview_more_lines_other": "… আরও {{count}} লাইন"
     },
     "projectPicker": {
       "back": "পেছনে",
@@ -4928,6 +5043,7 @@
       "screen_capture_drag_the_area_you_want_it_attache": "স্ক্রিন ক্যাপচার — আপনি যে অংশটি চান সেটি ড্র্যাগ করুন; ছেড়ে দিলেই তা স্বয়ংক্রিয়ভাবে সংযুক্ত হবে"
     },
     "tagManagerList": {
+      "change_color": "{{name}} এর রং পরিবর্তন করুন",
       "delete_tag": "\"{{name}}\" ট্যাগ মুছে ফেলো",
       "delete_tag_2": "{{name}} ট্যাগ মুছে ফেলো",
       "filter_by_tag": "ট্যাগ দিয়ে ফিল্টার করো",
@@ -4937,6 +5053,7 @@
       "new_tag": "নতুন ট্যাগ… ↵",
       "remove_status_flag_from": "{{name}} থেকে স্টেটাস ফ্ল্যাগ সরাও",
       "rename_tag": "{{name}} ট্যাগের নাম বদলাও",
+      "set_color_to_name": "রং {{name}} এ সেট করুন",
       "status_tag_mutually_exclusive_on_cards_click_to": "স্টেটাস ট্যাগ (কার্ডে একসাথে একটিই) — সাধারণ করতে ক্লিক করো"
     },
     "terminalCompletion": {
@@ -5141,9 +5258,9 @@
       "can_t_embed_an_http_page_here": "এখানে কোনো http:// পেজ এম্বেড করা যাবে না",
       "dismiss": "বন্ধ করুন",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "আপনি যে সাইটে কাজ করছেন সেটির প্রিভিউ দেখার জন্য উপরে আপনার dev-server URL দিন (যেমন localhost-এ চলা একটি Vite বা স্ট্যাটিক সার্ভার) —\n              আপনি এডিট করার সাথে সাথেই এটি লাইভ রিলোড হয়।",
-      "exit_expanded_preview": "প্রসারিত প্রিভিউ থেকে বেরোও",
+      "exit_expanded_preview": "সংকুচিত করো",
       "expand_preview": "প্রিভিউ প্রসারিত করো",
-      "expand_preview_hide_nav_sessions": "প্রিভিউ প্রসারিত করো (নেভিগেশন ও সেশন লুকাও)",
+      "expand_preview_hide_nav_sessions": "প্রসারিত করো (নেভিগেশন ও সেশন লুকাও)",
       "forward": "সামনে",
       "http": "http://",
       "let_the_agent_act": "এজেন্টকে কাজ করতে দিন",
@@ -7761,7 +7878,29 @@
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "ওয়ার্কস্পেস",
         "no_skills_yet": "এখনও কোনো দক্ষতা নেই",
-        "empty_subtitle": "দক্ষতা এজেন্টকে পুনরায় ব্যবহারযোগ্য পদ্ধতি শেখায়। একটি যোগ করতে রেজিস্ট্রি ব্রাউজ করুন।"
+        "empty_subtitle": "দক্ষতা এজেন্টকে পুনরায় ব্যবহারযোগ্য পদ্ধতি শেখায়। একটি যোগ করতে রেজিস্ট্রি ব্রাউজ করুন।",
+        "budget_doorway_static": "কনটেক্সট বাজেট →",
+        "budget_back": "স্কিল",
+        "budget_title": "কনটেক্সট বাজেট",
+        "budget_subtitle": "ট্রিগার চললে প্রতিটি স্কিলের খরচ। নাম নয়, খরচ অনুসারে সাজানো।",
+        "budget_header": "<total>{{total}}</total> অক্ষর · গত 30 দিন · সেরা 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "সাজান",
+        "budget_sort_cost": "সর্বোচ্চ খরচ",
+        "budget_sort_size": "সবচেয়ে বড় ফাইল",
+        "budget_sort_recent": "সম্প্রতি ব্যবহৃত",
+        "budget_group_counting": "কনটেক্সটে গণনা হচ্ছে",
+        "budget_group_counting_detail": "{{count}} স্কিল · খরচের {{pct}} %",
+        "budget_group_cold": "30 দিনে কখনও চলেনি",
+        "budget_group_cold_detail": "{{count}} স্কিল · {{size}} নিষ্ক্রিয়",
+        "budget_group_frozen": "ইতিমধ্যে শুধু পয়েন্টার",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} খরচ হচ্ছিল",
+        "budget_chars": "অক্ষর",
+        "budget_if_fires": "চললে {{size}}",
+        "budget_every_turn": "প্রতি টার্নে {{size}}",
+        "budget_renamed": "(নাম পরিবর্তিত)",
+        "budget_footnote": "পিন করা (always: true) বা প্যাকেজ-মালিকানাধীন স্কিল খরচ দেখায় কিন্তু এর কোনও স্যুইচ নেই।",
+        "budget_empty_title": "এখনও কোনও বাজেট ডেটা নেই",
+        "budget_empty_subtitle": "এখনও কোনও স্কিল ইনস্টল করা হয়নি।"
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -8171,7 +8310,7 @@
       "script_python": "script · python",
       "select": "{{name}} নির্বাচন করো",
       "select_all_jobs": "সব কাজ নির্বাচন করুন",
-      "select_deselect_all_jobs_matching_the_current_fi": "বর্তমান ফিল্টারের সাথে মেলে এমন সব কাজ নির্বাচন / অনির্বাচন করুন",
+      "select_deselect_all_jobs_matching_the_current_fi": "সমস্ত দৃশ্যমান কাজ নির্বাচন / অনির্বাচন করুন (সংকুচিত ফোল্ডার বাদ)",
       "selected": "নির্বাচিত",
       "start_from_a_pre_made_schedule": "একটি প্রস্তুত সময়সূচি থেকে শুরু করুন",
       "status": "অবস্থা",
@@ -8186,7 +8325,25 @@
       "view": "দেখো",
       "view_last_result": "শেষ ফলাফল দেখো",
       "you_can_also_create_schedules_by_chatting_try": "চ্যাট করেও আপনি সময়সূচি তৈরি করতে পারেন — চেষ্টা করুন",
-      "jobs_noun": "জব"
+      "jobs_noun": "জব",
+      "cronFolders": {
+        "batch_move_failed_one": "{{total}} টির মধ্যে {{count}} টি কাজ সরানো যায়নি",
+        "batch_move_failed_other": "{{total}} টির মধ্যে {{count}} টি কাজ সরানো যায়নি",
+        "collapse_folder": "ফোল্ডার সংকুচিত করো",
+        "confirm_delete_folder": "\"{{name}}\" মুছে ফেলবেন? কাজগুলো আলাদা হবে।",
+        "create": "তৈরি করুন",
+        "delete_folder": "ফোল্ডার মুছে ফেলো",
+        "delete_folder_named": "\"{{name}}\" মুছুন",
+        "expand_folder": "ফোল্ডার প্রসারিত করো",
+        "folder_actions": "ফোল্ডার ক্রিয়া",
+        "job_count_one": "{{count}} টি কাজ",
+        "job_count_other": "{{count}} টি কাজ",
+        "move_to_folder": "ফোল্ডারে সরাও",
+        "new_folder": "নতুন ফোল্ডার",
+        "new_folder_name": "নতুন ফোল্ডারের নাম",
+        "rename": "নাম বদলাও",
+        "ungrouped": "গোষ্ঠীহীন"
+      }
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "ফাজি ফিল্টার (সাবস্ট্রিং মিল)",
@@ -8371,7 +8528,11 @@
         "completion_event_characters_2": "কমপ্লিশন ইভেন্টের ক্যারেক্টার সংখ্যা",
         "completion_event_truncation": "কমপ্লিশন ইভেন্ট সংক্ষিপ্তকরণ",
         "composer": "কম্পোজার",
-        "concise_responses": "সংক্ষিপ্ত উত্তর",
+        "response_verbosity": "উত্তরের বিস্তার",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "এজেন্টের লেখা কতটা সংক্ষিপ্ত হবে। ‘অতি-সংক্ষিপ্ত’ দ্রুত মনোসংযোগ হারানো পাঠকের জন্য: উত্তর শুরুর তিন বাক্যেই আসে, আর পরের বিস্তারিত অংশ অনুচ্ছেদ নয়, সহজে দেখা যায় এমন পয়েন্টে রাখতে হয়। কোড, কমান্ড ও ত্রুটির বার্তা অপরিবর্তিত থাকে; নিরাপত্তা সতর্কতা ও ধাপে ধাপে নির্দেশনা সব স্তরেই সম্পূর্ণ বিস্তারিত থাকে।",
+        "default_normal_length": "ডিফল্ট — স্বাভাবিক দৈর্ঘ্য",
+        "concise_trim_filler": "সংক্ষিপ্ত — বাহুল্য ও বর্ণনা বাদ",
+        "ultra_concise_3_sentences": "অতি-সংক্ষিপ্ত — ৩ বাক্যে উত্তর, তারপর সহজে দেখা যায় এমন বিস্তার",
         "confirm_before_closing_session": "সেশন বন্ধ করার আগে নিশ্চিত করুন",
         "content_width": "কনটেন্টের প্রস্থ",
         "context": "কনটেক্সট",
@@ -8427,7 +8588,6 @@
         "technical_comfort": "প্রযুক্তিগত স্বাচ্ছন্দ্য",
         "text_streaming_style": "টেক্সট স্ট্রিমিং স্টাইল",
         "time_window_for_session_restoration": "সেশন পুনরুদ্ধারের সময়সীমা",
-        "trim_filler_and_over_narration_lead_with_the_ans": "বাহুল্য ও অতিরিক্ত বর্ণনা ছেঁটে ফেলুন: উত্তর দিয়ে শুরু করুন, অগ্রগতির নোট সংক্ষিপ্ত রাখুন। কোড, কমান্ড ও এরর স্ট্রিং অবিকল থাকবে; নিরাপত্তা সতর্কবার্তা ও একাধিক ধাপের নির্দেশনা পূর্ণ বিবরণসহ থাকবে।",
         "when_enabled_inline_tool_pills_show_simplified_t": "চালু থাকলে, ইনলাইন টুল পিলগুলো চলমান হুবহু কমান্ডের বদলে টুল ব্যবহারের সরলীকৃত উদ্দেশ্য দেখায়",
         "which_model_new_sessions_start_with_pick_a_model": "কোনো এজেন্ট নিজের মডেল না বাঁধলে নতুন সেশন কোন মডেল দিয়ে শুরু হবে। প্রতিটি এজেন্টের জন্য মডেল ঠিক করতে এজেন্ট সক্ষমতা → Crews-এ যাও, বা কোনো নির্দিষ্ট সেশনে তা বদলাতে সেই সেশনের ভিতরে একটি মডেল বেছে নাও।",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "প্যারেন্ট সেশনে সাবএজেন্টের সমাপ্তি ইভেন্ট ইনজেক্ট করার সময় তার স্ট্রিমের কোন অংশ রাখা হবে। Head শুরুর অংশ রাখে (ডিফল্ট, পুরোনো আচরণের সঙ্গে মেলে)। Tail চূড়ান্ত সারসংক্ষেপ রাখে। Both দুই প্রান্ত থেকেই একটি অংশ রাখে এবং মাঝে একটি মার্কার বসায়।",

@@ -139,6 +139,8 @@ jobs:
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           case "$EVENT" in
@@ -149,12 +151,36 @@ jobs:
               # `workflow_run.pull_requests` is empty for a fork head AND for
               # the managed `dynamic` CodeQL runs, so it can never be the only
               # way in. Resolve the PR from the immutable head SHA instead.
+              #
+              # NOT via `repos/{repo}/commits/{sha}/pulls`: that endpoint only
+              # lists PRs whose head commit is reachable in THIS repo, and a
+              # fork PR's head commit is not reachable from any base-repo
+              # branch until it merges -- so it returns empty for every OPEN
+              # fork PR, skipping every re-evaluation and freezing the fork
+              # verdict at the `opened` snapshot (a premature red). Match the
+              # head SHA against the open-PR list instead: a PR object always
+              # carries its `head.sha` regardless of which repo the commit
+              # lives in, so this resolves fork and same-repo heads alike.
+              #
+              # A head SHA is not by itself unique -- two open PRs can point at
+              # the same commit (e.g. the same fork commit pushed to two
+              # branches). Disambiguate with the triggering run's head
+              # repository + branch (both populated on every workflow_run),
+              # exactly as the verdict step binds monitored runs below; fall
+              # back to SHA-only when either is absent.
               if [ -z "$PR" ]; then
-                associated="$(gh api "repos/$REPO/commits/$RUN_SHA/pulls")"
-                PR="$(jq -r --arg sha "$RUN_SHA" '
-                  [.[] | select(.state == "open" and .head.sha == $sha)]
-                  | first.number // empty
-                ' <<<"$associated")"
+                PR="$(gh api --paginate \
+                  "repos/$REPO/pulls?state=open&per_page=100" \
+                  | jq -rs \
+                      --arg sha "$RUN_SHA" \
+                      --arg repo "$RUN_HEAD_REPO" \
+                      --arg ref "$RUN_HEAD_REF" '
+                      first(.[][]
+                        | select(.head.sha == $sha
+                                 and ($repo == "" or .head.repo.full_name == $repo)
+                                 and ($ref  == "" or .head.ref == $ref))
+                        | .number) // empty
+                    ')"
               fi
               if [ -z "$PR" ]; then
                 {
