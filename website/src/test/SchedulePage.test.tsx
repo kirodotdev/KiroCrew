@@ -31,10 +31,22 @@ vi.mock('../api/client', () => ({
     toggleCron: vi.fn().mockResolvedValue({}),
     runCron: vi.fn().mockResolvedValue({}),
     cronToChat: vi.fn().mockResolvedValue({}),
+    cronHistoryAll: vi.fn().mockResolvedValue({ runs: [] }),
     kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
     syncKirocrewAgents: vi.fn().mockResolvedValue({}),
   },
 }))
+
+/**
+ * Open the template gallery. It is no longer its own toolbar button: it is the
+ * second half of the Add Job split button — one intent ("make a job") with two
+ * starting points — so reaching it takes a menu open. Radix needs
+ * keyboard-open in jsdom.
+ */
+const openGallery = async () => {
+  fireEvent.keyDown(screen.getByLabelText('Browse schedule templates'), { key: 'Enter' })
+  fireEvent.click(await screen.findByText('Browse all templates'))
+}
 
 describe('SchedulePage delete button state machine', () => {
   beforeEach(() => {
@@ -189,6 +201,14 @@ describe('SchedulePage batch select + bulk delete', () => {
     // Modal stays open with the error; the failed job remains selected for retry.
     expect(await screen.findByText('1 of 2 jobs could not be deleted')).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // The retry scope narrowed to the one failure — the confirm button counts
+    // the still-selected ids. Asserted from INSIDE the dialog: it is modal, so
+    // Radix marks the table behind it aria-hidden and the row checkbox is not
+    // reachable by role while it is open.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete 1' })).toBeInTheDocument())
+
+    // Dismiss the dialog: the failed row is still checked, ready for a retry.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() =>
       expect(screen.getByRole('checkbox', { name: 'Select Weekly digest' })).toBeChecked())
   })
@@ -270,8 +290,11 @@ describe('SchedulePage empty-state preset cards', () => {
     const preset = SCHEDULE_PRESETS[0]
     fireEvent.click(screen.getByRole('button', { name: `Use the ${preset.title} template` }))
 
-    // Gallery closes and the seeded create panel opens.
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // Gallery closes and the seeded create dialog opens. Asserted by the
+    // gallery's own card disappearing, NOT by "no dialog remains": the create
+    // view is itself a dialog now, so a `queryByRole('dialog')` check here
+    // would be satisfied only if the thing under test had failed to open.
+    await waitFor(() => expect(screen.queryByRole('button', { name: `Use the ${preset.title} template` })).not.toBeInTheDocument())
     const nameInput = (await screen.findByLabelText('Name')) as HTMLInputElement
     expect(nameInput.value).toBe(preset.prefill.name)
     const msgInput = screen.getByLabelText('Message') as HTMLTextAreaElement
@@ -284,7 +307,7 @@ describe('SchedulePage template gallery (non-empty state)', () => {
     vi.clearAllMocks()
   })
 
-  it('shows the Templates button which opens the gallery', async () => {
+  it('the Add Job split button opens the template gallery', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({
       jobs: [mkJob({ id: 'job-1', name: 'Nightly report' })],
@@ -293,9 +316,9 @@ describe('SchedulePage template gallery (non-empty state)', () => {
     renderWithProviders(<SchedulePage />)
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
-    const templatesBtn = screen.getByRole('button', { name: 'Templates' })
-    expect(templatesBtn).toBeInTheDocument()
-    fireEvent.click(templatesBtn)
+    // Blank-create stays a one-click primary; only the ▾ half is a menu.
+    expect(screen.getByRole('button', { name: /Add Job/ })).toBeInTheDocument()
+    await openGallery()
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     expect(screen.getByText('Schedule templates')).toBeInTheDocument()
@@ -400,20 +423,20 @@ describe('SchedulePage write-capable preset indicator', () => {
   })
 
   it('re-selecting the SAME preset resets the form (pins the selection-nonce remount)', async () => {
-    // Without the nonce in JobDetailPanel's key, React keeps JobForm mounted
+    // Without the nonce in JobDetailDialog's key, React keeps JobForm mounted
     // across a second pick of the same preset, so edits from the first pick
     // survive into the "fresh" form and can be saved unnoticed.
-    // Uses the non-empty state deliberately: the "Browse all templates" link
-    // lives in the empty state and is unmounted once the create panel opens,
-    // whereas the Jobs-header Templates button persists alongside the panel —
-    // so this is the only path that can re-pick without closing anything.
+    // The create view is a modal, so the Templates button behind it is
+    // aria-hidden while it is open — the re-pick path dismisses the create
+    // dialog first, which is also what a user has to do.
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
 
     const preset = SCHEDULE_PRESETS[0]
 
     renderWithProviders(<SchedulePage />)
-    fireEvent.click(await screen.findByRole('button', { name: /Templates/ }))
+    await waitFor(() => expect(screen.getByLabelText('Browse schedule templates')).toBeInTheDocument())
+    await openGallery()
     await screen.findByRole('dialog')
     fireEvent.click(screen.getByRole('button', { name: `Use the ${preset.title} template` }))
 
@@ -421,8 +444,11 @@ describe('SchedulePage write-capable preset indicator', () => {
     fireEvent.change(nameInput, { target: { value: 'EDITED BY USER' } })
     expect(screen.getByDisplayValue('EDITED BY USER')).toBeInTheDocument()
 
-    // Re-open the gallery and pick the SAME preset again.
-    fireEvent.click(screen.getByRole('button', { name: /Templates/ }))
+    // Dismiss the create dialog, then re-open the gallery and pick the SAME
+    // preset again.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.getByLabelText('Browse schedule templates')).toBeInTheDocument())
+    await openGallery()
     await screen.findByRole('dialog')
     fireEvent.click(screen.getByRole('button', { name: `Use the ${preset.title} template` }))
 
@@ -444,7 +470,8 @@ describe('SchedulePage write-capable preset indicator', () => {
     const silentPreset = SCHEDULE_PRESETS.find(p => p.prefill.silent)!
 
     renderWithProviders(<SchedulePage />)
-    fireEvent.click(await screen.findByRole('button', { name: /Templates/ }))
+    await waitFor(() => expect(screen.getByLabelText('Browse schedule templates')).toBeInTheDocument())
+    await openGallery()
     await screen.findByRole('dialog')
     fireEvent.click(screen.getByRole('button', { name: `Use the ${silentPreset.title} template` }))
     fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
@@ -494,5 +521,55 @@ describe('SchedulePage write-capable preset indicator', () => {
 
     await waitFor(() => expect(screen.getByDisplayValue(readOnlyPreset.prefill.name)).toBeInTheDocument())
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+})
+
+describe('SchedulePage job detail dialog', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('opens the detail dialog on a row click, titled with the job name', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Nightly report'))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    // The form is the detail view's payload, not just a titled shell.
+    expect(await screen.findByDisplayValue('Nightly report')).toBeInTheDocument()
+  })
+
+  it('keeps the job selected after the dialog is dismissed, so the Executions filter survives', async () => {
+    // The detail view was a side panel that could stay open beside the
+    // Executions table; as a modal it cannot, so the job selection is held in
+    // state SEPARATE from the dialog's open flag. Without that split, closing
+    // the modal to look at the executions it was filtering would clear the
+    // filter — this asserts the jobId still reaches the history query.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('Nightly report'))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // The view switcher is a collapsing SegmentedControl: jsdom reports a 0px
+    // container, so it renders in its dropdown mode showing only the active
+    // segment. Open it, then pick Executions.
+    fireEvent.click(screen.getByText('List'))
+    fireEvent.click(await screen.findByText('Executions'))
+
+    await waitFor(() => expect(api.cronHistoryAll).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-1' }),
+    ))
   })
 })
