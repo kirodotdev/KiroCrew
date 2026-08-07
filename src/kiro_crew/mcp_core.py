@@ -315,6 +315,24 @@ def _list_tools() -> list[dict[str, Any]]:
                             "a long-lived delegation workstream."
                         ),
                     },
+                    "context": {
+                        "type": "string",
+                        "enum": ["full", "no_memory", "minimal"],
+                        "description": (
+                            "Context-injection mode for the subagent. 'full' "
+                            "(default): memory, lessons, history, episodic, "
+                            "skills. 'no_memory': skip memory/lessons/history/"
+                            "episodic but keep skills and output-format rules "
+                            "— use for independent reviews where stored "
+                            "context could bias the result. 'minimal': date + "
+                            "agent identity only — ALSO drops the skills "
+                            "catalog and the output-format rules (diff "
+                            "blocks, OPTIONS markers), so use only for work "
+                            "that needs none of those, e.g. read-and-report "
+                            "tasks where context adds no value. Applies to "
+                            "all tasks in a batch spawn."
+                        ),
+                    },
                 },
             },
         },
@@ -3467,6 +3485,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         cwd = args.get("cwd") or ""
         model = args.get("model") or ""
         keep = bool(args.get("keep"))
+        # Context-injection mode ("full"/"no_memory"/"minimal"); "" and "full"
+        # both mean the default full injection, so only the reducing modes are
+        # forwarded to /api/spawn.
+        context_mode = args.get("context") or ""
         if agents_list and len(agents_list) != len(task_list):
             return f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
 
@@ -3504,6 +3526,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 body["model"] = model
             if keep:
                 body["keep"] = True
+            if context_mode and context_mode != "full":
+                body["context"] = context_mode
             if approval_mode:
                 body["approval_mode"] = approval_mode
             d = _post("/api/spawn", body)

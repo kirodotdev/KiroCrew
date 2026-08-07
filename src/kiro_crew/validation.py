@@ -47,6 +47,12 @@ ALLOWED_LESSON_CATEGORIES = frozenset({"tool", "preference", "knowledge"})
 # Allowed scopes for lessons (mirrors the learn_add MCP inputSchema enum).
 ALLOWED_LESSON_SCOPES = frozenset({"global", "workspace"})
 
+# Allowed context-injection modes for subagent spawns (mirrors the spawn_run
+# MCP inputSchema enum). Maps onto ContextBuilder.build_message flags:
+# "full" → default injection, "no_memory" → blocks_reads=True,
+# "minimal" → minimal_context=True.
+ALLOWED_SPAWN_CONTEXT_MODES = frozenset({"full", "no_memory", "minimal"})
+
 # Allowed cron schedule kinds
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 
@@ -923,6 +929,12 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # Context-injection mode for the subagent's first message. "full"
+        # (default when omitted) injects memory/lessons/history/episodic and
+        # skills; "no_memory" skips the memory-derived blocks (independent
+        # reviews — parity with dashboard temporary sessions); "minimal"
+        # injects only date/agent/runtime (parity with cron minimal_context).
+        FieldSpec("context", str, allowed=ALLOWED_SPAWN_CONTEXT_MODES),
     ],
 )
 

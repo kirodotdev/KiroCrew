@@ -940,6 +940,12 @@ class SubagentInfo:
     # SessionManager.mark_continuable, and skips session-file deletion at
     # teardown so the conversation can be resumed by a later run.
     keep: bool = False
+    # Context-injection mode for the run's first message. ""/"full" ⇒ default
+    # full injection; "no_memory" ⇒ build_message(blocks_reads=True), skipping
+    # memory/lessons/history/episodic (dashboard temporary-session parity);
+    # "minimal" ⇒ build_message(minimal_context=True), date + agent identity
+    # only (cron minimal_context parity). Consumed in _run_inner.
+    context_mode: str = ""
     # Session key override for continuation runs: a spawn_continue run reuses
     # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
     # finds the persisted sid and arms session/load. Empty ⇒ the default
@@ -2443,6 +2449,7 @@ class SubagentManager:
         batch_id: str = "",
         batch_total: int = 0,
         keep: bool = False,
+        context_mode: str = "",
         conversation_key: str = "",
         app: str = "",
         _agent_prevalidated: bool = False,
@@ -2487,6 +2494,10 @@ class SubagentManager:
                 set session-level auto-approve.  Only honored from
                 authenticated internal callers (X-Internal-Secret).
             silent (bool): Suppress completion notifications.
+            context_mode (str): Context-injection mode for the run's first
+                message: ""/"full" (default full injection), "no_memory"
+                (skip memory/lessons/history/episodic), or "minimal"
+                (date + agent identity only).
 
         Returns:
             SubagentInfo | None: Agent metadata, or None if at capacity.
@@ -2707,6 +2718,7 @@ class SubagentManager:
                     "batch_id": batch_id,
                     "batch_total": batch_total,
                     "keep": keep,
+                    "context_mode": context_mode,
                     "conversation_key": conversation_key,
                     "app": app,
                     "_agent_prevalidated": _agent_prevalidated,
@@ -2780,6 +2792,7 @@ class SubagentManager:
             batch_id=batch_id,
             batch_total=max(0, int(batch_total)),
             keep=keep,
+            context_mode=context_mode,
             conversation_key=conversation_key,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
@@ -4235,6 +4248,13 @@ class SubagentManager:
             session_key,
             provider_type="claude_code" if is_cc else "acp",
             model_window=_sub_window,
+            # Context-injection mode (spawn_run context=...): "no_memory"
+            # skips memory/lessons/history/episodic via the same blocks_reads
+            # path as dashboard temporary sessions; "minimal" injects only
+            # date/agent/runtime via the same minimal_context path as crons.
+            # ""/"full" leaves both flags off (default full injection).
+            blocks_reads=info.context_mode == "no_memory",
+            minimal_context=info.context_mode == "minimal",
         )
 
         result_text = ""

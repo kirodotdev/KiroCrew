@@ -1988,3 +1988,102 @@ class TestSubagentUsageRow:
 
         persist.assert_awaited_once()
         assert persist.await_args.kwargs["agent"] == "researcher"
+
+
+class TestSpawnContextMode:
+    """spawn_run context=... → SubagentInfo.context_mode → build_message flags.
+
+    The two reducing modes reuse existing, separately-tested ContextBuilder
+    branches (blocks_reads = dashboard temporary sessions, minimal_context =
+    cron minimal runs); what THIS class must prove is the plumbing — the mode
+    survives spawn (and the capacity queue) and lands on the right
+    build_message flag.
+    """
+
+    @staticmethod
+    def _executed_spawn() -> tuple[SubagentManager, MagicMock]:
+        """Build a yolo manager plus its ctx-builder mock."""
+        ctx = _mock_ctx_builder()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=ctx,
+            is_yolo=lambda: True,
+        )
+        return manager, ctx
+
+    @pytest.mark.asyncio
+    async def test_no_memory_maps_to_blocks_reads(self) -> None:
+        manager, ctx = self._executed_spawn()
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("review task", context_mode="no_memory")
+            assert info is not None
+            await manager._tasks[info.id]
+        assert info.context_mode == "no_memory"
+        kwargs = ctx.build_message.call_args.kwargs
+        assert kwargs["blocks_reads"] is True
+        assert kwargs["minimal_context"] is False
+
+    @pytest.mark.asyncio
+    async def test_minimal_maps_to_minimal_context(self) -> None:
+        manager, ctx = self._executed_spawn()
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("cheap task", context_mode="minimal")
+            assert info is not None
+            await manager._tasks[info.id]
+        kwargs = ctx.build_message.call_args.kwargs
+        assert kwargs["blocks_reads"] is False
+        assert kwargs["minimal_context"] is True
+
+    @pytest.mark.asyncio
+    async def test_default_leaves_both_flags_off(self) -> None:
+        manager, ctx = self._executed_spawn()
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("normal task")
+            assert info is not None
+            await manager._tasks[info.id]
+        assert info.context_mode == ""
+        kwargs = ctx.build_message.call_args.kwargs
+        assert kwargs["blocks_reads"] is False
+        assert kwargs["minimal_context"] is False
+
+    @pytest.mark.asyncio
+    async def test_full_behaves_as_default(self) -> None:
+        manager, ctx = self._executed_spawn()
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("normal task", context_mode="full")
+            assert info is not None
+            await manager._tasks[info.id]
+        kwargs = ctx.build_message.call_args.kwargs
+        assert kwargs["blocks_reads"] is False
+        assert kwargs["minimal_context"] is False
+
+    @pytest.mark.asyncio
+    async def test_context_mode_survives_capacity_queue(self) -> None:
+        """A spawn queued behind the concurrency cap must re-land its
+        context_mode on build_message after the _drain_queue round-trip —
+        asserting on the queue dict alone would still pass if the drained
+        path dropped the flag."""
+        ctx = _mock_ctx_builder()
+        manager = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=ctx,
+            max_concurrent=1,
+            is_yolo=lambda: True,
+        )
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            first = manager.spawn("task one")
+            second = manager.spawn("task two", context_mode="no_memory")
+            assert first is not None and second is not None
+            assert second.queued is True
+            assert manager._queue[0]["context_mode"] == "no_memory"
+            await manager._tasks[first.id]
+            # Slot is free now; bypass the stagger interval and pump the queue.
+            manager._last_spawn_ts = 0.0
+            manager._drain_queue()
+            # The drained spawn runs under its preassigned id (= second.id).
+            assert second.id in manager._tasks
+            await manager._tasks[second.id]
+        # Last build_message call is the drained spawn's.
+        kwargs = ctx.build_message.call_args.kwargs
+        assert kwargs["blocks_reads"] is True
+        assert kwargs["minimal_context"] is False

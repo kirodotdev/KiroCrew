@@ -91,6 +91,11 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "max_turns": body.get("max_turns", 0),
                 "cwd": body.get("cwd", ""),
                 "model": body.get("model", ""),
+                # None (not "") when absent: the schema's allowed-set check
+                # rejects any non-member string including "", while None falls
+                # through to the field default. "" and omission both mean
+                # "full" downstream.
+                "context": body.get("context") or None,
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -125,6 +130,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     max_turns = cleaned.get("max_turns") or 0
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
+    context_mode = cleaned.get("context") or ""
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
     batch_id = str(body.get("batch_id", "") or "")[:32]
@@ -146,6 +152,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_id=batch_id,
         batch_total=batch_total,
         keep=keep,
+        context_mode=context_mode,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but

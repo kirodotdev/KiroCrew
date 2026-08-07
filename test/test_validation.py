@@ -258,6 +258,19 @@ class TestValidateToolArgs:
         with pytest.raises(ValidationError, match=">="):
             validate_tool_args({"task": "x", "max_turns": -1}, SPAWN_RUN_SCHEMA)
 
+    def test_spawn_run_context_modes_accepted(self):
+        for mode in ("full", "no_memory", "minimal"):
+            result = validate_tool_args({"task": "x", "context": mode}, SPAWN_RUN_SCHEMA)
+            assert result["context"] == mode
+
+    def test_spawn_run_context_omitted_passes(self):
+        result = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
+        assert result.get("context") is None
+
+    def test_spawn_run_context_bad_mode_rejected(self):
+        with pytest.raises(ValidationError, match="must be one of"):
+            validate_tool_args({"task": "x", "context": "ephemeral"}, SPAWN_RUN_SCHEMA)
+
     def test_learn_add_valid(self):
         result = validate_tool_args(
             {"rule": "use dark mode", "category": "preference"},
