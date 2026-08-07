@@ -1061,3 +1061,146 @@ def test_a_transient_metadata_read_failure_does_not_drop_a_tab(tmp_path, monkeyp
         f"restored slots: {sorted(state2._slots)}"
     )
     assert keys[2] in state2._slots
+
+
+def test_read_messages_retries_transient_sharing_violation(tmp_path, monkeypatch):
+    """A transient sharing violation on the transcript BODY is retried, not lost.
+
+    Companion to ``test_a_transient_metadata_read_failure_does_not_drop_a_tab``,
+    which covers the metadata (first-line) read. ``_read_messages`` is on the
+    same restore path (``read_messages_chained`` ->
+    ``_rehydrate_slot_from_history``), and before the fix its body read
+    propagated a Windows ``PermissionError`` (``ERROR_SHARING_VIOLATION``, an
+    ``OSError`` subclass) straight out of rehydrate. ``_restore_open_slots_steps``
+    then dropped the tab -- the same intermittent ``assert 7 == 8`` shape on the
+    Windows CI line, but from the body read rather than the metadata read, so the
+    metadata-only retry did not cover it.
+
+    Primes the metadata cache first so the ONLY open under the violation is the
+    body read we want to exercise, faults it once, and requires the messages
+    back intact.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-body")
+    log = state.conversation_log
+    assert log is not None
+    key = _history_key_for("chat-1-body")
+    victim = log._path(key).name
+    # Prime the metadata cache and drop any warmed message cache so the sole
+    # open under the violation is the body read this test targets.
+    log.get_metadata(key)
+    log._msg_cache.clear()
+
+    with builtin_open_sharing_violation(match=victim, times=1) as seen:
+        msgs = log._read_messages(key)
+
+    assert seen["n"] >= 1, "the simulator never intercepted the body open"
+    assert [m.get("content") for m in msgs] == ["hello"], (
+        f"a transient sharing violation lost the message body (got {msgs!r}); "
+        "the tab would restore empty or be dropped on the Windows CI line"
+    )
+
+
+def test_read_messages_reraises_after_exhausting_retries(tmp_path, monkeypatch):
+    """A PERSISTENT body-read failure must re-raise, not swallow to ``[]``.
+
+    GPT review (PR #2052): swallowing an exhausted read to ``[]`` is
+    indistinguishable from a genuinely empty session, so
+    ``_rehydrate_slot_from_history`` would register an EMPTY slot -- which
+    ``restore_recent_sessions`` then dedupes by key and skips, stranding the tab
+    history-less for the whole session. ``_read_messages`` must instead re-raise
+    on exhaustion so rehydrate rolls back and the fallback restore can retry.
+    Transient failures are still absorbed (see the companion test above).
+    """
+    from kiro_crew.history import _METADATA_READ_ATTEMPTS
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-persist")
+    log = state.conversation_log
+    assert log is not None
+    key = _history_key_for("chat-1-persist")
+    victim = log._path(key).name
+    # Prime the metadata cache and drop the message cache so the ONLY opens
+    # under the violation are the body reads -- and fault EVERY attempt.
+    log.get_metadata(key)
+    log._msg_cache.clear()
+
+    with builtin_open_sharing_violation(match=victim, times=_METADATA_READ_ATTEMPTS):
+        with pytest.raises(OSError):
+            log._read_messages(key)
+
+
+def test_read_messages_missing_file_mid_read_returns_empty(tmp_path, monkeypatch):
+    """A transcript deleted AFTER exists() (concurrent delete race) yields ``[]``.
+
+    GPT review (PR #2052): ``_read_messages`` re-raises a persistent OSError so
+    restore can drop+retry the tab -- but ``FileNotFoundError`` is NOT a
+    transient lock. Re-raising it would turn a benign concurrent
+    ``delete_session`` into an HTTP 500 in a caller like ``api_session_detail``,
+    which reaches ``read_messages`` after its own ``exists()`` check. It must be
+    caught separately and return ``[]`` (matching the ``exists()``-miss branch),
+    without spending the retry budget on a file that is gone.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-race")
+    log = state.conversation_log
+    assert log is not None
+    key = _history_key_for("chat-1-race")
+    # Prime metadata cache + drop the message cache so the body read happens.
+    log.get_metadata(key)
+    log._msg_cache.clear()
+
+    # Simulate the file vanishing between the (passing) exists()/stat() and the
+    # body open() -- the concurrent-delete race the guard is for.
+    victim = log._path(key).name
+    real_open = open
+
+    def _fnf_open(file, *args, **kwargs):
+        if victim in str(file):
+            raise FileNotFoundError(2, "No such file or directory", str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _fnf_open)
+
+    # Must return [] (not raise) so read_messages callers don't 500 on the race.
+    assert log._read_messages(key) == []
+
+
+def test_persistent_body_read_failure_drops_tab_not_registers_empty(tmp_path, monkeypatch):
+    """End-to-end: a persistent body-read failure DROPS the tab, never registers
+    it empty.
+
+    Pins the GPT #2052 fix at the restore layer: the other tabs restore, and the
+    unreadable one is ABSENT from ``_slots`` (so the mtime-based
+    ``restore_recent_sessions`` fallback -- and the next restart -- can still
+    recover it) rather than being registered as a history-less slot that the
+    dedup guard would then skip.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    keys = [f"chat-{i}-persist" for i in range(3)]
+    for k in keys:
+        _seed_session(state, k)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    victim_key = _history_key_for(keys[1])
+    victim = state2.conversation_log._path(victim_key).name
+    # Warm the metadata cache so the victim's metadata reads are served cached;
+    # then fault EVERY victim open so the message-body read exhausts its retries
+    # (a large count also covers any incidental victim opens -- e.g. a tab_id
+    # index rebuild -- without letting the body read slip through unfaulted).
+    state2.conversation_log.get_metadata(victim_key)
+
+    with builtin_open_sharing_violation(match=victim, times=10_000):
+        restored = restore_open_slots(state2)
+
+    assert restored == 2, f"expected the two readable tabs; got {restored}"
+    assert keys[1] not in state2._slots, (
+        "an unreadable tab was registered EMPTY instead of dropped -- "
+        "restore_recent_sessions would dedupe it and the history would be lost"
+    )
+    assert keys[0] in state2._slots and keys[2] in state2._slots

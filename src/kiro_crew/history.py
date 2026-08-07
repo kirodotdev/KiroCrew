@@ -2661,27 +2661,83 @@ class ConversationLog:
         if not path.exists():
             self._msg_cache.pop(key, None)
             return []
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return []
-        cached = self._msg_cache.get(key)
-        if cached and cached[0] == mtime:
-            return cached[1]
-        messages: list[dict] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        # Retry transient read failures rather than reporting an empty session.
+        # This method is on the open-tab restore path
+        # (``read_messages_chained`` -> ``_rehydrate_slot_from_history``); on
+        # Windows a just-written transcript can be briefly unopenable while an
+        # indexer or AV scanner holds it (``ERROR_SHARING_VIOLATION`` ->
+        # ``PermissionError``, an ``OSError`` subclass). An unhandled OSError
+        # here propagates out of rehydrate and DROPS the tab, which is the
+        # intermittent ``restored == N-1`` (``assert 7 == 8``) failure on the
+        # Windows CI line. Mirror the retry ``_read_metadata`` already uses so
+        # the tab keeps its full history instead of vanishing. The old bare
+        # ``except OSError: return []`` on the stat silently yielded a
+        # history-less tab on the same fault; retrying first recovers it.
+        for attempt in range(_METADATA_READ_ATTEMPTS):
             try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if data.get("_type") == "metadata":
-                continue
-            messages.append(data)
-        self._msg_cache[key] = (mtime, messages)
-        return messages
+                mtime = path.stat().st_mtime
+                cached = self._msg_cache.get(key)
+                if cached and cached[0] == mtime:
+                    return cached[1]
+                with open(path, encoding="utf-8") as fh:
+                    raw = fh.read()
+            except FileNotFoundError:
+                # The transcript was deleted AFTER the exists() check above -- a
+                # concurrent delete_session racing this read. That is NOT a
+                # transient lock (retrying cannot bring the file back), and the
+                # correct answer is an empty read: it matches the exists()-miss
+                # branch above and the pre-PR stat() OSError branch. Letting it
+                # fall through to the generic OSError arm below -- which now
+                # re-raises on exhaustion -- would turn a benign race into an
+                # HTTP 500 in a caller like api_session_detail that reaches
+                # read_messages after its own exists() check (GPT review, PR
+                # #2052). Return [] immediately, dropping any stale cache entry;
+                # do not spend the retry budget on a file that is gone.
+                self._msg_cache.pop(key, None)
+                return []
+            except OSError:
+                if attempt + 1 < _METADATA_READ_ATTEMPTS:
+                    self._pause_for_transient_retry()
+                    continue
+                # Out of retries. Do NOT swallow to [] here. A persistent read
+                # failure is indistinguishable from a genuinely empty session,
+                # and on the restore path _rehydrate_slot_from_history would then
+                # register an EMPTY slot -- which restore_recent_sessions dedupes
+                # by key and skips, stranding the tab history-less for the whole
+                # session (GPT review, PR #2052). Re-raise instead so rehydrate
+                # rolls back its partial slot and the tab is DROPPED rather than
+                # registered empty -- recoverable on a later restore pass, most
+                # reliably the next restart once the holder has released the file
+                # (the same-startup restore_recent_sessions fallback only recovers
+                # it if the file is readable by then). That matches the
+                # "drop, don't register empty" outcome _read_metadata reaches by
+                # returning {} on exhaustion. It is also the pre-retry behaviour:
+                # the old unwrapped read_text() propagated this OSError with no
+                # retry, so callers already tolerate it -- the loop above just
+                # absorbs the transient case first.
+                logger.warning(
+                    "history: could not read messages for %s after %d attempts; "
+                    "re-raising so restore can retry",
+                    key,
+                    _METADATA_READ_ATTEMPTS,
+                    exc_info=True,
+                )
+                raise
+            messages: list[dict] = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("_type") == "metadata":
+                    continue
+                messages.append(data)
+            self._msg_cache[key] = (mtime, messages)
+            return messages
+        return []
 
     #: Starting tail window (bytes) for :meth:`_read_tail_messages`. Sized to
     #: comfortably cover a few dozen JSONL message lines in one read; grown
@@ -2929,6 +2985,27 @@ class ConversationLog:
         """Return session metadata for *key*."""
         return self._read_metadata(key)
 
+    def _pause_for_transient_retry(self) -> None:
+        """Pause briefly before retrying a transient read, but ONLY off the loop.
+
+        Shared by :meth:`_read_metadata` and :meth:`_read_messages`. Both are
+        reached ON the event loop by ``restore_open_slots_async`` (which keeps
+        the whole restore on the loop deliberately: creating a slot broadcasts
+        through ``asyncio.Queue.put_nowait`` / ``Event.set``, neither
+        thread-safe). A kernel sleep there stops ``_loop_heartbeat`` from petting
+        the LoopStallWatchdog -- whose ``exit_after`` timer then kills the
+        gateway, the exact crash-loop the async restore exists to prevent. So
+        sleep only when NOT on a running loop; on the loop the retry is
+        immediate (a stat plus an open -- cheap enough to be worth taking).
+        """
+        on_loop = True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop = False
+        if not on_loop:
+            _time.sleep(_METADATA_READ_RETRY_SECS)
+
     def _read_metadata(self, key: str) -> dict:
         """Read the metadata line (first line) from a session JSONL file.
 
@@ -2966,27 +3043,8 @@ class ConversationLog:
                     first = fh.readline().strip()
             except OSError:
                 if attempt + 1 < _METADATA_READ_ATTEMPTS:
-                    # Pause before retrying ONLY off the event loop. This path is
-                    # reached ON it: ``restore_open_slots_async`` keeps the whole
-                    # restore on the loop deliberately (creating a slot broadcasts
-                    # through ``asyncio.Queue.put_nowait`` / ``Event.set``, neither
-                    # thread-safe), and a kernel sleep there stops
-                    # ``_loop_heartbeat`` from petting the LoopStallWatchdog --
-                    # whose ``exit_after`` timer then kills the gateway. That
-                    # crash-loop is the exact thing the async restore exists to
-                    # prevent, so it must not be reintroduced here. Same probe as
-                    # the cross-process lock acquire above.
-                    on_loop = True
-                    try:
-                        asyncio.get_running_loop()
-                    except RuntimeError:
-                        on_loop = False
-                    if not on_loop:
-                        _time.sleep(_METADATA_READ_RETRY_SECS)
-                    # On the loop the retry is immediate instead. It costs a stat
-                    # plus an open, so it is cheap enough to be worth taking, and
-                    # losing it only yields the same ``{}`` this returned before
-                    # any retry existed -- never worse than the old behaviour.
+                    # Pause before retrying (off-loop only -- see the helper).
+                    self._pause_for_transient_retry()
                     continue
                 # Out of retries. Distinguish this from "no metadata" in the log
                 # so a dropped tab is traceable to its cause instead of looking
