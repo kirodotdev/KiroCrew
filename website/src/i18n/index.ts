@@ -124,6 +124,40 @@ export const CATALOGS: Record<string, { translation: Record<string, unknown> }> 
     : AUTHORED_CATALOGS
 
 /**
+ * The product name rendered by `{{productName}}` in catalog values.
+ *
+ * Catalog strings never hardcode the displayed product name; they interpolate
+ * this variable, supplied to i18next as `interpolation.defaultVariables`. The
+ * stock build resolves it to "Kiro Crew", so rendered output is identical to a
+ * hardcoded literal — the indirection exists for downstream editions.
+ *
+ * The `apps.<id>.manifest.*` keys are the deliberate exception: they must stay
+ * byte-identical to the Python-side `app.json` prose (the manifest-sync gate),
+ * so they keep the literal.
+ */
+const DEFAULT_PRODUCT_NAME = 'Kiro Crew'
+let productName = DEFAULT_PRODUCT_NAME
+
+/**
+ * Override the product name an edition renders. Call it from the edition
+ * composition root (`extensions.tsx`), which `main.tsx` imports BEFORE
+ * `initI18n()` runs — after init the variable has already been handed to
+ * i18next, so a late call cannot take effect and is refused loudly in dev
+ * rather than half-applying.
+ */
+export function setProductName(name: string): void {
+  if (i18next.isInitialized) {
+    if (import.meta.env.DEV) {
+      throw new Error('setProductName() must be called before initI18n()')
+    }
+    return
+  }
+  // Stored trimmed: accidental edge whitespace would render into every string.
+  const trimmed = name.trim()
+  if (trimmed) productName = trimmed
+}
+
+/**
  * Initialize i18next exactly once.
  *
  * Called from `main.tsx` before render, and from the vitest setup file so
@@ -141,9 +175,14 @@ export function initI18n(initialLanguage?: string): typeof i18next {
     lng,
     fallbackLng: DEFAULT_LANGUAGE,
     supportedLngs: [...SUPPORTED_CODES],
-    // React escapes interpolated values already; escaping here would
-    // double-encode (`&amp;amp;`) any string containing & < > " '.
-    interpolation: { escapeValue: false },
+    interpolation: {
+      // React escapes interpolated values already; escaping here would
+      // double-encode (`&amp;amp;`) any string containing & < > " '.
+      escapeValue: false,
+      // Resolves `{{productName}}` in every catalog value. A call-time
+      // variable of the same name still wins, per i18next merge order.
+      defaultVariables: { productName },
+    },
     // A missing key renders its English fallback, never an empty string, so a
     // gap in a translation degrades to readable English instead of blank UI.
     returnEmptyString: false,

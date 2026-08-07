@@ -167,7 +167,14 @@ function extractStringProp(source: string, propName: string): string | undefined
     'g',
   )
   const tMatch = tCall.exec(source)
-  if (tMatch) return getEnCatalog()[tMatch[1]]
+  // `{{productName}}` is resolved to its stock default here, mirroring what
+  // i18next's `defaultVariables` renders at runtime. The registry is a SEARCH
+  // corpus: leaving the raw placeholder in would make a user's query for the
+  // product name stop matching these entries. The literal deliberately
+  // duplicates DEFAULT_PRODUCT_NAME in `src/i18n/index.ts`: importing that
+  // module here would drag i18next and every catalog into a build-time
+  // script for one constant.
+  if (tMatch) return getEnCatalog()[tMatch[1]]?.replaceAll('{{productName}}', 'Kiro Crew')
   return undefined
 }
 
