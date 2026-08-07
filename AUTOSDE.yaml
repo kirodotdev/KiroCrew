@@ -98,6 +98,37 @@ custom-rules:
       When in doubt, offload — a leaked worker thread is survivable; a frozen
       loop is not.
 
+  - id: no-test-side-effects
+    blocking: true
+    file-patterns:
+      - "test/**/*.py"
+      - "tests/**/*.py"
+      - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
+      - "transfer/**/*.py"
+    rule: |
+      A test must have no side effects outside its own tmp dir. Never register a
+      real cron job, write into the operator's real ~/.kiro/crew or HOME, start
+      or reconfigure a gateway/service, or create directories in the repo or
+      anywhere else that outlives the run. Both shapes have already bitten us: a
+      unit test registered a live cron job, and test runs accumulated stray
+      directories under the developer's home.
+
+      Know which floor you are standing on — it is NOT the same everywhere:
+      - Tests under `test/` inherit the autouse fixtures in `test/conftest.py`
+        (`_isolate_kirocrew_home` pins KIROCREW_HOME per test,
+        `_isolate_subagents_dir`, `_isolate_sel_default_dir`, and friends).
+      - Tests under `src/kiro_crew/apps/builtins/*/tests/` and `tests/` see only
+        the ROOT `conftest.py`, which isolates $XDG_CONFIG_HOME and blocks host
+        service mutation but does NOT pin KIROCREW_HOME. A test there that
+        reaches `config_dir()` / `apps_dir()` writes the developer's real data
+        dir. Isolate it yourself: `monkeypatch.setenv("KIROCREW_HOME",
+        str(tmp_path))`.
+
+      Assert against the tmp dir, not the real one, and clean up anything you
+      create. If a test genuinely needs a host-level effect, it must be opt-in
+      and named in the corresponding conftest allowlist with a comment saying
+      why.
+
   - id: top-level-imports
     blocking: false
     file-patterns:
