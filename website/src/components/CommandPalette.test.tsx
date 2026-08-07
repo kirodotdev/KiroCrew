@@ -817,3 +817,79 @@ describe('CommandPalette — per-type Enter matrix (dispatchEnter routing)', () 
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Scoped-provider error state (issue #1928).
+ *
+ * A scoped tab whose provider's search REJECTS must render a distinct failure
+ * state (message + retry) rather than the ordinary "No matches" empty copy,
+ * which would mislabel a backend failure as an empty corpus. The All aggregator
+ * is unaffected: it guards each provider and always RESOLVES with a blended
+ * list (pinned by allAggregator.test.ts), so isError is never set on the All
+ * tab.
+ */
+describe('CommandPalette — scoped provider error state (issue #1928)', () => {
+  // The file-scoped afterEach uses vi.clearAllMocks(), which clears call history
+  // but NOT a mockRejectedValue implementation — restore the Sessions provider's
+  // default resolve so a rejection set here cannot leak into a later test.
+  afterEach(() => {
+    H.sessionsProvider.search.mockResolvedValue([H.sessResult])
+  })
+
+  it('renders a distinct error state with a Retry (not "No matches") when a scoped provider search rejects', async () => {
+    H.sessionsProvider.search.mockRejectedValue(new Error('backend down'))
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    // Scope to Sessions via prefix + Tab, then the empty-query scoped listing
+    // is served by the (now rejecting) Sessions provider.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions') // scope hint label
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
+    // The ordinary empty copy must NOT appear for a failure.
+    expect(screen.queryByText('No matches')).toBeNull()
+  })
+
+  it('the Retry button refetches the scoped provider and shows the results', async () => {
+    H.sessionsProvider.search
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValue([H.sessResult])
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions')
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+
+    const retry = await screen.findByRole('button', { name: /Retry/ })
+    fireEvent.click(retry)
+
+    // The refetch resolves this time, so the row renders and the error clears.
+    expect(await screen.findByText('Session Result')).toBeInTheDocument()
+    expect(screen.queryByText('Search failed')).toBeNull()
+  })
+
+  it('the All tab shows "No matches" (never the error state) when the aggregator swallows provider failures', async () => {
+    // The real All aggregator catches each provider and resolves with []; a
+    // fully-swallowed fan-out therefore looks like an empty result, not an
+    // error. isError stays false, so the ordinary empty copy shows.
+    H.allProvider.search.mockResolvedValue([])
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'zzz' } })
+
+    expect(await screen.findByText('No matches', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText('Search failed')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+
+    H.allProvider.search.mockResolvedValue([H.allResult])
+  })
+})

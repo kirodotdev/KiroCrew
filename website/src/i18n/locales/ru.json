@@ -4531,6 +4531,8 @@
       "search_everywhere": "Искать везде",
       "search_for_anything": "Ищи что угодно",
       "search_scope": "Искать {{scope}}...",
+      "retry": "Повторить",
+      "search_failed": "Поиск не удался",
       "searching": "Поиск…",
       "tab": "tab"
     },

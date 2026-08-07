@@ -4315,7 +4315,9 @@
           "skills": "스킬"
         }
       },
+      "retry": "다시 시도",
       "search_everywhere": "전체 검색",
+      "search_failed": "검색에 실패했습니다",
       "search_for_anything": "무엇이든 검색",
       "search_scope": "{{scope}} 검색…",
       "searching": "검색 중…",

@@ -204,3 +204,39 @@ describe('createSessionsProvider — fetch wiring', () => {
     expect(results).toEqual([])
   })
 })
+
+describe('createSessionsProvider — folder-fetch failure is distinct from search failure', () => {
+  it('still returns session results when the folder fetch rejects (chip omitted, failure logged, not conflated with "no folders")', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [{ key: 's-1', title: 'My Session', folder_id: 'f-1' }],
+      }),
+    )
+    const fetchFolders = vi.fn(async (): Promise<{ id: string; name: string }[]> => {
+      throw new Error('folders down')
+    })
+    const { d } = deps({ fetchSessions })
+    const p = createSessionsProvider({ ...d, fetchFolders })
+
+    const results = await p.search('my')
+    // A folders failure must NEVER blank the search results…
+    expect(results).toHaveLength(1)
+    expect(results[0].title).toBe('My Session')
+    // …the folder chip is simply omitted (folder unresolved)…
+    expect(results[0].folder).toBeUndefined()
+    // …and the failure is surfaced (logged), not silently swallowed as "no folders".
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('propagates a session-search rejection — distinct from the swallowed folder failure — so the palette can render its error state', async () => {
+    const fetchSessions = vi.fn(async (): Promise<SessionSearchResponse> => {
+      throw new Error('search down')
+    })
+    const { d } = deps({ fetchSessions })
+    const p = createSessionsProvider(d)
+
+    await expect(p.search('my')).rejects.toThrow('search down')
+  })
+})

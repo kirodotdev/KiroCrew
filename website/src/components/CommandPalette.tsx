@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { createPortal } from 'react-dom'
-import { Search, X, Pin, MessageSquare, Clock, Plus } from 'lucide-react'
+import { Search, X, Pin, MessageSquare, Clock, Plus, RotateCw } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 
 import { useAppSelector } from '../store'
@@ -357,7 +357,7 @@ export default function CommandPalette({
         : '',
     [activeProvider.id, slots, unreadSlots, slotStatusDetail, simplifiedToolNames],
   )
-  const { data: results = [], isLoading: loading } = useQuery({
+  const { data: results = [], isLoading: loading, isError, refetch } = useQuery({
     queryKey: ['palette', 'search', activeProvider.id, debouncedQuery, liveFingerprint],
     queryFn: () => Promise.resolve(activeProvider.search(debouncedQuery)),
     enabled: open,
@@ -455,7 +455,27 @@ export default function CommandPalette({
 
   if (!open) return null
 
-  const emptyState = loading ? (
+  const emptyState = isError ? (
+    // A provider's search REJECTED. This is distinct from an empty corpus: the
+    // ordinary "No matches" copy below would mislabel a backend failure as
+    // "nothing found", so a rejection gets its own message plus a retry that
+    // re-runs the query (React Query `refetch`). The All aggregator never lands
+    // here — it guards each provider and always RESOLVES with a blended list
+    // (see allAggregator.search) — so this branch only ever shows on a scoped
+    // tab (or the recents quick-switcher), leaving the All tab's swallow
+    // untouched.
+    <div className="px-3 py-6 text-center text-[12px] flex flex-col items-center gap-2">
+      <span className="text-muted">{i18nT('components.commandPalette.search_failed')}</span>
+      <button
+        type="button"
+        onClick={() => { void refetch() }}
+        className="inline-flex items-center gap-1 rounded-md border border-border bg-transparent px-2 py-1 text-[12px] text-text cursor-pointer hover:bg-bg-hover"
+      >
+        <RotateCw size={12} className="lucide-inline" />
+        {i18nT('components.commandPalette.retry')}
+      </button>
+    </div>
+  ) : loading ? (
     <div className="px-3 py-6 text-center text-[12px] text-muted">{i18nT('components.commandPalette.searching')}</div>
   ) : (
     <div className="px-3 py-6 text-center text-[12px] text-muted">
@@ -537,7 +557,10 @@ export default function CommandPalette({
 
         {/* Result list */}
         <div className="overflow-y-auto py-1" role="listbox">
-          {results.length === 0
+          {/* An errored query takes precedence over any stale placeholder rows
+              React Query keeps from the previous key: a failed search must read
+              as failed, not silently show the last query's results. */}
+          {isError || results.length === 0
             ? emptyState
             : results.map((r, i) => {
                 // Section header whenever the group changes — the recents view

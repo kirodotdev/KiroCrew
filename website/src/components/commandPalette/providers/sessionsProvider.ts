@@ -131,11 +131,23 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
     async search(query: string): Promise<Result[]> {
       const q = query.trim()
       if (q.length > 0 && q.length < SESSIONS_MIN_QUERY_CHARS) return []
-      // Folders resolve in parallel with the search; a folders failure only
-      // costs the chips, never the results.
+      // Folders resolve in parallel with the search. Folder chips are cosmetic,
+      // so a folders failure must NEVER blank the session results — but
+      // swallowing it as a bare `[]` silently conflated "the folder fetch
+      // FAILED" with "there are no folders", hiding a real backend error. Keep
+      // the graceful degradation (results render, chips omitted) but surface the
+      // failure distinctly via a log instead of masquerading as an empty list.
       const [data, folders] = await Promise.all([
         fetchSessions(q),
-        fetchFolders ? fetchFolders().catch(() => []) : Promise.resolve([]),
+        fetchFolders
+          ? fetchFolders().catch((err) => {
+              console.warn(
+                '[palette] session folder fetch failed; rendering results without folder chips',
+                err,
+              )
+              return []
+            })
+          : Promise.resolve([]),
       ])
       const folderName = (fid?: string): string | undefined =>
         fid ? folders.find((f) => f.id === fid)?.name : undefined

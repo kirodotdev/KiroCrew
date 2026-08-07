@@ -4318,6 +4318,8 @@
       "search_everywhere": "全局搜索",
       "search_for_anything": "搜索任何内容",
       "search_scope": "搜索{{scope}}…",
+      "retry": "重试",
+      "search_failed": "搜索失败",
       "searching": "搜索中…",
       "tab": "Tab"
     },

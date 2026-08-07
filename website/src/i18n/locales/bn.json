@@ -4389,6 +4389,8 @@
       "search_everywhere": "সর্বত্র অনুসন্ধান করুন",
       "search_for_anything": "যেকোনো কিছু খোঁজো",
       "search_scope": "{{scope}} খোঁজো…",
+      "retry": "আবার চেষ্টা করুন",
+      "search_failed": "অনুসন্ধান ব্যর্থ হয়েছে",
       "searching": "অনুসন্ধান চলছে…",
       "tab": "tab"
     },
