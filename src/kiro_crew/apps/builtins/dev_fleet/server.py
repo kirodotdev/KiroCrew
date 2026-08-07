@@ -2955,6 +2955,18 @@ _refresher_task: asyncio.Task | None = None
 _warm_task: asyncio.Task | None = None
 _reaper_task: asyncio.Task | None = None
 
+# Test-only escape hatch: a test that boots the real app via ``create_app()``
+# (e.g. to exercise the HMAC middleware) would otherwise start a genuine
+# network ``git fetch`` inside ``_status_refresher`` with nothing stubbed,
+# leaking a live background task into whichever test runs next. Unset in
+# production; ``test/conftest.py`` sets it for every test by default.
+_DISABLE_BACKGROUND_ENV = "KIROCREW_DEVFLEET_NO_BACKGROUND"
+
+
+def _background_tasks_disabled() -> bool:
+    return os.environ.get(_DISABLE_BACKGROUND_ENV) == "1"
+
+
 # Auto-prune reaper (opt-in via dev_fleet.auto_prune.enabled). The poll interval
 # is floored so a misconfigured tiny value can't hammer gh/git every cycle.
 _AUTO_PRUNE_MIN_INTERVAL_S = 300
@@ -3321,6 +3333,8 @@ async def dev_fleet_startup(app: web.Application) -> None:
     # Resolve the node build toolchain here, on the executor, so no request
     # handler ever pays for the filesystem scan (NFS homes make it slow).
     await _warm_build_path()
+    if _background_tasks_disabled():
+        return
     if _refresher_task is None or _refresher_task.done():
         _refresher_task = asyncio.create_task(_status_refresher())
     if _reaper_task is None or _reaper_task.done():
