@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -3076,18 +3077,20 @@ class TestToolElapsedTimer:
         slack = MockSlackClient()
         slack._stream_enabled = True
 
-        # We need to track when _tool_start_time gets set
-        # The simplest way: wrap the original and track based on call count
-        # From debug: ~20 calls happen. The timer start is around call 7-8
-        # and elapsed calc around call 18. We need start to be early, elapsed late.
+        # Advance the clock by >60s on EVERY monotonic() call. The elapsed
+        # calc always runs at least one call after _start_tool_timer, so the
+        # computed elapsed is >= one step regardless of how many unrelated
+        # monotonic() calls precede the timer start. (A fixed call-count
+        # threshold here was order-dependent: module caches touched by earlier
+        # tests in this file change the pre-timer call count, so the test
+        # broke whenever a pytest-split shard boundary landed inside this
+        # class.)
         calls = [0]
         base = handler.time.monotonic()
 
         def fake_monotonic():
             calls[0] += 1
-            # Calls 1-10 return base (timer sets _tool_start_time here)
-            # Calls 11+ return base + 75.5 (elapsed calculation)
-            return base if calls[0] <= 10 else base + 75.5
+            return base + calls[0] * 75.5
 
         monkeypatch.setattr(handler.time, "monotonic", fake_monotonic)
         provider = FakeProvider(
@@ -3102,9 +3105,13 @@ class TestToolElapsedTimer:
         task_appends = [a for a in slack.actions if a[0] == "append_task"]
         complete_tasks = [t for t in task_appends if t[1].get("status") == "complete"]
         # Elapsed time is shown in the TITLE (Slack replaces title on same
-        # task_id; details would APPEND and accumulate ⏱ stamps).
+        # task_id; details would APPEND and accumulate ⏱ stamps). Elapsed is
+        # N*75.5s for some N>=1, so assert the minutes FORMAT rather than a
+        # specific minute count.
         title_list = [str(t[1].get("title", "")) for t in complete_tasks]
-        assert any("1m" in t for t in title_list), f"Expected '1m' in title but got: {title_list}"
+        assert any(
+            re.search(r"⏱ \d+m \d+(\.\d+)?s", t) for t in title_list
+        ), f"Expected minutes-format elapsed in title but got: {title_list}"
         # Regression guard: elapsed must NOT be in details (append bug)
         details_list = [str(t[1].get("details", "")) for t in complete_tasks]
         assert all("⏱" not in d for d in details_list), f"⏱ leaked into details: {details_list}"
@@ -3167,9 +3174,11 @@ class TestToolElapsedTimer:
 
         def fake_monotonic():
             calls[0] += 1
-            # Early calls (tool 1 timer start) return base; later calls
-            # (transition completion elapsed calc) return base + 42s.
-            return base if calls[0] <= 10 else base + 42.0
+            # Advance >1s per call: the transition's elapsed calc always runs
+            # after the first tool's timer start, so elapsed >= one 42s step.
+            # (A fixed call-count threshold was order-dependent — see
+            # test_elapsed_time_shows_minutes_format.)
+            return base + calls[0] * 42.0
 
         monkeypatch.setattr(handler.time, "monotonic", fake_monotonic)
         provider = FakeProvider(

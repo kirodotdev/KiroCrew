@@ -902,9 +902,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     scope = body.get("scope", "global")
     # Delete from vector store if active, else JSONL
     vs = _get_memory(state).vector_store
-    vs_lessons = vs.get_lessons() if vs else None
+    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
-        ok = vs.delete_lesson(rule_sub)
+        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub)
     else:
         if scope == "workspace":
             ws = body.get("workspace")
@@ -1104,7 +1104,7 @@ async def api_lessons(request: web.Request) -> web.Response:
     workspace = request.query.get("workspace")
     # Read from vector store if it has lessons, else JSONL
     vs = _get_memory(state).vector_store
-    vs_lessons = vs.get_lessons() if vs else None
+    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
         data = []
         for e in vs_lessons[-50:]:

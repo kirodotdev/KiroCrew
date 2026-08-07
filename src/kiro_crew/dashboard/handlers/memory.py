@@ -212,7 +212,11 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     entries = []
-    for e in store.get_all_semantic(limit=limit, offset=offset):
+    # Offload: the fetch serializes on the store's _db_lock (#1947), and a
+    # worker holding it (e.g. backfill's locked FAISS rebuild) would otherwise
+    # block the gateway event loop here.
+    rows = await asyncio.to_thread(store.get_all_semantic, limit=limit, offset=offset)
+    for e in rows:
         d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
         entries.append(_redact_memory_field(d))
     return web.json_response({"entries": entries})
@@ -280,7 +284,8 @@ async def api_memory_semantic_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
     store = _get_vector_store(request.app["state"])
     key = request.match_info["key"]
-    ok = store.delete_semantic(key, source="user_explicit")
+    # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
+    ok = await asyncio.to_thread(store.delete_semantic, key, source="user_explicit")
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"ok": True})
@@ -294,7 +299,9 @@ async def api_memory_events(request: web.Request) -> web.Response:
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
-    return web.json_response({"events": store.get_events(limit=limit, offset=offset)})
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    events = await asyncio.to_thread(store.get_events, limit=limit, offset=offset)
+    return web.json_response({"events": events})
 
 
 _embedding_setup_status: dict[str, object] = {"step": "idle", "error": ""}
@@ -1016,9 +1023,16 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
         else None
     )
     results = []
-    for e in store.search_episodic(
-        query_embedding=emb, query_text=query, limit=limit, tag_filter=tag_filter
-    ):
+    # Offload: search_episodic serializes on _db_lock (#1947) — see
+    # api_memory_semantic.
+    hits = await asyncio.to_thread(
+        store.search_episodic,
+        query_embedding=emb,
+        query_text=query,
+        limit=limit,
+        tag_filter=tag_filter,
+    )
+    for e in hits:
         d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
         results.append(_redact_memory_field(d))
     return web.json_response({"results": results})
@@ -1033,10 +1047,11 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
-    entries = [
-        _redact_memory_field(dict(e))
-        for e in store.get_episodic_list(limit=limit, offset=offset, tag_filter=tag_filter)
-    ]
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    rows = await asyncio.to_thread(
+        store.get_episodic_list, limit=limit, offset=offset, tag_filter=tag_filter
+    )
+    entries = [_redact_memory_field(dict(e)) for e in rows]
     return web.json_response({"entries": entries})
 
 
@@ -1044,7 +1059,8 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/episodic/{id} — tombstone an episodic memory."""
     store = _get_vector_store(request.app["state"])
     mem_id = request.match_info["id"]
-    ok = store.delete_episodic(mem_id)
+    # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
+    ok = await asyncio.to_thread(store.delete_episodic, mem_id)
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"ok": True})
@@ -1053,7 +1069,8 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
 async def api_memory_stats(request: web.Request) -> web.Response:
     """GET /api/memory/stats — memory system statistics."""
     store = _get_vector_store(request.app["state"])
-    stats = store.memory_stats()
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    stats = await asyncio.to_thread(store.memory_stats)
     # Add embedding status
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
@@ -1119,7 +1136,9 @@ async def api_memory_context_preview(request: web.Request) -> web.Response:
     """GET /api/memory/context-preview?q=... — preview what gets injected into prompts."""
     store = _get_vector_store(request.app["state"])
     query = request.query.get("q", "")[:500]
-    semantic_ctx = store.get_semantic_context()
+    # Offload: the fetch serializes on _db_lock (#1947) — see api_memory_semantic.
+    # (No query_text is passed, so this is the recency path — no embed calls.)
+    semantic_ctx = await asyncio.to_thread(store.get_semantic_context)
     # Filter semantic context by query if provided
     if query and semantic_ctx:
         lines = semantic_ctx.split("\n")
@@ -1173,8 +1192,9 @@ async def api_memory_observability(request: web.Request) -> web.Response:
     """GET /api/memory/observability — memory health metrics and context preview."""
     store = _get_vector_store(request.app["state"])
     query = request.query.get("q", "")[:500]
-    stats = store.memory_stats()
-    rejections = store.get_rejection_stats()
+    # Offload: both serialize on _db_lock (#1947) — see api_memory_semantic.
+    stats = await asyncio.to_thread(store.memory_stats)
+    rejections = await asyncio.to_thread(store.get_rejection_stats)
     # get_context_preview with a query embeds the query AND every non-lesson
     # semantic row (blocking urllib per row) — the worst on-loop amplification
     # in the store; offload so it can't stall the gateway event loop.

@@ -3597,7 +3597,11 @@ class HistoryConsolidator:
             # Structured memory extraction (when vector store is available)
             has_vector = self._vector_store is not None
             if has_vector and self._vector_store is not None:
-                current_semantic = self._vector_store.get_all_semantic()
+                # Offload: the fetch serializes on the store's _db_lock (#1947),
+                # and this coroutine runs on the gateway event loop — a worker
+                # holding the lock (backfill's FAISS rebuild, reconcile's bulk
+                # UPDATEs) would otherwise block the whole loop here.
+                current_semantic = await asyncio.to_thread(self._vector_store.get_all_semantic)
                 semantic_json = (
                     json.dumps(
                         [

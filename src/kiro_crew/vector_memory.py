@@ -18,6 +18,7 @@ import math
 import re
 import struct
 import threading
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from fnmatch import fnmatch
@@ -475,6 +476,33 @@ class VectorMemoryStore:
             raise RuntimeError("VectorMemoryStore not initialized — call init() first")
         return self._db
 
+    # ── Locked fetch helpers ──
+    #
+    # The single ``check_same_thread=False`` connection is shared across the
+    # event loop, executor threads (context assembly via run_in_embed_pool) and
+    # worker threads (consolidation, dashboard handlers). sqlite3 caches
+    # prepared statements per connection, so an unsynchronized statement racing
+    # another thread's implicit transaction corrupts the statement cache —
+    # observed in production as sqlite3.InterfaceError ("bad parameter or other
+    # API misuse") and DatabaseError ("another row available") — or silently
+    # corrupts row iteration. EVERY statement on ``self.db`` must therefore be
+    # serialized on ``_db_lock`` (enforced by an AST guard in
+    # test_vector_memory.py). Route plain SELECTs through these helpers; only
+    # read-modify-write sections that must be atomic should take the lock
+    # explicitly. Both helpers materialize results before releasing the lock,
+    # so callers never iterate a live cursor unlocked — and per the lock's
+    # contract, never call a blocking embed while holding it.
+
+    def _fetch_all_locked(self, sql: str, params: Sequence[object] = ()) -> list[sqlite3.Row]:
+        """Run a SELECT serialized on ``_db_lock``; return materialized rows."""
+        with self._db_lock:
+            return self.db.execute(sql, params).fetchall()
+
+    def _fetch_one_locked(self, sql: str, params: Sequence[object] = ()) -> sqlite3.Row | None:
+        """Run a SELECT serialized on ``_db_lock``; return the first row or None."""
+        with self._db_lock:
+            return self.db.execute(sql, params).fetchone()
+
     # ── Key Validation ──
 
     def _validate_key(self, key: str) -> str | None:
@@ -546,9 +574,9 @@ class VectorMemoryStore:
 
     def get_semantic(self, key: str) -> dict | None:
         """Get a single semantic memory entry by key."""
-        row = self.db.execute(
+        row = self._fetch_one_locked(
             "SELECT * FROM semantic_memory WHERE key = ? AND is_deleted = 0", (key,)
-        ).fetchone()
+        )
         return dict(row) if row else None
 
     def get_all_semantic(self, limit: int | None = None, offset: int = 0) -> list[dict]:
@@ -565,7 +593,7 @@ class VectorMemoryStore:
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params = (int(limit), int(offset))
-        rows = self.db.execute(sql, params).fetchall()
+        rows = self._fetch_all_locked(sql, params)
         return [dict(r) for r in rows]
 
     @timed("vector", "write")
@@ -821,10 +849,10 @@ class VectorMemoryStore:
     @timed("vector", "search")
     def search_semantic(self, prefix: str) -> list[dict]:
         """Search semantic memory by key prefix."""
-        rows = self.db.execute(
+        rows = self._fetch_all_locked(
             "SELECT * FROM semantic_memory WHERE key LIKE ? AND is_deleted = 0 ORDER BY key",
             (prefix.rstrip("*").rstrip(".") + "%",),
-        ).fetchall()
+        )
         return [dict(r) for r in rows]
 
     # ── Context Injection ──
@@ -844,19 +872,16 @@ class VectorMemoryStore:
             query_embedding = self._try_embed(query_text) if self.embed_fn else None
 
             # Context assembly runs on executor threads (subagent context builds,
-            # run_in_embed_pool) concurrent with writers on worker threads. The
-            # shared connection's statement cache is not safe for unsynchronized
-            # cross-thread use — an unlocked SELECT racing a writer's implicit
-            # BEGIN surfaces as sqlite3.InterfaceError ("bad parameter or other
-            # API misuse"), and context.py does not guard this call, so the
-            # whole subagent run dies. Lock ONLY the fetch: fetchall()
-            # materializes the rows, and the scoring loop below issues blocking
-            # per-row embed calls that must never run under _db_lock.
-            with self._db_lock:
-                all_rows = self.db.execute(
-                    "SELECT key, value_json, updated_at FROM semantic_memory "
-                    "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
-                ).fetchall()
+            # run_in_embed_pool) concurrent with writers on worker threads, and
+            # context.py does not guard this call — an unserialized fetch here
+            # used to kill the whole subagent run (see the locked-fetch helper
+            # contract). The helper materializes the rows; the scoring loop
+            # below issues blocking per-row embed calls that must never run
+            # under _db_lock.
+            all_rows = self._fetch_all_locked(
+                "SELECT key, value_json, updated_at FROM semantic_memory "
+                "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
+            )
 
             scored_rows: list[tuple[float, dict]] = []
             for r in all_rows:
@@ -895,12 +920,11 @@ class VectorMemoryStore:
         else:
             # No query: recent entries. Same serialization requirement as the
             # query path above.
-            with self._db_lock:
-                rows = self.db.execute(
-                    "SELECT key, value_json FROM semantic_memory WHERE is_deleted = 0 "
-                    "AND key NOT LIKE 'lesson.%' ORDER BY updated_at DESC LIMIT ?",
-                    (max_rows,),
-                ).fetchall()
+            rows = self._fetch_all_locked(
+                "SELECT key, value_json FROM semantic_memory WHERE is_deleted = 0 "
+                "AND key NOT LIKE 'lesson.%' ORDER BY updated_at DESC LIMIT ?",
+                (max_rows,),
+            )
 
         if not rows:
             return ""
@@ -955,10 +979,10 @@ class VectorMemoryStore:
 
     def get_events(self, limit: int = 50, offset: int = 0) -> list[dict]:
         """Return recent memory events with pagination."""
-        rows = self.db.execute(
+        rows = self._fetch_all_locked(
             "SELECT * FROM memory_events ORDER BY id DESC LIMIT ? OFFSET ?",
             (limit, offset),
-        ).fetchall()
+        )
         return [dict(r) for r in rows]
 
     def rotate_events(self, max_rows: int = _MAX_EVENTS) -> int:
@@ -984,10 +1008,10 @@ class VectorMemoryStore:
             return 0
         self._faiss_index = faiss.IndexFlatIP(self._embedding_dim)
         self._faiss_id_map = []
-        rows = self.db.execute(
+        rows = self._fetch_all_locked(
             "SELECT id, embedding FROM episodic_memories "
             "WHERE is_deleted = 0 AND embedding IS NOT NULL"
-        ).fetchall()
+        )
         skipped = 0
         for row in rows:
             vec = np.frombuffer(row["embedding"], dtype=np.float32).reshape(1, -1)
@@ -1334,14 +1358,13 @@ class VectorMemoryStore:
 
     def has_episodic_text(self, text: str) -> bool:
         """Return whether an active episodic memory exactly matches *text*."""
-        with self._db_lock:
-            return (
-                self.db.execute(
-                    "SELECT 1 FROM episodic_memories WHERE is_deleted = 0 AND text = ? LIMIT 1",
-                    (text,),
-                ).fetchone()
-                is not None
+        return (
+            self._fetch_one_locked(
+                "SELECT 1 FROM episodic_memories WHERE is_deleted = 0 AND text = ? LIMIT 1",
+                (text,),
             )
+            is not None
+        )
 
     @timed("vector", "search")
     def _episodic_relevance_threshold(self, text: str) -> float:
@@ -1500,19 +1523,16 @@ class VectorMemoryStore:
         q = [x / norm for x in query_embedding] if norm > 0 else query_embedding
         q_len = len(q)
 
-        # The fetch is serialized with every other statement on this shared
-        # connection. sqlite3 caches prepared statements per connection, so two
-        # threads running a statement at the same time can corrupt each other's
-        # row iteration — observed as DatabaseError("another row available") and,
-        # on Windows CI, a NULL value for a column the WHERE clause excludes
-        # (`embedding IS NOT NULL` returning None, TypeError on len()). Only the
-        # fetch is locked: the scoring loop below works on materialized rows.
-        with self._db_lock:
-            rows = self.db.execute(
-                "SELECT id, conversation_id, text, tags, importance, created_at, "
-                "last_accessed_at, embedding FROM episodic_memories "
-                "WHERE is_deleted = 0 AND embedding IS NOT NULL"
-            ).fetchall()
+        # Serialized via the locked helper — two threads running a statement at
+        # the same time used to corrupt each other's row iteration (observed as
+        # DatabaseError("another row available") and, on Windows CI, a NULL
+        # value for a column the WHERE clause excludes). Only the fetch is
+        # locked: the scoring loop below works on materialized rows.
+        rows = self._fetch_all_locked(
+            "SELECT id, conversation_id, text, tags, importance, created_at, "
+            "last_accessed_at, embedding FROM episodic_memories "
+            "WHERE is_deleted = 0 AND embedding IS NOT NULL"
+        )
 
         logger.debug(
             "Episodic SQLite vector search: query=%s… rows_with_emb=%d",
@@ -1575,12 +1595,12 @@ class VectorMemoryStore:
         else:
             tag_conds = ""
             tag_params = ()
-        rows = self.db.execute(
+        rows = self._fetch_all_locked(
             "SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
             f"FROM episodic_memories WHERE is_deleted = 0{tag_conds} "
             "ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (*tag_params, limit, offset),
-        ).fetchall()
+        )
         return [dict(r) for r in rows]
 
     def delete_episodic(self, mem_id: str, source: str = "user_explicit") -> bool:
@@ -1635,7 +1655,7 @@ class VectorMemoryStore:
 
     def memory_stats(self) -> dict:
         """Return counts and sizes for dashboard display."""
-        row = self.db.execute(
+        row = self._fetch_one_locked(
             "SELECT "
             "(SELECT COUNT(*) FROM semantic_memory WHERE is_deleted=0) AS sem_active, "
             "(SELECT COUNT(*) FROM semantic_memory WHERE is_deleted=1) AS sem_deleted, "
@@ -1643,7 +1663,8 @@ class VectorMemoryStore:
             "(SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=1) AS ep_deleted, "
             "(SELECT COUNT(*) FROM memory_events) AS events_count, "
             "(SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NOT NULL) AS ep_with_vec"
-        ).fetchone()
+        )
+        assert row is not None  # a scalar-subquery SELECT always returns one row
         faiss_size = len(self._faiss_id_map) if self._faiss_id_map else 0
         return {
             "semantic_active": row[0],
@@ -1665,9 +1686,9 @@ class VectorMemoryStore:
         return bool(set(t.lower() for t in entry_tags) & set(t.lower() for t in tag_filter))
 
     def _get_episodic(self, mem_id: str) -> dict | None:
-        row = self.db.execute(
+        row = self._fetch_one_locked(
             "SELECT * FROM episodic_memories WHERE id = ? AND is_deleted = 0", (mem_id,)
-        ).fetchone()
+        )
         return dict(row) if row else None
 
     #: Columns returned for episodic search hits. Deliberately omits the
@@ -1689,11 +1710,14 @@ class VectorMemoryStore:
         if not mem_ids:
             return {}
         placeholders = ",".join("?" * len(mem_ids))
-        rows = self.db.execute(
+        # The FAISS search path calls this while already holding _db_lock;
+        # the helper's re-acquire is safe (RLock) and keeps the site covered
+        # when reached from any future unlocked caller.
+        rows = self._fetch_all_locked(
             f"SELECT {self._EPISODIC_SEARCH_COLUMNS} FROM episodic_memories "
             f"WHERE id IN ({placeholders}) AND is_deleted = 0",
             tuple(mem_ids),
-        ).fetchall()
+        )
         return {row["id"]: dict(row) for row in rows}
 
     #: Minimum interval between last_accessed_at writes for the same episodic row.
@@ -2036,11 +2060,9 @@ class VectorMemoryStore:
         # remain safe.
         if limit is not None and limit > 0:
             sql += " LIMIT ?"
-            with self._db_lock:
-                rows = self.db.execute(sql, (limit,)).fetchall()
+            rows = self._fetch_all_locked(sql, (limit,))
         else:
-            with self._db_lock:
-                rows = self.db.execute(sql).fetchall()
+            rows = self._fetch_all_locked(sql)
         return [dict(r) for r in rows]
 
     def delete_lesson(self, rule_substring: str) -> bool:
@@ -2172,8 +2194,7 @@ class VectorMemoryStore:
 
     def _read_meta(self, key: str) -> str | None:
         """Read a ``memory_meta`` value, or None when absent."""
-        with self._db_lock:
-            row = self.db.execute("SELECT value FROM memory_meta WHERE key = ?", (key,)).fetchone()
+        row = self._fetch_one_locked("SELECT value FROM memory_meta WHERE key = ?", (key,))
         return str(row["value"]) if row is not None else None
 
     def _write_meta(self, key: str, value: str) -> None:
@@ -2404,11 +2425,10 @@ class VectorMemoryStore:
         self._backfill_lesson_embeddings(progress)
         if not _HAS_NUMPY:
             return 0
-        with self._db_lock:
-            rows = self.db.execute(
-                "SELECT id, text FROM episodic_memories "
-                "WHERE is_deleted = 0 AND embedding IS NULL"
-            ).fetchall()
+        rows = self._fetch_all_locked(
+            "SELECT id, text FROM episodic_memories "
+            "WHERE is_deleted = 0 AND embedding IS NULL"
+        )
         if not rows:
             return 0
         embedded = 0
@@ -2483,11 +2503,10 @@ class VectorMemoryStore:
         """
         if self.embed_fn is None:
             return 0
-        with self._db_lock:
-            rows = self.db.execute(
-                "SELECT key, value_json FROM semantic_memory "
-                "WHERE is_deleted = 0 AND embedding IS NULL AND key LIKE 'lesson.%'"
-            ).fetchall()
+        rows = self._fetch_all_locked(
+            "SELECT key, value_json FROM semantic_memory "
+            "WHERE is_deleted = 0 AND embedding IS NULL AND key LIKE 'lesson.%'"
+        )
         if not rows:
             return 0
         embedded = 0
@@ -2631,9 +2650,10 @@ class VectorMemoryStore:
                     else:
                         counts["skipped"] += 1
 
-        embedded_n = self.db.execute(
+        embedded_row = self._fetch_one_locked(
             "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NOT NULL"
-        ).fetchone()[0]
+        )
+        embedded_n = embedded_row[0] if embedded_row is not None else 0
         logger.info(
             "Migration complete: semantic=%d episodic=%d skipped=%d embedded=%d",
             counts["semantic"],
@@ -2696,13 +2716,12 @@ class VectorMemoryStore:
             params.extend(f'%"{t.lower()}"%' for t in tag_filter)
         # Serialized for the same reason as the vector fallback above: this runs
         # on the context-assembly path, concurrently with memory writes.
-        with self._db_lock:
-            rows = self.db.execute(
-                f"SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
-                f"FROM episodic_memories WHERE is_deleted = 0 AND ({conditions}) "
-                f"ORDER BY created_at DESC LIMIT ?",
-                (*params, limit),
-            ).fetchall()
+        rows = self._fetch_all_locked(
+            f"SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
+            f"FROM episodic_memories WHERE is_deleted = 0 AND ({conditions}) "
+            f"ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
+        )
         return [dict(r) for r in rows]
 
     # ── Episodic Promotion ──
@@ -2717,11 +2736,11 @@ class VectorMemoryStore:
             return 0
 
         promoted = 0
-        rows = self.db.execute(
+        rows = self._fetch_all_locked(
             "SELECT id, text, embedding FROM episodic_memories "
             "WHERE is_deleted = 0 AND embedding IS NOT NULL "
             "ORDER BY importance DESC, created_at DESC LIMIT 500"
-        ).fetchall()
+        )
 
         # Cluster similar episodic memories
         clusters: dict[int, list[dict]] = {}
@@ -2786,13 +2805,13 @@ class VectorMemoryStore:
         FAISS dedup, so counting episodic there would conflate benign
         deduplication with policy rejections.
         """
-        rows = self.db.execute(
+        rows = self._fetch_all_locked(
             "SELECT event_type, COUNT(*) as count FROM memory_events "
             "WHERE event_type = 'injection_blocked' "
             "OR (memory_type = 'semantic' AND event_type IN "
             "('allowlist_reject', 'low_confidence', 'conflict_skip')) "
             "GROUP BY event_type"
-        ).fetchall()
+        )
         return {r["event_type"]: r["count"] for r in rows}
 
     def get_context_preview(self, query_text: str = "") -> dict:
