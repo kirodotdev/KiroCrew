@@ -2329,6 +2329,14 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     target = f"{backend_url}/api/{path}"
     if request.query_string:
         target += f"?{request.query_string}"
+    # Parse once into a yarl.URL so the HMAC signs the exact wire form the
+    # backend will see as self.path. Without this, request.query_string is
+    # decoded (spaces stay as spaces) but yarl re-encodes when sending
+    # (space → '+'), causing an HMAC mismatch for any path containing
+    # percent-encodable characters (spaces, #, +, non-ASCII).
+    import yarl as _yarl
+
+    target_url = _yarl.URL(target)
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
     headers: dict[str, str] = {}
@@ -2355,10 +2363,12 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             )
         ts = str(int(time.time()))
         body_hash = hashlib.sha256(body or b"").hexdigest()
-        msg = f"{ts}:{request.method}:/api/{path}"
-        if request.query_string:
-            msg += f"?{request.query_string}"
-        msg += f":{body_hash}"
+        # Sign the request-target in its wire form (raw_path_qs) so the
+        # signature matches what the backend receives as self.path. The
+        # decoded query_string would diverge after yarl re-encodes it
+        # (e.g. space → '+'), breaking HMAC verification for any path
+        # containing percent-encodable characters.
+        msg = f"{ts}:{request.method}:{target_url.raw_path_qs}:{body_hash}"
         sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
         headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
     except OSError as exc:
@@ -2377,7 +2387,7 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         try:
             async with session.request(
                 method=request.method,
-                url=target,
+                url=target_url,
                 headers=headers,
                 data=body,
                 timeout=timeout,
