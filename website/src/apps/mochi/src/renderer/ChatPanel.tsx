@@ -52,7 +52,7 @@ import {
 } from '../../panel/composerDrop'
 import { PendingAttachments } from '../../panel/PendingAttachments'
 import { MochiCodeBlock } from '../../panel/MochiCodeBlock'
-import { reportStat } from '../../panel/panelBridge'
+import { reportStat, isMochiBindError } from '../../panel/panelBridge'
 import { i18nT } from '../../../../i18n/t'
 import { i18next } from '../../../../i18n'
 import { moodLabel, stateLabel } from '../../i18nKeys'
@@ -840,17 +840,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     try {
       await api?.sendMessage?.(text, screenshotRef.current || undefined)
       setScreenshot(null)
-    } catch {
+    } catch (err) {
       // Send failed. handleSend already cleared the composer before awaiting, so
       // without this the typed text is lost, no error shows, and the spinner
       // sticks forever. Restore the text (composer is empty on this path), clear
       // the stuck waiting state, and surface the failure via the existing
       // error banner — the dashboard AddWatchForm "your input is still here,
-      // try again" recovery.
+      // try again" recovery. Binding failures get their own string: blaming
+      // the user's connection for a server-side agent-binding refusal would
+      // send them debugging the wrong thing.
       setIsWaiting(false)
       setTurnActive(false)
       setInput((prev) => (prev ? prev : text))
-      setDropError(i18nT('apps.mochi.chat.send_failed'))
+      setDropError(i18nT(isMochiBindError(err)
+        ? 'apps.mochi.chat.bind_failed'
+        : 'apps.mochi.chat.send_failed'))
     }
   }, [])
 

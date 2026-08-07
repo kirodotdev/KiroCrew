@@ -2397,6 +2397,7 @@
       },
       "chat": {
         "ask_placeholder": "Frag {{name}}...",
+        "bind_failed": "Der Agent des Haustiers konnte nicht verbunden werden – bitte gleich noch einmal versuchen.",
         "edit_cancel": "Abbrechen",
         "edit_mode": "Bearbeiten — zum Ersetzen senden oder abbrechen",
         "load_earlier": "Ältere Nachrichten laden",

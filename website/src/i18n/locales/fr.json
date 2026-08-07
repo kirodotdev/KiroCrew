@@ -2441,6 +2441,7 @@
       },
       "chat": {
         "ask_placeholder": "Demander à {{name}}...",
+        "bind_failed": "Impossible de connecter l'agent du compagnon — réessaie dans un instant.",
         "edit_cancel": "Annuler",
         "edit_mode": "Modification — envoyez pour remplacer, ou annulez",
         "load_earlier": "Charger les messages précédents",
