@@ -69,6 +69,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import AgentDropdownList, { ManageAgentsFooter } from '../components/AgentDropdownList'
 import ProjectPicker from '../components/ProjectPicker'
+import WorktreePicker from '../components/WorktreePicker'
 import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import {
@@ -1306,6 +1307,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
   const [projectBtnRect, setProjectBtnRect] = useState<DOMRect | null>(null)
+  const [worktreePickerOpen, setWorktreePickerOpen] = useState(false)
+  const [worktreeBtnRect, setWorktreeBtnRect] = useState<DOMRect | null>(null)
 
   // Prevent Chrome from navigating to dropped files.
   // Must be on document to catch drops anywhere on the page.
@@ -5465,6 +5468,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 setProjectBtnRect(rect)
                 setProjectPickerOpen(o => !o)
               }}
+              onWorktreesClick={(rect) => {
+                setWorktreeBtnRect(rect)
+                setWorktreePickerOpen(o => !o)
+              }}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
@@ -5624,6 +5631,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onOpenChange={setProjectPickerOpen}
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
+            />
+            {/* Worktree picker — list/switch/create/remove worktrees (#1607) */}
+            <WorktreePicker
+              open={worktreePickerOpen}
+              onOpenChange={setWorktreePickerOpen}
+              anchorRect={worktreeBtnRect}
+              repo={currentSlot?.project}
+              activeSlot={activeSlot}
+              onSelect={path => { setProject(path); setWorktreePickerOpen(false) }}
             />
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) && createPortal(

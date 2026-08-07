@@ -335,6 +335,95 @@ def _worktree_branches(root: str) -> dict[str, str] | None:
     return trees
 
 
+def _list_worktrees_detailed(root: str) -> list[dict] | None:
+    """Full worktree records for the picker, in git's own (main-first) order.
+
+    Like :func:`_worktree_branches` but keeps every attribute the dashboard
+    picker needs — ``path``, ``branch`` (empty when detached), ``head`` sha, and
+    the ``bare``/``detached``/``locked`` flags — and preserves porcelain ORDER,
+    so the caller can treat the first entry as the main worktree (git always
+    lists it first). Returns ``None`` when the git query itself fails, which is
+    deliberately distinct from an empty list: the remove path keys a destructive
+    decision off this answer, so "git could not tell us" must never read as
+    "nothing is registered".
+    """
+    # `-z` so a worktree path that itself contains a newline stays one record
+    # (see `_worktree_branches`). Every attribute is NUL-terminated and an extra
+    # NUL separates entries, so empty fields are simply skipped.
+    listing = _run_git(["worktree", "list", "--porcelain", "-z"], root)
+    if listing.returncode != 0:
+        return None
+    records: list[dict] = []
+    current: dict | None = None
+    for field in listing.stdout.split("\0"):
+        if not field:
+            continue
+        if field.startswith("worktree "):
+            if current is not None:
+                records.append(current)
+            current = {
+                "path": field[len("worktree ") :],
+                "branch": "",
+                "head": "",
+                "bare": False,
+                "detached": False,
+                "locked": False,
+            }
+        elif current is None:
+            continue
+        elif field.startswith("branch "):
+            ref = field[len("branch ") :]
+            current["branch"] = (
+                ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            )
+        elif field.startswith("HEAD "):
+            current["head"] = field[len("HEAD ") :]
+        elif field == "bare":
+            current["bare"] = True
+        elif field == "detached":
+            current["detached"] = True
+        elif field == "locked" or field.startswith("locked "):
+            current["locked"] = True
+    if current is not None:
+        records.append(current)
+    return records
+
+
+def _worktree_dirty(worktree_path: str) -> bool | None:
+    """True when ``worktree_path`` has uncommitted changes (tracked or untracked).
+
+    ``None`` when the status query fails — callers read that as "cannot prove it
+    is clean" and refuse to remove without an explicit force. ``cwd`` is the
+    worktree so git reports THAT tree's state, and the query inherits
+    :func:`_run_git`'s repo-code suppression (``core.fsmonitor`` off, hooks
+    sink), so reading status cannot run a repo-supplied program.
+    """
+    proc = _run_git(["status", "--porcelain"], worktree_path)
+    if proc.returncode != 0:
+        return None
+    return bool(proc.stdout.strip())
+
+
+def _active_worktree_slots(state: object) -> dict[str, str]:
+    """Map ``normalized realpath -> slot key`` for every session-scoped project.
+
+    Lets the picker flag which worktrees are the live project of some chat
+    session, so it can warn — and :func:`_remove_worktree_sync` can refuse — on a
+    worktree in use elsewhere. Paths are realpath+normcase-normalized to match
+    git's registered worktree paths through symlinks and case-insensitive
+    filesystems.
+    """
+    active: dict[str, str] = {}
+    slots = getattr(state, "_slots", None) or {}
+    items = getattr(slots, "items", None)
+    for key, slot in items() if callable(items) else []:
+        project = str(getattr(slot, "project", "") or "").strip()
+        if not project:
+            continue
+        active[_norm_path(os.path.realpath(project))] = str(key)
+    return active
+
+
 def _worktree_config_active(root: str) -> bool:
     """True when this repo has a *worktree-scoped* config file git will read.
 
@@ -664,6 +753,102 @@ def _match_allowed_root(candidate: str, roots: list[str]) -> str | None:
     return None
 
 
+async def _resolve_repo_root(
+    request: web.Request, repo: str, caller: str, operation: str
+) -> tuple[str | None, web.Response | None]:
+    """Resolve ``repo`` to a git toplevel inside an allow-listed slot project.
+
+    The shared allow-list + sensitive-path + git-toplevel barrier for EVERY
+    worktree endpoint (see the module docstring for the trust model). On success
+    returns ``(root, None)`` where ``root`` is a SERVER-held path — a slot
+    project's git toplevel — never the caller's string, so every filesystem/git
+    operation the caller performs downstream runs on a path the server chose. On
+    failure returns ``(None, response)`` carrying the audited status/body; the
+    caller just returns it.
+
+    Every filesystem probe runs on a worker thread: a slot project on stalled
+    network storage would otherwise block the event loop — and with it every
+    session — for as long as the filesystem takes to answer.
+    """
+    roots = await asyncio.to_thread(_allowed_repo_roots, request.app.get("state"))
+    submitted = os.path.normpath(os.path.expanduser(repo))
+    repo_root = _match_allowed_root(submitted, roots)
+    if repo_root is None:
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            resources=f"repo={submitted[:300]}",
+            error="outside slot project directories",
+        )
+        return None, web.json_response(
+            {
+                "error": (
+                    "repo must be a project directory of an existing session. "
+                    "Set the session's project first."
+                )
+            },
+            status=403,
+        )
+
+    if not await asyncio.to_thread(os.path.isdir, repo_root):
+        return None, web.json_response({"error": "repo is not a directory"}, status=400)
+    if await asyncio.to_thread(is_sensitive_path, repo_root):
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            resources=f"repo={repo_root}",
+            error="sensitive path",
+        )
+        return None, web.json_response({"error": "Access denied"}, status=403)
+
+    try:
+        root = await asyncio.to_thread(_git_toplevel, repo_root)
+    except SandboxUnavailable as exc:
+        # Fail CLOSED: no OS isolation available, so the spawn does not happen.
+        logger.warning("%s: sandbox unavailable: %s", operation, exc)
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            resources=f"repo={repo_root}",
+            error="sandbox backend unavailable",
+        )
+        return None, web.json_response({"error": _SANDBOX_REFUSAL}, status=503)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("%s: git toplevel probe failed: %s", operation, exc)
+        return None, web.json_response({"error": "git is unavailable"}, status=503)
+    if not root:
+        return None, web.json_response({"error": "Not a git repository"}, status=400)
+    # Re-check the toplevel: resolving upward from an allowed subdirectory can
+    # land on a repo root ABOVE every allowed root, which the match above never
+    # saw. Without this, granting a nested directory would let git operate on an
+    # ancestor the caller was never granted.
+    if _match_allowed_root(root, roots) is None:
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            resources=f"root={root}",
+            error="git toplevel outside slot project directories",
+        )
+        return None, web.json_response(
+            {"error": "The repository root is outside this session's project directory."},
+            status=403,
+        )
+    if await asyncio.to_thread(is_sensitive_path, root):
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            resources=f"root={root}",
+            error="sensitive path",
+        )
+        return None, web.json_response({"error": "Access denied"}, status=403)
+    return root, None
+
+
 async def api_worktree_create(request: web.Request) -> web.Response:
     """POST ``/api/worktree/create`` with ``{repo, branch}``.
 
@@ -701,91 +886,13 @@ async def api_worktree_create(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "Invalid branch name"}, status=400)
 
-    # Allow-list barrier FIRST, before the submitted value touches the
-    # filesystem: it is normalized and compared as a string, and what comes back
-    # is the server-held slot project. Every path operation from here down uses
-    # `repo_root` (server-chosen), never the request value.
-    # `_allowed_repo_roots` realpaths and stats every slot project, and the
-    # checks below stat again. A project on stalled network storage would block
-    # the event loop — and with it every session — for as long as the filesystem
-    # takes to answer, so all of it runs on a worker thread, per the repo's
-    # no-blocking-calls-on-the-loop rule.
-    roots = await asyncio.to_thread(_allowed_repo_roots, request.app.get("state"))
-    submitted = os.path.normpath(os.path.expanduser(repo))
-    repo_root = _match_allowed_root(submitted, roots)
-    if repo_root is None:
-        sel().log_api_access(
-            caller=caller,
-            operation="worktree_create",
-            outcome="denied",
-            resources=f"repo={submitted[:300]}",
-            error="outside slot project directories",
-        )
-        return web.json_response(
-            {
-                "error": (
-                    "repo must be a project directory of an existing session. "
-                    "Set the session's project first."
-                )
-            },
-            status=403,
-        )
-
-    if not await asyncio.to_thread(os.path.isdir, repo_root):
-        return web.json_response({"error": "repo is not a directory"}, status=400)
-    if await asyncio.to_thread(is_sensitive_path, repo_root):
-        sel().log_api_access(
-            caller=caller,
-            operation="worktree_create",
-            outcome="denied",
-            resources=f"repo={repo_root}",
-            error="sensitive path",
-        )
-        return web.json_response({"error": "Access denied"}, status=403)
-
-    try:
-        root = await asyncio.to_thread(_git_toplevel, repo_root)
-    except SandboxUnavailable as exc:
-        # Fail CLOSED: no OS isolation available, so the spawn does not happen.
-        logger.warning("worktree_create: sandbox unavailable: %s", exc)
-        sel().log_api_access(
-            caller=caller,
-            operation="worktree_create",
-            outcome="denied",
-            resources=f"repo={repo_root}",
-            error="sandbox backend unavailable",
-        )
-        return web.json_response({"error": _SANDBOX_REFUSAL}, status=503)
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.warning("worktree_create: git toplevel probe failed: %s", exc)
-        return web.json_response({"error": "git is unavailable"}, status=503)
-    if not root:
-        return web.json_response({"error": "Not a git repository"}, status=400)
-    # Re-check the toplevel: resolving upward from an allowed subdirectory can
-    # land on a repo root ABOVE every allowed root, which the match above never
-    # saw. Without this, granting a nested directory would let git operate on an
-    # ancestor the caller was never granted.
-    if _match_allowed_root(root, roots) is None:
-        sel().log_api_access(
-            caller=caller,
-            operation="worktree_create",
-            outcome="denied",
-            resources=f"root={root}",
-            error="git toplevel outside slot project directories",
-        )
-        return web.json_response(
-            {"error": "The repository root is outside this session's project directory."},
-            status=403,
-        )
-    if await asyncio.to_thread(is_sensitive_path, root):
-        sel().log_api_access(
-            caller=caller,
-            operation="worktree_create",
-            outcome="denied",
-            resources=f"root={root}",
-            error="sensitive path",
-        )
-        return web.json_response({"error": "Access denied"}, status=403)
+    # Allow-list + sensitive-path + git-toplevel barrier, shared by every
+    # worktree endpoint. `root` comes back as a SERVER-held path (never the
+    # request value), so every filesystem/git operation below runs on a path the
+    # server chose — see `_resolve_repo_root` and the module trust model.
+    root, err = await _resolve_repo_root(request, repo, caller, "worktree_create")
+    if err is not None:
+        return err
 
     try:
         async with _repo_lock(root):
@@ -822,4 +929,221 @@ async def api_worktree_create(request: web.Request) -> web.Response:
     )
     if status == 200:
         logger.info("Created worktree %s (branch %s) from %s", payload.get("path"), branch, root)
+    return web.json_response(payload, status=status)
+
+
+def _list_worktrees_sync(root: str, state: object) -> list[dict] | None:
+    """Blocking half of the list endpoint. ``None`` on a git listing failure.
+
+    Enriches each porcelain record with a per-worktree dirty probe and the chat
+    slot (if any) currently scoped to it.
+    """
+    records = _list_worktrees_detailed(root)
+    if records is None:
+        return None
+    active = _active_worktree_slots(state)
+    out: list[dict] = []
+    for index, rec in enumerate(records):
+        path = rec["path"]
+        norm = _norm_path(os.path.realpath(path))
+        # A bare worktree has no working tree to be dirty; skip the status probe.
+        dirty = None if rec["bare"] else _worktree_dirty(path)
+        out.append(
+            {
+                "path": path,
+                "branch": rec["branch"],
+                "head": rec["head"][:12],
+                "is_main": index == 0,
+                "detached": rec["detached"],
+                "bare": rec["bare"],
+                "locked": rec["locked"],
+                "dirty": dirty,
+                "active_session": active.get(norm),
+            }
+        )
+    return out
+
+
+async def api_worktree_list(request: web.Request) -> web.Response:
+    """GET ``/api/worktree/list?repo=<dir>`` — worktrees of the repo at ``repo``.
+
+    Returns, for every registered worktree, its ``path``, ``branch`` (empty when
+    detached), short ``head``, the flags ``is_main``/``detached``/``bare``/``locked``,
+    whether it has uncommitted changes (``dirty``; ``null`` when git could not be
+    asked), and the chat slot key currently scoped to it (``active_session``;
+    ``null`` when none). ``repo`` is subject to the same allow-list barrier as
+    ``create``: it must be — or sit inside — a project directory of an existing
+    session.
+    """
+    caller = str(request.get("user") or "dashboard")
+    denied = deny_non_dashboard_caller(request, "worktree_list")
+    if denied is not None:
+        return denied
+    repo = (request.query.get("repo") or "").strip()
+    if not repo:
+        return web.json_response({"error": "repo is required"}, status=400)
+
+    root, err = await _resolve_repo_root(request, repo, caller, "worktree_list")
+    if err is not None:
+        return err
+
+    try:
+        worktrees = await asyncio.to_thread(
+            _list_worktrees_sync, root, request.app.get("state")
+        )
+    except SandboxUnavailable as exc:
+        logger.warning("worktree_list: sandbox unavailable: %s", exc)
+        return web.json_response({"error": _SANDBOX_REFUSAL}, status=503)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("worktree_list failed: %s", exc)
+        return web.json_response({"error": "worktree listing failed"}, status=500)
+    if worktrees is None:
+        return web.json_response(
+            {"error": "git could not list this repository's worktrees"}, status=503
+        )
+
+    sel().log_api_access(
+        caller=caller,
+        operation="worktree_list",
+        outcome="allowed",
+        resources=f"root={root} count={len(worktrees)}",
+        error="",
+    )
+    return web.json_response({"worktrees": worktrees})
+
+
+def _remove_worktree_sync(
+    root: str, target: str, force: bool, state: object
+) -> tuple[dict, int]:
+    """Blocking half of the remove endpoint. Returns ``(json_body, http_status)``.
+
+    ``target`` is matched against git's OWN registered worktree paths (both
+    realpath-normalized); anything git does not list under ``root`` is refused
+    404, so only a genuine worktree of this repo can be reached, and the removal
+    command below is given git's registered path — never the request string. The
+    main worktree is refused, as is one that is the live project of a session. A
+    worktree with uncommitted changes is refused unless ``force``, and only then
+    is ``--force`` passed to git — this is the confirmation the issue's "warn
+    before removing a worktree with uncommitted changes" flow turns into.
+    """
+    records = _list_worktrees_detailed(root)
+    if records is None:
+        return ({"error": "git could not list this repository's worktrees"}, 503)
+    tnorm = _norm_path(os.path.realpath(os.path.expanduser(target)))
+    match: tuple[int, dict] | None = None
+    for index, rec in enumerate(records):
+        if _norm_path(os.path.realpath(rec["path"])) == tnorm:
+            match = (index, rec)
+            break
+    if match is None:
+        return ({"error": "That path is not a worktree of this repository"}, 404)
+    index, rec = match
+    if index == 0 or rec["bare"]:
+        return ({"error": "The main worktree cannot be removed"}, 409)
+
+    active_slot = _active_worktree_slots(state).get(tnorm)
+    if active_slot is not None:
+        return (
+            {
+                "error": (
+                    "This worktree is the active project of another session. "
+                    "Switch that session's project before removing it."
+                ),
+                "active_session": active_slot,
+            },
+            409,
+        )
+
+    if not force:
+        dirty = _worktree_dirty(rec["path"])
+        if dirty is None:
+            # Could not prove the tree is clean — refuse rather than risk
+            # discarding uncommitted work behind git's own guard.
+            return ({"error": "Could not check for uncommitted changes; not removing."}, 409)
+        if dirty:
+            return (
+                {
+                    "error": (
+                        "This worktree has uncommitted changes. Commit or discard "
+                        "them, or remove with force."
+                    ),
+                    "dirty": True,
+                },
+                409,
+            )
+
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(rec["path"])
+    proc = _run_git(args, root)
+    if proc.returncode != 0:
+        return ({"error": _git_error(proc)}, 400)
+    # Drop the now-stale registration so a later create reusing the same slug
+    # does not 409 on a leftover entry.
+    _run_git(["worktree", "prune"], root)
+    return ({"ok": True, "path": rec["path"], "branch": rec["branch"]}, 200)
+
+
+async def api_worktree_remove(request: web.Request) -> web.Response:
+    """POST ``/api/worktree/remove`` with ``{repo, path, force?}``.
+
+    Removes the linked worktree at ``path`` from the repo containing ``repo``.
+    Refuses (409) the main worktree, one that is the live project of another
+    session, or one with uncommitted changes — the last only unless ``force`` is
+    true. ``path`` is only ever COMPARED against git's registered worktree paths
+    (see :func:`_remove_worktree_sync`); the git command is given git's path, so
+    an arbitrary request path cannot be aimed at git.
+    """
+    caller = str(request.get("user") or "dashboard")
+    denied = deny_non_dashboard_caller(request, "worktree_remove")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    repo = body.get("repo")
+    path = body.get("path")
+    if not isinstance(repo, str) or not isinstance(path, str):
+        return web.json_response({"error": "repo and path must be strings"}, status=400)
+    repo, path = repo.strip(), path.strip()
+    if not repo or not path:
+        return web.json_response({"error": "repo and path are required"}, status=400)
+    force = bool(body.get("force"))
+
+    root, err = await _resolve_repo_root(request, repo, caller, "worktree_remove")
+    if err is not None:
+        return err
+
+    try:
+        async with _repo_lock(root):
+            payload, status = await asyncio.to_thread(
+                _remove_worktree_sync, root, path, force, request.app.get("state")
+            )
+    except subprocess.TimeoutExpired:
+        sel().log_api_access(
+            caller=caller,
+            operation="worktree_remove",
+            outcome="error",
+            resources=f"root={root}",
+            error="git timeout",
+        )
+        return web.json_response({"error": "git timed out"}, status=504)
+    except SandboxUnavailable as exc:
+        logger.warning("worktree_remove: sandbox unavailable: %s", exc)
+        return web.json_response({"error": _SANDBOX_REFUSAL}, status=503)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("worktree_remove failed: %s", exc)
+        return web.json_response({"error": "worktree removal failed"}, status=500)
+
+    sel().log_api_access(
+        caller=caller,
+        operation="worktree_remove",
+        outcome="allowed" if status == 200 else "error",
+        resources=f"root={root} path={payload.get('path', path)}",
+        error="" if status == 200 else str(payload.get("error", "")),
+    )
     return web.json_response(payload, status=status)

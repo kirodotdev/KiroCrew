@@ -133,7 +133,11 @@ from kiro_crew.dashboard.handlers.source_providers import (
 )
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
-from kiro_crew.dashboard.handlers.worktree import api_worktree_create
+from kiro_crew.dashboard.handlers.worktree import (
+    api_worktree_create,
+    api_worktree_list,
+    api_worktree_remove,
+)
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     PROBE_PATHS,
@@ -2312,6 +2316,8 @@ async def start_dashboard(
     # Follow-up suggestion card (suggest_followup MCP tool -> card below composer)
     app.router.add_post("/api/chat/slots/{slot}/followup", chat.api_chat_slot_followup)
     app.router.add_post("/api/worktree/create", api_worktree_create)
+    app.router.add_get("/api/worktree/list", api_worktree_list)
+    app.router.add_post("/api/worktree/remove", api_worktree_remove)
     app.router.add_get("/api/recent-projects", chat.api_recent_projects)
     app.router.add_patch("/api/chat/slots/{slot}/color", chat.api_chat_slot_color)
     # Context injection (App Kit — silent background context)

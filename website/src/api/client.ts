@@ -1226,6 +1226,34 @@ export const api = {
       base?: string
       error?: string
     }>,
+  // Worktree picker (issue #1607): list the repo's worktrees with branch, dirty
+  // state, and which chat slot (if any) currently has each as its project.
+  worktreeList: (repo: string) =>
+    get('/api/worktree/list?repo=' + encodeURIComponent(repo)).then(j) as Promise<{
+      worktrees: {
+        path: string
+        branch: string
+        head: string
+        is_main: boolean
+        detached: boolean
+        bare: boolean
+        locked: boolean
+        dirty: boolean | null
+        active_session: string | null
+      }[]
+      error?: string
+    }>,
+  // Remove a linked worktree. The server refuses (409) the main worktree, one
+  // active in another session, or one with uncommitted changes unless `force`.
+  worktreeRemove: (repo: string, path: string, force?: boolean) =>
+    post('/api/worktree/remove', { repo, path, force: !!force }).then(j) as Promise<{
+      ok?: boolean
+      path?: string
+      branch?: string
+      dirty?: boolean
+      active_session?: string
+      error?: string
+    }>,
   recentProjects: () => fetch('/api/recent-projects').then(j) as Promise<{ dirs: string[] }>,
   browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
   browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,

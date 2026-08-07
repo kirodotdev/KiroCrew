@@ -264,6 +264,74 @@ def _neutralize_structural_markers(text: str) -> str:
     return _apply_marker_spans(text, _structural_marker_spans(text))
 
 
+# Cap on the upward walk looking for a repo root, and on echoed label lengths.
+_GIT_WALK_LIMIT = 64
+_GIT_LABEL_CAP = 120
+
+
+def _project_git_context_line(project: str) -> str:
+    """One-line git awareness for the ``[PROJECT]`` block: branch + worktree kind.
+
+    Makes the agent aware of which branch and worktree its session is on, so it
+    keeps a ticket's work on that branch instead of mixing sessions that share a
+    repo (issue #1607). PURE FILESYSTEM — no subprocess, so it is safe to run
+    inline during prompt assembly (a couple of small local reads, like the
+    resource probe alongside it). A linked worktree's ``.git`` is a FILE (a
+    ``gitdir:`` pointer) rather than a directory, which is exactly how a linked
+    worktree is told apart from the main one and how its HEAD is located.
+
+    Returns ``""`` when the project is not inside a git repo, or on any read
+    error — best-effort, never raises.
+    """
+    try:
+        base = os.path.realpath(os.path.expanduser(project))
+        root: str | None = None
+        cur = base
+        for _ in range(_GIT_WALK_LIMIT):
+            if os.path.exists(os.path.join(cur, ".git")):
+                root = cur
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        if root is None:
+            return ""
+        dotgit = os.path.join(root, ".git")
+        linked = os.path.isfile(dotgit)
+        if linked:
+            first = ""
+            with open(dotgit, encoding="utf-8", errors="replace") as fh:
+                first = fh.readline(4096).strip()
+            pointer = first[len("gitdir:") :].strip() if first.startswith("gitdir:") else ""
+            if not pointer:
+                return ""
+            git_dir = pointer if os.path.isabs(pointer) else os.path.normpath(os.path.join(root, pointer))
+            head_path = os.path.join(git_dir, "HEAD")
+        else:
+            head_path = os.path.join(dotgit, "HEAD")
+        with open(head_path, encoding="utf-8", errors="replace") as fh:
+            raw = fh.readline(4096).strip()
+        kind = "a linked worktree" if linked else "the main worktree"
+        if raw.startswith("ref:"):
+            ref = raw[len("ref:") :].strip()
+            prefix = "refs/heads/"
+            branch = ref[len(prefix) :] if ref.startswith(prefix) else ref
+            branch = branch[:_GIT_LABEL_CAP]
+            note = (
+                " Keep this session's work on this branch — sibling worktrees of "
+                "the same repo hold other branches."
+                if linked
+                else ""
+            )
+            return f"Git: on branch `{branch}` in {kind} (repo root: {root})." + note
+        if re.fullmatch(r"[0-9a-fA-F]{7,64}", raw):
+            return f"Git: detached HEAD at `{raw[:12]}` in {kind} (repo root: {root})."
+        return ""
+    except OSError:
+        return ""
+
+
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
 # Multi-byte UTF-8 chars straddling the boundary cause a Rust panic:
 #   "byte index 4096 is not a char boundary; it is inside '—'"
@@ -2292,13 +2360,20 @@ class ContextBuilder:
         # Project context — inject on every message so the LLM always knows
         # the active project, even when set/changed after session start.
         if project:
-            parts.append(
+            project_block = (
                 f"[PROJECT] Active project directory: {project}\n"
                 "This is the codebase you are working in for this session. "
                 "File search, @-mentions, and code references are scoped to "
                 "this directory. Prefer files and patterns from this project "
-                "when answering questions.\n\n"
+                "when answering questions.\n"
             )
+            # Git worktree awareness (issue #1607): tell the agent which branch
+            # and worktree it is on so a ticket's work stays on its own branch
+            # when several sessions share a repo. Best-effort, pure filesystem.
+            git_line = _project_git_context_line(project)
+            if git_line:
+                project_block += git_line + "\n"
+            parts.append(project_block + "\n")
 
         # Resource pressure — inject a compact advisory ONLY when host memory is
         # tight/critical, so the model can choose the lighter path for heavy work
