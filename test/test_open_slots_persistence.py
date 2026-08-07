@@ -767,6 +767,72 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
     assert ticks >= 6, f"restore starved the loop (ticks={ticks})"
 
 
+def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatch):
+    """A tab needing a tab_id backfill must be READ before the backfill fires.
+
+    ``_rehydrate_slot_from_history`` mints a tab_id for a legacy session that
+    lacks one and persists it via ``update_metadata_off_loop`` — which dispatches
+    an ``os.replace()`` of THIS session file to a worker thread. If that write is
+    dispatched BEFORE the loop-thread transcript read of the same file, the
+    replace races the read: on Windows the in-flight replace makes the reader's
+    ``open()`` raise a sharing violation, and the on-loop read retry cannot pause
+    (a loop sleep would starve the LoopStallWatchdog), so it drops the tab —
+    the intermittent ``restored == N-1`` open-tabs loss on restart.
+
+    Reproduced deterministically without threads: dispatching the backfill for a
+    key arms its transcript read to raise the sharing violation, standing in for
+    the in-flight replace holding the file. Under the correct order (read first)
+    the read completes while the file is quiescent, so nothing is ever armed and
+    every tab restores. Under the buggy order the armed read faults and the tab
+    is dropped. The read-retry mechanics themselves are out of scope here (they
+    are exercised by test_history's sharing-violation tests); this pins the
+    ordering that keeps the file quiescent for the read in the first place.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    n = 4
+    for i in range(n):
+        # _seed_session writes no tab_id, so every tab triggers the backfill.
+        _seed_session(state, f"chat-{i}-race")
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": [f"chat-{i}-race" for i in range(n)], "ts": 0.0})
+    )
+
+    import kiro_crew.dashboard.chat_persistence as chat_persistence
+
+    state2 = _make_state(tmp_path / "sessions")
+    log = state2.conversation_log
+    armed_unreadable: set[str] = set()
+
+    real_read_messages = log._read_messages
+
+    def guarded_read_messages(key):
+        if key in armed_unreadable:
+            raise PermissionError(
+                f"[WinError 32] simulated in-flight os.replace holding {key}"
+            )
+        return real_read_messages(key)
+
+    monkeypatch.setattr(log, "_read_messages", guarded_read_messages)
+
+    real_backfill = chat_persistence.update_metadata_off_loop
+
+    def arming_backfill(conv_log, key, fields):
+        # Dispatching the tab_id os.replace makes the file briefly unreadable.
+        armed_unreadable.add(key)
+        return real_backfill(conv_log, key, fields)
+
+    monkeypatch.setattr(chat_persistence, "update_metadata_off_loop", arming_backfill)
+
+    restored = asyncio.run(restore_open_slots_async(state2))
+
+    assert restored == n, (
+        "a tab was dropped: its transcript was read while its tab_id backfill "
+        "replace was in flight (read must precede the backfill dispatch)"
+    )
+    assert set(state2._slots) == {f"chat-{i}-race" for i in range(n)}
+
+
 def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
     """The async and sync drivers must restore the same slots.
 

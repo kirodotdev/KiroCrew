@@ -498,13 +498,9 @@ def _rehydrate_slot_from_history(
         tab_id = meta.get("tab_id")
         if not tab_id:
             tab_id = uuid.uuid4().hex[:12]
-            # _rehydrate_slot_from_history runs on the event-loop thread (cold-slot
-            # resolution in api_send_message). update_metadata enters _locked
-            # (flock + os.close), a blocking-on-loop-prohibited op, so backfill the
-            # tab_id off the loop rather than on it.
-            update_metadata_off_loop(
-                state.conversation_log, history_key, {"tab_id": tab_id}
-            )
+            needs_tab_id_backfill = True
+        else:
+            needs_tab_id_backfill = False
         slot._tab_id = tab_id
         # Use read_messages_chained (not read_messages) so the loaded window walks
         # the tab_id ancestry across forks, matching restore_recent_sessions.
@@ -516,6 +512,28 @@ def _rehydrate_slot_from_history(
             if _prefetched_messages is not None
             else state.conversation_log.read_messages_chained(history_key)
         )
+        if needs_tab_id_backfill:
+            # Persist the freshly-minted tab_id AFTER reading the transcript above,
+            # never before. update_metadata_off_loop dispatches an os.replace() of
+            # THIS session file to a worker thread; scheduling it before the read
+            # let that replace race the loop-thread transcript read of the very
+            # same file. On Windows a concurrent replace makes the reader's open()
+            # fail with a sharing violation (PermissionError, an OSError subclass),
+            # and the on-loop read retry cannot pause (a loop sleep would starve the
+            # LoopStallWatchdog heartbeat), so the immediate retries expire while the
+            # replace is still in flight, _read_messages re-raises, and the
+            # except-BaseException arm below rolls the whole tab back — the
+            # intermittent `restored == N-1` open-tabs drop on restart
+            # (test_restore_open_slots_async_yields_between_tabs, Windows shard).
+            # Reading first removes the self-inflicted race: the file is quiescent
+            # for the read, and the backfill lands once nothing is reading it. The
+            # id is freshly minted with no on-disk siblings, so read_messages_chained
+            # returns the identical window whether it is written before or after.
+            # Kept off the loop because update_metadata enters _locked (flock +
+            # os.close), a blocking-on-loop-prohibited op.
+            update_metadata_off_loop(
+                state.conversation_log, history_key, {"tab_id": tab_id}
+            )
         # Only the recent window is loaded into memory; older on-disk lines become
         # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
         # therefore count those older lines so the save model preserves them.
