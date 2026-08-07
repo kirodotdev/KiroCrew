@@ -1002,6 +1002,7 @@
         "prList": {
           "clear_search": "Effacer la recherche",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Les PR fermées/fusionnées sont limitées aux 100 mises à jour le plus récemment — activez un filtre « moi » pour une recherche complète sur tout le dépôt",
+          "loading_the_rest": "Chargement du reste…",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PR",

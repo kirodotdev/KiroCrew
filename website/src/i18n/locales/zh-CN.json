@@ -816,6 +816,7 @@
         "prList": {
           "clear_search": "清除搜索",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "已关闭/已合并的 PR 最多显示最近更新的 100 个 — 开启“me”筛选条件可在整个仓库范围内完整搜索",
+          "loading_the_rest": "正在加载其余内容…",
           "pr_other": "{{count}} 个 PR",
           "re_fetch_from": "从 {{provider}} 重新获取 {{label}}",
           "refresh": "刷新 {{label}}",

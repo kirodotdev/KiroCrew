@@ -1450,6 +1450,21 @@ def list_open_pulls(owner: str, repo: str, *, host: str = "", timeout: float = G
     return _list_pulls(owner, repo, "open", host=host, timeout=timeout, paginate=True)
 
 
+def list_open_pulls_first_page(
+    owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest single page of OPEN MRs, in ONE request (no pagination).
+
+    The progressive first paint on a cold cache — the same first page (full MR
+    shape, most-recently-updated first) that ``list_open_pulls`` returns, so the
+    full paginated set appends behind it with no reordering. GitLab already
+    inlines each MR's ``head_pipeline`` (so ``_norm_pull`` writes the card
+    enrichment eagerly and ``enrich_pulls`` is a no-op), meaning this page is
+    already card-complete. Mirrors ``github_client.list_open_pulls_first_page``.
+    """
+    return _list_pulls(owner, repo, "open", host=host, timeout=timeout, paginate=False)
+
+
 def list_closed_pulls(owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC) -> list[dict]:
     return _list_pulls(owner, repo, "closed", host=host, timeout=timeout, paginate=False)
 

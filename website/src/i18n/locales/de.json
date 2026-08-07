@@ -987,6 +987,7 @@
         "prList": {
           "clear_search": "Suche leeren",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Geschlossene/zusammengeführte PRs sind auf die 100 zuletzt aktualisierten begrenzt — aktiviere einen „me“-Filter für eine vollständige, repo-weite Suche",
+          "loading_the_rest": "Rest wird geladen…",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PRs",
           "re_fetch_from": "{{label}} erneut von {{provider}} abrufen",

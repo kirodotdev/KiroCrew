@@ -718,6 +718,7 @@
         "prList": {
           "clear_search": "অনুসন্ধান সাফ করুন",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "বন্ধ/মার্জ হওয়া PR সর্বশেষ আপডেট হওয়া 100টিতে সীমিত — পুরো রিপো জুড়ে সম্পূর্ণ খোঁজের জন্য \"me\" ফিল্টার চালু করো",
+          "loading_the_rest": "বাকিটা লোড হচ্ছে…",
           "pr_one": "{{count}}টি PR",
           "pr_other": "{{count}}টি PR",
           "re_fetch_from": "{{provider}} থেকে {{label}} আবার আনো",

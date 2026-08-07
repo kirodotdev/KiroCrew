@@ -37,7 +37,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET/PUT | `/settings` | Per-repo triage settings. The PUT replaces the whole document, so it carries the `revision` it read and is refused with **409** if the stored revision has moved — otherwise a stale tab would erase a label appended meanwhile |
 | POST | `/settings/role` | APPEND one label to a triage-label role, under the config lock. Exists because the PUT replaces the whole document, so a client read-modify-write only serializes itself — two dashboard tabs would each read the same settings and the later full replacement would drop the other's label |
 | GET | `/issue-ai` | AI summary + suggested labels (kirocrew-lite) |
-| GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; rows enriched with diff size + check tally via one GraphQL call and merge readiness via a second, lean one, each topped up by number for rows outside its `first:100` window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
+| GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; `first_page=1` (open only) takes the progressive first-paint fast path — see First Paint; rows enriched with diff size + check tally via one GraphQL call and merge readiness via a second, lean one run CONCURRENTLY, each topped up by number for rows outside its `first:100` window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
 | GET | `/pulls/search` | PRs matching a per-person filter, resolved server-side by GitHub search (escapes the list's page cap). Paginates only as far as its own cap and reports `truncated` so the UI says "newest N" rather than implying completeness |
 | GET | `/pull` | Full PR detail + conversation (issue timeline merged with inline review comments) + automated checks on the head commit. Cache-first with a short server-side TTL (`PR_DETAIL_CACHE_TTL_SEC`), so a plain GET self-refreshes and no caller has to pass `refresh=1` to stay current |
 | GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
@@ -661,7 +661,7 @@ issues (high-water mark in `watch-state.json`). Sends dashboard bell
 notifications via `state.notify`. Zero-LLM. Guarded by `is_app_enabled` — silent
 when disabled. Lifecycle hooks registered via `app.on_startup`/`on_cleanup`.
 
-## First Paint (progressive open-issue load)
+## First Paint (progressive open-list load)
 
 The open-issue list is **fully paginated**: `list_open_issues` follows every `Link`
 page in one `gh --paginate` process (a ~2.6k-issue repo is ~26 sequential requests
@@ -670,6 +670,11 @@ in-band before the list can render, so a COLD open (first-ever open of a repo, a
 freshly connected one, or after an `ISSUES_CACHE_SCHEMA` bump invalidates the cache)
 blocked on a skeleton for seconds. Every WARM re-open is already instant — the list
 cache has no TTL and is served immediately — so this is a cold-cache-only problem.
+
+The **open-PR list is the same shape and worse**: `list_open_pulls` paginates every
+page AND the route then runs `enrich_pulls` (the GraphQL summaries + readiness
+families) before a byte can render, so a cold PR pane is the app's slowest open. Both
+lists therefore carry a `first_page=1` fast path.
 
 `GET /issues?first_page=1` (open state only) is the fast path that ends the blank
 wait, handled by `_handle_issues_first_page`:
@@ -700,6 +705,32 @@ loaded". The list footer shows an `issuesPartial` "loading the rest" hint so the
 does not read as the whole repo. Net cost: exactly one extra single-page request per
 cold repo-open. `list_open_issues_first_page` is on the `ProviderClient` protocol, so
 GitLab implements the symmetric single-page variant and `test_provider_parity` holds.
+
+`GET /pulls?first_page=1` (open state only) is the PR twin, handled by
+`_handle_pulls_first_page` with one added rule: the first page is returned
+**UN-ENRICHED**. Enrichment is the other slow leg the fast path exists to skip, so it
+is deliberately not paid here; a row's missing diff/check data renders as absent (the
+card's bottom row is omitted), never as a wrong "no diff, no checks", and the
+authoritative fetch that runs next enriches and caches. Warm cache → whole,
+`partial: false`, no fetch; cold cache → the newest single page
+(`list_open_pulls_first_page`, `_list_pulls(..., paginate=False)`), `partial: true`, no
+cache write (the full fetch owns the durable cache and refuses to persist incomplete,
+un-enriched rows). The client runs `pullsFirstPageQuery` only in the exact cold window —
+open state, **no person filter** (search owns that path and is already whole-repo), the
+PR surface actually in use (same gate as `pullsQuery`, so no request is spent on an
+unopened pane), and `pullsQuery.data === undefined`. Its rows feed `pulls` and clear the
+skeleton until the full list lands; the footer shows a `pullsPartial` "loading the rest"
+hint. `list_open_pulls_first_page` is on the `ProviderClient` protocol (GitLab's variant
+is card-complete already, since it inlines `head_pipeline`), and `test_provider_parity`
+holds.
+
+`enrich_pulls` runs its two INDEPENDENT GraphQL families — card summaries and merge
+readiness — **concurrently** on a two-worker `ThreadPoolExecutor` rather than
+back-to-back. They must stay two calls (readiness cannot ride on the card selection
+without 502ing it) and neither derives from the other, so overlapping their blocking
+`gh` round trips makes the enrichment leg cost the slower family instead of their sum.
+Each family (`_enrich_summaries` / `_enrich_readiness`) swallows its own `GhCliError`
+internally, preserving the best-effort contract: one failing does not sink the other.
 
 ## Client-Side List Polling
 

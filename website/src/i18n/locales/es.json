@@ -846,6 +846,7 @@
         "prList": {
           "clear_search": "Borrar búsqueda",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Las PR cerradas/fusionadas se limitan a las 100 actualizadas más recientemente — activa un filtro \"yo\" para hacer una búsqueda completa en todo el repositorio",
+          "loading_the_rest": "Cargando el resto…",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PR",

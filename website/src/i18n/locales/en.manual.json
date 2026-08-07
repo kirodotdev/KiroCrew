@@ -216,6 +216,7 @@
         },
         "prList": {
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Closed/merged PRs are capped at the 100 most recently updated — turn on a \"me\" filter for a complete, repo-wide search",
+          "loading_the_rest": "Loading the rest…",
           "re_fetch_from": "Re-fetch {{label}} from {{provider}}",
           "refresh": "Refresh {{label}}",
           "resolved_by_github_search_across_the_whole_repo": "Resolved by GitHub search across the whole repo — not limited to the 100 most recent",

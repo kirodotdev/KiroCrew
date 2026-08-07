@@ -1050,6 +1050,7 @@
         "prList": {
           "clear_search": "検索をクリア",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "閉じられた/マージ済みPRは最後に更新された100件に限定されます。完全にリポジトリ全体を検索するには「me」フィルターをオンにしてください",
+          "loading_the_rest": "残りを読み込んでいます…",
           "pr_other": "{{count}}個のPR",
           "re_fetch_from": "{{label}} を {{provider}} から再取得",
           "refresh": "{{label}} を更新",
@@ -4572,7 +4573,8 @@
     "pastedChip": {
       "collapse_paste": "ペーストを折りたたむ",
       "expand_paste": "ペーストを展開",
-      "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]"
+      "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
+      "preview_more_lines_other": "… 他 {{count}} 行"
     },
     "privacyChapter": {
       "continue": "続行",

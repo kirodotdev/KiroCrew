@@ -1004,12 +1004,19 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
 
 
 async def _handle_pulls(request: web.Request) -> web.Response:
-    """GET /pulls?owner=<o>&repo=<r>[&state=open|closed][&refresh=1][&poll=1] — list PRs.
+    """GET /pulls?owner=<o>&repo=<r>[&state=open|closed][&refresh=1][&poll=1][&first_page=1] — list PRs.
 
     Cache-first (mirrors /issues). ``state`` defaults to open; closed is bounded
     to the 100 most-recently-updated (includes both merged and closed-unmerged —
     the frontend splits them on ``merged_at``). Pass refresh=1 to force a fresh
     ``gh`` fetch, or poll=1 for the probe-gated client-poll path.
+
+    ``first_page=1`` is the PROGRESSIVE-PAINT intent, open state only, and the PR
+    counterpart of ``/issues?first_page=1``: a cold ``/pulls`` open is the app's
+    slowest — it paginates every open PR AND runs the GraphQL enrichment before a
+    byte renders — so this branch fetches only the newest single page (one
+    request, un-enriched, ``partial: true``) WITHOUT writing the cache, and the
+    client swaps the full enriched set in behind it. See ``_handle_pulls_first_page``.
     """
     key = _key_from_request(request)
     owner, repo = key.owner, key.repo
@@ -1026,6 +1033,12 @@ async def _handle_pulls(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
+
+    # Progressive first paint takes its own branch BEFORE the poll/refresh logic:
+    # a read-only fast path (never writes the cache, never probes, never enriches)
+    # whose only job is to paint the newest page while the authoritative fetch runs.
+    if request.query.get("first_page") == "1" and state == "open":
+        return await _handle_pulls_first_page(key, client, pkw)
 
     force_refresh = request.query.get("refresh") == "1"
     is_poll = request.query.get("poll") == "1"
@@ -1070,6 +1083,51 @@ async def _handle_pulls(request: web.Request) -> web.Response:
         {**_identity(key), "state": state, "pulls": pulls, "from_cache": False,
          "bulk_max": _BULK_PR_MAX}
     )
+
+
+async def _handle_pulls_first_page(
+    key: provider.RepoKey, client: provider.ProviderClient, pkw: dict
+) -> web.Response:
+    """The progressive first-paint branch of ``/pulls`` (open state only).
+
+    The PR counterpart of ``_handle_issues_first_page``, and the bigger win: a
+    cold ``/pulls`` blocks on BOTH the full pagination and the GraphQL enrichment
+    before rendering, so a busy repo can sit on a skeleton for many seconds. A
+    warm cache is served whole and complete; a COLD cache pays only the newest
+    single page in one request and returns it ``partial: true``.
+
+    The first page is returned UN-ENRICHED — no diff size, no check tally. That
+    is deliberate: enrichment is the other slow leg, so paying it here would
+    defeat the fast path, and a row's missing enrichment renders as absent (the
+    card's bottom row is simply omitted) rather than as a wrong "no diff, no
+    checks". The authoritative fetch the client runs next enriches and caches.
+
+    Deliberately does NOT write the cache, for the same reason as the issues fast
+    path: the durable cache is owned by the full fetch (which stores fully
+    enriched rows plus the poll ``probe`` under one lock, and refuses to cache
+    incomplete rows). Persisting an un-enriched partial here would let a later
+    poll serve it as if it were whole, so this path stays read-only — its result
+    lives only in the client's transient first-paint query.
+    """
+    owner, repo = key.owner, key.repo
+    snapshot = await _st(key, store.read_pulls_snapshot, owner, repo, state="open")
+    if snapshot is not None:
+        return web.json_response({
+            **_identity(key), "state": "open",
+            "pulls": snapshot["rows"], "from_cache": True, "partial": False,
+            "bulk_max": _BULK_PR_MAX,
+        })
+    try:
+        pulls = await asyncio.to_thread(
+            partial(client.list_open_pulls_first_page, owner, repo, **pkw)
+        )
+    except GhCliError as exc:
+        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+    return web.json_response({
+        **_identity(key), "state": "open",
+        "pulls": pulls, "from_cache": False, "partial": True,
+        "bulk_max": _BULK_PR_MAX,
+    })
 
 
 async def _handle_pulls_search(request: web.Request) -> web.Response:

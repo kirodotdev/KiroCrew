@@ -849,6 +849,7 @@
         "prList": {
           "clear_search": "Очистить поиск",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Закрытые и влитые PR ограничены 100 последними обновлёнными — включи фильтр «я» для полного поиска по всему репозиторию",
+          "loading_the_rest": "Загрузка остального…",
           "pr_few": "{{count}} PR",
           "pr_many": "{{count}} PR",
           "pr_one": "{{count}} PR",

@@ -718,6 +718,7 @@
         "prList": {
           "clear_search": "खोज साफ़ करें",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "बंद/मर्ज किए गए PR सबसे हाल में अपडेट हुए 100 तक सीमित हैं — पूरे रिपो में पूरी खोज के लिए कोई \"me\" फ़िल्टर चालू करें",
+          "loading_the_rest": "बाकी लोड हो रहा है…",
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PRs",
           "re_fetch_from": "{{provider}} से {{label}} दोबारा लाओ",
