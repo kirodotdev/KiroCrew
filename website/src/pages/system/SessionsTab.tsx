@@ -24,9 +24,9 @@ import {
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3 } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3, TriangleAlert } from 'lucide-react'
 import { api } from '../../api/client'
-import { Btn, Card, EmptyState, IconButton, SearchInput } from '../../components/ui'
+import { Btn, Card, ContentSkeleton, EmptyState, IconButton, SearchInput } from '../../components/ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import InfoTip from '../../components/InfoTip'
 import SegmentedControl, { type Segment } from '../../components/SegmentedControl'
@@ -48,6 +48,20 @@ import { i18nT } from '../../i18n/t'
 import type { PlaneState, SessionsPlaneState } from '../SystemPage'
 
 type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
+
+/**
+ * Shared empty fallbacks for a payload that carries no rows yet.
+ *
+ * These MUST be stable references, not inline `?? []` literals. An inline literal
+ * mints a NEW array on every render, which changes the identity of `rows` (and so
+ * of the `data` handed to `useReactTable`) even though nothing about the content
+ * changed. TanStack reads a new `data` identity as "the data changed" and fires
+ * its auto-reset queue, which calls `setState` — re-rendering, minting another
+ * array, and looping. The window where it bites is any render with no `sessions`
+ * field at all: the first fetch, and an error payload such as a 403.
+ */
+const EMPTY_SESSIONS: Payload['sessions'] = []
+const EMPTY_TASKS: Payload['tasks'] = []
 
 /** Attribute the table folds on. `none` is a flat ranking, Task Manager's default. */
 export type GroupBy = 'none' | 'app' | 'agent' | 'channel'
@@ -132,14 +146,14 @@ export default function SessionsTab({ planeStateRef }: Props) {
     }
   }, [pickerOpen])
 
-  const { data } = useQuery<Payload>({
+  const { data, isPending, isError, isFetching, refetch } = useQuery<Payload>({
     queryKey: ['sessionsMemory'],
     queryFn: () => api.sessionsMemory(),
     refetchInterval: 5000,
   })
 
-  const sessions = data?.sessions ?? []
-  const tasks = data?.tasks ?? []
+  const sessions = data?.sessions ?? EMPTY_SESSIONS
+  const tasks = data?.tasks ?? EMPTY_TASKS
   const totals = data?.totals
   const unattributed = data?.unattributed ?? null
   const hostMb = totals?.host_mb ?? null
@@ -268,6 +282,14 @@ export default function SessionsTab({ planeStateRef }: Props) {
     getGroupedRowModel: getGroupedRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
     autoResetExpanded: false,
+    // This table does not paginate — `getPaginationRowModel` is never supplied, so
+    // `pageIndex` / `pageSize` describe nothing. Auto-reset defaults to ON anyway,
+    // and with no `onPaginationChange` supplied it routes through TanStack's own
+    // `makeStateUpdater('pagination')`, i.e. `table.setState` → a React render.
+    // Paired with any change in `data` identity that becomes a render loop, since
+    // the render feeds the next auto-reset. Resetting a page index that cannot
+    // exist has no upside to trade against that, so it is off.
+    autoResetPageIndex: false,
     initialState: {
       expanded: true,
     },
@@ -304,6 +326,26 @@ export default function SessionsTab({ planeStateRef }: Props) {
 
   return (
     <Card className="mb-6 overflow-hidden">
+      {/* Stale-data notice. Shown when a poll has failed but a previous payload is
+          still on screen: the rows below are real, just not current, and saying so
+          is what lets the user trust them without mistaking them for live. */}
+      {isError && data && (
+        <div
+          data-testid="sessions-stale"
+          className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-warn-subtle text-[11.5px] text-warn"
+        >
+          <TriangleAlert size={13} aria-hidden="true" className="lucide-inline shrink-0" />
+          <span>{i18nT('pages.sessionsTab.could_not_refresh')}</span>
+          <Btn
+            type="button"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="ml-auto text-[11px]"
+          >
+            {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
+          </Btn>
+        </div>
+      )}
       {/* Toolbar: Group by + segments + filter on left, Columns on right */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5 flex-wrap">
         <span className="text-[10.5px] text-muted">{i18nT('pages.sessionsTab.group_by')}</span>
@@ -355,7 +397,45 @@ export default function SessionsTab({ planeStateRef }: Props) {
         </div>
       </div>
 
-      {table.getRowModel().rows.length === 0 && !showUnattributed ? (
+      {isPending ? (
+        // "No active sessions" is a claim about the machine, and during the first
+        // fetch it is one we cannot make — a slow or failing endpoint made the page
+        // assert there were none while it was still asking. A skeleton says
+        // "not known yet", which is the truth.
+        <ContentSkeleton rows={6} />
+      ) : isError && !data ? (
+        // The same false claim, by a different route: a failed request resolves the
+        // query with no data, so the empty state would render — indistinguishable
+        // from a healthy idle host, and re-asserted every 5s. That lands hardest on
+        // the shared-MCP-gateway users this page's own failure mode affects, so
+        // silence here reads as "nothing is running" while the truth is "we cannot
+        // tell".
+        //
+        // Gated on `!data` deliberately. react-query keeps the last payload while
+        // flipping status to `error`, so an unguarded `isError` would let one failed
+        // BACKGROUND poll unmount a table the user is mid-read on. Stale rows with a
+        // "can't refresh" notice (below) beat correct rows replaced by a panel.
+        <EmptyState
+          testId="sessions-error"
+          icon={<TriangleAlert className="lucide-inline" />}
+          title={i18nT('pages.sessionsTab.could_not_read_sessions')}
+          subtitle={i18nT('pages.sessionsTab.could_not_read_sessions_hint')}
+          action={
+            // Relabelled off `isFetching`, not decorative: the default retry +
+            // backoff leaves the screen pixel-identical for several seconds after
+            // the click, so an unacknowledged button reads as a dead one and gets
+            // clicked again — exactly when the user is already anxious.
+            <Btn
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="text-[11.5px]"
+            >
+              {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
+            </Btn>
+          }
+        />
+      ) : table.getRowModel().rows.length === 0 && !showUnattributed ? (
         <EmptyState
           icon={<MemoryStick className="lucide-inline" />}
           title={i18nT('pages.sessionsTab.no_active_sessions')}
@@ -545,7 +625,10 @@ export default function SessionsTab({ planeStateRef }: Props) {
       )}
 
       {/* Footer — single horizontal strip of stat pairs.
-          Finding 3: units added to catalog labels (GB suffix in label string). */}
+          Suppressed until a payload lands: the body above says "not known yet"
+          (skeleton) or "cannot tell" (error), and a footer reading a concrete
+          "0" beside either of those makes the card tell two different stories. */}
+      {!isPending && data && (
       <div className="flex items-center flex-wrap px-3.5 py-2 border-t border-border bg-bg-elevated">
         <FooterStat label={i18nT('pages.sessionsTab.footer_kirocrew_gb')} value={fmtGb(usedMb)} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={totals?.host_pct != null ? fmtPercent(totals.host_pct / 100, { maximumFractionDigits: 2 }) : '—'} />
@@ -561,6 +644,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
           />
         )}
       </div>
+      )}
     </Card>
   )
 }
