@@ -303,14 +303,21 @@ exits non-zero.
   free-check→bind race: because only one process can bind the port, a listener
   answering while our SSM child has already exited is a foreign process that won
   the bind — so both paths refuse in that case rather than send the token/code.
-  Teardown kills the whole **process group** (`killpg`, since `open_port_forward`
+  Teardown kills the whole **process tree** (`killpg`, since `open_port_forward`
   uses `start_new_session=True`): `proc.terminate()` alone would signal only the
   `aws` wrapper and leave the `session-manager-plugin` child — which actually
   holds the forwarded port — alive after Ctrl+C or a mint failure. The shared
-  `ssm.kill_port_forward` does the group teardown, and **both** the dashboard
+  `ssm.kill_port_forward` does the tree teardown, and **both** the dashboard
   tunnel (`connect.Connection.close`/`_terminate`) and the login callback tunnel
   (`login._close_process`) go through it, so neither leaves an orphaned
-  plugin/port (group signal on POSIX, single-proc fallback otherwise). Every
+  plugin/port. **Windows** has no process groups (`start_new_session` is silently
+  ignored and `os.killpg`/`os.getpgid` do not exist), so it reaps the tree with
+  `taskkill /T /F` and falls through to the single-proc path only if that is
+  unavailable. Both platforms escalate SIGTERM→SIGKILL when the graceful stop does
+  not reap; signal numbers come from `platform_compat` (**never** `signal.SIGKILL`,
+  which is undefined on Windows — naming it inside the escalation's own
+  `except Exception` swallows the `AttributeError` and skips `proc.kill()`
+  entirely, on the very platform that reaches that path). Every
   no-URL exit reaps its tunnel too: `connect()` folds a mint failure — whether
   `mint_token` returns `""` **or raises** — into a `ready=False` Connection after
   `_terminate`; and the **social-login** paths close their callback tunnel on the

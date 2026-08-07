@@ -115,6 +115,42 @@ def test_staged_update_meta_appears_in_pending_list(loader):
 
 # ── approve_pending_update happy path ──
 
+def test_approve_update_carries_the_injection_opt_out_forward(loader):
+    """A candidate never sets `inject_on_trigger`, so live must supply it.
+
+    Without this the user's pointer-only choice is undone by an unrelated
+    update approval — the skill silently starts injecting its whole body again.
+    """
+    live_dir = _write_live(loader, "quiet", body="v1 body")
+    live = live_dir / "SKILL.md"
+    live.write_text(
+        live.read_text(encoding="utf-8").replace(
+            "\n---\n", "\ninject_on_trigger: false\n---\n", 1
+        ),
+        encoding="utf-8",
+    )
+    loader._invalidate_iter_cache()
+    assert loader.split_triggered(["auto/quiet"])[1] == ["auto/quiet"]
+
+    _stage_update(loader, "quiet", target="auto/quiet", body="## Steps\n\nv2 steps")
+    assert loader.approve_pending_update("quiet") == "auto/quiet"
+
+    live_text = live.read_text(encoding="utf-8")
+    assert "v2 steps" in live_text
+    assert "inject_on_trigger: false" in live_text
+    # And the runtime agrees, not just the file.
+    assert loader.split_triggered(["auto/quiet"])[1] == ["auto/quiet"]
+
+
+def test_approve_update_does_not_invent_an_opt_out(loader):
+    _write_live(loader, "loud", body="v1 body")
+    _stage_update(loader, "loud", target="auto/loud", body="## Steps\n\nv2 steps")
+    assert loader.approve_pending_update("loud") == "auto/loud"
+
+    live_text = (loader._dir / "auto" / "loud" / "SKILL.md").read_text(encoding="utf-8")
+    assert "inject_on_trigger" not in live_text
+
+
 def test_approve_update_snapshots_and_replaces(loader):
     _write_live(loader, "greet", created_at="2020-01-01T00:00:00+00:00", body="v1 body")
     _stage_update(loader, "greet", target="auto/greet", body="## Steps\n\nv2 steps")
@@ -472,6 +508,42 @@ def test_refine_preserves_version_and_pinned(loader):
     # created_at is still preserved (pre-existing behavior).
     assert "2020-01-01" in body
     assert loader.get_auto_skill_version("auto/refine-keep") == 3
+
+
+def test_refine_preserves_the_injection_opt_out(loader):
+    """Same class as version/pinned: the refine path rebuilds the frontmatter
+    from the generator's template, which never emits `inject_on_trigger`. Losing
+    it would silently restore full-body injection on a skill the user had made
+    pointer-only."""
+    _write_live(loader, "refine-quiet", body="OLD")
+    live_skill = loader._dir / "auto" / "refine-quiet" / "SKILL.md"
+    assert loader.set_inject_on_trigger("auto/refine-quiet", False) is True
+
+    assert loader.update_auto_skill(
+        "auto/refine-quiet",
+        description="refined desc",
+        triggers="t",
+        procedure_md="## Steps\n\nrefined",
+        provenance=_prov(),
+    ) is True
+
+    body = live_skill.read_text(encoding="utf-8")
+    assert "refined" in body
+    assert "inject_on_trigger: false" in body
+    assert loader.split_triggered(["auto/refine-quiet"])[1] == ["auto/refine-quiet"]
+
+
+def test_refine_does_not_invent_an_opt_out(loader):
+    _write_live(loader, "refine-loud", body="OLD")
+    assert loader.update_auto_skill(
+        "auto/refine-loud",
+        description="d",
+        triggers="t",
+        procedure_md="## Steps\n\nrefined",
+        provenance=_prov(),
+    ) is True
+    body = (loader._dir / "auto" / "refine-loud" / "SKILL.md").read_text(encoding="utf-8")
+    assert "inject_on_trigger" not in body
 
 
 def test_approve_update_never_clobbers_an_existing_snapshot(loader):

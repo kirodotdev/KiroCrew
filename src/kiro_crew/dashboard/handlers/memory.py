@@ -742,10 +742,17 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         return True, ""
     except ImportError:
         pass
-    sandboxed_argv, cleanup = wrap_argv(
-        [sys.executable, "-m", "ensurepip", "--upgrade"],
-        mode="standard",
-    )
+    try:
+        sandboxed_argv, cleanup = wrap_argv(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            mode="standard",
+        )
+    except SandboxUnavailableError as exc:
+        # Fail-closed sandbox (any host with no OS backend). Report it as a
+        # normal not-ok result: the caller resets the setup status and returns a
+        # 500, so an escaping exception can never leave the non-terminal
+        # "installing_faiss" latched and 409 every later Enable click.
+        return False, f"pip bootstrap could not run in a sandbox: {exc}"
     sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
     try:
         proc = await create_subprocess_limited(
@@ -871,16 +878,21 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                 # faiss is a pure accelerator; episodic recall still works via
                 # the stdlib cosine fallback (_sqlite_vector_search). On a host
                 # with no sandbox backend the install cannot run, but that must
-                # not wedge setup: reset the non-terminal "installing_faiss"
-                # status (else the 2s poll latches it and every later Enable
-                # click 409s until restart) and continue to the embed_fn wiring
-                # below with faiss absent. `kirocrew doctor` points the user at a
-                # manual `pip install faiss-cpu` if they want the accelerator.
+                # not wedge setup — so fall through to the embed_fn wiring below
+                # with faiss absent, and let the tail set the terminal "done".
+                # `kirocrew doctor` points the user at a manual
+                # `pip install faiss-cpu` if they want the accelerator.
+                #
+                # Deliberately NOT resetting the status to "idle" here: the 409
+                # guard is checked BEFORE _faiss_install_lock, so publishing a
+                # terminal status mid-flight would admit a second concurrent
+                # Enable and duplicate the ~85 lines of unserialized setup that
+                # follow (embed_fn wiring, load_faiss_index, the config
+                # read/write cycle). The tail's "done" is the only terminal write.
                 logger.info(
                     "Skipping on-demand faiss-cpu install: no sandbox backend on "
                     "this host. Episodic recall uses the stdlib cosine fallback."
                 )
-                _embedding_setup_status = {"step": "idle", "error": ""}
                 cleanup = None
                 sandboxed_argv = None
             if sandboxed_argv is not None:

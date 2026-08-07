@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.agent_discovery import clear_list_agents_cache, list_agents
+from kiro_crew.agent_discovery import AgentInfo, clear_list_agents_cache, list_agents
 
 
 @pytest.fixture
@@ -92,6 +92,199 @@ class TestListAgentsRobustness:
         agents = list_agents(agents_dir=agents_dir)
         names = {a.name for a in agents}
         assert "good" in names, "well-formed sibling agent must survive a bad mcpServers value"
+
+
+class TestSpecModelCoercion:
+    """``AgentInfo.model`` is declared ``str`` and must always BE one.
+
+    ``~/.kiro/agents`` is shared with other tools whose specs spell ``model``
+    differently. A non-string reached the dashboard via ``to_dict()`` ->
+    ``/api/agents/installed`` and, rendered as a React child, threw error #31 —
+    taking the whole Agent Templates tab (and every other agent's row) down.
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            # ACP-style structured reference, observed in the wild. This exact
+            # shape produced "object with keys {id}" in the React #31 message.
+            {"id": "anthropic:claude-opus-4-8"},
+            None,  # key present but null
+            ["claude-opus-4-8"],
+            42,
+        ],
+        ids=["dict-id", "null", "list", "int"],
+    )
+    def test_non_string_model_degrades_to_auto(self, tmp_path: Path, raw: object) -> None:
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "foreign.json").write_text(
+            json.dumps({"name": "foreign", "model": raw}), encoding="utf-8"
+        )
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.model == "auto"
+        # to_dict() is what the API serialises — the guarantee has to hold there,
+        # since that is the value the dashboard renders.
+        assert isinstance(agent.to_dict()["model"], str)
+
+    def test_string_model_is_preserved(self, tmp_path: Path) -> None:
+        """The coercion must not flatten a legitimately pinned model."""
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "pinned.json").write_text(
+            json.dumps({"name": "pinned", "model": "claude-opus-4-6"}), encoding="utf-8"
+        )
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.model == "claude-opus-4-6"
+
+    def test_non_string_description_degrades_to_empty(self, tmp_path: Path) -> None:
+        """``model`` is not the only rendered field, so it is not the only one guarded.
+
+        The detail panel renders ``description`` as a JSX child too, and an object
+        is truthy — so a foreign spec with a structured ``description`` blanks the
+        whole tab exactly like a structured ``model`` does. Coercing per FIELD is
+        what closes the class rather than the one observed instance.
+        """
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "foreign.json").write_text(
+            json.dumps({"name": "foreign", "description": {"text": "hi"}, "model": "auto"}),
+            encoding="utf-8",
+        )
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.description == ""
+        assert isinstance(agent.to_dict()["description"], str)
+
+    def test_string_description_is_preserved(self, tmp_path: Path) -> None:
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "ok.json").write_text(
+            json.dumps({"name": "ok", "description": "a real one", "model": "auto"}),
+            encoding="utf-8",
+        )
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.description == "a real one"
+
+    def test_bad_model_does_not_drop_sibling_agents(self, tmp_path: Path) -> None:
+        """A foreign spec must cost only its own row, never the whole listing."""
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "foreign.json").write_text(
+            json.dumps({"name": "foreign", "model": {"id": "anthropic:claude-opus-4-8"}}),
+            encoding="utf-8",
+        )
+        (d / "good.json").write_text(
+            json.dumps({"name": "good", "model": "auto"}), encoding="utf-8"
+        )
+        clear_list_agents_cache()
+        names = {a.name for a in list_agents(agents_dir=d)}
+        assert names == {"foreign", "good"}
+
+    def test_edition_supplied_row_is_coerced(self, tmp_path: Path, monkeypatch) -> None:
+        """The edition seam is a SECOND ``AgentInfo`` construction site.
+
+        Rows arrive from out-of-tree code, so ``AgentInfo.model: str`` has to be
+        enforced there too — coercing only the on-disk path would leave the same
+        crash reachable through an edition build.
+        """
+        d = tmp_path / "agents"
+        d.mkdir()
+        # Stub the seam at ``safe_context_call``: it is what ``_with_edition_agents``
+        # funnels the platform lookup through, so this needs no platform context.
+        monkeypatch.setattr(
+            "kiro_crew.platform.context.safe_context_call",
+            lambda *_a, **_kw: [
+                {"name": "edition-foreign", "model": {"id": "anthropic:claude-opus-4-8"}}
+            ],
+        )
+        clear_list_agents_cache()
+        by_name = {a.name: a for a in list_agents(agents_dir=d)}
+        assert by_name["edition-foreign"].model == "auto"
+
+    def test_every_str_field_is_coerced_at_construction(self) -> None:
+        """The invariant is on the CONSTRUCTOR, not on any one caller.
+
+        `model` and `description` were the two fields observed failing, but
+        `name`, `package`, `source` and `filename` are rendered bare too
+        (`{a.name}`, `{a.package}`, `<SourceBadge source={a.source}>`,
+        `a.filename.startsWith(...)`), so a per-field fix at one call site only
+        looks complete. Constructing directly — as the out-of-tree edition seam
+        does — must still yield the declared types.
+        """
+        info = AgentInfo(
+            name={"id": "x"},  # type: ignore[arg-type]
+            filename=None,  # type: ignore[arg-type]
+            description=["a"],  # type: ignore[arg-type]
+            model={"id": "anthropic:claude-opus-4-8"},  # type: ignore[arg-type]
+            source=7,  # type: ignore[arg-type]
+            package={"n": 1},  # type: ignore[arg-type]
+        )
+        assert info.name == ""
+        assert info.filename == ""
+        assert info.description == ""
+        assert info.model == "auto"
+        assert info.source == "builtin"
+        assert info.package == ""
+        # to_dict() is the wire shape the dashboard renders.
+        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
+                   ("skills", "mcp_servers"))
+
+    def test_list_fields_drop_only_the_unusable_elements(self) -> None:
+        """`skills` / `mcp_servers` are rendered as chips, one element each.
+
+        A bad entry costs itself, not the whole list — dropping the list would
+        hide real skills the agent does have.
+        """
+        info = AgentInfo(
+            name="a",
+            filename="a.json",
+            description="",
+            model="auto",
+            skills=["good", {"bad": 1}, "also-good"],  # type: ignore[list-item]
+            mcp_servers=[None, "srv"],  # type: ignore[list-item]
+        )
+        assert info.skills == ["good", "also-good"]
+        assert info.mcp_servers == ["srv"]
+
+    def test_non_string_name_falls_back_to_filename_stem(self, tmp_path: Path) -> None:
+        """A structured `name` must degrade the row, not silently DROP it.
+
+        The package-detection branch does `stem.endswith(agent_name)`, which
+        raised TypeError on a non-string name; the loop's broad `except` then
+        swallowed it and the agent vanished from the listing entirely.
+        """
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "weird.json").write_text(
+            json.dumps({"name": {"id": "nope"}, "model": "auto"}), encoding="utf-8"
+        )
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.name == "weird"
+
+    def test_edition_row_with_unusable_name_is_skipped(self, tmp_path: Path, monkeypatch) -> None:
+        """Unlike cosmetic fields, an unusable NAME is not degraded.
+
+        The name is the dedup key, the React list key, and the argument every
+        mutation is addressed by, so a blank-named row would be unselectable and
+        would collide with any other nameless row.
+        """
+        d = tmp_path / "agents"
+        d.mkdir()
+        monkeypatch.setattr(
+            "kiro_crew.platform.context.safe_context_call",
+            lambda *_a, **_kw: [
+                {"name": {"id": "nope"}, "model": "auto"},
+                {"name": "usable", "model": "auto"},
+            ],
+        )
+        clear_list_agents_cache()
+        names = {a.name for a in list_agents(agents_dir=d)}
+        assert names == {"usable"}
 
 
 class TestListAgentsGlobalGuards:

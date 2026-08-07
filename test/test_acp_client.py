@@ -6813,6 +6813,86 @@ class TestFormatAcpError:
         assert "transient error" not in out.lower()
         assert "ValidationException: input contains an unsupported field 'foo'" in out
 
+    def test_session_expired_rewrite(self):
+        """An expired session gets actionable sign-in guidance rather than the
+        misleading transient-5xx retry advice."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "DispatchFailure: session expired",
+        }
+        out = _format_acp_error(err)
+        assert "session has expired" in out.lower() or "session expired" in out.lower()
+        assert "kiro-cli login" in out.lower()
+        assert "retry" in out.lower() and "will not help" in out.lower()
+        # Must NOT show the misleading 5xx message.
+        assert "transient error" not in out.lower()
+        assert "retry in a moment" not in out.lower()
+
+    def test_session_expired_by_http_status(self):
+        """A bare 401/403 is the shape an expired session actually arrives in:
+        the rejection carries no explanatory wording, so status alone must
+        drive the classification."""
+        for status in ("HTTP 401", "HTTP 403", "status code 401", "status 403"):
+            err = {"code": -32603, "message": "Internal error", "data": status}
+            out = _format_acp_error(err)
+            assert "kiro-cli login" in out.lower(), f"No sign-in guidance for: {status!r}"
+            assert "transient error" not in out.lower(), f"Misclassified: {status!r}"
+
+    def test_session_expired_401_with_transport_error(self):
+        """The reported failure mode: an aborted request leaves a transport
+        error alongside the 401, and the 5xx family used to win and tell the
+        user to retry."""
+        err = {
+            "code": -32603,
+            "message": "Encountered an error in the response stream",
+            "data": "DispatchFailure ConnectionResetError: HTTP 401",
+        }
+        out = _format_acp_error(err)
+        assert "kiro-cli login" in out.lower()
+        assert "transient error" not in out.lower()
+        assert "retry in a moment" not in out.lower()
+
+    def test_genuine_5xx_still_transient_with_auth_absent(self):
+        """The new auth-status branch must not swallow real 5xx errors."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "ServiceUnavailableException: HTTP 503",
+        }
+        out = _format_acp_error(err)
+        assert "transient" in out.lower()
+        assert "kiro-cli login" not in out.lower()
+
+    def test_session_expired_variants(self):
+        """Various kiro-cli session-expiry error shapes are all classified."""
+        variants = [
+            "not logged in",
+            "session has expired",
+            "login expired",
+            "authentication required",
+            "session timed out",
+            "not authenticated",
+            "login required",
+        ]
+        for text in variants:
+            err = {"code": -32603, "message": "Internal error", "data": text}
+            out = _format_acp_error(err)
+            assert "transient error" not in out.lower(), f"Failed for: {text!r}"
+            assert "kiro-cli login" in out.lower(), f"No login guidance for: {text!r}"
+
+    def test_session_expired_with_5xx_token_wins(self):
+        """Session expiry checked before 5xx: a DispatchFailure wrapping a
+        session-expired message must surface as auth, not transient."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "DispatchFailure ConnectionResetError: session expired",
+        }
+        out = _format_acp_error(err)
+        assert "transient error" not in out.lower()
+        assert "kiro-cli login" in out.lower()
+
 
 class TestIsTransientRawError:
     """_is_transient_raw_error classifies retryability from the RAW JSON-RPC
@@ -6881,6 +6961,54 @@ class TestIsTransientRawError:
         )
         assert _is_transient_raw_error(None) is False
         assert _is_transient_raw_error("boom") is False
+
+    def test_session_expired_is_not_transient(self):
+        """Regression test: kiro-cli session expiry must be terminal.
+
+        These error shapes previously fell through to the 5xx branch (when they
+        also carried DispatchFailure/ConnectionResetError), telling the user to
+        retry when re-authentication was required.
+        """
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # Direct session-expired wording from kiro-cli.
+        assert _is_transient_raw_error({"data": "session expired"}) is False
+        assert _is_transient_raw_error({"data": "session has expired"}) is False
+        assert _is_transient_raw_error({"data": "not logged in"}) is False
+        assert _is_transient_raw_error({"data": "not authenticated"}) is False
+        assert _is_transient_raw_error({"data": "login required"}) is False
+        assert _is_transient_raw_error({"data": "authentication required"}) is False
+        assert _is_transient_raw_error({"data": "re-authenticate"}) is False
+        assert _is_transient_raw_error({"message": "session timed out", "data": ""}) is False
+        # Session expiry with a co-occurring 5xx token: the session-expiry
+        # branch must win (checked first).
+        assert (
+            _is_transient_raw_error(
+                {"data": "DispatchFailure: session expired", "message": ""}
+            )
+            is False
+        )
+        assert (
+            _is_transient_raw_error(
+                {"data": "ConnectionResetError: not logged in", "message": ""}
+            )
+            is False
+        )
+        # A bare 401/403 — the shape an expired session actually arrives in.
+        assert _is_transient_raw_error({"data": "HTTP 401"}) is False
+        assert _is_transient_raw_error({"data": "HTTP 403"}) is False
+        assert _is_transient_raw_error({"data": "status code 401"}) is False
+        # 401 alongside the transport error left by the aborted request: the
+        # 5xx family must not reclaim it and re-arm the retry ladder.
+        assert (
+            _is_transient_raw_error(
+                {"data": "DispatchFailure ConnectionResetError: HTTP 401", "message": ""}
+            )
+            is False
+        )
+        # Real 5xx stays retryable — the auth-status branch must not overreach.
+        assert _is_transient_raw_error({"data": "ServiceUnavailableException"}) is True
+        assert _is_transient_raw_error({"data": "HTTP 503"}) is True
 
     def test_kiro_generic_generation_failure_is_transient(self):
         from kiro_crew.acp.client import _is_transient_raw_error
@@ -8976,6 +9104,15 @@ class TestModelEntitlementPreflight:
         # The actionable part: what they CAN pick.
         assert "claude-sonnet-4.6" in msg
         assert "claude-haiku-4.5" in msg
+        # The identity hint stays CONDITIONAL and read-only. This error also
+        # reaches users who really are on a free tier and for whom picking an
+        # advertised model is the whole fix, so it must not read as an
+        # instruction to re-authenticate: `whoami` only reports which tier is
+        # signed in, and no destructive step is ever named.
+        assert "if you expected" in msg.lower()
+        assert "kiro-cli whoami" in msg
+        assert "logout" not in msg.lower()
+        assert "kiro-cli login" not in msg
         # Terminal, and EXPLICITLY so -- None would send the retry layer back to
         # string-matching, which is what produced the retry rows.
         assert excinfo.value.transient is False

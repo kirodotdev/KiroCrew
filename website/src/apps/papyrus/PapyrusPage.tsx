@@ -26,7 +26,8 @@ import {
   MessageSquare, Play, Sparkles, TerminalSquare, X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Btn, Select } from '../../components/ui'
+import { Btn } from '../../components/ui'
+import SearchableSelect from '../../components/SearchableSelect'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { addSlotOptimistic, fetchSlots } from '../../store/dashboardSlice'
 import { selectComposerBusy } from '../../store/chatSlice'
@@ -85,9 +86,6 @@ const FLUSH_FAILED = 'papyrus: buffer flush failed'
 /** True for the flush-abort sentinel above, so a mutation that bailed on an
  *  unsaveable buffer does not overwrite the real write error with it. */
 const isFlushAbort = (err: Error): boolean => err.message === FLUSH_FAILED
-
-/** DOM id linking the toolbar's main-document label to its select. */
-const MAIN_DOC_SELECT_ID = 'papyrus-main-document'
 
 /**
  * Instructions handed to the co-author AGENT, not shown to the user.
@@ -704,6 +702,12 @@ export default function PapyrusPage() {
   const branchLabel = gitBranchLabel(git)
   const pdfSrc = project && hasPdf ? pdfUrl(project, pdfVersion) : null
   const mainCandidates = useMemo(() => texFiles(files), [files])
+  // Option objects, not just names: a new array identity on every render would
+  // bust `SearchableSelect`'s filter memo, and `mainCandidates` is already stable.
+  const mainOptions = useMemo(
+    () => mainCandidates.map(file => ({ value: file, label: file })),
+    [mainCandidates],
+  )
 
   // Warn before the BROWSER discards the buffer — reload, tab close, back out of the
   // SPA entirely. The in-app exits (`closeProject`, `openFile`, `openFullChat`,
@@ -829,30 +833,31 @@ export default function PapyrusPage() {
         </Btn>
         <span className="text-[13px] font-medium text-text-strong truncate max-w-[12rem]">{project}</span>
 
-        {/* Nested AND explicitly associated (`htmlFor`/`id`), which is what
-            actually reaches assistive technology through the shared `Select`.
-            `jsx-a11y/label-has-for` still fires because `Select` is a
-            `forwardRef` component, so the rule cannot see the `<select>` it
-            wraps and cannot verify the nesting half — the association is real,
-            the lint is not. Same false positive as the other `Select`-in-label
-            sites in this repo. */}
-        {/* eslint-disable-next-line jsx-a11y/label-has-for */}
-        <label
-          htmlFor={MAIN_DOC_SELECT_ID}
-          className="flex items-center gap-1.5 text-[12px] text-muted"
-        >
+        {/* The picker is a `<button>` now, not a `<select>`, and HTML-AAM
+            computes a button's accessible name from its own content — a
+            `<label for>` is NOT in that path the way it is for a `<select>`.
+            So the name comes from `aria-label` and the visible text is a
+            plain span; that also retires the `jsx-a11y/label-has-for`
+            suppression this site used to need, because there is no longer a
+            `<label>` for the rule to be wrong about.
+            `SearchableSelect` rather than `SimpleSelect`: the candidates are
+            every `.tex` file in the project's RECURSIVE walk (bounded at
+            `MAX_PROJECT_FILES`), so they are nested paths sharing a common
+            prefix — a Radix Select's first-letter typeahead cannot separate
+            `chapters/01.tex` from `chapters/02.tex`. */}
+        <span className="flex items-center gap-1.5 text-[12px] text-muted">
           {i18nT('apps.papyrus.workspace.main_document')}
-          <Select
-            id={MAIN_DOC_SELECT_ID}
+          <SearchableSelect
+            options={mainOptions}
             value={mainFile}
-            onChange={e => setMainMutation.mutate(e.target.value)}
+            onChange={file => setMainMutation.mutate(file)}
             disabled={setMainMutation.isPending || mainCandidates.length === 0}
-          >
-            {mainCandidates.map(file => (
-              <option key={file} value={file}>{file}</option>
-            ))}
-          </Select>
-        </label>
+            aria-label={i18nT('apps.papyrus.workspace.main_document')}
+            // The trigger is `w-full`, so it needs a definite flex basis in this
+            // wrapping toolbar; a path too long for it truncates inside the span.
+            style={{ flex: '0 0 14rem' }}
+          />
+        </span>
 
         <span className="text-[12px] text-muted truncate">
           {dirty

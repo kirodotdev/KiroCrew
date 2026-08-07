@@ -1334,6 +1334,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # Keep the host awake while the agent is running a task. Gateway-host
+    # behavior (not a display pref), read by the prevent-sleep poll in
+    # dashboard/server.py; off by default.
+    "dashboard.prevent_sleep": {"type": "bool"},
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready
     # descriptions in its [USER PROFILE] block. "" = unspecified/cleared.

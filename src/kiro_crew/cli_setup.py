@@ -256,6 +256,18 @@ def _setup_electron() -> None:
 
 def _setup(agent_only: bool = False, electron_only: bool = False, clean: bool = False) -> None:
     """Install agent config and optionally configure credentials."""
+    try:
+        _setup_impl(agent_only=agent_only, electron_only=electron_only, clean=clean)
+    except _SetupAborted as exc:
+        # A closed/piped stdin mid-wizard. One clean line instead of a stack
+        # trace at whichever prompt hit it first — every guarded prompt raises,
+        # so the exit point is deterministic. Bare `input()` calls still exist
+        # in some steps and traceback the old way; converting them all is a
+        # sweep for its own change.
+        print(f"\n⏭  Setup aborted: {exc}. Re-run interactively to finish.")
+
+
+def _setup_impl(agent_only: bool = False, electron_only: bool = False, clean: bool = False) -> None:
     from kiro_crew.agent import install_agent  # circular import: agent imports cli
     from kiro_crew.cli import _project_dir_file  # circular import: cli -> cli_setup -> cli
 
@@ -436,7 +448,10 @@ def _setup_workspace_dir() -> None:
     print("── Workspace Directory ──\n")
     print("  LLM sessions and task output are stored in a workspace directory.")
     print(f"  {label}: {default}\n")
-    answer = input(f"  Workspace path [{default}]: ").strip()
+    # EOF (piped / closed stdin) keeps the default rather than raising a
+    # traceback out of the wizard — this step runs FIRST, so a bare input() here
+    # made `kirocrew setup < /dev/null` fail before any later guard could help.
+    answer = _input_or_skip(f"  Workspace path [{default}]: ") or ""
     chosen = default if answer.lower() in ("", "y", "yes") else Path(answer).expanduser()
     try:
         chosen.mkdir(parents=True, exist_ok=True)
@@ -549,20 +564,33 @@ def _detect_system_timezone() -> str:
     return ""
 
 
-def _input_or_skip(prompt: str) -> str | None:
-    """``input(prompt).strip()``, returning ``None`` on EOF instead of crashing.
+class _SetupAborted(Exception):
+    """Raised when stdin is closed mid-wizard.
 
-    A closed/piped stdin (non-interactive setup, or a Windows console quirk)
-    makes bare ``input()`` raise ``EOFError``. The timezone step's retry loop is
-    only entered on a validation failure, so a Windows user who mistyped a zone
-    once — the common case, since detection used to yield nothing there — hit an
-    uncaught traceback. Callers treat ``None`` as "skip this step".
+    The wizard is a sequential chain of interactive prompts; if stdin closes at
+    ANY prompt, every subsequent bare ``input()`` would traceback. Callers use
+    ``_input_or_skip`` for guarded prompts (workspace, slash-command, timezone);
+    the top-level ``_setup`` catches this and exits cleanly, so a
+    ``kirocrew setup < /dev/null`` — or a Windows console quirk that closes
+    stdin — surfaces one clean message instead of a stack trace.
+    """
+
+
+def _input_or_skip(prompt: str) -> str | None:
+    """``input(prompt).strip()``, or raise ``_SetupAborted`` on EOF.
+
+    Returns ``None`` when the user hit Enter with no input, which callers treat
+    as "keep the default / skip this step". A closed/piped stdin is a different
+    condition and must not be silently coerced to ``""`` (that used to admit an
+    empty default and cascade the failure into the NEXT step's bare
+    ``input()``) — see ``_SetupAborted``.
     """
 
     try:
-        return input(prompt).strip()
-    except EOFError:
-        return None
+        answer = input(prompt).strip()
+    except EOFError as exc:
+        raise _SetupAborted("stdin closed; setup cannot continue") from exc
+    return answer or None
 
 
 def _setup_slash_command() -> None:
@@ -578,7 +606,8 @@ def _setup_slash_command() -> None:
 
     print("── Slash Command ──\n")
     current = cfg.get("slack", {}).get("command", "kirocrew")
-    raw = input(f"  Slash command name [{current}]: ").strip()
+    # EOF keeps the current value (same reasoning as the workspace step).
+    raw = _input_or_skip(f"  Slash command name [{current}]: ") or ""
     if raw:
         raw = raw.lstrip("/").strip()
     if not raw:

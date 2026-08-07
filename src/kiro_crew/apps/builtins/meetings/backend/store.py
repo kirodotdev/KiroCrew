@@ -234,7 +234,13 @@ DEFAULT_MEETING_AGENTS: list[dict[str, Any]] = [
     {
         "id": "note-taker",
         "name": "Note Taker",
-        "agent": "meetings/meetings-note-taker",
+        # The agent's DECLARED name, not `meetings/meetings-note-taker`. The
+        # namespaced form is a display/tracking id; the dispatchable one is the
+        # `name` field from the agent JSON, which is what kiro-cli enumerates and
+        # what `bridges._register_agents` publishes via
+        # `publish_materialized_agents`. Asking for the namespaced form got
+        # `Mode 'meetings/meetings-note-taker' not found` and no agent ever ran.
+        "agent": "meetings-note-taker",
         "widget_type": "markdown",
         "enabled_by_default": True,
         "listening_by_default": True,
@@ -243,7 +249,7 @@ DEFAULT_MEETING_AGENTS: list[dict[str, Any]] = [
     {
         "id": "sketch-artist",
         "name": "Sketch Artist",
-        "agent": "meetings/meetings-sketch-artist",
+        "agent": "meetings-sketch-artist",
         "widget_type": "html",
         "enabled_by_default": True,
         "listening_by_default": True,
@@ -267,11 +273,44 @@ def config_path(root: Path | None = None) -> Path:
     return data_dir(root) / k.CONFIG_FILE
 
 
+def _repair_builtin_agent_refs(agents: Any) -> Any:
+    """Strip the stale ``meetings/`` namespace from builtin agents' ``agent``.
+
+    Correcting :data:`DEFAULT_MEETING_AGENTS` does not reach an existing install.
+    ``read_config`` merges ``{**DEFAULT_CONFIG, **raw}``, so a ``meeting_agents``
+    list already in ``config.json`` wins, and the re-seed below only fires when
+    that list is empty. Any user who opened Settings on a build that wrote the
+    namespaced form therefore keeps it — and it is not dispatchable, so every
+    meeting yields empty notes with nothing in the UI to say why, which is the
+    exact failure this module's comments describe.
+
+    Only rows flagged ``builtin`` are touched: their correct ``agent`` is known
+    from :data:`DEFAULT_MEETING_AGENTS`, whereas a user-defined row's slash could
+    name something we have no basis to rewrite.
+    """
+    if not isinstance(agents, list):
+        return agents
+    repaired: list[Any] = []
+    for entry in agents:
+        ref = entry.get("agent") if isinstance(entry, dict) else None
+        if (
+            isinstance(entry, dict)
+            and entry.get("builtin")
+            and isinstance(ref, str)
+            and ref.startswith(k.LEGACY_AGENT_NAMESPACE)
+        ):
+            entry = {**entry, "agent": ref[len(k.LEGACY_AGENT_NAMESPACE):]}
+        repaired.append(entry)
+    return repaired
+
+
 def read_config(root: Path | None = None) -> dict[str, Any]:
     """Read config.json, seeding defaults for a fresh install.
 
     Missing top-level keys are filled from :data:`DEFAULT_CONFIG` so an older
-    config keeps working after an upgrade adds a field.
+    config keeps working after an upgrade adds a field. Builtin agent references
+    persisted by an older build are repaired here — see
+    :func:`_repair_builtin_agent_refs`.
     """
     raw = _read_json(config_path(root), {})
     if not isinstance(raw, dict):
@@ -279,6 +318,8 @@ def read_config(root: Path | None = None) -> dict[str, Any]:
     config = {**DEFAULT_CONFIG, **raw}
     if not config.get("meeting_agents"):
         config["meeting_agents"] = list(DEFAULT_MEETING_AGENTS)
+    else:
+        config["meeting_agents"] = _repair_builtin_agent_refs(config["meeting_agents"])
     if not isinstance(config.get("calendar"), dict):
         config["calendar"] = dict(DEFAULT_CONFIG["calendar"])
     return config

@@ -39,6 +39,28 @@ function renderRoute() {
   )
 }
 
+/**
+ * The version picker's trigger. `SimpleSelect` wraps a Radix Select, so this is
+ * a <button role="combobox"> — its current value is read with toHaveTextContent,
+ * not `.value`, and it carries `disabled` like any button.
+ */
+const versionTrigger = () => screen.getByRole('combobox', { name: /Version/i })
+
+/**
+ * Pick a row from the version picker. A `change` event on the trigger does
+ * nothing — Radix needs open-then-click (see `SimpleSelect.test.tsx`).
+ */
+async function pickVersion(label: string) {
+  fireEvent.click(versionTrigger())
+  fireEvent.click(await screen.findByRole('option', { name: label }))
+}
+
+/** The version rows' labels. They exist in the DOM only while the popup is open. */
+async function versionRowLabels() {
+  fireEvent.click(versionTrigger())
+  return (await screen.findAllByRole('option')).map((o) => o.textContent?.trim())
+}
+
 describe('ArtifactDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -181,14 +203,15 @@ describe('ArtifactDetailPage', () => {
 
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
+    const trigger = versionTrigger()
     // Dropdown defaults to "Live" — historical snapshots are numbered and
     // ordered newest-first below it.
-    expect(select.value).toBe('live')
+    expect(trigger).toHaveTextContent('Live')
     expect(screen.getByText(/Showing Live \(v2\)/i)).toBeInTheDocument()
-    // Numbered options exist for each historical version.
-    const options = Array.from(select.options).map((o) => o.value)
-    expect(options).toEqual(['live', '2', '1'])
+    // Numbered rows exist for each historical version. Assert the labels rather
+    // than the values: the Radix rows carry no value attribute, and the label is
+    // what a person actually picks from.
+    expect(await versionRowLabels()).toEqual(['Live', 'v2', 'v1'])
   })
 
   it('displays loading state', () => {
@@ -340,8 +363,7 @@ describe('ArtifactDetailPage', () => {
     // Current view: no Revert button.
     expect(screen.queryByTitle(/Revert to v/)).toBeNull()
     // Switch to v1.
-    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
-    fireEvent.change(select, { target: { value: '1' } })
+    await pickVersion('v1')
     await waitFor(() => expect(screen.getByTitle(/Revert to v1/)).toBeInTheDocument())
   })
 
@@ -534,8 +556,7 @@ describe('ArtifactDetailPage', () => {
       .mockResolvedValue({ slug: 'cr-queue', versions: [1, 2, 3] })
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
-    const labels = Array.from(select.options).map((o) => o.textContent?.trim())
+    const labels = await versionRowLabels()
     expect(labels).toEqual(['Live', 'v3', 'v2', 'v1'])
   })
 
@@ -558,9 +579,8 @@ describe('ArtifactDetailPage', () => {
 
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
     // Select v3 (the latest numbered snapshot).
-    fireEvent.change(select, { target: { value: '3' } })
+    await pickVersion('v3')
     // versionQuery must fire for v3 — the buggy code skipped it.
     await waitFor(() => expect(versionFetch).toHaveBeenCalledWith('cr-queue', 3))
     // Page renders v3 content (frozen), not Live.
@@ -646,11 +666,11 @@ describe('ArtifactDetailPage', () => {
     )
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const select = screen.getByRole('combobox', { name: /Version/i }) as HTMLSelectElement
-    expect(select.disabled).toBe(false)
+    const trigger = versionTrigger()
+    expect(trigger).not.toBeDisabled()
     fireEvent.click(screen.getByText('Snapshot'))
     // Wait for the saving state to render (in-flight update).
-    await waitFor(() => expect(select.disabled).toBe(true))
+    await waitFor(() => expect(trigger).toBeDisabled())
     // Resolve to clean up.
     resolveUpdate?.(mkArtifact({ kind: 'markdown' }))
   })
@@ -737,7 +757,7 @@ describe('ArtifactDetailPage', () => {
     vi.mocked(api).artifactVersion = versionFetch
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '2' } })
+    await pickVersion('v2')
     await waitFor(() => expect(versionFetch).toHaveBeenCalledWith('cr-queue', 2))
     await waitFor(() => expect(screen.getByText(/historical v2/)).toBeInTheDocument())
     // Edit/Snapshot buttons hidden on historical view.
@@ -761,7 +781,7 @@ describe('ArtifactDetailPage', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '2' } })
+    await pickVersion('v2')
     await waitFor(() => expect(screen.getByTitle(/Revert to v2/)).toBeInTheDocument())
     fireEvent.click(screen.getByTitle(/Revert to v2/))
     await waitFor(() =>
@@ -859,7 +879,7 @@ describe('ArtifactDetailPage', () => {
     // Enter edit mode but stay clean — no dirty, no confirm needed.
     fireEvent.click(screen.getByTitle('Edit content'))
     const confirmSpy = vi.spyOn(window, 'confirm')
-    fireEvent.change(screen.getByRole('combobox', { name: /Version/i }), { target: { value: '1' } })
+    await pickVersion('v1')
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
@@ -1036,7 +1056,7 @@ describe('ArtifactDetailPage', () => {
       await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
       expect(screen.getByLabelText('Remove star from artifact')).toBeInTheDocument()
 
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } })
+      await pickVersion('v1')
 
       await waitFor(() =>
         expect(screen.queryByLabelText('Remove star from artifact')).not.toBeInTheDocument(),

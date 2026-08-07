@@ -76,6 +76,12 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
+
+/** Slot keys `chatSlotDetail` was asked for — i.e. which sessions got fetched. */
+function detailCalls(): string[] {
+  return vi.mocked(api.chatSlotDetail).mock.calls.map(c => c[0] as string)
+}
 
 const slot = (key: string, title?: string, mode = ''): ChatSlot => ({
   key, title: title ?? key, messages: 0, running: false, mode, created: '', last_ts: '',
@@ -102,13 +108,15 @@ function NavController() {
 
 function renderChatPage(opts: {
   route?: string
+  /** Full history stack; the last entry is where the app starts. Overrides `route`. */
+  entries?: string[]
   mode?: string
   activeSlot?: string | null
   slots?: ChatSlot[]
   /** Render the companion-panel variant on a HOST route (see the noUrlSync suite). */
   hostEmbed?: { noUrlSync?: boolean }
 }) {
-  const { route = '/chat', mode, activeSlot = null, slots = [], hostEmbed } = opts
+  const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed } = opts
   const preload: PreloadState = {
     dashboard: {
       status: { platform: 'darwin' }, connected: true, slots, approvalMode: 'normal',
@@ -131,16 +139,21 @@ function renderChatPage(opts: {
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter initialEntries={[route]}>
+          <MemoryRouter initialEntries={entries ?? [route]}>
             <Routes>
               <Route path="/chat/:slug?" element={<ChatPage mode={mode} />} />
               <Route path="/orchestrated/:slug?" element={<ChatPage mode="orchestrator" />} />
+              {/* Stands in for any non-chat dashboard page a session link is
+                  followed FROM (System, Telemetry) — it only has to be a
+                  distinct history entry. */}
+              <Route path="/developer" element={<div>developer</div>} />
               <Route
                 path="/artifacts/:slug"
                 element={<ChatPage embedded embedMode="chat" noUrlSync={hostEmbed?.noUrlSync} />}
               />
             </Routes>
             <UrlCapture />
+            <NavController />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -154,7 +167,13 @@ beforeEach(() => {
   currentUrl = ''
 })
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  // Restore real timers here, not only in the tests that install fakes: a fake
+  // clock left armed by a failing assertion makes every later test in the file
+  // time out, which reads as a cascade of unrelated breakage.
+  vi.useRealTimers()
+  vi.clearAllMocks()
+})
 
 const slots = [
   slot('chat-1-100', 'Debug video playback'),
@@ -269,6 +288,119 @@ describe('ChatPage ?sid= URL parameter', () => {
         expect(currentUrl).toContain('/chat/debug-video-playback')
       })
       expect(currentUrl).not.toContain('sid=chat-2-200')
+    })
+  })
+
+  // Regression: a deep link followed from ANOTHER dashboard page (System's
+  // "Session & Task Memory" rows, Telemetry's conversation links) mounts ChatPage
+  // with a Redux `activeSlot` already carried over from earlier in the visit.
+  describe('deep link from another page (activeSlot already set)', () => {
+    it('activates the session named by ?sid= instead of the carried-over slot', async () => {
+      const { store } = renderChatPage({
+        route: '/chat?sid=chat-2-200',
+        activeSlot: 'chat-1-100',
+        slots,
+      })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+      // The carried-over slot must not be re-fetched: that switchSlot is what
+      // used to land the user back in the session they came from.
+      expect(detailCalls()).not.toContain('chat-1-100')
+    })
+
+    // The switch must not leave a history entry for the slot it switched AWAY
+    // from: the URL-sync effect runs later in the same commit with the
+    // pre-switch activeSlot, and a PUSH there means Back opens that session
+    // instead of returning to the page the link was clicked on.
+    it('leaves Back pointing at the page the link came from', async () => {
+      const { store } = renderChatPage({
+        entries: ['/developer', '/chat?sid=chat-2-200'],
+        activeSlot: 'chat-1-100',
+        slots,
+      })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+      await act(async () => { navBack() })
+      await waitFor(() => expect(currentUrl).toBe('/developer'))
+    })
+
+    // Legacy `?slot=` resolves through the same path, so it must release the
+    // in-flight flag too — otherwise URL sync stays wedged for the whole mount
+    // and a later switch leaves the URL (and a reload) on the wrong session.
+    it('normalizes a legacy ?slot= deep link and keeps URL sync alive', async () => {
+      const { store } = renderChatPage({
+        entries: ['/developer', '/chat?slot=chat-2-200'],
+        activeSlot: 'chat-1-100',
+        slots,
+      })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2-200'))
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+      expect(currentUrl).not.toContain('slot=')
+      // A switch AFTER the deep link must still reach the URL.
+      await act(async () => { await store.dispatch(switchSlot('chat-1-100')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-1-100'))
+    })
+
+    // A session created and linked in one go (the app pages' create-then-navigate)
+    // reaches this URL before its slots frame does. The wait must not leak a
+    // history entry for the carried-over session.
+    it('waits for a slot that arrives later without polluting history', async () => {
+      const { store } = renderChatPage({
+        entries: ['/developer', '/chat?sid=chat-9-900'],
+        activeSlot: 'chat-1-100',
+        slots,
+      })
+      // The link cannot resolve yet — the slot does not exist in the list.
+      await act(async () => { await new Promise(r => setTimeout(r, 150)) })
+      expect(store.getState().chat.activeSlot).toBe('chat-1-100')
+
+      await act(async () => {
+        store.dispatch(sseSlots([...slots, slot('chat-9-900', 'Late Session')]))
+      })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-9-900'))
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-9-900'))
+
+      await act(async () => { navBack() })
+      await waitFor(() => expect(currentUrl).toBe('/developer'))
+    })
+
+    // Abandoning a pending link must not leave URL sync wedged: the user can pick
+    // another session while the linked slot is still missing, and the not-found
+    // timeout cannot help — clearing `initialSidRef` on that path is exactly what
+    // stops the timeout from firing.
+    it('keeps URL sync alive when the user switches away from a pending deep link', async () => {
+      const { store } = renderChatPage({
+        entries: ['/developer', '/chat?sid=chat-9-900'],
+        activeSlot: 'chat-1-100',
+        slots,
+      })
+      await act(async () => { await new Promise(r => setTimeout(r, 150)) })
+      expect(store.getState().chat.activeSlot).toBe('chat-1-100')
+
+      await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+    })
+
+    // The skip above is scoped to a pending deep link only. Plain nav-away-and-back
+    // (no ?sid=) must still re-fetch, or a session reopened from the sidebar shows
+    // whatever messages Redux happened to be holding.
+    it('still re-fetches the carried-over slot when no ?sid= is present', async () => {
+      renderChatPage({ route: '/chat', activeSlot: 'chat-1-100', slots })
+      await waitFor(() => expect(detailCalls()).toContain('chat-1-100'))
+    })
+
+    // The not-found timeout must NOT fetch the session on screen. Five seconds is
+    // long enough for the user to type and send; a refresh landing after that
+    // optimistic row would replace it (and `running`) with a server snapshot that
+    // predates the turn, so the message they just sent would vanish. Staleness is
+    // the lesser fault, and the banner explains the failed link.
+    it('does not fetch the on-screen session when the deep link is declared not found', async () => {
+      vi.useFakeTimers()
+      renderChatPage({ route: '/chat?sid=nonexistent', activeSlot: 'chat-1-100', slots })
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(detailCalls()).not.toContain('chat-1-100')
+      expect(screen.getByText(/session "nonexistent" not found/i)).toBeTruthy()
+      vi.useRealTimers()
     })
   })
 

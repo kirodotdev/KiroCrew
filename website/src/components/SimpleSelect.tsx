@@ -33,10 +33,15 @@ export interface SimpleSelectProps {
   triggerFallback?: string
   disabled?: boolean
   style?: React.CSSProperties
+  /** Extra classes for the TRIGGER. For a caller whose surrounding rows are
+   *  denser than the default `px-3 py-2 text-sm` — the dev config table runs at
+   *  `h-7 text-[13px]`, and a taller control there would change every row's
+   *  height. Merged after the defaults, so it wins. */
+  className?: string
   'aria-label'?: string
 }
 
-export default function SimpleSelect({ options, optionLabels, value, onChange, action, clearLabel, triggerFallback, disabled, style, 'aria-label': ariaLabel }: SimpleSelectProps) {
+export default function SimpleSelect({ options, optionLabels, value, onChange, action, clearLabel, triggerFallback, disabled, style, className, 'aria-label': ariaLabel }: SimpleSelectProps) {
   const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
   const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
   // '' is selectable only when the options include it or a clearLabel row exists;
@@ -53,7 +58,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
         }}
         disabled={disabled}
       >
-        <SelectTrigger aria-label={ariaLabel}>
+        <SelectTrigger aria-label={ariaLabel} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')} />
         </SelectTrigger>
         <SelectContent>

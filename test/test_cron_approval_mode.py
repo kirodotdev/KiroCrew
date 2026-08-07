@@ -470,6 +470,7 @@ class TestCronSubagentInjection:
                 captured_done = kwargs["on_done"]
                 mgr = MagicMock()
                 mgr.running = []
+                mgr.queued_count_for = MagicMock(return_value=0)
                 return mgr
 
             mock_cls.side_effect = capture_mgr
@@ -587,6 +588,7 @@ class TestCronSubagentInjection:
 
         # .running is empty, but another subagent is mid-injection
         gw.subagent_mgr.running = []
+        gw.subagent_mgr.queued_count_for = MagicMock(return_value=0)
         gw._cron_injecting["cron:daily-prep"] = 1
 
         info = SubagentInfo(

@@ -230,3 +230,117 @@ class TestTheDashboardWriter:
             slot.append("user", "replayed", ts=original)
 
         assert slot.messages[-1]["ts"] == original
+
+
+class TestTheDashboardWriterAndAForeignRow:
+    """A row the slot never observed must still be ordered against.
+
+    ``ConversationLog.append`` floors on the on-disk tail under the cross-process
+    flock, so it sees every committed row. ``_ChatSlot.append`` runs on the event
+    loop and may only read in-process state -- a ``stat`` plus a file read per
+    append is what ``AUTOSDE.yaml``'s ``no-blocking-call-on-event-loop`` rule
+    forbids -- so it floors on its in-memory window.
+
+    Those are not the same set. ``_save_slot_to_history`` deliberately preserves a
+    genuinely foreign on-disk row without folding it into ``slot.messages``, so a
+    row can live in the file forever and never become a floor candidate. Under a
+    colliding clock the slot's next append then produces a ``ts`` that TIES the
+    foreign row, which is exactly the ambiguity the stamper exists to prevent.
+
+    The fix caches the last known disk tail on the slot and floors on the later of
+    the two, refreshed at the save boundary where the lock is already held.
+    """
+
+    def test_a_foreign_disk_row_is_ordered_against(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+
+        with colliding_clock("kiro_crew.dashboard.state", at=_INSTANT):
+            slot.append("user", "run the job")
+            window_tail = slot.messages[-1]["ts"]
+            # A subagent wrote this under the flock one microsecond later. It is
+            # on disk and will be preserved as a foreign line; the slot never
+            # observed it, so before the fix it was not a floor candidate.
+            foreign = _parse_transcript_ts(window_tail) + timedelta(microseconds=1)
+            slot._disk_tail_ts = foreign.isoformat()
+
+            slot.append("assistant", "acknowledged")
+
+        assert transcript_sort_key(slot.messages[-1]["ts"]) > transcript_sort_key(
+            slot._disk_tail_ts
+        ), "the slot's row ties or precedes a foreign on-disk row"
+
+    def test_a_stale_cached_tail_does_not_drag_a_row_backwards(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+
+        with colliding_clock("kiro_crew.dashboard.state", at=_INSTANT):
+            slot.append("user", "later row", ts=(_INSTANT + timedelta(seconds=5)).isoformat())
+            slot._disk_tail_ts = _INSTANT.isoformat()  # older than the window tail
+            slot.append("assistant", "reply")
+
+        assert _sorts_strictly_ascending(slot.messages)
+
+    def test_a_replayed_row_still_keeps_its_timestamp(self, tmp_path, monkeypatch):
+        """The extra floor candidate must not restamp an explicit ts."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._disk_tail_ts = "2099-01-01T00:00:00.000000+00:00"  # far in the future
+        original = "2026-01-01T00:00:00+00:00"
+
+        with colliding_clock("kiro_crew.dashboard.state", at=_INSTANT):
+            slot.append("user", "replayed", ts=original)
+
+        assert slot.messages[-1]["ts"] == original
+
+    def test_no_cached_tail_behaves_exactly_as_before(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        assert slot._disk_tail_ts is None
+
+        with colliding_clock("kiro_crew.dashboard.state", at=_INSTANT):
+            slot.append("user", "the question")
+            slot.append("assistant", "the reply")
+
+        assert _sorts_strictly_ascending(slot.messages)
+
+    def test_the_save_boundary_records_a_foreign_rows_ts(self, tmp_path, monkeypatch):
+        """The save is the ONLY place the slot can learn a foreign row's ts.
+
+        Without this the cache would never populate and the floor above would be
+        permanently ``None`` -- the fix would be inert.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log = ConversationLog(tmp_path / "history")
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hello")
+        _save_slot_to_history(state, slot, force=True)
+
+        # Another process appends to the same transcript. The slot never sees it.
+        state.conversation_log.append(slot.key, "assistant", "from a subagent")
+        _save_slot_to_history(state, slot, force=True)
+
+        assert slot._disk_tail_ts, "the save recorded no disk tail at all"
+
+    def test_the_cached_tail_never_moves_backwards(self, tmp_path, monkeypatch):
+        """A save must not regress the floor -- that would re-open the tie."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log = ConversationLog(tmp_path / "history")
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hello")
+
+        future = "2099-01-01T00:00:00.000000+00:00"
+        slot._disk_tail_ts = future
+        _save_slot_to_history(state, slot, force=True)
+
+        assert slot._disk_tail_ts == future, "a save regressed the ordering floor"

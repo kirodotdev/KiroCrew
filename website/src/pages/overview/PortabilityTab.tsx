@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-react'
 import { Card, CardTitle } from '../../components/ui'
+import SimpleSelect from '../../components/SimpleSelect'
 
 import { i18nT } from '../../i18n/t'
 interface Manifest {
@@ -134,14 +135,13 @@ export default function PortabilityTab() {
               className="hidden"
             />
           </label>
-          <select
+          <SimpleSelect
+            aria-label={i18nT('pages.overview.portabilityTab.mode')}
+            options={['merge', 'replace']}
+            optionLabels={[i18nT('pages.overview.portabilityTab.merge'), i18nT('pages.overview.portabilityTab.replace')]}
             value={mode}
-            onChange={e => setMode(e.target.value as 'merge' | 'replace')}
-            className="h-9 px-3 rounded-lg bg-bg-elevated border border-border text-[13px] text-text font-body focus:border-accent focus:outline-none"
-          >
-            <option value="merge">{i18nT('pages.overview.portabilityTab.merge')}</option>
-            <option value="replace">{i18nT('pages.overview.portabilityTab.replace')}</option>
-          </select>
+            onChange={v => setMode(v as 'merge' | 'replace')}
+          />
           <button
             onClick={handleImport}
             disabled={!preview || importStatus.type === 'loading'}

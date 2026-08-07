@@ -316,32 +316,18 @@ def _get_rss_tree_mb(pid: int) -> float | None:
         return total if found else None
 
     if platform_compat.IS_WINDOWS:
-        # Walk the Toolhelp parent map (the same snapshot descendant tracking
-        # uses) to find the subtree rooted at pid, then sum each process's RSS
-        # via the shim. Windows spawns kiro-cli without a launcher fork, but the
-        # tree still covers any MCP-server / tool children it spawns.
-        try:
-            parent_map = platform_compat._windows_process_parent_map()
-        except Exception:
-            return _get_rss_mb(pid)
-        win_children: dict[int, list[int]] = {}
-        for cpid, ppid in parent_map.items():
-            win_children.setdefault(ppid, []).append(cpid)
-        total_mb = 0.0
-        found = False
-        win_visited: set[int] = set()
-        stack = [pid]
-        while stack:
-            p = stack.pop()
-            if p in win_visited:
-                continue
-            win_visited.add(p)
-            r = _get_rss_mb(p)
-            if r is not None:
-                total_mb += r
-                found = True
-            stack.extend(win_children.get(p, ()))
-        return total_mb if found else None
+        # Windows spawns kiro-cli WITHOUT a launcher fork, but it still spawns
+        # MCP-server / tool children that can leak. Sum the tree via
+        # proc_rss_tree_mb_for_pid, which enumerates descendants through
+        # descendant_termination_handles — the lineage-VALIDATED walk (exact
+        # creation/exit-time edge checks across two snapshots). A raw Toolhelp
+        # parent-map walk is unsafe here: th32ParentProcessID is never cleared
+        # when a parent dies and Windows recycles PIDs, so it would sum unrelated
+        # subtrees rooted at a recycled PID into a kill/health decision. The
+        # validated walk always counts the root, so an unreadable descendant
+        # (another session / higher integrity) narrows the total rather than
+        # producing a phantom-low tree attached to a recycled root.
+        return platform_compat.proc_rss_tree_mb_for_pid(pid)
 
     # macOS / other: build a ppid map from a single ps snapshot, then sum the
     # descendant subtree rooted at pid (ps reports RSS in KiB).

@@ -32,6 +32,7 @@ def _make_gateway():
     gateway._no_crons = False
     gateway.subagent_mgr = MagicMock()
     gateway.subagent_mgr.running = []
+    gateway.subagent_mgr.queued_count_for = MagicMock(return_value=0)
     gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gateway.sessions.release = MagicMock()
     gateway.sessions.reset = AsyncMock()
@@ -99,6 +100,7 @@ def _capture_subagent_done(gateway):
             captured_done = kw["on_done"]
             mgr = MagicMock()
             mgr.running = []
+            mgr.queued_count_for = MagicMock(return_value=0)
             gateway.subagent_mgr = mgr
             return mgr
 
@@ -288,8 +290,10 @@ class TestSubagentDoneCancelsBeforeRelease:
         p1, p2 = self._patches()
         with (
             patch("kiro_crew.slack.gateway.stream_and_collect", new_callable=AsyncMock, return_value="ok"),
-            patch("kiro_crew.slack.gateway.to_slack_mrkdwn", return_value="ok"),
-            patch("kiro_crew.slack.gateway.split_message", return_value=["ok"]),
+            # gateway renders through the shared Slack pipeline now, so this is
+            # the one seam to stub -- patching to_slack_mrkdwn/split_message
+            # individually no longer intercepts anything.
+            patch("kiro_crew.slack.gateway.render_for_slack", return_value=["ok"]),
             p1, p2,
         ):
             await subagent_done(info)

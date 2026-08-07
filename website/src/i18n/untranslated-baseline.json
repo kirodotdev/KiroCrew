@@ -1,6 +1,6 @@
 {
-  "_comment": "Untranslated user-visible strings, per file. Generated \u2014 re-snapshot with `node scripts/check-i18n-strings.mjs --update`. REPORT ONLY: no run fails because a file is over its number here. A whole-repo total is written by whichever branch measured it last, so another branch can push a file past its ceiling without touching your files. `[added-lines]` and `[vs-base]` enforce the same population against the base ref, where every finding is attributable. These numbers may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 1833,
+  "_comment": "Untranslated user-visible strings, per file. Generated — re-snapshot with `node scripts/check-i18n-strings.mjs --update`. These are CEILINGS, not current counts: the gate fails only when a file gains strings, so a number here may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
+  "_total": 1037,
   "files": {
     "api/client.ts": {
       "total": 23,
@@ -108,10 +108,6 @@
       "total": 1,
       "template": 1
     },
-    "apps/issue-radar/components/RefLink.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "apps/issue-radar/components/ReviewButton.tsx": {
       "total": 3,
       "template": 3
@@ -191,10 +187,6 @@
       "total": 1,
       "template": 1
     },
-    "components/ApprovalCard.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "components/appstore/AppListRow.tsx": {
       "total": 1,
       "template": 1
@@ -249,9 +241,9 @@
       "template": 1
     },
     "components/ChatInput.tsx": {
-      "total": 18,
+      "total": 17,
       "expression": 1,
-      "prose": 5,
+      "prose": 4,
       "template": 12
     },
     "components/ChatPane.tsx": {
@@ -264,8 +256,7 @@
       "prose": 1
     },
     "components/CliPanel.tsx": {
-      "total": 4,
-      "prose": 1,
+      "total": 3,
       "template": 3
     },
     "components/CommandPalette.tsx": {
@@ -276,13 +267,9 @@
       "total": 3,
       "object-prop": 3
     },
-    "components/commandPalette/providers/pagesProvider.ts": {
-      "total": 1,
-      "object-prop": 1
-    },
     "components/commandPalette/providers/recentsProvider.ts": {
-      "total": 2,
-      "prose": 2
+      "total": 1,
+      "prose": 1
     },
     "components/commandPalette/providers/settingsProvider.ts": {
       "total": 1,
@@ -298,8 +285,8 @@
       "prose": 1
     },
     "components/ComputerUseLiveView.tsx": {
-      "total": 2,
-      "template": 2
+      "total": 1,
+      "template": 1
     },
     "components/ContextBar.tsx": {
       "total": 1,
@@ -352,18 +339,22 @@
       "object-prop": 1
     },
     "components/MarkdownPanel.tsx": {
-      "total": 8,
+      "total": 6,
       "object-prop": 3,
       "prose": 1,
-      "template": 4
+      "template": 2
     },
     "components/MarkdownRenderer.tsx": {
-      "total": 2,
-      "prose": 2
+      "total": 4,
+      "prose": 4
     },
     "components/MarkdownToc.tsx": {
-      "total": 4,
-      "template": 4
+      "total": 2,
+      "template": 2
+    },
+    "components/McpAppFrame.tsx": {
+      "total": 1,
+      "prose": 1
     },
     "components/McpBrowserModal.tsx": {
       "total": 3,
@@ -399,14 +390,6 @@
       "expression": 2,
       "prose": 8,
       "template": 20
-    },
-    "components/QueueStack.tsx": {
-      "total": 2,
-      "prose": 2
-    },
-    "components/ReasoningEffortDropdown.tsx": {
-      "total": 2,
-      "template": 2
     },
     "components/RegistryManager.tsx": {
       "total": 5,
@@ -448,21 +431,9 @@
       "total": 6,
       "template": 6
     },
-    "components/TerminalCompletion.tsx": {
-      "total": 2,
-      "prose": 2
-    },
-    "components/themeEditor.tsx": {
-      "total": 1,
-      "template": 1
-    },
     "components/ThemeExperienceLayer.tsx": {
       "total": 1,
       "template": 1
-    },
-    "components/TipCard.tsx": {
-      "total": 2,
-      "prose": 2
     },
     "components/TunnelStatus.tsx": {
       "total": 2,
@@ -478,10 +449,6 @@
       "total": 8,
       "template": 8
     },
-    "components/WebPreviewPanel.tsx": {
-      "total": 1,
-      "template": 1
-    },
     "components/WeekGrid.tsx": {
       "total": 1,
       "prose": 1
@@ -494,11 +461,6 @@
     "hooks/useBlockAssembler.ts": {
       "total": 1,
       "prose": 1
-    },
-    "hooks/useKeyboardShortcuts.ts": {
-      "total": 3,
-      "object-prop": 1,
-      "prose": 2
     },
     "hooks/useNativeNotification.ts": {
       "total": 1,
@@ -555,38 +517,38 @@
       "template": 20
     },
     "pages/AgentsPage.tsx": {
-      "total": 14,
+      "total": 12,
       "array": 2,
       "expression": 3,
       "object-prop": 1,
       "prose": 3,
-      "template": 5
+      "template": 3
     },
     "pages/aidlc/TaskDetailPanel.tsx": {
       "total": 2,
       "template": 2
     },
     "pages/AppDetailPage.tsx": {
-      "total": 11,
+      "total": 9,
       "prose": 1,
-      "template": 10
+      "template": 8
     },
     "pages/AppsPage.tsx": {
-      "total": 8,
+      "total": 9,
       "prose": 1,
-      "template": 7
+      "template": 8
     },
     "pages/ArtifactDeployPage.tsx": {
-      "total": 38,
+      "total": 36,
       "array": 15,
-      "prose": 5,
+      "prose": 3,
       "template": 18
     },
     "pages/ArtifactDetailPage.tsx": {
-      "total": 22,
+      "total": 21,
       "expression": 1,
       "prose": 1,
-      "template": 20
+      "template": 19
     },
     "pages/ArtifactPopoutFrame.tsx": {
       "total": 1,
@@ -601,14 +563,13 @@
       "prose": 2
     },
     "pages/chat/ActivityViewer.tsx": {
-      "total": 5,
-      "prose": 2,
-      "template": 3
+      "total": 1,
+      "template": 1
     },
     "pages/chat/ChatSettings.tsx": {
-      "total": 23,
+      "total": 20,
       "array": 18,
-      "prose": 4,
+      "prose": 1,
       "template": 1
     },
     "pages/chat/McpInfoButton.tsx": {
@@ -649,30 +610,25 @@
       "template": 2
     },
     "pages/ChatPage.tsx": {
-      "total": 18,
+      "total": 17,
       "expression": 2,
       "object-prop": 1,
-      "prose": 1,
       "template": 14
     },
     "pages/ChatSidebar.tsx": {
-      "total": 28,
+      "total": 25,
       "object-prop": 1,
-      "template": 27
+      "template": 24
     },
     "pages/DevFleetPage.tsx": {
-      "total": 32,
-      "prose": 21,
+      "total": 24,
+      "prose": 13,
       "template": 11
     },
     "pages/HooksPage.tsx": {
       "total": 8,
       "prose": 1,
       "template": 7
-    },
-    "pages/KiroCrewAgentsPage.tsx": {
-      "total": 1,
-      "template": 1
     },
     "pages/knowledge/helpers.ts": {
       "total": 3,
@@ -683,8 +639,7 @@
       "template": 3
     },
     "pages/LocalStorageDebug.tsx": {
-      "total": 2,
-      "prose": 1,
+      "total": 1,
       "template": 1
     },
     "pages/MigrationPage.tsx": {
@@ -700,9 +655,9 @@
       "template": 3
     },
     "pages/overview/McpTab.tsx": {
-      "total": 7,
+      "total": 6,
       "expression": 2,
-      "template": 5
+      "template": 4
     },
     "pages/overview/PortabilityTab.tsx": {
       "total": 1,
@@ -713,13 +668,11 @@
       "template": 1
     },
     "pages/overview/SkillsTab.tsx": {
-      "total": 8,
-      "prose": 1,
+      "total": 7,
       "template": 7
     },
     "pages/overview/SteeringTab.tsx": {
-      "total": 5,
-      "prose": 1,
+      "total": 4,
       "template": 4
     },
     "pages/overview/UsageTab.tsx": {
@@ -732,10 +685,6 @@
       "object-prop": 3,
       "template": 2
     },
-    "pages/OverviewPage.tsx": {
-      "total": 6,
-      "object-prop": 6
-    },
     "pages/PopoutFrame.tsx": {
       "total": 1,
       "template": 1
@@ -745,7 +694,8 @@
       "template": 1
     },
     "pages/RemoteArtifactDetailPage.tsx": {
-      "total": 2,
+      "total": 3,
+      "prose": 1,
       "template": 2
     },
     "pages/scenes/GhostScene.tsx": {
@@ -805,23 +755,20 @@
       "array": 3,
       "template": 5
     },
-    "pages/settings/BrowserPanel.tsx": {
-      "total": 1,
-      "prose": 1
-    },
     "pages/settings/ChatPanel.tsx": {
       "total": 5,
       "object-prop": 1,
       "template": 4
     },
     "pages/settings/ComputerUsePanel.tsx": {
-      "total": 2,
+      "total": 3,
+      "prose": 1,
       "template": 2
     },
     "pages/settings/DisplayPanel.tsx": {
-      "total": 12,
+      "total": 11,
       "object-prop": 9,
-      "template": 3
+      "template": 2
     },
     "pages/settings/InstancesPanel.tsx": {
       "total": 5,
@@ -842,8 +789,7 @@
       "template": 3
     },
     "pages/settings/SecurityPanel.tsx": {
-      "total": 9,
-      "prose": 2,
+      "total": 7,
       "template": 7
     },
     "pages/settings/ShortcutsPanel.tsx": {
@@ -878,8 +824,7 @@
       "template": 1
     },
     "pages/TelemetryPanel.tsx": {
-      "total": 6,
-      "prose": 5,
+      "total": 1,
       "template": 1
     },
     "providers/adapters/acp.ts": {
@@ -892,9 +837,8 @@
       "template": 4
     },
     "surfaces/builtins.tsx": {
-      "total": 20,
-      "object-prop": 18,
-      "prose": 2
+      "total": 18,
+      "object-prop": 18
     },
     "utils/extractChatLinks.ts": {
       "total": 1,

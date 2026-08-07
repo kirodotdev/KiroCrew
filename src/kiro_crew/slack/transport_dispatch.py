@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
-from kiro_crew.llm_helpers import save_conversation_turn
+from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
@@ -230,7 +230,7 @@ async def handle_message_transport(
         if hook_result.action == HOOK_REPLY:
             await slack.post_message(channel, hook_result.text, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -548,8 +548,7 @@ async def handle_message_transport(
                             source_user=user_id,
                         )
                 else:
-                    await asyncio.to_thread(
-                        save_conversation_turn,
+                    await save_conversation_turn_off_loop(
                         conversation_log,
                         session_key,
                         text,

@@ -2,7 +2,8 @@
 
 Spin up a **throwaway, full-stack KiroCrew gateway** for any feature worktree —
 its own port, its own `KIROCREW_HOME` (own DB / sessions / memory), no Slack
-tunnel, `--no-crons`, resource-capped, and `rm -rf`'d on stop. Test a branch's
+tunnel, `--no-crons` (unless you pass `--crons`), resource-capped, and `rm -rf`'d
+on stop. Test a branch's
 backend `/api/*` **and** the SPA bundle it serves, all **without touching your
 live gateway or your shared `~/.kiro/crew` data**.
 
@@ -17,6 +18,8 @@ kirocrew pod install              # lay down the systemd --user template unit (o
 kirocrew pod provision <wt>       # build the worktree's venv + SPA dist (the on-ramp)
 kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, token, port}
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
+kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
+kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
 kirocrew pod ls                   # what's running (≈ kubectl get pods)
 kirocrew pod status <wt>          # up/down + health
 kirocrew pod token  <wt> [--ttl]  # (re)mint a dashboard token for a running pod

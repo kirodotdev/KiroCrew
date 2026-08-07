@@ -549,6 +549,76 @@ async def api_skill_pin(request: web.Request) -> web.Response:
     return web.json_response({"name": name, "pinned": pinned})
 
 
+async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
+    """POST /api/skills/-/inject-on-trigger — body {name, inject:bool}.
+
+    Opt a skill in or out of full-body injection when its triggers match. The
+    edit is a targeted frontmatter line change performed server-side, not a
+    round-trip through the skill editor: rebuilding the file from the structured
+    form would be a wider write than this needs.
+
+    Every outcome is audited, including the rejections. Turning ``inject`` off
+    changes what the agent is guaranteed to see when the skill matches, so "who
+    made this skill advisory, and when" has to be answerable.
+    """
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    # `request.json()` yields whatever the body parsed to, and `[]` / `"x"` / `7`
+    # are all valid JSON. Normalize any non-object to an empty one so validation
+    # answers with a 400 and a code instead of AttributeError -> 500.
+    if not isinstance(body, dict):
+        body = {}
+    name = str(body.get("name", "")).strip()
+    raw_inject = body.get("inject")
+    if not isinstance(raw_inject, bool):
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_inject_on_trigger', tool_kind='skill',
+            outcome='rejected', metadata={'name': name, 'reason': 'inject_not_bool'},
+        )
+        return web.json_response(
+            {"error": "inject must be a boolean", "code": "inject_not_bool"}, status=400
+        )
+    inject = raw_inject
+    if not name:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_inject_on_trigger', tool_kind='skill',
+            outcome='rejected', metadata={'name': name, 'reason': 'name_required'},
+        )
+        return web.json_response(
+            {"error": "name required", "code": "name_required"}, status=400
+        )
+    try:
+        ok = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.set_inject_on_trigger, name, inject
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skill_inject_on_trigger', tool_kind='skill',
+            outcome='error', metadata={'name': name, 'inject': inject},
+        )
+        return web.json_response(
+            {"error": "internal error", "code": "internal_error"}, status=500
+        )
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skill_inject_on_trigger', tool_kind='skill',
+        outcome='ok' if ok else 'rejected', metadata={'name': name, 'inject': inject},
+    )
+    if not ok:
+        return web.json_response(
+            {"error": "not found or has no frontmatter", "code": "skill_not_editable"},
+            status=400,
+        )
+    return web.json_response({"name": name, "inject_on_trigger": inject})
+
+
 async def api_skill_detail(request: web.Request) -> web.Response:
     """GET/PUT/DELETE /api/skills/{name} — get, update, or delete a skill."""
     state: DashboardState = request.app["state"]

@@ -23,13 +23,7 @@ from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_resolver import _CACHE_FILENAME, ChannelNameResolver
-from kiro_crew.slack.format import (
-    SLACK_MAX_TEXT,
-    SLACK_MSG_LIMIT,
-    split_message,
-    strip_ansi,
-    to_slack_mrkdwn,
-)
+from kiro_crew.slack.format import render_for_slack
 from kiro_crew.sync_bridge import handoff_to_slack
 
 logger = logging.getLogger(__name__)
@@ -70,54 +64,16 @@ _USER_ICON = "\U0001f9d1"
 _AGENT_ICON = "\U0001f916"
 
 
-def _format_backfill_parts(content: str) -> list[str]:
-    """Normalise, redact, convert to Slack mrkdwn, redact again, then split.
+def _format_backfill_parts(content: str, icon: str) -> list[str]:
+    """Render one transcript row into postable Slack parts, icon included.
 
-    ANSI escapes are stripped FIRST, before any redaction. ``to_slack_mrkdwn``
-    strips them itself, and that strip can *reassemble* a credential the escapes
-    had broken up -- so a secret written as ``AKIA<esc>IOSF...`` is invisible to
-    the regex until the strip happens. Normalising up front means the first
-    redaction pass sees the credential whole, while the text is still one piece.
-    Redacting per block after the strip is NOT equivalent: if the split boundary
-    falls inside the credential, each block holds only an unmatchable fragment
-    and two adjacent posts reassemble it for the reader.
-
-    Redaction then runs over the whole normalised text, because
-    ``to_slack_mrkdwn`` self-truncates at ``SLACK_MAX_TEXT`` before converting:
-    converting first would cut a credential at that boundary and leave a prefix
-    the regex no longer matches.
-
-    It runs a second time on each converted block, because conversion can still
-    reorder or drop characters (inline markup, link rewriting) in ways that
-    reveal a secret only afterwards. Redacting on both sides of the transform is
-    what makes the guarantee independent of what conversion does to the bytes.
-
-    The pre-split into blocks below the limit exists for that same truncation
-    reason: converting the whole message and splitting after would silently drop
-    everything past 39,000 characters -- the tail loss the 2,000-char cap used to
-    cause, just further out. Blocks are halved against the limit so a conversion
-    that *grows* text (table and mermaid rewriting) still cannot reach it.
-
-    When -- and only when -- that split actually produces more than one block,
-    tables are left as raw markdown. ``_convert_tables`` keys a table's labels off
-    the first ``|`` row it sees, so a block beginning part-way through a table
-    adopts a DATA row as its header: that row's values are then only ever emitted
-    as labels (and vanish entirely if no data rows follow it, because
-    ``_flush_table`` returns early on an empty body), while every later row is
-    labelled with the wrong names. Raw pipes read worse on mobile than the
-    vertical-list conversion, which is why this is not the default -- but a
-    message that never splits keeps the nicer rendering, and one that does keeps
-    all of its rows.
+    Thin delegate to :func:`kiro_crew.slack.format.render_for_slack`, which owns
+    the redact/convert/split ordering this path used to implement privately. The
+    icon is passed as the prefix rather than prepended afterwards: decorating a
+    maximally-sized part after the split pushed it past ``SLACK_MSG_LIMIT`` by
+    the width of the icon plus its space.
     """
-    cleaned = redact_via_context(strip_ansi(content or ""))
-    blocks = split_message(cleaned, limit=SLACK_MAX_TEXT // 2)
-    # A single block IS the whole message, so no table can be straddled.
-    keep_tables = len(blocks) > 1
-    parts: list[str] = []
-    for block in blocks:
-        converted = redact_via_context(to_slack_mrkdwn(block, keep_tables=keep_tables))
-        parts.extend(split_message(converted, limit=SLACK_MSG_LIMIT))
-    return parts
+    return render_for_slack(content, prefix=f"{icon} ", redactor=redact_via_context)
 
 
 async def drain_slack_backfill(
@@ -163,8 +119,8 @@ async def drain_slack_backfill(
 
     for row in selection.first_turn:
         icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
-        for part in _format_backfill_parts(backfill_content(row)):
-            if not await _post(f"{icon} {part}"):
+        for part in _format_backfill_parts(backfill_content(row), icon):
+            if not await _post(part):
                 return
 
     if selection.skipped_turns and selection.recent:
@@ -182,8 +138,8 @@ async def drain_slack_backfill(
 
     for row in selection.recent_rows:
         icon = _USER_ICON if row.get("role") == "user" else _AGENT_ICON
-        for part in _format_backfill_parts(backfill_content(row)):
-            if not await _post(f"{icon} {part}"):
+        for part in _format_backfill_parts(backfill_content(row), icon):
+            if not await _post(part):
                 return
 
 

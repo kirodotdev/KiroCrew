@@ -55,6 +55,7 @@
   "components.inlineCommentOverlay.comment",
   "components.inlineCommentOverlay.comment_unread",
   "components.pastedChip.paste_lines",
+  "components.pastedChip.preview_more_lines",
   "components.publishHub.scan_blocked_finding",
   "components.pullRequestPanel.files_changed",
   "components.queueStack.sub_agent_result",
@@ -84,11 +85,15 @@
   "pages.overview.mcpTab.pending_change",
   "pages.overview.memoryTab.session",
   "pages.overview.skillsTab.agent",
+  "pages.schedulePage.cronFolders.batch_move_failed",
+  "pages.schedulePage.cronFolders.job_count",
   "pages.schedulePage.scheduled_job",
   "pages.schedulePage.this_permanently_removes_the_selected_job",
   "pages.telemetryPanel.startups_recorded",
   "pages.telemetryPanel.turn_faults",
   "pages.telemetryPanel.turns_measured",
+  "pages.webhooksPage.enabled_credentials",
+  "pages.webhooksPage.switched_off_credentials_kept",
   "pages.worldsPage.agent",
   "pages.worldsPage.slot"
 ]

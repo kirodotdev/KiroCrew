@@ -1269,16 +1269,77 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     """
     if source_cmd == agent_cmd:
         return False
+    # Two RESOLVED paths for one binary, differing only in separator flavour or
+    # case (``C:\tools\srv.exe`` vs ``C:/Tools/SRV.exe``). Windows itself treats
+    # those as the same file, so comparing the strings re-syncs forever.
+    if platform_compat.IS_WINDOWS and _names_a_location(source_cmd) and _names_a_location(agent_cmd):
+        if ntpath.normcase(ntpath.normpath(source_cmd)) == ntpath.normcase(
+            ntpath.normpath(agent_cmd)
+        ):
+            return False
     # If one is an absolute resolved path of the other, they match. Test both
     # path flavors regardless of host OS: on Windows ``os.path is ntpath`` and
     # would treat a POSIX-absolute config path (/usr/bin/server) as relative,
     # so a resolved-vs-short pair authored on POSIX would spuriously read as
     # diverged and trigger an endless re-sync.
-    if _is_abs_any(agent_cmd) and _basename_any(agent_cmd) == source_cmd:
+    if _names_a_location(agent_cmd) and _basenames_match(agent_cmd, source_cmd):
         return False
-    if _is_abs_any(source_cmd) and _basename_any(source_cmd) == agent_cmd:
+    if _names_a_location(source_cmd) and _basenames_match(source_cmd, agent_cmd):
         return False
     return True
+
+
+def _names_a_location(cmd: str) -> bool:
+    """True when *cmd* is a path rather than a bare ``PATH`` lookup name.
+
+    Broader than :func:`_is_abs_any` by one Windows case: ``ntpath.isabs``
+    rejects a DRIVELESS root (``\\tools\\srv``) because it is absolute only
+    relative to the current drive — yet such a string still names a location
+    whose basename is meaningful. A relative path (``bin/srv``, ``./srv``) is
+    deliberately NOT a location for this purpose: it designates a specific file
+    relative to the CWD, so it must not match an unrelated rooted path that
+    merely shares a basename.
+    """
+    if _is_abs_any(cmd):
+        return True
+    return platform_compat.IS_WINDOWS and cmd[:1] in ("/", "\\")
+
+
+def _basenames_match(resolved: str, bare: str) -> bool:
+    """True when *resolved*'s basename names the same binary as *bare*.
+
+    On Windows the resolver (``shutil.which``, via ``agent._resolve_command``)
+    appends the extension as ``PATHEXT`` spells it — commonly UPPER case — so
+    ``npx`` resolves to ``...\\npx.CMD``. An exact basename comparison therefore
+    reports every stdio MCP server as diverged forever, and each discovery pass
+    re-syncs it. Fold the executable suffix and the case, both of which Windows
+    itself ignores. POSIX keeps the exact comparison: paths are case-sensitive
+    there and an extension is part of the name.
+    """
+    name = _basename_any(resolved)
+    if name == bare:
+        return True
+    if not platform_compat.IS_WINDOWS:
+        return False
+    name, bare = name.casefold(), bare.casefold()
+    if name == bare:
+        return True
+    stem, ext = ntpath.splitext(name)
+    return bool(ext) and ext in _win_exec_suffixes() and stem == bare
+
+
+# Executable suffixes Windows appends when resolving a bare command name. Read
+# live from ``PATHEXT`` so a host that customizes it is honored; the fallback
+# mirrors the Windows default for the pathological case of it being unset.
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+def _win_exec_suffixes() -> frozenset[str]:
+    """Lower-cased ``PATHEXT`` suffixes."""
+    raw = os.environ.get("PATHEXT") or _DEFAULT_PATHEXT
+    return frozenset(
+        s for s in (part.strip().casefold() for part in raw.split(os.pathsep)) if s.startswith(".")
+    )
 
 
 def _is_abs_any(cmd: str) -> bool:
@@ -1287,8 +1348,14 @@ def _is_abs_any(cmd: str) -> bool:
 
 
 def _basename_any(cmd: str) -> str:
-    """Basename of ``cmd`` under whichever path flavor treats it as absolute."""
-    if ntpath.isabs(cmd):
+    """Basename of ``cmd`` under whichever path flavor treats it as absolute.
+
+    A backslash-bearing string takes the Windows flavour even when
+    ``ntpath.isabs`` is False, which a DRIVELESS root (``\\tools\\srv``) is.
+    ``posixpath.basename`` does not know ``\\`` is a separator, so it would
+    return the whole string and the basename comparison could never match.
+    """
+    if ntpath.isabs(cmd) or "\\" in cmd:
         return ntpath.basename(cmd)
     return posixpath.basename(cmd)
 

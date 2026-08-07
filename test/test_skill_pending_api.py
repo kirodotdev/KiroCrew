@@ -10,15 +10,20 @@ import pytest
 from kiro_crew.dashboard.handlers import prompts as H
 from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
+_OMITTED = object()
+
 
 class _Req:
     """Minimal aiohttp-request stand-in for handler unit tests."""
 
-    def __init__(self, loader, *, match=None, body=None, query=None):
+    def __init__(self, loader, *, match=None, body=_OMITTED, query=None):
         state = SimpleNamespace(context_builder=SimpleNamespace(skills=loader))
         self.app = {"state": state}
         self.match_info = match or {}
-        self._body = body or {}
+        # `body or {}` would have turned a falsy-but-valid JSON body (`[]`, `0`,
+        # `null`) into a dict inside the double — hiding exactly the non-object
+        # bodies a handler has to survive. Only an OMITTED body defaults.
+        self._body = {} if body is _OMITTED else body
         self.query = query or {}
 
     async def json(self):
@@ -145,6 +150,17 @@ async def test_pin_rejects_non_bool_pinned(loader):
     assert resp.status == 400
     resp2 = await H.api_skill_pin(_Req(loader, body={"name": name, "pinned": 1}))
     assert resp2.status == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [[], "name", 7, None, True])
+async def test_inject_on_trigger_rejects_a_non_object_body(loader, body):
+    """`[]` and `"x"` are valid JSON, so `request.json()` can hand back a
+    non-dict. Calling `.get` on it would raise AttributeError and surface as a
+    500 — a validation answer is the correct outcome."""
+    resp = await H.api_skill_inject_on_trigger(_Req(loader, body=body))
+    assert resp.status == 400
+    assert _payload(resp)["code"] == "inject_not_bool"
 
 
 # ── Part C: pending-update fields + approve/detail routing ──

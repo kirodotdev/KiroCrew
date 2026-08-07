@@ -370,10 +370,16 @@ class TestRunScriptHookStopEnvCap:
             captured["env"] = kwargs.get("env", {})
             return fake_proc
 
+        # Both spawn forms are patched because the choice is platform-dependent:
+        # Windows hands the command line to ``create_subprocess_shell`` so
+        # cmd.exe parses the operator's quotes verbatim, POSIX execs
+        # ``/bin/sh -c`` as an argv. The env cap under test is identical either
+        # way, so the test must not assume one host's form.
         with (
             patch("kiro_crew.sandbox.wrap_argv", lambda argv, *a, **k: (argv, None)),
             patch("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: argv),
             patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch("asyncio.create_subprocess_shell", side_effect=fake_exec),
         ):
             await run_script_hook(hook, context=full, hook_event=hook_event)
 

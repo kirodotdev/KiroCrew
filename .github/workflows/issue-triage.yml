@@ -18,8 +18,8 @@
 #   2. Labels are an ALLOWLIST BY CONSTRUCTION, not a denylist: the applicable
 #      set is (a fixed list of type labels) + (live `area:` labels) + (live
 #      `platform:` labels). Process labels the automation must never touch —
-#      `readiness: *`, `release-blocker`, `defer-longterm`, `blocked`,
-#      `duplicate`, `wontfix`, ... — are simply not in any of those buckets, so
+#      `readiness: *`, `blocked`, `follow-up`, `decision`,
+#      `merge conflict`, ... — are simply not in any of those buckets, so
 #      no model output can select them.
 #   3. Untrusted text never reaches a `run:` block through `${{ }}`, and never
 #      reaches the shell at all: title and body are fetched with `gh api` and

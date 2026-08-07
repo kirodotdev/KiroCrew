@@ -93,6 +93,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     POOL_SIZE_MAX,
@@ -534,6 +535,10 @@ class _Session:
     provider_switch_replay: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
+    # Set after context compaction drops the session-start skill index.
+    # Consumed one-shot by the next prompt builder to re-inject the skills
+    # index so the model can still discover skills post-compaction.
+    needs_context_reinjection: bool = False
 
 
 class _ProviderBgSession:
@@ -653,6 +658,17 @@ class SessionManager:
         without reaching into the private session map.
         """
         return [sess.provider for sess in self._sessions.values()]
+
+    def any_active_turn(self) -> bool:
+        """True if ANY live session currently has a turn in flight.
+
+        The gateway's prevent-sleep poll reads this to decide whether to keep the
+        host awake. It filters on the same real-turn signal the shutdown drain
+        uses (:func:`_provider_has_active_turn`), so a session whose provider
+        does not implement the probe (warm-pool doubles, stubs) contributes
+        nothing rather than a false positive.
+        """
+        return any(_provider_has_active_turn(sess.provider) for sess in self._sessions.values())
 
     def get_pid(self, key: str) -> int | None:
         """Return the kiro-cli PID for a session, or None."""
@@ -2015,7 +2031,12 @@ class SessionManager:
                 except (ValueError, OSError):
                     continue
                 if ad.get("name") == agent or af.stem == agent:
-                    model = ad.get("model", "auto")
+                    # Coerced, not raw: this method is annotated ``-> str`` and
+                    # its result is CACHED, fed to ``/api/sessions/context``
+                    # (where the dashboard calls ``.replace()`` on it) and
+                    # compared/translated as a model id in ``claim_pooled``. A
+                    # foreign spec's ``{"id": ...}`` would poison all three.
+                    model = spec_model(ad)
                     break
         except Exception:
             pass
@@ -2782,6 +2803,31 @@ class SessionManager:
             logger.warning("Compact callback already registered; replacing existing handler")
         self._on_compacted = cb
 
+    def mark_needs_reinjection(self, key: str) -> None:
+        """Flag *key*'s session to re-inject skill context on the next turn.
+
+        Called after a successful compaction drops the session-start context
+        (which includes the skills index).  The flag is consumed one-shot by
+        :meth:`consume_needs_reinjection`.
+        """
+        sess = self._sessions.get(self._fold_key(key))
+        if sess is not None:
+            sess.needs_context_reinjection = True
+
+    def consume_needs_reinjection(self, key: str) -> bool:
+        """Read *and clear* *key*'s re-injection flag; return what it was.
+
+        One-shot by construction: the flag is cleared as it is read, so the
+        skills index is re-injected on exactly the FIRST turn after a
+        compaction rather than on every subsequent turn (which would re-pay
+        the index cost forever and defeat the point of compacting).
+        """
+        sess = self._sessions.get(self._fold_key(key))
+        if sess is None or not sess.needs_context_reinjection:
+            return False
+        sess.needs_context_reinjection = False
+        return True
+
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
         """Register a callback fired when the watchdog recycles a session.
 
@@ -3032,6 +3078,25 @@ class SessionManager:
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Invoke ``_on_compacted`` if registered, swallowing exceptions."""
+        # Mark BEFORE the callback check, and here rather than in any one
+        # surface's callback: all the compaction-success paths funnel through
+        # this method, so every surface (dashboard, Slack, Discord) gets the
+        # flag, and it is still set when no callback is registered at all.
+        # Placing it in DashboardState._on_compacted instead would miss every
+        # channel-born session, and even dashboard sessions with no open tab —
+        # that branch returns before the callback body runs.
+        #
+        # A RECYCLE is excluded even though it reports success=True: recycling
+        # destroys the session, so its successor cold-starts and receives the
+        # index through the normal new-session context — there is nothing to
+        # restore. Without this guard, the `_recycle_held` branch that finds its
+        # entry "already replaced" by a racing cold-start would flag that fresh
+        # replacement, making an un-compacted session re-inject a redundant
+        # index. In the ordinary recycle branch the session is already popped so
+        # the mark would no-op anyway; the guard makes that intent explicit
+        # rather than leaving it to an ordering accident.
+        if success and key not in self._recycling:
+            self.mark_needs_reinjection(key)
         if self._on_compacted is None:
             return
         try:

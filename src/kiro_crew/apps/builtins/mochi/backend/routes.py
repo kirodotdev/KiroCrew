@@ -435,6 +435,12 @@ async def _handle_pet_event(request: web.Request) -> web.Response:
         )
     sm = _rt().state_manager
     sm.apply_event(event, _now())
+    # The runtime tracks foreground chat-turn activity from this SAME signal so
+    # an ambient pet push is not interleaved into a live turn (see
+    # MochiRuntime.note_chat_lifecycle). Using the route (foreground-only) rather
+    # than state_manager.current is deliberate: background spawns also drive the
+    # state machine, and must not count as the user conversing.
+    _rt().note_chat_lifecycle(event, _now())
     return web.json_response({"ok": True, "state": sm.current})
 
 

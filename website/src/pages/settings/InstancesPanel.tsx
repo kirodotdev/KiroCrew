@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../../api/client'
 import { Card, Btn } from '../../components/ui'
+import SimpleSelect from '../../components/SimpleSelect'
 import { useAppDispatch } from '../../store'
 import { removeWarm } from '../../store/instancesSlice'
 
@@ -127,24 +128,24 @@ function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPort
           {i18nT('pages.settings.instancesPanel.name')}
           <input id="add-instance-name" aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={name} onChange={e => setName(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} />
         </label>
-        <label htmlFor="add-instance-method" className="flex flex-col gap-1 text-[13px] text-muted">
+        {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
+            at no form control. The caption text stays put and the accessible name
+            moves to the trigger's aria-label (same key). */}
+        <div className="flex flex-col gap-1 text-[13px] text-muted">
           {i18nT('pages.settings.instancesPanel.connection_method')}
-          <select
-            id="add-instance-method"
-            aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
-            className={inputCls}
+          <SimpleSelect
+            options={['ssh', 'ssm']}
+            optionLabels={[i18nT('pages.settings.instancesPanel.ssh_tunnel'), i18nT('pages.settings.instancesPanel.aws_ssm_session_manager')]}
             value={method}
-            onChange={e => setMethod(e.target.value as 'ssh' | 'ssm')}
-          >
-            <option value="ssh">{i18nT('pages.settings.instancesPanel.ssh_tunnel')}</option>
-            <option value="ssm">{i18nT('pages.settings.instancesPanel.aws_ssm_session_manager')}</option>
-          </select>
+            onChange={v => setMethod(v as 'ssh' | 'ssm')}
+            aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
+          />
           <span className="text-[12px] text-muted leading-snug">
             {isSsm
               ? i18nT('pages.settings.instancesPanel.tunnels_via_aws_ssm_start_session_no_inbound_ssh')
               : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
           </span>
-        </label>
+        </div>
         {isSsm ? (
           <>
             <label htmlFor="add-instance-ssm-target" className="flex flex-col gap-1 text-[13px] text-muted">

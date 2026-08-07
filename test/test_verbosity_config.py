@@ -1,4 +1,4 @@
-"""Tests for the Concise Responses verbosity control.
+"""Tests for the Response Verbosity control (``default`` / ``concise`` / ``ultra``).
 
 Lives under ``test/`` (the collected root per setup.cfg ``testpaths``) so these
 run in CI. Covers three layers: the ``{{VERBOSITY_BLOCK}}`` prompt-template
@@ -58,6 +58,96 @@ class TestVerbosityBlockPlaceholder:
         with patch("kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg):
             result = ContextBuilder._resolve_prompt_templates("a {{VERBOSITY_BLOCK}} b", "dashboard:x")
         assert result == "a  b"
+
+
+class TestUltraConciseBlock:
+    """``ultra`` is a distinct, stricter level — not an alias of ``concise``."""
+
+    def test_ultra_emits_its_own_block_on_every_transport(self):
+        for key in ("dashboard:abc", "slack:C1:1.2", "cli:local", ""):
+            result = _resolve("{{VERBOSITY_BLOCK}}", key, verbosity="ultra")
+            assert "## Response Verbosity: Punchline First (ADHD reader)" in result
+            assert "reader with ADHD" in result
+            # The concise block must NOT leak in — the branches are exclusive.
+            assert "Concise mode is on" not in result
+
+    def test_ultra_caps_the_opening_not_the_whole_reply(self):
+        """Regression: the cap is a lede budget, NOT a hard whole-response limit.
+
+        An earlier draft said "Hard cap: ~3 sentences of prose per response",
+        which suppressed detail the user actually wanted. The cap must be
+        scoped to the opening and must explicitly license detail after it.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "at most 3 sentences" in result
+        assert "governs the OPENING, not the whole response" in result
+        assert "supporting detail is welcome" in result
+        assert "Hard cap" not in result
+
+    def test_ultra_requires_scannable_structure(self):
+        """Detail after the lede must be scannable, and structure is not padding."""
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "scannable" in result
+        assert "it is not padding" in result
+
+    def test_ultra_bans_narration_and_reasoning_dumps(self):
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "narration" in result
+        assert "not the reasoning chain" in result
+
+    def test_ultra_still_allows_the_chain_for_hard_problems(self):
+        """Regression guard: "conclusion not chain" must not suppress a chain the
+        user needs. An over-strict reading left hard diagnoses unexplainable.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "Do include the chain when the user needs it" in result
+        assert "genuinely" in result and "hard problem" in result
+
+    def test_ultra_still_allows_options_when_no_clear_winner(self):
+        """Regression guard: "take a position" must not suppress genuine options.
+
+        Hedging is the target, not the existence of alternatives — when the
+        recommendation is not a clear winner the contenders ARE the answer.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "not a clear winner" in result
+        assert "Hedging is the thing to avoid, not the existence of options" in result
+
+    def test_ultra_prefers_punchy_text_over_bold_labels(self):
+        """Emphasis is not the mechanism — a punchy first clause is."""
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "a punchy first clause beats a bold label" in result
+        assert "bold lead-in label" not in result
+
+    def test_ultra_never_cuts_a_required_output_format(self):
+        """Regression guard: the "no closing summary" rule must not eat a
+        surface-required trailing element (an options line, a diff block, a
+        PR URL), which renders the response broken rather than terse.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "Required output formats are not filler and are never cut" in result
+        assert "options/choice line" in result
+        assert "diff block" in result
+
+    def test_ultra_is_stricter_than_concise(self):
+        ultra = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        concise = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="concise")
+        assert ultra != concise
+        # concise explicitly ALLOWS a brief progress note; ultra budgets one line.
+        assert "Keep progress signal brief, not absent" in concise
+        assert "Keep progress signal brief, not absent" not in ultra
+
+    def test_ultra_keeps_safety_carveout(self):
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
+        assert "security warnings" in result
+        assert "irreversible" in result
+        assert "multi-step" in result
+        # Correctness carve-out: code/errors are never compressed.
+        assert "verbatim" in result
+
+    def test_unknown_level_falls_back_to_empty(self):
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="bogus")
+        assert result == ""
 
 
 class TestShippedPromptCarriesToken:
@@ -128,6 +218,14 @@ async def test_handler_put_verbosity_concise(handler_app, cfg_file):
         resp = await client.put("/api/dashboard/config", json={"verbosity": "concise"})
         assert resp.status == 200
     assert KiroCrewConfig.load().dashboard.verbosity == "concise"
+
+
+@pytest.mark.asyncio
+async def test_handler_put_verbosity_ultra(handler_app, cfg_file):
+    async with TestClient(TestServer(handler_app)) as client:
+        resp = await client.put("/api/dashboard/config", json={"verbosity": "ultra"})
+        assert resp.status == 200
+    assert KiroCrewConfig.load().dashboard.verbosity == "ultra"
 
 
 @pytest.mark.asyncio

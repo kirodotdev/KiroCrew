@@ -133,7 +133,7 @@ from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
     provider_last_turn_usage,
-    save_conversation_turn,
+    save_conversation_turn_off_loop,
     stream_and_collect,
 )
 from kiro_crew.mcp_gateway import is_gateway_supported
@@ -147,6 +147,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     rewrite_agents,
 )
 from kiro_crew.memory import MemoryStore
+from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
@@ -172,8 +173,7 @@ from kiro_crew.slack.format import (
     build_cron_ack_block,
     build_options_blocks,
     extract_options,
-    split_message,
-    to_slack_mrkdwn,
+    render_for_slack,
 )
 from kiro_crew.slack.handler import (
     _get_agent_for_session,
@@ -301,6 +301,27 @@ _BACKGROUND_APPROVAL_SOURCES = frozenset({"cron", "heartbeat", "taskrunner", "au
 # Slack Block Kit section.text hard limit is 3000 chars.
 # We split cron output at this boundary so each chunk fits in a section block.
 _CRON_MSG_LIMIT = 3000
+
+
+def _heartbeat_slack_parts(title: str, result_text: str) -> list[str]:
+    """Render a heartbeat completion into postable Slack parts.
+
+    Shared by all four heartbeat delivery branches so they cannot drift. Two
+    things it fixes relative to the per-branch f-string it replaces:
+
+    - **It splits.** Those branches posted one unsplit message, and Slack
+      rejects anything past ~40,000 characters outright -- so a long heartbeat
+      result was silently lost rather than truncated.
+    - **It redacts around the transform.** ``_deliver_result`` redacts
+      ``result_text`` at its head, but ``to_slack_mrkdwn`` strips ANSI escapes
+      and that strip can reassemble a credential the escapes had broken up.
+      Redacting again after conversion is what closes that.
+
+    The ``💓 *title*`` caption goes through ``header=``, which redacts it without
+    converting (it is already Slack mrkdwn) and charges it against the limit.
+    """
+    return render_for_slack(result_text, header=f"💓 *{title}*\n\n")
+
 
 # Volatile patterns stripped before hashing cron results for dedup.
 _VOLATILE_RE = re.compile(
@@ -1622,14 +1643,16 @@ class GatewayOrchestrator:
         if not channel:
             logger.warning("Cron %s: no channel resolved for subagent response", parent_key)
             return False
-        # Defense-in-depth: redact at the Slack boundary so this helper is safe
-        # even if a future caller forgets to pre-redact (security-controls).
-        text, _ = redact_exfiltration_urls(text)
-        text, _ = redact_credentials(text)
         # render [OPTIONS: ...] tags as interactive buttons, matching
         # the interactive-handler / subagent-completion / dashboard-mirror paths.
+        # Extracted from the raw text: the tag is a plain-text marker, so pulling
+        # it off before conversion is what makes the controls independent of what
+        # conversion (and its 39,000-char self-truncation) does to the tail.
         text, options = extract_options(text)
-        for part in split_message(to_slack_mrkdwn(text), limit=_CRON_MSG_LIMIT):
+        # render_for_slack IS the redaction boundary here -- it normalises ANSI
+        # first so a credential broken up by escapes cannot be reassembled by the
+        # strip inside to_slack_mrkdwn, and redacts again after conversion.
+        for part in render_for_slack(text, limit=_CRON_MSG_LIMIT):
             await self.slack.post_message(channel, part, thread_ts)
         if options:
             try:
@@ -1746,6 +1769,38 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron command invoked path", exc_info=True
                         )
+                    # Re-run governance at fire time, not just at cron_add authoring
+                    # time. A job vetted when it was scheduled can outlive a later
+                    # policy tightening: mcp_cron._vet_cron_capability_governance and
+                    # _vet_command_governance only run once, at authoring, so a
+                    # ceiling change has no effect on an already-scheduled job until
+                    # someone notices and re-authors it. Denial here does not delete
+                    # the job, so a later policy loosening lets it resume on its own.
+                    from kiro_crew.mcp_cron import (
+                        _vet_command_governance,
+                        _vet_cron_capability_governance,
+                    )
+
+                    gate_reason = _vet_cron_capability_governance() or _vet_command_governance(
+                        job.command
+                    )
+                    if gate_reason:
+                        job.last_status = "error"
+                        job.last_error = redact(gate_reason)
+                        job.record_failure()
+                        try:
+                            sel().log_tool_invocation(
+                                session_key=f"cron:{job.id}",
+                                tool_name="cron_command_exec",
+                                tool_kind="cron_command",
+                                outcome="denied",
+                            )
+                        except Exception:
+                            logger.debug(
+                                "SEL logging failed in cron command fire-time deny path",
+                                exc_info=True,
+                            )
+                        return None
                     cmd_timeout = job.timeout or 300
                     result = await asyncio.wait_for(
                         asyncio.get_running_loop().run_in_executor(
@@ -1813,12 +1868,8 @@ class GatewayOrchestrator:
                     return None
                 except Exception as exc:
                     logger.exception("Command cron '%s' failed: %s", job.name, exc)
-                    # Store the full message (matching the script-cron sibling
-                    # below): the 200-char cap chopped the SandboxUnavailableError
-                    # mid-word, discarding the one sentence naming the fix, so a
-                    # Windows user saw "…Probe detail: not Linux. I" and no remedy.
                     err_str = redact(str(exc))
-                    job.last_error = err_str
+                    job.last_error = err_str[:200]
                     job.last_status = "error"
                     job.record_failure()
                     try:
@@ -2088,6 +2139,18 @@ class GatewayOrchestrator:
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
+                        # Publish this turn's session identity so managed MCP
+                        # tools resolve their parent session. The cron path was
+                        # the ONE turn-running surface that skipped this (every
+                        # other surface publishes — see messaging.identity), and
+                        # under session sharing the runtime env carries no
+                        # KIROCREW_SESSION_KEY and macOS sets no
+                        # KIROCREW_HOST_PID, so the ancestor PID-walk over the
+                        # per-turn pidfile mapping is the only identity source
+                        # left. Without the publish, spawn_run resolved an
+                        # empty parent ("notification only (parent=)") unless an
+                        # unrelated surface happened to be mid-turn.
+                        await publish_turn_identity(self.sessions, agent_session_key)
                         # Off-loop: build_message embeds the episodic query.
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
@@ -2148,9 +2211,33 @@ class GatewayOrchestrator:
                     finally:
                         if _acq:
                             self.sessions.release(agent_session_key)
-                            await self.sessions.reset(agent_session_key)
-                            if self.cron_svc is not None:
-                                self.cron_svc.clear_active_session_key(job.id)
+                            # Mirror the single-agent finally below: defer the
+                            # reset when this agent's sub-agents are still
+                            # running, QUEUED behind the concurrency/stagger
+                            # gate, or mid-injection — _subagent_done resets
+                            # after the last one. Now that this path publishes
+                            # turn identity, a non-final agent's spawn_run
+                            # resolves a REAL parent key, so an unconditional
+                            # reset here would tear down the session a pending
+                            # completion is about to inject into (cold-starting
+                            # a context-free replacement) and the completion's
+                            # own cleanup would clear the reaper registration
+                            # for the NEXT agent's still-in-flight turn.
+                            _has_pending = bool(
+                                self.subagent_mgr
+                                and self.subagent_mgr.has_pending_work_for(agent_session_key)
+                            )
+                            _has_injecting = self._cron_injecting.get(agent_session_key, 0) > 0
+                            if _has_pending or _has_injecting:
+                                logger.info(
+                                    "Cron '%s': deferring reset of %s, subagents pending",
+                                    job.name,
+                                    agent_session_key,
+                                )
+                            else:
+                                await self.sessions.reset(agent_session_key)
+                                if self.cron_svc is not None:
+                                    self.cron_svc.clear_active_session_key(job.id)
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
                 job.last_result = result_text
@@ -2170,6 +2257,10 @@ class GatewayOrchestrator:
                     session_key, job.agent_id or None
                 )
                 _acquired = True
+                # Same identity publish as the sequential site above — the
+                # single-agent cron turn must publish its pidfile mapping or
+                # spawn_run's parent resolution has no source to walk to.
+                await publish_turn_identity(self.sessions, session_key)
                 if job.acked_items:
                     msg += (
                         "\n\n[User has seen and acknowledged ALL of the following — "
@@ -2370,10 +2461,18 @@ class GatewayOrchestrator:
                                 job.created_by or self._owner_id, job.name
                             )
                         if channel:
-                            redacted, _ = redact_exfiltration_urls(result_text)
-                            redacted, _ = redact_credentials(redacted)
-                            post_text = f"⏰ *Cron: {job.name}*\n\n{to_slack_mrkdwn(redacted)}"
-                            parts = split_message(post_text, limit=_CRON_MSG_LIMIT)
+                            # The caption is redacted-but-not-converted by
+                            # render_for_slack's header= seam, which also charges
+                            # it against the limit. Doing it there rather than
+                            # here is the point: a cron name is LLM-authored (the
+                            # agent can create crons via cron_add), and the
+                            # hand-rolled version of this had already forgotten to
+                            # redact it once.
+                            parts = render_for_slack(
+                                result_text,
+                                limit=_CRON_MSG_LIMIT,
+                                header=f"⏰ *Cron: {job.name}*\n\n",
+                            )
                             # First part as Block Kit message with ack button
                             blocks: list[dict] = [
                                 {
@@ -2590,10 +2689,12 @@ class GatewayOrchestrator:
                 assert self.sessions is not None
                 if _acquired:
                     self.sessions.release(session_key)
-                    # Defer session reset if subagents are still running or
+                    # Defer session reset if subagents are still running,
+                    # queued behind the concurrency/stagger gate, or
                     # mid-injection — _subagent_done will reset after the last one.
-                    has_pending = self.subagent_mgr and any(
-                        a.parent_session_key == session_key for a in self.subagent_mgr.running
+                    has_pending = bool(
+                        self.subagent_mgr
+                        and self.subagent_mgr.has_pending_work_for(session_key)
                     )
                     has_injecting = self._cron_injecting.get(session_key, 0) > 0
                     if has_pending or has_injecting:
@@ -2934,9 +3035,7 @@ class GatewayOrchestrator:
         # turn itself already ran, so failures here don't fail the cycle).
         try:
             if response:
-                reply_text, _ = redact_exfiltration_urls(to_slack_mrkdwn(response))
-                reply_text, _ = redact_credentials(reply_text)
-                for part in split_message(reply_text):
+                for part in render_for_slack(response):
                     await self.slack.post_message(channel, part, thread_ts)
         except Exception:
             logger.exception("AutoNudge: slack posting failed for %s (turn ran)", key)
@@ -2947,7 +3046,7 @@ class GatewayOrchestrator:
                 safe_nudge, _ = redact_credentials(safe_nudge)
                 safe_response, _ = redact_exfiltration_urls(response or "")
                 safe_response, _ = redact_credentials(safe_response)
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     self.conv_log,
                     key,
                     safe_nudge,
@@ -3453,8 +3552,8 @@ class GatewayOrchestrator:
                 try:
                     channel = await self.slack.open_dm(self._owner_id)
                     if channel:
-                        post = f"💓 *{title}*\n\n{to_slack_mrkdwn(result_text)}"
-                        await self.slack.post_message(channel, post)
+                        for post in _heartbeat_slack_parts(title, result_text):
+                            await self.slack.post_message(channel, post)
                 except Exception:
                     logger.exception("Heartbeat Slack delivery failed")
             return
@@ -3465,13 +3564,13 @@ class GatewayOrchestrator:
             try:
                 if self.slack and len(parts) == 3:
                     chan, ts = parts[1], parts[2]
-                    post = f"💓 *{title}*\n\n{to_slack_mrkdwn(result_text)}"
-                    await self.slack.post_message(chan, post, ts)
+                    for post in _heartbeat_slack_parts(title, result_text):
+                        await self.slack.post_message(chan, post, ts)
                 elif self.slack and self._owner_id:
                     chan = await self.slack.open_dm(self._owner_id)
                     if chan:
-                        post = f"💓 *{title}*\n\n{to_slack_mrkdwn(result_text)}"
-                        await self.slack.post_message(chan, post)
+                        for post in _heartbeat_slack_parts(title, result_text):
+                            await self.slack.post_message(chan, post)
             except Exception:
                 logger.exception("Heartbeat Slack delivery failed")
             if self.dashboard_state:
@@ -3483,8 +3582,8 @@ class GatewayOrchestrator:
             try:
                 channel = await self.slack.open_dm(self._owner_id)
                 if channel:
-                    post = f"💓 *{title}*\n\n{to_slack_mrkdwn(result_text)}"
-                    await self.slack.post_message(channel, post)
+                    for post in _heartbeat_slack_parts(title, result_text):
+                        await self.slack.post_message(channel, post)
             except Exception:
                 logger.exception("Heartbeat Slack delivery failed")
         if self.dashboard_state:
@@ -4261,12 +4360,12 @@ class GatewayOrchestrator:
                                     self.sessions.get_channel(parent_key) if self.sessions else None
                                 ) or await self.slack.open_dm(self._owner_id)
                                 if channel:
-                                    reply_text, _ = redact_exfiltration_urls(
-                                        to_slack_mrkdwn(response)
-                                    )
-                                    reply_text, _ = redact_credentials(reply_text)
-                                    reply_text, options = extract_options(reply_text)
-                                    for part in split_message(reply_text):
+                                    # OPTIONS off the RAW text, then render: the
+                                    # tag is plain text, so extracting it after
+                                    # conversion made the controls hostage to
+                                    # to_slack_mrkdwn's 39,000-char truncation.
+                                    reply_text, options = extract_options(response)
+                                    for part in render_for_slack(reply_text):
                                         await self.slack.post_message(channel, part, parent_key)
                                     try:
                                         elapsed = (
@@ -4317,7 +4416,7 @@ class GatewayOrchestrator:
                                 safe_announce, _ = redact_credentials(safe_announce)
                                 safe_response, _ = redact_exfiltration_urls(response or "")
                                 safe_response, _ = redact_credentials(safe_response)
-                                save_conversation_turn(
+                                await save_conversation_turn_off_loop(
                                     self.conv_log,
                                     parent_key,
                                     safe_announce,
@@ -4485,10 +4584,17 @@ class GatewayOrchestrator:
                             "Subagent %s: failed to deliver cron response to Slack",
                             info.id,
                         )
-                # Reset only when no subagents running AND no injections pending
-                still_running = self.subagent_mgr and any(
-                    a.parent_session_key == parent_key and a.id != info.id
-                    for a in self.subagent_mgr.running
+                # Reset only when no subagents running or QUEUED AND no
+                # injections pending. Queued spawns (behind the concurrency /
+                # stagger gate) have no SubagentInfo in `running` yet — a
+                # sibling completing while the rest of the wave is still
+                # queued must not reset the parent out from under them.
+                still_running = self.subagent_mgr and (
+                    any(
+                        a.parent_session_key == parent_key and a.id != info.id
+                        for a in self.subagent_mgr.running
+                    )
+                    or self.subagent_mgr.queued_count_for(parent_key) > 0
                 )
                 still_injecting = self._cron_injecting.get(parent_key, 0) > 0
                 if not still_running and not still_injecting:
@@ -4503,11 +4609,20 @@ class GatewayOrchestrator:
                         # still be alive — reaper must be able to target it).
                         # parent_key is "cron:{job_id}" (persistent) or
                         # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
-                        # second colon-separated segment in both cases.
+                        # second colon-separated segment in both cases. Clear
+                        # ONLY when the registration still points at the session
+                        # just reset: an agent-sequence job re-registers the
+                        # NEXT agent's key (cron:{job_id}:{agent}) while a prior
+                        # agent's deferred reset is still pending, and an
+                        # unconditional clear here would strip the reaper's
+                        # handle on that still-in-flight turn.
                         cron_svc = getattr(self, "cron_svc", None)
                         if cron_svc is not None:
                             parts = parent_key.split(":", 2)
-                            if len(parts) >= 2:
+                            if (
+                                len(parts) >= 2
+                                and cron_svc.get_active_session_key(parts[1]) == parent_key
+                            ):
                                 cron_svc.clear_active_session_key(parts[1])
                     except Exception:
                         logger.exception(

@@ -9,7 +9,8 @@ import { useRef } from 'react'
 import { Plus, Trash2, X } from 'lucide-react'
 
 import { i18nT } from '../../../i18n/t'
-import { Badge, Btn, Input, Select, SendBtn } from '../../../components/ui'
+import SimpleSelect from '../../../components/SimpleSelect'
+import { Badge, Btn, Input, SendBtn } from '../../../components/ui'
 import { PRIORITY_LABEL_KEY, type Task, type TaskPriority } from '../api'
 
 const PRIORITIES: TaskPriority[] = ['high', 'medium', 'low']
@@ -98,17 +99,19 @@ export default function TaskSidebar({ tasks, onClose, onAdd, onUpdate, onDelete 
                     }
                   }}
                 />
-                <Select
+                <SimpleSelect
+                  options={PRIORITIES}
+                  optionLabels={PRIORITIES.map(priority =>
+                    i18nT(PRIORITY_LABEL_KEY[priority]),
+                  )}
                   value={task.priority}
                   aria-label={i18nT('apps.meetings.taskSidebar.priorityLabel')}
-                  onChange={e => onUpdate(task.id, { priority: e.target.value as TaskPriority })}
-                >
-                  {PRIORITIES.map(priority => (
-                    <option key={priority} value={priority}>
-                      {i18nT(PRIORITY_LABEL_KEY[priority])}
-                    </option>
-                  ))}
-                </Select>
+                  onChange={value => onUpdate(task.id, { priority: value as TaskPriority })}
+                  // The old select carried `flexShrink: 0` from the shared wrapper:
+                  // the description Input beside it is `flex-1`, so the priority
+                  // picker must keep its own width instead of being squeezed.
+                  style={{ flex: '0 0 auto', minWidth: 110 }}
+                />
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={priorityBadge(task.priority)}>

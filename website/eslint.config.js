@@ -43,6 +43,43 @@ export default [
         }],
       }],
       'no-console': 'warn',
+      // A native <select> renders an OS-drawn popup: it ignores every theme
+      // token, cannot be styled per row, and looks nothing like the rest of the
+      // dashboard. Every dropdown goes through the shared Radix components —
+      // SettingsSelect / SimpleSelect / SearchableSelect / DropdownMenu. See
+      // website/docs/page-layout.md §Forms.
+      //
+      // 'error', not 'warn', on purpose: the tree is at zero, so this is a
+      // hard-zero gate rather than a stored count, and it stays out of the
+      // --max-warnings budget where a real regression would be indistinguishable
+      // from an unrelated no-explicit-any.
+      'no-restricted-syntax': ['error', {
+        selector: "JSXOpeningElement[name.name='select']",
+        message: 'No native <select> — its popup is drawn by the OS and ignores the theme. Use SimpleSelect, SearchableSelect, SettingsSelect, or DropdownMenu. See website/docs/page-layout.md.',
+      }],
+    },
+  },
+  {
+    // The Mochi sub-windows (settings.html / avatar.html / panel.html) are
+    // separate Electron entry points. Each ships its OWN inline <style> block
+    // with hardcoded colors and the system font stack, and loads neither
+    // Tailwind nor the theme tokens — so the shared token-based dropdowns would
+    // render unstyled there. They keep their native selects until that renderer
+    // is brought onto the dashboard's styling.
+    files: ['src/apps/mochi/src/renderer/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
+  {
+    // Test doubles are exempt: a `vi.mock` that swaps a portalled Radix dropdown
+    // for a plain <select> is the ESTABLISHED way to make one driveable in jsdom
+    // (Radix commits discrete events through flushSync, which throws inside
+    // Testing Library's act() — see src/test/CrewEditorSelect.test.tsx). Nothing
+    // here renders to a user.
+    files: ['src/**/*.test.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': 'off',
     },
   },
 ]

@@ -141,6 +141,11 @@ export default [
       // user-visible copy ever added to THIS path will not be reported — keep the
       // module parser-facing only.
       'src/apps/pptx-maker/lib.ts',
+      // Emits runnable shell text, not copy: the output is pasted into a terminal
+      // and executed, so translating a `curl` invocation, an `openssl` flag or a
+      // header name would produce a snippet that fails. Exempted by exact path;
+      // the Webhooks page itself remains fully gated.
+      'src/pages/webhooks/requestExamples.ts',
       // Model-facing, not user-facing: `planningInstructionForMode` returns the
       // behaviour instruction embedded in the pet's planning PROMPT. Translating it
       // would send the agent a localized instruction while the rest of its prompt
@@ -192,6 +197,10 @@ export default [
       // module parser-facing only, and keep it DOM-free, which is the property
       // that makes that easy to check.
       'src/hooks/themeCss.ts',
+      // Same rationale, different convention: this app keeps its seed prompts in a
+      // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
+      // payload sent over the wire, never rendered.
+      'src/apps/*/lib/prompts.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -456,6 +465,22 @@ export default [
               // presses, so translating it would mislabel their keyboard. Anchored and
               // enumerated, not a pattern: ordinary copy cannot match it.
               '^(Ctrl|Alt|Shift|Cmd|Win)$',
+              // Wire-protocol marker, not copy: the backend stamps `QUEUED:<fp>` onto a
+              // `pr` value that was queued rather than drafted
+              // (`spine/profile.py`: `return f"QUEUED:{fingerprint}"`), and the client only
+              // ever `startsWith()`-matches it. Translating it would break the match — the
+              // string is compared, never shown. Anchored with the colon so it cannot
+              // swallow the word "queued" used as prose.
+              '^QUEUED:$',
+              // Persisted IDENTITY, not copy: this prefix builds the chat-folder NAME that
+              // is also the lookup key (`folders.find(f => f.name === name)`, because there
+              // is no upsert endpoint). Translating it would make a language switch fail to
+              // find the existing folder and silently create a second one per language,
+              // orphaning every prior session. Anchored WITHOUT the trailing space: the
+              // plugin trims the literal before matching (`no-literal-string.js`: `const
+              // trimed = value.trim()`), so a pattern that requires the space can never
+              // match. Verified — the space-bearing version left the warning in place.
+              '^Auto-Improve -$',
             ],
           },
 
@@ -579,6 +604,10 @@ export default [
               // Icon component factory: the string argument is a React DevTools
               // displayName, not user-visible copy.
               '^makePanelIcon$',
+              // Built-in surface fallback labels and group buckets are registry
+              // machine values. The helper is deliberately explicit and narrow;
+              // rendered badgeLabel/activityLabel strings never pass through it.
+              '^surfaceMachineValue$',
               // A per-app `request` wrapper takes an ENDPOINT PATH — the same class as
               // the `fetch` exclusion above, and the only thing standing between a
               // route string and the fetch it performs. Anchored, so it cannot match a

@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
+import SimpleSelect from './SimpleSelect'
 import type { CronJob } from '../types'
 import type { CronPrefill } from '../utils/schedulePresets'
-import { SaveCreateLabel, CRON_SEL, expandDow } from '../utils/cronUtils'
+import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 
 import { i18nT } from '../i18n/t'
 import { fmtWeekday } from '../i18n/format'
@@ -164,6 +165,20 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
   const jobKind = defaults.jobKind
   const isLlmless = jobKind === 'script' || jobKind === 'command'
 
+  /** Model-override rows as the two parallel arrays `SimpleSelect` takes.
+   *
+   *  "" (inherit) is the `clearLabel` row rather than an option, so `options`
+   *  holds only real model names. A model already saved on the job that the
+   *  backend no longer advertises is prepended — same position the old
+   *  `<option>` held — so an existing override never silently disappears from
+   *  the picker. Both layouts render this list, so it is built once. */
+  const modelOptions = useMemo(() => {
+    const values = modelList.map(m => m.name)
+    const labels = modelList.map(m => m.description || m.name)
+    if (model && !values.includes(model)) { values.unshift(model); labels.unshift(model) }
+    return { values, labels }
+  }, [modelList, model])
+
   const submit = async () => {
     setError(''); setSaving(true)
     const f = { name, message: msg, agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
@@ -185,6 +200,30 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
   if (submitRef) submitRef.current = submit
 
   const vertical = layout === 'vertical'
+
+  /** The job's timezone picker, rendered identically by the weekly and the
+   *  cron-expression branch (it was the same markup twice).
+   *
+   *  `TIMEZONES` is a curated 15-zone fast-pick list, not the IANA set, so this
+   *  is a `SimpleSelect` — the searchable variant is for the full host list
+   *  (see `TimezoneSelect`). The stored zone is unioned in at the front so a
+   *  job saved with a zone outside the curated list keeps it. */
+  const tzOptions = Array.from(new Set([tz, ...TIMEZONES]))
+  const tzSelect = (
+    <SimpleSelect
+      aria-label={i18nT('components.jobForm.timezone')}
+      options={tzOptions}
+      optionLabels={tzOptions.map(z => z.replace(/_/g, ' '))}
+      value={tz}
+      onChange={setTz}
+      // The vertical (Schedule sidebar) layout runs its row at 12px; without this
+      // the trigger would sit at the shared `text-sm` default while every sibling
+      // stayed 12px. The horizontal layout keeps the default and takes a fixed
+      // flex basis instead.
+      className={vertical ? 'text-[12px]' : undefined}
+      style={vertical ? {} : { flex: '0 0 200px' }}
+    />
+  )
 
   return (
     <div className="flex flex-col gap-3">
@@ -213,15 +252,23 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
           <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} />
-          <select className={CRON_SEL} aria-label={i18nT('components.jobForm.model')} value={model} onChange={e => setModel(e.target.value)}>
-            <option value="">{i18nT('components.jobForm.model_inherit')}</option>
-            {model && !modelList.some(o => o.name === model) && <option value={model}>{model}</option>}
-            {modelList.map(m => <option key={m.name} value={m.name}>{m.description || m.name}</option>)}
-          </select>
+          <SimpleSelect
+            options={modelOptions.values}
+            optionLabels={modelOptions.labels}
+            value={model}
+            onChange={setModel}
+            clearLabel={i18nT('components.jobForm.model_inherit')}
+            aria-label={i18nT('components.jobForm.model')}
+          />
           <Input placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
-          <select className={CRON_SEL} value={approvalMode} onChange={e => setApprovalMode(e.target.value)}>
-            <option value="">{i18nT('components.jobForm.approval_default')}</option><option value="auto">{i18nT('components.jobForm.auto')}</option>
-          </select>
+          <SimpleSelect
+            aria-label={i18nT('components.jobForm.approval')}
+            options={['auto']}
+            optionLabels={[i18nT('components.jobForm.auto')]}
+            value={approvalMode}
+            onChange={setApprovalMode}
+            clearLabel={i18nT('components.jobForm.approval_default')}
+          />
           <label htmlFor="jobform-silent" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-silent" aria-label={i18nT('components.jobForm.silent')} type="checkbox" checked={silent} onChange={e => setSilent(e.target.checked)} /> {i18nT('components.jobForm.silent')}</label>
           <label htmlFor="jobform-strict-schedule" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-strict-schedule" aria-label={i18nT('components.jobForm.strict_schedule')} type="checkbox" checked={strictSchedule} onChange={e => setStrictSchedule(e.target.checked)} /> {i18nT('components.jobForm.strict_schedule')}</label>
           <label htmlFor="jobform-hide-in-chat" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-hide-in-chat" aria-label={i18nT('components.jobForm.hide_in_chat')} type="checkbox" checked={hideInChat} onChange={e => setHideInChat(e.target.checked)} /> {i18nT('components.jobForm.hide_in_chat')}</label>
@@ -231,30 +278,32 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
       {/* Schedule */}
       {vertical && <div className="flex flex-col gap-0.5"><span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.schedule')}</span><span className="text-[11px] text-muted/70">{i18nT('components.jobForm.how_often_this_job_runs')}</span></div>}
       <div className={`flex gap-2 items-center flex-wrap ${vertical ? '' : ''}`}>
-        <select className={CRON_SEL} value={schedMode} onChange={e => setSchedMode(e.target.value as 'interval' | 'weekly' | 'cron')}>
-          <option value="interval">{i18nT('components.jobForm.every_interval')}</option>
-          <option value="weekly">{i18nT('components.jobForm.weekly_schedule')}</option>
-          <option value="cron">{i18nT('components.jobForm.cron_expression')}</option>
-        </select>
+        <SimpleSelect
+          options={['interval', 'weekly', 'cron']}
+          optionLabels={[i18nT('components.jobForm.every_interval'), i18nT('components.jobForm.weekly_schedule'), i18nT('components.jobForm.cron_expression')]}
+          value={schedMode}
+          onChange={v => setSchedMode(v as 'interval' | 'weekly' | 'cron')}
+          aria-label={i18nT('components.jobForm.schedule')}
+        />
         {schedMode === 'interval' ? (<>
           <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
-          <select className={CRON_SEL} value={intUnit} onChange={e => setIntUnit(e.target.value as 'minutes' | 'hours' | 'days')}>
-            <option value="minutes">{i18nT('components.jobForm.minutes')}</option><option value="hours">{i18nT('components.jobForm.hours')}</option><option value="days">{i18nT('components.jobForm.days')}</option>
-          </select>
+          <SimpleSelect
+            aria-label={i18nT('components.jobForm.every_interval')}
+            options={['minutes', 'hours', 'days']}
+            optionLabels={[i18nT('components.jobForm.minutes'), i18nT('components.jobForm.hours'), i18nT('components.jobForm.days')]}
+            value={intUnit}
+            onChange={v => setIntUnit(v as 'minutes' | 'hours' | 'days')}
+          />
         </>) : schedMode === 'weekly' ? (<>
           <div className="flex gap-1 flex-wrap">{dayNames().map((d, i) => (
             <button key={d} type="button" onClick={() => toggleDay(i + 1)} className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${weekDays.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
           ))}</div>
           <span className="text-muted text-[13px]">{i18nT('components.jobForm.at')}</span>
           <Input type="time" style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
-          <select className={`${CRON_SEL} ${vertical ? 'text-[12px]' : ''}`} style={vertical ? {} : { flex: '0 0 200px' }} value={tz} onChange={e => setTz(e.target.value)}>
-            {Array.from(new Set([tz, ...TIMEZONES])).map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
-          </select>
+          {tzSelect}
         </>) : (<>
           <Input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
-          <select className={`${CRON_SEL} ${vertical ? 'text-[12px]' : ''}`} style={vertical ? {} : { flex: '0 0 200px' }} value={tz} onChange={e => setTz(e.target.value)}>
-            {Array.from(new Set([tz, ...TIMEZONES])).map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
-          </select>
+          {tzSelect}
         </>)}
         {!vertical && !externalSubmit && <SendBtn onClick={submit} disabled={saving}>{saving ? i18nT('components.jobForm.saving') : (job ? i18nT('components.jobForm.save') : i18nT('components.jobForm.add'))}</SendBtn>}
       </div>
@@ -272,13 +321,19 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
         </>)}
         {!isLlmless && (
         <div className="flex flex-col gap-1">
-          <label className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.model')}</label>
+          {/* A <span>, not a <label>: the control below renders a button, which
+              a <label> cannot associate with — the accessible name rides on
+              aria-label instead. Matches every sibling field in this form. */}
+          <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.model')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.override_the_model_for_this_job_leave_on_inherit')}</span>
-          <select className={CRON_SEL} aria-label={i18nT('components.jobForm.model')} value={model} onChange={e => setModel(e.target.value)}>
-            <option value="">{i18nT('components.jobForm.inherit_from_agent')}</option>
-            {model && !modelList.some(o => o.name === model) && <option value={model}>{model}</option>}
-            {modelList.map(m => <option key={m.name} value={m.name}>{m.description || m.name}</option>)}
-          </select>
+          <SimpleSelect
+            options={modelOptions.values}
+            optionLabels={modelOptions.labels}
+            value={model}
+            onChange={setModel}
+            clearLabel={i18nT('components.jobForm.inherit_from_agent')}
+            aria-label={i18nT('components.jobForm.model')}
+          />
         </div>
         )}
         <div className="flex flex-col gap-1">
@@ -287,13 +342,18 @@ export default function JobForm({ job, prefill, agents, defaultAgent, onSaved, l
           <Input id="jobform-channel" aria-label={i18nT('components.jobForm.channel_id')} value={channel} onChange={e => setChannel(e.target.value)} placeholder={i18nT('components.jobForm.optional')} />
         </div>
         {!isLlmless && (
-        <label htmlFor="jobform-approval" className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.approval')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.how_tool_calls_are_approved_during_execution')}</span>
-          <select id="jobform-approval" className={CRON_SEL} value={approvalMode} onChange={e => setApprovalMode(e.target.value)}>
-            <option value="">{i18nT('components.jobForm.default')}</option><option value="auto">{i18nT('components.jobForm.auto_approve')}</option>
-          </select>
-        </label>
+          <SimpleSelect
+            options={['auto']}
+            optionLabels={[i18nT('components.jobForm.auto_approve')]}
+            value={approvalMode}
+            onChange={setApprovalMode}
+            clearLabel={i18nT('components.jobForm.default')}
+            aria-label={i18nT('components.jobForm.approval')}
+          />
+        </div>
         )}
         <SettingsToggle
           label={i18nT('components.jobForm.silent_mode')}

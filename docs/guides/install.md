@@ -82,6 +82,13 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
+`stable` suits everyone, `insider` is for power users who want features days to
+weeks early and accept the new bugs that arrive with them, and `nightly` is
+untested `main` HEAD for us and contributors. The
+[Release channels](../../README.md#release-channels) table has the full
+comparison; re-running the installer with a different `--channel` is how a CLI
+install moves between lanes.
+
 The installer verifies the wheel's digest against the signed manifest and
 refuses to install on a mismatch; there is no checksum-only fallback. It uses
 `pipx` when available, otherwise it creates a managed venv **beside** the data
@@ -377,6 +384,14 @@ AppArmor is not an active LSM, when the sysctl is not `1`, when
 rule needs 4.x or newer). So on Debian, Arch, RHEL and Amazon Linux nothing
 changes.
 
+**Running the gateway outside systemd** (for example `kirocrew gateway` in a
+terminal) does not pick up the profile, because systemd is what applies it —
+and there is no unprivileged way to enter it yourself. `aa_change_onexec()` into
+a named profile is not permitted for an ordinary unconfined user, and `aa-exec`
+does **not** fail when it cannot transition: it execs the command unconfined, so
+`aa-exec -p kirocrew-userns -- kirocrew gateway` appears to work and changes
+nothing. Run the gateway as the service instead.
+
 ### The AppImage (desktop app) needs its own profile
 
 The profile above is applied **by systemd**, so it covers the installed service
@@ -484,6 +499,12 @@ python3 -c "
 import kiro_crew.sandbox as sb
 sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
 ```
+
+`kirocrew doctor` reports the same verdict without the one-liner, and the
+dashboard's **Sandbox unavailable** screen names the mechanism and the command
+for it directly — the probe classifies the failing step into one of
+`apparmor_userns`, `max_user_namespaces`, `userns_denied` or `no_user_ns`, which
+is the row of the table above that applies to you.
 
 ## Troubleshooting
 

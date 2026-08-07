@@ -54,6 +54,7 @@ import NotificationDetailPanel from './components/notifications/NotificationDeta
 import NotificationFeed from './components/notifications/NotificationFeed'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
+import WebhooksPage from './pages/WebhooksPage'
 import CapabilitiesPage from './pages/CapabilitiesPage'
 import KnowledgePage from './pages/KnowledgePage'
 import ArtifactsPage from './pages/ArtifactsPage'
@@ -86,7 +87,7 @@ import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
 import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
-import { FEATURE_REQUEST_PROMPT } from './prompts/featureRequest'
+import { FEATURE_REQUEST_PROMPT_WITH_SKILL, FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useCommandPalette } from './hooks/useCommandPalette'
@@ -98,7 +99,7 @@ import Modal from './components/Modal'
 import ReportProblemModal from './components/ReportProblemModal'
 
 import { i18nT } from './i18n/t'
-import { appPageLabel } from './components/appstore/appManifest'
+import { appNavTarget } from './appNav'
 import { fmtCompact, fmtNumber, fmtPercent } from './i18n/format'
 type LogSubscribeFn = (cb: ((data: { level: string; msg: string }) => void) | null) => void
 
@@ -464,7 +465,22 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
     >
       {badge}
       {iconEl}
-      {!collapsed && <span className="whitespace-nowrap overflow-hidden">{label}</span>}
+      {/* `aria-label` carries the FULL label: this span is `whitespace-nowrap overflow-hidden`, so
+          a translation longer than the rail is silently cut off with no way to read it. Surfaced by
+          the render gate under the en-XA pseudolocale at 2.2x once a new app entry narrowed the
+          row (`layout/clipped-without-title`), which accepts `title` OR `aria-label`. Deliberately
+          `aria-label`, NOT `title`: a page-wide `getByTitle('Settings'/'Board'/…)` in another app's
+          Playwright specs (ops-mission-control) matches on `title`, and a sidebar nav item titled
+          the same as one of those segment names would be clicked instead of the segment. `label`
+          is already the resolved, translated string. */}
+      {!collapsed && (
+        <span
+          aria-label={typeof label === 'string' ? label : undefined}
+          className="whitespace-nowrap overflow-hidden"
+        >
+          {label}
+        </span>
+      )}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
@@ -547,7 +563,14 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
       onBlur={hideTip}
     >
       <span className="w-4 h-4 flex items-center justify-center shrink-0 opacity-70"><Icon size={16} /></span>
-      {!collapsed && <span className="whitespace-nowrap overflow-hidden">{labelText}</span>}
+      {/* Same reason as the nav-item label above: clipped by `whitespace-nowrap
+          overflow-hidden`, so the full string lives on `aria-label` (not `title` — see the
+          getByTitle collision note on the NavItem span above). */}
+      {!collapsed && (
+        <span aria-label={labelText} className="whitespace-nowrap overflow-hidden">
+          {labelText}
+        </span>
+      )}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
@@ -1081,44 +1104,38 @@ export default function App() {
     api.listApps()
       .then((apps: AppListEntry[]) => {
         const items = apps
-          .filter(a => a.enabled && (a.manifest?.ui?.pages?.length ?? 0) > 0)
           .flatMap(a => {
-            const page = a.manifest!.ui!.pages![0]
-            const isBuiltin = a.origin === 'builtin'
-            const isOrphaned = !!a.orphaned
-            // A builtin that ships a dynamic UI bundle (manifest.ui.entry) has no
-            // native compiled surface — route it through AppHost like an installed
-            // app. Native builtins (no ui.entry) use their registered surface route.
-            const hasDynamicUI = !!a.manifest?.ui?.entry
-            const dynamicApp = !isBuiltin || hasDynamicUI
-            // Orphaned apps route to migration page; native builtins use their
-            // surface route; dynamic-UI builtins + installed apps use /apps/{name}.
-            const path = isOrphaned
-              ? `/apps/migrate/${a.name}`
-              : dynamicApp ? `/apps/${a.name}` : page.route
-            const iconName = page.icon || ''
+            // Eligibility, route, id and label come from the shared derivation in
+            // `appNav.ts` — the palette's Apps provider resolves destinations
+            // through the same functions, so the rail and the palette cannot send
+            // a user to different places for the same app. Only the icon is built
+            // here, because the rail tints orphaned apps and sizes its glyph for a
+            // 16px row.
+            const target = appNavTarget(a)
+            if (!target) return []
+            const iconName = target.iconName
             // Prefer the app's custom top-level iconUrl (an absolute
             // /app-assets/... path — the same source the App Store card renders
             // via AppIcon) so builtin colorful SVG icons also show in the left
             // nav. Fall back to a page-relative ui/ icon (installed apps), then
             // the builtin lucide glyph, then the generic package icon.
-            const customIconUrl = a.manifest?.iconUrl || ''
-            const builtinIcon = isBuiltin ? getBuiltinIcon(iconName) : undefined
+            const customIconUrl = target.iconUrl
+            const builtinIcon = target.builtin ? getBuiltinIcon(iconName) : undefined
             const baseIcon = customIconUrl
               ? <AppIcon iconUrl={customIconUrl} icon={iconName} size={16} />
-              : page.iconUrl
-                ? <img src={'/apps/' + a.name + '/ui/' + page.iconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
+              : target.pageIconUrl
+                ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
                 : builtinIcon
                   ? builtinIcon
                   : <Package size={16} />
             // Orphaned apps get a warn-colored icon to signal migration needed
-            const icon = isOrphaned
+            const icon = target.orphaned
               ? <span className="text-warn">{baseIcon}</span>
               : baseIcon
             return [{
-              path,
-              id: dynamicApp ? `app-${a.name}` : a.name,
-              label: appPageLabel(a.name, page.label, a.displayName),
+              path: target.route,
+              id: target.id,
+              label: target.label,
               group: 'Apps',
               icon,
             }]
@@ -1488,10 +1505,18 @@ export default function App() {
   }, [])
 
   const requestFeature = useCallback(async () => {
+    // Resolve skill availability in the dashboard so the agent never needs
+    // to probe the filesystem (which would trigger a tool-approval prompt).
+    let msg = FEATURE_REQUEST_PROMPT_FALLBACK
+    try {
+      const skills: { name: string }[] = await api.skills()
+      if (skills.some(s => s.name === 'feature-request')) {
+        msg = FEATURE_REQUEST_PROMPT_WITH_SKILL
+      }
+    } catch { /* skill list unavailable — use the self-contained fallback */ }
     const result = await dispatch(createSlot(undefined)).unwrap()
     const slot = result.key
     navigate('/chat')
-    const msg = FEATURE_REQUEST_PROMPT
     dispatch(appendMessage({ role: 'user', content: i18nT('app.i_d_like_to_request_a_feature'), cls: '', ts: new Date().toISOString() }))
     dispatch(setSlotRunning(true))
     try {
@@ -1545,7 +1570,9 @@ export default function App() {
   const closeMobileNav = isMobile ? () => setMobileNavOpen(false) : undefined
   const activePath = location.pathname
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
-  const needsFixedHeight = isChat || activePath === '/settings' || activePath === '/developer' || activePath === '/capabilities'
+  // /webhooks is a full-height rail-and-detail shell (like /capabilities), so it
+  // owns its own scrolling and must not sit inside <main>'s scroll container.
+  const needsFixedHeight = isChat || activePath === '/settings' || activePath === '/developer' || activePath === '/capabilities' || activePath === '/webhooks'
 
   // Render one standard nav row (used by the top-fixed mains, the Apps list,
   // and the bottom-fixed section). Active-state, mobile close, chat pin
@@ -2391,6 +2418,7 @@ export default function App() {
             <Route path="/tasks" element={<TasksRedirect />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/hooks" element={<HooksPage />} />
+            <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />
             {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
             <Route path="/instances" element={<Navigate to="/settings?tab=instances" replace />} />

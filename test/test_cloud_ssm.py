@@ -75,8 +75,10 @@ class TestOpenPortForward:
 class TestKillPortForward:
     def test_kills_whole_group_incl_plugin_child(self, tmp_path):
         # The tunnel is spawned start_new_session=True, so the plugin child is in
-        # the same group. kill_port_forward must reap the WHOLE group — a plain
-        # terminate() would leave the plugin (holding the forwarded port) alive.
+        # the wrapper's group. kill_port_forward must reap the WHOLE tree — a
+        # plain terminate() would leave the plugin (holding the forwarded port)
+        # alive. The mechanism differs per platform (POSIX killpg vs. Windows
+        # `taskkill /T`) but the invariant is the same: no descendant survives.
         import subprocess
         import sys
         import time
@@ -106,10 +108,11 @@ class TestKillPortForward:
             time.sleep(0.1)
         child_pid = int(pidfile.read_text(encoding="utf-8").strip())
 
-        # `platform_compat.pid_exists`, NOT `os.kill(pid, 0)`: on Windows that call
-        # TERMINATES the target rather than probing it, so the helper this test used to
-        # define killed the very process whose survival it was asserting about — the probe
-        # was the experiment. The shim uses OpenProcess(QUERY_LIMITED_INFORMATION) there.
+        # `platform_compat.pid_exists`, NOT `os.kill(pid, 0)`: on Windows signal 0
+        # is signal.CTRL_C_EVENT, which CPython routes to
+        # GenerateConsoleCtrlEvent — a console-group signal whose return value
+        # says nothing about whether pid exists. The shim uses OpenProcess +
+        # GetExitCodeProcess there and os.kill(pid, 0) on POSIX.
         _alive = platform_compat.pid_exists
 
         assert _alive(child_pid)
@@ -119,7 +122,71 @@ class TestKillPortForward:
             if not _alive(child_pid):
                 break
             time.sleep(0.1)
-        assert not _alive(child_pid), "plugin child (same group) must be killed"
+        assert not _alive(child_pid), "plugin child (same tree) must be killed"
+
+    def test_escalates_to_kill_when_terminate_does_not_reap(self, monkeypatch):
+        """The SIGKILL escalation must actually run — on Windows too.
+
+        Windows defines no ``signal.SIGKILL``, so naming it as the escalation's
+        call argument raises AttributeError *inside* the handler's own
+        ``try``/``except Exception``, which swallows it and skips ``proc.kill()``
+        entirely. Windows is the platform that reaches this code (via the
+        taskkill fall-through), so the escalation silently became a no-op exactly
+        where it was needed and the plugin kept the forwarded port bound. Signal
+        numbers therefore come from ``platform_compat``, which defines both on
+        every platform. Runs on any platform: taskkill is stubbed to fail so the
+        Windows branch falls through, and the group signal is stubbed to fail so
+        the per-process terminate/kill escalation is what gets exercised.
+        """
+        import subprocess as sp
+
+        called = {"terminate": False, "kill": False}
+
+        class Stubborn:
+            """terminate() never reaps it; only .kill() would."""
+
+            # A pid that is NOT this process: the escalation under test is the
+            # per-process one, so `killpg` must never actually fire (see the
+            # getpgid stub below).
+            pid = 4321
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                called["terminate"] = True
+
+            def kill(self):
+                called["kill"] = True
+
+            def wait(self, timeout=None):
+                raise sp.TimeoutExpired("aws", timeout or 5)
+
+        # taskkill unavailable -> the Windows branch falls through to escalation.
+        monkeypatch.setattr(
+            ssm.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no taskkill"))
+        )
+        # Force the group signal to fail so the per-process path is what runs.
+        # Mandatory on POSIX, where `os.killpg`/`os.getpgid` are REAL: pid 4321
+        # may well belong to an unrelated live process, and the group lookup
+        # would then succeed and SIGKILL a stranger's process group instead of
+        # reaching the `proc.kill()` this test asserts on.
+        monkeypatch.setattr(
+            ssm.os,
+            "getpgid",
+            lambda pid: (_ for _ in ()).throw(ProcessLookupError()),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            ssm.os,
+            "killpg",
+            lambda pgid, sig: (_ for _ in ()).throw(ProcessLookupError()),
+            raising=False,
+        )
+        ssm.kill_port_forward(Stubborn())
+
+        assert called["terminate"], "graceful terminate should be attempted first"
+        assert called["kill"], "escalation must reach proc.kill(), else the port stays bound"
 
     def test_none_and_dead_are_noops(self):
         ssm.kill_port_forward(None)

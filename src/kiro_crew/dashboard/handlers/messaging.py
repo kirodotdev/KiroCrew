@@ -1872,8 +1872,11 @@ async def api_browser_command(request: web.Request) -> web.Response:
     """POST /api/browser/command — run one op against the native browser panel.
 
     Called by the Playwright MCP proxy. Body:
-    ``{"session_key": str, "op": str, "args": object, "timeout_ms"?: int}``.
-    Enqueues the op on the command bus and awaits the native panel's result.
+    ``{"op": str, "host_pid": int, "session_key"?: str, "args"?: object, "timeout_ms"?: int}``.
+    The session is resolved from ``host_pid`` (signed session_pid sidecar, same as
+    ``api_browser_frame``); ``session_key`` is only a fallback for per-session
+    spawns. Enqueues the op on the command bus and awaits the native panel's
+    result.
 
     Responses:
     - 200 ``{"id", "ok": true, "result": <any>}`` — op ran and succeeded;
@@ -1913,23 +1916,55 @@ async def api_browser_command(request: web.Request) -> web.Response:
             resources="invalid-json",
         )
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    session_key = body.get("session_key")
+    fallback_key = body.get("session_key")
     op = body.get("op")
     args = body.get("args")
     timeout_ms = body.get("timeout_ms")
-    if not isinstance(session_key, str) or not session_key or not isinstance(op, str) or not op:
+    if not isinstance(op, str) or not op:
         _sel().log_tool_invocation(
             session_key="dashboard",
             tool_name="browser_command",
             outcome="invalid_input",
             downstream_service="browser",
-            resources="missing session_key/op",
+            resources="missing op",
         )
-        return web.json_response({"error": "session_key and op required", "code": "session_key_and_op_required"}, status=400)
+        return web.json_response({"error": "op required", "code": "op_required"}, status=400)
     if args is not None and not isinstance(args, dict):
         return web.json_response({"error": "args must be an object", "code": "args_must_be_object"}, status=400)
     if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
         timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS
+    # Resolve the AUTHORITATIVE session key from the posting proxy's host pid
+    # (gateway-signed session_pid sidecar), overriding the proxy's frozen-env key
+    # which is EMPTY under the warm pool -- the same resolution api_browser_frame
+    # does. Strip the "dashboard:" prefix so the key matches the BARE slot key the
+    # Electron panel registers via command-drain and dispatches on (see
+    # api_browser_frame for the identical normalization). The proxy-provided
+    # session_key is only a fallback for per-session spawns whose pid does not
+    # resolve.
+    resolved_key = await asyncio.to_thread(
+        _resolve_browse_session_key,
+        body.get("host_pid"),
+    )
+    if resolved_key:
+        session_key = resolved_key.removeprefix("dashboard:")
+    elif isinstance(fallback_key, str):
+        session_key = fallback_key
+    else:
+        session_key = ""
+    if not session_key:
+        # No identifiable session -> no panel we could address. Answer like the
+        # no-panel case (503) so the proxy falls back to Playwright, NOT 400: a
+        # 400 surfaces a hard MCP error to the agent instead of the graceful
+        # mirror path, and a warm-pool worker on a remote/non-Electron host (no
+        # sidecar to resolve) legitimately reaches here on every browser_* call.
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="browser_command",
+            outcome="no_panel",
+            downstream_service="browser",
+            resources=op,
+        )
+        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
     bus = get_command_bus()
     try:
         outcome = await bus.submit(session_key, op, args or {}, timeout_ms=timeout_ms)

@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
-import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, X, Pin, MessageSquare, Clock, Plus } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -22,6 +21,8 @@ import { usePromptsProvider } from './commandPalette/providers/promptsProvider'
 import { useArtifactsProvider } from './commandPalette/providers/artifactsProvider'
 import { useRecentsProvider } from './commandPalette/providers/recentsProvider'
 import { useSettingsProvider } from './commandPalette/providers/settingsProvider'
+import { useAppsProvider } from './commandPalette/providers/appsProvider'
+import { Highlighted } from './commandPalette/Highlighted'
 
 import { i18nT } from '../i18n/t'
 /**
@@ -88,35 +89,19 @@ export interface CommandPaletteProps {
 /** Stable no-op so `useActionsProvider` always gets a defined callback. */
 const NOOP = () => {}
 
+/**
+ * Idle gap before a typed query is dispatched to the providers. Sized against
+ * the cost of a dispatch, not typing feel: one debounced value fans out to
+ * every registered provider (see {@link useAllAggregator}), and Sessions +
+ * Artifacts both content-search server-side.
+ */
+export const SEARCH_DEBOUNCE_MS = 250
+
 /** Composer-style sigil scopes: typing a leading sigil instantly scopes the
  * palette, mirroring the chat composer's `$skill` / `/command` muscle memory.
  * `@` is mapped to Artifacts here (the palette's `@` destination). Value =
  * provider (tab) id. */
 const SIGIL_SCOPE: Record<string, string> = { $: 'skills', '@': 'artifacts', '/': 'actions' }
-
-/**
- * Render `text` with the characters at `indices` emphasised. Each character is
- * its own span/strong node keyed by position — safe (no HTML string building)
- * and good enough for short titles.
- */
-function Highlighted({ text, indices }: { text: string; indices: number[] }): ReactNode {
-  if (indices.length === 0) return text
-  const hit = new Set(indices)
-  const nodes: ReactNode[] = []
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    nodes.push(
-      hit.has(i) ? (
-        <strong key={i} className="text-text-strong font-semibold">
-          {ch}
-        </strong>
-      ) : (
-        <span key={i}>{ch}</span>
-      ),
-    )
-  }
-  return <>{nodes}</>
-}
 
 export default function CommandPalette({
   open,
@@ -165,12 +150,16 @@ export default function CommandPalette({
   const recents = useRecentsProvider()
   // Settings — instant client-side search over the codegen settings registry.
   const settings = useSettingsProvider()
+  // Apps — launch an installed app by name. Destinations come from the shared
+  // `appNav` derivation the left rail uses, so the two cannot disagree.
+  const apps = useAppsProvider()
 
   // Tab strip order (§1): All · Sessions · Knowledge · Skills ·
-  // Prompts, with Artifacts + Pages + Actions riding along after the v1 corpus.
+  // Prompts, with Artifacts + Apps + Pages + Actions riding along after the v1
+  // corpus. Apps sits next to Pages because both are pure navigation targets.
   const tabs = useMemo<ResourceProvider[]>(
-    () => [all, sessions, knowledge, skills, prompts, artifacts, pages, actions, settings],
-    [all, sessions, knowledge, skills, prompts, artifacts, pages, actions, settings],
+    () => [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
+    [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
   )
 
   // Make the per-category providers discoverable by the All aggregator, which
@@ -181,14 +170,19 @@ export default function CommandPalette({
   // Promise.all fan-out and drags every other provider's results with it.
   // Both surface only when scoped (sigil or prefix+Tab), reached directly via
   // the tabs list rather than the aggregator. Re-registration is idempotent.
+  //
+  // Apps IS registered: the list is one small cached request on a key the Apps
+  // page already warms, and "type a name, press Enter to launch" is the whole
+  // point of putting apps in the palette — it has to work from the default tab.
   useEffect(() => {
     registerProvider(sessions)
     registerProvider(prompts)
     registerProvider(artifacts)
+    registerProvider(apps)
     registerProvider(pages)
     registerProvider(actions)
     registerProvider(settings)
-  }, [sessions, prompts, artifacts, pages, actions, settings])
+  }, [sessions, prompts, artifacts, apps, pages, actions, settings])
 
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<string | null>(null)
@@ -373,12 +367,17 @@ export default function CommandPalette({
 
   // Debounce the query into debouncedQuery (empty resets immediately so the
   // recents/quick-switcher shows without lag on open or clear).
+  //
+  // 250ms rather than a tighter window because each debounced value is a fresh
+  // React Query key, and the All tab fans that out to every provider — two of
+  // which content-search server-side. A 150ms window turned typing one word
+  // into five or six full corpus scans that the user never saw the results of.
   useEffect(() => {
     if (query === '') {
       setDebouncedQuery('')
       return
     }
-    const t = setTimeout(() => setDebouncedQuery(query), 150)
+    const t = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(t)
   }, [query])
 

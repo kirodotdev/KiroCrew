@@ -1,9 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, RefreshCw, Sparkles } from 'lucide-react'
+import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, Btn, SearchInput, EmptyState } from '../../components/ui'
+import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, type SkillFormData } from '../../components/SkillForm'
@@ -12,12 +12,26 @@ import SkillBrowserModal from '../../components/SkillBrowserModal'
 import DiffBlock from '../../components/DiffBlock'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
+import SkillContextBudget from './SkillContextBudget'
 
+import { fmtBytes, fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /** Humanize a kebab/snake-case skill name for display. */
 const displayName = (s: Skill) => s.name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+/** A skill only carries injection cost when a trigger can fire it, so the
+ *  control is meaningless for a pinned (`always: true`) skill — the matcher
+ *  skips those entirely — and for sources the dashboard cannot write.
+ *
+ *  `owned === false` is the backend's own write predicate: a skill reached
+ *  through `skills.extra_paths` still reports `source: 'kirocrew'`, but
+ *  `set_inject_on_trigger` refuses to rewrite it. Gating on the reported
+ *  writability, not on source alone, is what keeps the UI from offering a
+ *  toggle that always fails. */
+const canControlInjection = (s: Skill) =>
+  s.source === 'kirocrew' && !s.always && s.owned !== false
 
 /** Short, human label for a skill's provenance — drives the source badge. */
 function sourceLabel(source: Skill['source']): string | null {
@@ -32,6 +46,7 @@ function sourceLabel(source: Skill['source']): string | null {
 export default function SkillsTab() {
   const provider = useProvider()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [creating, setCreating] = useState(false)
   const [formData, setFormData] = useState<SkillFormData>(EMPTY_FORM)
   const [skillFilter, setSkillFilter] = useState('')
@@ -39,6 +54,18 @@ export default function SkillsTab() {
   const [detailEditing, setDetailEditing] = useState(false)
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
+
+  // Deep-linkable view param: ?view=budget swaps to the control plane.
+  // Entering the budget view PUSHES a history entry so browser Back returns to
+  // Skills; leaving via the in-app affordance replaces (pops back cleanly).
+  const viewBudget = searchParams.get('view') === 'budget'
+  const showBudget = () => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', 'budget'); return next })
+  const hideBudget = () => setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('view'); return next }, { replace: true })
+
+  // Light prefetch removed: the Design reviewer correctly noted that firing the
+  // budget endpoint on every Skills-tab mount contradicts the PR's own
+  // justification that Context Budget is a deliberate, user-initiated path.
+  // The doorway label is now static; the data is fetched when the user opens it.
 
   const { data: skills = [], isLoading, isFetching, refetch } = useQuery<Skill[]>({
     queryKey: ['skills'],
@@ -152,7 +179,9 @@ export default function SkillsTab() {
             ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-aim-subtle text-aim border border-aim/30 font-bold shrink-0">{i18nT('pages.overview.skillsTab.package')}</span>
             : s.always
               ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-ok-subtle text-ok font-bold shrink-0">{i18nT('pages.overview.skillsTab.auto')}</span>
-              : <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">{i18nT('pages.overview.skillsTab.on_demand')}</span>}
+              : s.inject_on_trigger === false
+                ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent border border-accent/30 font-bold shrink-0">{i18nT('pages.overview.skillsTab.pointer')}</span>
+                : <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">{i18nT('pages.overview.skillsTab.on_demand')}</span>}
         </div>
         <div className="text-[11px] text-muted font-mono truncate">{s.key}</div>
         {s.loaded_by_agents && s.loaded_by_agents.length > 0 && (
@@ -177,6 +206,9 @@ export default function SkillsTab() {
     </Card>
   </>)
 
+  // Control plane: full-page budget view, deep-linkable via ?view=budget.
+  if (viewBudget) return <SkillContextBudget onBack={hideBudget} />
+
   return (<>
     <PendingSkillsPanel />
     {/* Create Skill Modal */}
@@ -187,7 +219,7 @@ export default function SkillsTab() {
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="ml-auto flex items-center gap-2"><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="ml-auto flex items-center gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
@@ -253,6 +285,7 @@ export default function SkillsTab() {
                     </div>
                   )}
                 </div>
+                <InjectionRow skill={selectedSkill} />
                 <div className="flex-1 min-h-0 p-3">
                   <SkillDirectoryBrowser key={selectedSkill.key} skillKey={selectedSkill.key} skill={selectedSkill} />
                 </div>
@@ -269,8 +302,87 @@ export default function SkillsTab() {
 }
 
 
-/** Pending review queue for auto-generated skill candidates.
- *  Self-contained: its own query + approve/dismiss mutations, so it can be
+/** The full-content-vs-pointer control for one skill, with the cost that makes
+ *  the choice informed.
+ *
+ *  Applies immediately on flip and refetches, matching the poolable-MCP-server
+ *  row rather than the surrounding Edit/Save flow: it is a single boolean whose
+ *  new state is visible at once and whose undo is one more click.
+ *
+ *  Rendered only for a skill the matcher can actually fire and the dashboard can
+ *  write — see `canControlInjection`. */
+function InjectionRow({ skill }: { skill: Skill }) {
+  const qc = useQueryClient()
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (!canControlInjection(skill)) return null
+
+  const inject = skill.inject_on_trigger !== false
+  const size = skill.size_bytes ?? 0
+  const deliveries = skill.deliveries ?? null
+  const spent = deliveries !== null && size ? deliveries * size : null
+
+  const flip = async (next: boolean) => {
+    setError(null)
+    setPending(true)
+    try {
+      await api.setSkillInjectOnTrigger(skill.key, next)
+    } catch {
+      setError(i18nT('pages.overview.skillsTab.injection_update_failed'))
+      setPending(false)
+      return
+    }
+    // Await the refetch before clearing pending: invalidateQueries resolves once
+    // the active query has refetched, and releasing the control earlier would
+    // briefly render the stale value as interactive.
+    await qc.invalidateQueries({ queryKey: ['skills'] })
+    setPending(false)
+  }
+
+  return (
+    <div className="px-4 py-2.5 border-b border-border shrink-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13px] text-text">
+            {i18nT('pages.overview.skillsTab.inject_full_content_on_match')}
+          </div>
+          <div className="text-[11px] text-muted mt-0.5">
+            {inject
+              ? i18nT('pages.overview.skillsTab.injection_on_help')
+              : i18nT('pages.overview.skillsTab.injection_off_help')}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {pending && <Loader2 size={14} className="animate-spin text-accent" />}
+          <Toggle
+            checked={inject}
+            onChange={flip}
+            disabled={pending}
+            label={i18nT('pages.overview.skillsTab.inject_full_content_on_match')}
+          />
+        </div>
+      </div>
+      <div className="mt-2 text-[11px] text-muted font-mono">
+        {deliveries === null
+          ? i18nT('pages.overview.skillsTab.size_no_deliveries', { size: fmtBytes(size) })
+          : i18nT(
+              inject
+                ? 'pages.overview.skillsTab.cost_line'
+                : 'pages.overview.skillsTab.cost_line_frozen',
+              {
+                size: fmtBytes(size),
+                deliveries: String(deliveries),
+                chars: fmtCompact(spent ?? 0),
+              },
+            )}
+      </div>
+      {error && <div className="text-[11px] text-danger mt-1.5">{error}</div>}
+    </div>
+  )
+}
+
+/** Pending review queue for auto-generated skill candidates. *  Self-contained: its own query + approve/dismiss mutations, so it can be
  *  dropped into the Skills tab without touching the main list logic. Renders
  *  nothing when the queue is empty. Each row can be expanded to review the
  *  full SKILL.md body and any bundled script contents BEFORE approving. */

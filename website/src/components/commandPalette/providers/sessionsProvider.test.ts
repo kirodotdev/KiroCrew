@@ -45,6 +45,36 @@ describe('createSessionsProvider — identity & metadata', () => {
   })
 })
 
+describe('createSessionsProvider — sub-threshold queries cost no round trip', () => {
+  // `/api/sessions/search` returns an empty list below SEARCH_MIN_CHARS (2), and
+  // serving that empty list still made the backend walk the corpus. Skipping the
+  // fetch is behavior-preserving because the answer was already always empty.
+  it('does not fetch for a one-character query', async () => {
+    const { d, fetchSessions } = deps()
+    const results = await createSessionsProvider(d).search('k')
+    expect(results).toEqual([])
+    expect(fetchSessions).not.toHaveBeenCalled()
+  })
+
+  it('does not fetch for a query that is only whitespace-padded to length', async () => {
+    const { d, fetchSessions } = deps()
+    expect(await createSessionsProvider(d).search('  k  ')).toEqual([])
+    expect(fetchSessions).not.toHaveBeenCalled()
+  })
+
+  it('still fetches the recents listing for an empty query', async () => {
+    const { d, fetchSessions } = deps()
+    await createSessionsProvider(d).search('')
+    expect(fetchSessions).toHaveBeenCalledWith('')
+  })
+
+  it('fetches once the query reaches the threshold', async () => {
+    const { d, fetchSessions } = deps()
+    await createSessionsProvider(d).search('ki')
+    expect(fetchSessions).toHaveBeenCalledWith('ki')
+  })
+})
+
 describe('createSessionsProvider — result mapping', () => {
   it('maps a backend session to a Result with id, title, subtitle, and highlight indices', async () => {
     const fetchSessions = vi.fn(

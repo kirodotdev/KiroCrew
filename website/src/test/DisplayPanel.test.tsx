@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
@@ -201,6 +201,39 @@ describe('DisplayPanel – theme install', () => {
         type: 'github',
         url: 'https://github.com/u/lcars',
       })
+    })
+    spy.mockRestore()
+  })
+
+  it('picking "Local folder" retargets the install at a filesystem path', async () => {
+    // Regression guard for the native-<select> → SimpleSelect migration: the
+    // source picker is a Radix Select, so a `change` event on the trigger does
+    // nothing — open it, then click the option. The placeholder and the
+    // installTheme payload are the two observable consequences of the state move.
+    const spy = vi
+      .spyOn(api, 'installTheme')
+      .mockResolvedValue({ ok: true, slug: 'lcars' })
+    renderWithProviders(<DisplayPanel />)
+
+    const trigger = screen.getByRole('combobox', { name: 'Theme source' })
+    expect(trigger).toHaveTextContent('GitHub')
+    expect(screen.getByLabelText('Theme source location')).toHaveAttribute(
+      'placeholder',
+      'https://github.com/user/theme'
+    )
+
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('option', { name: 'Local folder' }))
+
+    expect(trigger).toHaveTextContent('Local folder')
+    const location = screen.getByLabelText('Theme source location')
+    expect(location).toHaveAttribute('placeholder', '/path/to/theme')
+
+    fireEvent.change(location, { target: { value: '/srv/themes/lcars' } })
+    fireEvent.click(screen.getByText('Install'))
+
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalledWith({ type: 'local', path: '/srv/themes/lcars' })
     })
     spy.mockRestore()
   })

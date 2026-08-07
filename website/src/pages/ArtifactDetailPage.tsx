@@ -14,6 +14,7 @@ import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
+import SimpleSelect from '../components/SimpleSelect'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import ReadingWidthToggle from '../components/ReadingWidthToggle'
 import { useReadingWidth } from '../hooks/useReadingWidth'
@@ -1350,8 +1351,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   }
   if (!artifact) return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div>
 
-  const sel =
-    'bg-bg-elevated border border-border rounded-md px-2 py-1 text-text text-[12px] font-body outline-none cursor-pointer transition-colors focus-ring'
+  // Version-picker rows as two PARALLEL arrays, newest snapshot first, the order
+  // the <option> list had. `live` leads as a static entry: Live is always-current
+  // state, distinct from any numbered snapshot because in the explicit-snapshot
+  // model saves update Live without bumping versions, so Live can be ahead of the
+  // latest numbered snapshot.
+  const versionsDesc = versions.slice().reverse()
+  const versionOptions = ['live', ...versionsDesc.map(String)]
+  const versionOptionLabels = [
+    i18nT('pages.artifactDetailPage.live'),
+    ...versionsDesc.map((v) => `${i18nT('pages.artifactDetailPage.v')}${v}`),
+  ]
 
   // Cron-source warning shown only while editing — surface the foot-gun
   // (next cron run will create a newer version) without noisy chrome on
@@ -1405,18 +1415,18 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             * would strand a document the user is typing in. Choosing a type also
             * PINS it, stopping the auto-detect from re-typing it later. */}
           {editable ? (
-            <select
-              className="text-[11px] px-1.5 py-0.5 rounded bg-accent-soft border border-accent-soft-border text-accent font-mono cursor-pointer outline-none focus-ring"
-              value={artifact.kind}
-              aria-label={i18nT('pages.artifactDetailPage.document_type')}
-              title={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}
-              disabled={changingKind}
-              onChange={(e) => void changeKind(e.target.value)}
-            >
-              {USER_SELECTABLE_KINDS.map((k) => (
-                <option key={k} value={k}>{k}</option>
-              ))}
-            </select>
+            /* SimpleSelect has no `title` channel, so the hover tooltip moves to
+             * a wrapper element; the accessible name still rides on the trigger
+             * itself via aria-label. */
+            <div title={i18nT('pages.artifactDetailPage.change_how_this_document_is_rendered')}>
+              <SimpleSelect
+                options={USER_SELECTABLE_KINDS}
+                value={artifact.kind}
+                aria-label={i18nT('pages.artifactDetailPage.document_type')}
+                disabled={changingKind}
+                onChange={(v) => void changeKind(v)}
+              />
+            </div>
           ) : (
             <Badge variant="aim">{artifact.kind}</Badge>
           )}
@@ -1494,36 +1504,25 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           )}
           <span className="mc-art-toolbar ml-auto flex items-center gap-2 text-[13px] text-muted">
             <span>{i18nT('pages.artifactDetailPage.version')}</span>
-            <select
-              className={sel}
+            <SimpleSelect
               // Named so it is distinguishable from the document-type control
               // beside it -- both for assistive tech and for tests.
               aria-label={i18nT('pages.artifactDetailPage.version')}
               disabled={saving}
+              options={versionOptions}
+              optionLabels={versionOptionLabels}
               value={selectedVersion === null ? 'live' : String(selectedVersion)}
-              onChange={(e) => {
+              onChange={(raw) => {
                 if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
                 setEditing(false)
                 setEditedContent('')
-                const raw = e.target.value
                 if (raw === 'live') {
                   setSelectedVersion(null)
                 } else {
                   setSelectedVersion(parseInt(raw, 10))
                 }
               }}
-            >
-              {/* Live = always-current state. Distinct from any numbered
-                  snapshot because in the explicit-snapshot model saves
-                  update Live without bumping versions, so Live can be
-                  ahead of the latest numbered snapshot. */}
-              <option value="live">{i18nT('pages.artifactDetailPage.live')}</option>
-              {versions.slice().reverse().map((v) => (
-                <option key={v} value={v}>
-                  {i18nT('pages.artifactDetailPage.v')}{v}
-                </option>
-              ))}
-            </select>
+            />
 
             {/* Revert: only meaningful when viewing a historical version */}
             {!isCurrent && (

@@ -73,6 +73,18 @@ if [ -x "$_kirocrew_dir/ensure-node.sh" ]; then
     elif command -v mise >/dev/null 2>&1; then
         eval "$(mise activate bash 2>/dev/null)" 2>/dev/null || true
     fi
+    # On a host where no version manager can serve a supported Node -- Amazon
+    # Linux 2, whose glibc 2.26 cannot load the official builds -- ensure-node.sh
+    # installs a private toolchain that neither nvm nor mise owns, so the
+    # re-sourcing above cannot surface it. It records the directory it settled on;
+    # consume that marker the way the Makefile and kiro_crew.env.node_bin_dirs()
+    # already do. Without this the checks below miss the node just installed and
+    # the frontend build plus the agent-backend install are skipped.
+    _nbd="$(cat "${KIROCREW_HOME:-$HOME/.kiro/crew}/node-bin-dir" 2>/dev/null || true)"
+    if [ -n "$_nbd" ] && [ -x "$_nbd/node" ]; then
+        export PATH="$_nbd:$PATH"
+    fi
+    unset _nbd
     if _check node; then
         echo "  ✅ node ($(which node))"
     else

@@ -126,6 +126,51 @@ describe('FileExplorerPage', () => {
     await waitFor(() => expect(document.querySelector('.mc-fe-root')).toBeInTheDocument())
     expect(screen.queryByText('src')).not.toBeInTheDocument()
   })
+
+  it('opens at the backend-reported home dir, not the shortest root', async () => {
+    // macOS shape: /opt is the shortest allowed root; home must still win.
+    vi.mocked(fileExplorerApi.health).mockResolvedValue({
+      allowedRoots: ['/Users/u', '/private/tmp', '/home', '/opt'],
+      home: '/Users/u',
+    })
+    vi.mocked(fileExplorerApi.tree).mockResolvedValue({ entries: [] })
+    vi.mocked(fileExplorerApi.gitStatus).mockResolvedValue(null)
+    renderPage()
+    await waitFor(() => expect(fileExplorerApi.tree).toHaveBeenCalledWith('/Users/u', 2))
+  })
+
+  it('recognizes a macOS /Users home from an older backend without `home`', async () => {
+    // Regression: the old heuristic matched only '/home/' and fell back to
+    // the shortest root, which opened /opt on macOS.
+    vi.mocked(fileExplorerApi.health).mockResolvedValue({
+      allowedRoots: ['/Users/u', '/private/tmp', '/home', '/opt'],
+    })
+    vi.mocked(fileExplorerApi.tree).mockResolvedValue({ entries: [] })
+    vi.mocked(fileExplorerApi.gitStatus).mockResolvedValue(null)
+    renderPage()
+    await waitFor(() => expect(fileExplorerApi.tree).toHaveBeenCalledWith('/Users/u', 2))
+  })
+
+  it('still opens the Linux /home/<user> root without `home`', async () => {
+    vi.mocked(fileExplorerApi.health).mockResolvedValue({
+      allowedRoots: ['/home/user', '/tmp', '/home', '/opt'],
+    })
+    vi.mocked(fileExplorerApi.tree).mockResolvedValue({ entries: [] })
+    vi.mocked(fileExplorerApi.gitStatus).mockResolvedValue(null)
+    renderPage()
+    await waitFor(() => expect(fileExplorerApi.tree).toHaveBeenCalledWith('/home/user', 2))
+  })
+
+  it('ignores a `home` that is not an allowed root and uses roots[0]', async () => {
+    vi.mocked(fileExplorerApi.health).mockResolvedValue({
+      allowedRoots: ['/tmp', '/opt'],
+      home: '/nonexistent',
+    })
+    vi.mocked(fileExplorerApi.tree).mockResolvedValue({ entries: [] })
+    vi.mocked(fileExplorerApi.gitStatus).mockResolvedValue(null)
+    renderPage()
+    await waitFor(() => expect(fileExplorerApi.tree).toHaveBeenCalledWith('/tmp', 2))
+  })
 })
 
 // ─── TreeNode ───────────────────────────────────────────────────────────────

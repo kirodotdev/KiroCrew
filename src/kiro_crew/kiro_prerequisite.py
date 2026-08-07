@@ -74,6 +74,16 @@ OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
 # a catalog value"). Served in the status payload so the UI has one source of
 # truth for it rather than hardcoding a second copy that can drift.
 KIRO_CLI_LOGIN_COMMAND = "kiro-cli login"
+# The organization-SSO counterpart, served alongside the bare command so the gate
+# can offer both instead of one ambiguous line. Both flags are load-bearing:
+# ``--use-device-flow`` is what makes the others take effect at all (kiro-cli
+# discards every login flag unless the environment is remote OR that flag is set,
+# falling back to a browser portal), and ``--license pro`` then selects Identity
+# Center directly. The pair cannot yield a Builder ID session, which is the
+# failure this exists to prevent: on the portal, a free Builder ID sits as a
+# visual peer of organization SSO, so a user on an SSO plan can sign in to the
+# wrong tier and only discover it when models are missing.
+KIRO_CLI_SSO_LOGIN_COMMAND = "kiro-cli login --use-device-flow --license pro"
 # Compatibility shim, not live state. Nothing performs an operation any more, but a
 # dashboard loaded BEFORE this change reads ``status.operation.status``
 # unconditionally in its refetch-interval callback — the optional chain there
@@ -215,11 +225,12 @@ class ProcessResult:
     returncode: int | None = None
     timed_out: bool = False
     error: str = ""
-    # ``(kind, detail)`` when the spawn was refused because the sandbox could not
-    # be built — set ONLY from the typed SandboxUnavailableError, never inferred
-    # from host capability. A probe that failed for any other reason leaves this
-    # None, so an unrelated failure can never be misreported as a sandbox problem.
-    sandbox_failure: tuple[str, str] | None = None
+    # ``(kind, detail, remedy)`` when the spawn was refused because the sandbox
+    # could not be built — set ONLY from the typed SandboxUnavailableError, never
+    # inferred from host capability. A probe that failed for any other reason
+    # leaves this None, so an unrelated failure can never be misreported as a
+    # sandbox problem.
+    sandbox_failure: tuple[str, str, str] | None = None
 
 
 @dataclass
@@ -239,6 +250,10 @@ class PrerequisiteStatus:
     docs_url: str = OFFICIAL_INSTALL_DOCS_URL
     # What the user runs to sign in. Kiro Crew never runs it for them.
     login_command: str = KIRO_CLI_LOGIN_COMMAND
+    # The organization-SSO alternative, offered next to ``login_command`` so the
+    # tier is an explicit choice rather than whichever option the sign-in page
+    # happens to make prominent.
+    sso_login_command: str = KIRO_CLI_SSO_LOGIN_COMMAND
     # A Kiro CLI binary that is present and executable but could not be VERIFIED
     # (verification runs the binary inside the sandbox) is a categorically
     # different condition from a missing binary, and a failed sandbox build
@@ -253,6 +268,11 @@ class PrerequisiteStatus:
     # Technical probe reason, e.g. "unshare(CLONE_NEWNS) failed with errno 1
     # (EPERM)". Names the failing step, so it is shown verbatim, untranslated.
     sandbox_detail: str = ""
+    # Machine-readable host mechanism behind a Linux userns denial — one of the
+    # sandbox ``REMEDY_*`` tokens, or "" when unknown. Without it the gate could
+    # only show the raw errno, which is the dead end reported in issue #1660: the
+    # probe knows the fix is an AppArmor profile and the user cannot tell.
+    sandbox_remedy: str = ""
     # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
     # requires these on disk, not merely a viable binary and a good ``whoami``:
     # without them kiro-cli answers every ``session/set_mode`` with
@@ -1122,7 +1142,7 @@ async def _run_process(
         # evidence about why THIS spawn failed.
         await _unlink_off_loop(cleanup_path)
         return ProcessResult(
-            ok=False, error=str(exc), sandbox_failure=(exc.kind, exc.detail)
+            ok=False, error=str(exc), sandbox_failure=(exc.kind, exc.detail, exc.remedy)
         )
     except (OSError, RuntimeError) as exc:
         await _unlink_off_loop(cleanup_path)
@@ -1801,7 +1821,7 @@ class KiroPrerequisiteService:
                     _is_runnable_executable, first_candidate, self._platform
                 )
                 if sandbox_failure is not None and candidate_runnable:
-                    kind, detail = sandbox_failure
+                    kind, detail, remedy = sandbox_failure
                     logger.warning(
                         "Kiro CLI at %s is present and executable but could not be "
                         "verified: the sandbox refused the probe (%s: %s)",
@@ -1823,6 +1843,7 @@ class KiroPrerequisiteService:
                         sandbox_unavailable=True,
                         sandbox_failure_kind=kind,
                         sandbox_detail=detail,
+                        sandbox_remedy=remedy,
                     )
                     self._last_probe_at = self._clock()
                     self._has_probed = True

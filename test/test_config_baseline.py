@@ -100,27 +100,28 @@ class TestBaselineGenerator:
         for entry_dict in data["entries"]:
             keys = set(entry_dict.keys())
             assert required_keys <= keys, (
-                f"Entry {entry_dict.get('path', '?')!r} missing keys: "
-                f"{required_keys - keys}"
+                f"Entry {entry_dict.get('path', '?')!r} missing keys: " f"{required_keys - keys}"
             )
             unexpected = keys - required_keys - optional_keys
             assert not unexpected, (
-                f"Entry {entry_dict.get('path', '?')!r} has unexpected keys: "
-                f"{unexpected}"
+                f"Entry {entry_dict.get('path', '?')!r} has unexpected keys: " f"{unexpected}"
             )
 
-    def test_script_is_runnable_and_produces_valid_json(self) -> None:
+    def test_script_is_runnable_and_produces_valid_json(self, tmp_path: str) -> None:
         """Script is executable via python and produces valid JSON."""
+        out_path = os.path.join(str(tmp_path), "config-baseline.json")
+        env = os.environ.copy()
+        env["KIROCREW_BASELINE_OUTPUT"] = out_path
         result = subprocess.run(
             [sys.executable, _SCRIPT_PATH],
             capture_output=True,
             text=True,
             cwd=_REPO_ROOT,
+            env=env,
             timeout=30,
         )
         assert result.returncode == 0, f"Script failed:\n{result.stderr}"
 
-        out_path = os.path.join(_REPO_ROOT, "config-baseline.json")
         with open(out_path, encoding="utf-8") as f:
             data = json.load(f)  # Validates it's valid JSON
 
@@ -141,8 +142,7 @@ class TestBaselineGenerator:
         entry = entries_by_path.get("slack.reactions.*")
         assert entry is not None, "slack.reactions.* entry missing from baseline"
         assert entry.get("nullable") is True, (
-            "slack.reactions.* must be marked nullable (Optional[str] values); "
-            f"got {entry!r}"
+            "slack.reactions.* must be marked nullable (Optional[str] values); " f"got {entry!r}"
         )
         # And the base type is still 'string' — we didn't break the scalar type contract.
         assert entry["type"] == "string"

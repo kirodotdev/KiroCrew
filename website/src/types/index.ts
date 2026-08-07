@@ -73,6 +73,7 @@ export interface CronJob {
   skip_dates?: string[] | null
   script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
+  folder_id?: string
 }
 
 export interface Lesson {
@@ -81,6 +82,22 @@ export interface Lesson {
 
 export interface Skill {
   key: string; name: string; description: string; always?: boolean; source?: string; package?: string
+  /** False when the skill set `inject_on_trigger: false` — a trigger match then
+   *  contributes a one-line pointer instead of the whole SKILL.md. */
+  inject_on_trigger?: boolean
+  /** Byte length of SKILL.md — half of the injection cost (the other half is
+   *  how many times that body was delivered). */
+  size_bytes?: number
+  /** Times this skill's body was DELIVERED into a prompt. Not trigger matches:
+   *  the ledger records only on delivery, so a false positive and a pointer-only
+   *  skill both count zero. An opted-out skill therefore stops accruing, making
+   *  its figure historical. `null`/absent means no ledger entry, which is NOT
+   *  the same as zero (an entry can also age out of the window). */
+  deliveries?: number | null
+  /** False when the SKILL.md lives outside the directory Kiro Crew owns (e.g. a
+   *  `skills.extra_paths` entry). Such a skill is listed but not ours to rewrite,
+   *  so the injection toggle must not be offered — the endpoint refuses it. */
+  owned?: boolean
   /** Absolute path to SKILL.md on disk, when known. */
   path?: string
   /** Absolute path to the skill folder. */
@@ -89,6 +106,28 @@ export interface Skill {
    *  SKILL.md path.  Empty list means no agent loads it via kiro-cli's
    *  native ``skill://`` loader (it may still load via KiroCrew text-injection). */
   loaded_by_agents?: string[]
+}
+
+/** Response shape for GET /api/skills/budget — the control-plane cost data. */
+export interface SkillBudgetRow {
+  key: string
+  name: string
+  size_bytes: number
+  deliveries: number | null
+  /** null when the cost is not measurable: an `always: true` skill is injected
+   *  every turn but that injection is never recorded in the usage ledger. */
+  chars: number | null
+  inject_on_trigger: boolean
+  always: boolean
+  owned: boolean
+  source: string
+  folded_from?: string[]
+  idle_days: number | null
+}
+export interface SkillBudgetResponse {
+  window_days: number
+  total_chars: number
+  rows: SkillBudgetRow[]
 }
 
 /** A single entry in a skill folder's tree listing. */

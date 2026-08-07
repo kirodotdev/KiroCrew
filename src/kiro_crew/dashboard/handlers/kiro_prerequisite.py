@@ -11,6 +11,7 @@ from aiohttp import web
 
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
+    KIRO_CLI_SSO_LOGIN_COMMAND,
     OFFICIAL_INSTALL_DOCS_URL,
     KiroPrerequisiteService,
     PrerequisiteStatus,
@@ -160,6 +161,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "repair_required": False,
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
             "login_command": KIRO_CLI_LOGIN_COMMAND,
+            "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
             "setup_allowed": False,
             # Redacted like the rest of this block: the failure kind and probe
             # detail describe the HOST's sandbox posture (kernel knobs, errnos),
@@ -169,6 +171,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "sandbox_unavailable": False,
             "sandbox_failure_kind": "",
             "sandbox_detail": "",
+            "sandbox_remedy": "",
             # Redacted for the same reason as the block above, and kept present
             # for the same shape-stability reason: only the owner can act on a
             # missing spec (the repair is an owner-gated POST). A non-owner on an

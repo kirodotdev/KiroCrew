@@ -89,15 +89,32 @@ describe('AgentPillBar', () => {
 
   it('renders the preset picker with the active preset selected', () => {
     mount()
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.value).toBe('standup')
+    // The picker is a Radix Select now, so the selection lives in the trigger's
+    // text, not a `.value` — and 'standup' is the default preset, so it renders
+    // decorated.
+    expect(screen.getByRole('combobox', { name: 'Agent preset' })).toHaveTextContent(
+      'standup (default)',
+    )
   })
 
-  it('reports a preset change', () => {
+  it('reports a preset change', async () => {
     const onPresetChange = vi.fn()
     mount({ onPresetChange })
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'design' } })
+    // A `change` event on the trigger does nothing — open it, then click the option.
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent preset' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'design' }))
     expect(onPresetChange).toHaveBeenCalledWith('design')
+  })
+
+  it('clears the preset back to empty from the "no preset" row', async () => {
+    // The old `<option value="">` is now SimpleSelect's `clearLabel`, which routes
+    // through an internal sentinel. This pins that '' still reaches the callback
+    // rather than the sentinel leaking out.
+    const onPresetChange = vi.fn()
+    mount({ onPresetChange })
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent preset' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'No preset' }))
+    expect(onPresetChange).toHaveBeenCalledWith('')
   })
 
   it('offers to create one when there are no presets', () => {

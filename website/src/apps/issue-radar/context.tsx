@@ -50,6 +50,9 @@ export interface IssueRadarContextValue {
   issues: Issue[]
   repoLabels: RepoLabel[]
   issuesLoading: boolean
+  /** True while the rendered issues are only the cold-start first page and the
+   * full list is still loading behind them (see the progressive first paint). */
+  issuesPartial: boolean
   issuesError: Error | null
   labelsLoading: boolean
   labelsError: Error | null
@@ -114,6 +117,9 @@ export interface IssueRadarContextValue {
   // ── pull requests ──
   pulls: PullRequest[]
   pullsLoading: boolean
+  /** True when `pulls` holds only the cold-open first page (un-enriched) while
+   * the full enriched list loads behind it — the PR twin of `issuesPartial`. */
+  pullsPartial: boolean
   pullsError: Error | null
   refreshPulls: () => void
   pullsRefreshing: boolean
@@ -430,6 +436,27 @@ export function IssueRadarProvider({
     // what is rendered during a fetch that was happening anyway.
     placeholderData: keepWithinRepo,
   })
+  // Progressive first paint. The full issues fetch above paginates the WHOLE open
+  // backlog before it can resolve — tens of `gh` requests on a large repo — so a
+  // COLD open (no cached rows yet) would otherwise sit on a skeleton for seconds.
+  // This fetches only the newest page in one request and feeds it to `issues`
+  // until the authoritative list lands, then stands down.
+  //
+  // Deliberately additive and open-state only: it never feeds `issuesQuery.is
+  // Success`, so the one-shot auto-select and the members gate (both keyed on it)
+  // still wait for the COMPLETE list — a partial page must not satisfy "the repo's
+  // issues are loaded". `enabled` gates it to the exact cold window: open state,
+  // and the full query has produced nothing for this key yet (`data === undefined`
+  // covers first load and a cross-repo switch, where keepWithinRepo yields
+  // undefined). Once the full list resolves it is disabled and its rows are
+  // ignored below, so it costs exactly one extra request per cold repo-open.
+  const firstPageQuery = useQuery({
+    queryKey: ['issue-radar', 'issues-first-page', scopeKey],
+    queryFn: () => issueRadarApi.issuesFirstPage(active),
+    enabled: stateFilter === 'open' && issuesQuery.data === undefined,
+    staleTime: Infinity,
+    gcTime: 0,
+  })
   const labelsQuery = useQuery({
     queryKey: ['issue-radar', 'labels', scopeKey],
     queryFn: () => issueRadarApi.labels(active),
@@ -496,6 +523,28 @@ export function IssueRadarProvider({
       queryClient.setQueryData(['issue-radar', 'pulls', scopeKey, prFetchState], data)
     },
   })
+  // Progressive first paint for PRs — the same shape as `firstPageQuery` for
+  // issues, and the larger win: a cold `pullsQuery` blocks on BOTH the full
+  // pagination AND the GraphQL enrichment before it resolves, so the PR pane is
+  // the app's slowest cold open. This fetches only the newest page (one request,
+  // un-enriched) and feeds it to `pulls` until the authoritative list lands.
+  //
+  // Gated to the exact cold window: open state, no person filter (search owns
+  // that path and is already whole-repo), the PR surface actually in use (so we
+  // never spend a request on a pane the user has not opened — same gate as
+  // `pullsQuery`), and the full query has produced nothing for this key yet
+  // (`data === undefined` covers first load and a cross-repo switch). It never
+  // feeds `pullsQuery.isSuccess`, so nothing keyed on "the PRs are loaded" is
+  // satisfied by a partial page. Once the full list resolves it disables and its
+  // rows are ignored below, so it costs exactly one extra request per cold open.
+  const pullsFirstPageQuery = useQuery({
+    queryKey: ['issue-radar', 'pulls-first-page', scopeKey],
+    queryFn: () => issueRadarApi.pullsFirstPage(active),
+    enabled: prSurfaceActive && prStateFilter === 'open'
+      && !prPersonFilterRequested && pullsQuery.data === undefined,
+    staleTime: Infinity,
+    gcTime: 0,
+  })
 
   const prSearchArgs = {
     state: prStateFilter,
@@ -549,7 +598,33 @@ export function IssueRadarProvider({
     },
   })
 
-  const issues = useMemo(() => asArray<Issue>(issuesQuery.data?.issues), [issuesQuery.data])
+  // The full list once it exists, else the cold-start first page. Falling back
+  // only when `issuesQuery.data` is undefined means the authoritative set ALWAYS
+  // wins the moment it arrives, and the first page's rows are the newest slice of
+  // the same list in the same order, so the swap appends rather than reorders.
+  //
+  // Gated on `stateFilter === 'open'`: `firstPageQuery` is disabled off the open
+  // filter, but disabling a query does NOT clear its cached data. Without the gate,
+  // switching to Closed during the cold-open "loading the rest" window — while the
+  // closed query has no data yet and its keepWithinRepo placeholder is undefined —
+  // would paint the OPEN first-page rows under the Closed filter until the closed
+  // fetch lands (filteredIssues does not re-split by lifecycle, so nothing else
+  // masks it).
+  const issues = useMemo(
+    () => asArray<Issue>(
+      (issuesQuery.data ?? (stateFilter === 'open' ? firstPageQuery.data : undefined))?.issues,
+    ),
+    [issuesQuery.data, firstPageQuery.data, stateFilter],
+  )
+  /** True while the visible issue rows are only the cold-start first page and the
+   * complete list is still loading behind them — drives a "loading the rest" hint
+   * without blocking the paint. */
+  // Same `stateFilter === 'open'` gate as `issues` above: the first page (and its
+  // partial flag) only apply to the open list, and its data lingers after the query
+  // is disabled — so without the gate the "loading the rest" hint would show under
+  // the Closed filter during a cold open.
+  const issuesPartial = stateFilter === 'open'
+    && issuesQuery.data === undefined && !!firstPageQuery.data?.partial
   const repoLabels = useMemo(() => asArray<RepoLabel>(labelsQuery.data?.labels), [labelsQuery.data])
   const members = useMemo<RepoMember[]>(() => asArray<RepoMember>(membersQuery.data?.members), [membersQuery.data])
 
@@ -610,14 +685,21 @@ export function IssueRadarProvider({
   const isMemberPull = isMemberAuthored
   const hasMemberIssues = useMemo(() => issues.some(isMemberIssue), [issues, isMemberIssue])
 
-  const openIssues = () => setMainView('issues')
-  const openDashboard = (tab: DashboardTab) => { setDashboardTab(tab); setMainView('dashboard') }
-  const openSettings = (target?: SettingsTarget) => {
+  // Every handler below is a useCallback with stable deps (state setters are stable;
+  // functional updaters read no captured state). This is what lets the memoized
+  // `value` object keep a stable identity across renders that don't change a field
+  // it carries — so a poll tick or an unrelated surface's filter change no longer
+  // re-renders all ~20 context consumers, only the ones whose data actually moved.
+  const openIssues = useCallback(() => setMainView('issues'), [])
+  const openDashboard = useCallback((tab: DashboardTab) => {
+    setDashboardTab(tab); setMainView('dashboard')
+  }, [])
+  const openSettings = useCallback((target?: SettingsTarget) => {
     setSettingsTarget(target ?? { kind: 'general', anchor: 'account' })
     setMainView('settings')
-  }
+  }, [])
 
-  const toggleLabel = (name: string) => {
+  const toggleLabel = useCallback((name: string) => {
     setMainView('issues')
     setSelectedLabels((prev) => {
       const next = new Set(prev)
@@ -625,22 +707,24 @@ export function IssueRadarProvider({
       else next.add(name)
       return next
     })
-  }
+  }, [])
 
-  const toggleRequestedByMe = () => { setRequestedByMe((v) => !v); setMainView('issues') }
-  const toggleAssignedToMe = () => { setAssignedToMe((v) => !v); setMainView('issues') }
-  const toggleCreatedByMember = () => { setCreatedByMember((v) => !v); setMainView('issues') }
+  const toggleRequestedByMe = useCallback(() => { setRequestedByMe((v) => !v); setMainView('issues') }, [])
+  const toggleAssignedToMe = useCallback(() => { setAssignedToMe((v) => !v); setMainView('issues') }, [])
+  const toggleCreatedByMember = useCallback(() => { setCreatedByMember((v) => !v); setMainView('issues') }, [])
 
   const anyFilterActive = selectedLabels.size > 0 || requestedByMe || assignedToMe || createdByMember
-  const clearFilters = () => {
+  const clearFilters = useCallback(() => {
     setSelectedLabels(new Set()); setRequestedByMe(false); setAssignedToMe(false); setCreatedByMember(false)
-  }
+  }, [])
 
-  const cycleSort = (key: SortKey) => {
+  // `sortKey` is read, so it is a dep — the identity changes only when the sort key
+  // does, which is exactly when a consumer of `cycleSort` would need the new closure.
+  const cycleSort = useCallback((key: SortKey) => {
     setMainView('issues')
     if (key === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     else setSortKey(key)
-  }
+  }, [sortKey])
 
   const filteredIssues = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -686,12 +770,22 @@ export function IssueRadarProvider({
 
   // ── pull requests: derived list (parallels the issue derivations) ──
   // Source depends on whether a person filter is active (see prPersonFilterActive).
+  // On a cold open the authoritative `pullsQuery` is still undefined, so fall back
+  // to the first-page rows (open state only — the fast path never runs off open, so
+  // its lingering data must not leak into the closed tab, exactly as `firstPageQuery`
+  // is gated for issues). The full set ALWAYS wins the moment it lands.
   const pulls = useMemo(
     () => prPersonFilterActive
       ? asArray<PullRequest>(pullsSearchQuery.data?.pulls)
-      : asArray<PullRequest>(pullsQuery.data?.pulls),
-    [prPersonFilterActive, pullsSearchQuery.data, pullsQuery.data],
+      : asArray<PullRequest>(
+        (pullsQuery.data ?? (prStateFilter === 'open' ? pullsFirstPageQuery.data : undefined))?.pulls,
+      ),
+    [prPersonFilterActive, pullsSearchQuery.data, pullsQuery.data, pullsFirstPageQuery.data, prStateFilter],
   )
+  // True while `pulls` holds only the un-enriched first page: open state, no person
+  // filter, the full query has produced nothing yet, and the first page said partial.
+  const pullsPartial = !prPersonFilterActive && prStateFilter === 'open'
+    && pullsQuery.data === undefined && !!pullsFirstPageQuery.data?.partial
 
   const countByPrLabel = useMemo(() => {
     const m = new Map<string, number>()
@@ -699,9 +793,9 @@ export function IssueRadarProvider({
     return m
   }, [pulls])
 
-  const openPulls = () => setMainView('pulls')
+  const openPulls = useCallback(() => setMainView('pulls'), [])
 
-  const togglePrLabel = (name: string) => {
+  const togglePrLabel = useCallback((name: string) => {
     setMainView('pulls')
     setPrSelectedLabels((prev) => {
       const next = new Set(prev)
@@ -709,28 +803,28 @@ export function IssueRadarProvider({
       else next.add(name)
       return next
     })
-  }
-  const togglePrAuthoredByMe = () => { setPrAuthoredByMe((v) => !v); setMainView('pulls') }
-  const togglePrAssignedToMe = () => { setPrAssignedToMe((v) => !v); setMainView('pulls') }
-  const togglePrReviewRequestedByMe = () => { setPrReviewRequestedByMe((v) => !v); setMainView('pulls') }
-  const togglePrDraftOnly = () => { setPrDraftOnly((v) => !v); setMainView('pulls') }
-  const togglePrCreatedByMember = () => { setPrCreatedByMember((v) => !v); setMainView('pulls') }
+  }, [])
+  const togglePrAuthoredByMe = useCallback(() => { setPrAuthoredByMe((v) => !v); setMainView('pulls') }, [])
+  const togglePrAssignedToMe = useCallback(() => { setPrAssignedToMe((v) => !v); setMainView('pulls') }, [])
+  const togglePrReviewRequestedByMe = useCallback(() => { setPrReviewRequestedByMe((v) => !v); setMainView('pulls') }, [])
+  const togglePrDraftOnly = useCallback(() => { setPrDraftOnly((v) => !v); setMainView('pulls') }, [])
+  const togglePrCreatedByMember = useCallback(() => { setPrCreatedByMember((v) => !v); setMainView('pulls') }, [])
   const hasMemberPulls = useMemo(() => pulls.some(isMemberPull), [pulls, isMemberPull])
 
   const anyPrFilterActive = prSelectedLabels.size > 0 || prAuthoredByMe || prAssignedToMe
     || prReviewRequestedByMe || prDraftOnly || prCreatedByMember
-  const clearPrFilters = () => {
+  const clearPrFilters = useCallback(() => {
     setPrSelectedLabels(new Set())
     setPrAuthoredByMe(false); setPrAssignedToMe(false)
     setPrReviewRequestedByMe(false); setPrDraftOnly(false)
     setPrCreatedByMember(false)
-  }
+  }, [])
 
-  const cyclePrSort = (key: PrSortKey) => {
+  const cyclePrSort = useCallback((key: PrSortKey) => {
     setMainView('pulls')
     if (key === prSortKey) setPrSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     else setPrSortKey(key)
-  }
+  }, [prSortKey])
 
   const filteredPulls = useMemo(() => {
     const q = prQuery.trim().toLowerCase()
@@ -825,7 +919,7 @@ export function IssueRadarProvider({
     prSelectedLabels, prAuthoredByMe, prAssignedToMe, prReviewRequestedByMe,
   ])
 
-  const switchRepo = (r: ActiveRepo) => {
+  const switchRepo = useCallback((r: ActiveRepo) => {
     setSelectedIssue(null)
     setQuery('')
     clearFilters()
@@ -833,7 +927,7 @@ export function IssueRadarProvider({
     setPrQuery('')
     clearPrFilters()
     onSwitch(r)
-  }
+  }, [clearFilters, clearPrFilters, onSwitch])
 
   // A just-connected repo opens its first issue once the list resolves, so the
   // user lands on real content instead of an empty detail pane. Driven by a
@@ -856,15 +950,30 @@ export function IssueRadarProvider({
     if (first) setSelectedIssue(first.number)
   }, [issuesQuery.isSuccess, sortedIssues, issues, active])
 
-  const value: IssueRadarContextValue = {
+  // Stable so they don't force a new `value` identity every render. The mutation
+  // objects are stable references, so no deps are needed.
+  const refresh = useCallback(() => refreshMutation.mutate(), [refreshMutation])
+  const refreshPulls = useCallback(() => {
+    // Refresh targets the ACTIVE source: a refetch of the search query when a
+    // person filter is on (the search route is uncached server-side, so a plain
+    // refetch already hits GitHub), else the cache-busting list refresh.
+    if (prPersonFilterActive) pullsSearchQuery.refetch()
+    else refreshPullsMutation.mutate()
+  }, [prPersonFilterActive, pullsSearchQuery, refreshPullsMutation])
+
+  const value: IssueRadarContextValue = useMemo(() => ({
     repos, active, switchRepo, onAddRepo,
     activePermissions, canWrite,
     me, issues, repoLabels,
-    issuesLoading: issuesQuery.isLoading,
+    // The skeleton clears as soon as EITHER the full list or the cold-start first
+    // page has rows: the whole point of the first page is to end the blank wait.
+    // `issues.length` is the honest signal — it is fed by both queries above.
+    issuesLoading: issuesQuery.isLoading && issues.length === 0,
+    issuesPartial,
     issuesError: (issuesQuery.error as Error) ?? null,
     labelsLoading: labelsQuery.isLoading,
     labelsError: (labelsQuery.error as Error) ?? null,
-    refresh: () => refreshMutation.mutate(),
+    refresh,
     refreshing: refreshMutation.isPending,
     issuesUpdatedAt: issuesQuery.dataUpdatedAt,
     repoSettings, needsTriage, isGoodFirstIssue,
@@ -887,22 +996,20 @@ export function IssueRadarProvider({
     // skeleton every time a persisted person filter is restored. Keyed on
     // meQuery.isLoading rather than `me` being falsy so a FAILED /me falls
     // through to the empty state instead of spinning forever.
+    // `&& pulls.length === 0` so the cold-open first page drops the skeleton the
+    // moment it paints (the full fetch is still in flight but there are rows to
+    // show) — the PR twin of `issuesLoading`.
     pullsLoading: prPersonFilterRequested
       ? (prSurfaceActive && (meQuery.isLoading || pullsSearchQuery.isLoading))
-      : pullsQuery.isLoading,
+      : (pullsQuery.isLoading && pulls.length === 0),
+    pullsPartial,
     // A manual refresh goes through refreshPullsMutation, so its failure has to be
     // reported here too — otherwise the spinner just stops and the stale rows stay
     // on screen as if the refresh had worked.
     pullsError: ((prPersonFilterActive
       ? pullsSearchQuery.error
       : (pullsQuery.error ?? refreshPullsMutation.error)) as Error) ?? null,
-    // Refresh targets the ACTIVE source: a refetch of the search query when a
-    // person filter is on (the search route is uncached server-side, so a plain
-    // refetch already hits GitHub), else the cache-busting list refresh.
-    refreshPulls: () => {
-      if (prPersonFilterActive) pullsSearchQuery.refetch()
-      else refreshPullsMutation.mutate()
-    },
+    refreshPulls,
     pullsRefreshing: prPersonFilterActive ? pullsSearchQuery.isFetching : refreshPullsMutation.isPending,
     pullsUpdatedAt: prPersonFilterActive ? pullsSearchQuery.dataUpdatedAt : pullsQuery.dataUpdatedAt,
     prPersonFilterActive,
@@ -932,7 +1039,34 @@ export function IssueRadarProvider({
     refStack, openRef, popRef, closeRefs,
     mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
     expanded, setExpanded,
-  }
+  }), [
+    repos, active, switchRepo, onAddRepo, activePermissions, canWrite,
+    me, issues, repoLabels, issuesQuery.isLoading, issuesQuery.error, issuesQuery.dataUpdatedAt,
+    issuesPartial, labelsQuery.isLoading, labelsQuery.error, refresh, refreshMutation.isPending,
+    repoSettings, needsTriage, isGoodFirstIssue,
+    colorByName, countByLabel, sortedRepoLabels, filteredIssues, sortedIssues, activeIssue,
+    memberRoleByLogin, query, setQuery,
+    selectedLabels, toggleLabel, requestedByMe, toggleRequestedByMe,
+    assignedToMe, toggleAssignedToMe, createdByMember, toggleCreatedByMember, hasMemberIssues,
+    stateFilter, setStateFilter, anyFilterActive, clearFilters, sortKey, sortDir, cycleSort,
+    selectedIssue, setSelectedIssue, pulls,
+    prPersonFilterRequested, prSurfaceActive, meQuery.isLoading, pullsSearchQuery.isLoading,
+    pullsQuery.isLoading, prPersonFilterActive, pullsSearchQuery.error, pullsQuery.error,
+    refreshPullsMutation.error, refreshPulls, pullsSearchQuery.isFetching, refreshPullsMutation.isPending,
+    pullsSearchQuery.dataUpdatedAt, pullsQuery.dataUpdatedAt, pullsSearchQuery.data, pullsQuery.data,
+    pullsPartial, pullsFirstPageQuery.data,
+    refreshPrefs, setRefreshPrefs, countByPrLabel, prQuery, setPrQuery,
+    prSelectedLabels, togglePrLabel, prAuthoredByMe, togglePrAuthoredByMe,
+    prAssignedToMe, togglePrAssignedToMe, prReviewRequestedByMe, togglePrReviewRequestedByMe,
+    prDraftOnly, togglePrDraftOnly, prCreatedByMember, togglePrCreatedByMember, hasMemberPulls,
+    prStateFilter, setPrStateFilter, anyPrFilterActive, clearPrFilters,
+    prSortKey, prSortDir, cyclePrSort, selectedPull, setSelectedPull,
+    filteredPulls, sortedPulls, activePull,
+    checkedPulls, togglePullChecked, toggleAllPullsChecked, clearCheckedPulls,
+    refStack, openRef, popRef, closeRefs,
+    mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
+    expanded, setExpanded,
+  ])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

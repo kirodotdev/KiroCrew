@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
-import CronTab from '../src/pages/overview/CronTab'
 import McpTab from '../src/pages/overview/McpTab'
 import MemoryTab from '../src/pages/overview/MemoryTab'
 import HooksPage from '../src/pages/HooksPage'
@@ -19,30 +18,6 @@ describe('SortableTable Integration Tests', () => {
         HttpResponse.json([{ name: 'default', source: 'builtin' }])
       )
     )
-  })
-
-  describe('CronTab sorting', () => {
-    it('default sort orders rows by name ascending', async () => {
-      renderWithProviders(<CronTab refreshTrigger={0} />)
-      await waitFor(() => expect(screen.getByText('Check system status')).toBeInTheDocument())
-
-      const rows = screen.getAllByRole('row').slice(1)
-      expect(rows[0]).toHaveTextContent('Backup database')
-      expect(rows[1]).toHaveTextContent('Check system status')
-    })
-
-    it('clicking Name toggles to descending and reverses row order', async () => {
-      const user = userEvent.setup()
-      renderWithProviders(<CronTab refreshTrigger={0} />)
-      await waitFor(() => expect(screen.getByText('Check system status')).toBeInTheDocument())
-
-      const nameBtn = screen.getByRole('button', { name: /name/i })
-      await user.click(nameBtn) // asc -> desc
-
-      const rows = screen.getAllByRole('row').slice(1)
-      expect(rows[0]).toHaveTextContent('Check system status')
-      expect(rows[1]).toHaveTextContent('Backup database')
-    })
   })
 
   describe('McpTab sorting', () => {
@@ -144,33 +119,6 @@ describe('SortableTable Integration Tests', () => {
     })
   })
 
-  describe('CronTab status sorting', () => {
-    it('clicking Status sorts by rendered state: Paused < Error < OK < Ready', async () => {
-      server.use(
-        http.get('/api/crons', () =>
-          HttpResponse.json({ jobs: [
-            { id: 'c1', name: 'ok-job', message: 'm', schedule: '* * * * *', enabled: true, last_status: 'ok', last_run_ts: 1 },
-            { id: 'c2', name: 'paused-job', message: 'm', schedule: '* * * * *', enabled: false, last_status: '', last_run_ts: 0 },
-            { id: 'c3', name: 'error-job', message: 'm', schedule: '* * * * *', enabled: true, last_status: 'error', last_run_ts: 2 },
-            { id: 'c4', name: 'ready-job', message: 'm', schedule: '* * * * *', enabled: true, last_status: '', last_run_ts: 0 },
-          ]})
-        )
-      )
-      const user = userEvent.setup()
-      renderWithProviders(<CronTab refreshTrigger={0} />)
-      await waitFor(() => expect(screen.getByText('ok-job')).toBeInTheDocument())
-
-      const statusBtn = screen.getByRole('button', { name: /status/i })
-      await user.click(statusBtn) // asc: Paused(0) < Error(1) < OK(2) < Ready(3)
-
-      const rows = screen.getAllByRole('row').slice(1)
-      expect(rows[0]).toHaveTextContent('paused-job')
-      expect(rows[1]).toHaveTextContent('error-job')
-      expect(rows[2]).toHaveTextContent('ok-job')
-      expect(rows[3]).toHaveTextContent('ready-job')
-    })
-  })
-
   describe('HooksPage sorting', () => {
     beforeEach(() => {
       server.use(
@@ -206,12 +154,13 @@ describe('SortableTable Integration Tests', () => {
     })
   })
 
-  describe('SchedulePage status sorting', () => {
+  describe('SchedulePage sorting', () => {
     beforeEach(() => {
       globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as any
     })
 
-    it('clicking Status sorts by rendered state: Paused < Error < OK < Ready', async () => {
+    /** Fixture shared by the sorting cases below. */
+    function serveJobs() {
       server.use(
         http.get('/api/crons', () =>
           HttpResponse.json({ jobs: [
@@ -222,6 +171,10 @@ describe('SortableTable Integration Tests', () => {
           ]})
         )
       )
+    }
+
+    it('clicking Status sorts by rendered state: Paused < Error < OK < Ready', async () => {
+      serveJobs()
       const user = userEvent.setup()
       renderWithProviders(<SchedulePage />)
       await waitFor(() => expect(screen.getByText('ok-job')).toBeInTheDocument())
@@ -234,6 +187,28 @@ describe('SortableTable Integration Tests', () => {
       expect(rows[1]).toHaveTextContent('error-job')
       expect(rows[2]).toHaveTextContent('ok-job')
       expect(rows[3]).toHaveTextContent('ready-job')
+    })
+
+    // Name is not the default column here (the table opens on nextRun), so the
+    // first click selects it ascending and the second flips it — covering both
+    // directions of the name comparator on the live cron surface.
+    it('clicking Name sorts ascending, clicking again reverses it', async () => {
+      serveJobs()
+      const user = userEvent.setup()
+      renderWithProviders(<SchedulePage />)
+      await waitFor(() => expect(screen.getByText('ok-job')).toBeInTheDocument())
+
+      const nameBtn = within(screen.getAllByRole('row')[0]).getByRole('button', { name: /name/i })
+
+      await user.click(nameBtn) // unsorted-by-name -> asc
+      let rows = screen.getAllByRole('row').slice(1)
+      expect(rows[0]).toHaveTextContent('error-job')
+      expect(rows[3]).toHaveTextContent('ready-job')
+
+      await user.click(nameBtn) // asc -> desc
+      rows = screen.getAllByRole('row').slice(1)
+      expect(rows[0]).toHaveTextContent('ready-job')
+      expect(rows[3]).toHaveTextContent('error-job')
     })
   })
 })

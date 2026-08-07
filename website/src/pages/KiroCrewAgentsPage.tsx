@@ -275,7 +275,11 @@ function BindingFields({
       <Field label={templateLabel} hint={i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')}>
         <SimpleSelect options={withCurrent(kiroAgentOptions, kiroAgent)} value={kiroAgent} onChange={setKiroAgent} aria-label={templateLabel} />
       </Field>
-      <Field label={i18nT('pages.kiroCrewAgentsPage.workspace_2')} hint={i18nT('pages.kiroCrewAgentsPage.isolated_memory_and_files_for_this_crew')}>
+      <Field
+        label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
+        hint={i18nT('pages.kiroCrewAgentsPage.isolated_memory_and_files_for_this_crew')}
+        info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
+      >
         <SimpleSelect
           options={withCurrent(workspaceOptions, workspace)}
           value={workspace}
@@ -284,7 +288,11 @@ function BindingFields({
           aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
         />
       </Field>
-      <Field label={i18nT('pages.kiroCrewAgentsPage.memory_store')} hint={i18nT('pages.kiroCrewAgentsPage.which_store_its_lessons_and_history_are_written')}>
+      <Field
+        label={i18nT('pages.kiroCrewAgentsPage.memory_store')}
+        hint={i18nT('pages.kiroCrewAgentsPage.which_store_its_lessons_and_history_are_written')}
+        info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
+      >
         <SimpleSelect options={withCurrent(memoryStoreOptions, memoryStore)} value={memoryStore} onChange={setMemoryStore} aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')} />
         {/* Show the "more coming" note only when `default` is the sole option —
             an install that has declared extra `memory_stores` in config already
@@ -728,6 +736,20 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     <>
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
       <div className={`${embedded ? '' : 'px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
+        {/* Says out loud what the bindings below cannot: a crew's workspace and
+            memory store are shown and editable, but the isolation they imply is
+            only partly built — every crew still reads one shared semantic
+            memory. Page-level rather than per-card: the claim is about the whole
+            surface, and repeating it on every card would put two "?" glyphs on
+            each of them. The editor panel and the list header carry the same
+            copy as a tooltip, because neither can see this line. */}
+        <div className="mb-3.5 flex items-start gap-2 rounded-lg border border-accent-subtle bg-bg-accent px-3 py-2.5">
+          <Sparkles className="lucide-inline mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+          <span className="text-[12.5px] leading-relaxed text-muted">
+            {i18nT('pages.kiroCrewAgentsPage.bindings_preview_notice')}
+          </span>
+        </div>
+
         {/* Which crew a new chat starts as, hoisted out of the cards. Two jobs:
             it answers "which one is the default" without hunting for a badge,
             and it is the one place that CHANGES it — a per-crew toggle could
@@ -821,8 +843,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 <TableRow className="hover:bg-transparent">
                   <TableHead>{i18nT('pages.kiroCrewAgentsPage.crew_column')}</TableHead>
                   <TableHead>{provider.labels.agentTemplateField}</TableHead>
-                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.workspace_2')}</TableHead>
-                  <TableHead>{i18nT('pages.kiroCrewAgentsPage.memory_store')}</TableHead>
+                  {/* `aria-label` keeps the column's accessible name to the
+                      label itself. Without it the InfoTip's own name is
+                      concatenated into the header, and a screen reader
+                      announces every cell in the column as "Workspace,
+                      Preview. Isolated memory per crew is…". */}
+                  <TableHead aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}>
+                    <span className="inline-flex items-center gap-1.5">
+                      {i18nT('pages.kiroCrewAgentsPage.workspace_2')}
+                      <InfoTip text={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')} />
+                    </span>
+                  </TableHead>
+                  <TableHead aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')}>
+                    <span className="inline-flex items-center gap-1.5">
+                      {i18nT('pages.kiroCrewAgentsPage.memory_store')}
+                      <InfoTip text={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')} />
+                    </span>
+                  </TableHead>
                   <TableHead>{i18nT('pages.kiroCrewAgentsPage.model')}</TableHead>
                 </TableRow>
               </TableHeader>

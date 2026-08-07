@@ -138,6 +138,11 @@
       }
     },
     "issueRadar": {
+      "workspace": {
+        "selected_issue_hidden_by_filters": "The selected issue is hidden by the active filters.",
+        "selected_change_hidden_by_filters": "The selected {{subject}} is hidden by the active filters.",
+        "clear_filters": "Clear filters"
+      },
       "components": {
         "agentSessionButton": {
           "resume": "Resume"
@@ -173,7 +178,8 @@
           "read_only_connect_with_triage_push_access_to_app_2": "Read-only — connect with triage/push access to apply"
         },
         "issueList": {
-          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated"
+          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated",
+          "loading_the_rest": "Loading the rest…"
         },
         "labelPalette": {
           "no_labels_match_query": "No labels match “{{query}}”."
@@ -210,6 +216,7 @@
         },
         "prList": {
           "closed_merged_prs_are_capped_at_the_100_most_rec": "Closed/merged PRs are capped at the 100 most recently updated — turn on a \"me\" filter for a complete, repo-wide search",
+          "loading_the_rest": "Loading the rest…",
           "re_fetch_from": "Re-fetch {{label}} from {{provider}}",
           "refresh": "Refresh {{label}}",
           "resolved_by_github_search_across_the_whole_repo": "Resolved by GitHub search across the whole repo — not limited to the 100 most recent",
@@ -759,6 +766,10 @@
         },
         "skillsProvider": {
           "skills": "Skills"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Needs migration"
         }
       },
       "search_for_anything": "Search for anything",
@@ -984,7 +995,8 @@
       "name_is_required": "Name is required",
       "save": "Save",
       "saving": "Saving...",
-      "select_at_least_one_day": "Select at least one day"
+      "select_at_least_one_day": "Select at least one day",
+      "timezone": "Timezone"
     },
     "jobLogsView": {
       "failed_to_load_history": "Failed to load history"
@@ -992,7 +1004,11 @@
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",
       "another_sandbox_already_confines_kiro_crew_so_it": "Another sandbox already confines Kiro Crew, so its own sandbox cannot nest inside it. This host's sandbox is not broken.",
+      "copied": "Copied",
+      "copy_command": "Copy command",
       "get_kiro_cli": "Get Kiro CLI",
+      "how_to_fix": "How to fix",
+      "if_this_keeps_happening": "If this keeps happening",
       "if_you_are_diagnosing_this_from_a_terminal_kiro": "If you are diagnosing this from a terminal, note that kiro-cli diagnostic reports nothing until the Kiro CLI app itself is running — launch it with kiro-cli launch first. That refusal is not the cause of this.",
       "install_kiro_cli_from_kiros_official_setup_page": "Install Kiro CLI from Kiro's official setup page. It carries the steps for your platform and stays current.",
       "kiro_cli_is_installed_but_could_not_be_verified": "Kiro CLI is installed but could not be verified",
@@ -1003,16 +1019,27 @@
       "kiro_crew_isolates_the_agent_in_an_os_level_sand": "Kiro Crew isolates the agent in an OS-level sandbox before it runs anything.",
       "kiro_crew_s_agent_specs_are_not_installed": "Kiro Crew's agent specs are not installed",
       "kiro_crew_writes_its_own_agent_specs_where_kiro": "Kiro Crew writes its own agent specs where Kiro CLI reads them. Without them Kiro CLI cannot resolve the agent, so every message fails. Check again rewrites the specs and reports what went wrong.",
+      "linux_sandbox_guide": "Linux sandbox guide",
       "missing": "Missing",
       "open_kiro_cli_setup": "Open Kiro CLI setup",
+      "remedy_apparmor_service_install": "Install Kiro Crew as a service. It also writes a narrow AppArmor profile (kirocrew-userns) that grants only the user-namespace permission, to the Kiro Crew service alone — nothing else on the machine is loosened.",
+      "remedy_max_user_namespaces": "User namespace creation hit the per-user cap, which usually means user.max_user_namespaces is 0 on a hardened host. Raise it, and persist the value in /etc/sysctl.d/ so it survives a reboot.",
+      "remedy_no_user_ns": "This kernel was built without user-namespace support (CONFIG_USER_NS), so there is no setting to change. A different kernel is the only fix.",
+      "remedy_userns_denied": "The kernel refused to create the user namespace. On Debian-family hosts check this legacy knob, and persist the value in /etc/sysctl.d/ so it survives a reboot. Inside a container it is usually the container's own seccomp filter denying unshare, which is fixed with container run flags rather than host settings.",
       "required": "Required",
+      "run_kirocrew_doctor_on_the_gateway_host_for_a_ful": "Run this on the gateway host for a full prerequisite report, including which sandbox step failed.",
       "sandbox_unavailable": "Sandbox unavailable",
+      "sign_in_method_note": "Both open a browser to finish signing in. Pick the one that matches your plan — the sign-in page offers a personal Builder ID alongside organization SSO, and a Builder ID carries a smaller set of models.",
+      "sign_in_personal_label": "Personal account — Builder ID, Google, or GitHub",
+      "sign_in_sso_hint": "Prompts for your organization's start URL and region.",
+      "sign_in_sso_label": "Organization SSO — IAM Identity Center",
       "sign_in_with_kiro_cli_on_the_gateway_host": "Sign in with Kiro CLI on the gateway host, then check again. Kiro CLI manages the sign-in and keeps the credentials.",
       "technical_detail": "Technical detail",
       "the_check_hit_a_temporary_limit_and_was_not_cach": "The check hit a temporary resource limit. Try again — do not disable the sandbox.",
       "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
       "the_gateway_returned_no_prerequisite_status": "The gateway returned no prerequisite status.",
       "the_repair_attempt_failed": "The repair attempt failed",
+      "this_host_allows_user_namespaces_but_the_kernel_d": "This host allows user namespaces, but the kernel then denied the mount namespace — the signature of Ubuntu 23.10 and newer, which moves any process that creates a user namespace into a restricted AppArmor profile. Kiro Crew refuses to run the agent unisolated rather than expose your credentials, so it stays blocked until the profile is in place.",
       "this_host_provides_no_os_level_sandbox_so_kiro_c": "This host provides no OS-level sandbox, so Kiro Crew cannot isolate the agent. It refuses to run the agent unsandboxed rather than expose your credentials.",
       "this_kiro_cli_is_signed_in": "This Kiro CLI is signed in.",
       "this_page_detects_kiro_cli_automatically": "Leave this page open. It checks the gateway host and continues on its own once Kiro CLI is installed.",
@@ -1167,7 +1194,9 @@
       "collapse_paste": "Collapse paste",
       "expand_paste": "Expand paste",
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
-      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]"
+      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
+      "preview_more_lines_one": "… {{count}} more line",
+      "preview_more_lines_other": "… {{count}} more lines"
     },
     "publishHub": {
       "checking": "Checking…",
@@ -1304,6 +1333,7 @@
       "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
     },
     "tagManagerList": {
+      "change_color": "Change color of {{name}}",
       "delete_tag": "Delete tag \"{{name}}\"",
       "delete_tag_2": "Delete tag {{name}}",
       "filter_by_tag": "Filter by tag",
@@ -1312,6 +1342,7 @@
       "make_status_tag": "Make status tag",
       "remove_status_flag_from": "Remove status flag from {{name}}",
       "rename_tag": "Rename tag {{name}}",
+      "set_color_to_name": "Set color to {{name}}",
       "status_tag_mutually_exclusive_on_cards_click_to": "Status tag (mutually exclusive on cards) — click to make regular"
     },
     "terminalCompletion": {
@@ -1403,9 +1434,9 @@
       "tearing_down": "Tearing down..."
     },
     "webPreviewPanel": {
-      "exit_expanded_preview": "Exit expanded preview",
+      "exit_expanded_preview": "Collapse",
       "expand_preview": "Expand preview",
-      "expand_preview_hide_nav_sessions": "Expand preview (hide nav & sessions)",
+      "expand_preview_hide_nav_sessions": "Expand (hide nav and sessions)",
       "responsive_desktop": "Responsive (desktop)"
     },
     "welcomeView": {
@@ -1549,6 +1580,10 @@
     "trustDropdown": {
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
       "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
+    },
+    "searchableSelect": {
+      "no_matches": "No matches",
+      "search": "Search…"
     }
   },
   "hooks": {
@@ -1661,12 +1696,13 @@
     "schedule": "Schedule",
     "sessions": "Sessions",
     "settings": "Settings",
-    "task_runner": "Task Runner"
+    "task_runner": "Task Runner",
+    "webhooks": "Webhooks"
   },
   "pages": {
     "capabilitiesPage": {
       "crews_label": "Crews",
-      "crews_description": "Crews you chat with, each with its own workspace and memory",
+      "crews_description": "Crews you chat with, each with its own workspace",
       "templates_label": "Agent Templates",
       "templates_description": "Installed agent configurations and packages",
       "connections_label": "Connections",
@@ -1997,11 +2033,6 @@
       },
       "chatNavPanel": {
         "link": "Link"
-      },
-      "chatSettings": {
-        "enter_for_newline": "Enter for newline",
-        "enter_for_newline_2": "{{mod}}+Enter for newline",
-        "shift_enter_for_newline": "Shift+Enter for newline"
       },
       "folderPanel": {
         "empty_folder": "Empty folder",
@@ -2393,7 +2424,9 @@
         "embeddings_loading": "embeddings loading",
         "graph_view": "Graph View",
         "list_view": "List View",
-        "sources_tab": "Sources"
+        "sources_tab": "Sources",
+        "status_active": "Active",
+        "status_archived": "Archived"
       },
       "sourceGroup": {
         "items_count": "({{count}} items)",
@@ -2548,7 +2581,29 @@
         "this_skill_changed_after_this_update_was_written": "This skill changed after this update was written, so applying it now would undo those newer changes. Approving is blocked — dismiss this candidate and a fresh update will be proposed against the current version.",
         "update": "Update",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "budget_doorway_static": "Context budget →",
+        "budget_back": "Skills",
+        "budget_title": "Context budget",
+        "budget_subtitle": "What each skill costs when a trigger fires it. Ranked by spend, not by name.",
+        "budget_header": "<total>{{total}}</total> chars · last 30 days · top 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "Sort",
+        "budget_sort_cost": "Biggest cost",
+        "budget_sort_size": "Biggest file",
+        "budget_sort_recent": "Recently used",
+        "budget_group_counting": "Counting toward context",
+        "budget_group_counting_detail": "{{count}} skills · {{pct}}% of spend",
+        "budget_group_cold": "Never fired in 30 days",
+        "budget_group_cold_detail": "{{count}} skills · {{size}} idle",
+        "budget_group_frozen": "Already pointer-only",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} was being spent",
+        "budget_chars": "chars",
+        "budget_if_fires": "{{size}} if it fires",
+        "budget_every_turn": "{{size}} every turn",
+        "budget_renamed": "(renamed)",
+        "budget_footnote": "A pinned (always: true) or package-owned skill shows its cost but has no switch.",
+        "budget_empty_title": "No budget data yet",
+        "budget_empty_subtitle": "No skills installed yet."
       },
       "steeringTab": {
         "delete_confirm": "Delete \"{{path}}\"?",
@@ -2561,21 +2616,6 @@
         "steering_files_looked_in": "Steering files are always-on markdown conventions. Looked in: {{path}}",
         "title_describe_the_convention_the_agent_should_a": "# Title\n\nDescribe the convention the agent should always follow.",
         "workspace": "Workspace"
-      },
-      "cronTab": {
-        "continue_session": "Continue session",
-        "enter_a_5_field_cron_expression_or_interval_in_s": "Enter a 5-field cron expression or interval in seconds (≥60)",
-        "failed_to_update_job_check_server_connection": "Failed to update job — check server connection",
-        "name_and_message_are_required": "Name and message are required",
-        "no_result_yet": "No result yet",
-        "pause": "Pause",
-        "resume": "Resume",
-        "resume_job_to_run": "Resume job to run",
-        "run_now": "Run now",
-        "running": "Running",
-        "schedule_recurring_or_one_time_tasks": "Schedule recurring or one-time tasks. Jobs run in their own {{sessionProcess}} session. Use cron expressions or interval seconds.",
-        "select_at_least_one_day": "Select at least one day",
-        "view_last_result": "View last result"
       },
       "displayTab": {
         "change_the_dashboard_font_family_persists_across": "Change the dashboard font family. Persists across sessions.",
@@ -2598,7 +2638,8 @@
         "importing": "Importing...",
         "invalid_archive": "Invalid archive",
         "network_error": "Network error",
-        "network_error_during_preview": "Network error during preview"
+        "network_error_during_preview": "Network error during preview",
+        "mode": "Mode"
       },
       "usageTab": {
         "credits": "Credits",
@@ -2757,7 +2798,25 @@
       "scheduled_jobs_run_on_the_configured_interval_or": "Scheduled jobs run on the configured interval or cron expression.",
       "select": "Select {{name}}",
       "view": "View",
-      "view_last_result": "View last result"
+      "view_last_result": "View last result",
+      "cronFolders": {
+        "batch_move_failed_one": "{{count}} of {{total}} job could not be moved",
+        "batch_move_failed_other": "{{count}} of {{total}} jobs could not be moved",
+        "collapse_folder": "Collapse folder",
+        "confirm_delete_folder": "Delete \"{{name}}\"? Jobs will be ungrouped.",
+        "create": "Create",
+        "delete_folder": "Delete folder",
+        "delete_folder_named": "Delete \"{{name}}\"",
+        "expand_folder": "Expand folder",
+        "folder_actions": "Folder actions",
+        "job_count_one": "{{count}} job",
+        "job_count_other": "{{count}} jobs",
+        "move_to_folder": "Move to folder",
+        "new_folder": "New folder",
+        "new_folder_name": "New folder name",
+        "rename": "Rename",
+        "ungrouped": "Ungrouped"
+      }
     },
     "sessionArchive": {
       "no_matches_for_query": "No matches for \"{{query}}\".",
@@ -2810,7 +2869,6 @@
         "copied": "Copied",
         "update_check_managed_by_app": "This build updates through the app, not the gateway.",
         "update_check_managed_by_image": "This container updates by pulling a newer image.",
-        "update_to_version": "Update to v{{version}}",
         "not_checked_yet": "Not checked yet",
         "notify_when_an_update_is_available": "Notify when an update is available",
         "auto_update_notify_only_on_this_install": "This install cannot apply updates itself, so it only notifies."
@@ -3338,7 +3396,6 @@
       "status_disabled": "Disabled",
       "status_unknown": "Unknown"
     },
-    "telemetryPanel": {},
     "worldsPage": {
       "hide_controls": "Hide controls",
       "show_controls": "Show controls"
@@ -3578,5 +3635,86 @@
       "medium": "Medium",
       "xhigh": "Extra High"
     }
+  },
+  "autoImprovement": {
+    "activityDiscovered": "(discovered {{discovered}}, fresh {{fresh}})",
+    "autocommitHint": "Push each verified change straight to the base branch. Protected branches always fall back to a draft PR.",
+    "autocommitLabel": "Commit directly to the branch (no pull request)",
+    "band": "band",
+    "base": "Base",
+    "branchDefault": "Repository default",
+    "branchLabel": "Base branch",
+    "calibrated": "Calibrated",
+    "changesHeading": "Draft pull requests",
+    "cloneBtn": "Connect",
+    "colActions": "Actions",
+    "colChange": "Change",
+    "colChecks": "Checks",
+    "colPr": "Pull request",
+    "colVerdict": "State",
+    "commitConfirm": "Commit this change to {{branch}} and push it? A published commit cannot be recalled.",
+    "commitFailed": "The commit was refused.",
+    "commitFinding": "Commit to the branch",
+    "currentRepo": "Working on",
+    "cycle": "Cycle",
+    "defectHeading": "Defect",
+    "delta": "Measured delta",
+    "detailUnavailable": "Details are unavailable for this finding.",
+    "discussFinding": "Discuss this finding",
+    "discussPr": "Discuss this pull request",
+    "discussRuler": "Discuss the ruler",
+    "draftPr": "Draft",
+    "findingTitlePrefix": "Finding",
+    "findingsHeading": "Findings ledger",
+    "findingsStat": "Findings",
+    "findingsTruncated": "Showing the {{shown}} most recent of {{total}} findings.",
+    "fingerprint": "Fingerprint",
+    "gateHeading": "Verification gates",
+    "gateNote": "Gate note",
+    "historyHeading": "Status history",
+    "hypothesisHeading": "Reproduction hypothesis",
+    "idleStatus": "Idle — start a run to find improvements and draft pull requests.",
+    "intro": "Measures a repository before it changes it: the metric is calibrated and proved first, then keep-or-revert cycles draft survivors as draft pull requests you review.",
+    "keptStat": "Kept",
+    "loadingDetail": "Loading details…",
+    "noFindings": "No findings recorded yet.",
+    "noPrs": "No pull requests drafted yet.",
+    "prStat": "Pull requests",
+    "prTitlePrefix": "PR",
+    "pushDisabled": "push disabled",
+    "queuedOnly": "queued locally, not opened",
+    "refreshPr": "Refresh pull request status",
+    "regressed": "Regressed tests: {{tests}}",
+    "repoLabel": "GitHub repository to improve",
+    "reproTest": "Repro test",
+    "rulerHeading": "The ruler",
+    "rulerNotReady": "The ruler is not calibrated yet, so no improvement cycle will run. Calibration proves the metric can detect a known win before anything is optimized.",
+    "rulerReady": "Ruler calibrated and ready",
+    "rulerSessionTitle": "Ruler review",
+    "rulerStat": "Ruler",
+    "runBtn": "Start run",
+    "runError": "The run stopped with an error.",
+    "runningStatus": "Running — cycle {{cycle}}, {{kept}} kept, {{drafted}} pull requests drafted.",
+    "setupHeading": "Repository",
+    "showDiff": "Show the change",
+    "showPrBody": "Show the pull request description",
+    "statusCommitted": "Committed to the branch",
+    "statusDiscardedNoise": "Below the noise band",
+    "statusDuplicate": "Duplicate",
+    "statusError": "Tooling error",
+    "statusFailedGate": "Rejected by the gate",
+    "statusFailedVerify": "Fix did not verify",
+    "statusFiled": "Pull request drafted",
+    "statusNoDefect": "No defect found",
+    "statusPurged": "Deleted by the operator",
+    "statusSeen": "Seen",
+    "statusUnavailable": "Unavailable",
+    "stopBtn": "Stop run",
+    "title": "Auto-Improvement",
+    "toggleDetail": "Show finding details",
+    "truncated": "truncated",
+    "uncalibrated": "Not calibrated",
+    "viewCommit": "View commit",
+    "viewPr": "Pull request"
   }
 }

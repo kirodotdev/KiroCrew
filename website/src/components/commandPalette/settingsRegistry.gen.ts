@@ -134,14 +134,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "chat.concise-responses",
-    "label": "Concise Responses",
-    "description": "Trim filler and over-narration: lead with the answer, keep progress notes high-level. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
     "id": "chat.confirm-before-closing-session",
     "label": "Confirm Before Closing Session",
     "description": "Show a confirmation dialog when closing a session",
@@ -261,10 +253,26 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.prevent-sleep-while-running",
+    "label": "Prevent sleep while running",
+    "description": "Keep your computer awake while a task is running",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.quick-send",
     "label": "Quick Send",
     "tab": "chat",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.response-verbosity",
+    "label": "Response Verbosity",
+    "description": "How terse the agent's prose is. Ultra-concise writes for an ADHD reader: the answer lands in an opening of at most three sentences, and any detail after it must be scannable bullets rather than prose. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail at every level.",
+    "tab": "chat",
+    "type": "select",
     "occurrence": 1
   },
   {

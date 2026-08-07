@@ -8,7 +8,8 @@ import { Paperclip, Plus, Settings2, Sparkles, Star, X } from 'lucide-react'
 
 import { i18nT } from '../../../i18n/t'
 import Clickable from '../../../components/Clickable'
-import { Btn, Select } from '../../../components/ui'
+import SimpleSelect from '../../../components/SimpleSelect'
+import { Btn } from '../../../components/ui'
 import type { AgentDef, Attachment, MeetingStatus, Preset } from '../api'
 
 interface Props {
@@ -51,20 +52,25 @@ export default function AgentPillBar({
   return (
     <div className="px-6 py-2 border-b border-border flex flex-wrap items-center gap-2">
       {presetNames.length > 0 ? (
-        <Select
+        <SimpleSelect
+          options={presetNames}
+          // `presetDefaultOption` decorates only the preset the config marks as
+          // default; the rest render bare. Labels stay positionally in lockstep
+          // with `options`, so the VALUE handed to `onPresetChange` is always the
+          // undecorated preset name.
+          optionLabels={presetNames.map(name =>
+            name === defaultPreset
+              ? i18nT('apps.meetings.pillBar.presetDefaultOption', { name })
+              : name,
+          )}
           value={selectedPreset}
-          onChange={e => onPresetChange(e.target.value)}
+          onChange={onPresetChange}
+          // Reproduces the old `<option value="">`: a selectable top row that
+          // clears the selection back to '' and shows in the trigger while empty.
+          clearLabel={i18nT('apps.meetings.pillBar.noPreset')}
           aria-label={i18nT('apps.meetings.pillBar.presetLabel')}
-        >
-          <option value="">{i18nT('apps.meetings.pillBar.noPreset')}</option>
-          {presetNames.map(name => (
-            <option key={name} value={name}>
-              {name === defaultPreset
-                ? i18nT('apps.meetings.pillBar.presetDefaultOption', { name })
-                : name}
-            </option>
-          ))}
-        </Select>
+          style={{ minWidth: 160 }}
+        />
       ) : (
         <Btn onClick={onOpenSettings}>
           <Plus className="lucide-inline" />

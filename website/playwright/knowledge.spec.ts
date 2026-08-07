@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { randomUUID } from 'crypto'
+import { pickFromDropdown } from './helpers/dropdown'
 
 const HARNESS_GATEWAY = !!process.env.KIROCREW_E2E_EPHEMERAL
 
@@ -84,11 +85,11 @@ test.describe('Knowledge Page E2E Tests', () => {
     expect(importRes.ok()).toBeTruthy()
 
     await page.goto('/knowledge', { waitUntil: 'domcontentloaded' })
-    const typeSelect = page.getByLabel('Filter by type')
+    const typeSelect = page.getByRole('combobox', { name: 'Filter by type' })
     await expect(typeSelect).toBeVisible({ timeout: 10000 })
     // 'policy' is a valid ITEM_TYPES value that the seeded 'document' item
     // cannot match, so the list goes to 0 results with a filter applied.
-    await typeSelect.selectOption('policy')
+    await pickFromDropdown(page, 'Filter by type', 'policy')
 
     await expect(page.getByTestId('knowledge-onboarding')).toHaveCount(0)
     await expect(typeSelect).toBeVisible()
@@ -115,7 +116,10 @@ test.describe('Knowledge Page E2E Tests', () => {
   })
 
   test('help dialog opens and closes', async ({ page }) => {
-    await expect(page.getByText('Knowledge Library')).toBeVisible({ timeout: 10000 })
+    // exact: true — the onboarding heading also contains "Knowledge Library"
+    // ("Welcome to the Knowledge Library"), so a substring match resolves to two
+    // elements and trips strict mode (see the same guard above).
+    await expect(page.getByText('Knowledge Library', { exact: true })).toBeVisible({ timeout: 10000 })
 
     // Click the Help button
     await page.getByRole('button', { name: /Help/i }).click()
@@ -345,7 +349,7 @@ test.describe('Knowledge Page E2E Tests', () => {
     await expect(page.getByText(docTitle)).toBeVisible({ timeout: 10000 })
 
     // Select type filter "runbook"
-    await page.getByLabel('Filter by type').selectOption('runbook')
+    await pickFromDropdown(page, 'Filter by type', 'runbook')
 
     // Runbook should remain, document should disappear
     await expect(page.getByText(runbookTitle)).toBeVisible({ timeout: 10000 })

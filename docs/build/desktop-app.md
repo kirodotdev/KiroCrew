@@ -264,14 +264,15 @@ provider:
 3. It verifies authentication with `kiro-cli whoami`.
 
 If either check fails, the shared React setup gate appears in both the desktop
-shell and browser dashboard. On macOS, Linux, and native Windows, the user can
-explicitly choose **Install Kiro CLI**. The gateway downloads the fixed official
-HTTPS installer for the host platform, validates its size and
-platform-specific marker in memory, and pipes those same bytes to the fixed
-system interpreter. The installer itself verifies the downloaded Kiro CLI
-package. The second step runs `kiro-cli login --use-device-flow`, displays the
-secure sign-in URL and code, and opens the Kiro Crew dashboard only after
-`kiro-cli whoami` succeeds.
+shell and browser dashboard. Kiro Crew performs neither setup step: the gate
+links out to <https://kiro.dev/cli/> to obtain the CLI, and names the commands
+the user runs to sign in — `kiro-cli login` for a personal account, or
+`kiro-cli login --use-device-flow --license pro` for organization SSO. Both
+tiers are shown because the browser portal the bare command opens offers a free
+Builder ID alongside organization SSO, so an SSO user who picks the wrong one
+authenticates successfully and only discovers the mismatch later as models
+missing from their account. The gate's only control is **Check again**, which
+re-probes the host; it opens the dashboard once `kiro-cli whoami` succeeds.
 An installed candidate that cannot start is shown as needing repair rather than
 as merely signed out; one that runs is directly usable for sign-in regardless of
 install source (toolbox, Homebrew, winget, the official installer, or a

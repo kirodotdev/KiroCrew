@@ -843,19 +843,25 @@ class TestSearchSessions:
         assert "new-weak-1" in result_keys
         assert "new-weak-2" in result_keys
 
-    def test_substring_scan_reads_through_msg_cache(self, tmp_path):
-        """search_sessions sources content via _read_messages (the mtime
-        cache), not a second raw file parse.
+    def test_substring_scan_reads_the_file_and_leaves_msg_cache_alone(self, tmp_path):
+        """search_sessions sources content from the file, never ``_msg_cache``.
 
-        Regression lock for the double-parse fix: previously the scan opened
-        and re-parsed each file inline, so _read_messages was never consulted
-        by the search path (the snippet path then parsed the same file a
-        second time). After the fix the scan goes through the cache, so a
-        matched session is counted via _read_messages and its parse is
-        memoized for the snippet read.
+        Both halves of a query read the session file directly: the fold that
+        counts matches, and the snippet built for each returned row. Neither goes
+        through ``_read_messages``, for two reasons.
+
+        Memory: ``_read_messages`` memoizes the PARSED message dicts, and a scan
+        touches every session in the window — so sourcing content through it makes
+        searching pin the whole corpus's parsed form in RSS.
+
+        Correctness: ``_msg_cache`` is populated by callers that hold no write
+        lock, so an entry can be a pre-rewrite parse stored under a restored
+        (unchanged) mtime. Folding from it would launder that staleness into the
+        search cache, where the mtime guard cannot detect it.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("a", "user", "apollo deployment rollback notes")
+        log._msg_cache.clear()
         calls: list[str] = []
         real = log._read_messages
 
@@ -864,11 +870,12 @@ class TestSearchSessions:
             return real(key)
 
         log._read_messages = counting  # type: ignore[assignment]
-        assert [s["key"] for s in log.search_sessions("apollo")] == ["a"]
-        # The scan consulted the cache entry point for the matched session...
-        assert "a" in calls
-        # ...and the parse is now memoized, so the snippet read is a cache hit.
-        assert "a" in log._msg_cache
+        hits = log.search_sessions("apollo")
+        assert [s["key"] for s in hits] == ["a"]
+        # The snippet still resolves, from the file rather than a parsed cache.
+        assert "apollo" in hits[0]["snippet"]
+        assert calls == [], "the search path must not enter _read_messages"
+        assert len(log._msg_cache) == 0, "searching must not pin a parsed transcript"
 
 
 class TestArchive:

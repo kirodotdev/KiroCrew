@@ -28,7 +28,7 @@ from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.constants import OPTIONS_RE_LINE
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
-from kiro_crew.history import monotonic_transcript_ts
+from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
+    from kiro_crew.power import SleepInhibitor  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -861,6 +862,7 @@ class _ChatSlot:
         "_channel_window_mtime",
         "_disk_older_count",
         "_disk_window_len",
+        "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_pending_rewrite",
         "_file_changes",
@@ -1078,7 +1080,18 @@ class _ChatSlot:
         # watermark is what makes the #8 trim credit safe. It is NOT a fragile
         # "what to append" counter — saves always re-serialize the WHOLE window.
         self._disk_window_len: int = 0
-        # Cached frozen-prefix bytes for the append-safe save model.
+        # The newest ``ts`` seen on disk at the last save, INCLUDING rows this
+        # slot never observed. A subagent, cron, or CLI appending to a session a
+        # live tab also has open writes rows that ``_save_slot_to_history``
+        # preserves as "foreign" without ever folding them into ``messages`` --
+        # so the window is not a superset of the file, and flooring the next
+        # append on the window tail alone can tie a foreign row's timestamp.
+        # Cached rather than read per append: consulting the file here would put
+        # a stat plus a bounded read on the event loop, which AUTOSDE's
+        # no-blocking-call-on-event-loop rule forbids. Refreshed at the save
+        # boundary, where the lock is already held and the foreign lines are
+        # already parsed.
+        self._disk_tail_ts: str | None = None        # Cached frozen-prefix bytes for the append-safe save model.
         # The session file is FROZEN-PREFIX (the first _disk_older_count on-disk
         # message lines, OLDER than the in-memory window) + a fresh re-serialize
         # of the whole window. The prefix is never rewritten, so a restart that
@@ -1219,6 +1232,20 @@ class _ChatSlot:
             "current": current,
         }
 
+    def note_disk_tail(self, *candidates: str | None) -> None:
+        """Record the newest ``ts`` known to be ON DISK for this session.
+
+        The save boundary is the only place a slot can learn about a row it never
+        observed (see ``_disk_tail_ts``), so it calls this with whatever it just
+        wrote -- foreign rows included. Keeping the update here rather than
+        assigning the attribute from the persistence module means the **monotone**
+        rule lives with the field it guards: the floor may only ever move FORWARD.
+        A save that moved it backwards would re-open the same-``ts`` tie the floor
+        exists to prevent, and unparseable candidates are skipped rather than
+        ranked (``latest_transcript_ts``), so one corrupt row cannot capture it.
+        """
+        self._disk_tail_ts = latest_transcript_ts(self._disk_tail_ts, *candidates)
+
     def append(
         self,
         role: str,
@@ -1240,9 +1267,19 @@ class _ChatSlot:
             # the clock does not tick between two appends. An explicit *ts*
             # (a row replayed from a channel transcript) is preserved verbatim
             # -- rewriting it would reorder the replay it came from.
+            #
+            # The floor is the later of the window tail and the last on-disk tail
+            # this slot was told about, because the window is NOT a superset of
+            # the file: a row written by another process is preserved as a
+            # foreign line without entering ``messages``, so flooring on the
+            # window alone leaves it un-ordered-against. Both candidates are
+            # in-process reads -- no file I/O on the event loop.
             "ts": ts
             or monotonic_transcript_ts(
-                self.messages[-1].get("ts") if self.messages else None,
+                latest_transcript_ts(
+                    self.messages[-1].get("ts") if self.messages else None,
+                    self._disk_tail_ts,
+                ),
                 datetime.now(timezone.utc),
             ),
         }
@@ -1926,6 +1963,7 @@ class DashboardState:
         # never acquires it.
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
+        self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
@@ -1948,6 +1986,11 @@ class DashboardState:
         # entrypoint (faulthandler enabled) and stopped on shutdown. Annotated
         # here so the assignment in start_dashboard type-checks under mypy strict.
         self._loop_watchdog: "LoopStallWatchdog | None" = None
+        # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
+        # released/cancelled on shutdown; annotated here so the assignments in
+        # start_dashboard type-check under mypy.
+        self._sleep_inhibitor: "SleepInhibitor | None" = None
+        self._prevent_sleep_task: asyncio.Task | None = None  # type: ignore[type-arg]
 
         # Knowledge Library
         self._knowledge_store: "KnowledgeStore | None" = None  # Lazy-initialized on first access
@@ -3200,6 +3243,137 @@ class DashboardState:
         path = config_dir() / self._FOLDERS_FILE
         self._atomic_write_json(path, self._folders)
 
+    _CRON_FOLDERS_FILE = "cron_folders.json"
+
+    def load_cron_folders(self) -> None:
+        """Load cron folder definitions from disk.
+
+        Validates the loaded shape: the file must contain a JSON array of
+        folder objects. Anything else (a hand-edited ``{}``, a string, or
+        malformed entries) is discarded with a warning instead of being
+        assigned verbatim — a non-list value would flow to the frontend
+        and crash grouping (``folders.map is not a function``).
+        """
+        path = config_dir() / self._CRON_FOLDERS_FILE
+        try:
+            if path.exists():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, list):
+                    logger.warning(
+                        "Ignoring %s: expected a JSON array, got %s",
+                        self._CRON_FOLDERS_FILE,
+                        type(loaded).__name__,
+                    )
+                    return
+                valid = [
+                    f
+                    for f in loaded
+                    if isinstance(f, dict)
+                    and isinstance(f.get("id"), str)
+                    and f.get("id")
+                    and isinstance(f.get("name"), str)
+                    and f.get("name")
+                    and isinstance(f.get("order"), (int, float))
+                    and not isinstance(f.get("order"), bool)
+                ]
+                if len(valid) != len(loaded):
+                    logger.warning(
+                        "Dropped %d malformed entr(ies) while loading %s",
+                        len(loaded) - len(valid),
+                        self._CRON_FOLDERS_FILE,
+                    )
+                self._cron_folders = valid
+        except Exception:
+            logger.warning("Failed to load cron folders", exc_info=True)
+
+    def save_cron_folders(self) -> None:
+        """Persist cron folder definitions to disk (atomic write).
+
+        Raises on I/O failure so callers can surface a 500 to the client
+        rather than silently losing the write.
+        """
+        path = config_dir() / self._CRON_FOLDERS_FILE
+        self._atomic_write_json_strict(path, self._cron_folders)
+
+    def create_cron_folder(self, name: str, folder_id: str) -> dict:
+        """Create a new cron folder and persist.
+
+        Returns the created folder dict. Raises on persistence failure
+        (callers should surface a 500); in-memory state is rolled back.
+        """
+        order = max((f["order"] for f in self._cron_folders), default=-1) + 1
+        folder = {"id": folder_id, "name": name, "order": order}
+        self._cron_folders.append(folder)
+        try:
+            self.save_cron_folders()
+        except Exception:
+            self._cron_folders.pop()
+            raise
+        return folder
+
+    def rename_cron_folder(self, folder_id: str, name: str) -> dict | None:
+        """Rename a cron folder and persist.
+
+        Returns the updated folder dict, or None if folder_id not found.
+        Raises on persistence failure (callers should surface a 500);
+        original name is restored on failure.
+        """
+        for folder in self._cron_folders:
+            if folder["id"] == folder_id:
+                old_name = folder["name"]
+                folder["name"] = name
+                try:
+                    self.save_cron_folders()
+                except Exception:
+                    folder["name"] = old_name
+                    raise
+                return folder
+        return None
+
+    def delete_cron_folder(self, folder_id: str) -> bool:
+        """Remove a cron folder and clear its assignment on all jobs.
+
+        Returns True if the folder existed, False otherwise.
+        Raises on persistence failure (callers should surface a 500).
+
+        Ordering: the folder removal is the single authoritative write —
+        it is removed from memory and persisted FIRST (rolled back in
+        memory if the save fails, keeping memory consistent with disk).
+        Job ``folder_id`` clears happen afterwards as best-effort cleanup:
+        a dangling ``folder_id`` is benign (grouping renders unknown ids
+        in the Ungrouped bucket, and a job's next folder move overwrites
+        it), so a crash or per-job failure between writes can never strand
+        jobs in a half-deleted state — the folder is either fully present
+        or fully gone.
+        """
+        if not any(f["id"] == folder_id for f in self._cron_folders):
+            return False
+        # Remove the folder definition and persist — the one write that
+        # decides whether the delete happened.
+        snapshot = list(self._cron_folders)
+        self._cron_folders = [f for f in self._cron_folders if f["id"] != folder_id]
+        try:
+            self.save_cron_folders()
+        except Exception:
+            self._cron_folders = snapshot
+            raise
+        # Best-effort: clear the now-dangling folder_id on affected jobs.
+        # Failures are logged and tolerated — consumers treat an unknown
+        # folder_id as ungrouped, so a leftover id has no user-visible
+        # effect and self-heals on the job's next folder assignment.
+        for job in self.crons.list_jobs(include_disabled=True):
+            if job.folder_id == folder_id:
+                try:
+                    self.crons.update_job(job.id, folder_id="")
+                except Exception:
+                    logger.warning(
+                        "Failed to clear folder_id on job %s after folder delete "
+                        "(benign: unknown ids render as ungrouped)",
+                        job.id,
+                        exc_info=True,
+                    )
+        return True
+
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a folder's ancestry root→leaf as a breadcrumb string.
 
@@ -3280,24 +3454,40 @@ class DashboardState:
         self._atomic_write_json(config_dir() / self._TAG_BOARDS_FILE, self._tag_boards)
 
     @staticmethod
-    def _atomic_write_json(path: Path, data: Any) -> None:
-        """Atomic JSON write used by folder/tag persistence helpers."""
+    def _atomic_write_json_strict(path: Path, data: Any) -> None:
+        """Atomic JSON write that RAISES on failure (no swallowing).
+
+        Used by persistence helpers where the caller needs to know about
+        write failures (e.g. to return HTTP 500).
+        """
+        payload = json.dumps(data).encode()
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
-            payload = json.dumps(data).encode()
-            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            # fdopen takes ownership of fd; file-object write() guarantees
+            # the full buffer is written or an exception is raised (a bare
+            # os.write may return a short count silently, which would let
+            # os.replace() install truncated JSON).
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(path))
+        except Exception:
             try:
-                try:
-                    os.write(fd, payload)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, str(path))
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: Any) -> None:
+        """Atomic JSON write used by folder/tag persistence helpers.
+
+        Delegates to _atomic_write_json_strict but swallows errors (logs a
+        warning instead of raising).
+        """
+        try:
+            DashboardState._atomic_write_json_strict(path, data)
         except Exception:
             logger.warning("Failed to write %s", path.name, exc_info=True)
 

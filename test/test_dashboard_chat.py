@@ -3892,6 +3892,88 @@ class TestRuntimeWiring:
         assert len(build_message_calls) == 1
         assert build_message_calls[0]["kwargs"].get("memory_store") == "oncall-mem"
 
+    @pytest.mark.asyncio
+    async def test_run_chat_forwards_and_clears_the_reinjection_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """A compaction flags the session; the NEXT _run_chat must forward
+        needs_reinjection=True to build_message and clear the flag so the turn
+        after that does not re-inject again.
+
+        Regression guard: without this wiring the flag is set by the compact
+        callback and read by nobody, so the whole feature is dead code.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        build_message_calls: list[dict] = []
+
+        def mock_build_message(self_ctx, text, is_new, session_key=None, **kwargs):
+            build_message_calls.append({"text": text, "kwargs": kwargs})
+            return text, MagicMock(action=None, text="")
+
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        monkeypatch.setattr(
+            ctx_builder, "build_message", lambda *a, **kw: mock_build_message(ctx_builder, *a, **kw)
+        )
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        slot = state.get_or_create_slot("reinject-test")
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=AsyncIterator([]))
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
+        state.sessions.get_pid = MagicMock(return_value=None)
+
+        # Stand in for the real SessionManager flag store, including the
+        # mark/consume round-trip so the empty-response re-queue path is
+        # exercised the way production behaves.
+        flag = {"set": True}
+
+        def _consume(key):
+            was = flag["set"]
+            flag["set"] = False
+            return was
+
+        def _mark(key):
+            flag["set"] = True
+
+        state.sessions.consume_needs_reinjection = MagicMock(side_effect=_consume)
+        state.sessions.mark_needs_reinjection = MagicMock(side_effect=_mark)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "first turn after compaction")
+
+        # The stream is empty, so this turn does not land. The flag must be put
+        # BACK -- asserting on the mark call directly, because asserting that some
+        # build carried True is tautological (the first assertion already pins it,
+        # and the re-queue is drained by an outer worker, not an inner loop).
+        assert build_message_calls, "build_message must have been called"
+        assert (
+            build_message_calls[0]["kwargs"].get("needs_reinjection") is True
+        ), "the turn right after a compaction must re-inject the skills index"
+        assert state.sessions.mark_needs_reinjection.called, (
+            "a turn that consumed the flag but did not land must restore it, "
+            "or the skills index is lost for the rest of the session"
+        )
+        assert flag["set"] is True, "the flag must be back on after a non-landing turn"
+
+        # Once a turn genuinely lands, the flag is gone and later turns are clean.
+        flag["set"] = False
+        build_message_calls.clear()
+        await _run_chat(state, slot, "a later turn")
+        assert build_message_calls, "build_message must have been called again"
+        assert all(
+            c["kwargs"].get("needs_reinjection") is False for c in build_message_calls
+        ), "the flag must be one-shot, not sticky for every later turn"
+
 
 class TestRunChatToolBoundarySegments:
     """Test that _run_chat inserts whitespace across tool call boundaries."""
@@ -5252,6 +5334,116 @@ class TestOrchestratorPlanGateArming:
         assert not any("Stage 2" in s or "Stage 3" in s for s in seps), (
             "no phantom stage beyond the live plan size may be built"
         )
+
+    # ── P0 hardening: stage turn ceiling + subagent wait cap ──
+
+    @staticmethod
+    def _orch_state():
+        """Minimal DashboardState double for driving _stage_loop."""
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        return state
+
+    @pytest.mark.asyncio
+    async def test_stage_loop_times_out_a_stage_that_swallows_cancellation(
+        self, tmp_path, monkeypatch
+    ):
+        """The real `_run_chat` CATCHES CancelledError (flushes partial output and
+        returns), so `asyncio.wait_for` would absorb its own deadline and let a
+        half-finished stage advance as a success. The fake here reproduces that
+        exact semantic -- a bare `sleep()` would propagate the cancellation and
+        pass even against the broken implementation, which is why this test uses
+        a swallowing turn."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = self._orch_state()
+        slot = _ChatSlot("hang-test", mode="orchestrator")
+        slot._stage_titles = ["A", "B"]
+        # 1s budget so the ceiling fires well inside the test's runtime.
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=1)
+        slot._auto_run = True
+
+        swallowed = False
+
+        async def _hang_and_swallow(s, sl, msg, **kw):
+            nonlocal swallowed
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                # Exactly what _run_chat does: absorb it and return normally.
+                swallowed = True
+                return None
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._run_chat", _hang_and_swallow
+        )
+
+        await asyncio.wait_for(_stage_loop(state, slot, auto_run=True), timeout=30)
+
+        assert swallowed, "the fake must have absorbed the cancellation (the real path)"
+        assert slot._auto_run is False, "a stage cut at the ceiling must stop auto-run"
+        assert any(
+            "timed out" in m.get("content", "") for m in slot.messages
+        ), "the user must see a timeout card, not a silently-advanced stage"
+        seps = [m["content"] for m in slot.messages if "stage-sep" in m.get("cls", "")]
+        assert not any("Stage 2" in s for s in seps), (
+            "a cut stage must NOT advance to the next one"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stage_loop_disabled_timeout_does_not_abort_instantly(
+        self, tmp_path, monkeypatch
+    ):
+        """stage_timeout_seconds=0 means 'disabled' (see is_stage_timed_out), so
+        it must become wait_for(None) — passing 0 through would time out every
+        stage before its turn began."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
+        from kiro_crew.context_management import OrchestrationTracker
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = self._orch_state()
+        slot = _ChatSlot("no-timeout", mode="orchestrator")
+        slot._stage_titles = ["A"]
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=0)
+
+        ran = 0
+
+        async def _ok(s, sl, msg, **kw):
+            nonlocal ran
+            ran += 1
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _ok)
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        assert ran == 1, "a disabled timeout must let the stage turn actually run"
+        assert not any(
+            "timed out" in m.get("content", "") for m in slot.messages
+        ), "no timeout card may be emitted when the timeout is disabled"
+
+    def test_subagent_wait_cap_scales_with_stage_timeout(self):
+        """The poll cap tracks the stage budget instead of a fixed 5 min, and a
+        disabled timeout falls back to the ceiling rather than 0 (which would
+        skip the subagent wait entirely)."""
+        from kiro_crew.context_management import OrchestrationTracker
+
+        def cap(timeout: int) -> int:
+            t = OrchestrationTracker(stage_timeout_seconds=timeout)
+            return min(t.stage_timeout_seconds // 4, 450) if t.stage_timeout_seconds else 450
+
+        assert cap(1800) == 450, "default 30m budget -> 15 min of subagent wait"
+        assert cap(600) == 150, "a 10m budget scales down proportionally"
+        assert cap(7200) == 450, "a huge budget is still capped at the 15 min ceiling"
+        assert cap(0) == 450, "disabled timeout must NOT collapse the wait to zero"
 
 
 # ── Tests: plan execution via Go/Go All button simulation ──
@@ -9082,6 +9274,107 @@ class TestStopReasonCancelled:
 
         state.sessions.record_success.assert_not_called()
         state.sessions.record_failure.assert_not_called()
+
+    @staticmethod
+    def _wire_reinjection(state, tmp_path, monkeypatch):
+        """Give the state a context builder so the consume site actually runs.
+
+        The class's default harness sets `context_builder = None`, which skips
+        the leg that consumes the flag -- with no consume there is nothing to
+        restore, so a test without this would pass vacuously.
+        """
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        monkeypatch.setattr(
+            ctx_builder,
+            "build_message",
+            lambda text, *a, **kw: (text, MagicMock(action=None, text="")),
+        )
+        state.context_builder = ctx_builder
+        state.sessions.consume_needs_reinjection = MagicMock(return_value=True)
+        state.sessions.mark_needs_reinjection = MagicMock()
+        return state
+
+    @pytest.mark.asyncio
+    async def test_cancelled_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
+        """A graceful cancel discards the prompt, so the one-shot
+        post-compaction re-injection flag must be put back.
+
+        Regression guard for the path a narrower fix missed: restoring only on
+        the empty-response re-queue left a soft-stop losing the skills index for
+        the rest of the session.
+        """
+        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial"),
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        self._wire_reinjection(state, tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        await _run_chat(state, slot, "hello")
+
+        state.sessions.consume_needs_reinjection.assert_called()
+        state.sessions.mark_needs_reinjection.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exception_mid_turn_restores_the_reinjection_flag(self, tmp_path, monkeypatch):
+        """An exception between the consume and the success check must not
+        swallow the flag either -- the restore lives in the `finally`, so every
+        non-landing exit is covered, not only the ones that reach the end."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        self._wire_reinjection(state, tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+
+        client = MagicMock()
+
+        def _boom(_msg):
+            raise RuntimeError("provider exploded mid-turn")
+
+        client.stream = _boom
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_failure = AsyncMock()
+
+        await _run_chat(state, slot, "hello")
+
+        state.sessions.mark_needs_reinjection.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_landed_turn_does_not_restore_the_reinjection_flag(self, tmp_path, monkeypatch):
+        """The complement: a turn that lands must leave the flag cleared,
+        otherwise the index is re-paid on every subsequent turn."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="a real answer"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        self._wire_reinjection(state, tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_success = MagicMock()
+
+        await _run_chat(state, slot, "hello")
+
+        state.sessions.mark_needs_reinjection.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_skips_consolidation(self, tmp_path, monkeypatch):

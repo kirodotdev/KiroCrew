@@ -364,6 +364,25 @@ class TestValidateToolArgs:
                 CRON_ADD_SCHEMA,
             )
 
+    def test_cron_add_accepts_windows_path_with_spaces(self):
+        # "First Last" is the DEFAULT Windows account-name shape, and
+        # config_dir() is rooted at %USERPROFILE%, so rejecting spaces made a
+        # script cron impossible for a typical Windows user.
+        spaced = "C:\\Users\\John Smith\\.kiro\\crew\\crons\\job.py:run"
+        result = validate_tool_args(
+            {"name": "s", "script": spaced, "every": 300}, CRON_ADD_SCHEMA
+        )
+        assert result["script"] == spaced
+
+    def test_cron_add_rejects_unc_script_path(self):
+        # A UNC path is not a local script, and resolving one triggers an
+        # outbound SMB/DNS probe before the crons-root check can reject it.
+        for unc in ("\\\\host\\share\\job.py:run", "//host/share/job.py:run"):
+            with pytest.raises(ValidationError, match="invalid format"):
+                validate_tool_args(
+                    {"name": "x", "script": unc, "every": 300}, CRON_ADD_SCHEMA
+                )
+
     def test_task_run_valid(self):
         result = validate_tool_args({"spec": "do things"}, TASK_RUN_SCHEMA)
         assert result["spec"] == "do things"

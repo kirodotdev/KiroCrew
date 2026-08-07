@@ -200,11 +200,37 @@ _PROBE_SNIPPET = (
 
 _DRIVER = r"""
 import json, os, subprocess, sys, threading, time
+from kiro_crew import platform_compat
+
 w = sys.argv[1]
 p = subprocess.Popen(["kiro-cli", "acp", "--agent", "pooltest"], cwd=w + "/proj",
                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                      stderr=subprocess.PIPE, text=True,
                      env={**os.environ, "KIRO_HOME": w + "/khome"})
+
+
+def teardown():
+    # The whole TREE, not just kiro-cli: the probe MCP servers are ITS children
+    # and inherit its cwd (the work dir), so a bare p.kill() leaves them alive
+    # holding a directory handle on it. On Windows that handle makes the caller's
+    # rmtree fail with WinError 32 ("used by another process"), so the test blew
+    # up in TemporaryDirectory teardown after its assertions had already passed.
+    try:
+        platform_compat.kill_process_tree(p.pid, platform_compat.SIGKILL)
+    except (ProcessLookupError, OSError):
+        p.kill()
+    try:
+        p.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
+    # Close our ends of the pipes too, so no descriptor of ours outlives the run.
+    for stream in (p.stdin, p.stdout, p.stderr):
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
 send = lambda o: (p.stdin.write(json.dumps(o) + "\n"), p.stdin.flush())
 send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
       "params": {"protocolVersion": 1, "clientCapabilities":
@@ -219,7 +245,7 @@ _t = threading.Thread(target=lambda: _line.append(p.stdout.readline()), daemon=T
 _t.start()
 _t.join(30)
 if not _line:
-    p.kill()
+    teardown()
     sys.exit("kiro-cli never answered initialize within 30s")
 send({"jsonrpc": "2.0", "id": 2, "method": "session/new",
       "params": {"cwd": w + "/proj", "mcpServers": [
@@ -235,7 +261,7 @@ while time.time() < deadline and not os.path.exists(injected):
 # chance to write its own marker -- otherwise this driver could exit before the
 # thing the test asserts is ABSENT would have appeared, making it pass vacuously.
 time.sleep(1)
-p.kill()
+teardown()
 """
 
 

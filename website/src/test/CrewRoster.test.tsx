@@ -13,7 +13,7 @@
  * (`columnheader`, the row's own control) rather than cell positions, so
  * reordering a column does not break them.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
@@ -226,6 +226,56 @@ describe('crew roster — cards', () => {
   })
 })
 
+describe('crew roster — isolation preview notice', () => {
+  const NOTICE = /Isolated memory per crew is on the way/
+  const TIP = /Isolated memory per crew is still being built/
+
+  /* The view choice persists to localStorage, so a test here that switches to
+     List would otherwise hand every later block a table instead of the cards
+     they query. Cleared on both edges: before, so this block starts on cards
+     whatever ran earlier; after, so it cannot leak forward. */
+  beforeEach(() => localStorage.clear())
+  afterEach(() => localStorage.clear())
+
+  it('says the bindings are a preview, in both views', async () => {
+    await renderRoster()
+    // Page-level, so it is on screen before the user picks a view.
+    expect(screen.getByText(NOTICE)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    await screen.findByRole('table')
+    // Switching the layout must not take the caveat away with the cards.
+    expect(screen.getByText(NOTICE)).toBeInTheDocument()
+  })
+
+  it('is not repeated on every card', async () => {
+    await renderRoster()
+    // The claim is about the whole surface. Two crews, one notice — a per-card
+    // copy would put the same sentence on the page as many times as there are
+    // crews, and the roster runs to dozens.
+    expect(screen.getAllByText(NOTICE)).toHaveLength(1)
+  })
+
+  it('hangs the same caveat off the workspace and memory bindings', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    // Two tips, one per binding the notice is about. The editor is an overlay,
+    // so the page-level notice is not readable from here — the tooltip is the
+    // only place this caveat reaches a user who is mid-edit.
+    expect(within(sheet).getAllByTitle(TIP)).toHaveLength(2)
+  })
+
+  it('marks the workspace and memory columns in the list view', async () => {
+    await renderRoster()
+    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    const table = await screen.findByRole('table')
+    expect(within(table).getAllByTitle(TIP)).toHaveLength(2)
+    // Each tip is a named control rather than announcing as "question mark",
+    // and the header above keeps its own short name regardless.
+    expect(within(table).getAllByRole('button', { name: 'More information' })).toHaveLength(2)
+  })
+})
+
 describe('crew roster — filtering', () => {
   it('narrows the visible cards', async () => {
     await renderRoster()
@@ -322,7 +372,9 @@ describe('crew roster — view toggle', () => {
     // The cards are gone, not merely hidden underneath.
     expect(screen.queryAllByTestId('crew-card')).toHaveLength(0)
     // Bindings move into columns, so the header names them once instead of
-    // repeating a label per card.
+    // repeating a label per card. Exact names: the workspace and memory headers
+    // carry the preview InfoTip, and each `th` pins its own `aria-label` so the
+    // tip's name is not concatenated into the column's.
     expect(within(table).getByRole('columnheader', { name: 'Workspace' })).toBeInTheDocument()
     expect(within(table).getByRole('columnheader', { name: 'Memory Store' })).toBeInTheDocument()
   })

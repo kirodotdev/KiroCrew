@@ -1,8 +1,24 @@
 export const FEATURE_REQUEST_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
 
-export const FEATURE_REQUEST_PROMPT = [
+/**
+ * Prompt used when the dashboard has already confirmed that the
+ * `feature-request` skill is installed. The ``$feature-request`` token is
+ * resolved server-side by the chat runner (``resolve_dollar_skills``) and
+ * injected into the message before the agent sees it — no tool call, no
+ * filesystem probe, no approval prompt.
+ */
+export const FEATURE_REQUEST_PROMPT_WITH_SKILL = [
   'The user clicked "Request a Feature".',
-  'If the `feature-request` skill is available, load and follow it. Otherwise follow this self-contained workflow:',
+  'Follow the $feature-request skill.',
+].join('\n')
+
+/**
+ * Self-contained fallback prompt used when the `feature-request` skill is
+ * NOT installed. Contains the full conversational workflow inline so the
+ * agent never needs to probe for the skill.
+ */
+export const FEATURE_REQUEST_PROMPT_FALLBACK = [
+  'The user clicked "Request a Feature".',
   '',
   "Greet the user warmly and ask what they'd like — a feature request or a bug report. Keep it casual; don't present a form.",
   'Guide them conversationally (two to three exchanges) to describe: what they want or what is broken, why it matters, and any context.',
@@ -21,3 +37,11 @@ export const FEATURE_REQUEST_PROMPT = [
   '',
   'Be casual and helpful. This is a conversation, not a form.',
 ].join('\n')
+
+/**
+ * Backward-compatible alias — points at the fallback so any consumer that
+ * imported the old name keeps working. New code should use
+ * {@link FEATURE_REQUEST_PROMPT_WITH_SKILL} or
+ * {@link FEATURE_REQUEST_PROMPT_FALLBACK} explicitly.
+ */
+export const FEATURE_REQUEST_PROMPT = FEATURE_REQUEST_PROMPT_FALLBACK

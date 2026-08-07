@@ -22,7 +22,14 @@ import zipfile
 import zlib
 from pathlib import Path
 
-from defusedxml.ElementTree import fromstring as _xml_fromstring
+# Optional so a stale install (git pull without `pip install -e .`) degrades
+# to "docx/pptx parsing unavailable" instead of killing every CLI entry at
+# import time — this module sits on the gateway's import path. NEVER fall
+# back to stdlib xml.etree: it resolves external entities (XXE).
+try:
+    from defusedxml.ElementTree import fromstring as _xml_fromstring
+except ModuleNotFoundError:  # pragma: no cover — exercised via monkeypatch
+    _xml_fromstring = None  # type: ignore[assignment]
 
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -80,6 +87,13 @@ def extract_text(path: str, mimetype: str = "", filename: str = "") -> str:
         fmt = {".docx": "docx", ".pptx": "pptx", ".pdf": "pdf"}.get(ext, "")
     if not fmt:
         return ""
+    if fmt in ("docx", "pptx") and _xml_fromstring is None:
+        logger.warning(
+            "Cannot parse %s: defusedxml is not installed (checkout newer "
+            "than installed deps?). Fix: pip install -e .",
+            filename or path,
+        )
+        return ""
     try:
         if fmt == "docx":
             return _extract_docx(path)
@@ -134,6 +148,7 @@ def _extract_docx(path: str) -> str:
 
     Must only be called from extract_text() which enforces is_sensitive_path().
     """
+    assert _xml_fromstring is not None  # extract_text() gates the None case
     if is_sensitive_path(path):
         return ""
     paragraphs: list[str] = []
@@ -165,6 +180,7 @@ def _extract_pptx(path: str) -> str:
 
     Must only be called from extract_text() which enforces is_sensitive_path().
     """
+    assert _xml_fromstring is not None  # extract_text() gates the None case
     if is_sensitive_path(path):
         return ""
     slides: list[tuple[int, str]] = []

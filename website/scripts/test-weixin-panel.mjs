@@ -235,7 +235,11 @@ assert(calls.status >= 2, `Status endpoint polled repeatedly (${calls.status} ca
 await page.screenshot({ path: join(OUT, 'weixin-panel-connected.png') })
 
 // 6) DM policy -> allowlist reveals the editor and persists
-await page.locator('[data-testid="weixin-dm-policy"]').selectOption('allowlist')
+// The picker is a Radix Select (SimpleSelect), not a native <select>: selectOption
+// no longer applies — open the trigger, then click the option, which Radix portals
+// to the end of <body> (so the option query is page-scoped, not field-scoped).
+await page.locator('[data-testid="weixin-dm-policy"] [role="combobox"]').click()
+await page.getByRole('option', { name: 'Only allowed user IDs' }).click()
 await page.waitForSelector('[data-testid="weixin-allowlist"]', { timeout: 10000 })
 assert(
   calls.save.some(b => b.dm_policy === 'allowlist'),

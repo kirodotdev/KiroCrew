@@ -1596,7 +1596,7 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "max_triggered": 3,
+        "max_triggered": 0,
         "lazy_load": false,
         "auto_create_from_sessions": false,
         "auto_refine_on_deviation": false,
@@ -1621,10 +1621,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Triggered",
-      "help": "Maximum number of skills to load per message (≥1).",
+      "help": "Maximum number of skills to load per message (≥0). Defaults to 0 (disabled); set to a positive integer to re-enable per-turn trigger matching.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 3
+      "defaultValue": 0
     },
     {
       "path": "skills.lazy_load",
@@ -3951,6 +3951,9 @@
       "enumValues": null,
       "defaultValue": {
         "url": "",
+        "tailscale": {
+          "enabled": false
+        },
         "restore_sessions": false,
         "restore_window_minutes": 30,
         "surface_channel_sessions": true,
@@ -3964,6 +3967,7 @@
         "link_previews": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
+        "prevent_sleep": false,
         "quick_send": false,
         "session_grid": false,
         "mcp_app_panel": false,
@@ -4005,6 +4009,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "dashboard.tailscale",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailscale",
+      "help": "Reach the dashboard over your tailnet via `tailscale serve`.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false
+      }
+    },
+    {
+      "path": "dashboard.tailscale.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailnet Access",
+      "help": "Accept this machine's own MagicDNS name as a dashboard origin, so `tailscale serve` works without hand-writing dashboard.url. Reads the local Tailscale daemon once at startup; contributes nothing if Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the network bind and does NOT change authentication — every request still needs a dashboard session.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.restore_sessions",
@@ -4144,11 +4178,12 @@
       "sensitive": false,
       "tags": [],
       "label": "Response Verbosity",
-      "help": "Controls how terse the agent's prose is. 'default' is normal; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim) while preserving full detail for security warnings, irreversible-action confirmations, and ordered multi-step instructions.",
+      "help": "Controls how terse the agent's prose is. 'default' is normal; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim); 'ultra' writes for an ADHD reader — the answer lands in a 3-sentence opening, and any detail after it must be scannable bullets rather than prose. Both levels preserve full detail for security warnings, irreversible-action confirmations, and ordered multi-step instructions.",
       "hasChildren": false,
       "enumValues": [
         "default",
-        "concise"
+        "concise",
+        "ultra"
       ],
       "defaultValue": "default"
     },
@@ -4193,6 +4228,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.prevent_sleep",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Prevent Sleep While Running",
+      "help": "Keep this computer awake while the agent is running a task, so a long task is not interrupted by the machine going to sleep. Off by default. Uses caffeinate on macOS, systemd-inhibit on Linux, and SetThreadExecutionState on Windows; on a host with no keep-awake backend it is a no-op.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.quick_send",

@@ -726,10 +726,14 @@ class TestHydrationBeforeHook:
         monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
 
         saved: list = []
+
+        async def _fake_save(*a, **k):
+            saved.append((a, k))
+
         monkeypatch.setattr(
             transport_dispatch,
-            "save_conversation_turn",
-            lambda *a, **k: saved.append((a, k)),
+            "save_conversation_turn_off_loop",
+            _fake_save,
         )
 
         class _CtxBuilder:

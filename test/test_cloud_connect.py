@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.cloud import aws, connect, ssm
 
 
@@ -254,15 +255,18 @@ class TestConnect:
 class TestKillProcessTree:
     def test_kills_whole_group_not_just_parent(self, tmp_path):
         # The SSM tunnel is spawned with start_new_session=True, so the parent
-        # `aws` process is a group leader and the plugin child is in the same
-        # group. _kill_process_tree must reap the WHOLE group — a plain
-        # proc.terminate() would leave the child (holding the local port) alive.
+        # `aws` process leads its own group and the plugin child is in that group.
+        # _kill_process_tree must reap the WHOLE tree — a plain proc.terminate()
+        # would leave the child (holding the local port) alive. The reap mechanism
+        # differs per platform (POSIX killpg vs. Windows `taskkill /T`, since
+        # start_new_session is silently ignored there) but the invariant asserted
+        # here — no descendant survives teardown — is identical on both.
         import subprocess
         import sys
         import time
 
         # Parent spawns a grandchild `sleep`, writes its pid, then waits — so the
-        # group has two members. Start it in its own session (mirrors
+        # tree has two members. Start it in its own session (mirrors
         # open_port_forward's start_new_session=True).
         pidfile = tmp_path / "child.pid"
         script = (
@@ -284,12 +288,12 @@ class TestKillProcessTree:
 
         # Both the parent and the grandchild must be gone.
         assert proc.poll() is not None, "parent should be reaped"
-        # Give the group signal a moment to propagate to the grandchild.
+        # Poll: the tree kill is asynchronous w.r.t. the grandchild exiting.
         for _ in range(50):
             if not _pid_alive(child_pid):
                 break
             time.sleep(0.1)
-        assert not _pid_alive(child_pid), "grandchild (same group) must also be killed"
+        assert not _pid_alive(child_pid), "grandchild (same tree) must also be killed"
 
     def test_windows_uses_a_tree_kill_not_a_parent_only_terminate(self, monkeypatch):
         """On Windows the group signal can never work, so the tree kill must run.
@@ -380,13 +384,16 @@ class TestKillProcessTree:
 
 
 def _pid_alive(pid: int) -> bool:
-    import os
+    """Liveness probe that is correct on both platforms.
 
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    NOT ``os.kill(pid, 0)``: signal 0 is ``signal.CTRL_C_EVENT`` on Windows, so
+    CPython routes it to ``GenerateConsoleCtrlEvent`` — a console-group signal
+    whose return value is unrelated to whether ``pid`` exists. It reports "alive"
+    for every already-dead pid, so a teardown assertion built on it can never
+    observe the reap. ``platform_compat.pid_exists`` uses ``OpenProcess`` +
+    ``GetExitCodeProcess`` there and ``os.kill(pid, 0)`` on POSIX.
+    """
+    return pc.pid_exists(pid)
 
 
 class TestRegistryIntegration:

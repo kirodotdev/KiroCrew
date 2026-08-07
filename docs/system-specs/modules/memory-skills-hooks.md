@@ -609,7 +609,7 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 - **OFF** (`get_context(budget=None)`): the byte-for-byte legacy full dump — every on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`.
 - **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
 
-**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
+**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
 
@@ -700,9 +700,87 @@ The `false` value carries no new privilege surface: it can only reduce what a
 skill delivers, and foreign-imported skills are refused for declaring `triggers`
 at all (`onboarding_import.py`), so an import cannot reach either path.
 
+**Setting it from the dashboard.** `POST /api/skills/-/inject-on-trigger` (body
+`{name, inject}`) edits that one frontmatter line server-side via
+`SkillsLoader.set_inject_on_trigger()`, mirroring `set_pinned()` — atomic write,
+caches invalidated so the next match sees the change rather than a stale parse.
+`inject: true` REMOVES the key instead of writing `true`, because injecting is the
+default and an absent key is the honest way to say "unchanged". It refuses any
+skill whose file resolves **outside the loader's own skills dir**: `_resolve_path`
+also reaches `skills.extra_paths` and the kiro-cli user/workspace dirs so the
+listing can show those skills, but rewriting a `SKILL.md` Kiro Crew does not own —
+possibly not even writable — is a side effect nobody asked for. Ownership is
+checked before the write rather than left to the UI, which does gate on source but
+does not stand between the endpoint and a direct caller. A skill with no
+frontmatter block returns False
+rather than silently succeeding, so the UI shows a failed toggle instead of a
+no-op it reports as applied. The key it strips before rewriting is matched at
+column 0 only: an indented `inject_on_trigger:` sits inside a block scalar (a
+description that documents the flag, say), and deleting that line would rewrite
+the skill's prose while changing a setting. Every outcome is SEL-audited, rejections included —
+turning injection off changes what the agent is guaranteed to see, so "who made
+this skill advisory, and when" has to be answerable.
+
+`list_skills()` carries `inject_on_trigger`, `size_bytes` and `deliveries` so the
+Skills page can show the cost behind the choice (cost = size × deliveries).
+`deliveries` counts bodies that **reached a prompt**, not trigger matches: the
+ledger records on delivery only, so a false-positive match, a pointer-only skill
+and an undelivered match all count zero. Two consequences a surface must not
+paper over — a skill already opted out **stops accruing**, so its figure is
+historical and frozen (the Skills page says so in the cost line rather than
+showing a number that silently stopped moving), and the field measures what was
+SPENT, never how often the skill was relevant. `deliveries` is `None` when
+untracked, which is NOT zero — an entry can also age out of the 30-day window.
+Consumers must also join against live skill keys: the ledger retains keys for
+skills that have since moved or been removed, and ranking naively by them puts a
+nonexistent skill first.
+
+It also carries `owned` — whether the `SKILL.md` sits under the directory
+Kiro Crew owns. A skill reached through `skills.extra_paths` still reports
+`source: kirocrew`, so source alone cannot gate the toggle; the UI hides the
+control when `owned` is `false` instead of offering one the writer always
+refuses. The listing's check is deliberately syscall-free (a path comparison, no
+`resolve()`), because `list_skills()` also feeds the session-start skill index on
+the event loop; the authoritative resolved check stays at the write boundary in
+`set_inject_on_trigger`. A path differing only by a symlink therefore reads as
+owned in the listing and is still refused on write — the failure mode is a toggle
+that reports an error, never a foreign file being rewritten. For the same reason
+`size_bytes` reuses the stat the frontmatter cache already needed for its mtime,
+so the listing costs the same one stat per skill it did before the field existed.
+
+The dashboard's structured skill editor rebuilds the frontmatter block from its
+own fields, so it must carry every key it does not model. It re-emits those keys'
+**original source lines verbatim** rather than reserializing a parsed value: the
+form does not know a field's YAML type, so any value it invents can change the
+type (a list or nested map becomes a block scalar, a folded `>` becomes literal
+`|`). A field's block is defined as everything from its key line up to the next
+top-level key — the inverse of the key test, not a list of accepted continuation
+shapes, so indented lines, interior blank lines, indentless `- item` entries and
+comments are all covered without enumerating them. That verbatim rule applies to
+PRESERVATION only: the scalar view the form reads its own five fields from keeps
+the narrower "indented lines continue a value" rule, because a top-level comment
+after `always: true` is part of the block but not part of the value — folding it
+in made the flag read as unset and the form dropped the pin. A comment attached to
+one of the five modelled keys is not preserved, for the same reason their original
+spacing is not: the form owns those and re-emits them from its own state. The
+invariant to preserve when touching this code: editing a modelled field leaves
+every unmodelled field byte-identical.
+
+The auto-skill (`auto/*`) write paths rebuild frontmatter from the generator's
+template rather than editing it, so each lifecycle key they must not lose is
+carried forward explicitly from the LIVE skill: `version` (dropping it makes the
+next approval overwrite an existing `.versions/` snapshot), `pinned` (dropping it
+removes the archival exemption), and `inject_on_trigger` (dropping it restores
+full-body injection on a skill the user made pointer-only). This applies to both
+`update_auto_skill` (auto-refine) and `approve_pending_update` — a candidate never
+declares any of the three, so live is authoritative. A new per-skill frontmatter
+setting that the runtime reads must be added to that carry list, or an unrelated
+approval will silently undo it.
+
 Unchanged: `always: true` pinned skills (skipped by the matcher entirely) and the
-explicit `$skillname` token. Set `skills.max_triggered = 0` to stop flagging
-altogether and rely only on the index, `$skillname`, and `skill_search`. The
+explicit `$skillname` token. `skills.max_triggered` defaults to 0 (disabled): the
+trigger matcher does not fire in stock config, so the agent relies only on the
+index, `$skillname`, and `skill_search`. Set to a positive integer to re-enable. The
 pointer block is attributed as `skill_hint` in the per-turn context breakdown, so
 it is never folded into whatever precedes it.
 
@@ -719,14 +797,26 @@ opt-out is stateless and has neither failure mode. Dedup remains a legitimate
 future addition — it is orthogonal, since re-sending a body ACP already replays
 does nothing for enforcement even on a skill that must be enforced.
 
-**What `_record_use` counts.** A trigger match, which is what it has always
-counted — the call sits in `get_triggered_skills` ahead of any delivery decision,
-as it did when delivery was unconditional. Decoupling delivery does make the
-consequence plainer: the lazy-load hotness ledger accrues hits for skills the
-agent may never read, so a matcher false positive still earns ranking weight.
-That is pre-existing, and cheaper to correct now that a false positive costs a
-line rather than a body — measuring the matcher's false-positive rate is the
-prerequisite, not a change to the ledger.
+**What `_record_use` counts.** Actual body delivery — the call now sits in the body-delivery loop in `context.py`, after `load_skill` confirms the content and the body is appended to the prompt. Only skills whose body is actually injected earn a hit; pointer-only skills (`inject_on_trigger: false`) and undelivered false positives contribute nothing to the ranking. The `resolve_dollar_skills` path also records, since `$skillname` is an intentional user action. With `max_triggered` defaulting to 0 in stock config, this recorder is inactive — only `resolve_dollar_skills` contributes hits unless the trigger matcher is re-enabled. This ensures the lazy-load hotness ledger ranks by actual utility to the agent, not by how often the word-overlap matcher fires on common words.
+
+**CRUD operations** (via `SkillsLoader`):
+
+**Context Budget endpoint.** `GET /api/skills/-/budget` returns the 30-day
+per-skill injection cost with alias folding across renamed/aliased ledger keys.
+Response shape: `{window_days, total_chars, rows: [{key, name, size_bytes,
+deliveries, chars, inject_on_trigger, always, owned, source, idle_days,
+folded_from?}]}`. `deliveries` is `null` when untracked (no ledger entry),
+distinct from `0` (entry exists but zero hits). `chars = size_bytes *
+(deliveries ?? 0)`. `folded_from` lists alias ledger keys whose `SKILL.md`
+resolves (via symlink) to the same real file as the canonical key; their hits are
+summed into `deliveries`. Unresolvable ledger keys (orphaned after relocation)
+are dropped, not guessed. `idle_days` is days since last delivery, `null` when
+untracked. `total_chars` equals the sum of all row `chars`. The fold logic lives
+in a dedicated handler (`skill_budget.py`), NOT in `list_skills()`, because it
+requires per-ledger-key path resolution and `list_skills()` must remain O(skills)
+on the event loop. The endpoint offloads all blocking work to `discovery_executor`
+(same pattern as `GET /api/skills`). The alias map is cached on the ledger's key
+set so repeat calls don't re-resolve.
 
 **CRUD operations** (via `SkillsLoader`):
 - `create_skill(name, content)` — creates `{name}/SKILL.md`, supports nested paths
@@ -788,6 +878,12 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 **sync_to_agent_config()**: registers servers via `kiro-cli mcp add` in parallel (all Popen spawned at once, then waited), followed by a single config patch pass for `tools`/`allowedTools`. Atomic write (tmp + rename) prevents corrupted config. Checks returncode, logs stderr on failure, separate timeout handling. Falls back to direct JSON edit if kiro-cli unavailable.
 
 **On-demand discovery** (dashboard): same `discover_servers_to_sync()` + `sync_to_agent_config()` triggered by "Discover & Sync" button.
+
+**Command divergence** (`_commands_diverged`): an existing server is only re-synced when its `mcp.json` command differs from the one recorded in the agent config. The two legitimately differ in spelling because `agent._resolve_command` stores the `shutil.which` result while `mcp.json` keeps the bare name, so the comparison folds path resolution:
+
+- A basename match is only accepted when one side is a **rooted path** and the other a **bare name** (no separator), since PATH lookup is what produced the rooted form. Two distinct rooted paths sharing a basename (`/opt/a/srv` vs `/opt/b/srv`) and a CWD-relative path (`bin/srv` vs `/usr/bin/srv`) each name a specific different file, so both stay divergent.
+- On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
+- A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
 
 **Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
 
@@ -914,7 +1010,7 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 ```json
 {
   "skills": {
-    "max_triggered": 3,
+    "max_triggered": 0,
     "auto_create_from_sessions": false,
     "approval_required": true,
     "auto_refine_on_deviation": false,
@@ -953,6 +1049,40 @@ Hook evaluation order: deny overrides approve; auto-reply → transform → cont
 Foreign-agent hooks are never imported. Hook scripts, hook commands, matchers,
 and hook runtime state are unsupported items: scan/apply may report their
 presence, but must not copy or register them.
+
+### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
+
+A script hook's `command` is a single shell command line stored in
+`~/.kiro/crew/hooks.json`. It runs in that platform's native shell language, and
+a hook is therefore **not portable across platforms**:
+
+| | Shell | Env var in a command | Quote grouping |
+|---|---|---|---|
+| POSIX | `/bin/sh -c <command>` | `$KIROCREW_HOOK_EVENT` | `'…'` and `"…"` |
+| Windows | `%ComSpec% /c "<command>"` | `%KIROCREW_HOOK_EVENT%` | `"…"` only (cmd.exe gives `'` no meaning) |
+
+Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
+env vars and the same hook-event JSON on stdin.
+
+**Windows spawns through `asyncio.create_subprocess_shell`, not an argv.** cmd.exe
+must receive the operator's command line verbatim: an argv spawn of
+`["cmd", "/c", command]` routes it through `subprocess.list2cmdline`, which
+backslash-escapes every quote the operator wrote, so an ordinary
+`"C:\Program Files\Python\python.exe" -c "print(1)"` reaches cmd.exe as
+`\"C:\Program Files\…\"` and fails with *"is not recognized as an internal or
+external command"*. `create_subprocess_shell` formats `%ComSpec% /c "<command>"`
+with no argv escaping — the same parse the operator gets typing the line at a
+prompt, and the only form under which both `%VAR%` and a literal `%` behave as
+written. The shell spawn is guarded on `wrap_argv` + `cgroup_scope_argv` having
+been no-ops; if a wrapper ever prepends anything the code falls back to the argv
+path, choosing isolation over quoting fidelity.
+
+On Windows both wrappers are pass-throughs whenever they return at all — there is
+no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
+passing through unless `agent.sandbox_allow_unsandboxed_exec` is set, so a
+Windows script hook needs that opt-in (the same one script crons and Papyrus
+need). Without it the hook's `SandboxUnavailableError` surfaces as the result's
+`error`, naming the setting.
 
 ### `safe_read_file(path: str) -> str`
 

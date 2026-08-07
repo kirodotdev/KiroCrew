@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_blocks import split_blocks
 from kiro_crew.memory import MemoryStore
@@ -47,13 +48,27 @@ def _builder(tmp_path: Path, skills: SkillsLoader) -> ContextBuilder:
     return ContextBuilder(memory=MemoryStore(workspace=tmp_path / "ws"), skills=skills)
 
 
+def _loader(skills_path: Path, *, cap: int = 3) -> SkillsLoader:
+    """Build a loader with the trigger matcher enabled.
+
+    ``max_triggered`` defaults to 0 (matcher off) and is snapshotted at
+    construction, so every test in this file — whose whole subject is
+    trigger-match delivery — must inject a positive cap via ``config=``.
+    """
+    return SkillsLoader(
+        skills_path=skills_path,
+        install_builtins=False,
+        config=KiroCrewConfig(skills=SkillsConfig(max_triggered=cap)),
+    )
+
+
 class TestDefaultIsInjection:
     """Forgetting the field must not silently stop a skill being delivered."""
 
     def test_absent_field_injects_the_full_body(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         _write_skill(skills, "foundation")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         msg, _ = _builder(tmp_path, loader).build_message("zebra quokka", is_new_session=False)
 
@@ -64,7 +79,7 @@ class TestDefaultIsInjection:
     def test_absent_field_splits_as_body(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         _write_skill(skills, "plain")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         assert loader.split_triggered(["plain"]) == (["plain"], [])
 
@@ -73,7 +88,7 @@ class TestDefaultIsInjection:
         """Anything that is not `false` means inject — the safe direction."""
         skills = tmp_path / "skills"
         _write_skill(skills, "foundation", inject=value)
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         assert loader.split_triggered(["foundation"]) == (["foundation"], [])
 
@@ -81,7 +96,7 @@ class TestDefaultIsInjection:
     def test_false_is_case_and_space_insensitive(self, tmp_path: Path, value: str) -> None:
         skills = tmp_path / "skills"
         _write_skill(skills, "foundation", inject=value)
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         assert loader.split_triggered(["foundation"]) == ([], ["foundation"])
 
@@ -90,7 +105,7 @@ class TestOptedOutSkill:
     def test_body_stays_out_of_the_message(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         path = _write_skill(skills, "foundation", inject="false")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         msg, _ = _builder(tmp_path, loader).build_message("zebra quokka", is_new_session=False)
 
@@ -101,7 +116,7 @@ class TestOptedOutSkill:
     def test_hint_names_the_skill_and_its_path(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         path = _write_skill(skills, "foundation", inject="false")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         hint = loader.trigger_hint(["foundation"])
 
@@ -119,7 +134,7 @@ class TestOptedOutSkill:
         """
         skills = tmp_path / "skills"
         _write_skill(skills, "foundation", inject="false")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         assert "already appears earlier in this conversation" in loader.trigger_hint(["foundation"])
 
@@ -128,7 +143,7 @@ class TestOptedOutSkill:
         _write_skill(
             skills, "verbose", inject="false", description="x" * (_SHORT_DESC_CHARS + 200)
         )
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         hint = loader.trigger_hint(["verbose"])
 
@@ -137,11 +152,11 @@ class TestOptedOutSkill:
         assert "…" in hint
 
     def test_unknown_name_yields_no_block(self, tmp_path: Path) -> None:
-        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        loader = _loader(tmp_path / "skills")
         assert loader.trigger_hint(["does-not-exist"]) == ""
 
     def test_empty_selection_yields_no_block(self, tmp_path: Path) -> None:
-        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        loader = _loader(tmp_path / "skills")
         assert loader.trigger_hint([]) == ""
 
 
@@ -150,7 +165,7 @@ class TestMixedAndUnchangedPaths:
         skills = tmp_path / "skills"
         _write_skill(skills, "mandated")
         _write_skill(skills, "offered", inject="false", body="POINTER ONLY BODY")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         msg, _ = _builder(tmp_path, loader).build_message("zebra quokka", is_new_session=False)
 
@@ -163,7 +178,7 @@ class TestMixedAndUnchangedPaths:
         _write_skill(skills, "a-ptr", inject="false")
         _write_skill(skills, "b-body")
         _write_skill(skills, "c-ptr", inject="false")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         assert loader.split_triggered(["a-ptr", "b-body", "c-ptr"]) == (
             ["b-body"],
@@ -171,21 +186,21 @@ class TestMixedAndUnchangedPaths:
         )
 
     def test_unknown_name_is_dropped_from_both_sides(self, tmp_path: Path) -> None:
-        loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        loader = _loader(tmp_path / "skills")
         assert loader.split_triggered(["ghost"]) == ([], [])
 
     def test_always_skill_keeps_its_full_body(self, tmp_path: Path) -> None:
         """Pinning is untouched — the matcher skips `always: true` entirely."""
         skills = tmp_path / "skills"
         _write_skill(skills, "pinned", triggers=None, always=True)
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         assert BODY_SENTINEL in _builder(tmp_path, loader).build_session_context()
 
     def test_no_match_emits_nothing(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         _write_skill(skills, "foundation", inject="false")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         msg, _ = _builder(tmp_path, loader).build_message(
             "unrelated wording", is_new_session=False
@@ -199,7 +214,7 @@ class TestMixedAndUnchangedPaths:
         """The floor lift is what makes the whole path switchable off."""
         skills = tmp_path / "skills"
         _write_skill(skills, "foundation")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
         loader._max_triggered = cap
 
         msg, _ = _builder(tmp_path, loader).build_message("zebra quokka", is_new_session=False)
@@ -220,7 +235,7 @@ class TestDeliveryIsAuditable:
         skills = tmp_path / "skills"
         _write_skill(skills, "mandated")
         _write_skill(skills, "offered", inject="false")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        loader = _loader(skills)
 
         captured: dict[str, str] = {}
 

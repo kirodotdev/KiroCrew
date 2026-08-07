@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,32 @@ def ensure_ffmpeg_in_path() -> None:
             path_parts.insert(0, d)
 
 
+def _own_scripts_dir() -> str:
+    """Scripts dir of the interpreter THIS process is running under.
+
+    Where ``pip install openai-whisper`` (or ``mlx-whisper``) lands its console
+    script when the app is installed in a virtualenv — which is how the gateway
+    normally runs. Nothing else in the search order looks there:
+
+    * ``shutil.which`` only sees ``PATH``, and a venv is on ``PATH`` only after
+      ``activate``. The gateway is launched as ``<venv>/bin/kirocrew``, which does
+      not modify ``PATH``, so the venv's own ``bin/`` is invisible to it.
+    * :func:`_python3_bin_dir` deliberately asks the SYSTEM python3 (via
+      ``find_python_interpreter``), so it reports the system scripts dir even when
+      we are running inside a venv.
+
+    The result was that installing Whisper into the app's own environment — the
+    obvious thing to do — left ``is_available()`` reporting False, with the only
+    workarounds being to set ``stt.whisper_path`` by hand or install it a second
+    time somewhere else.
+
+    Uses ``sys.prefix`` rather than ``sysconfig.get_path('scripts')`` because the
+    latter can be redirected by an active ``--user`` scheme or a posix_prefix
+    override, while the console script always sits beside the running interpreter.
+    """
+    return os.path.dirname(os.path.abspath(sys.executable))
+
+
 def _python3_bin_dir() -> str:
     """Return the bin dir of the system python3 (where pip installs scripts)."""
     try:
@@ -142,6 +169,15 @@ def _find_whisper(configured_path: str = "") -> str | None:
     found = shutil.which("whisper")
     if found:
         return found
+    # This interpreter's own scripts dir FIRST of the directory probes: when the
+    # app runs from a venv, that is where `pip install openai-whisper` put the
+    # console script, and it is the only candidate guaranteed to match the
+    # environment the caller actually installed into.
+    own_bin = _own_scripts_dir()
+    if own_bin:
+        found_own = _find_script_in_dir(own_bin, "whisper")
+        if found_own:
+            return found_own
     # Check system python3's scripts dir (pip install target)
     py3_bin = _python3_bin_dir()
     if py3_bin:
@@ -218,6 +254,12 @@ def _find_mlx_whisper() -> str | None:
     found = shutil.which("mlx_whisper")
     if found:
         return found
+    # Same venv gap as `_find_whisper` — see `_own_scripts_dir`.
+    own_bin = _own_scripts_dir()
+    if own_bin:
+        found_own = _find_script_in_dir(own_bin, "mlx_whisper")
+        if found_own:
+            return found_own
     py3_bin = _python3_bin_dir()
     if py3_bin:
         found_script = _find_script_in_dir(py3_bin, "mlx_whisper")
@@ -657,12 +699,32 @@ async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type:
     return text
 
 
+def _is_openai_whisper(whisper_bin: str) -> bool:
+    """True when *whisper_bin* is the reference openai-whisper CLI.
+
+    ``--fp16`` is an openai-whisper-only flag (it silences the "FP16 is not
+    supported on CPU" warning). Drop-in replacements advertised as
+    openai-whisper-compatible — e.g. ``whisper-ctranslate2`` — do not implement
+    it and exit ``rc=2`` (``unrecognized arguments: --fp16``), which surfaces to
+    the user as a silent empty transcript. openai-whisper's console script is
+    always named ``whisper`` (``whisper`` / ``whisper.exe``), so gating on the
+    resolved binary's stem lets a compatible engine work through the existing
+    ``stt.whisper_path`` setting with no extra config. Getting this wrong for a
+    genuine openai-whisper install only restores a harmless CPU warning; wrongly
+    passing the flag to an engine that rejects it breaks transcription outright,
+    so the check errs toward omitting the flag when unsure.
+    """
+    return Path(whisper_bin).stem.lower() == "whisper"
+
+
 async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe using the native openai-whisper binary."""
+    """Transcribe using the native openai-whisper (or a compatible) binary."""
     whisper_bin = await asyncio.to_thread(_find_whisper, stt_config.whisper_path)
     if not whisper_bin:
         logger.error("whisper not found — install: pip install openai-whisper")
         return None
+
+    add_fp16 = _is_openai_whisper(whisper_bin)
 
     return await _run_whisper_cli(
         whisper_bin,
@@ -676,8 +738,9 @@ async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type
             out_dir,
             "--output_format",
             "txt",
-            "--fp16",
-            "False",
+            # ``--fp16`` is openai-whisper-only; omit it for compatible engines
+            # (e.g. whisper-ctranslate2) that would reject it with rc=2.
+            *(["--fp16", "False"] if add_fp16 else []),
         ],
         stt_config.timeout_secs,
         label="whisper",

@@ -131,6 +131,70 @@ def set_model_params(session_id: str, model_id: str) -> dict[str, Any]:
     return {"sessionId": session_id, "modelId": model_id}
 
 
+#: Top-level ``_kiro.dev/metadata`` params this parser consumes. ``sessionId`` is
+#: consumed a layer up — ``AcpRuntime`` routes every notification by it to the
+#: right per-session queue — so reporting it would mislabel a load-bearing routing
+#: field as an unhandled discovery on the first frame of every shared-runtime
+#: session.
+_KNOWN_METADATA_KEYS = frozenset({"contextUsagePercentage", "meteringUsage", "sessionId"})
+
+#: ``meteringUsage`` entry keys this parser knows, and the one ``unit`` value the
+#: credit sum reads. An entry with any other unit contributes nothing.
+_KNOWN_METERING_KEYS = frozenset({"unit", "unitPlural", "value"})
+_KNOWN_METERING_UNITS = frozenset({"credit"})
+
+#: Field names already reported, so a stream of per-turn notifications logs each
+#: novel shape once per process rather than on every frame. Two threads racing
+#: here can only duplicate a log line, so the hot path takes no lock.
+_reported_metadata_fields: set[str] = set()
+
+
+def _log_unrecognized_metadata_fields(params: dict[str, Any]) -> None:
+    """Report ``_kiro.dev/metadata`` fields this parser drops, once each.
+
+    kiro-cli owns the metadata payload, so a field it begins sending — prompt-cache
+    counters being the case in point, since ``AcpPromptStats`` already carries
+    ``cache_read_tokens``/``cache_creation_tokens`` slots that nothing fills — is
+    otherwise discarded with no way to notice.
+
+    What reaches the log is deliberately narrow: field NAMES and value TYPES, plus
+    — for ``meteringUsage`` units alone — the unit LABEL itself, because there the
+    label IS the signal (``unit=cacheRead`` is the discovery; ``unit:str`` conveys
+    nothing, since the unit is always a string). A unit is a low-cardinality
+    dimension name drawn from kiro's own billing vocabulary, never a quantity,
+    alias, or identifier, so no billing detail reaches the log.
+    """
+    novel: list[str] = []
+    for key, value in params.items():
+        if key in _KNOWN_METADATA_KEYS or key in _reported_metadata_fields:
+            continue
+        _reported_metadata_fields.add(key)
+        novel.append(f"{key}:{type(value).__name__}")
+
+    metering = params.get("meteringUsage")
+    if isinstance(metering, list):
+        for entry in metering:
+            if not isinstance(entry, dict):
+                continue
+            for key, value in entry.items():
+                name = f"meteringUsage[].{key}"
+                if key in _KNOWN_METERING_KEYS or name in _reported_metadata_fields:
+                    continue
+                _reported_metadata_fields.add(name)
+                novel.append(f"{name}:{type(value).__name__}")
+            unit = entry.get("unit")
+            # A non-credit unit is silently dropped by the credit sum, so naming it
+            # is the only signal that kiro started reporting a new usage dimension.
+            if isinstance(unit, str) and unit not in _KNOWN_METERING_UNITS:
+                name = f"meteringUsage[].unit={unit}"
+                if name not in _reported_metadata_fields:
+                    _reported_metadata_fields.add(name)
+                    novel.append(name)
+
+    if novel:
+        logger.debug("acp metadata: unconsumed field(s) %s", ", ".join(sorted(novel)))
+
+
 def parse_metadata(params: dict[str, Any]) -> tuple[float | None, float]:
     """Parse a ``_kiro.dev/metadata`` notification's params.
 
@@ -140,7 +204,16 @@ def parse_metadata(params: dict[str, Any]) -> tuple[float | None, float]:
     ``AcpClient`` and ``AcpSessionHandle`` call this so the credit-capture
     logic has a single source of truth. The caller applies the values to its own
     ``last_prompt_stats`` (credits are accumulated across the turn).
+
+    Fields outside the two consumed keys are reported once each at debug level by
+    :func:`_log_unrecognized_metadata_fields`.
     """
+    try:
+        _log_unrecognized_metadata_fields(params)
+    except Exception:
+        # A diagnostic must never break a turn.
+        logger.debug("acp metadata: field scan failed", exc_info=True)
+
     pct = params.get("contextUsagePercentage")
     try:
         pct_val = float(pct) if pct is not None else None

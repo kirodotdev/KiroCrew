@@ -106,7 +106,7 @@ jobs:
           echo "name=ghcr.io/${OWNER}/kirocrew" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -221,7 +221,7 @@ jobs:
       # The existing-tag re-run path is handled by the VERIFY step below.
       - name: Attest image provenance (fresh build)
         if: steps.existing.outputs.exists == 'false'
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.digest.outputs.value }}

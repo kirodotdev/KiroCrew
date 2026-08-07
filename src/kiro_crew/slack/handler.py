@@ -67,7 +67,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes,
     validate_file_path,
 )
-from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn
+from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn_off_loop
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
@@ -101,9 +101,10 @@ from kiro_crew.slack.format import (
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
     _convert_tables,
+    extract_options,
+    render_one_for_slack,
     split_message,
     strip_thinking_tags,
-    to_slack_mrkdwn,
 )
 from kiro_crew.slack.sessions_view import (
     _SESSIONS_DEFAULT_LIMIT,
@@ -2402,7 +2403,9 @@ async def maybe_handle_keyword_command(
         if spawn_reply:
             await slack.post_message(channel, spawn_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                # Offloaded via the shared choke point -- see
+                # save_conversation_turn_off_loop for why every async caller must.
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -2419,7 +2422,7 @@ async def maybe_handle_keyword_command(
         if run_reply:
             await slack.post_message(channel, run_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -2436,7 +2439,7 @@ async def maybe_handle_keyword_command(
         if cron_reply:
             await slack.post_message(channel, cron_reply, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -2616,7 +2619,7 @@ async def handle_message(
         if hook_result.action == HOOK_REPLY:
             await slack.post_message(channel, hook_result.text, reply_ts)
             if conversation_log and not _is_slack_restricted(session_key):
-                save_conversation_turn(
+                await save_conversation_turn_off_loop(
                     conversation_log,
                     session_key,
                     text,
@@ -3599,7 +3602,7 @@ async def handle_message(
             except Exception:
                 logger.debug("Failed to delete thinking placeholder", exc_info=True)
         if conversation_log and not _is_slack_restricted(session_key):
-            save_conversation_turn(
+            await save_conversation_turn_off_loop(
                 conversation_log,
                 session_key,
                 text,
@@ -3618,11 +3621,33 @@ async def handle_message(
             thinking_accumulated += ("\n\n" if thinking_accumulated else "") + inline_thinking
 
     actually_streamed = use_slack_stream and bool(stream_ts)
-    final_text = (
-        to_slack_mrkdwn(accumulated, keep_tables=actually_streamed) if accumulated else _NO_RESPONSE
-    )
+    # render_one_for_slack normalises ANSI and redacts BEFORE converting, then
+    # again after. Converting first (as this did) let to_slack_mrkdwn's ANSI strip
+    # reassemble a credential the escapes had broken up, and let its 39,000-char
+    # self-truncation cut one in half before the regex below could match it.
+    # keep_tables is forced here because Slack's rich streaming renderer draws
+    # tables itself when the stream actually started.
+    #
+    # _render_redacted carries whether that internal redaction fired. It is
+    # load-bearing, not informational: the answer has ALREADY been posted
+    # incrementally, and the only thing that replaces the visible copy is the
+    # final-update condition below. The outer passes cannot supply that signal
+    # any more, because by the time they run the render has already cleaned the
+    # text and they find nothing left to redact.
+    # Extract the OPTIONS tag from the RAW accumulated text, BEFORE rendering.
+    # It is a plain-text marker at the very end of the turn, so rendering first
+    # makes the controls hostage to the render's size ceiling: a >39,000-char
+    # answer ending in [OPTIONS: ...] is truncated, the tag goes with the tail,
+    # and the buttons silently never appear. Matches the ordering used by the
+    # cron, subagent-completion and dashboard-mirror paths.
+    _body_text, options = extract_options(accumulated) if accumulated else ("", [])
 
-    # Scan for URL exfiltration before posting to Slack (link previews auto-fetch)
+    _render = render_one_for_slack(_body_text, keep_tables=actually_streamed)
+    final_text = _render.text or _NO_RESPONSE
+    _render_redacted = _render.redacted
+
+    # Second pass at the boundary: the decorator seam below can still introduce
+    # text, and these warning lists drive the final chat_update decision.
     final_text, exfil_warnings = redact_exfiltration_urls(final_text)
     for w in exfil_warnings:
         logger.warning("Exfiltration URL redacted in response: %s", w)
@@ -3630,10 +3655,7 @@ async def handle_message(
     for w in cred_warnings:
         logger.warning("Credential redacted in response: %s", w)
 
-    # Extract OPTIONS buttons from response and post as Block Kit
-    from kiro_crew.slack.format import extract_options
-
-    clean_text, options = extract_options(final_text)
+    clean_text = final_text
 
     # Outbound-reply decorator seam (Default: identity, OSS-identical). The model
     # has finished speaking, so this is the outbound half of an active
@@ -3700,7 +3722,7 @@ async def handle_message(
         logger.info("Review mode: ephemeral draft sent to %s in %s", user_id, channel)
         # Persist conversation (draft counts as a turn)
         if conversation_log and not _is_slack_restricted(session_key):
-            save_conversation_turn(
+            await save_conversation_turn_off_loop(
                 conversation_log,
                 session_key,
                 text,
@@ -3728,11 +3750,17 @@ async def handle_message(
     if use_slack_stream and stream_ts:
         # Rich AI renderer is now locked in by stop_stream above.
         # Only overwrite via chat_update when redaction modified the text —
-        # either per-chunk during streaming (_stream_had_redaction) or caught
-        # by the final scan (exfil_warnings/cred_warnings). The security
-        # invariant requires the final visible message reflect the redacted
-        # accumulated text; all other cases leave the rich render intact.
-        if _stream_had_redaction or exfil_warnings or cred_warnings:
+        # either per-chunk during streaming (_stream_had_redaction), inside the
+        # final render (_render_redacted), or caught by the post-decorator scan
+        # (exfil_warnings/cred_warnings). The security invariant requires the
+        # final visible message reflect the redacted accumulated text; all other
+        # cases leave the rich render intact.
+        #
+        # _render_redacted is the one that catches an ANSI-obfuscated credential:
+        # the per-chunk StreamRedactor sees raw chunks and does not strip escapes,
+        # so it can miss one that only becomes matchable after normalisation —
+        # and the post-decorator scan sees text the render has already cleaned.
+        if _stream_had_redaction or _render_redacted or exfil_warnings or cred_warnings:
             fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
             await _safe_final_update(
                 slack, channel, stream_ts, fallback_text or _NO_RESPONSE, reply_ts
@@ -3751,7 +3779,10 @@ async def handle_message(
     # reads reasoning → answer. Otherwise (the stream started before any
     # reasoning arrived) fall back to a post after the answer.
     if thinking_accumulated and _show_thinking:
-        thinking_mrkdwn = to_slack_mrkdwn(thinking_accumulated)
+        # thinking_accumulated is built from raw event text and, unlike the answer
+        # stream, has no StreamRedactor upstream -- so this render is its ONLY
+        # redaction. Ordering matters most here for that reason.
+        thinking_mrkdwn = render_one_for_slack(thinking_accumulated).text
         thinking_mrkdwn, exfil_warnings = redact_exfiltration_urls(thinking_mrkdwn)
         for w in exfil_warnings:
             logger.warning("Exfiltration URL redacted in thinking: %s", w)
@@ -3857,7 +3888,9 @@ async def handle_message(
     # ── Persist conversation history ──
     _skip_writes = _is_slack_restricted(session_key)
     if conversation_log and not _skip_writes:
-        save_conversation_turn(
+        # The per-turn hot path: two appends every turn, so this is where the
+        # ~12ms of loop time was paid most often.
+        await save_conversation_turn_off_loop(
             conversation_log,
             session_key,
             text,

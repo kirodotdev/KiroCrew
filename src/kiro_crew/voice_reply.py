@@ -27,7 +27,12 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -323,6 +328,21 @@ async def _synthesize_piper(
                 os.unlink(path)
                 return None
             return path
+        except SandboxUnavailableError as exc:
+            # Same fail-closed sandbox refusal as the Polly path — relay the
+            # sandbox layer's own kind-specific remedy prose (see that handler
+            # for why it is never hardcoded) instead of logging a stack trace
+            # that reads as a piper binary/model fault.
+            logger.error(
+                "voice_reply: Piper TTS refused by the sandbox (%s): %s",
+                exc.kind,
+                exc,
+            )
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
         except Exception:
             logger.exception("piper synthesis error")
             try:
@@ -487,6 +507,30 @@ async def _synthesize_polly(
                 os.unlink(path)
                 return None
             return path
+        except SandboxUnavailableError as exc:
+            # A host with no OS sandbox backend (every Windows host, and Linux
+            # without user namespaces) fail-closes here rather than spawning the
+            # AWS CLI unconfined. Report it as its own diagnosis: the generic
+            # handler below logs a stack trace under "Polly synthesis error",
+            # which reads as a Polly/credentials fault and sends the operator
+            # looking in the wrong place.
+            #
+            # The remedy prose comes from ``str(exc)``, never hardcoded here.
+            # The sandbox layer picks it per ``kind``, and only "no_backend"
+            # names the allow_unsandboxed_exec opt-in: "transient" means
+            # momentary resource pressure where callers must NOT advise
+            # disabling the sandbox, and "foreign_sandbox" means this host's
+            # sandbox is fine and the fix is a kiro-cli setting.
+            logger.error(
+                "voice_reply: Polly TTS refused by the sandbox (%s): %s",
+                exc.kind,
+                exc,
+            )
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
         except Exception:
             logger.exception("Polly synthesis error")
             try:

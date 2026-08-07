@@ -422,6 +422,21 @@ _BYPASS_EXACT = {
     # before processing -- so it must bypass the dashboard cookie gate. Same
     # self-authenticating-external-caller class as a chat provider webhook.
     "/api/messaging/teams",
+    # Inbound agent webhook: external systems (CI runners, code-review bots,
+    # deploy pipelines) POST here holding a webhook token and nothing else — no
+    # dashboard cookie, no gateway IPC secret. The handler does its OWN auth:
+    # api_hooks_agent calls _verify_hook_token, which compares the bearer
+    # against the sha256 of every stored token entry with hmac.compare_digest
+    # and refuses with 401 when none match (and when no token exists at all, so
+    # the endpoint is closed by default on a fresh install). Same
+    # self-authenticating-external-caller class as /api/messaging/teams above.
+    #
+    # This is a deliberate exposure decision: a valid token authorizes a real
+    # agent turn with full tool access, so the handler also rate-limits repeated
+    # failures per source (webhooks.auth_throttle) and records every 401 in the
+    # run history the dashboard shows. It was previously in
+    # server._STRICT_INTERNAL_API_PATHS, which made the token layer dead code.
+    "/api/hooks/agent",
 }
 
 # Anchored bypass for installed-app static UI bundles only (federated-app

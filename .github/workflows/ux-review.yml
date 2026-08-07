@@ -94,7 +94,7 @@ jobs:
         # (merge is gated by human review). The always()-run steps below still
         # post a leak-safe comment and log the outcome regardless.
         if: github.actor != 'dependabot[bot]' && steps.scope.outputs.ui == 'true'
-        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
           # inference profile, no `[1m]` tag) is load-bearing — see the

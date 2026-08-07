@@ -39,6 +39,7 @@ from unittest import mock
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase
 
+from conftest import make_dir_link
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, paths, provision, routes
 
 # An AKIA-shaped access key ID. The canonical AWS documentation example, so it is
@@ -1739,7 +1740,6 @@ class TestReadArtifactWorker(unittest.TestCase):
         for bad in (".js", ".mjs", ".html.js", ".sh", ".py", ".wasm", ".xhtml", ".svgz"):
             self.assertNotIn(bad, routes.SERVED_SUFFIXES)
 
-    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
     def test_an_intermediate_directory_swapped_after_resolution_is_refused(self) -> None:
         """The check-to-use window `O_NOFOLLOW` alone does NOT close.
 
@@ -1754,6 +1754,11 @@ class TestReadArtifactWorker(unittest.TestCase):
         exactly the window a real racing writer has. `safe_read_file_bytes_nolink`
         closes it by validating the OPENED DESCRIPTOR's real path against
         `within_root`, so the inode checked is the inode read.
+
+        The link is made through ``make_dir_link`` so Windows uses a junction: a
+        directory symlink there needs a privilege an unelevated shell lacks, and
+        the escape it models — an intermediate reparse point the containment check
+        must catch — is identical either way.
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "decks"
@@ -1777,7 +1782,7 @@ class TestReadArtifactWorker(unittest.TestCase):
                 def resolve_then_swap(deck_id: str, subpath: str):
                     resolved = real_resolve(deck_id, subpath)
                     shutil.rmtree(deck / "compose")
-                    (deck / "compose").symlink_to(outside, target_is_directory=True)
+                    make_dir_link(deck / "compose", outside)
                     return resolved
 
                 with mock.patch.object(

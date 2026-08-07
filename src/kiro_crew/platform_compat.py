@@ -971,9 +971,9 @@ def _windows_last_error() -> int:
 
 
 # Bounds for the exited-but-exit-FILETIME-unpublished window (see
-# _windows_process_handle_identity). The observed window closes within ~20ms;
-# the ceiling is generous enough to absorb a loaded host without letting a
-# genuinely unreadable handle stall a caller.
+# _windows_process_handle_identity). The window closes within a few tens of
+# milliseconds; the ceiling is generous enough to absorb a loaded host without
+# letting a genuinely unreadable handle stall a caller.
 _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS = 0.25
 _WINDOWS_EXIT_FILETIME_POLL_SECS = 0.002
 
@@ -1043,11 +1043,10 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
         exit_value = _filetime_value(exit_)
         # GetExitCodeProcess reports the exit BEFORE the kernel publishes the
         # exit FILETIME, so a just-terminated process reads back as
-        # exited-with-exit_time==0 for a sub-millisecond-to-tens-of-milliseconds
-        # window (observed on 57/60 back-to-back spawns, resolving in
-        # 0.05-20ms). Treating that window as "no identity" makes the caller
-        # reject a perfectly good handle, so poll briefly for the real value
-        # instead. The bound stays short because the only alternative to a
+        # exited-with-exit_time==0 for a brief window (sub-millisecond to a few
+        # tens of milliseconds). Treating that window as "no identity" makes the
+        # caller reject a perfectly good handle, so poll briefly for the real
+        # value. The bound stays short because the only alternative to a
         # published exit time is refusing the handle.
         if not active and exit_value <= 0:
             deadline = time.monotonic() + _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS
@@ -2751,6 +2750,61 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
         return None
 
 
+def proc_rss_tree_mb_for_pid(pid: int) -> float | None:
+    """Sum RSS (MiB) of *pid* and its LINEAGE-VALIDATED Windows descendants.
+
+    Windows-only; returns None on other platforms (callers keep their /proc or
+    ps route). The naive way to sum a Windows tree — walk Toolhelp's
+    ``th32ParentProcessID`` map — is unsafe for a kill/health decision: that
+    field is never cleared when a parent dies and Windows recycles PIDs
+    aggressively, so a raw walk sums unrelated subtrees rooted at a recycled
+    PID. This reuses :func:`descendant_termination_handles`, which validates
+    every parent->child edge against exact creation/exit times across two
+    snapshots, so only genuine descendants are counted. RSS that cannot be read
+    for a given descendant (another session / higher integrity) is skipped, but
+    the root itself always contributes, so the result is never a phantom-low
+    tree total attached to a recycled root.
+
+    Returns None if even the root's RSS is unavailable, matching the "unknown,
+    do not judge" contract the RSS staleness probe relies on.
+    """
+
+    if not IS_WINDOWS:
+        return None
+    if type(pid) is not int or pid <= 1:
+        return None
+    root_handle = _open_process_termination_handle(pid)
+    if root_handle is None:
+        # Cannot even anchor the root — fall back to the single-process read so a
+        # readable self still yields a number rather than a spurious None.
+        rss = proc_rss_bytes_for_pid(pid)
+        return None if rss is None else rss / (1024 * 1024)
+    descendants: dict[int, int] = {}
+    try:
+        identity = _windows_process_handle_identity(root_handle)
+        if identity is None or identity[0] != pid:
+            rss = proc_rss_bytes_for_pid(pid)
+            return None if rss is None else rss / (1024 * 1024)
+        try:
+            descendants = descendant_termination_handles(pid, root_handle=root_handle)
+        except Exception:
+            # Enumeration failed (transient snapshot race): measure the root
+            # alone rather than an unvalidated tree.
+            descendants = {}
+        total_bytes = 0
+        found = False
+        for member in (pid, *descendants):
+            member_rss = proc_rss_bytes_for_pid(member)
+            if member_rss is not None:
+                total_bytes += member_rss
+                found = True
+        return total_bytes / (1024 * 1024) if found else None
+    finally:
+        for handle in descendants.values():
+            close_process_handle(handle)
+        close_process_handle(root_handle)
+
+
 def proc_cpu_seconds() -> float:
     """Return total (user+system) CPU seconds consumed by this process, or 0.0.
 
@@ -2767,6 +2821,20 @@ def proc_cpu_seconds() -> float:
     try:
 
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # argtypes/restype are load-bearing on 64-bit: without them ctypes
+        # defaults GetCurrentProcess's return to a 32-bit int and truncates the
+        # pseudo-handle, so GetProcessTimes fails and this reads 0.0 (mirrors the
+        # proc_rss_bytes fix — same truncation, same cause).
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
         creation = wintypes.FILETIME()
         exit_ = wintypes.FILETIME()
         kernel = wintypes.FILETIME()

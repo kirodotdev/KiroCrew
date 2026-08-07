@@ -7,10 +7,10 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, LayoutGrid } from 'lucide-react'
+import { MessageSquare, Bell, BookOpen, Component, CalendarDays, Settings, ClipboardCheck, LayoutGrid, Webhook } from 'lucide-react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
-import { registerBuiltinSurface } from './registry'
+import { registerBuiltinSurface, surfaceMachineValue } from './registry'
 import { selectSubagentActivityCount } from '../store/chatSlice'
 import type { RootState } from '../store'
 
@@ -80,6 +80,18 @@ registerBuiltinSurface({
   labelKey: 'nav.schedule',
   icon: <CalendarDays size={16} />,
   group: 'Main',
+})
+
+// Inbound webhooks: token store, registered contexts, and run history for
+// POST /api/hooks/agent. A Main-group destination because it is an always-on
+// gateway capability, not an installable app.
+registerBuiltinSurface({
+  navId: 'webhooks',
+  route: '/webhooks',
+  label: surfaceMachineValue('Webhooks'),
+  labelKey: 'nav.webhooks',
+  icon: <Webhook size={16} />,
+  group: surfaceMachineValue('Main'),
 })
 
 // ── Apps ───────────────────────────────────────────────────────────────────

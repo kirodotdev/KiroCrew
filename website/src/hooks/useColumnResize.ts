@@ -1,6 +1,7 @@
 // Drag-to-resize behaviour shared by the dashboard's fixed-width workspace
 // columns (Issue Radar's left rail and issue / PR lists, Task Runner's run
-// rail). Every column behaves the same way — the handle sits on its right edge,
+// rail, the Webhooks rail). Every column behaves the same way — the handle sits
+// on its right edge,
 // dragging right widens it, the width is clamped while dragging and persisted to
 // localStorage on release — so the logic lives here once instead of being
 // duplicated per column.
@@ -39,6 +40,10 @@ export interface ColumnResize {
   /** Move the column by `dx` px and persist, clamping / collapsing the same way
    *  a drag of that distance would. Drives the handle's arrow keys. */
   nudge: (dx: number) => void
+  /** Collapse to the icon strip without a drag — e.g. on a narrow viewport,
+   *  where a fixed-width column would squeeze the pane beside it. No-op when the
+   *  column was created without a collapse config. */
+  collapse: () => void
   /** Spread onto the drag handle element (see components/ResizeHandle). */
   handleProps: ReturnType<typeof usePointerDrag>
 }
@@ -148,6 +153,18 @@ export function useColumnResize(
     persist({ openWidth: liveRef.current.openWidth, collapsed: false })
   }, [persist])
 
+  /** Collapse to the icon strip, keeping the remembered open width.
+   *
+   *  Symmetric with `expand`, for consumers that need to collapse for a reason
+   *  other than a drag — a narrow viewport, where a fixed-width rail beside a
+   *  detail pane would leave the pane too narrow to use. Named apart from the
+   *  `collapse` CONFIG parameter above, which it reads.  */
+  const collapseColumn = useCallback(() => {
+    if (!collapse) return
+    setCollapsed(true)
+    persist({ openWidth: liveRef.current.openWidth, collapsed: true })
+  }, [persist, collapse])
+
   // Keyboard counterpart to the drag. A pointer-only handle leaves keyboard
   // users with no way to resize — or, once the rail can collapse, no way back
   // out of a collapsed rail except the strip's own expand button. Steps are
@@ -178,6 +195,7 @@ export function useColumnResize(
   }, [min, max, collapse, persist])
 
   return {
-    width, collapsed: !!collapse && collapsed, dragging, expand, nudge, handleProps,
+    width, collapsed: !!collapse && collapsed, dragging, expand, nudge,
+    collapse: collapseColumn, handleProps,
   }
 }

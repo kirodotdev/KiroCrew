@@ -60,6 +60,7 @@ import { Badge, Btn, Card, CardTitle, Input, SendBtn, Toggle } from '../../compo
 import { i18nT } from '../../i18n/t'
 import { fmtUnit } from '../../i18n/format'
 import SegmentedControl from '../../components/SegmentedControl'
+import SimpleSelect from '../../components/SimpleSelect'
 import {
   opsApi,
   type AutonomyRule,
@@ -1327,26 +1328,23 @@ function ActRulesCard({
         </p>
       ) : (
         <div className="flex flex-col gap-2 mt-3">
-          <label className="flex items-center gap-2 text-[13px]" htmlFor="omc-rule-source">
+          {/* A div, not a label: SimpleSelect renders a button, so `htmlFor`/`id` no
+              longer associate and the visible heading's own key becomes the aria-label
+              instead. "Choose a source" stays SELECTABLE (re-picking it clears `source`
+              and re-disables Grant), which is what `clearLabel` is for. */}
+          <div className="flex items-center gap-2 text-[13px]">
             <span className="w-44 shrink-0 text-muted">
               {i18nT('apps.opsMissionControl.settingsPanel.signal_source')}
             </span>
-            <select
-              id="omc-rule-source"
-              className="bg-bg-elevated border border-border rounded px-2 py-1 text-[13px]"
+            <SimpleSelect
+              options={eligible.map((p) => p.id)}
+              optionLabels={eligible.map((p) => p.display_name)}
               value={source}
-              onChange={(e) => setSource(e.target.value)}
-            >
-              <option value="">
-                {i18nT('apps.opsMissionControl.settingsPanel.choose_a_source')}
-              </option>
-              {eligible.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.display_name}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={setSource}
+              clearLabel={i18nT('apps.opsMissionControl.settingsPanel.choose_a_source')}
+              aria-label={i18nT('apps.opsMissionControl.settingsPanel.signal_source')}
+            />
+          </div>
           {/* Input BOTH nested and bound by htmlFor/id, matching the Slack channel row —
               jsx-a11y/label-has-for wants both forms and still warns because `Input` is a
               wrapper it cannot see through. Same warning as the eight existing rows here. */}

@@ -341,3 +341,37 @@ class TestXxeGuards:
         finally:
             if os.path.exists(secret_path):
                 os.unlink(secret_path)
+
+
+# ── Missing-parser degradation (stale editable install) ──
+
+
+def test_missing_defusedxml_degrades_without_stdlib_fallback(monkeypatch, caplog):
+    """No hardened parser -> empty string + warning; NEVER stdlib xml (XXE)."""
+    import kiro_crew.doc_parser as doc_parser
+
+    monkeypatch.setattr(doc_parser, "_xml_fromstring", None)
+    path = _make_docx(["hello"])
+    try:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.doc_parser"):
+            assert extract_text(path, filename="a.docx") == ""
+    finally:
+        os.unlink(path)
+    assert any("defusedxml" in r.message for r in caplog.records)
+
+
+def test_missing_defusedxml_leaves_pdf_parsing_alone(monkeypatch, caplog):
+    """PDF extraction has no XML dependency and must keep working."""
+    import kiro_crew.doc_parser as doc_parser
+
+    monkeypatch.setattr(doc_parser, "_xml_fromstring", None)
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    try:
+        # The point is the dispatch path: a .pdf must reach the PDF parser,
+        # not be short-circuited by the missing-XML-parser gate.
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.doc_parser"):
+            extract_text(path, filename="a.pdf")
+    finally:
+        os.unlink(path)
+    assert not any("defusedxml" in r.message for r in caplog.records)

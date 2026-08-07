@@ -58,7 +58,7 @@ jobs:
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: block
           disable-telemetry: true
@@ -196,7 +196,7 @@ jobs:
         # ADVISORY: the finalize step below resolves an errored/incomplete run to
         # NEUTRAL (never a hard failure) and fails the check ONLY on a real BLOCK
         # verdict. Mirrors design-review.yml's advisory contract.
-        uses: anthropics/claude-code-action@44423bdec74b97d67543eb16c110546762c110b2 # v1
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"

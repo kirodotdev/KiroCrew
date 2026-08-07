@@ -2572,6 +2572,17 @@ async def _run_chat(
     saw_compaction = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
     _retrying_empty = False
+    # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
+    # Bound at turn scope, not at the consume site: the consume lives inside the
+    # context-builder leg, and the probe/base legs skip it entirely — reading an
+    # unbound local at the restore would raise UnboundLocalError.
+    _needs_reinjection = False
+    # Set ONLY where the turn is recorded as successful. The `finally` restores
+    # the re-injection flag when this is still False, which covers every
+    # non-landing exit — the early `return`s (stale-recover, tool-stall, error
+    # re-queue), every `except` arm, and a hard CancelledError — not just the
+    # graceful-cancel and empty-re-queue paths that reach the success check.
+    _turn_landed = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
     # recorded during this turn as (redacted_title, reason). If non-empty when
     # the turn ends — and the user did not stop it — a recovery continuation is
@@ -3111,6 +3122,10 @@ async def _run_chat(
             # build_message performs blocking work (episodic query embed via
             # urllib to Ollama, file reads) — run off-loop (mc-embed bulkhead)
             # so a slow embedding endpoint can't stall the gateway event loop.
+            # A compaction on the PREVIOUS turn dropped the session-start
+            # context, taking the skills index with it. Read-and-clear the flag
+            # here so this turn re-injects the index exactly once.
+            _needs_reinjection = state.sessions.consume_needs_reinjection(session_key)
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
@@ -3135,6 +3150,7 @@ async def _run_chat(
                     + attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
                 ),
                 user_span_out=_user_span,
+                needs_reinjection=_needs_reinjection,
             )
             # The reported span is valid for the message as build_message
             # returned it. Several later steps PREPEND to the finished prompt
@@ -5171,6 +5187,10 @@ async def _run_chat(
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
         if _stop_reason != STOP_REASON_CANCELLED and not _retrying_empty:
             state.sessions.record_success(session_key)
+            # This turn landed: the prompt (including any re-injected skills
+            # index) reached the model, so the `finally` must NOT restore the
+            # one-shot flag.
+            _turn_landed = True
             # Per-interaction telemetry (PlatformContext seam) — shared helper so
             # the payload shape and model reflection cannot drift across surfaces.
             record_interaction_event(client, session_key, "dashboard")
@@ -5223,16 +5243,17 @@ async def _run_chat(
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
                     extract_options,
-                    split_message,
-                    to_slack_mrkdwn,
+                    render_for_slack,
                 )
 
-                _mirror_text = to_slack_mrkdwn(assistant_text)
-                _mirror_text = redact_exfiltration_urls(_mirror_text)[0]
-                _mirror_text = redact_credentials(_mirror_text)[0]
-                _mirror_text, _mirror_options = extract_options(_mirror_text)
+                # Extract the OPTIONS tag from the RAW text, before rendering.
+                # It is a plain-text marker, so pulling it off after conversion
+                # means whatever conversion did to the tail decides whether the
+                # controls render at all -- and a >39,000-char turn used to lose
+                # the tag entirely to to_slack_mrkdwn's self-truncation.
+                _mirror_body, _mirror_options = extract_options(assistant_text)
 
-                for _part in split_message(_mirror_text):
+                for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
                     await state.slack_client.post_blocks(
@@ -5596,6 +5617,19 @@ async def _run_chat(
             _flush_file_changes(slot)
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
+        # This turn consumed the one-shot post-compaction re-injection flag but
+        # never landed, so the prompt carrying the skills index was discarded —
+        # an early return (stale-recover / tool-stall / error re-queue), an
+        # except arm, a hard CancelledError, a graceful cancel, or an empty
+        # re-queue. Put the flag back here rather than at the success check,
+        # because most of those paths never reach it; without this the index is
+        # lost for the remaining life of the session. Wrapped for the same
+        # reason as the flush above.
+        if _needs_reinjection and not _turn_landed:
+            try:
+                state.sessions.mark_needs_reinjection(session_key)
+            except Exception:
+                logger.debug("re-arming skills re-injection failed", exc_info=True)
         # ── AutoNudge: (re)arm the idle timer on EVERY turn-exit path. ──
         # Must be in finally, not the happy path: a turn that ends via timeout
         # / AcpProcessDied / AcpError / cancel would otherwise never re-arm,

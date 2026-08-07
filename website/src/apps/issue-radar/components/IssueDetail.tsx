@@ -572,6 +572,13 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
       aiRefreshRef.current = false
       return issueRadarApi.issueAi(active, issue.number, { refresh: useRefresh })
     },
+    // Wait for the detail read to land first (mirrors PrDetail's aiQuery). The AI
+    // route derives its summary from the issue detail, and on a COLD open firing
+    // both at once made the server fetch the detail TWICE — once for /issue and
+    // again inside /issue-ai, which missed the not-yet-written detail cache. Gating
+    // on the detail lets /issue-ai read the warm cache, saving one gh round-trip per
+    // first-open. Warm re-opens hit the AI cache and never reach this path.
+    enabled: Boolean(detailQuery.data?.detail),
     staleTime: Infinity,  // server owns freshness; don't refetch on window focus
   })
   const regenerateAi = () => { aiRefreshRef.current = true; aiQuery.refetch() }

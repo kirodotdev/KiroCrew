@@ -178,14 +178,16 @@ from a different later installation.
   A candidate that already runs is directly usable for sign-in regardless of
   install source; the post-installer attestation file is now write-only
   bookkeeping and does not gate credential access.
-- Installed but signed out: the setup page starts
-  `kiro-cli login --use-device-flow`, relays its sign-in URL/code, and requires
-  a successful `kiro-cli whoami` before continuing. Only the official
-  `app.kiro.dev` sign-in host and the Kiro device-flow `/start` path on
-  `view.awsapps.com` become clickable links. Backend parsing rejects URL
-  userinfo, backslashes, and control characters, and the browser independently
-  reparses and applies the same scheme/port/host/path allowlist before rendering
-  a link.
+- Installed but signed out: the setup page names the commands the USER runs and
+  runs nothing itself — `kiro-cli login` for a personal account (Builder ID,
+  Google, or GitHub), or `kiro-cli login --use-device-flow --license pro` for
+  organization SSO, which prompts for the organization's start URL and region.
+  Both are backend code constants rendered verbatim in a `<code>`, never catalog
+  values, because a translated command cannot be typed. Both tiers are named
+  because the browser portal the bare command opens presents a free Builder ID
+  as a peer of organization SSO; Kiro Crew does not detect which tier applies,
+  so the gate describes the choice and the user makes it. Sign-in completion is
+  observed only through the read-only `kiro-cli whoami` probe.
 - Browser dashboard: the authenticated SPA gate operates on the **gateway
   host**, not the browser host. This covers native Windows source installs,
   Linux gateways, and browsers connected to another machine.
@@ -488,10 +490,11 @@ Each step checks if the tool is already installed and skips if present.
 5. **MCP tools**: `@kirocrew-cron` and `@kirocrew-core` in `tools`, `allowedTools`, and `mcpServers` — auto-fixes missing entries
 6. **Global mcp.json**: kirocrew MCP servers present with valid binary paths — auto-fixes stale paths
 7. **Python environment**: checks Python 3.9+ availability and dependency installation
-8. **Vector memory (in-process embeddings)**: vendored llama-cpp-python runtime importable, embedding model file present (downloads in background on gateway start; when absent, a light HTTPS-reachability probe of the resolved model URL runs); embeddings are always-on (`embeddings:  ✅ always-on`). On platforms with no vendored native libs (`_platform_libs_dirname()` returns None, e.g. darwin/x86_64 — Intel Macs or a Rosetta interpreter), the runtime line reports `⏹ unsupported platform … — memory uses keyword search` and is NOT counted as an issue (designed degradation per `embeddings.py`); only a load failure on a supported platform flags `embedding runtime`
-9. Slack credentials (optional)
-10. kiro-cli connectivity
-11. Gateway running status
+8. **Vector memory (in-process embeddings)**: vendored llama-cpp-python runtime importable, embedding model file present (downloads in background on gateway start; when absent, a light HTTPS-reachability probe of the resolved model URL runs); embeddings are always-on (`embeddings:  ✅ always-on`). On platforms with no vendored native libs (`_platform_libs_dirname()` returns None, e.g. darwin/x86_64 — Intel Macs or a Rosetta interpreter), the runtime line reports `⏹ unsupported platform … — memory uses keyword search` and is NOT counted as an issue (designed degradation per `embeddings.py`); only a load failure on a supported platform flags `embedding runtime`. A `faiss:` line reports whether the optional FAISS accelerator is importable — never an issue on any platform (episodic recall falls back to the stdlib cosine scan); when absent it suggests `pip install faiss-cpu`
+9. **Speech-to-Text (optional)**: whisper + ffmpeg presence when STT is enabled. On Windows these are reported as non-fatal `⚠️` notes (neither is a Kiro Crew dependency there, and STT ships enabled-by-default) so a healthy first install exits 0 and the guide's `kirocrew doctor && kirocrew gateway` chain proceeds; on macOS/Linux a missing binary still flags an issue. Fix hints are OS-aware (`brew` / `winget` / Linux)
+10. Slack credentials (optional)
+11. kiro-cli connectivity
+12. Gateway running status
 
 ## Update Command
 

@@ -838,3 +838,59 @@ def save_conversation_turn(
             source_thread=source_thread,
             source_user=source_user,
         )
+
+
+async def save_conversation_turn_off_loop(
+    log: ConversationLog,
+    key: str,
+    user_text: str,
+    assistant_text: str,
+    source_thread: str | None = None,
+    source_user: str | None = None,
+    agent: str | None = None,
+) -> None:
+    """Save a turn without blocking (or fail-fast-dropping on) the event loop.
+
+    :func:`save_conversation_turn` makes TWO ``ConversationLog.append`` calls, and
+    append acquires a cross-process flock and writes to disk -- ~12 ms each on a
+    large transcript. Called directly from an ``async def`` that is worse than
+    slow: on a running loop ``_locked`` makes a single NON-blocking acquire and
+    raises :class:`~kiro_crew.history.HistoryLockTimeout` on any concurrent
+    holder, and most callers swallow that, so the durable copy was dropped
+    exactly when another writer was active. Off the loop the same primitive takes
+    the patient poll-to-deadline path instead.
+
+    This is the single choke point for every async caller, so the offload cannot
+    be forgotten at a new call site and the ten Slack sites do not each restate
+    it.
+
+    Unlike :func:`~kiro_crew.history.append_off_loop`, this **awaits** the write
+    rather than firing it at the executor and returning. That difference is
+    deliberate: callers here go on to refresh a dashboard tab or hand the session
+    to consolidation, both of which read the transcript back, so the turn has to
+    be on disk before the caller continues. ``append_off_loop`` has no such
+    reader and can afford to be fire-and-forget.
+
+    The whole turn is written under one :meth:`~kiro_crew.history.ConversationLog.atomic_appends`
+    hold. ``append`` locks per ROW, so without it two concurrent turns for the
+    same session could interleave into ``user_A, user_B, assistant_A,
+    assistant_B`` -- turns that no longer pair up, which no timestamp ordering can
+    repair because each row's ``ts`` is individually correct. On the loop that was
+    impossible (a synchronous caller never yields between its two appends), so the
+    hazard is introduced BY offloading and has to be closed here rather than
+    inherited.
+    """
+
+    def _write() -> None:
+        with log.atomic_appends(key):
+            save_conversation_turn(
+                log,
+                key,
+                user_text,
+                assistant_text,
+                source_thread=source_thread,
+                source_user=source_user,
+                agent=agent,
+            )
+
+    await asyncio.to_thread(_write)

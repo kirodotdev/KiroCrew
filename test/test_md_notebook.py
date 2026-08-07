@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Optional
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
 
@@ -739,6 +740,7 @@ async def test_autosave_of_a_scoped_vault_stays_in_scope(fixtures) -> None:
         assert "Outside.md" not in _git("ls-files", cwd=root)
 
 
+@requires_symlinks
 @pytest.mark.asyncio
 async def test_delete_refuses_an_in_vault_trash_symlink(fixtures) -> None:
     """Containment is not the test for `.trash` — being a symlink at all is.
@@ -773,6 +775,7 @@ async def test_delete_refuses_an_in_vault_trash_symlink(fixtures) -> None:
         assert "symlink" in open_body["error"]
 
 
+@requires_symlinks
 @pytest.mark.asyncio
 async def test_trashing_a_symlink_leaves_its_target_alone(fixtures) -> None:
     """A trashed alias is moved as the LINK, never followed.
@@ -1332,15 +1335,34 @@ async def test_reads_a_note_with_aliased_frontmatter_fast(fixtures) -> None:
         # serialize it; with memoization this stays fast, without it 2**21 nodes
         # would be materialized and wedge the loop.
         #
-        # The bound guards against EXPONENTIAL blowup, not ordinary latency: an
-        # uncontained expansion materializes 2**21 nodes and takes minutes / OOMs,
-        # so a generous deadline still catches the regression while tolerating a
-        # loaded parallel runner (a 5s bound false-failed under -n auto on
-        # Windows purely from scheduler contention — a wall-clock race).
+        # The budget is measured RELATIVE to the same request against the vault
+        # without the amplifying note, not as a fixed wall-clock span: a bare
+        # "< 5s" is the same order as one scheduler stall on a loaded parallel
+        # runner (git.exe process spawns on Windows make this request tens of
+        # times more expensive than on Linux), so it failed on a correct
+        # implementation. Containment is a RATIO property — un-memoized, 2**21
+        # nodes is thousands of times the baseline, so a generous multiplier
+        # still catches the regression this test exists for.
+        amp = Path(vault["localPath"]) / "amp.md"
+        amp_text = amp.read_text(encoding="utf-8")
+        amp.unlink()
+        baseline_start = time.monotonic()
+        status, body = await client.get("/api/notes")
+        baseline = time.monotonic() - baseline_start
+        assert status == 200, body
+
+        amp.write_text(amp_text, encoding="utf-8")
         start = time.monotonic()
         status, body = await client.get("/api/notes")
+        elapsed = time.monotonic() - start
         assert status == 200, body
-        assert time.monotonic() - start < 30, "alias amplification was not contained"
+        # Floor the baseline so a sub-millisecond measurement can't make the
+        # budget unsatisfiable, and allow generous headroom over it.
+        budget = max(baseline, 0.05) * 20 + 1.0
+        assert elapsed < budget, (
+            f"alias amplification was not contained: {elapsed:.2f}s vs a "
+            f"{budget:.2f}s budget (baseline {baseline:.2f}s)"
+        )
 
 
 def test_json_safe_collapses_repeated_aliases(fixtures) -> None:
@@ -1539,6 +1561,7 @@ async def test_sync_works_when_the_vault_already_ignores_the_trash(fixtures) -> 
         assert not any(".trash" in p for p in committed)
 
 
+@requires_symlinks
 @pytest.mark.asyncio
 async def test_delete_refuses_a_trash_symlink_escaping_the_vault(fixtures, tmp_path) -> None:
     """A vault-supplied `.trash` symlink must not redirect the move out of the vault."""

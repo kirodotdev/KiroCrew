@@ -315,7 +315,7 @@ afterEach(() => server.resetHandlers())
 // Remove the session-expired banner api/client.ts appends to document.body on a
 // 403 — RTL doesn't clean up body-appended nodes, so it lingers and steals focus
 // from later tests. Don't click its dismiss button: that resets the module guard
-// and the banner resurfaces mid-userEvent.type elsewhere (broke CronTab).
+// and the banner resurfaces mid-userEvent.type elsewhere (broke a cron table test).
 afterEach(() => {
   document.getElementById('mc-session-expired')?.remove()
 })

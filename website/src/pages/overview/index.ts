@@ -1,5 +1,4 @@
 export { default as MemoryTab } from './MemoryTab'
-export { default as CronTab } from './CronTab'
 export { default as SkillsTab } from './SkillsTab'
 export { default as SteeringTab } from './SteeringTab'
 export { default as PromptsTab } from './PromptsTab'

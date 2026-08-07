@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test'
+import { pickFromDropdown } from './helpers/dropdown'
 
 const HARNESS_GATEWAY = !!process.env.KIROCREW_E2E_EPHEMERAL
 
@@ -47,7 +48,7 @@ test.describe('Artifacts Page — /artifacts', () => {
     // Search input present
     await expect(page.getByPlaceholder('Filter by name, slug, description…')).toBeVisible()
     // Kind filter dropdown
-    await expect(page.locator('select[aria-label="Filter by kind"]')).toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Filter by kind' })).toBeVisible()
   })
 
   test('seeded artifact appears in the list via search', async ({ page, request }) => {
@@ -62,7 +63,8 @@ test.describe('Artifacts Page — /artifacts', () => {
     const { slug, name } = await seedArtifact(request, { kind: 'widget' })
     await page.goto('/artifacts', { waitUntil: 'domcontentloaded' })
     // Set kind filter to widget
-    await page.locator('select[aria-label="Filter by kind"]').selectOption('widget')
+    // The kind filter stores 'widget' but renders 'kind: widget'.
+    await pickFromDropdown(page, 'Filter by kind', 'kind: widget')
     // Search for our specific artifact
     const search = page.getByPlaceholder('Filter by name, slug, description…')
     await search.fill(slug)

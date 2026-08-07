@@ -29,7 +29,7 @@ const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
  *  territory); only the `'0'` sentinel's label is prose. It reuses the in-chat
  *  settings popover's key — same setting, same option, one string to translate. */
 function restoreLabels(): string[] {
-  return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.chat.chatSettings.no_limit')]
+  return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.settings.chatPanel.no_limit')]
 }
 const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
 const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '80%', '90% (default)']
@@ -63,6 +63,27 @@ const SOFT_STOP_DEFAULT = 10.0
 
 type CompletionKeepMode = 'head' | 'tail' | 'both'
 const COMPLETION_KEEP_OPTIONS: CompletionKeepMode[] = ['head', 'tail', 'both']
+
+type VerbosityLevel = 'default' | 'concise' | 'ultra'
+const VERBOSITY_OPTIONS: VerbosityLevel[] = ['default', 'concise', 'ultra']
+
+/**
+ * Narrow a persisted `dashboard.verbosity` to a level this Select can render.
+ *
+ * The config loader reads the field with a plain `.get()` and does not type-check
+ * it, so a hand-edited or migrated `config.json` can put any JSON there — e.g.
+ * `{"dashboard": {"verbosity": {}}}` — and the GET response hands that object
+ * straight to the UI. `?? 'default'` guards only null/undefined, so an object
+ * would flow into SimpleSelect's `triggerFallback`
+ * (`optionLabels?.[options.indexOf(value)] ?? (value || '—')`): `indexOf` misses,
+ * the object is truthy, and React throws on rendering it as a child — taking the
+ * whole Chat settings page down rather than degrading one row.
+ */
+function asVerbosity(value: unknown): VerbosityLevel {
+  return VERBOSITY_OPTIONS.includes(value as VerbosityLevel)
+    ? (value as VerbosityLevel)
+    : 'default'
+}
 function completionKeepLabels(): string[] {
   return [
     i18nT('pages.settings.chatPanel.head_preserve_start_of_stream'),
@@ -146,7 +167,7 @@ export function ChatPanel() {
       completion_keep?: CompletionKeepMode
       completion_keep_chars?: number
     }
-    dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string }
+    dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
     knowledge?: {
       auto_add_documents?: boolean
       auto_register_project_docs?: boolean
@@ -171,6 +192,14 @@ export function ChatPanel() {
       api.patchConfig(path, value),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_profile')),
+  })
+
+  // ── Prevent sleep while running (server-side; gateway-host behavior) ──
+  const preventSleep = mcCfg?.dashboard?.prevent_sleep ?? false
+  const preventSleepMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('dashboard.prevent_sleep', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_dashboard_config')),
   })
 
   // "Other" reveals a free-text role. Typed locally and committed on blur /
@@ -491,6 +520,18 @@ export function ChatPanel() {
         </SettingsCard>
       </SettingsSection>
 
+      <SettingsSection title={i18nT('pages.settings.chatPanel.power')}>
+        <SettingsCard>
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.prevent_sleep_while_running')}
+            description={i18nT('pages.settings.chatPanel.keep_your_computer_awake_while_a_task_is_running')}
+            checked={preventSleep}
+            onChange={v => preventSleepMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title={i18nT('pages.settings.chatPanel.composer')}>
         <SettingsCard>
           <SettingsSelect
@@ -545,7 +586,7 @@ export function ChatPanel() {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} description={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.concise_responses')} description={i18nT('pages.settings.chatPanel.trim_filler_and_over_narration_lead_with_the_ans')} checked={dashCfg.verbosity === 'concise'} onChange={v => setDash({ verbosity: v ? 'concise' : 'default' })} disabled={dashDisabled} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} description={i18nT('pages.settings.chatPanel.how_terse_the_agent_s_prose_is_ultra_concise_cap')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.ultra_concise_3_sentences')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} description={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? i18nT('pages.settings.chatPanel.disabled_by_instance_config_tips_enabled_false') : i18nT('pages.settings.chatPanel.show_occasional_feature_discovery_tips_above_the')} checked={!!tipsQ.data && tipsQ.data.enabled_config && !tipsQ.data.opted_out} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />

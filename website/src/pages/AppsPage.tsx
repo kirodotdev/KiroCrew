@@ -21,7 +21,8 @@ import {
   Package, Bot, Zap, Clock, ShoppingBag, Lock, Trash2, X, ArrowUp, Boxes,
 } from 'lucide-react'
 import { api } from '../api/client'
-import { Btn, EmptyState, PageHeader, SearchInput, Select } from '../components/ui'
+import { Btn, EmptyState, PageHeader, SearchInput } from '../components/ui'
+import SimpleSelect from '../components/SimpleSelect'
 import { recordEvent } from '../rum'
 import SegmentedControl from '../components/SegmentedControl'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
@@ -595,18 +596,21 @@ export default function AppsPage() {
                 <div className="min-w-0">
                   <div className="flex items-center justify-between mb-3 text-[12.5px] text-muted">
                     <span>{i18nT('pages.appsPage.app', { count: filteredBrowse.length })}</span>
-                    <label className="flex items-center gap-1.5">
+                    {/* A `<label>` cannot wrap this any more: `SimpleSelect`
+                        renders a button, and a button takes its accessible name
+                        from its own content, not from an enclosing label. The
+                        name is on `aria-label` instead. */}
+                    <span className="flex items-center gap-1.5">
                       <span>{i18nT('pages.appsPage.sort')}</span>
-                      <Select
+                      <SimpleSelect
+                        options={['name', 'category']}
+                        optionLabels={[i18nT('pages.appsPage.name'), i18nT('pages.appsPage.category')]}
                         value={sort}
-                        onChange={e => setSort(e.target.value as 'name' | 'category')}
+                        onChange={v => setSort(v as 'name' | 'category')}
                         aria-label={i18nT('pages.appsPage.sort_apps')}
-                        className="text-[12.5px] py-1"
-                      >
-                        <option value="name">{i18nT('pages.appsPage.name')}</option>
-                        <option value="category">{i18nT('pages.appsPage.category')}</option>
-                      </Select>
-                    </label>
+                        style={{ flexShrink: 0 }}
+                      />
+                    </span>
                   </div>
                   {filteredBrowse.length === 0 ? (
                     <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={i18nT('pages.appsPage.try_a_different_search_or_category')} />

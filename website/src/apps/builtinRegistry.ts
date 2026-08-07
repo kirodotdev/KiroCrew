@@ -26,6 +26,7 @@ export type LazyComponent = React.LazyExoticComponent<ComponentType<Record<strin
 export const BUILTIN_COMPONENT_REGISTRY: Record<string, LazyComponent> = {
   '/worlds': lazy(() => import('../pages/WorldsPage')),
   '/channels': lazy(() => import('../pages/ChannelPage')),
+  '/auto-improvement': lazy(() => import('./auto-improvement/AutoImprovementPage')),
   '/auto-research': lazy(() => import('./auto-research/ResearchLabPage')),
   '/file-explorer': lazy(() => import('./file-explorer/FileExplorerPage')),
   '/code-review-sage': lazy(() => import('./code-review-sage/CodeReviewSagePage')),

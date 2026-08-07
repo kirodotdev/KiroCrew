@@ -4,6 +4,7 @@ import { Check, Bot, FolderOpen, Brain, Settings, Lock, Flame } from 'lucide-rea
 import { api } from '../../api/client'
 import { Card, CardTitle, Badge, EmptyState } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import SimpleSelect from '../../components/SimpleSelect'
 import { useProvider } from '../../providers'
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
@@ -34,7 +35,7 @@ function UsedByTags({ names }: { names: string[] }) {
 }
 
 const rowCls = "flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm"
-const inputCls = "h-7 min-w-[120px] bg-bg-elevated border border-border rounded px-2 py-0.5 text-[13px] font-mono text-text focus:border-accent focus:outline-none"
+const inputCls = "h-7 min-w-[120px] bg-bg-elevated border border-border rounded-md px-2 py-0.5 text-[13px] font-mono text-text focus:border-accent focus:outline-none"
 const readonlyCls = "flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm bg-bg-elevated/30 rounded px-1 -mx-1"
 
 function useDirtyTrack<T>(value: T) {
@@ -63,9 +64,20 @@ function CfgSelect({ label, path, value, options, hint, labels, onSave }: { labe
   useEffect(() => { setLocal(value) }, [value])
   return (
     <CfgRow label={label} hint={hint} ok={ok}>
-      <select className={inputCls} value={local} onChange={e => { markDirty(); setLocal(e.target.value); onSave(path, e.target.value) }}>
-        {options.map(o => <option key={o} value={o}>{labels?.[o] ?? o}</option>)}
-      </select>
+      {/* The trigger is a <button>, so the row's visible label is threaded in
+          as the accessible name (matches CfgNumber's aria-label={label}).
+          `className` restores this table's compact geometry: the shared trigger
+          defaults to `px-3 py-2 text-sm`, which is ~10px taller than the `h-7
+          text-[13px]` control it replaced and would grow every row. */}
+      <SimpleSelect
+        aria-label={label}
+        className="h-7 px-2 py-0.5 text-[13px] font-mono"
+        style={{ minWidth: 120 }}
+        options={options}
+        optionLabels={options.map(o => labels?.[o] ?? o)}
+        value={local}
+        onChange={v => { markDirty(); setLocal(v); onSave(path, v) }}
+      />
     </CfgRow>
   )
 }

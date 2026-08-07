@@ -116,7 +116,7 @@ jobs:
       - name: Attest build provenance
         # Signed SLSA provenance for the wheel/sdist/AppImage (CWE-1104).
         # Runs right after flatten, before anything leaves the runner.
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           # Attest only artifacts whose bytes are final here. The macOS .zip is
           # re-signed + notarized downstream, so a pre-notarization attestation
@@ -431,7 +431,7 @@ jobs:
       # embeds the ticket into the DMG file (the final released bytes).
       - name: Attest DMG provenance
         if: env.HAS_SIGNING_SECRETS
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: work/*.dmg
 

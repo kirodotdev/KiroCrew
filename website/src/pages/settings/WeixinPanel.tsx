@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { QrCode, Loader2, Check, TriangleAlert, RefreshCw } from 'lucide-react'
 import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
+import SimpleSelect from '../../components/SimpleSelect'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
@@ -242,26 +243,36 @@ export function WeixinPanel() {
           disabled={readOnly}
           onChange={e => save({ enabled: e.target.checked })}
           data-testid="weixin-enabled"
+          aria-label={i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}
         />
         <span className="text-[13px] text-text">{i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}</span>
       </label>
 
       <div>
-        <label htmlFor="weixin-dm-policy" className="block">
+        {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
+            at no form control. The caption keeps its key and is reused verbatim as
+            the trigger's accessible name. data-testid moves to this wrapper so the
+            Playwright drive (scripts/test-weixin-panel.mjs) still finds the field. */}
+        <div className="block" data-testid="weixin-dm-policy">
           <span className="block text-[11px] text-muted mb-1.5">{i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}</span>
-          <select
-            id="weixin-dm-policy"
+          {/* maxWidth: the native select was content-sized; the Radix trigger is
+              w-full and this field is a stretch flex item, so without a cap it
+              would span the whole panel while every neighbouring control stays
+              content-scaled. */}
+          <SimpleSelect
+            options={['open', 'allowlist', 'disabled']}
+            optionLabels={[
+              i18nT('pages.settings.weixinPanel.anyone_who_messages_the_bot'),
+              i18nT('pages.settings.weixinPanel.only_allowed_user_ids'),
+              i18nT('pages.settings.weixinPanel.nobody_ignore_all_messages'),
+            ]}
             value={data?.dm_policy || 'allowlist'}
             disabled={readOnly}
-            onChange={e => save({ dm_policy: e.target.value })}
-            data-testid="weixin-dm-policy"
-            className="text-sm px-2.5 py-2 rounded-md bg-bg border border-border text-text"
-          >
-            <option value="open">{i18nT('pages.settings.weixinPanel.anyone_who_messages_the_bot')}</option>
-            <option value="allowlist">{i18nT('pages.settings.weixinPanel.only_allowed_user_ids')}</option>
-            <option value="disabled">{i18nT('pages.settings.weixinPanel.nobody_ignore_all_messages')}</option>
-          </select>
-        </label>
+            onChange={v => save({ dm_policy: v })}
+            aria-label={i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}
+            style={{ maxWidth: 280 }}
+          />
+        </div>
       </div>
 
       {data?.dm_policy === 'allowlist' && (

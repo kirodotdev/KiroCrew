@@ -16,6 +16,7 @@ from kiro_crew.transcribe import (
     BREW_PATH_DIRS,
     _find_mlx_whisper,
     _find_whisper,
+    _is_openai_whisper,
     _ProfileCredentialResolver,
     find_brew,
     is_available,
@@ -25,6 +26,18 @@ from kiro_crew.transcribe import (
 # ---------------------------------------------------------------------------
 # _find_whisper
 # ---------------------------------------------------------------------------
+
+
+def _no_own_venv(monkeypatch) -> None:
+    """Neutralize the running interpreter's own scripts dir.
+
+    ``_find_whisper`` probes it (that is what makes an install into the app's own
+    venv work), and on a dev machine that directory really does contain a
+    ``whisper`` — so a test isolating any LATER probe has to switch it off or it
+    never gets there. Same reason these tests already stub ``shutil.which`` and
+    ``_python3_bin_dir``.
+    """
+    monkeypatch.setattr("kiro_crew.transcribe._own_scripts_dir", lambda: "")
 
 
 class TestFindWhisper:
@@ -49,14 +62,69 @@ class TestFindWhisper:
 
     def test_empty_path_which_none_checks_search_paths(self, tmp_path, monkeypatch):
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            _no_own_venv(monkeypatch)
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [str(tmp_path / "w")])
             assert _find_whisper("") is None
+
+    def test_finds_whisper_installed_into_our_own_venv(self, tmp_path, monkeypatch):
+        """``pip install openai-whisper`` inside the app's venv must be enough.
+
+        Nothing else in the search order looks there: ``shutil.which`` only sees
+        PATH (a venv is on PATH only after ``activate``, and the gateway runs as
+        ``<venv>/bin/kirocrew``), and ``_python3_bin_dir`` deliberately asks the
+        SYSTEM python3. So the obvious install left ``is_available()`` False, with
+        no fix but setting ``stt.whisper_path`` by hand.
+        """
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        binary = venv_bin / "whisper"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        monkeypatch.setattr("kiro_crew.transcribe.sys.executable", str(venv_bin / "python"))
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: "")
+            assert _find_whisper("") == str(binary)
+
+    def test_our_venv_is_preferred_over_the_system_python(self, tmp_path, monkeypatch):
+        """Both present: the environment the caller installed into wins.
+
+        Picking the system one would run a DIFFERENT Whisper than the operator
+        just installed — a silently wrong version, or a missing model cache.
+        """
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        ours = venv_bin / "whisper"
+        ours.write_text("#!/bin/sh\n")
+        ours.chmod(0o755)
+        sys_bin = tmp_path / "system" / "bin"
+        sys_bin.mkdir(parents=True)
+        theirs = sys_bin / "whisper"
+        theirs.write_text("#!/bin/sh\n")
+        theirs.chmod(0o755)
+
+        monkeypatch.setattr("kiro_crew.transcribe.sys.executable", str(venv_bin / "python"))
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: str(sys_bin))
+            assert _find_whisper("") == str(ours)
+
+    def test_path_still_wins_over_the_venv(self, tmp_path, monkeypatch):
+        """A whisper already on PATH is what the operator chose; do not override it."""
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "whisper").write_text("#!/bin/sh\n")
+        (venv_bin / "whisper").chmod(0o755)
+        monkeypatch.setattr("kiro_crew.transcribe.sys.executable", str(venv_bin / "python"))
+        with patch("kiro_crew.transcribe.shutil.which", return_value="/usr/bin/whisper"):
+            assert _find_whisper("") == "/usr/bin/whisper"
 
     def test_empty_path_finds_in_search_paths(self, tmp_path, monkeypatch):
         binary = tmp_path / "whisper"
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            _no_own_venv(monkeypatch)
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [str(binary)])
             assert _find_whisper("") == str(binary)
 
@@ -77,9 +145,93 @@ class TestFindWhisper:
         exe.write_text("")  # no execute bit on Windows
         monkeypatch.setattr("kiro_crew.transcribe.platform_compat.IS_WINDOWS", True)
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            _no_own_venv(monkeypatch)
             monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: str(scripts))
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
             assert _find_whisper("") == str(exe)
+
+
+# ---------------------------------------------------------------------------
+# _is_openai_whisper — the --fp16 gate (issue #1896)
+# ---------------------------------------------------------------------------
+
+
+class TestIsOpenaiWhisper:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "whisper",
+            "/usr/bin/whisper",
+            "/opt/homebrew/bin/whisper",
+            "whisper.exe",  # Windows console script — .stem drops the suffix
+            "/usr/bin/WHISPER",  # case-insensitive
+        ],
+    )
+    def test_reference_binary_is_openai(self, path):
+        assert _is_openai_whisper(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "whisper-ctranslate2",
+            "/usr/local/bin/whisper-ctranslate2",
+            "/home/u/.local/bin/faster-whisper",
+            "/usr/bin/whisperx",
+            "/opt/whisper-cpp/main",
+        ],
+    )
+    def test_dropin_engines_are_not_openai(self, path):
+        assert _is_openai_whisper(path) is False
+
+
+# ---------------------------------------------------------------------------
+# _transcribe_native --fp16 gating end-to-end (issue #1896)
+# ---------------------------------------------------------------------------
+
+
+class TestNativeFp16Gating:
+    """``--fp16 False`` must reach openai-whisper but never a drop-in engine.
+
+    Passing it to whisper-ctranslate2 makes the CLI exit rc=2 and the user sees
+    a silent empty transcript, so the flag is gated on the resolved binary name.
+    """
+
+    async def _run_native(self, tmp_path, whisper_bin: str) -> list:
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True, provider="whisper", timeout_secs=10)
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        captured: dict = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"] = list(args)
+            out_dir = args[args.index("--output_dir") + 1]
+            Path(out_dir).joinpath("test.txt").write_text("hello world")
+            return mock_proc
+
+        with patch("kiro_crew.transcribe._find_whisper", return_value=whisper_bin):
+            with patch(
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
+            ):
+                result = await transcribe_audio(str(audio), cfg)
+        assert result == "hello world"
+        return captured["args"]
+
+    @pytest.mark.asyncio
+    async def test_openai_whisper_gets_fp16(self, tmp_path):
+        args = await self._run_native(tmp_path, "/usr/bin/whisper")
+        assert "--fp16" in args
+        assert args[args.index("--fp16") + 1] == "False"
+
+    @pytest.mark.asyncio
+    async def test_dropin_engine_omits_fp16(self, tmp_path):
+        args = await self._run_native(tmp_path, "/usr/local/bin/whisper-ctranslate2")
+        assert "--fp16" not in args
+        # The rest of the invocation is unchanged — the engine still gets its model/output flags.
+        assert "--model" in args and "--output_format" in args
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +374,10 @@ class TestTranscribeAudio:
         monkeypatch.setattr(
             "kiro_crew.transcribe._python3_bin_dir", discover_python_bin_dir
         )
+        # This test observes the thread `_python3_bin_dir` runs on, so the probe
+        # BEFORE it must miss — otherwise discovery short-circuits and never
+        # reaches the call being watched.
+        _no_own_venv(monkeypatch)
         monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
             result = await transcribe_audio(str(audio), cfg)

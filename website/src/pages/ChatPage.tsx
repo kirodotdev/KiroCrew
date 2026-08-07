@@ -138,6 +138,9 @@ import {
 import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
+import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
+import { focusComposerAfter } from './chat/composerFocus'
+import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
 import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
@@ -172,6 +175,7 @@ import { rewindWithRollback } from '../lib/rewindCall'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
+import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
 /**
  * Human-readable reason from a rejected thunk. `unwrap()` rejects with RTK's
  * SERIALIZED error — a plain object, never an `Error` instance — so an
@@ -630,6 +634,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const connected = useConnected()
+  // Create-in-flight, so the flyout's New button can go inert exactly like the
+  // sidebar's does instead of accepting a second click.
+  const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
@@ -2635,6 +2642,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // "session not found" timeout that keys off it; the POP effect reads
   // searchParams live and is gated separately below.
   const initialSidRef = useRef(noUrlSync ? null : (searchParams.get('sid') || searchParams.get('slot')))
+  // The active slot as of MOUNT. Redux outlives this component, so `activeSlot`
+  // being set says nothing about whether the USER chose it during this visit —
+  // only a change away from this snapshot does.
+  const mountSlotRef = useRef(activeSlot)
+  // A deep link (?sid=) naming a DIFFERENT session than the one Redux carried
+  // over owns the first switch of this mount — see the mount re-fetch effect.
+  const deepLinkPendingRef = useRef(!!initialSidRef.current && initialSidRef.current !== activeSlot)
   const initialMsgRef = useRef(searchParams.get('msg'))
   const initialNewRef = useRef(searchParams.get('new') === '1')
   // Deep-link mount activation in progress — stops the sync effect from stripping
@@ -2671,15 +2685,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (embedded && !embedMode) return
     if (!connected) return  // offline: defer URL-driven switchSlot until reconnect
     const urlSlot = initialSidRef.current
-    if (!urlSlot || filteredSlots.length === 0) return
+    if (!urlSlot) return
     // The deep-link ?sid only sets the INITIAL active slot. The slot list can
     // populate AFTER the user has already clicked a different session in the
     // sidebar (switchSlot.pending sets activeSlot synchronously); without this
     // guard the delayed activation would override that click and snap the UI
     // back to the deep-linked session.
-    if (activeSlot) { initialSidRef.current = null; return }
+    //
+    // The comparison is against the slot as of MOUNT, not against "is there any
+    // active slot at all". `activeSlot` lives in Redux, which outlives this
+    // component: a deep link followed from another dashboard page (the System
+    // page's Session & Task Memory rows, Telemetry's conversation links) mounts
+    // here with the previously-visited session already active, and a bare
+    // truthiness check read that as "the user already chose" and silently
+    // dropped the link — you clicked a session and landed on a different one.
+    // Only a switch that happened AFTER this mount is a real user choice.
+    // Both abandon paths clear the in-flight flag, because arming happens BELOW
+    // and this effect re-runs: an earlier run can have armed it while waiting for
+    // a slot that had not arrived, and the run that abandons the link is a
+    // different one. Leaving it set would kill URL sync for the rest of the mount
+    // — and the not-found timeout is no backstop here, since it only acts while
+    // `initialSidRef` is still set, which these branches clear.
+    if (activeSlot !== mountSlotRef.current) {
+      initialSidRef.current = null
+      popInFlightRef.current = false
+      return
+    }
+    if (activeSlot === urlSlot) {
+      initialSidRef.current = null
+      popInFlightRef.current = false
+      return
+    }
+    // Armed BEFORE the slot is known to exist, because the wait is exactly when
+    // the damage happens: a session created and linked in one go (the app pages'
+    // create-then-navigate) puts `?sid=` in the URL before its slots frame
+    // arrives, and during that window the URL-sync effect below sees a `sid` it
+    // cannot match and PUSHes a history entry for the carried-over session — so
+    // Back opens that session instead of the page the link came from. Same
+    // stale-closure hazard a Back/Forward has, so it takes the same guard.
+    // Released by the sync effect once activeSlot matches the URL, and by the
+    // not-found timeout, so a link that never resolves cannot wedge URL sync.
+    popInFlightRef.current = true
+    // `some` on an empty list is false, so an unpopulated slot list waits here
+    // too; this effect re-runs when `filteredSlots` arrives.
     if (filteredSlots.some(s => s.key === urlSlot)) {
       initialSidRef.current = null
+      popInFlightRef.current = true
       dispatch(switchSlot(urlSlot))
     }
     // Don't error immediately — slot may arrive via SSE shortly
@@ -2754,6 +2805,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         pendingSidRef.current = false
         popInFlightRef.current = false
         setSidError(i18nT('pages.chatPage.session_not_found', { name: urlSlot }))
+        // Deliberately does NOT refresh the session on screen. The deep link did
+        // own this mount's fetch, so that session's messages can be as stale as
+        // Redux left them — but a refresh here races the user: five seconds is
+        // long enough to type and send, and the in-flight response would land
+        // after the optimistic row and replace both it and `running`, making the
+        // turn they just sent disappear. Stale-until-next-interaction is the
+        // lesser fault, and the banner above tells them the link failed.
       }
     }, 5000)
     return () => clearTimeout(timer)
@@ -2789,7 +2847,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // matches the URL, then fall through for replace-only slug normalization (a POP
     // must never produce a push).
     if (popInFlightRef.current) {
-      if (!activeSlot || activeSlot !== sp.get('sid')) return
+      // `sid || slot` — the same pair the READ paths accept. A legacy `?slot=`
+      // link resolves through this flag too, and matching on `sid` alone would
+      // never release it: the flag would stay armed for the life of the mount,
+      // so URL sync would be dead and a later session switch would leave the
+      // URL (and therefore a reload) pointing at the wrong session.
+      const urlSlot = sp.get('sid') || sp.get('slot')
+      if (!activeSlot || activeSlot !== urlSlot) return
       popInFlightRef.current = false
     }
     if (!activeSlot) {
@@ -2821,7 +2885,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Re-fetch slot messages on mount (handles nav away + back).
   // Skip when newSession=1 — createSlot in send() will set the active slot;
   // dispatching switchSlot here would race and overwrite it.
-  useEffect(() => { if (activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  //
+  // Also skipped while a deep link (?sid=) names a DIFFERENT session: this
+  // effect runs after the sid-activation effect above, so re-fetching the slot
+  // Redux carried over from the previous page would switch straight back and
+  // silently undo the link — clicking a session on the System page landed you
+  // in whatever chat you had open before. The sid effect's own switchSlot
+  // fetches, so nothing is lost by skipping here.
+  useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // Clear activeSlot when it belongs to a different mode (page switch)
   useEffect(() => {
     if (activeSlot && slots.length > 0 && !filteredSlots.find(s => s.key === activeSlot)) {
@@ -4498,7 +4569,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // visibleIndexMap is O(1) per row.
     const canFork = !isStreaming && !isInject && !slotHasMore
     const forkIndex = canFork ? visibleIndexMap.get(i) : undefined
-    const msgTime = m.ts ? fmtDateFields(m.ts, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+    const msgTime = fmtMessageTime(m.ts)
+    const msgTimeFull = fmtMessageTimeFull(m.ts)
     return (
       <MessageSearchScope key={key} messageIdx={i}>
       <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
@@ -4508,6 +4580,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               content={m.content}
               meta={m.meta}
               timestamp={chatConfig.showTimestamps ? msgTime : undefined}
+              timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}
               canEdit={!slotRunning && !regenerating && !!activeSlot}
               messageIndex={i}
@@ -4527,12 +4600,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               return <>
                 {cronLabel && <span className="text-muted text-[11px] font-medium px-1 mb-0.5"><Clock className="lucide-inline" /> {cronLabel}</span>}
                 <div className="msg-content px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap rounded-lg bg-warning-subtle text-fg border border-warning/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}><MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} /></MessageErrorBoundary></div>
-                {chatConfig.showTimestamps && msgTime && <span className="text-muted text-[12px] font-mono px-1">{msgTime}</span>}
+                {/* No `font-mono`: a formatted date is prose, and Tailwind's
+                    `font-mono` pins `var(--mono)` — a token the Font Family
+                    setting never writes, so it overrode the user's choice and
+                    put JetBrains Mono (no CJK coverage) under a date that a
+                    zh/ja dashboard renders WITH CJK characters. `tabular-nums`
+                    keeps the digits fixed-width, which is the alignment the
+                    mono was actually there for. */}
+                {chatConfig.showTimestamps && msgTime && <span className="text-muted text-[12px] tabular-nums px-1" title={msgTimeFull}>{msgTime}</span>}
               </>
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
+              <AssistantMessage linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdx} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -4628,6 +4708,61 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
   }, [])
   const sidebarOpen = !previewFocused && (isMobile ? mobileSessions : (sidebarPinned || filteredSlots.length === 0))
+
+  // ── Collapsed-sidebar hover flyout ──────────────────────────────────────
+  // Hovering the toggle while collapsed opens a recents list over the chat, so
+  // switching sessions stops being expand → switch → collapse. It is purely an
+  // overlay: it never touches `sidebarPinned`, because `panelReserve` and
+  // `panelFillWidth` below both read `sidebarOpen`, and flipping it to show a
+  // transient popover would re-run the side panel's width maths and visibly
+  // resize the chat every time the pointer rested on a 28px button.
+  const flyoutTriggerRef = useRef<HTMLButtonElement>(null)
+  const flyoutSurfaceRef = useRef<HTMLDivElement>(null)
+  // Touch is a second gate beyond isMobile: a desktop-width touch device has no
+  // hover, so the flyout would only ever appear as a tap artefact.
+  const flyoutEligible = !isMobile && !isTouchDevice() && !previewFocused && !splitMode
+    && embedMode !== 'chat' && embedMode !== 'sessions'
+    && !sidebarOpen && filteredSlots.length > 0
+  const flyout = useHoverIntent({
+    enabled: flyoutEligible,
+    triggerRef: flyoutTriggerRef,
+    surfaceRef: flyoutSurfaceRef,
+  })
+  // Rect the sidebar's clip window should expand FROM, captured at click time
+  // from the live flyout element. Null when the expand came from the button
+  // alone, which keeps the stock button-rect morph for that path.
+  const [expandFrom, setExpandFrom] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const expandSidebar = useCallback((fromFlyout: boolean) => {
+    const surface = flyoutSurfaceRef.current
+    const container = chatContainerRef.current
+    if (fromFlyout && surface && container) {
+      const s = surface.getBoundingClientRect()
+      const c = container.getBoundingClientRect()
+      setExpandFrom({ x: s.left - c.left, y: s.top - c.top, w: s.width, h: s.height })
+    } else {
+      setExpandFrom(null)
+    }
+    flyout.close()
+    window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))
+  }, [flyout])
+  // The rect is only valid for the mount it was captured for. Clearing it on
+  // collapse means a later button-only expand cannot inherit a stale flyout
+  // rect and appear to grow out of nothing.
+  useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
+  const flyoutSwitch = useCallback((key: string) => {
+    dispatch(switchSlot(key))
+    setSplitMode(false)
+    flyout.close()
+  }, [dispatch, flyout])
+  const flyoutNew = useCallback(() => {
+    const effectiveMode = loadChatConfig().defaultAutopilot ? 'orchestrator' : (mode || '')
+    flyout.close()
+    // `focusComposerAfter`, not a bare dispatch + rAF: there is one composer and
+    // it is bound to the ACTIVE slot, so focusing before creation fulfils puts
+    // the caret on the old session and loses whatever is typed. See the module.
+    focusComposerAfter(dispatch(createSlot({ agent: defaultAgent || undefined, mode: effectiveMode })).unwrap())
+  }, [dispatch, defaultAgent, mode, flyout])
+
   useEffect(() => {
     if (filteredSlots.length === 0 && !sidebarPinned) {
       setSidebarPinned(true)
@@ -4680,11 +4815,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           (only the icon flips), so collapsing cannot drag it sideways with
           the reflowing content pane. The collapse/expand motion itself is the
           panel deforming into/out of this button's rect (OverlayDrawer morph
-          mode, morphTarget below). Desktop, non-embed, with sessions only. */}
-      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && (
+          mode, morphTarget below). Desktop, non-embed, with sessions only.
+          While collapsed, hovering it opens the recents flyout below; clicking
+          hands that flyout's rect to the drawer so the panel grows out of it. */}
+      {!isMobile && embedMode !== 'chat' && embedMode !== 'sessions' && !previewFocused && filteredSlots.length > 0 && (
         <button
+          ref={flyoutTriggerRef}
           type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent('toggle-pin-chat-sidebar'))}
+          onClick={() => expandSidebar(flyout.open)}
+          {...flyout.triggerProps}
+          aria-haspopup={flyoutEligible ? 'menu' : undefined}
+          aria-expanded={flyoutEligible ? flyout.open : undefined}
+          // Geometry mirrored by TOGGLE_RECT (chat/SessionFlyout) — every
+          // surface in this interaction grows out of and back into this rect.
           className="pi-morph absolute top-[9px] left-2 z-[61] w-7 h-7 rounded-md flex items-center justify-center cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none"
           title={sidebarOpen ? i18nT('pages.chatPage.hide_sessions') : i18nT('pages.chatPage.show_sessions')}
           aria-label={sidebarOpen ? i18nT('pages.chatPage.hide_sessions_sidebar') : i18nT('pages.chatPage.show_sessions_sidebar')}
@@ -4692,6 +4835,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           {sidebarOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
         </button>
       )}
+      <AnimatePresence>
+        {flyoutEligible && flyout.open && (
+          <SessionFlyout
+            key="session-flyout"
+            ref={flyoutSurfaceRef}
+            slots={filteredSlots}
+            activeSlot={activeSlot}
+            unreadSlots={surfaceUnreadSlots}
+            panelWidth={sidebarWidth}
+            // The panel's own height (OverlayDrawer carries pb-2), so the
+            // flyout can never be taller than the thing it grows into.
+            maxHeight={Math.max(0, containerH - 8)}
+            connected={connected}
+            creating={creatingSlot}
+            autoFocus={flyout.openedBy === 'keyboard'}
+            onSwitch={flyoutSwitch}
+            onNew={flyoutNew}
+            onExpand={() => expandSidebar(true)}
+            onDismiss={() => { flyout.close(); flyoutTriggerRef.current?.focus() }}
+            onMouseEnter={flyout.surfaceProps.onMouseEnter}
+            onMouseLeave={flyout.surfaceProps.onMouseLeave}
+            onBlur={flyout.surfaceProps.onBlur}
+          />
+        )}
+      </AnimatePresence>
       {embedMode === 'chat' ? null : embedMode === 'sessions' ? (
         <div className="flex-1 min-w-0 h-full overflow-hidden [&_.sidebar-inner]:!w-full [&_.sidebar-inner]:!border-0 [&_.sidebar-inner]:!rounded-none [&_.sidebar-inner]:!shrink [&_.sidebar-inner]:!bg-bg [&_.sidebar-resize-handle]:!hidden">
           <ChatSidebar
@@ -4709,7 +4877,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={{ x: 8, y: 9, size: 28 }} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}

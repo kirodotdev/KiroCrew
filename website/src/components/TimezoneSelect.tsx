@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { formatTzOffset } from '../utils/tz'
+import SearchableSelect from './SearchableSelect'
 
 import { i18nT } from '../i18n/t'
 /** A curated short list of commonly used timezones, used as
@@ -45,32 +46,49 @@ function allTimezones(): string[] {
   return COMMON_TZS
 }
 
+/** `formatTzOffset` delegates to `Intl.DateTimeFormat`, which throws
+ *  `RangeError` on a zone the runtime does not know. `value` comes from
+ *  localStorage and the zone list from the host, so a stale or retired id
+ *  (Factory/Legacy, a zone dropped by a browser update) would otherwise take
+ *  the whole Schedule page down. Degrade to no offset instead. */
+function safeOffset(tz: string): string | undefined {
+  try {
+    return formatTzOffset(tz)
+  } catch {
+    return undefined
+  }
+}
+
 /** Dropdown picker for choosing the render timezone for the Schedule
  *  page. Persisted by the parent via `localStorage`. */
 export default function TimezoneSelect({ value, onChange, className, id }: Props) {
-  const allTzs = useMemo(() => {
+  const options = useMemo(() => {
     const all = allTimezones()
     // De-duplicate while keeping `value` and `COMMON_TZS` ordered first.
     const ordered = [value, ...COMMON_TZS, ...all]
-    return [...new Set(ordered.filter(Boolean))]
+    return [...new Set(ordered.filter(Boolean))].map(tz => {
+      const offset = safeOffset(tz)
+      return {
+        value: tz,
+        label: tz,
+        // `formatTzOffset('UTC')` is itself "UTC", so showing both would render
+        // "UTC (UTC)". Drop a sublabel that just repeats the zone name.
+        sublabel: offset === tz ? undefined : offset,
+        // Let a query match the city without its underscore and the region
+        // without its slash, so "los angeles" and "america los" both hit.
+        keywords: tz.replace(/[_/]/g, ' '),
+      }
+    })
   }, [value])
 
-  const selectCls =
-    'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none cursor-pointer transition-colors focus-ring'
-
   return (
-    <select
+    <SearchableSelect
       id={id}
+      options={options}
       value={value}
-      onChange={e => onChange(e.target.value)}
-      className={`${selectCls} ${className || ''}`.trim()}
+      onChange={onChange}
+      className={className}
       aria-label={i18nT('components.timezoneSelect.render_timezone')}
-    >
-      {allTzs.map(tz => (
-        <option key={tz} value={tz}>
-          {tz} ({formatTzOffset(tz)})
-        </option>
-      ))}
-    </select>
+    />
   )
 }

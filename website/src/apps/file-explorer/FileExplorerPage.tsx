@@ -57,12 +57,14 @@ export default function FileExplorerPage() {
   useEffect(() => {
     if (!healthData || initialized) return
     const roots = healthData.allowedRoots || []
-    let defaultRoot = roots[0] || '/'
-    if (roots.length > 1) {
-      const home = roots.find((r) => r.includes('/home/'))
-      if (home) defaultRoot = home
-      else defaultRoot = roots.reduce((a, b) => a.length <= b.length ? a : b)
-    }
+    // Open at the user's home dir. Prefer the backend-reported `home` (must be
+    // an allowed root); for older backends that don't send it, recognize
+    // home-style roots on Linux (/home/<u>) and macOS (/Users/<u>). Never fall
+    // back to "shortest root" — on macOS that picked /opt over /Users/<u>.
+    const home =
+      (healthData.home && roots.includes(healthData.home) ? healthData.home : undefined) ??
+      roots.find((r) => r.includes('/home/') || r.startsWith('/Users/'))
+    const defaultRoot = home || roots[0] || '/'
     const saved = loadState()
     if (saved && saved.folderTabs?.length) {
       const ft = saved.folderTabs.map((t: Partial<FolderTab>) => ({ ...newFolderTab(t.rootPath, t.label), id: t.id!, expanded: t.expanded || { [t.rootPath!]: true } }))

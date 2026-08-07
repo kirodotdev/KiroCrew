@@ -41,6 +41,7 @@ from kiro_crew.dashboard import (
     handlers_project,
     openai_compat,
     stt_stream,
+    tailnet,
     ws,
 )
 from kiro_crew.dashboard.crash_dump_store import (
@@ -174,6 +175,7 @@ from kiro_crew.platform import (
     current_context,
     safe_context_call,
 )
+from kiro_crew.power import SleepInhibitor
 from kiro_crew.safety_override import (
     apply_config_duration,
     grant_declared_yolo,
@@ -214,6 +216,43 @@ logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _DIST_DIR = _STATIC_DIR / "dist"
+
+# How often the prevent-sleep poll re-evaluates whether the host should be kept
+# awake. It only needs to beat OS idle-sleep timers (minutes), so a coarse
+# interval keeps the overhead negligible; a turn shorter than one interval never
+# outlasts a sleep timer, so not catching it is harmless.
+_PREVENT_SLEEP_POLL_INTERVAL_SECS = 15.0
+
+
+async def _should_prevent_sleep(state: DashboardState) -> bool:
+    """Whether the host should be kept awake right now.
+
+    True only when the user opted in (``dashboard.prevent_sleep``) AND some live
+    session has a turn in flight. Reads config live so toggling the flag takes
+    effect on the next poll without a restart. Fail-closed: any error resolves to
+    "allow sleep" so a config/lookup hiccup can never wedge the machine awake.
+    """
+    try:
+        # KiroCrewConfig.load() does a stat and, on a cache miss, a JSON read +
+        # schema validation. On a slow home filesystem that is a blocking call,
+        # and this runs on the gateway event loop every poll — offload it so a
+        # slow read can never stall chat/heartbeat (no-blocking-call-on-event-loop).
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if not cfg.dashboard.prevent_sleep:
+            return False
+    except Exception:
+        logger.debug("prevent-sleep config read failed", exc_info=True)
+        return False
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        # In-memory dict scan on the loop thread (no await inside, so no
+        # concurrent mutation) — cheap and non-blocking.
+        return sessions.any_active_turn()
+    except Exception:
+        logger.debug("prevent-sleep active-turn check failed", exc_info=True)
+        return False
 
 
 # Strict internal API paths — exact paths that ONLY internal processes
@@ -260,7 +299,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/computer-use/frame",
         "/api/session-keepalive",
         "/api/session-tool-policy",
-        "/api/hooks/agent",
+        # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
+        # webhook for EXTERNAL callers (CI runners, review bots) that hold no
+        # dashboard cookie and no gateway IPC secret, so a strict-internal entry
+        # denied every real caller with 403 before the handler's own bearer check
+        # ever ran — the webhook token layer was unreachable. It now lives in
+        # token_auth._BYPASS_EXACT alongside /api/messaging/teams: a
+        # self-authenticating external webhook whose handler
+        # (api_hooks_agent -> _verify_hook_token) is the sole auth gate.
         "/api/outbox/notify",
         "/api/notifications/agent",  # MCP-only (send_notification tool); no browser caller
         "/api/slack/upload-file",
@@ -882,6 +928,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/crons/{job_id}/ack", handlers.api_cron_ack)
     app.router.add_get("/api/crons/{job_id}/history", handlers.api_cron_history)
     app.router.add_get("/api/crons/{job_id}/history/{run_id}", handlers.api_cron_history_detail)
+    app.router.add_get("/api/cron-folders", handlers.api_cron_folders)
+    app.router.add_post("/api/cron-folders", handlers.api_cron_folders_create)
+    app.router.add_patch("/api/cron-folders/{folder_id}", handlers.api_cron_folders_update)
+    app.router.add_delete("/api/cron-folders/{folder_id}", handlers.api_cron_folders_delete)
     app.router.add_get("/api/taskrunner", handlers.api_taskrunner_status)
     app.router.add_post("/api/taskrunner", handlers.api_taskrunner_start)
     app.router.add_post("/api/taskrunner/cancel", handlers.api_taskrunner_cancel)
@@ -1545,6 +1595,77 @@ def _wire_tunnel_shutdown(app: web.Application, state: DashboardState) -> None:
     app.on_cleanup.append(_tunnel_shutdown)
 
 
+def _register_prevent_sleep_shutdown(app: web.Application, state: DashboardState) -> None:
+    """Register the on_cleanup hook that cancels the prevent-sleep poll and
+    releases the OS block.
+
+    MUST be called BEFORE ``runner.setup()`` freezes the app's signal lists. The
+    inhibitor and task are created after setup (by :func:`_arm_prevent_sleep_poll`)
+    and resolved here lazily via ``getattr``. Shared by both ``start_dashboard``
+    and the headless ``start_api_server`` (``--slack-only``) so a graceful stop
+    never leaves caffeinate / systemd-inhibit / the Windows execution-state
+    request dangling, in either mode.
+    """
+
+    async def _prevent_sleep_shutdown(app_: web.Application) -> None:
+        task = getattr(state, "_prevent_sleep_task", None)
+        if task is not None:
+            task.cancel()
+        inhibitor = getattr(state, "_sleep_inhibitor", None)
+        if inhibitor is not None:
+            try:
+                inhibitor.set_active(False)
+            except Exception:
+                logger.debug("prevent-sleep release on shutdown failed", exc_info=True)
+
+    app.on_cleanup.append(_prevent_sleep_shutdown)
+
+
+def _arm_prevent_sleep_poll(state: DashboardState) -> None:
+    """Create the sleep inhibitor and start its poll task on the running loop.
+
+    Keeps the host awake while any session has a turn in flight, but only when
+    the user opted in via ``dashboard.prevent_sleep``. Decoupled from the turn
+    paths on purpose: polling the same active-turn signal the shutdown drain
+    filters on covers every surface (dashboard, Slack, CLI, task runner, and
+    sub-agents running under a parent turn) without threading acquire/release
+    through each path.
+
+    MUST be called AFTER ``runner.setup()`` (it needs a running loop), and paired
+    with :func:`_register_prevent_sleep_shutdown` (registered before setup) for
+    release. Shared by both server entrypoints so headless ``--slack-only`` mode
+    keeps the host awake identically to the full dashboard — a long Slack task
+    on a laptop is the case this feature exists for.
+    """
+    inhibitor = SleepInhibitor()
+    state._sleep_inhibitor = inhibitor  # prevent GC; released on cleanup
+
+    async def _prevent_sleep_poll() -> None:
+        try:
+            while True:
+                await asyncio.sleep(_PREVENT_SLEEP_POLL_INTERVAL_SECS)
+                try:
+                    inhibitor.set_active(await _should_prevent_sleep(state))
+                except Exception:
+                    logger.debug("prevent-sleep poll toggle failed", exc_info=True)
+        except asyncio.CancelledError:
+            # Release the OS block before propagating so a cancel (shutdown)
+            # never leaves the machine unable to sleep.
+            inhibitor.set_active(False)
+            raise
+
+    def _prevent_sleep_done(task: "asyncio.Task") -> None:  # type: ignore[type-arg]
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("prevent-sleep poll task exited unexpectedly", exc_info=exc)
+
+    task = asyncio.create_task(_prevent_sleep_poll())
+    task.add_done_callback(_prevent_sleep_done)
+    state._prevent_sleep_task = task  # prevent GC; cancelled on cleanup
+
+
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -1886,6 +2007,9 @@ async def start_dashboard(
     # and the task is cancelled by the service's shutdown hook.
     app["kiro_prerequisite_service"].warm_up()
     state.load_folders()
+    # Off-loop: a large cron_folders.json would otherwise block the event
+    # loop with synchronous file I/O + JSON parsing during startup.
+    await asyncio.to_thread(state.load_cron_folders)
     state.load_tags()
     app["port"] = port
 
@@ -2019,6 +2143,15 @@ async def start_dashboard(
     app.router.add_post("/api/hooks/{hook_id}/toggle", handlers.api_hook_toggle)
     app.router.add_post("/api/hooks/{hook_id}/test", handlers.api_hook_test)
 
+    # Inbound webhook management (dashboard-authed — the webhook token itself
+    # only ever authenticates POST /api/hooks/agent, never these).
+    app.router.add_get("/api/webhooks", handlers.api_webhooks)
+    app.router.add_post("/api/webhooks/tokens", handlers.api_webhook_token_create)
+    app.router.add_delete("/api/webhooks/tokens/{token_id}", handlers.api_webhook_token_delete)
+    app.router.add_delete("/api/webhooks/contexts/{hook_id}", handlers.api_webhook_context_delete)
+    app.router.add_post("/api/webhooks/test", handlers.api_webhook_test)
+    app.router.add_post("/api/webhooks/switch", handlers.api_webhooks_switch)
+
     # Prompts (Agent SOPs)
     app.router.add_get("/api/prompts", handlers.api_prompts)
     app.router.add_get("/api/prompts/{name:.+}", handlers.api_prompt_detail)
@@ -2042,6 +2175,11 @@ async def start_dashboard(
     app.router.add_post("/api/skills/-/pending/{slug}/approve", handlers.api_skill_pending_approve)
     app.router.add_post("/api/skills/-/pending/{slug}/dismiss", handlers.api_skill_pending_dismiss)
     app.router.add_post("/api/skills/-/pin", handlers.api_skill_pin)
+    app.router.add_post(
+        "/api/skills/-/inject-on-trigger", handlers.api_skill_inject_on_trigger
+    )
+    # Skill context budget (read-only cost analysis with alias folding).
+    app.router.add_get("/api/skills/-/budget", handlers.api_skills_budget)
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)
     app.router.add_get("/api/skills/{name:.+}/-/file", handlers.api_skill_file)
     app.router.add_get("/api/skills/{name:.+}", handlers.api_skill_detail)
@@ -2799,7 +2937,22 @@ async def start_dashboard(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    app["allowed_origins"] = build_allowed_origins(port, local_only, configured_host)
+    # Tailnet origin (RFC §4): this machine's own MagicDNS name, so
+    # `tailscale serve` works without the operator hand-writing dashboard.url.
+    # Off by default; resolved in a thread so the daemon call cannot stall the
+    # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
+    # validated.
+    _tailnet_host = await tailnet.resolve_tailnet_host(
+        KiroCrewConfig.load().dashboard.tailscale.enabled
+    )
+    if _tailnet_host:
+        logger.info(
+            "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
+            _tailnet_host,
+        )
+    app["allowed_origins"] = build_allowed_origins(
+        port, local_only, configured_host, tailnet_host=_tailnet_host
+    )
     # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
     # the browser and gateway are co-located on localhost.
     app["local_only"] = local_only
@@ -2883,7 +3036,7 @@ async def start_dashboard(
         _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
         if _has_token_auth:
             app["allowed_origins"] = build_allowed_origins(
-                port, local_only, configured_host, dashboard_url
+                port, local_only, configured_host, dashboard_url, tailnet_host=_tailnet_host
             )
             logger.info(
                 "dashboard_url=%s: added to CSRF allowed origins (token auth verified)",
@@ -2909,6 +3062,12 @@ async def start_dashboard(
             wd.stop()
 
     app.on_cleanup.append(_watchdog_shutdown)
+
+    # ── Prevent-sleep inhibitor shutdown ─────────────────────────────────────
+    # Registered HERE (before runner.setup freezes the signal lists) for the
+    # same reason as the watchdog hook above. The inhibitor + poll task are
+    # created after runner.setup by _arm_prevent_sleep_poll and released here.
+    _register_prevent_sleep_shutdown(app, state)
 
     async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
         await app_["kiro_prerequisite_service"].close()
@@ -3006,6 +3165,11 @@ async def start_dashboard(
     _hb = asyncio.create_task(_loop_heartbeat())
     _hb.add_done_callback(_heartbeat_done)
     state._loop_heartbeat = _hb  # prevent GC
+
+    # ── Prevent-sleep poll ───────────────────────────────────────────────────
+    # Keep the host awake while a turn is in flight (opt-in via
+    # dashboard.prevent_sleep). Shared with the headless --slack-only entrypoint.
+    _arm_prevent_sleep_poll(state)
 
     # Arm the stall watchdog only when faulthandler is enabled — i.e. under the
     # real gateway entrypoint (see cli `gateway` dispatch). Tests that spin up
@@ -3297,6 +3461,9 @@ async def start_api_server(
     # and the task is cancelled by the service's shutdown hook.
     app["kiro_prerequisite_service"].warm_up()
     state.load_folders()
+    # Off-loop: a large cron_folders.json would otherwise block the event
+    # loop with synchronous file I/O + JSON parsing during startup.
+    await asyncio.to_thread(state.load_cron_folders)
     state.load_tags()
     app["port"] = port
 
@@ -3306,7 +3473,14 @@ async def start_api_server(
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
-    app["allowed_origins"] = build_allowed_origins(port, local_only, configured_host)
+    app["allowed_origins"] = build_allowed_origins(
+        port,
+        local_only,
+        configured_host,
+        tailnet_host=await tailnet.resolve_tailnet_host(
+            KiroCrewConfig.load().dashboard.tailscale.enabled
+        ),
+    )
     app["local_only"] = local_only
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.
@@ -3319,7 +3493,7 @@ async def start_api_server(
     app["local_secret"] = _internal_secret
 
     # SEL audit middleware — log mutating MCP tool calls
-    _sel_methods = {"GET", "POST", "PUT", "DELETE"}
+    _sel_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
     _safe_methods = {"GET", "HEAD", "OPTIONS"}
 
     @web.middleware  # type: ignore[misc]
@@ -3427,6 +3601,12 @@ async def start_api_server(
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
 
+    # Prevent-sleep shutdown hook — registered before runner.setup freezes the
+    # signal lists; the poll itself is armed after the port binds (below). This
+    # is what makes headless --slack-only keep the host awake during a long
+    # Slack task, identically to the full dashboard.
+    _register_prevent_sleep_shutdown(app, state)
+
     # Hardened runner: same slowloris / CWE-400 mitigation as start_dashboard,
     # plus the raised max_field_size (see start_dashboard for the cookie-jar
     # rationale).
@@ -3455,6 +3635,11 @@ async def start_api_server(
         raise
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
+
+    # Arm the prevent-sleep poll now the loop is up and the port is bound
+    # (shutdown hook already registered above). Headless --slack-only mode keeps
+    # the host awake during a long Slack task exactly as the full dashboard does.
+    _arm_prevent_sleep_poll(state)
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.

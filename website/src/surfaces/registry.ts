@@ -40,6 +40,18 @@ import type { RootState } from '../store'
 import { i18nT } from '../i18n/t'
 export type SurfaceGroup = 'Main' | 'Apps' | 'Platform' | 'Bottom'
 
+/**
+ * Marks a registry literal as a machine value rather than rendered copy.
+ *
+ * Keep this wrapper narrow: `label` fallbacks in the built-in registry are
+ * unreachable when `labelKey` is present (enforced by navLabels.test.tsx), and
+ * `group` is a routing bucket. Other surface strings such as `badgeLabel` and
+ * `activityLabel` are rendered and must not use this helper.
+ */
+export function surfaceMachineValue<T extends string>(value: T): T {
+  return value
+}
+
 /** Anything that can appear as a top-level destination in the left rail. */
 export interface Surface {
   /** Stable identifier matching the prior NAV_ITEMS `id` for back-compat. */

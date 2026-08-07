@@ -368,6 +368,12 @@ async def _handle_connect(request: web.Request) -> web.Response:
 # cost this replaced.
 LIST_POLL_MAX_STALENESS_SEC = 600.0
 
+# Max concurrent live permission-verify calls when /repos self-heals rows connected
+# before permissions were tracked. Bounded so a switcher with many un-healed repos
+# fans out a few `gh` calls at once rather than an unbounded burst against the
+# provider, while still beating the old one-at-a-time loop that gated app open.
+_REPO_HEAL_CONCURRENCY = 6
+
 # How long one probe reading may be reused across CALLERS. Without this, every
 # visible tab probes on its own 60s cadence and the search quota (30/min, shared
 # with the user's own searches) scales with the number of open tabs. The lock
@@ -487,13 +493,22 @@ async def _poll_can_serve_cache(
 
 
 async def _handle_issues(request: web.Request) -> web.Response:
-    """GET /issues?owner=<o>&repo=<r>[&refresh=1][&poll=1] — list open issues.
+    """GET /issues?owner=<o>&repo=<r>[&refresh=1][&poll=1][&first_page=1] — list open issues.
 
     Serves the local cache by default; ``refresh=1`` forces a fresh `gh` fetch.
     ``poll=1`` is the CLIENT-POLL intent: it wants current data but delegates the
     cost policy to this handler, which answers with one cheap probe call and only
     pays the paginated fetch when the probe says something moved (see
     ``_poll_can_serve_cache``).
+
+    ``first_page=1`` is the PROGRESSIVE-PAINT intent, open state only. On a warm
+    cache it serves the full cached rows unchanged; on a COLD cache it fetches only
+    the newest single page in ONE request and returns it with ``partial: true``,
+    WITHOUT writing the cache. That first page paints in one round-trip instead of
+    blocking on the tens of paginated requests ``list_open_issues`` needs for a
+    large repo; the client then runs the ordinary full fetch (which owns the
+    durable cache) and swaps the complete set in behind it. See
+    ``_handle_issues_first_page``.
     """
     key = _key_from_request(request)
     owner, repo = key.owner, key.repo
@@ -510,6 +525,12 @@ async def _handle_issues(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
+
+    # Progressive first paint takes its own branch BEFORE the poll/refresh logic:
+    # it is a read-only fast path (never writes the cache, never probes) whose only
+    # job is to get something on screen while the authoritative fetch runs.
+    if request.query.get("first_page") == "1" and state == "open":
+        return await _handle_issues_first_page(key, client, pkw)
 
     force_refresh = request.query.get("refresh") == "1"
     is_poll = request.query.get("poll") == "1"
@@ -542,6 +563,42 @@ async def _handle_issues(request: web.Request) -> web.Response:
     return web.json_response(
         {**_identity(key), "state": state, "issues": issues, "from_cache": False}
     )
+
+
+async def _handle_issues_first_page(
+    key: provider.RepoKey, client: provider.ProviderClient, pkw: dict
+) -> web.Response:
+    """The progressive first-paint branch of ``/issues`` (open state only).
+
+    A warm cache means the full list is already one instant read away, so serve it
+    whole and mark it complete — there is nothing to gain from a partial. Only a
+    COLD cache pays a fetch, and then just the newest single page (one request,
+    ``partial: true``) so the app paints without waiting on the full pagination the
+    authoritative fetch runs next.
+
+    Deliberately does NOT write the cache: the durable cache is owned by the full
+    fetch, which stores the complete set plus the poll ``probe`` under one lock.
+    Persisting a partial here would let a subsequent poll serve an INCOMPLETE list
+    as if it were whole (and with no probe), so this path stays read-only — its
+    result lives only in the client's transient first-paint query.
+    """
+    owner, repo = key.owner, key.repo
+    snapshot = await _st(key, store.read_issues_snapshot, owner, repo, state="open")
+    if snapshot is not None:
+        return web.json_response({
+            **_identity(key), "state": "open",
+            "issues": snapshot["rows"], "from_cache": True, "partial": False,
+        })
+    try:
+        issues = await asyncio.to_thread(
+            partial(client.list_open_issues_first_page, owner, repo, **pkw)
+        )
+    except GhCliError as exc:
+        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+    return web.json_response({
+        **_identity(key), "state": "open",
+        "issues": issues, "from_cache": False, "partial": True,
+    })
 
 
 async def _handle_labels(request: web.Request) -> web.Response:
@@ -626,39 +683,55 @@ async def _handle_repos(request: web.Request) -> web.Response:
     so the UI can badge Read/Write access.
     """
     repos = await asyncio.to_thread(store.list_connected_repos)
-    for r in repos:
-        if r.get("permissions"):
-            continue
-        # Each entry carries its own provider+host, so a mixed GitHub/GitLab
-        # switcher self-heals every row against the right server rather than
-        # asking GitHub about a GitLab project.
-        entry_key = provider.key_from_parts(
-            str(r.get("owner") or ""), str(r.get("repo") or ""), r.get("provider"), r.get("host")
-        )
-        entry_client = provider.client_for(entry_key)
-        try:
-            summary = await asyncio.to_thread(
+    # Self-heal the rows missing a cached permissions object CONCURRENTLY. This
+    # runs on the app-open path and gates the switcher, and a serial loop paid one
+    # live round-trip PLUS one config write per un-healed repo, back to back — so a
+    # handful of legacy repos added seconds to first paint. A bounded gather fans
+    # the reads out; the semaphore keeps it from spawning an unbounded burst of `gh`
+    # when many repos need healing at once.
+    missing = [r for r in repos if not r.get("permissions")]
+    if missing:
+        sem = asyncio.Semaphore(_REPO_HEAL_CONCURRENCY)
+
+        async def _heal(r: dict) -> None:
+            # Each entry carries its own provider+host, so a mixed GitHub/GitLab
+            # switcher self-heals every row against the right server rather than
+            # asking GitHub about a GitLab project.
+            entry_key = provider.key_from_parts(
+                str(r.get("owner") or ""), str(r.get("repo") or ""), r.get("provider"), r.get("host")
+            )
+            entry_client = provider.client_for(entry_key)
+            async with sem:
+                try:
+                    summary = await asyncio.to_thread(
+                        partial(
+                            entry_client.verify_repo_access,
+                            entry_key.owner,
+                            entry_key.repo,
+                            **provider.call_kwargs(entry_key),
+                        )
+                    )
+                except GhCliError:
+                    # A single unreadable repo must not fail the batch — the same
+                    # per-row skip the serial loop had. It stays un-badged and
+                    # re-heals on the next /repos.
+                    return
+            perms = summary.get("permissions")
+            r["permissions"] = perms
+            await asyncio.to_thread(
                 partial(
-                    entry_client.verify_repo_access,
+                    store.set_repo_permissions,
                     entry_key.owner,
                     entry_key.repo,
-                    **provider.call_kwargs(entry_key),
+                    perms,
+                    provider=entry_key.provider,
+                    host=entry_key.host,
                 )
             )
-        except GhCliError:
-            continue
-        perms = summary.get("permissions")
-        r["permissions"] = perms
-        await asyncio.to_thread(
-            partial(
-                store.set_repo_permissions,
-                entry_key.owner,
-                entry_key.repo,
-                perms,
-                provider=entry_key.provider,
-                host=entry_key.host,
-            )
-        )
+
+        # return_exceptions so an unexpected error in one heal cannot abort the rest;
+        # _heal already swallows the expected GhCliError as a per-row skip.
+        await asyncio.gather(*(_heal(r) for r in missing), return_exceptions=True)
     return web.json_response({"repos": repos})
 
 
@@ -931,12 +1004,19 @@ async def _handle_issue_detail(request: web.Request) -> web.Response:
 
 
 async def _handle_pulls(request: web.Request) -> web.Response:
-    """GET /pulls?owner=<o>&repo=<r>[&state=open|closed][&refresh=1][&poll=1] — list PRs.
+    """GET /pulls?owner=<o>&repo=<r>[&state=open|closed][&refresh=1][&poll=1][&first_page=1] — list PRs.
 
     Cache-first (mirrors /issues). ``state`` defaults to open; closed is bounded
     to the 100 most-recently-updated (includes both merged and closed-unmerged —
     the frontend splits them on ``merged_at``). Pass refresh=1 to force a fresh
     ``gh`` fetch, or poll=1 for the probe-gated client-poll path.
+
+    ``first_page=1`` is the PROGRESSIVE-PAINT intent, open state only, and the PR
+    counterpart of ``/issues?first_page=1``: a cold ``/pulls`` open is the app's
+    slowest — it paginates every open PR AND runs the GraphQL enrichment before a
+    byte renders — so this branch fetches only the newest single page (one
+    request, un-enriched, ``partial: true``) WITHOUT writing the cache, and the
+    client swaps the full enriched set in behind it. See ``_handle_pulls_first_page``.
     """
     key = _key_from_request(request)
     owner, repo = key.owner, key.repo
@@ -953,6 +1033,12 @@ async def _handle_pulls(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
+
+    # Progressive first paint takes its own branch BEFORE the poll/refresh logic:
+    # a read-only fast path (never writes the cache, never probes, never enriches)
+    # whose only job is to paint the newest page while the authoritative fetch runs.
+    if request.query.get("first_page") == "1" and state == "open":
+        return await _handle_pulls_first_page(key, client, pkw)
 
     force_refresh = request.query.get("refresh") == "1"
     is_poll = request.query.get("poll") == "1"
@@ -997,6 +1083,51 @@ async def _handle_pulls(request: web.Request) -> web.Response:
         {**_identity(key), "state": state, "pulls": pulls, "from_cache": False,
          "bulk_max": _BULK_PR_MAX}
     )
+
+
+async def _handle_pulls_first_page(
+    key: provider.RepoKey, client: provider.ProviderClient, pkw: dict
+) -> web.Response:
+    """The progressive first-paint branch of ``/pulls`` (open state only).
+
+    The PR counterpart of ``_handle_issues_first_page``, and the bigger win: a
+    cold ``/pulls`` blocks on BOTH the full pagination and the GraphQL enrichment
+    before rendering, so a busy repo can sit on a skeleton for many seconds. A
+    warm cache is served whole and complete; a COLD cache pays only the newest
+    single page in one request and returns it ``partial: true``.
+
+    The first page is returned UN-ENRICHED — no diff size, no check tally. That
+    is deliberate: enrichment is the other slow leg, so paying it here would
+    defeat the fast path, and a row's missing enrichment renders as absent (the
+    card's bottom row is simply omitted) rather than as a wrong "no diff, no
+    checks". The authoritative fetch the client runs next enriches and caches.
+
+    Deliberately does NOT write the cache, for the same reason as the issues fast
+    path: the durable cache is owned by the full fetch (which stores fully
+    enriched rows plus the poll ``probe`` under one lock, and refuses to cache
+    incomplete rows). Persisting an un-enriched partial here would let a later
+    poll serve it as if it were whole, so this path stays read-only — its result
+    lives only in the client's transient first-paint query.
+    """
+    owner, repo = key.owner, key.repo
+    snapshot = await _st(key, store.read_pulls_snapshot, owner, repo, state="open")
+    if snapshot is not None:
+        return web.json_response({
+            **_identity(key), "state": "open",
+            "pulls": snapshot["rows"], "from_cache": True, "partial": False,
+            "bulk_max": _BULK_PR_MAX,
+        })
+    try:
+        pulls = await asyncio.to_thread(
+            partial(client.list_open_pulls_first_page, owner, repo, **pkw)
+        )
+    except GhCliError as exc:
+        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+    return web.json_response({
+        **_identity(key), "state": "open",
+        "pulls": pulls, "from_cache": False, "partial": True,
+        "bulk_max": _BULK_PR_MAX,
+    })
 
 
 async def _handle_pulls_search(request: web.Request) -> web.Response:
@@ -3095,7 +3226,7 @@ async def _handle_add_settings_label(request: web.Request) -> web.Response:
 #    merge path at all.
 #    There is still deliberately no "override and merge": an override is a
 #    governance decision recorded ON the provider (this repo does it with a reviewed
-#    `/ai-review override` comment plus the `defer-longterm` label), and a button
+#    `/ai-review override` comment), and a button
 #    that silently sheds a required check is the one thing the provider would NOT
 #    adjudicate for us.
 # 2. **Bulk is opt-in per action, not a generic loop.** ``_handle_pulls_bulk``
@@ -3517,9 +3648,16 @@ async def _refuse_if_head_moved(
     moved" are different answers and the second is the one the user must act on.
     """
     try:
+        # ``resolve_mergeable=False``: this check reads ONLY ``head_sha``, which GitHub
+        # returns eagerly on the first request. The default path would sleep 1.5s and
+        # issue a SECOND call to resolve the lazy merge state (unknown on a cold read
+        # for essentially every PR), and this runs once per verdict AND per row of a
+        # bulk approve — so on a 50-PR approve it was ~75s of pure sleep plus ~50
+        # redundant round-trips. Dropping the retry does not weaken the pin: the read
+        # is still a LIVE read of the current head, which is all the 409 needs.
         detail = await asyncio.to_thread(
             partial(provider.client_for(key).get_pr_detail, key.owner, key.repo, number,
-                    **provider.call_kwargs(key))
+                    resolve_mergeable=False, **provider.call_kwargs(key))
         )
     except GhCliError as exc:
         return _pr_action_error(op, f"{key.slug}#{number}", exc)

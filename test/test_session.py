@@ -55,6 +55,91 @@ def _alive_provider_factory():
 
 class TestSessionManager:
     @pytest.mark.asyncio
+    async def test_reinjection_flag_is_one_shot(self, cfg):
+        """mark → consume returns True once, then False. If it did not clear,
+        every turn after a compaction would re-pay the skills-index cost."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+
+        assert mgr.consume_needs_reinjection("thread1") is False, "unset by default"
+        mgr.mark_needs_reinjection("thread1")
+        assert mgr.consume_needs_reinjection("thread1") is True, "first read sees it"
+        assert mgr.consume_needs_reinjection("thread1") is False, "cleared on read"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_reinjection_helpers_tolerate_an_unknown_key(self, cfg):
+        """A compaction callback can fire for a session that has since been
+        evicted; neither helper may raise."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr.mark_needs_reinjection("never-existed")
+        assert mgr.consume_needs_reinjection("never-existed") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_compaction_marks_reinjection_without_any_callback(self, cfg):
+        """The mark lives at the compaction chokepoint, not in one surface.
+
+        Placing it in DashboardState._on_compacted missed every channel-born
+        session (and dashboard sessions with no open tab, whose branch returns
+        before the callback body). Marking here covers all surfaces and works
+        even when no callback is registered at all.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+        assert mgr._on_compacted is None, "precondition: no callback registered"
+
+        await mgr._fire_compact_callback("thread1", 90.0, success=True)
+
+        assert mgr.consume_needs_reinjection("thread1") is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_failed_compaction_does_not_mark_reinjection(self, cfg):
+        """A compaction that failed did not drop the context, so there is
+        nothing to re-inject."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+
+        await mgr._fire_compact_callback("thread1", 90.0, success=False)
+
+        assert mgr.consume_needs_reinjection("thread1") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_recycle_does_not_mark_reinjection(self, cfg):
+        """A recycle reports success=True but is NOT a compaction.
+
+        Recycling destroys the session; its successor cold-starts and gets the
+        index through the normal new-session context. The dangerous case is
+        `_recycle_held`'s "entry already replaced" branch: without the guard the
+        mark would land on the fresh replacement via `_sessions.get(key)`,
+        making an un-compacted session re-inject a redundant index.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        mgr.release("thread1")
+        replacement = mgr._sessions[mgr._fold_key("thread1")]
+
+        # Stand in for the in-flight recycle of the session that was REPLACED by
+        # this one -- _recycle_held holds the key in _recycling across its
+        # success callback.
+        mgr._recycling["thread1"] = object()  # type: ignore[assignment]
+        try:
+            await mgr._fire_compact_callback("thread1", 90.0, success=True)
+        finally:
+            mgr._recycling.pop("thread1", None)
+
+        assert replacement.needs_context_reinjection is False, (
+            "a recycle must not flag the fresh replacement session"
+        )
+        assert mgr.consume_needs_reinjection("thread1") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_creates_session(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, is_new, _resumed = await mgr.get_or_create("thread1")
@@ -1737,6 +1822,29 @@ class TestContextInfo:
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
             result = SessionManager._resolve_agent_model("test-agent")
         assert result == "opus-5"
+
+    def test_resolve_agent_model_coerces_non_string_spec(self, cfg, tmp_path):
+        """A foreign spec's structured ``model`` must not escape as a dict.
+
+        ``~/.kiro/agents`` is shared with other tools; an ACP-style
+        ``{"id": ...}`` here would be CACHED and then handed to
+        ``/api/sessions/context`` (the dashboard calls ``.replace()`` on it) and
+        to the pooled-model comparison in ``claim_pooled``. This method is
+        annotated ``-> str`` and must honour that.
+        """
+        import json
+
+        if hasattr(SessionManager, "_agent_model_cache"):
+            SessionManager._agent_model_cache.clear()
+        agent_file = tmp_path / "foreign.json"
+        agent_file.write_text(
+            json.dumps({"name": "foreign", "model": {"id": "anthropic:claude-opus-4-8"}})
+        )
+
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
+            result = SessionManager._resolve_agent_model("foreign")
+        assert result == "auto"
+        assert isinstance(result, str)
 
 
 class TestWarmPoolInternals:

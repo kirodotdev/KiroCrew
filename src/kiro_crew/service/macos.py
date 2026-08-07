@@ -2,9 +2,8 @@
 
 The plist lives at ``~/Library/LaunchAgents/dev.kirocrew.gateway.plist``
 and is loaded via ``launchctl load -w``. It keeps the gateway continuously
-running. Dev Fleet's ``launchctl stop`` restart is launchd-owned: SIGTERM first,
-then SIGKILL only after the finite ``ExitTimeOut`` if cooperative shutdown does
-not finish.
+running. Dev Fleet's restart is launchd-owned: SIGTERM first, then SIGKILL only
+after the finite ``ExitTimeOut`` if cooperative shutdown does not finish.
 """
 
 from __future__ import annotations
@@ -143,7 +142,7 @@ def loaded_restart_contract_current(printed: str) -> bool:
 
 
 def restart_contract_current(path: Path | None = None) -> bool:
-    """Return whether *path* has the expected ``launchctl stop`` contract."""
+    """Return whether *path* has the expected graceful-restart contract."""
     payload = _plist_payload(path or PLIST_PATH)
     if payload is None:
         return False
@@ -423,8 +422,9 @@ def is_active() -> bool:
 def stop() -> None:
     """Stop the agent without triggering its ``KeepAlive`` restart.
 
-    Dev Fleet restarts with ``launchctl stop``; operator stop unloads the job
-    from the current domain while leaving it enabled for the next login.
+    Dev Fleet restarts by signalling the job so ``KeepAlive`` respawns it;
+    operator stop unloads the job from the current domain while leaving it
+    enabled for the next login.
     """
     if PLIST_PATH.exists():
         _launchctl("unload", str(PLIST_PATH))

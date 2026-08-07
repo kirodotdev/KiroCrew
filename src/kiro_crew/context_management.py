@@ -129,6 +129,16 @@ class OrchestrationTracker:
         return (time.monotonic() - self._stage_start) > self._stage_timeout
 
     @property
+    def stage_timeout_seconds(self) -> int:
+        """Configured per-stage timeout in seconds (0 = disabled).
+
+        Public accessor for callers that need the raw budget -- e.g. the
+        orchestrator's ``asyncio.wait_for`` around a stage turn and its
+        subagent-wait poll cap, both of which derive from this value.
+        """
+        return self._stage_timeout
+
+    @property
     def timeout_human(self) -> str:
         """Human-friendly timeout string, e.g. '30m' or '1m30s'."""
         s = self._stage_timeout
