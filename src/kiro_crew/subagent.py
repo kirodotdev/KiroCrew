@@ -3955,6 +3955,28 @@ class SubagentManager:
         behind the concurrency cap / stagger gate, not yet started)."""
         return sum(1 for q in self._queue if q.get("parent_session_key", "") == parent_session_key)
 
+    def queued_count_for(self, parent_session_key: str) -> int:
+        """Public queued-spawn count for *parent_session_key*.
+
+        Spawns accepted behind the concurrency cap / stagger gate sit in
+        ``_queue`` with no ``SubagentInfo`` yet, so ``running``-based checks
+        read "no pending work" during exactly the window a wave is ramping.
+        Reset-deferral guards must consult this alongside ``running``.
+        """
+        return self._queued_depth(parent_session_key)
+
+    def has_pending_work_for(self, parent_session_key: str) -> bool:
+        """True while *parent_session_key* has sub-agents RUNNING or QUEUED.
+
+        The reset-deferral guards must consult this, not ``running`` alone —
+        see :meth:`queued_count_for` for why. A parent session reset while a
+        spawn is still queued strands that agent's completion on a
+        cold-started, context-free replacement session.
+        """
+        if self._queued_depth(parent_session_key) > 0:
+            return True
+        return any(a.parent_session_key == parent_session_key for a in self.running)
+
     def _emit_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
         """Emit the current queued depth for *parent_session_key* as a
         ``subagent_queued`` lifecycle event.
