@@ -11,7 +11,7 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const fileExplorerApi = {
-  health: () => get<{ allowedRoots: string[] }>(`${API_BASE}/health`),
+  health: () => get<{ allowedRoots: string[]; home?: string }>(`${API_BASE}/health`),
 
   tree: (path: string, depth = 1) =>
     get<{ entries: TreeEntry[] }>(`${API_BASE}/tree?path=${encodeURIComponent(path)}&depth=${depth}`),

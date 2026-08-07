@@ -384,6 +384,32 @@ class TestHTTPHandler:
         assert code == 200
         assert body["status"] == "ok"
 
+    def test_health_reports_home_dir(self, tmp_tree):
+        """Health payload carries the resolved home dir so the frontend can
+        open there by default instead of guessing from allowedRoots (the old
+        heuristic picked /opt on macOS)."""
+        responses = self._make_request("/health")
+        code, body = responses[0]
+        assert code == 200
+        assert body["home"] == str(tmp_tree)
+        assert body["home"] in body["allowedRoots"]
+
+    def test_allowed_roots_order_is_deterministic_home_first(self, tmp_path):
+        """_compute_allowed_roots must preserve insertion order (home first) —
+        the frontend falls back to roots[0], so a set-based dedupe would make
+        the default root random across restarts."""
+        home = tmp_path / "home-dir"
+        tmp = tmp_path / "tmp-dir"
+        for d in (home, tmp):
+            d.mkdir()
+        roots = server._compute_allowed_roots(home, tmp)
+        assert roots[0] == home
+        assert roots[1] == tmp
+        # Dedupe keeps first occurrence: home==tmp collapses to one entry.
+        same = server._compute_allowed_roots(home, home)
+        assert same[0] == home
+        assert same.count(home) == 1
+
     def test_resolve_endpoint(self, tmp_tree):
         responses = self._make_request(f"/resolve?path={tmp_tree}/file.txt")
         assert responses[0][0] == 200

@@ -76,13 +76,27 @@ if _HOME == Path(_HOME.anchor):  # home resolved to the filesystem root — unus
 
 # The system temp dir is /tmp on POSIX and %TEMP% on Windows.
 _TMP = Path(tempfile.gettempdir()).resolve()
-ALLOWED_ROOTS = [_HOME, _TMP]
-if platform_compat.IS_POSIX:
-    # /home and /opt are POSIX-only conventions; on Windows they resolve to
-    # nonexistent C:\home / C:\opt and would be dropped by the exists() filter.
-    ALLOWED_ROOTS += [Path("/home").resolve(), Path("/opt").resolve()]
-# De-dupe and only keep ones that exist
-ALLOWED_ROOTS = list({p for p in ALLOWED_ROOTS if p.exists()})
+
+
+def _compute_allowed_roots(home: Path, tmp: Path) -> list[Path]:
+    """Ordered allow-list of browsing roots: home, tmp, then POSIX conventions.
+
+    Order matters — the health endpoint serves this list and the frontend
+    falls back to roots[0] as its default folder, so the dedupe must preserve
+    insertion order (home first) rather than use a set, whose iteration order
+    varies between interpreter runs.
+    """
+    roots = [home, tmp]
+    if platform_compat.IS_POSIX:
+        # /home and /opt are POSIX-only conventions; on Windows they resolve
+        # to nonexistent C:\home / C:\opt and would be dropped by the
+        # exists() filter.
+        roots += [Path("/home").resolve(), Path("/opt").resolve()]
+    # De-dupe and only keep ones that exist
+    return list(dict.fromkeys(p for p in roots if p.exists()))
+
+
+ALLOWED_ROOTS = _compute_allowed_roots(_HOME, _TMP)
 
 # Default ignore patterns for tree + search
 IGNORE_DIRS = {
@@ -874,9 +888,13 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "app": APP_NAME,
-                    "version": "0.2.0",
+                    "version": "0.2.1",
                     "rg": _has_rg(),
                     "allowedRoots": [str(p) for p in ALLOWED_ROOTS],
+                    # The user's home dir (resolved) — the frontend opens here
+                    # by default instead of guessing from allowedRoots, which
+                    # picked /opt on macOS (home is /Users/<u>, not /home/<u>).
+                    "home": str(_HOME),
                     "maxReadBytes": MAX_READ_BYTES,
                 },
             )
