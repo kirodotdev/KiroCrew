@@ -138,6 +138,7 @@ from kiro_crew.session_pid import (  # noqa: F401
 )
 from kiro_crew.session_pid import (
     find_orphan_mcp_candidates,
+    get_session_rss_mb,
     kill_orphan_mcps,
 )
 from kiro_crew.stats import Stats
@@ -4255,19 +4256,34 @@ class SessionManager:
                     candidates.append((key, pid, sess))
         victims: list[tuple[str, int, _Session]] = []
         if candidates:
-            # Build the /proc parent->child map ONCE per tick, off-loop. It is
-            # identical for every candidate this sweep, so measuring each tree
-            # via get_session_rss_mb (which builds its own map) would rescan all
-            # of /proc K times; scan once and share the read-only map instead.
             # Offloaded to the bounded maintenance pool (not the default
             # executor), matching the sibling hooks, so an unrelated default-
-            # pool backlog can't starve this periodic /proc walk.
+            # pool backlog can't starve this periodic walk.
             loop = asyncio.get_running_loop()
-            child_map = await loop.run_in_executor(maintenance_executor(), _build_child_map)
+            measure: Callable[[int], int]
+            if platform_compat.IS_WINDOWS:
+                # No /proc, and no snapshot worth sharing: a raw Toolhelp
+                # parent->child map can attach an unrelated subtree to a recycled
+                # PID, so each tree goes through the lineage-validating route
+                # instead. That costs one enumeration per candidate rather than
+                # one per tick — the price of never recycling a healthy session
+                # on stale ancestry.
+                def measure(pid: int) -> int:
+                    return get_session_rss_mb(pid)
+
+            else:
+                # Build the /proc parent->child map ONCE per tick. It is
+                # identical for every candidate this sweep, so measuring each
+                # tree via get_session_rss_mb (which builds its own map) would
+                # rescan all of /proc K times; scan once and share the read-only
+                # map instead.
+                child_map = await loop.run_in_executor(maintenance_executor(), _build_child_map)
+
+                def measure(pid: int) -> int:
+                    return _rss_mb_from_tree(pid, child_map)
+
             for key, pid, sess in candidates:
-                rss = await loop.run_in_executor(
-                    maintenance_executor(), _rss_mb_from_tree, pid, child_map
-                )
+                rss = await loop.run_in_executor(maintenance_executor(), measure, pid)
                 if rss > self._rss_max_mb:
                     victims.append((key, rss, sess))
         for key, rss, sess in victims:

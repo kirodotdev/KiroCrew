@@ -1366,6 +1366,9 @@ def _read_rss_pages(pid: int, proc_root: Path | None = None) -> int:
     sitting just over the ceiling.) Returns 0 if the process is gone or the
     field can't be read — a missing PID simply contributes nothing to the sum.
 
+    Windows never reaches here: ``get_session_rss_mb`` measures whole trees
+    through ``platform_compat.proc_rss_tree_mb_for_pid`` instead.
+
     *proc_root* overrides the ``/proc`` mount (test seam only).
     """
     root = proc_root if proc_root is not None else Path("/proc")
@@ -1391,6 +1394,14 @@ def _build_child_map(proc_root: Path | None = None) -> dict[int, list[int]]:
 
     A failure to scan ``/proc`` is logged at debug rather than swallowed
     silently, so a degraded reading is diagnosable.
+
+    Windows deliberately has NO branch here and returns an empty map: Toolhelp's
+    ``th32ParentProcessID`` is never cleared when a parent exits and Windows
+    recycles PIDs aggressively, so a raw parent->child walk can attach an
+    unrelated subtree to a recycled PID -- which would let the watchdog recycle a
+    healthy session. ``get_session_rss_mb`` routes Windows through
+    ``platform_compat.proc_rss_tree_mb_for_pid``, which validates every
+    parent->child edge against creation/exit times, instead of coming here.
 
     *proc_root* overrides the ``/proc`` mount (test seam only).
     """
@@ -1466,8 +1477,20 @@ def get_session_rss_mb(
 
     *proc_root* overrides the ``/proc`` mount (test seam only).
 
-    Linux-only (reads ``/proc``); returns 0 on platforms without it.
+    Linux reads ``/proc``. Windows has neither ``/proc`` nor a safe parent->child
+    walk (see ``_build_child_map``), so it delegates to
+    ``platform_compat.proc_rss_tree_mb_for_pid``, which sums only
+    lineage-validated descendants; without that the ceiling measured every tree
+    as 0 MiB there and no session was ever recycled. macOS has no ctypes-only
+    per-pid RSS path, so it returns 0 and the ceiling stays inert.
+
+    *exclude_pids* is honoured on the ``/proc`` route. The Windows route derives
+    its own validated descendant set, so a caller that needs a subtree barrier
+    there must exclude the pid before calling.
     """
+    if platform_compat.IS_WINDOWS and proc_root is None:
+        tree_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
+        return 0 if tree_mb is None else int(tree_mb)
     if sys.platform != "linux":
         return 0
     child_map = _build_child_map(proc_root)

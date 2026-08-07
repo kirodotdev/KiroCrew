@@ -2010,6 +2010,88 @@ class TestProcessTokenSid:
         assert pc._process_token_sid() is None
 
 
+class TestWin32StructsAreModuleScoped:
+    """``ctypes.POINTER(T)`` memoises T -> POINTER(T) forever.
+
+    ctypes keeps that memo in a module-level dict with no eviction, so a
+    Structure subclass declared inside a function body pins a fresh pair of type
+    objects on EVERY call. The Windows metrics/enumeration helpers are polled
+    (the dashboard's system-metrics endpoint, the RSS-recycle watchdog, the
+    tree-kill parent-map walk, the MCP pipe's per-connection peer check), which
+    turned that into unbounded growth in a long-running gateway -- measured at
+    ~8 KiB per ``proc_rss_bytes`` call, never reclaimed.
+
+    Asserting on the source keeps this enforceable from the POSIX fleet, where
+    the Windows branches never execute.
+    """
+
+    #: Helpers whose Win32 struct layouts must come from module scope.
+    _WIN32_STRUCT_USERS = (
+        "get_ppid",
+        "_windows_process_parent_map",
+        "_win_process_image_name",
+        "_process_token_sid_unguarded",
+        "proc_rss_bytes",
+        "proc_rss_bytes_for_pid",
+        "system_memory",
+    )
+
+    def test_the_shared_layouts_are_defined_once_at_module_scope(self) -> None:
+        import ctypes
+
+        for name in (
+            "_ProcessEntry32",
+            "_ProcessMemoryCounters",
+            "_MemoryStatusEx",
+            "_SidAndAttributes",
+            "_TokenUser",
+        ):
+            assert issubclass(getattr(pc, name), ctypes.Structure), name
+
+    @pytest.mark.parametrize("func_name", _WIN32_STRUCT_USERS)
+    def test_no_helper_declares_a_structure_in_its_body(self, func_name: str) -> None:
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(pc, func_name))))
+        local_structs = [
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            and any(
+                isinstance(base, ast.Attribute) and base.attr in ("Structure", "Union")
+                for base in node.bases
+            )
+        ]
+        assert not local_structs, (
+            f"{func_name} declares {local_structs} in its body; each call would pin a new "
+            "type in ctypes' pointer-type memo. Hoist the layout to module scope."
+        )
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Win32 metrics paths")
+    def test_repeated_metrics_calls_add_no_pointer_memo_entries(self) -> None:
+        """The behavioural half: polling must not grow ctypes' memo at all."""
+        import ctypes
+
+        memo = ctypes._pointer_type_cache  # type: ignore[attr-defined]
+        pid = os.getpid()
+        probes = (
+            pc.proc_rss_bytes,
+            lambda: pc.proc_rss_bytes_for_pid(pid),
+            pc.system_memory,
+            lambda: pc.get_ppid(pid),
+            lambda: pc.process_owner_sid(pid),
+        )
+        for probe in probes:
+            probe()  # a first call may legitimately populate the memo once
+        before = len(memo)
+        for _ in range(25):
+            for probe in probes:
+                probe()
+        assert len(memo) == before
+
+
 class TestLocalUserId:
     """The pool-partitioning identity. Must stay an int on every platform."""
 

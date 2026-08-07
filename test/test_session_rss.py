@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew import session_pid
+from kiro_crew import session, session_pid
 
 
 def _make_manager(rss_max_mb: int):
@@ -46,9 +46,64 @@ def _mib_of_pages(total_pages: int) -> int:
 
 
 class TestGetSessionRssMb:
-    def test_non_linux_returns_zero(self) -> None:
-        with patch("kiro_crew.session_pid.sys.platform", "darwin"):
+    @pytest.fixture(autouse=True)
+    def _off_windows_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default this class to the /proc route.
+
+        The tree-accumulation tests below set ``sys.platform`` to "linux" and stub
+        the /proc primitives, but the Windows dispatch is keyed off
+        ``platform_compat.IS_WINDOWS``, which a Windows host reports as True — so
+        without this they would take the Win32 route and never reach the stubs.
+        The Windows tests re-patch it to True explicitly.
+        """
+        monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", False)
+
+    def test_macos_returns_zero(self) -> None:
+        """macOS has no ctypes-only per-pid RSS route, so the ceiling stays inert."""
+        with patch("kiro_crew.session_pid.sys.platform", "darwin"), patch(
+            "kiro_crew.session_pid.platform_compat.IS_WINDOWS", False
+        ):
             assert session_pid.get_session_rss_mb(123) == 0
+
+    def test_windows_measures_the_tree_rather_than_returning_zero(self) -> None:
+        """Windows has no /proc, but it MUST still measure.
+
+        Returning 0 there made the configured ``watchdog_rss_max_mb`` ceiling
+        unreachable, so a session tree could grow without ever being recycled.
+        """
+        with patch("kiro_crew.session_pid.sys.platform", "win32"), patch(
+            "kiro_crew.session_pid.platform_compat.IS_WINDOWS", True
+        ), patch(
+            "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
+            return_value=512.7,
+        ):
+            assert session_pid.get_session_rss_mb(100) == 512
+
+    def test_windows_uses_the_lineage_validated_helper_not_a_raw_walk(self) -> None:
+        """Toolhelp's PPID field is never cleared when a parent exits and Windows
+        recycles PIDs, so a raw parent->child walk can attach an unrelated subtree
+        to a recycled PID -- and recycle a HEALTHY session. The measurement must
+        go through the helper that validates each edge against creation times."""
+        with patch("kiro_crew.session_pid.sys.platform", "win32"), patch(
+            "kiro_crew.session_pid.platform_compat.IS_WINDOWS", True
+        ), patch(
+            "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
+            return_value=1.0,
+        ), patch(
+            "kiro_crew.session_pid._build_child_map",
+            side_effect=AssertionError("must not walk a raw Toolhelp parent map"),
+        ):
+            assert session_pid.get_session_rss_mb(100) == 1
+
+    def test_windows_treats_an_unreadable_tree_as_zero(self) -> None:
+        """None means "unknown"; the ceiling must not fire on a guess."""
+        with patch("kiro_crew.session_pid.sys.platform", "win32"), patch(
+            "kiro_crew.session_pid.platform_compat.IS_WINDOWS", True
+        ), patch(
+            "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
+            return_value=None,
+        ):
+            assert session_pid.get_session_rss_mb(100) == 0
 
     def test_accumulates_root_plus_descendants(self) -> None:
         # tree: 100 -> [200, 300]; 300 -> [400]
@@ -172,7 +227,45 @@ class TestProcParsingPrimitives:
             assert session_pid.get_session_rss_mb(100, proc_root=tmp_path) == expected
 
 
+class TestWindowsRssPrimitives:
+    """Why the ``/proc`` primitives stay ``/proc``-only.
+
+    The RSS ceiling was a silent no-op on Windows (every tree measured 0 MiB, so
+    an over-budget tree was never recycled). The fix routes whole-tree
+    measurement through a lineage-validating helper rather than teaching these
+    two primitives a Win32 dialect -- pairing a raw Toolhelp parent map with an
+    aggressively recycled PID would sum an unrelated subtree and recycle a
+    HEALTHY session, which is worse than not recycling at all.
+    """
+
+    def test_build_child_map_has_no_windows_branch_by_design(self) -> None:
+        """A raw Toolhelp parent map is deliberately NOT used here.
+
+        ``th32ParentProcessID`` is never cleared when a parent exits, so pairing
+        it with an aggressively recycled PID would sum an unrelated subtree and
+        recycle a healthy session. Windows gets its own lineage-validated route
+        in ``get_session_rss_mb`` instead of a shareable snapshot.
+        """
+        import inspect
+
+        assert "_windows_process_parent_map" not in inspect.getsource(
+            session_pid._build_child_map
+        )
+
+
 class TestRssThresholdCheck:
+    @pytest.fixture(autouse=True)
+    def _on_the_proc_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pin the hook's /proc branch for the behaviour tests below.
+
+        They assert on the sweep's DECISIONS (which sessions get recycled, and
+        which are protected), so they stub the /proc measurement helpers. That
+        stub only takes effect on the /proc branch, so a Windows host would
+        otherwise measure real trees here and every one of them would read as
+        under-threshold. The Windows dispatch has its own test above.
+        """
+        monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
+
     @pytest.mark.asyncio
     async def test_disabled_by_default_is_noop(self) -> None:
         manager = _make_manager(rss_max_mb=0)
@@ -219,6 +312,29 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert bm.call_count == 1  # one /proc scan for the whole tick
         assert rt.call_count == 2  # measured once per candidate
+
+    @pytest.mark.asyncio
+    async def test_windows_measures_per_candidate_without_a_shared_map(self) -> None:
+        """Windows cannot share one snapshot across candidates.
+
+        A raw Toolhelp parent map is unsafe (stale PPIDs + recycled PIDs would
+        attach an unrelated subtree and recycle a healthy session), so each tree
+        is measured through the lineage-validating route instead. Paying one
+        enumeration per candidate is the deliberate trade.
+        """
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:a"] = _session_stub(busy=False)
+        manager._sessions["dashboard:b"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        # Overrides the class fixture's /proc pin: this is the Windows branch.
+        with patch.object(session.platform_compat, "IS_WINDOWS", True), patch(
+            "kiro_crew.session._build_child_map",
+            side_effect=AssertionError("must not build a raw Toolhelp parent map"),
+        ), patch("kiro_crew.session.get_session_rss_mb", return_value=2048) as gs:
+            await manager._rss_threshold_check()
+        assert gs.call_count == 2
+        assert manager.reset.await_count == 2
 
     @pytest.mark.asyncio
     async def test_one_failed_victim_does_not_skip_the_rest(self) -> None:

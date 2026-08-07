@@ -499,6 +499,50 @@ def _available_memory_gb() -> float:
     return -1.0
 
 
+_NATURAL_T = ctypes.c_uint  # natural_t is 32-bit on macOS
+
+
+class _VMStatistics64(ctypes.Structure):
+    """Leading fields of ``vm_statistics64_data_t`` (``<mach/vm_statistics.h>``).
+
+    Declared in kernel order so the byte layout matches what the kernel fills.
+    Only free/inactive/speculative/purgeable are read, but the full struct is
+    declared so the element count handed to ``host_statistics64`` is exact.
+
+    Module scope is load-bearing: ``ctypes.POINTER(T)`` memoises T in a
+    module-level dict inside ctypes that is never evicted, so declaring this in
+    the probe's body would pin a fresh pair of type objects on every call and
+    grow the gateway without bound -- the auto-sizing probe runs per task group.
+    """
+
+    _fields_ = [
+        ("free_count", _NATURAL_T),
+        ("active_count", _NATURAL_T),
+        ("inactive_count", _NATURAL_T),
+        ("wire_count", _NATURAL_T),
+        ("zero_fill_count", ctypes.c_uint64),
+        ("reactivations", ctypes.c_uint64),
+        ("pageins", ctypes.c_uint64),
+        ("pageouts", ctypes.c_uint64),
+        ("faults", ctypes.c_uint64),
+        ("cow_faults", ctypes.c_uint64),
+        ("lookups", ctypes.c_uint64),
+        ("hits", ctypes.c_uint64),
+        ("purges", ctypes.c_uint64),
+        ("purgeable_count", _NATURAL_T),
+        ("speculative_count", _NATURAL_T),
+        ("decompressions", ctypes.c_uint64),
+        ("compressions", ctypes.c_uint64),
+        ("swapins", ctypes.c_uint64),
+        ("swapouts", ctypes.c_uint64),
+        ("compressor_page_count", _NATURAL_T),
+        ("throttled_count", _NATURAL_T),
+        ("external_page_count", _NATURAL_T),
+        ("internal_page_count", _NATURAL_T),
+        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+    ]
+
+
 def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
     """Reclaimable memory in **pages** via Mach ``host_statistics64``, or ``None``.
 
@@ -518,41 +562,6 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
         libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
     except OSError:
         return None  # not macOS / libSystem unavailable
-
-    natural_t = ctypes.c_uint  # natural_t is 32-bit on macOS
-    u64 = ctypes.c_uint64
-
-    # Leading fields of vm_statistics64_data_t (<mach/vm_statistics.h>) in
-    # declaration order, so the byte layout matches what the kernel fills. Only
-    # free/inactive/speculative/purgeable are read, but the full struct is
-    # declared so the element count handed to host_statistics64 is exact.
-    class _VMStatistics64(ctypes.Structure):
-        _fields_ = [
-            ("free_count", natural_t),
-            ("active_count", natural_t),
-            ("inactive_count", natural_t),
-            ("wire_count", natural_t),
-            ("zero_fill_count", u64),
-            ("reactivations", u64),
-            ("pageins", u64),
-            ("pageouts", u64),
-            ("faults", u64),
-            ("cow_faults", u64),
-            ("lookups", u64),
-            ("hits", u64),
-            ("purges", u64),
-            ("purgeable_count", natural_t),
-            ("speculative_count", natural_t),
-            ("decompressions", u64),
-            ("compressions", u64),
-            ("swapins", u64),
-            ("swapouts", u64),
-            ("compressor_page_count", natural_t),
-            ("throttled_count", natural_t),
-            ("external_page_count", natural_t),
-            ("internal_page_count", natural_t),
-            ("total_uncompressed_pages_in_compressor", u64),
-        ]
 
     HOST_VM_INFO64 = 4  # flavor selector for host_statistics64
 
