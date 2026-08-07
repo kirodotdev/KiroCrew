@@ -35,12 +35,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.platform_compat import pid_exists
 
 logger = logging.getLogger(__name__)
 
@@ -148,15 +151,109 @@ def _list_dumps(dumps_dir: Path | None = None) -> list[Path]:
     return dumps
 
 
+# The header written by open_dump_file() is 3 comment lines + 1 blank line.
+# Anything beyond that is real faulthandler stack content.
+_HEADER_LINES = 4
+
+_PID_LINE_RE = re.compile(r"^# PID: (\d+)\s*$", re.MULTILINE)
+
+
+def _is_header_only(dump_path: Path) -> bool:
+    """True iff *dump_path* contains only the startup header (no thread stacks).
+
+    A header-only dump means that gateway session never wedged — the file was
+    pre-created at startup (faulthandler needs a stable fd for the process
+    lifetime) and faulthandler never fired into it.  Raises ``OSError`` through
+    to the caller on read failure so callers can choose their own conservative
+    fallback.
+    """
+    content = dump_path.read_text(encoding="utf-8", errors="replace")
+    return len(content.splitlines()) <= _HEADER_LINES
+
+
+def _dump_pid(dump_path: Path) -> int | None:
+    """Extract the owning gateway PID from a dump file's header, if present."""
+    try:
+        m = _PID_LINE_RE.search(dump_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return int(m.group(1)) if m else None
+
+
+def sweep_stale_dumps(
+    dumps_dir: Path | None = None,
+    *,
+    is_pid_alive: Callable[[int], bool] = pid_exists,
+) -> int:
+    """Remove header-only dumps left behind by dead gateway sessions.
+
+    Every gateway startup pre-creates a dump file so faulthandler has a stable
+    fd; a session that exits without ever wedging leaves that file behind as a
+    4-line header with zero diagnostic content.  Restart the gateway often
+    enough and those empty files pile up to the rotation cap — padding the
+    diagnostics bundle's per-bundle dump quota and, worse, aging REAL stall
+    dumps out of rotation (``rotate_dumps`` removes oldest-first by mtime, so
+    nine clean restarts after a wedge would delete the only evidence of it).
+
+    A dump is swept iff ALL of:
+    * it is header-only (a dump with stacks is evidence — never touched), and
+    * its header carries a parseable ``# PID:`` line, and
+    * that PID is no longer alive (a live PID means a concurrently running
+      gateway on this data home still owns the file — e.g. an isolated pod or
+      an overlapping restart — so it is left alone).
+
+    Unreadable files and headers without a PID line are left alone
+    (conservative: rotation will reap them eventually).  Returns the number of
+    files removed.
+    """
+    removed = 0
+    for path in _list_dumps(dumps_dir):
+        try:
+            if not _is_header_only(path):
+                continue
+        except OSError:
+            continue
+        pid = _dump_pid(path)
+        if pid is None or pid == os.getpid() or is_pid_alive(pid):
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            logger.debug("could not sweep stale dump %s", path, exc_info=True)
+    if removed:
+        logger.info("swept %d stale header-only crash dump(s) from prior sessions", removed)
+    return removed
+
+
 def rotate_dumps(max_dumps: int = _DEFAULT_MAX_DUMPS, dumps_dir: Path | None = None) -> int:
-    """Remove oldest dumps if count exceeds max_dumps.  Returns number removed."""
+    """Remove dumps if count exceeds max_dumps.  Returns number removed.
+
+    Header-only dumps (no stack content — the session never wedged) are
+    sacrificed first, oldest-first; dumps with real stacks are only removed
+    once no header-only candidates remain.  This keeps genuine stall evidence
+    alive as long as possible when empty startup files share the directory.
+    """
     dumps = _list_dumps(dumps_dir)
+
+    def _sacrifice_order(dumps: list[Path]) -> list[Path]:
+        header_only: list[Path] = []
+        stacked: list[Path] = []
+        for p in dumps:
+            try:
+                (header_only if _is_header_only(p) else stacked).append(p)
+            except OSError:
+                # Unreadable — treat as expendable so it can't shield real dumps.
+                header_only.append(p)
+        return header_only + stacked
+
+    victims = _sacrifice_order(dumps)
     removed = 0
     # Keep max_dumps - 1 so there's room for the new one we're about to create
-    while len(dumps) > max_dumps - 1:
-        oldest = dumps.pop(0)
+    while len(dumps) - removed > max_dumps - 1 and victims:
+        victim = victims.pop(0)
         try:
-            oldest.unlink()
+            victim.unlink()
             removed += 1
         except OSError:
             pass
@@ -215,12 +312,7 @@ def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
     dumps = _list_dumps(dumps_dir)
     for path in reversed(dumps):
         try:
-            # Header is 4 lines (3 comment lines + blank).  Real dump content
-            # starts after that.
-            content = path.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines()
-            # If there are more than 4 lines, there's actual stack content
-            if len(lines) > 4:
+            if not _is_header_only(path):
                 return path
         except OSError:
             continue
@@ -270,8 +362,7 @@ def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
     """Extract the first N lines of actual stack content from a dump file."""
     try:
         lines = dump_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        # Skip the 4-line header
-        stack_lines = [ln for ln in lines[4:] if ln.strip()]
+        stack_lines = [ln for ln in lines[_HEADER_LINES:] if ln.strip()]
         return stack_lines[:max_lines]
     except OSError:
         return []
@@ -291,8 +382,7 @@ def dump_replay_lines(
     except OSError:
         return [], False
     all_lines = content.splitlines()
-    # Skip the 4-line header
-    stack_lines = [ln for ln in all_lines[4:] if ln.strip()]
+    stack_lines = [ln for ln in all_lines[_HEADER_LINES:] if ln.strip()]
     result: list[str] = []
     total = 0
     for ln in stack_lines:
