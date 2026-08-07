@@ -475,6 +475,15 @@ class TestAutoApproveProvenanceGating:
     async def _execute_auto_approve_passed(self, request_app: str, auto_approve: bool = True):
         runner = MagicMock()
         runner.execute_plan = AsyncMock(return_value=None)
+        # /execute now reads the planned run's in-memory spec to honor a declared
+        # `approval: auto`; give it a real run with NO directive so this test
+        # isolates the UI-flag path (the spec-directive path is covered below).
+        runner._runs = {
+            "t1": Project(
+                spec_path="s.md", spec_content="# Task: t\n## Steps\n1. do\n",
+                status="planned", task_id="t1",
+            )
+        }
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
         req = make_mocked_request(
@@ -508,6 +517,12 @@ class TestAutoApproveProvenanceGating:
         """
         runner = MagicMock()
         runner.execute_plan = AsyncMock(return_value=None)
+        runner._runs = {
+            "t1": Project(
+                spec_path="s.md", spec_content="# Task: t\n## Steps\n1. do\n",
+                status="planned", task_id="t1",
+            )
+        }
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
         req = make_mocked_request(
@@ -534,3 +549,244 @@ class TestAutoApproveProvenanceGating:
         # (async) SEL write failure reaches this fail-closed handler rather than
         # being swallowed by the background writer after the gate has returned.
         assert boom.log_tool_invocation.call_args.kwargs["critical"] is True
+
+
+class TestSpecDeclaredApprovalGating:
+    """A spec that declares ``approval: auto`` requests trust through the SAME
+    provenance gate as the UI flag — it can never self-elevate a non-dashboard
+    launch. (Issue #2068: spec-declared approval mode.)
+    """
+
+    async def _start_auto_approve_passed(
+        self, tmp_path: Path, spec_body: str, source: str,
+        request_app: str = "", ui_flag: bool = False,
+    ) -> bool:
+        runner = MagicMock()
+        runner._work_dir = tmp_path
+        runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = request_app  # "" == dashboard itself
+        req.json = AsyncMock(
+            return_value={
+                "spec": f"__inline__:{spec_body}",
+                "source": source,
+                "auto_approve": ui_flag,
+            }
+        )
+        await api_taskrunner_start(req)
+        return runner.start_background.call_args.kwargs["auto_approve"]
+
+    _SPEC_AUTO = "---\napproval: auto\n---\n# Task: t\n## Steps\n1. do\n"
+    _SPEC_PLAIN = "# Task: t\n## Steps\n1. do\n"
+
+    @pytest.mark.asyncio
+    async def test_dashboard_spec_auto_grants_without_ui_flag(self, tmp_path: Path) -> None:
+        # Dashboard launch + spec-declared auto → trust, even though the UI flag
+        # was not set. The spec directive is a first-class request path.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "dashboard", request_app="", ui_flag=False
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_cron_spec_auto_still_denied(self, tmp_path: Path) -> None:
+        # SAME directive, cron source → the provenance gate still denies it.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "cron", request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_mcp_spec_auto_still_denied(self, tmp_path: Path) -> None:
+        # task_run (MCP) source → denied despite the spec asking for auto.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "mcp", request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_app_embedded_spec_auto_denied(self, tmp_path: Path) -> None:
+        # Even a dashboard-source claim cannot self-trust from an app/proxy embed.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "dashboard", request_app="someapp", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_dashboard_plain_spec_no_trust(self, tmp_path: Path) -> None:
+        # No directive + no UI flag → deny-by-default, even on the dashboard.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_PLAIN, "dashboard", request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_ui_flag_still_works_without_directive(self, tmp_path: Path) -> None:
+        # The pre-existing UI-flag path is unchanged by the OR with the directive.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_PLAIN, "dashboard", request_app="", ui_flag=True
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_non_utf8_spec_file_does_not_crash_start(self, tmp_path: Path) -> None:
+        # A non-UTF-8 spec FILE raises UnicodeDecodeError (a ValueError, NOT an
+        # OSError) on the bounded approval-prefix read. The handler must swallow
+        # it and fall back to empty mode (deny-by-default), NOT 500 (GPT review,
+        # PR #2129). Uses the file-path branch — inline specs are always UTF-8.
+        bad = tmp_path / "spec.md"
+        bad.write_bytes(b"---\napproval: auto\n---\n# Task \xff\xfe not utf-8\n")
+        runner = MagicMock()
+        runner._work_dir = tmp_path
+        runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = ""  # dashboard itself
+        req.json = AsyncMock(
+            return_value={"spec": str(bad), "source": "dashboard", "auto_approve": False}
+        )
+        resp = await api_taskrunner_start(req)  # must NOT raise
+        assert resp.status == 200
+        # Mode could not be read → deny-by-default; no unattended trust granted.
+        assert runner.start_background.call_args.kwargs["auto_approve"] is False
+
+    def test_truncated_spec_cannot_forge_directive(self, tmp_path: Path) -> None:
+        # A file whose approval-scan window ends mid-line must NOT let the
+        # truncated prefix read as a directive: ``approval: auto is NOT enabled``
+        # cut at the window boundary would otherwise yield ``approval: auto``
+        # (GPT review, PR #2129, B7). The bounded read drops the incomplete final
+        # line, so no forged directive survives → deny-by-default.
+        from kiro_crew.dashboard.handlers.taskrunner import (
+            _SPEC_APPROVAL_READ_CHARS,
+            _read_spec_head,
+        )
+        from kiro_crew.task_planner import parse_spec_approval_mode
+
+        # Pad so the poisoned line straddles the read boundary, then continues.
+        pad = "# filler\n" * ((_SPEC_APPROVAL_READ_CHARS // 9) + 1)
+        spec = pad + "approval: auto is NOT actually enabled, just prose\n"
+        bad = tmp_path / "spec.md"
+        bad.write_text(spec, encoding="utf-8")
+        head = _read_spec_head(str(bad))
+        # The truncated tail line is dropped, so the forged directive is absent.
+        assert "approval: auto is NOT" not in head
+        assert parse_spec_approval_mode(head) == ""
+        # A short spec that fits entirely is returned intact (no over-trimming).
+        short = tmp_path / "short.md"
+        short.write_text("approval: auto\n# Task\n", encoding="utf-8")
+        assert parse_spec_approval_mode(_read_spec_head(str(short))) == "auto"
+
+    @pytest.mark.asyncio
+    async def test_file_backed_auto_pins_immutable_snapshot(self, tmp_path: Path) -> None:
+        # TOCTOU (GPT review, PR #2129, B10): when a FILE-backed spec's directive
+        # grants auto, execution must be pinned to a snapshot of the approved
+        # bytes, NOT the original path — else an edit between the approval read
+        # and run()'s later re-read would execute different tasks under the stale
+        # grant. Assert start_background is handed a path OTHER than the original
+        # and that its content equals what was approved.
+        spec = tmp_path / "spec.md"
+        approved = "---\napproval: auto\n---\n# Task: approved\n## Steps\n1. safe\n"
+        spec.write_text(approved, encoding="utf-8")
+        runner = MagicMock()
+        runner._work_dir = tmp_path
+        runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = ""  # dashboard itself
+        req.json = AsyncMock(
+            return_value={"spec": str(spec), "source": "dashboard", "auto_approve": False}
+        )
+        resp = await api_taskrunner_start(req)
+        assert resp.status == 200
+        kw = runner.start_background.call_args
+        run_path = kw.args[0] if kw.args else kw.kwargs["spec_path"]
+        assert kw.kwargs["auto_approve"] is True          # directive granted auto
+        assert str(run_path) != str(spec)                 # NOT the original path
+        # Simulate the attacker editing the original AFTER approval; the snapshot
+        # the runner will execute must still hold the approved content.
+        spec.write_text("---\napproval: auto\n---\n# Task: MALICIOUS\n", encoding="utf-8")
+        assert Path(run_path).read_text(encoding="utf-8") == approved
+
+    @pytest.mark.asyncio
+    async def test_file_backed_per_action_not_snapshotted(self, tmp_path: Path) -> None:
+        # A file-backed spec WITHOUT an auto directive keeps running from its
+        # original path (no snapshot), so per-action spec-file resume/edit
+        # workflows are unaffected by the B10 fix.
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Task: t\n## Steps\n1. do\n", encoding="utf-8")
+        runner = MagicMock()
+        runner._work_dir = tmp_path
+        runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = ""
+        req.json = AsyncMock(
+            return_value={"spec": str(spec), "source": "dashboard", "auto_approve": False}
+        )
+        resp = await api_taskrunner_start(req)
+        assert resp.status == 200
+        kw = runner.start_background.call_args
+        run_path = kw.args[0] if kw.args else kw.kwargs["spec_path"]
+        assert kw.kwargs["auto_approve"] is False
+        assert str(run_path) == str(spec)  # unchanged: runs from the original file
+
+    # ── /execute launch-path parity ──
+    #
+    # plan→/execute is the SECOND dashboard launch path. It operates on an
+    # already-planned run whose spec was captured in memory at plan time, so it
+    # parses ``run.spec_content`` (no fresh disk read → no TOCTOU) and routes the
+    # request through the SAME provenance gate as /start. The gate here carries no
+    # source claim (the run already exists), so only the dashboard-context check
+    # separates a human launch from an app/proxy-embedded one.
+
+    async def _execute_auto_approve_passed(
+        self, spec_body: str, request_app: str = "", ui_flag: bool = False,
+    ) -> bool:
+        runner = MagicMock()
+        runner.execute_plan = AsyncMock(return_value=None)
+        runner._runs = {
+            "t1": Project(
+                spec_path="s.md", spec_content=spec_body,
+                status="planned", task_id="t1",
+            )
+        }
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request(
+            "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
+            headers={"Content-Length": "32"},
+        )
+        req["app"] = request_app  # "" == dashboard itself
+        req.json = AsyncMock(return_value={"auto_approve": ui_flag})
+        await api_taskrunner_execute_plan(req)
+        return runner.execute_plan.call_args.kwargs["auto_approve"]
+
+    @pytest.mark.asyncio
+    async def test_execute_dashboard_spec_auto_grants_without_ui_flag(self) -> None:
+        # Dashboard /execute + spec-declared auto → trust, without the UI flag —
+        # identical to the /start behavior, so the directive is path-consistent.
+        assert await self._execute_auto_approve_passed(
+            self._SPEC_AUTO, request_app="", ui_flag=False
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_execute_app_embedded_spec_auto_denied(self) -> None:
+        # An app/proxy-embedded caller cannot self-trust on /execute either, even
+        # when the planned run's spec declares auto.
+        assert await self._execute_auto_approve_passed(
+            self._SPEC_AUTO, request_app="someapp", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_execute_dashboard_plain_spec_no_trust(self) -> None:
+        # No directive + no UI flag → deny-by-default on /execute.
+        assert await self._execute_auto_approve_passed(
+            self._SPEC_PLAIN, request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_execute_ui_flag_still_works_without_directive(self) -> None:
+        # The pre-existing UI-flag path on /execute is unchanged by the OR with
+        # the spec directive.
+        assert await self._execute_auto_approve_passed(
+            self._SPEC_PLAIN, request_app="", ui_flag=True
+        ) is True

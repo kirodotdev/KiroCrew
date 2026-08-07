@@ -50,6 +50,151 @@ def auto_name(spec_content: str, spec_path: str = "") -> str:
     return ""
 
 
+# ── Spec-declared approval mode ──
+
+# The approval modes a spec may declare. Only ``auto`` requests unattended
+# execution; ``per-task``/``per-action`` are recognized (so a typo doesn't
+# silently read as ``auto``) but do not request auto-approval. ``per-action`` is
+# the default behavior when nothing is declared.
+SPEC_APPROVAL_MODES = ("auto", "per-task", "per-action")
+
+# A single ``approval: <mode>`` directive line, with optional quotes and an
+# optional trailing ``#`` comment. Deliberately strict on three axes: (1) the
+# value is one bare word, so prose like "approval: pending review of the design"
+# never matches; (2) NO leading whitespace, so an indented line (a nested mapping
+# value such as ``steps:\n  approval: auto``) is never read as a directive;
+# (3) quotes must BALANCE — either both sides quoted with the same character or
+# neither, so a mismatched ``"auto`` / ``auto'`` is rejected rather than silently
+# accepted. The ``(?P=q)`` backreference enforces the matching closing quote.
+_SPEC_APPROVAL_RE = re.compile(
+    r"""^approval\s*:\s*"""
+    r"""(?:(?P<q>['"])(?P<qval>[A-Za-z][A-Za-z-]*)(?P=q)"""
+    r"""|(?P<bval>[A-Za-z][A-Za-z-]*))"""
+    r"""\s*(?:#.*)?$""",
+    re.IGNORECASE,
+)
+
+# Fenced code-block delimiters. An ``approval:`` line inside a ``` / ~~~ fence is
+# documentation/example text, not a directive, so those lines are skipped. A
+# fence line is a run of >=3 of the SAME character (``` or ~~~); the opening run
+# may carry an info string, a closing run may not. Per CommonMark, a fence closes
+# only on a line of the SAME character whose run length is >= the opener's, so a
+# shorter or different-character run inside the block does NOT close it. Capturing
+# the char and length lets the scanner enforce that instead of toggling on any
+# fence-like line (which a crafted example could exploit to escape the block).
+_SPEC_FENCE_RE = re.compile(r"^\s*(?P<f>(?P<c>`|~)(?P=c){2,})\s*(?P<info>\S.*)?$")
+
+# How many leading lines to scan for a bare (non-frontmatter) directive. Bounds
+# the search to the top of the file so an ``approval:`` mention buried in the
+# body cannot flip the run's mode.
+_SPEC_APPROVAL_SCAN_LINES = 20
+
+
+def parse_spec_approval_mode(spec_content: str) -> str:
+    """Extract a spec-declared approval mode from the top of a spec.
+
+    A spec may declare how the run should gate tool approvals, either in a
+    leading YAML frontmatter fence::
+
+        ---
+        approval: auto
+        ---
+        # Task: refactor the widget
+
+    or as a bare top-of-file / top-level directive (markdown or YAML workflow)::
+
+        approval: auto
+
+    Returns the normalized mode — one of :data:`SPEC_APPROVAL_MODES` — or ``""``
+    when unset or unrecognized. **Deny-by-default:** only a literal ``auto``
+    (case-insensitive) requests unattended execution; a malformed block, an
+    unknown value, or an ``approval:`` line below the scanned top region all
+    yield ``""``, so the caller falls back to per-action prompting.
+
+    SECURITY: this reports *intent only*. Whether ``auto`` is actually honored is
+    decided solely by the launch-provenance gate (``_gate_auto_approve`` in the
+    task runner handler) — a spec can never self-elevate a cron/MCP run.
+    """
+    text = (spec_content or "").lstrip("﻿")
+    lines = text.splitlines()
+
+    # Skip leading blank lines to find the first meaningful line.
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+
+    if idx < len(lines) and lines[idx].strip() == "---":
+        # YAML frontmatter: scan only within the fence. A fence with NO closing
+        # ``---`` is malformed; treat it as no directive (deny-by-default) rather
+        # than scanning body text as if it were frontmatter.
+        scan: list[str] = []
+        closed = False
+        for j in range(idx + 1, len(lines)):
+            if lines[j].strip() == "---":
+                closed = True
+                break
+            scan.append(lines[j])
+        if not closed:
+            return ""
+    else:
+        # No frontmatter: only a bounded window at the very top is authoritative.
+        scan = lines[idx : idx + _SPEC_APPROVAL_SCAN_LINES]
+
+    # Neutralize HTML markup before matching. A directive shown inside ANY HTML
+    # markup — an ``<!-- ... -->`` comment OR an element such as ``<pre>``,
+    # ``<code>``, ``<div>``, ``<details>`` — is rendered/example text, not a
+    # top-level directive. This is handled as a CLASS, not one tag at a time: a
+    # real ``approval: <mode>`` directive line never contains ``<`` or ``>`` (the
+    # value is a bare word), so stripping every markup span can never remove a
+    # genuine directive, only an example wrapped in markup. Order of removal:
+    #   1. HTML comments (``<!-- ... -->``), closed or unterminated.
+    #   2. HTML element spans (``<tag ...> ... </tag>``), any tag name.
+    #   3. An UNTERMINATED opening tag swallows the rest of the region.
+    # 1 and 3 are deny-by-default: an unclosed comment/tag neutralizes everything
+    # after it rather than exposing a directive the author placed inside markup.
+    # (The code-fence state machine below handles ``` / ~~~ fences, the third
+    # markup class.) Adding a new wrapper never means another patch here — any
+    # ``<...>`` form is already covered by rules 2 and 3.
+    scan_text = "\n".join(scan)
+    scan_text = re.sub(r"<!--.*?-->", " ", scan_text, flags=re.DOTALL)
+    scan_text = re.sub(r"<!--.*\Z", " ", scan_text, flags=re.DOTALL)
+    scan_text = re.sub(r"<([a-zA-Z][\w-]*)\b[^>]*>.*?</\1\s*>", " ",
+                       scan_text, flags=re.DOTALL)
+    scan_text = re.sub(r"<[a-zA-Z][\w-]*\b[^>]*>.*\Z", " ",
+                       scan_text, flags=re.DOTALL)
+    scan = scan_text.split("\n")
+
+    # Fenced code block state: None when outside, else (char, length) of the open
+    # fence. A directive inside a fence is a documentation example, never real.
+    fence = None  # type: tuple[str, int] | None
+    for line in scan:
+        m = _SPEC_FENCE_RE.match(line)
+        if m:
+            run = m.group("f").strip()
+            char, length = run[0], len(run)
+            if fence is None:
+                # An opening fence may carry an info string (```yaml); enter the
+                # block and remember its char + length so only a valid closer exits.
+                fence = (char, length)
+            elif char == fence[0] and length >= fence[1] and not m.group("info"):
+                # A CLOSING fence must be the same char, at least as long, and
+                # carry NO info string. Anything else is content inside the block.
+                fence = None
+            continue
+        if fence is not None:
+            # Inside an open fence (including after a mismatched/short fake closer,
+            # which does NOT close it): skip. Deny-by-default — an unterminated
+            # fence swallows the rest of the region rather than exposing examples.
+            continue
+        match = _SPEC_APPROVAL_RE.match(line)
+        if match:
+            # Either the quoted (qval) or the bare (bval) alternative matched.
+            raw = match.group("qval") or match.group("bval") or ""
+            mode = raw.strip().lower()
+            return mode if mode in SPEC_APPROVAL_MODES else ""
+    return ""
+
+
 # ── Parallel Task Grouping ──
 
 
