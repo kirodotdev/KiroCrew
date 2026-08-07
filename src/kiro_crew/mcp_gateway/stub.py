@@ -60,6 +60,13 @@ _BRIDGE_PING_TYPE = "ping"
 # would reproduce the defect it exists to fix.
 _ERROR_EMIT_TIMEOUT_SECS = 5.0
 _BRIDGE_PONG_TYPE = "pong"
+# Reserved type for the gateway->stub keepalive control frame. The gateway
+# writes one to every live stub each heartbeat sweep so that a half-open
+# transport — which a parked reader cannot observe — fails an actual write and
+# becomes detectable. It carries no payload and expects no reply: the write
+# succeeding or failing IS the signal, and it is consumed here rather than
+# forwarded, exactly like the pong frame above.
+_BRIDGE_KEEPALIVE_TYPE = "keepalive"
 # Pre-flight ``ensure_backend`` reply timeout. Must comfortably
 # exceed cold backend fork latency. On timeout the stub falls back to a
 # direct per-session exec, so an over-generous value only costs a slower
@@ -730,24 +737,32 @@ async def run_bridge(
                     return
                 if not line:
                     return
-                # Intercept pong control frames (gateway liveness reply) and
-                # track response IDs to clear outstanding requests.
+                # Intercept control frames (gateway liveness reply, gateway
+                # keepalive) and track response IDs to clear outstanding
+                # requests.
                 # Best-effort: parse failures pass the line through verbatim.
-                _is_pong = False
+                _is_control = False
                 try:
                     msg = json.loads(line)
                     if isinstance(msg, dict):
-                        if msg.get("type") == _BRIDGE_PONG_TYPE:
+                        _mtype = msg.get("type")
+                        if _mtype == _BRIDGE_PONG_TYPE:
                             _pong_received.set()
-                            _is_pong = True
+                            _is_control = True
+                        elif _mtype == _BRIDGE_KEEPALIVE_TYPE:
+                            # Gateway-side transport probe. Nothing to do: the
+                            # gateway learns what it needs from whether the
+                            # write succeeded. Swallow it.
+                            _is_control = True
                         elif "id" in msg and "method" not in msg:
                             # A response (has id, no method) — clear from
                             # outstanding set.
                             _outstanding_ids.discard(msg["id"])
                 except (json.JSONDecodeError, ValueError, TypeError):
                     pass
-                # Pong is a control frame; never forward to kiro-cli stdout.
-                if _is_pong:
+                # Control frames are gateway<->stub only; never forward to
+                # kiro-cli stdout.
+                if _is_control:
                     continue
                 try:
                     await _emit(line)
