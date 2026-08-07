@@ -52,7 +52,12 @@ from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+)
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
@@ -895,6 +900,44 @@ async def api_models(request: web.Request) -> web.Response:
             )
         models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
         return web.json_response(models)
+    except SandboxUnavailableError as exc:
+        # Narrower subclass first — see the git_sandbox_unavailable branch in the
+        # Papyrus routes. SandboxUnavailableError subclasses RuntimeError, so the
+        # generic handler below would otherwise fold "the sandbox refused this
+        # spawn" into the untyped "model list unavailable" and the picker would
+        # collapse to auto-only with nothing to distinguish an unsupported host
+        # from a transient blip. That is the misdiagnosis class the typed error
+        # exists to prevent.
+        #
+        # `kind` is forwarded verbatim instead of being resolved to prose here:
+        # the presentation layer owns the (translated) remedy copy, and the three
+        # kinds need OPPOSITE advice — "no_backend" points at the
+        # agent.sandbox_allow_unsandboxed_exec opt-in, "transient" must NOT
+        # (retrying works), and "foreign_sandbox" means this host's sandbox is
+        # fine. Collapsing them to one message would tell a user to weaken their
+        # sandbox for a condition that clears on its own.
+        #
+        # Still 503, deliberately: the degraded-path contract this endpoint's
+        # callers rely on (React Query retries, `markModelsDegraded` keeps the
+        # 8s poll alive) is unchanged, so a transient denial self-heals exactly
+        # as it does today. Only the diagnosis is added.
+        from kiro_crew.platform import redact_via_context  # noqa: F811
+
+        detail = redact_via_context(exc.detail)
+        logger.warning(
+            "api_models: sandbox refused the --list-models spawn (kind=%s): %s; returning 503",
+            exc.kind,
+            detail or "<no detail>",
+        )
+        return web.json_response(
+            {
+                "error": redact_via_context(str(exc)),
+                "code": "model_list_sandbox_unavailable",
+                "kind": exc.kind,
+                "detail": detail,
+            },
+            status=503,
+        )
     except Exception:
         # Spawn failure, JSON parse error, etc. — degraded, not "zero models".
         # 503 so the client retries instead of caching an empty picker.

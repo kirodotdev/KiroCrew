@@ -9,6 +9,11 @@ return `[]` with HTTP 200, so the picker rendered empty until refresh.
 These tests pin the fix: every DEGRADED branch (binary unresolved, timeout,
 unexpected exception) must return HTTP 503 so the frontend's fetch helper throws
 and React Query retries with backoff, while a genuine successful parse stays 200.
+
+They also pin the DIAGNOSIS: a sandbox refusal (`SandboxUnavailableError`) keeps
+the same 503 contract but carries a `code`/`kind`/`detail` so the picker can say
+why it degraded, instead of an unsupported host looking identical to a cold-start
+blip.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.sandbox import SandboxUnavailableError
 
 
 async def _no_audit(**kwargs: Any) -> None:
@@ -201,6 +207,69 @@ def test_unexpected_exception_returns_503(tmp_path):
     ):
         resp = _run(agents.api_models(_kiro_request(tmp_path)))
     assert resp.status == 503
+    # A plain RuntimeError must still take the UNTYPED branch: only a sandbox
+    # refusal earns the diagnosis, or "the sandbox blocked this" would be
+    # asserted for every unrelated spawn failure.
+    assert _body(resp) == {"error": "model list unavailable"}
+
+
+def _sandbox_refusal(kind: str, detail: str):
+    """wrap_argv stand-in that fail-closes the way an unsupported host does."""
+
+    def _refuse(argv):
+        del argv
+        raise SandboxUnavailableError(
+            "Sandbox backend unavailable and allow_unsandboxed_exec is not set.",
+            kind,
+            detail,
+        )
+
+    return _refuse
+
+
+def _sandbox_refused_response(tmp_path, kind: str, detail: str):
+    with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
+    ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
+        "kiro_crew.env.augmented_path", lambda p: p
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _sandbox_refusal(kind, detail)
+    ), patch(
+        "kiro_crew.platform.redact_via_context", lambda text: text
+    ):
+        return _run(agents.api_models(_kiro_request(tmp_path)))
+
+
+def test_sandbox_refusal_is_diagnosed_not_swallowed(tmp_path):
+    # The regression this pins: on a host with no sandbox backend (Windows),
+    # wrap_argv fail-closes, the bare `except Exception` folded it into the
+    # untyped "model list unavailable", and the picker silently degraded to
+    # auto-only — indistinguishable from a cold-start blip, with no way for a
+    # user to learn that agent.sandbox_allow_unsandboxed_exec is the remedy.
+    resp = _sandbox_refused_response(tmp_path, "no_backend", "not Linux")
+    assert resp.status == 503  # degraded-path contract unchanged
+    body = _body(resp)
+    assert body["code"] == "model_list_sandbox_unavailable"
+    assert body["kind"] == "no_backend"
+    assert body["detail"] == "not Linux"
+    assert body["error"]
+
+
+def test_sandbox_refusal_forwards_kind_verbatim(tmp_path):
+    # kind must survive the hop unresolved: "transient" clears on retry and the
+    # presentation layer must NOT advise disabling the sandbox for it, so a
+    # handler that collapsed every refusal to one message would hand out the
+    # wrong remedy. Pinned per kind so a future edit cannot flatten them.
+    for kind, detail in (
+        ("transient", "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"),
+        ("foreign_sandbox", "already confined by an outer Seatbelt sandbox"),
+    ):
+        resp = _sandbox_refused_response(tmp_path, kind, detail)
+        assert resp.status == 503
+        body = _body(resp)
+        assert body["code"] == "model_list_sandbox_unavailable"
+        assert body["kind"] == kind
+        assert body["detail"] == detail
 
 
 def test_successful_list_returns_200_with_models(tmp_path):
