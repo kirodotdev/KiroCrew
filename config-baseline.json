@@ -1621,7 +1621,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Triggered",
-      "help": "Maximum number of skills to load per message (≥0). Defaults to 0 (disabled); set to a positive integer to re-enable per-turn trigger matching.",
+      "help": "Maximum number of skills a single message may flag as relevant (≥0). Each match injects that skill's full content, unless the skill sets inject_on_trigger: false (pointer-only; requires max_triggered > 0 to have any effect). Defaults to 0 (disabled): the agent discovers skills from the Available Skills index and reads them on demand via cat, $skillname, or skill_search. Set to a positive integer to re-enable per-turn word-overlap trigger matching.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
@@ -3965,6 +3965,7 @@
         "widget_density": "more",
         "verbosity": "default",
         "link_previews": false,
+        "usage_text_scrape_enabled": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "prevent_sleep": false,
@@ -4197,6 +4198,20 @@
       "tags": [],
       "label": "Link Previews",
       "help": "Render http(s) links in assistant messages as favicon + page title instead of a raw URL. Off by default because it is a network decision, not a display one: this machine fetches every link the model outputs, so each linked site sees a request from your IP address. When false the /api/link-meta endpoint fetches nothing and returns 403.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.usage_text_scrape_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Spend Credits To Read The Credit Meter",
+      "help": "Let the credit pill fall back to a `kiro-cli /usage` chat turn when the free usage API returns no plan. That fallback is a REAL billed LLM turn on whichever model the lite agent resolves, and it repeats on every refresh interval for as long as any dashboard tab is open, so it is off by default: a meter that reports spending must not itself spend. While it is off the pill shows whatever the free API returned and hides when the API has nothing to show.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
