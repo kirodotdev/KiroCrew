@@ -11,6 +11,7 @@ degrades into "always highlight the entry point" if it regresses.
 from __future__ import annotations
 
 import cProfile
+import gc
 import json
 import pstats
 import unittest.mock as mock
@@ -209,9 +210,26 @@ class TestPstatsNormalization:
             fib(12)
 
         prof = cProfile.Profile()
-        prof.enable()
-        entry()
-        prof.disable()
+        # GC is held off for the profiled region, because a collection that fires
+        # while `fib` is on the stack attributes the collected objects' weakref
+        # /  __del__ callbacks to `fib` as CALLEES. Those frames are real -- the
+        # profiler saw them -- but they have nothing to do with recursion, and
+        # their appearance is timing- and memory-pressure-dependent: this test
+        # passed alone and failed inside a 4-way xdist shard, where the other
+        # workers' allocation churn made a mid-`fib` collection likely (a
+        # `weakref`-module frame showed up as a child of `fib` with calls=4).
+        #
+        # Disabling GC removes the nondeterminism at its source rather than
+        # teaching the assertion to tolerate it.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            prof.enable()
+            entry()
+            prof.disable()
+        finally:
+            if gc_was_enabled:
+                gc.enable()
         path = tmp_path / "rec.pstats"
         prof.dump_stats(str(path))
 
@@ -223,7 +241,11 @@ class TestPstatsNormalization:
         assert tree is not None
         walked = _find(tree["root"], "fib")
         assert walked is not None
-        assert walked["children"] == []  # the self-edge is cut, not followed
+        # The property under test is that the SELF-EDGE is cut, not that `fib`
+        # happens to have no callees at all. Asserting `children == []` conflated
+        # the two, so any incidental frame the profiler attributed to `fib` failed
+        # a test about recursion.
+        assert "fib" not in [c["name"] for c in walked["children"]]
         assert _depth(tree["root"]) < 50  # bounded, not merely finite
 
     def test_corrupt_and_missing_files_return_none(self, tmp_path: Path) -> None:
