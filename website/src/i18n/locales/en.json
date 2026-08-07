@@ -74,6 +74,30 @@
     }
   },
   "apps": {
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "build",
+        "collects": "collects",
+        "green": "GREEN",
+        "lint": "lint",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "Measures a GitHub repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. Survivors are drafted as GitHub pull requests you review and publish yourself.",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "Proves its own metric first — a run refuses to start on an untrustworthy ruler",
+        "highlight_2": "Every candidate is measured A/B, or RED/GREEN for bug fixes, never just 'looks right'",
+        "highlight_3": "Keeps a change only when the win clears the measured noise band",
+        "highlight_4": "Drafts GitHub pull requests — draft-only, never published or merged for you",
+        "highlight_5": "Works on a push-disabled clone, so nothing escapes the sandbox unreviewed",
+        "highlight_6": "One resumable chat session per pull request, finding, and run",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "accept",

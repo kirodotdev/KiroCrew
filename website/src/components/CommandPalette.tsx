@@ -21,6 +21,7 @@ import { usePromptsProvider } from './commandPalette/providers/promptsProvider'
 import { useArtifactsProvider } from './commandPalette/providers/artifactsProvider'
 import { useRecentsProvider } from './commandPalette/providers/recentsProvider'
 import { useSettingsProvider } from './commandPalette/providers/settingsProvider'
+import { useAppsProvider } from './commandPalette/providers/appsProvider'
 import { Highlighted } from './commandPalette/Highlighted'
 
 import { i18nT } from '../i18n/t'
@@ -149,12 +150,16 @@ export default function CommandPalette({
   const recents = useRecentsProvider()
   // Settings — instant client-side search over the codegen settings registry.
   const settings = useSettingsProvider()
+  // Apps — launch an installed app by name. Destinations come from the shared
+  // `appNav` derivation the left rail uses, so the two cannot disagree.
+  const apps = useAppsProvider()
 
   // Tab strip order (§1): All · Sessions · Knowledge · Skills ·
-  // Prompts, with Artifacts + Pages + Actions riding along after the v1 corpus.
+  // Prompts, with Artifacts + Apps + Pages + Actions riding along after the v1
+  // corpus. Apps sits next to Pages because both are pure navigation targets.
   const tabs = useMemo<ResourceProvider[]>(
-    () => [all, sessions, knowledge, skills, prompts, artifacts, pages, actions, settings],
-    [all, sessions, knowledge, skills, prompts, artifacts, pages, actions, settings],
+    () => [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
+    [all, sessions, knowledge, skills, prompts, artifacts, apps, pages, actions, settings],
   )
 
   // Make the per-category providers discoverable by the All aggregator, which
@@ -165,14 +170,19 @@ export default function CommandPalette({
   // Promise.all fan-out and drags every other provider's results with it.
   // Both surface only when scoped (sigil or prefix+Tab), reached directly via
   // the tabs list rather than the aggregator. Re-registration is idempotent.
+  //
+  // Apps IS registered: the list is one small cached request on a key the Apps
+  // page already warms, and "type a name, press Enter to launch" is the whole
+  // point of putting apps in the palette — it has to work from the default tab.
   useEffect(() => {
     registerProvider(sessions)
     registerProvider(prompts)
     registerProvider(artifacts)
+    registerProvider(apps)
     registerProvider(pages)
     registerProvider(actions)
     registerProvider(settings)
-  }, [sessions, prompts, artifacts, pages, actions, settings])
+  }, [sessions, prompts, artifacts, apps, pages, actions, settings])
 
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<string | null>(null)

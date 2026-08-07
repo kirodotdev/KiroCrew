@@ -325,7 +325,7 @@ describe('WebPreviewPanel', () => {
       renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByLabelText('Expand preview'))
       expect(seen).toContain(true)
-      fireEvent.click(screen.getByLabelText('Exit expanded preview'))
+      fireEvent.click(screen.getByLabelText('Collapse'))
       expect(seen).toContain(false)
     } finally {
       window.removeEventListener('kirocrew-preview-focus', handler)
