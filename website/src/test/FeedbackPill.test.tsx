@@ -74,19 +74,62 @@ describe('FeedbackPill', () => {
     expect(onReportProblem).not.toHaveBeenCalled()
   })
 
-  it('gives the chip an accessible name that states the ACTION', () => {
-    // The visible text is the lane ("Nightly"), which alone tells a screen
-    // reader nothing about what the button does.
+  it('renders the action as its visible text', () => {
+    // The UX review's finding, pinned. The chip once rendered only a Bug icon
+    // and the lane name ("Nightly") in accent badge type, with the action
+    // confined to the tooltip — which reads as a status badge, so a first-time
+    // prerelease user has no reason to click and the always-visible report entry
+    // is never discovered. A tooltip is not discoverability: it requires a hover
+    // the user has no reason to attempt.
     status.release_channel = 'nightly'
     mount()
-    expect(screen.getByTestId('prerelease-report-chip')).toHaveAccessibleName(
-      /report a bug/i,
+    expect(screen.getByTestId('prerelease-report-chip').textContent).toMatch(
+      /report problem/i,
     )
   })
 
-  it('names the lane the user is actually on', () => {
+  it('gives the chip an accessible name that states the ACTION', () => {
+    status.release_channel = 'nightly'
+    mount()
+    expect(screen.getByTestId('prerelease-report-chip')).toHaveAccessibleName(
+      /report a problem/i,
+    )
+  })
+
+  it('speaks the same name as the flow it opens', () => {
+    // The modal, the nav rail link and Settings › About all call this "Report a
+    // Problem". A chip promising a "bug report" made the user re-read the
+    // dialog to check they had clicked the right thing.
     status.release_channel = 'insider'
     mount()
-    expect(screen.getByTestId('prerelease-report-chip').textContent).toMatch(/insider/i)
+    const chip = screen.getByTestId('prerelease-report-chip')
+    expect(chip.getAttribute('title')).toMatch(/problem/i)
+    expect(chip.textContent).not.toMatch(/\bbug\b/i)
+  })
+
+  it.each(['nightly', 'insider'])(
+    'keeps the %s lane out of the visible text',
+    ch => {
+      // The control is an ACTION, not a status readout. A lane name competing
+      // with the action for the eye is what made the earlier revision read as
+      // an identity badge, so its absence here is the fix — asserted because a
+      // well-meaning "show the user which build they're on" edit would
+      // reintroduce it and every other test would still pass.
+      status.release_channel = ch
+      mount()
+      expect(screen.getByTestId('prerelease-report-chip').textContent).not.toMatch(
+        new RegExp(ch, 'i'),
+      )
+    },
+  )
+
+  it('still names the lane in the tooltip', () => {
+    // Which build a report gets tagged against is real information — it is
+    // supplementary, not absent.
+    status.release_channel = 'nightly'
+    mount()
+    expect(screen.getByTestId('prerelease-report-chip').getAttribute('title')).toMatch(
+      /nightly/i,
+    )
   })
 })

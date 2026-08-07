@@ -22,11 +22,11 @@ import { i18nT } from '../i18n/t'
  * previously they had to know to look in Settings › About, and on a CLI install
  * that note did not render at all.
  *
- * WHY IT DOUBLES AS AN IDENTITY BADGE. Showing the lane is the reason this
- * cannot be dismissed away like a banner: a prerelease user wants to know which
- * bytes they are running, so the affordance earns its place in the header even
- * on the days nothing is broken — and it is still there weeks later when
- * something finally is.
+ * WHY THE LANE IS NOT ON THE CHIP. It reads as an action, not as a status badge:
+ * the visible text is the action alone, styled identically to its sibling. Which
+ * build the report will be tagged against is real information, but it belongs in
+ * the tooltip — a lane name competing with the action for the eye is what made an
+ * earlier revision read as an identity indicator nobody thought to click.
  */
 export default function FeedbackPill({
   onRequestFeature,
@@ -52,6 +52,15 @@ export default function FeedbackPill({
       ? i18nT('components.feedbackPill.nightly')
       : i18nT('components.feedbackPill.insider')
 
+  // One string for tooltip AND accessible name, so the two can never drift.
+  // Names the flow the way the flow names ITSELF ("Report a Problem" — see
+  // ReportProblemModal): a chip that promises a "bug report" and opens a
+  // "Report a Problem" dialog makes the user re-read the dialog to check they
+  // clicked the right thing.
+  const actionDescription = i18nT('components.feedbackPill.report_problem_on_build', {
+    channel: channelLabel,
+  })
+
   return (
     <div
       data-testid="feedback-pill"
@@ -75,23 +84,25 @@ export default function FeedbackPill({
           <button
             type="button"
             data-testid="prerelease-report-chip"
-            // Accent-toned, not warn/danger: this is a request for help, not a
-            // warning that the install is broken. A first-time reader took a
-            // warn-tinted prerelease note as "something is wrong with my
-            // installation" and would not click it (see AboutPanel).
-            className="flex items-center gap-1.5 h-full px-2.5 text-accent hover:bg-bg-hover transition-colors cursor-pointer text-[11px] font-semibold tracking-wide whitespace-nowrap bg-transparent border-0"
+            // Styled EXACTLY like its sibling: same 12px, same muted-to-text
+            // hover. An earlier revision made this accent-coloured, 11px
+            // semibold, tracking-wide, with the lane name as its only visible
+            // text — badge typography carrying a status word, which read as an
+            // identity indicator, so a first-time user had no reason to click
+            // and the always-visible report entry went undiscovered.
+            //
+            // Matching the sibling is what makes it read as the second half of
+            // one control rather than a decoration hanging off the end.
+            className="flex items-center gap-1.5 h-full px-2.5 text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap bg-transparent border-0"
             onClick={onReportProblem}
-            // The visible text names the LANE (that is the identity half of the
-            // control); the accessible name and the tooltip name the ACTION, so
-            // the chip is never just an unexplained word to a screen reader.
-            title={i18nT('components.feedbackPill.report_bug_on_build', {
-              channel: channelLabel,
-            })}
-            aria-label={i18nT('components.feedbackPill.report_bug_on_build', {
-              channel: channelLabel,
-            })}
+            // The LANE lives here and only here. Which build a report will be
+            // tagged against is useful but secondary, so it is supplementary
+            // hover detail — not a word competing with the action for the eye.
+            title={actionDescription}
+            aria-label={actionDescription}
           >
-            <Bug size={13} className="lucide-inline" /> {channelLabel}
+            <Bug size={13} className="lucide-inline" />{' '}
+            {i18nT('components.feedbackPill.report_problem')}
           </button>
         </>
       )}

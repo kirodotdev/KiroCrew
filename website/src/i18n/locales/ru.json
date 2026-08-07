@@ -4311,7 +4311,8 @@
     "feedbackPill": {
       "nightly": "Сборка Nightly",
       "insider": "Сборка Insider",
-      "report_bug_on_build": "Сообщить об ошибке в этой сборке ({{channel}})"
+      "report_problem": "Сообщить о проблеме",
+      "report_problem_on_build": "Сообщить о проблеме в этой сборке ({{channel}})"
     },
     "fileCard": {
       "audio": "Аудио: {{name}}",

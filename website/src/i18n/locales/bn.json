@@ -4207,7 +4207,8 @@
     "feedbackPill": {
       "nightly": "Nightly বিল্ড",
       "insider": "Insider বিল্ড",
-      "report_bug_on_build": "এই {{channel}}-এ বাগ রিপোর্ট করুন"
+      "report_problem": "সমস্যা রিপোর্ট করুন",
+      "report_problem_on_build": "এই {{channel}}-এ সমস্যা রিপোর্ট করুন"
     },
     "fileCard": {
       "audio": "অডিও: {{name}}",

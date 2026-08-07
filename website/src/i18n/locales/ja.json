@@ -4163,7 +4163,8 @@
     "feedbackPill": {
       "nightly": "Nightly ビルド",
       "insider": "Insider ビルド",
-      "report_bug_on_build": "この {{channel}} の問題を報告"
+      "report_problem": "問題を報告",
+      "report_problem_on_build": "この {{channel}} の問題を報告"
     },
     "fileCard": {
       "audio": "音声：{{name}}",

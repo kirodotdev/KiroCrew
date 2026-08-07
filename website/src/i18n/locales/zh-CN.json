@@ -4074,7 +4074,8 @@
     "feedbackPill": {
       "nightly": "Nightly 版",
       "insider": "Insider 版",
-      "report_bug_on_build": "反馈此 {{channel}} 的问题"
+      "report_problem": "反馈问题",
+      "report_problem_on_build": "反馈此 {{channel}} 的问题"
     },
     "fileCard": {
       "audio": "音频：{{name}}",

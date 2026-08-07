@@ -4259,7 +4259,8 @@
     "feedbackPill": {
       "nightly": "Nightly",
       "insider": "Insider",
-      "report_bug_on_build": "Relatar um erro nesta versão {{channel}}"
+      "report_problem": "Relatar um problema",
+      "report_problem_on_build": "Relatar um problema nesta versão {{channel}}"
     },
     "fileCard": {
       "audio": "Áudio: {{name}}",

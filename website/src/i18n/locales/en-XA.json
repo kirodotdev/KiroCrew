@@ -5345,7 +5345,8 @@
     "feedbackPill": {
       "nightly": "[Ñìğĥţĺý ···········]",
       "insider": "[Ìñşìðèŕ ···········]",
-      "report_bug_on_build": "[Ŕèþøŕţ à ƀùğ øñ ţĥìş {{channel}} ƀùìĺð ···················]"
+      "report_problem": "[Ŕèþøŕţ þŕøƀĺèɱ ·············]",
+      "report_problem_on_build": "[Ŕèþøŕţ à þŕøƀĺèɱ øñ ţĥìş {{channel}} ƀùìĺð ················]"
     },
     "folderConfigModal": {
       "agent_not_installed": "[{{agent}} (ñøţ ìñşţàĺĺèð) ··············]",

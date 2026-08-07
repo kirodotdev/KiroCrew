@@ -1106,7 +1106,8 @@
     "feedbackPill": {
       "nightly": "Nightly",
       "insider": "Insider",
-      "report_bug_on_build": "Report a bug on this {{channel}} build"
+      "report_problem": "Report problem",
+      "report_problem_on_build": "Report a problem on this {{channel}} build"
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
