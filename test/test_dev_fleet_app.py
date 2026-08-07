@@ -1458,13 +1458,53 @@ async def test_discover_worktrees_sandbox_error_is_still_bounded():
 
 
 @pytest.mark.asyncio
-async def test_discover_worktrees_normal_failure_returns_empty():
-    """Non-sandbox git failures return empty list (existing behavior)."""
-    with patch.object(mod, "_run_cmd", new=AsyncMock(
-        return_value=(128, "", "fatal: not a git repository")
-    )):
-        result = await mod._discover_worktrees()
-        assert result == []
+async def test_discover_worktrees_missing_repo_raises_actionable_error(tmp_path):
+    """A missing/non-git MAIN_REPO raises with the path and the remedy.
+
+    This used to return a silent [] — which the UI renders as the
+    "No worktrees found" empty state. On packaged installs (where
+    KIROCREW_PROJECT_DIR points at the app bundle and discovery falls through
+    to the hardcoded ~/kirocrew) that empty state told users they had no
+    worktrees when the app was simply looking at a path that does not exist.
+    """
+    missing = tmp_path / "does-not-exist"
+    with patch.object(mod, "MAIN_REPO", str(missing)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", f"fatal: cannot change to '{missing}'")
+         )):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    msg = str(exc.value)
+    assert str(missing) in msg  # names the path it tried
+    assert "KIROCREW_DEVFLEET_REPO" in msg  # names the remedy
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_git_failure_raises_with_stderr(tmp_path):
+    """When the repo exists but git fails, git's own message is surfaced."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", "fatal: index file corrupt")
+         )):
+        with pytest.raises(RuntimeError, match="index file corrupt"):
+            await mod._discover_worktrees()
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_git_failure_is_bounded(tmp_path):
+    """An unbounded git stderr is clipped before reaching the UI."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", "fatal: " + "x" * 5000)
+         )):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    # bounded: the git portion is clipped to _GIT_ERR_MAX plus the fixed prefix
+    assert len(str(exc.value)) <= mod._GIT_ERR_MAX + 200
 
 
 # =============================================================================
@@ -1582,6 +1622,31 @@ async def test_fleet_handler_sandbox_error_returns_error_payload():
             body = await resp.json()
             assert body["worktrees"] == []
             assert "sandbox unavailable" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_handler_missing_repo_returns_error_payload():
+    """The missing-repo RuntimeError reaches the client as the error payload
+    (the frontend renders it as the Discovery Error banner), not a silent
+    empty fleet."""
+    async def boom():
+        raise RuntimeError(
+            "main checkout not found: /nope/kirocrew is missing or not a git "
+            "checkout. Set KIROCREW_DEVFLEET_REPO to your Kiro Crew checkout, "
+            "or clone it to ~/kirocrew."
+        )
+
+    with patch.object(mod, "_fleet_refresh", new=boom), \
+         patch.object(mod, "_fleet_cached", new=boom):
+        app = web.Application()
+        app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/fleet")
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["worktrees"] == []
+            assert "main checkout not found" in body["error"]
+            assert "KIROCREW_DEVFLEET_REPO" in body["error"]
 
 
 # =============================================================================
