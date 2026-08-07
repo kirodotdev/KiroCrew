@@ -1963,6 +1963,7 @@ class DashboardState:
         # never acquires it.
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
+        self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
@@ -3242,6 +3243,137 @@ class DashboardState:
         path = config_dir() / self._FOLDERS_FILE
         self._atomic_write_json(path, self._folders)
 
+    _CRON_FOLDERS_FILE = "cron_folders.json"
+
+    def load_cron_folders(self) -> None:
+        """Load cron folder definitions from disk.
+
+        Validates the loaded shape: the file must contain a JSON array of
+        folder objects. Anything else (a hand-edited ``{}``, a string, or
+        malformed entries) is discarded with a warning instead of being
+        assigned verbatim — a non-list value would flow to the frontend
+        and crash grouping (``folders.map is not a function``).
+        """
+        path = config_dir() / self._CRON_FOLDERS_FILE
+        try:
+            if path.exists():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, list):
+                    logger.warning(
+                        "Ignoring %s: expected a JSON array, got %s",
+                        self._CRON_FOLDERS_FILE,
+                        type(loaded).__name__,
+                    )
+                    return
+                valid = [
+                    f
+                    for f in loaded
+                    if isinstance(f, dict)
+                    and isinstance(f.get("id"), str)
+                    and f.get("id")
+                    and isinstance(f.get("name"), str)
+                    and f.get("name")
+                    and isinstance(f.get("order"), (int, float))
+                    and not isinstance(f.get("order"), bool)
+                ]
+                if len(valid) != len(loaded):
+                    logger.warning(
+                        "Dropped %d malformed entr(ies) while loading %s",
+                        len(loaded) - len(valid),
+                        self._CRON_FOLDERS_FILE,
+                    )
+                self._cron_folders = valid
+        except Exception:
+            logger.warning("Failed to load cron folders", exc_info=True)
+
+    def save_cron_folders(self) -> None:
+        """Persist cron folder definitions to disk (atomic write).
+
+        Raises on I/O failure so callers can surface a 500 to the client
+        rather than silently losing the write.
+        """
+        path = config_dir() / self._CRON_FOLDERS_FILE
+        self._atomic_write_json_strict(path, self._cron_folders)
+
+    def create_cron_folder(self, name: str, folder_id: str) -> dict:
+        """Create a new cron folder and persist.
+
+        Returns the created folder dict. Raises on persistence failure
+        (callers should surface a 500); in-memory state is rolled back.
+        """
+        order = max((f["order"] for f in self._cron_folders), default=-1) + 1
+        folder = {"id": folder_id, "name": name, "order": order}
+        self._cron_folders.append(folder)
+        try:
+            self.save_cron_folders()
+        except Exception:
+            self._cron_folders.pop()
+            raise
+        return folder
+
+    def rename_cron_folder(self, folder_id: str, name: str) -> dict | None:
+        """Rename a cron folder and persist.
+
+        Returns the updated folder dict, or None if folder_id not found.
+        Raises on persistence failure (callers should surface a 500);
+        original name is restored on failure.
+        """
+        for folder in self._cron_folders:
+            if folder["id"] == folder_id:
+                old_name = folder["name"]
+                folder["name"] = name
+                try:
+                    self.save_cron_folders()
+                except Exception:
+                    folder["name"] = old_name
+                    raise
+                return folder
+        return None
+
+    def delete_cron_folder(self, folder_id: str) -> bool:
+        """Remove a cron folder and clear its assignment on all jobs.
+
+        Returns True if the folder existed, False otherwise.
+        Raises on persistence failure (callers should surface a 500).
+
+        Ordering: the folder removal is the single authoritative write —
+        it is removed from memory and persisted FIRST (rolled back in
+        memory if the save fails, keeping memory consistent with disk).
+        Job ``folder_id`` clears happen afterwards as best-effort cleanup:
+        a dangling ``folder_id`` is benign (grouping renders unknown ids
+        in the Ungrouped bucket, and a job's next folder move overwrites
+        it), so a crash or per-job failure between writes can never strand
+        jobs in a half-deleted state — the folder is either fully present
+        or fully gone.
+        """
+        if not any(f["id"] == folder_id for f in self._cron_folders):
+            return False
+        # Remove the folder definition and persist — the one write that
+        # decides whether the delete happened.
+        snapshot = list(self._cron_folders)
+        self._cron_folders = [f for f in self._cron_folders if f["id"] != folder_id]
+        try:
+            self.save_cron_folders()
+        except Exception:
+            self._cron_folders = snapshot
+            raise
+        # Best-effort: clear the now-dangling folder_id on affected jobs.
+        # Failures are logged and tolerated — consumers treat an unknown
+        # folder_id as ungrouped, so a leftover id has no user-visible
+        # effect and self-heals on the job's next folder assignment.
+        for job in self.crons.list_jobs(include_disabled=True):
+            if job.folder_id == folder_id:
+                try:
+                    self.crons.update_job(job.id, folder_id="")
+                except Exception:
+                    logger.warning(
+                        "Failed to clear folder_id on job %s after folder delete "
+                        "(benign: unknown ids render as ungrouped)",
+                        job.id,
+                        exc_info=True,
+                    )
+        return True
+
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a folder's ancestry root→leaf as a breadcrumb string.
 
@@ -3322,24 +3454,40 @@ class DashboardState:
         self._atomic_write_json(config_dir() / self._TAG_BOARDS_FILE, self._tag_boards)
 
     @staticmethod
-    def _atomic_write_json(path: Path, data: Any) -> None:
-        """Atomic JSON write used by folder/tag persistence helpers."""
+    def _atomic_write_json_strict(path: Path, data: Any) -> None:
+        """Atomic JSON write that RAISES on failure (no swallowing).
+
+        Used by persistence helpers where the caller needs to know about
+        write failures (e.g. to return HTTP 500).
+        """
+        payload = json.dumps(data).encode()
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
-            payload = json.dumps(data).encode()
-            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            # fdopen takes ownership of fd; file-object write() guarantees
+            # the full buffer is written or an exception is raised (a bare
+            # os.write may return a short count silently, which would let
+            # os.replace() install truncated JSON).
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(path))
+        except Exception:
             try:
-                try:
-                    os.write(fd, payload)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, str(path))
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: Any) -> None:
+        """Atomic JSON write used by folder/tag persistence helpers.
+
+        Delegates to _atomic_write_json_strict but swallows errors (logs a
+        warning instead of raising).
+        """
+        try:
+            DashboardState._atomic_write_json_strict(path, data)
         except Exception:
             logger.warning("Failed to write %s", path.name, exc_info=True)
 

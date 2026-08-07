@@ -423,7 +423,7 @@ class MeetingSession:
         # The task extractor always runs — it is the app's core output, not a
         # configurable agent.
         self.agents[k.TASK_EXTRACTOR_ID] = self._make_queue(
-            k.TASK_EXTRACTOR_ID, f"{k.APP_NAME}/meetings-task-extractor"
+            k.TASK_EXTRACTOR_ID, k.TASK_EXTRACTOR_AGENT
         )
 
     def _make_queue(self, agent_id: str, agent: str) -> AgentQueue:
@@ -700,7 +700,7 @@ async def init_agents(
         cross_ref,
     )
     await _safe_dispatch(
-        session, k.TASK_EXTRACTOR_ID, task_message, f"{k.APP_NAME}/meetings-task-extractor"
+        session, k.TASK_EXTRACTOR_ID, task_message, k.TASK_EXTRACTOR_AGENT
     )
 
 

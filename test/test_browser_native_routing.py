@@ -251,10 +251,65 @@ def test_transport_failure_does_fall_back() -> None:
         assert proxy._try_native_tool_call(_call()) is None
 
 
-def test_missing_session_key_falls_back_rather_than_guessing() -> None:
-    with patch.object(proxy, "_SESSION_KEY", ""):
-        # Mapped and unmapped alike fall back when native routing is inactive.
+def test_empty_session_key_delegates_resolution_to_gateway_via_host_pid() -> None:
+    """Warm pool: the frozen-env key is empty, so the proxy does NOT bail. It
+    sends its ``host_pid`` and lets the GATEWAY resolve the authoritative session
+    key (signed session_pid sidecar) -- the same mechanism the frame path uses.
+    A mapped op therefore still ATTEMPTS the native POST; only a transport gap
+    (503 / timeout) sends it to Playwright."""
+    import os as _os
+
+    seen: dict = {}
+
+    def _capture(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode())
+        return _ok("navigated")
+
+    with patch.object(proxy, "_SESSION_KEY", ""), patch.object(
+        proxy.urllib.request, "urlopen", side_effect=_capture
+    ):
+        out = proxy._try_native_tool_call(_call())
+    assert out is not None and "result" in out, "an empty key must not short-circuit to Playwright"
+    assert seen["body"]["host_pid"] == _os.getpid(), "the proxy's pid is sent for gateway resolution"
+    assert seen["body"]["session_key"] == "", "the frozen-env key rides along as an empty fallback"
+
+
+def test_host_pid_is_sent_even_when_session_key_is_known() -> None:
+    """Per-session spawns also carry host_pid, so the gateway can prefer the
+    authoritative resolution and the two paths behave identically."""
+    seen: dict = {}
+
+    def _capture(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode())
+        return _ok("navigated")
+
+    with _session("dashboard:chat-1"), patch.object(
+        proxy.urllib.request, "urlopen", side_effect=_capture
+    ):
+        assert proxy._try_native_tool_call(_call()) is not None
+    assert "host_pid" in seen["body"] and isinstance(seen["body"]["host_pid"], int)
+    assert seen["body"]["session_key"] == "dashboard:chat-1"
+
+
+def test_empty_session_key_still_falls_back_on_no_panel() -> None:
+    """When the gateway cannot resolve a panel it answers 503, and THAT (a
+    transport gap) is what routes the op to Playwright -- never a client guess."""
+    import urllib.error
+
+    err = urllib.error.HTTPError(
+        "http://127.0.0.1/api/browser/command", 503, "no-native-panel", {}, None  # type: ignore[arg-type]
+    )
+    with patch.object(proxy, "_SESSION_KEY", ""), patch.object(
+        proxy.urllib.request, "urlopen", side_effect=err
+    ):
         assert proxy._try_native_tool_call(_call()) is None
+
+
+def test_unmapped_tool_falls_back_until_a_panel_is_proven() -> None:
+    """An unmapped ``browser_*`` tool still falls back while no native panel has
+    answered, regardless of the session key -- the split-brain refusal only
+    engages once a panel is proven live."""
+    with patch.object(proxy, "_SESSION_KEY", ""), _panel_seen(False):
         assert proxy._try_native_tool_call(_call("browser_drag", {})) is None
 
 

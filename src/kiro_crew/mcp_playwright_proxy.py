@@ -811,15 +811,17 @@ def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
         # Not a browser tool (e.g. tools/list plumbing) -- never our concern.
         return None
 
+    # The frozen-env key is correct for per-session spawns but EMPTY for a
+    # warm-pool worker (pre-spawned before a slot is assigned, so
+    # KIROCREW_SESSION_KEY was never set). We do NOT bail on an empty key here:
+    # the command POST also carries this proxy's ``host_pid``, from which the
+    # GATEWAY resolves the AUTHORITATIVE session key by walking our process
+    # ancestry to the kiro-cli worker and verifying its signed session_pid
+    # sidecar -- the same mechanism the frame path already uses to make the live
+    # mirror work under the warm pool. When no native panel is registered for the
+    # resolved session the gateway answers 503 and we fall back to Playwright
+    # below, so attempting the POST costs nothing on a remote/non-Electron host.
     session_key = _SESSION_KEY
-    if not session_key:
-        # A warm-pool worker never had KIROCREW_SESSION_KEY frozen in, so we
-        # cannot say which panel to drive and native routing is INACTIVE for this
-        # session. Fall everything back to Playwright -- with nothing going
-        # native there is no split brain to guard against. (The frame path
-        # resolves the key from the session_pid sidecar via the gateway; doing
-        # the same here is a follow-up.)
-        return None
 
     op = _NATIVE_OPS.get(name)
     if op is None:
@@ -849,7 +851,12 @@ def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
         # fall back and silently mis-target on Playwright.
         return _native_error(msg.get("id"), arg_error)
 
-    body = json.dumps({"session_key": session_key, "op": op, "args": args}).encode()
+    # ``host_pid`` lets the gateway resolve the authoritative session key when
+    # ``session_key`` is empty (warm pool); ``session_key`` stays as the fallback
+    # for per-session spawns. Same pair the frame ingress accepts.
+    body = json.dumps(
+        {"session_key": session_key, "host_pid": os.getpid(), "op": op, "args": args}
+    ).encode()
     req = urllib.request.Request(
         _gateway_command_url(),
         data=body,

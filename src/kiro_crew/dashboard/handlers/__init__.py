@@ -95,6 +95,10 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_cancel,
     api_cron_delete,
     api_cron_enable,
+    api_cron_folders,
+    api_cron_folders_create,
+    api_cron_folders_delete,
+    api_cron_folders_update,
     api_cron_history,
     api_cron_history_all,
     api_cron_history_detail,
@@ -326,6 +330,11 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_close,
     api_side_open,
     api_side_turn,
+)
+
+# ── Skill context budget (extracted to handlers/skill_budget.py) ──
+from kiro_crew.dashboard.handlers.skill_budget import (  # noqa: E402, F401
+    api_skills_budget,
 )
 from kiro_crew.dashboard.handlers.sso_login import (  # noqa: E402, F401
     api_sso_login_ws,

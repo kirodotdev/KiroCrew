@@ -737,6 +737,15 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         # backend can detect an edition but never manufacture consent to compile
         # one.
         _platform_extra["KIROCREW_EDITION_DIR"] = os.environ["KIROCREW_EDITION_DIR"]
+    if os.environ.get("KIROCREW_DEVFLEET_REPO"):
+        # Operator-declared main-checkout override (same trust class as the
+        # KIROCREW_DEVFLEET_BIN_* overrides below). dev-fleet reads it as the
+        # highest-priority repo discovery hint, ahead of KIROCREW_PROJECT_DIR
+        # — which packaged installs point at the app bundle (no .git), leaving
+        # only the ~/kirocrew fallback. minimal_env() strips the var, so
+        # without this forward the documented override silently never reaches
+        # the backend and the fleet renders empty. A path, not a secret.
+        _platform_extra["KIROCREW_DEVFLEET_REPO"] = os.environ["KIROCREW_DEVFLEET_REPO"]
     for _k, _v in os.environ.items():
         # Operator-declared trusted-binary overrides (unit-file owned):
         # backends resolve credential-bearing tools through these instead of

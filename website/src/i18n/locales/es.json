@@ -121,6 +121,30 @@
     }
   },
   "apps": {
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "compilación",
+        "collects": "recopila",
+        "green": "GREEN",
+        "lint": "lint",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "Mide un repositorio de GitHub antes de cambiarlo. Diseña una métrica de rendimiento calibrada (la regla), demuestra que la métrica es fiable frente a una mejora conocida y luego ejecuta ciclos de conservar o revertir: cada corrección candidata se escribe en un worktree aislado, se filtra con una lista de permitidos de edición y las pruebas del propio repositorio, y solo se conserva cuando la mejora medida supera la banda de ruido. Las supervivientes se redactan como pull requests de GitHub en borrador que tú revisas y publicas.",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "Primero demuestra su propia métrica: una ejecución se niega a empezar con una regla poco fiable",
+        "highlight_2": "Cada candidato se mide en A/B, o RED/GREEN para correcciones de errores, nunca solo “parece correcto”",
+        "highlight_3": "Conserva un cambio solo cuando la mejora supera la banda de ruido medida",
+        "highlight_4": "Redacta pull requests de GitHub: solo borradores, nunca publicados ni fusionados por ti",
+        "highlight_5": "Funciona sobre un clon sin permiso de push, así nada sale del entorno aislado sin revisión",
+        "highlight_6": "Una sesión de chat reanudable por cada pull request, hallazgo y ejecución",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
+    },
     "designCritique": {
       "askLayer": {
         "ask": "Preguntar",
@@ -689,6 +713,7 @@
         },
         "issueList": {
           "clear_search": "Borrar la búsqueda",
+          "loading_the_rest": "Cargando el resto…",
           "closed_issues_are_capped_at_the_100_most_recentl": "Las incidencias cerradas se limitan a las 100 actualizadas más recientemente",
           "issue_many": "{{count}} incidencias",
           "issue_one": "{{count}} incidencia",
@@ -1239,6 +1264,9 @@
         "resize_sidebar": "Redimensionar la barra lateral",
         "select_a": "Selecciona un",
         "select_an_issue_to_see_its_details": "Selecciona una incidencia para ver sus detalles.",
+        "selected_issue_hidden_by_filters": "La incidencia seleccionada está oculta por los filtros activos.",
+        "selected_change_hidden_by_filters": "El elemento {{subject}} seleccionado está oculto por los filtros activos.",
+        "clear_filters": "Borrar filtros",
         "to_see_its_details": "para ver sus detalles."
       },
       "api": {
@@ -3205,6 +3233,87 @@
       }
     }
   },
+  "autoImprovement": {
+    "activityDiscovered": "(descubiertos {{discovered}}, nuevos {{fresh}})",
+    "autocommitHint": "Envía cada cambio verificado directamente a la rama base. Las ramas protegidas siempre recurren a un borrador de solicitud.",
+    "autocommitLabel": "Confirmar directamente en la rama (sin solicitud de incorporación)",
+    "band": "banda",
+    "base": "Base",
+    "branchDefault": "Predeterminada del repositorio",
+    "branchLabel": "Rama base",
+    "calibrated": "Calibrada",
+    "changesHeading": "Borradores de solicitudes",
+    "cloneBtn": "Conectar",
+    "colActions": "Acciones",
+    "colChange": "Cambio",
+    "colChecks": "Comprobaciones",
+    "colPr": "Solicitud",
+    "colVerdict": "Estado",
+    "commitConfirm": "¿Confirmar este cambio en {{branch}} y subirlo? Un commit publicado no se puede retirar.",
+    "commitFailed": "El commit fue rechazado.",
+    "commitFinding": "Confirmar en la rama",
+    "currentRepo": "Trabajando en",
+    "cycle": "Ciclo",
+    "defectHeading": "Defecto",
+    "delta": "Diferencia medida",
+    "detailUnavailable": "No hay detalles disponibles para este hallazgo.",
+    "discussFinding": "Comentar este hallazgo",
+    "discussPr": "Comentar esta solicitud",
+    "discussRuler": "Comentar la regla",
+    "draftPr": "Borrador",
+    "findingTitlePrefix": "Hallazgo",
+    "findingsHeading": "Registro de hallazgos",
+    "findingsStat": "Hallazgos",
+    "findingsTruncated": "Se muestran los {{shown}} hallazgos más recientes de {{total}}.",
+    "fingerprint": "Huella",
+    "gateHeading": "Controles de verificación",
+    "gateNote": "Nota del control",
+    "historyHeading": "Historial de estados",
+    "hypothesisHeading": "Hipótesis de reproducción",
+    "idleStatus": "Inactivo — inicia una ejecución para encontrar mejoras y preparar solicitudes de incorporación.",
+    "intro": "Mide un repositorio antes de cambiarlo: primero calibra y demuestra la métrica, y luego los ciclos de conservar o revertir preparan los cambios supervivientes como borradores de solicitudes de incorporación que tú revisas.",
+    "keptStat": "Conservados",
+    "loadingDetail": "Cargando detalles…",
+    "noFindings": "Todavía no hay hallazgos registrados.",
+    "noPrs": "Todavía no se ha preparado ninguna solicitud.",
+    "prStat": "Solicitudes",
+    "prTitlePrefix": "Solicitud",
+    "pushDisabled": "envío deshabilitado",
+    "queuedOnly": "en cola localmente, sin abrir",
+    "refreshPr": "Actualizar el estado de la solicitud",
+    "regressed": "Pruebas afectadas: {{tests}}",
+    "repoLabel": "Repositorio de GitHub a mejorar",
+    "reproTest": "Prueba de reproducción",
+    "rulerHeading": "La regla",
+    "rulerNotReady": "La regla aún no está calibrada, así que no se ejecutará ningún ciclo de mejora. La calibración demuestra que la métrica puede detectar una mejora conocida antes de optimizar nada.",
+    "rulerReady": "Regla calibrada y lista",
+    "rulerSessionTitle": "Revisión de la regla",
+    "rulerStat": "Regla",
+    "runBtn": "Iniciar ejecución",
+    "runError": "La ejecución se detuvo con un error.",
+    "runningStatus": "En ejecución — ciclo {{cycle}}, {{kept}} conservadas, {{drafted}} solicitudes preparadas.",
+    "setupHeading": "Repositorio",
+    "showDiff": "Ver el cambio",
+    "showPrBody": "Ver la descripción de la solicitud",
+    "statusCommitted": "Confirmado en la rama",
+    "statusDiscardedNoise": "Por debajo de la banda de ruido",
+    "statusDuplicate": "Duplicado",
+    "statusError": "Error de herramientas",
+    "statusFailedGate": "Rechazado por el control",
+    "statusFailedVerify": "La corrección no se verificó",
+    "statusFiled": "Pull request en borrador",
+    "statusNoDefect": "No se encontró ningún defecto",
+    "statusPurged": "Eliminado por el operador",
+    "statusSeen": "Visto",
+    "statusUnavailable": "No disponible",
+    "stopBtn": "Detener ejecución",
+    "title": "Automejora",
+    "toggleDetail": "Mostrar detalles del hallazgo",
+    "truncated": "truncado",
+    "uncalibrated": "Sin calibrar",
+    "viewCommit": "Ver commit",
+    "viewPr": "Solicitud"
+  },
   "components": {
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
@@ -3699,6 +3808,10 @@
         },
         "skillsProvider": {
           "skills": "Habilidades"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Requiere migración"
         }
       },
       "search_everywhere": "Buscar en todo",
@@ -4546,7 +4659,10 @@
       "expand_paste": "Expandir el texto pegado",
       "paste_lines_many": "[ Pegado #{{seq}} · {{count}} líneas ]",
       "paste_lines_one": "[ Pegado #{{seq}} · {{count}} línea ]",
-      "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]"
+      "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]",
+      "preview_more_lines_one": "… {{count}} línea más",
+      "preview_more_lines_many": "… {{count}} líneas más",
+      "preview_more_lines_other": "… {{count}} líneas más"
     },
     "projectPicker": {
       "back": "Atrás",
@@ -4988,6 +5104,7 @@
       "screen_capture_drag_the_area_you_want_it_attache": "Captura de pantalla: arrastra el área que quieras; se adjunta automáticamente al soltar"
     },
     "tagManagerList": {
+      "change_color": "Cambiar el color de {{name}}",
       "delete_tag": "Eliminar la etiqueta \"{{name}}\"",
       "delete_tag_2": "Eliminar la etiqueta {{name}}",
       "filter_by_tag": "Filtrar por etiqueta",
@@ -4997,6 +5114,7 @@
       "new_tag": "Nueva etiqueta… ↵",
       "remove_status_flag_from": "Quitar la marca de estado de {{name}}",
       "rename_tag": "Cambiar el nombre de la etiqueta {{name}}",
+      "set_color_to_name": "Establecer color en {{name}}",
       "status_tag_mutually_exclusive_on_cards_click_to": "Etiqueta de estado (mutuamente excluyente en las tarjetas) — clic para convertirla en normal"
     },
     "terminalCompletion": {
@@ -5201,9 +5319,9 @@
       "can_t_embed_an_http_page_here": "Aquí no se puede incrustar una página http://",
       "dismiss": "Descartar",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Introduce arriba la URL de tu servidor de desarrollo (p. ej. un servidor Vite o estático en localhost) para\n              ver la vista previa del sitio en el que trabajas: se recarga en vivo mientras editas.",
-      "exit_expanded_preview": "Salir de la vista previa ampliada",
+      "exit_expanded_preview": "Contraer",
       "expand_preview": "Ampliar la vista previa",
-      "expand_preview_hide_nav_sessions": "Ampliar la vista previa (ocultar la navegación y las sesiones)",
+      "expand_preview_hide_nav_sessions": "Ampliar (ocultar la navegación y las sesiones)",
       "forward": "Adelante",
       "http": "http://",
       "let_the_agent_act": "Permitir que el agente actúe",
@@ -7846,7 +7964,29 @@
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "espacio de trabajo",
         "no_skills_yet": "Aún no hay habilidades",
-        "empty_subtitle": "Las habilidades enseñan al agente procedimientos reutilizables. Explora el registro para añadir una."
+        "empty_subtitle": "Las habilidades enseñan al agente procedimientos reutilizables. Explora el registro para añadir una.",
+        "budget_doorway_static": "Presupuesto de contexto →",
+        "budget_back": "Skills",
+        "budget_title": "Presupuesto de contexto",
+        "budget_subtitle": "Lo que cuesta cada skill cuando un disparador lo activa. Ordenado por gasto, no por nombre.",
+        "budget_header": "<total>{{total}}</total> caracteres · últimos 30 días · top 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "Ordenar",
+        "budget_sort_cost": "Mayor coste",
+        "budget_sort_size": "Archivo más grande",
+        "budget_sort_recent": "Usado recientemente",
+        "budget_group_counting": "Cuenta para el contexto",
+        "budget_group_counting_detail": "{{count}} skills · {{pct}} % del gasto",
+        "budget_group_cold": "Nunca activado en 30 días",
+        "budget_group_cold_detail": "{{count}} skills · {{size}} sin usar",
+        "budget_group_frozen": "Ya solo como referencia",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} se estaban gastando",
+        "budget_chars": "caracteres",
+        "budget_if_fires": "{{size}} si se activa",
+        "budget_every_turn": "{{size}} en cada turno",
+        "budget_renamed": "(renombrado)",
+        "budget_footnote": "Un skill fijado (always: true) o propiedad de un paquete muestra su coste pero no tiene interruptor.",
+        "budget_empty_title": "Aún no hay datos de presupuesto",
+        "budget_empty_subtitle": "Aún no hay skills instaladas."
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -8257,7 +8397,7 @@
       "script_python": "script · python",
       "select": "Seleccionar {{name}}",
       "select_all_jobs": "Seleccionar todos los trabajos",
-      "select_deselect_all_jobs_matching_the_current_fi": "Seleccionar / deseleccionar todos los trabajos que coinciden con el filtro actual",
+      "select_deselect_all_jobs_matching_the_current_fi": "Seleccionar / deseleccionar todos los trabajos visibles (carpetas contraídas excluidas)",
       "selected": "seleccionados",
       "start_from_a_pre_made_schedule": "Empezar con una programación predefinida",
       "status": "Estado",
@@ -8273,7 +8413,27 @@
       "view": "Ver",
       "view_last_result": "Ver el último resultado",
       "you_can_also_create_schedules_by_chatting_try": "También puedes crear programaciones desde el chat — prueba",
-      "jobs_noun": "tareas"
+      "jobs_noun": "tareas",
+      "cronFolders": {
+        "batch_move_failed_many": "No se pudieron mover {{count}} de {{total}} tareas",
+        "batch_move_failed_one": "No se pudo mover {{count}} de {{total}} tarea",
+        "batch_move_failed_other": "No se pudieron mover {{count}} de {{total}} tareas",
+        "collapse_folder": "Contraer carpeta",
+        "confirm_delete_folder": "¿Eliminar \"{{name}}\"? Los trabajos quedarán sin agrupar.",
+        "create": "Crear",
+        "delete_folder": "Eliminar carpeta",
+        "delete_folder_named": "Eliminar \"{{name}}\"",
+        "expand_folder": "Expandir carpeta",
+        "folder_actions": "Acciones de carpeta",
+        "job_count_many": "{{count}} trabajos",
+        "job_count_one": "{{count}} trabajo",
+        "job_count_other": "{{count}} trabajos",
+        "move_to_folder": "Mover a carpeta",
+        "new_folder": "Nueva carpeta",
+        "new_folder_name": "Nombre de la nueva carpeta",
+        "rename": "Cambiar nombre",
+        "ungrouped": "Sin agrupar"
+      }
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Filtro aproximado (coincidencia parcial)",
@@ -8458,7 +8618,11 @@
         "completion_event_characters_2": "Caracteres del evento de finalización",
         "completion_event_truncation": "Truncado del evento de finalización",
         "composer": "Redactor",
-        "concise_responses": "Respuestas concisas",
+        "response_verbosity": "Nivel de detalle de las respuestas",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Qué tan escueta es la prosa del agente. «Ultraconciso» escribe para un lector con TDAH: la respuesta llega en una entrada de tres frases como máximo, y el detalle posterior debe ir en viñetas fáciles de escanear, no en prosa. El código, los comandos y los mensajes de error se mantienen literales; las advertencias de seguridad y las instrucciones de varios pasos conservan todo el detalle en cualquier nivel.",
+        "default_normal_length": "Predeterminado: longitud normal",
+        "concise_trim_filler": "Conciso: sin relleno ni narración",
+        "ultra_concise_3_sentences": "Ultraconciso: respuesta en 3 frases y luego detalle escaneable",
         "confirm_before_closing_session": "Confirmar antes de cerrar la sesión",
         "content_width": "Ancho del contenido",
         "context": "Contexto",
@@ -8514,7 +8678,6 @@
         "technical_comfort": "Nivel técnico",
         "text_streaming_style": "Estilo de transmisión del texto",
         "time_window_for_session_restoration": "Ventana de tiempo para restaurar sesiones",
-        "trim_filler_and_over_narration_lead_with_the_ans": "Elimina el relleno y la narración excesiva: empieza por la respuesta y mantén las notas de progreso a alto nivel. El código, los comandos y los mensajes de error se conservan literalmente; las advertencias de seguridad y las instrucciones de varios pasos mantienen todo el detalle.",
         "when_enabled_inline_tool_pills_show_simplified_t": "Cuando está activado, las etiquetas de herramientas en línea muestran el propósito simplificado del uso de la herramienta en lugar del comando exacto que se ejecuta",
         "which_model_new_sessions_start_with_pick_a_model": "Con qué modelo empiezan las sesiones nuevas cuando su agente no tiene uno propio. Define un modelo por agente en Capacidades → Crews, o elige uno dentro de una sesión para cambiarlo solo allí.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Qué parte del flujo de un subagente se conserva al inyectar su evento de finalización en la sesión principal. Inicio conserva el comienzo (predeterminado, igual que el comportamiento anterior). Cola conserva el resumen final. Ambos conserva un fragmento de cada extremo con un marcador entre ellos.",

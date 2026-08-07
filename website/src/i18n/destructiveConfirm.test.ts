@@ -133,6 +133,10 @@ describe('destructive confirmations are translated', () => {
     'pages.schedulePage.this_permanently_removes_the_selected_job_one',
     'pages.schedulePage.this_permanently_removes_the_selected_job_other',
     'pages.schedulePage.and_their_run_history_this_action_cannot_be_undo',
+    // Auto-Improvement's commit confirmation: it pushes to a real branch and a published
+    // commit cannot be recalled, so an operator reading it in English they do not speak is
+    // being asked to authorize an irreversible remote change they cannot evaluate.
+    'autoImprovement.commitConfirm',
   ]
 
   for (const { code } of NON_DEFAULT) {

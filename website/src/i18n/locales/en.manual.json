@@ -138,6 +138,11 @@
       }
     },
     "issueRadar": {
+      "workspace": {
+        "selected_issue_hidden_by_filters": "The selected issue is hidden by the active filters.",
+        "selected_change_hidden_by_filters": "The selected {{subject}} is hidden by the active filters.",
+        "clear_filters": "Clear filters"
+      },
       "components": {
         "agentSessionButton": {
           "resume": "Resume"
@@ -173,7 +178,8 @@
           "read_only_connect_with_triage_push_access_to_app_2": "Read-only — connect with triage/push access to apply"
         },
         "issueList": {
-          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated"
+          "closed_issues_are_capped_at_the_100_most_recentl": "Closed issues are capped at the 100 most recently updated",
+          "loading_the_rest": "Loading the rest…"
         },
         "labelPalette": {
           "no_labels_match_query": "No labels match “{{query}}”."
@@ -759,6 +765,10 @@
         },
         "skillsProvider": {
           "skills": "Skills"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Needs migration"
         }
       },
       "search_for_anything": "Search for anything",
@@ -1179,7 +1189,9 @@
       "collapse_paste": "Collapse paste",
       "expand_paste": "Expand paste",
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
-      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]"
+      "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
+      "preview_more_lines_one": "… {{count}} more line",
+      "preview_more_lines_other": "… {{count}} more lines"
     },
     "publishHub": {
       "checking": "Checking…",
@@ -1316,6 +1328,7 @@
       "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
     },
     "tagManagerList": {
+      "change_color": "Change color of {{name}}",
       "delete_tag": "Delete tag \"{{name}}\"",
       "delete_tag_2": "Delete tag {{name}}",
       "filter_by_tag": "Filter by tag",
@@ -1324,6 +1337,7 @@
       "make_status_tag": "Make status tag",
       "remove_status_flag_from": "Remove status flag from {{name}}",
       "rename_tag": "Rename tag {{name}}",
+      "set_color_to_name": "Set color to {{name}}",
       "status_tag_mutually_exclusive_on_cards_click_to": "Status tag (mutually exclusive on cards) — click to make regular"
     },
     "terminalCompletion": {
@@ -1415,9 +1429,9 @@
       "tearing_down": "Tearing down..."
     },
     "webPreviewPanel": {
-      "exit_expanded_preview": "Exit expanded preview",
+      "exit_expanded_preview": "Collapse",
       "expand_preview": "Expand preview",
-      "expand_preview_hide_nav_sessions": "Expand preview (hide nav & sessions)",
+      "expand_preview_hide_nav_sessions": "Expand (hide nav and sessions)",
       "responsive_desktop": "Responsive (desktop)"
     },
     "welcomeView": {
@@ -2562,7 +2576,29 @@
         "this_skill_changed_after_this_update_was_written": "This skill changed after this update was written, so applying it now would undo those newer changes. Approving is blocked — dismiss this candidate and a fresh update will be proposed against the current version.",
         "update": "Update",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "budget_doorway_static": "Context budget →",
+        "budget_back": "Skills",
+        "budget_title": "Context budget",
+        "budget_subtitle": "What each skill costs when a trigger fires it. Ranked by spend, not by name.",
+        "budget_header": "<total>{{total}}</total> chars · last 30 days · top 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "Sort",
+        "budget_sort_cost": "Biggest cost",
+        "budget_sort_size": "Biggest file",
+        "budget_sort_recent": "Recently used",
+        "budget_group_counting": "Counting toward context",
+        "budget_group_counting_detail": "{{count}} skills · {{pct}}% of spend",
+        "budget_group_cold": "Never fired in 30 days",
+        "budget_group_cold_detail": "{{count}} skills · {{size}} idle",
+        "budget_group_frozen": "Already pointer-only",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} was being spent",
+        "budget_chars": "chars",
+        "budget_if_fires": "{{size}} if it fires",
+        "budget_every_turn": "{{size}} every turn",
+        "budget_renamed": "(renamed)",
+        "budget_footnote": "A pinned (always: true) or package-owned skill shows its cost but has no switch.",
+        "budget_empty_title": "No budget data yet",
+        "budget_empty_subtitle": "No skills installed yet."
       },
       "steeringTab": {
         "delete_confirm": "Delete \"{{path}}\"?",
@@ -2757,7 +2793,25 @@
       "scheduled_jobs_run_on_the_configured_interval_or": "Scheduled jobs run on the configured interval or cron expression.",
       "select": "Select {{name}}",
       "view": "View",
-      "view_last_result": "View last result"
+      "view_last_result": "View last result",
+      "cronFolders": {
+        "batch_move_failed_one": "{{count}} of {{total}} job could not be moved",
+        "batch_move_failed_other": "{{count}} of {{total}} jobs could not be moved",
+        "collapse_folder": "Collapse folder",
+        "confirm_delete_folder": "Delete \"{{name}}\"? Jobs will be ungrouped.",
+        "create": "Create",
+        "delete_folder": "Delete folder",
+        "delete_folder_named": "Delete \"{{name}}\"",
+        "expand_folder": "Expand folder",
+        "folder_actions": "Folder actions",
+        "job_count_one": "{{count}} job",
+        "job_count_other": "{{count}} jobs",
+        "move_to_folder": "Move to folder",
+        "new_folder": "New folder",
+        "new_folder_name": "New folder name",
+        "rename": "Rename",
+        "ungrouped": "Ungrouped"
+      }
     },
     "sessionArchive": {
       "no_matches_for_query": "No matches for \"{{query}}\".",
@@ -3576,5 +3630,86 @@
       "medium": "Medium",
       "xhigh": "Extra High"
     }
+  },
+  "autoImprovement": {
+    "activityDiscovered": "(discovered {{discovered}}, fresh {{fresh}})",
+    "autocommitHint": "Push each verified change straight to the base branch. Protected branches always fall back to a draft PR.",
+    "autocommitLabel": "Commit directly to the branch (no pull request)",
+    "band": "band",
+    "base": "Base",
+    "branchDefault": "Repository default",
+    "branchLabel": "Base branch",
+    "calibrated": "Calibrated",
+    "changesHeading": "Draft pull requests",
+    "cloneBtn": "Connect",
+    "colActions": "Actions",
+    "colChange": "Change",
+    "colChecks": "Checks",
+    "colPr": "Pull request",
+    "colVerdict": "State",
+    "commitConfirm": "Commit this change to {{branch}} and push it? A published commit cannot be recalled.",
+    "commitFailed": "The commit was refused.",
+    "commitFinding": "Commit to the branch",
+    "currentRepo": "Working on",
+    "cycle": "Cycle",
+    "defectHeading": "Defect",
+    "delta": "Measured delta",
+    "detailUnavailable": "Details are unavailable for this finding.",
+    "discussFinding": "Discuss this finding",
+    "discussPr": "Discuss this pull request",
+    "discussRuler": "Discuss the ruler",
+    "draftPr": "Draft",
+    "findingTitlePrefix": "Finding",
+    "findingsHeading": "Findings ledger",
+    "findingsStat": "Findings",
+    "findingsTruncated": "Showing the {{shown}} most recent of {{total}} findings.",
+    "fingerprint": "Fingerprint",
+    "gateHeading": "Verification gates",
+    "gateNote": "Gate note",
+    "historyHeading": "Status history",
+    "hypothesisHeading": "Reproduction hypothesis",
+    "idleStatus": "Idle — start a run to find improvements and draft pull requests.",
+    "intro": "Measures a repository before it changes it: the metric is calibrated and proved first, then keep-or-revert cycles draft survivors as draft pull requests you review.",
+    "keptStat": "Kept",
+    "loadingDetail": "Loading details…",
+    "noFindings": "No findings recorded yet.",
+    "noPrs": "No pull requests drafted yet.",
+    "prStat": "Pull requests",
+    "prTitlePrefix": "PR",
+    "pushDisabled": "push disabled",
+    "queuedOnly": "queued locally, not opened",
+    "refreshPr": "Refresh pull request status",
+    "regressed": "Regressed tests: {{tests}}",
+    "repoLabel": "GitHub repository to improve",
+    "reproTest": "Repro test",
+    "rulerHeading": "The ruler",
+    "rulerNotReady": "The ruler is not calibrated yet, so no improvement cycle will run. Calibration proves the metric can detect a known win before anything is optimized.",
+    "rulerReady": "Ruler calibrated and ready",
+    "rulerSessionTitle": "Ruler review",
+    "rulerStat": "Ruler",
+    "runBtn": "Start run",
+    "runError": "The run stopped with an error.",
+    "runningStatus": "Running — cycle {{cycle}}, {{kept}} kept, {{drafted}} pull requests drafted.",
+    "setupHeading": "Repository",
+    "showDiff": "Show the change",
+    "showPrBody": "Show the pull request description",
+    "statusCommitted": "Committed to the branch",
+    "statusDiscardedNoise": "Below the noise band",
+    "statusDuplicate": "Duplicate",
+    "statusError": "Tooling error",
+    "statusFailedGate": "Rejected by the gate",
+    "statusFailedVerify": "Fix did not verify",
+    "statusFiled": "Pull request drafted",
+    "statusNoDefect": "No defect found",
+    "statusPurged": "Deleted by the operator",
+    "statusSeen": "Seen",
+    "statusUnavailable": "Unavailable",
+    "stopBtn": "Stop run",
+    "title": "Auto-Improvement",
+    "toggleDetail": "Show finding details",
+    "truncated": "truncated",
+    "uncalibrated": "Not calibrated",
+    "viewCommit": "View commit",
+    "viewPr": "Pull request"
   }
 }

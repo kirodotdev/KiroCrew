@@ -88,6 +88,7 @@ const H = vi.hoisted(() => {
   const artifactsProvider = { id: 'artifacts', label: 'Artifacts', icon: null, search: vi.fn(() => []) }
   const recentsProvider = { id: 'recents', label: 'Recent', icon: null, search: vi.fn(async () => [recentResult]) }
   const settingsProvider = { id: 'settings', label: 'Settings', icon: null, search: vi.fn(() => []) }
+  const appsProvider = { id: 'apps', label: 'Apps', icon: null, search: vi.fn(async () => []) }
   // Stable return for the mocked keyboard-nav hook (constant identities avoid
   // re-render loops in the palette's effects).
   const navReturn = {
@@ -124,6 +125,7 @@ const H = vi.hoisted(() => {
     artifactsProvider,
     recentsProvider,
     settingsProvider,
+    appsProvider,
     navReturn,
     nav,
   }
@@ -170,6 +172,9 @@ vi.mock('./commandPalette/providers/recentsProvider', () => ({
 }))
 vi.mock('./commandPalette/providers/settingsProvider', () => ({
   useSettingsProvider: () => H.settingsProvider,
+}))
+vi.mock('./commandPalette/providers/appsProvider', () => ({
+  useAppsProvider: () => H.appsProvider,
 }))
 // usePaletteActions backs the §2 Enter matrix (composer-insert + new-session).
 // Return the STABLE hoisted spies CommandPalette consumes so the insert-token

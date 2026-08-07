@@ -7,6 +7,7 @@ Covers:
 
 Related issue: https://github.com/kirodotdev/KiroCrew/issues/1617
 """
+
 from __future__ import annotations
 
 import sys
@@ -14,9 +15,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "linux", reason="Docker detection is Linux-only"
-)
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Docker detection is Linux-only")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -52,9 +51,7 @@ class TestIsDockerContainer:
         """/run/.containerenv present → Podman OCI marker."""
         from kiro_crew import sandbox
 
-        monkeypatch.setattr(
-            sandbox.os.path, "exists", lambda p: p == "/run/.containerenv"
-        )
+        monkeypatch.setattr(sandbox.os.path, "exists", lambda p: p == "/run/.containerenv")
         monkeypatch.delenv("CONTAINER", raising=False)
         assert sandbox.is_docker_container() is True
 
@@ -66,9 +63,7 @@ class TestIsDockerContainer:
         monkeypatch.setenv("CONTAINER", "oci")
         assert sandbox.is_docker_container() is True
 
-    def test_container_env_var_non_oci_ignored(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_container_env_var_non_oci_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Other ``CONTAINER`` values don't trigger the fast path."""
         from kiro_crew import sandbox
 
@@ -119,9 +114,7 @@ class TestIsDockerContainer:
         with patch("builtins.open", mock_open(read_data=cgroup)):
             assert sandbox.is_docker_container() is False
 
-    def test_cgroup_unreadable_returns_false(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cgroup_unreadable_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Unreadable /proc/1/cgroup → False (fail-safe, not an exception)."""
         from kiro_crew import sandbox
 
@@ -167,7 +160,7 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(
             sandbox,
             "_last_unshare_failure",
-            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)"),
+            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)", ""),
         )
         # Stub SEL so no real I/O happens.
         fake_sel = MagicMock()
@@ -175,9 +168,7 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(sandbox, "sel", fake_sel, raising=False)
 
     @pytest.mark.asyncio
-    async def test_docker_guidance_mentions_seccomp(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_docker_guidance_mentions_seccomp(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Error message references the seccomp option."""
         from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
 
@@ -211,9 +202,7 @@ class TestWrapArgvDockerGuidance:
         assert "install a supported sandbox backend" not in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_docker_error_kind_is_no_backend(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_docker_error_kind_is_no_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Error kind is 'no_backend', not 'transient' or 'foreign_sandbox'."""
         from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
 
@@ -246,7 +235,7 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(
             sandbox,
             "_last_unshare_failure",
-            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)"),
+            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)", ""),
         )
         fake_sel = MagicMock()
         fake_sel.return_value = fake_sel
@@ -281,7 +270,7 @@ class TestWrapArgvDockerGuidance:
         monkeypatch.setattr(
             sandbox,
             "_last_unshare_failure",
-            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)"),
+            (False, "unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)", ""),
         )
         fake_sel = MagicMock()
         fake_sel.return_value = fake_sel

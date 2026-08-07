@@ -74,6 +74,30 @@
     }
   },
   "apps": {
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "build",
+        "collects": "collects",
+        "green": "GREEN",
+        "lint": "lint",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "Measures a GitHub repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. Survivors are drafted as GitHub pull requests you review and publish yourself.",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "Proves its own metric first — a run refuses to start on an untrustworthy ruler",
+        "highlight_2": "Every candidate is measured A/B, or RED/GREEN for bug fixes, never just 'looks right'",
+        "highlight_3": "Keeps a change only when the win clears the measured noise band",
+        "highlight_4": "Drafts GitHub pull requests — draft-only, never published or merged for you",
+        "highlight_5": "Works on a push-disabled clone, so nothing escapes the sandbox unreviewed",
+        "highlight_6": "One resumable chat session per pull request, finding, and run",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "accept",
@@ -5744,7 +5768,7 @@
       "scheduled_job_other": "{{count}} scheduled jobs",
       "script_python": "script · python",
       "select_all_jobs": "Select all jobs",
-      "select_deselect_all_jobs_matching_the_current_fi": "Select / deselect all jobs matching the current filter",
+      "select_deselect_all_jobs_matching_the_current_fi": "Select / deselect all visible jobs (collapsed folders excluded)",
       "selected": "selected",
       "start_from_a_pre_made_schedule": "Start from a pre-made schedule",
       "status": "Status",
@@ -5860,7 +5884,11 @@
         "completion_event_characters_2": "Completion event characters",
         "completion_event_truncation": "Completion Event Truncation",
         "composer": "Composer",
-        "concise_responses": "Concise Responses",
+        "response_verbosity": "Response Verbosity",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "How terse the agent's prose is. Ultra-concise writes for an ADHD reader: the answer lands in an opening of at most three sentences, and any detail after it must be scannable bullets rather than prose. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail at every level.",
+        "default_normal_length": "Default — normal length",
+        "concise_trim_filler": "Concise — trim filler and narration",
+        "ultra_concise_3_sentences": "Ultra-concise — answer in 3 sentences, then scannable detail",
         "confirm_before_closing_session": "Confirm Before Closing Session",
         "content_width": "Content Width",
         "context": "Context",
@@ -5921,7 +5949,6 @@
         "technical_comfort": "Technical Comfort",
         "text_streaming_style": "Text Streaming Style",
         "time_window_for_session_restoration": "Time window for session restoration",
-        "trim_filler_and_over_narration_lead_with_the_ans": "Trim filler and over-narration: lead with the answer, keep progress notes high-level. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail.",
         "when_enabled_inline_tool_pills_show_simplified_t": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run",
         "which_model_new_sessions_start_with_pick_a_model": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",

@@ -27,6 +27,18 @@ from kiro_crew.transcribe import (
 # ---------------------------------------------------------------------------
 
 
+def _no_own_venv(monkeypatch) -> None:
+    """Neutralize the running interpreter's own scripts dir.
+
+    ``_find_whisper`` probes it (that is what makes an install into the app's own
+    venv work), and on a dev machine that directory really does contain a
+    ``whisper`` — so a test isolating any LATER probe has to switch it off or it
+    never gets there. Same reason these tests already stub ``shutil.which`` and
+    ``_python3_bin_dir``.
+    """
+    monkeypatch.setattr("kiro_crew.transcribe._own_scripts_dir", lambda: "")
+
+
 class TestFindWhisper:
     def test_configured_path_exists(self, tmp_path):
         binary = tmp_path / "whisper"
@@ -49,14 +61,69 @@ class TestFindWhisper:
 
     def test_empty_path_which_none_checks_search_paths(self, tmp_path, monkeypatch):
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            _no_own_venv(monkeypatch)
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [str(tmp_path / "w")])
             assert _find_whisper("") is None
+
+    def test_finds_whisper_installed_into_our_own_venv(self, tmp_path, monkeypatch):
+        """``pip install openai-whisper`` inside the app's venv must be enough.
+
+        Nothing else in the search order looks there: ``shutil.which`` only sees
+        PATH (a venv is on PATH only after ``activate``, and the gateway runs as
+        ``<venv>/bin/kirocrew``), and ``_python3_bin_dir`` deliberately asks the
+        SYSTEM python3. So the obvious install left ``is_available()`` False, with
+        no fix but setting ``stt.whisper_path`` by hand.
+        """
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        binary = venv_bin / "whisper"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        monkeypatch.setattr("kiro_crew.transcribe.sys.executable", str(venv_bin / "python"))
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: "")
+            assert _find_whisper("") == str(binary)
+
+    def test_our_venv_is_preferred_over_the_system_python(self, tmp_path, monkeypatch):
+        """Both present: the environment the caller installed into wins.
+
+        Picking the system one would run a DIFFERENT Whisper than the operator
+        just installed — a silently wrong version, or a missing model cache.
+        """
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        ours = venv_bin / "whisper"
+        ours.write_text("#!/bin/sh\n")
+        ours.chmod(0o755)
+        sys_bin = tmp_path / "system" / "bin"
+        sys_bin.mkdir(parents=True)
+        theirs = sys_bin / "whisper"
+        theirs.write_text("#!/bin/sh\n")
+        theirs.chmod(0o755)
+
+        monkeypatch.setattr("kiro_crew.transcribe.sys.executable", str(venv_bin / "python"))
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
+            monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: str(sys_bin))
+            assert _find_whisper("") == str(ours)
+
+    def test_path_still_wins_over_the_venv(self, tmp_path, monkeypatch):
+        """A whisper already on PATH is what the operator chose; do not override it."""
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "whisper").write_text("#!/bin/sh\n")
+        (venv_bin / "whisper").chmod(0o755)
+        monkeypatch.setattr("kiro_crew.transcribe.sys.executable", str(venv_bin / "python"))
+        with patch("kiro_crew.transcribe.shutil.which", return_value="/usr/bin/whisper"):
+            assert _find_whisper("") == "/usr/bin/whisper"
 
     def test_empty_path_finds_in_search_paths(self, tmp_path, monkeypatch):
         binary = tmp_path / "whisper"
         binary.write_text("#!/bin/sh\n")
         binary.chmod(0o755)
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            _no_own_venv(monkeypatch)
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [str(binary)])
             assert _find_whisper("") == str(binary)
 
@@ -77,6 +144,7 @@ class TestFindWhisper:
         exe.write_text("")  # no execute bit on Windows
         monkeypatch.setattr("kiro_crew.transcribe.platform_compat.IS_WINDOWS", True)
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            _no_own_venv(monkeypatch)
             monkeypatch.setattr("kiro_crew.transcribe._python3_bin_dir", lambda: str(scripts))
             monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
             assert _find_whisper("") == str(exe)
@@ -222,6 +290,10 @@ class TestTranscribeAudio:
         monkeypatch.setattr(
             "kiro_crew.transcribe._python3_bin_dir", discover_python_bin_dir
         )
+        # This test observes the thread `_python3_bin_dir` runs on, so the probe
+        # BEFORE it must miss — otherwise discovery short-circuits and never
+        # reaches the call being watched.
+        _no_own_venv(monkeypatch)
         monkeypatch.setattr("kiro_crew.transcribe._WHISPER_SEARCH_PATHS", [])
         with patch("kiro_crew.transcribe.shutil.which", return_value=None):
             result = await transcribe_audio(str(audio), cfg)

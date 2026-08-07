@@ -246,3 +246,21 @@ test/test_voice_reply.py::TestResolvePiperBinary::test_configured_path_not_execu
 test/test_voice_reply.py::TestResolvePiperBinary::test_falls_back_to_venv
 test/test_wecom_config_handlers.py::test_save_persists_credentials_and_config
 test/test_write_secret_file.py::TestWriteSecretFile::test_happy_path
+# auto-improvement builtin (PR #1013): these exercise real `git` behaviour over a
+# throwaway repo and assume POSIX. On Windows they fail on line-ending handling
+# (`git apply` rejects an LF diff against a CRLF-checked-out tree: "patch failed:
+# app.py:1") and `\`-vs-`/` in git output. `setup.cfg` already documents this
+# file-set as POSIX-assuming and excludes it from the Linux `testpaths`; the
+# Windows shard collects it directly, so it is burned down here. Porting these to
+# Windows (a synthetic-diff line-ending shim + separator-agnostic git parsing) is
+# its own change, not smuggled into the feature PR.
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestOneClickCommitWorksInAPushDisabledClone::test_a_failed_push_leaves_no_commit_behind
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestOneClickCommitWorksInAPushDisabledClone::test_a_rollback_restores_the_branch_to_its_fetched_base
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestOneClickCommitWorksInAPushDisabledClone::test_a_stale_local_ref_is_not_used_when_a_url_is_configured
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestOneClickCommitWorksInAPushDisabledClone::test_drafting_an_older_finding_does_not_publish_a_later_one
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestOneClickCommitWorksInAPushDisabledClone::test_the_queued_diff_is_committed_and_pushed
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestAFailedHeadCheckoutRefusesTheClone::test_a_missing_head_branch_is_an_error_not_a_silent_base_checkout
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestCloneLifecycleAndExport::test_the_pass_fix_is_exported_to_the_pr_queue
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py::TestLintFindingsOnDisk::test_findings_from_a_real_tree_carry_codes
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_suite_scope.py::TestSuiteScopeDerivation::test_a_test_dir_named_test_is_accepted
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_suite_scope.py::TestSuiteScopeDerivation::test_narrowed_globs_scope_to_the_nearest_tests_dir
