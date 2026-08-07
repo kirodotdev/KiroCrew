@@ -50,6 +50,80 @@ def auto_name(spec_content: str, spec_path: str = "") -> str:
     return ""
 
 
+# ── Spec-declared approval mode ──
+
+# The approval modes a spec may declare. Only ``auto`` requests unattended
+# execution; ``per-task``/``per-action`` are recognized (so a typo doesn't
+# silently read as ``auto``) but do not request auto-approval. ``per-action`` is
+# the default behavior when nothing is declared.
+SPEC_APPROVAL_MODES = ("auto", "per-task", "per-action")
+
+# A single ``approval: <mode>`` directive line, with optional quotes and an
+# optional trailing ``#`` comment. Deliberately strict: the value is a single
+# bare word so prose like "approval: pending review of the design" never matches.
+_SPEC_APPROVAL_RE = re.compile(
+    r"""^\s*approval\s*:\s*['"]?([A-Za-z][A-Za-z-]*)['"]?\s*(?:#.*)?$""",
+    re.IGNORECASE,
+)
+
+# How many leading lines to scan for a bare (non-frontmatter) directive. Bounds
+# the search to the top of the file so an ``approval:`` mention buried in the
+# body cannot flip the run's mode.
+_SPEC_APPROVAL_SCAN_LINES = 20
+
+
+def parse_spec_approval_mode(spec_content: str) -> str:
+    """Extract a spec-declared approval mode from the top of a spec.
+
+    A spec may declare how the run should gate tool approvals, either in a
+    leading YAML frontmatter fence::
+
+        ---
+        approval: auto
+        ---
+        # Task: refactor the widget
+
+    or as a bare top-of-file / top-level directive (markdown or YAML workflow)::
+
+        approval: auto
+
+    Returns the normalized mode — one of :data:`SPEC_APPROVAL_MODES` — or ``""``
+    when unset or unrecognized. **Deny-by-default:** only a literal ``auto``
+    (case-insensitive) requests unattended execution; a malformed block, an
+    unknown value, or an ``approval:`` line below the scanned top region all
+    yield ``""``, so the caller falls back to per-action prompting.
+
+    SECURITY: this reports *intent only*. Whether ``auto`` is actually honored is
+    decided solely by the launch-provenance gate (``_gate_auto_approve`` in the
+    task runner handler) — a spec can never self-elevate a cron/MCP run.
+    """
+    text = (spec_content or "").lstrip("﻿")
+    lines = text.splitlines()
+
+    # Skip leading blank lines to find the first meaningful line.
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+
+    if idx < len(lines) and lines[idx].strip() == "---":
+        # YAML frontmatter: scan only within the fence.
+        scan: list[str] = []
+        for j in range(idx + 1, len(lines)):
+            if lines[j].strip() == "---":
+                break
+            scan.append(lines[j])
+    else:
+        # No frontmatter: only a bounded window at the very top is authoritative.
+        scan = lines[idx : idx + _SPEC_APPROVAL_SCAN_LINES]
+
+    for line in scan:
+        match = _SPEC_APPROVAL_RE.match(line)
+        if match:
+            mode = match.group(1).strip().lower()
+            return mode if mode in SPEC_APPROVAL_MODES else ""
+    return ""
+
+
 # ── Parallel Task Grouping ──
 
 

@@ -12,7 +12,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-from kiro_crew.task_planner import plan_to_yaml
+from kiro_crew.task_planner import parse_spec_approval_mode, plan_to_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -152,17 +152,32 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             return web.json_response({"error": "access denied"}, status=403)
         spec_path = str(resolved)
 
+    # Spec text used ONLY to read a declared approval mode (see below). Captured
+    # for the inline case here; for a file path it is read as a bounded prefix.
+    spec_text_for_approval = ""
+
     # Handle inline spec content
     if spec_path.startswith("__inline__:"):
         content = spec_path[len("__inline__:"):]
         if not content.strip():
             return web.json_response({"error": "empty spec content"}, status=400)
+        spec_text_for_approval = content
         work_dir = state.task_runner._work_dir
         fname = f"TASK_{uuid.uuid4().hex[:8]}.md"
         fpath = Path(work_dir) / fname
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(content, encoding="utf-8")
         spec_path = str(fpath)
+    else:
+        # Bounded read of the top of the validated file — only for the approval
+        # directive; decomposition re-reads the full spec later. A read failure
+        # is non-fatal: it just leaves the declared mode empty (per-action).
+        try:
+            spec_text_for_approval = await asyncio.to_thread(
+                lambda: Path(spec_path).open(encoding="utf-8").read(4000)
+            )
+        except OSError:
+            spec_text_for_approval = ""
 
     try:
         agent = body.get("agent", "")
@@ -171,9 +186,20 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         allowed_sources = {"dashboard", "text", "spec", "file", "chat", "mcp", "cron", "yaml"}
         claimed_source = body.get("source")
         source = claimed_source if claimed_source in allowed_sources else "dashboard"
-        # Deny-by-default (`is True`) + shared provenance gate (dashboard-context only).
+        # A spec may DECLARE `approval: auto` (frontmatter or a top-of-file
+        # directive) as an alternative to the UI's per-run toggle, so a trusted
+        # plan can commit its unattended-execution intent into version control.
+        # This is only a REQUEST — it is OR-ed into the same `_gate_auto_approve`
+        # provenance check as the UI flag, so it can never widen trust beyond
+        # what the launching surface already allows: a dashboard human's spec can
+        # run unattended, but the identical directive on a cron/MCP launch is
+        # still denied. Deny-by-default: only a literal `auto` requests it.
+        spec_declares_auto = parse_spec_approval_mode(spec_text_for_approval) == "auto"
         auto_approve = await _gate_auto_approve(
-            request, body.get("auto_approve") is True, claimed_source, endpoint="start"
+            request,
+            body.get("auto_approve") is True or spec_declares_auto,
+            claimed_source,
+            endpoint="start",
         )
         task_id = await state.task_runner.start_background(
             spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir,

@@ -223,6 +223,39 @@ Steps can be marked with `force_approval: true` in the spec. These gates block e
 - Useful for destructive operations (deploy, delete, publish)
 - Frontend: inline approval buttons rendered in project detail view
 
+### Spec-declared approval mode
+
+A spec may declare how the run gates tool approvals, as an alternative to
+re-toggling the dashboard's per-run "trust" control on every launch — the
+intent lives in the version-controlled spec itself. Declare it either in a
+leading YAML frontmatter fence or as a bare top-of-file directive:
+
+```markdown
+---
+approval: auto
+---
+# Task: refactor the widget
+```
+
+- `approval: auto` — request unattended execution (no per-action prompts).
+- `approval: per-task` / `per-action` — recognized but request no
+  auto-approval; `per-action` is the default when nothing is declared.
+- Parsed by `task_planner.parse_spec_approval_mode()`. **Deny-by-default:** only
+  a literal `auto` (case-insensitive) in the frontmatter or the top
+  `_SPEC_APPROVAL_SCAN_LINES` lines requests it; anything else → `""` →
+  per-action prompting.
+
+**Security — a spec cannot self-elevate.** The declared mode is only a
+*request*. It is OR-ed with the UI's `auto_approve` flag and passed through the
+**same** launch-provenance gate (`_gate_auto_approve`), which honors
+auto-approve only for a dashboard-context human launch. So a dashboard user's
+spec can run unattended, but the identical `approval: auto` directive on a
+`cron`/`mcp` launch is still denied and falls back to deny-by-default. Operators
+who want an unattended background source have the separate explicit opt-in
+`hooks.auto_approve_sources` (e.g. add `"taskrunner"`), which is consent scoped
+to that source rather than a side effect of a spec directive. `force_approval`
+gates still block regardless of the declared mode.
+
 ## Parallel Execution
 
 Parallel groups are throttled to prevent resource exhaustion from simultaneous
