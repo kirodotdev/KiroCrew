@@ -52,6 +52,22 @@ AGENT_NAME = "kirocrew-knowledge"
 # (the always-on behaviour).
 DEFAULT_IDLE_TTL_SECS = 300.0
 
+# Conversation-recycle thresholds for a checked-out worker.
+#
+# Pool workers are long-lived sessions, but every prompt they serve is
+# self-contained: ``extractor.EXTRACTION_PROMPT`` inlines the whole chunk between
+# per-call nonce markers, and ``agent_fetch`` inlines the whole URL, so no call
+# depends on anything an earlier call said. The accumulating transcript is
+# therefore pure cost — and once it reaches the backend's own ceiling the backend
+# auto-compacts, which is a BILLED summarization turn over the entire transcript,
+# repeated every few minutes for the rest of a large ingestion.
+#
+# Recycling the conversation first makes that never happen. The percentage is the
+# real signal; the call count is the fallback for backends that report no context
+# telemetry at all (a 0% reading is indistinguishable from an empty transcript).
+WORKER_RECYCLE_PCT = 50.0
+WORKER_RECYCLE_CALLS = 20
+
 
 # Sandbox modes accepted by ``kiro_crew.sandbox.wrap_argv`` (see its docstring).
 # An out-of-set value from config falls back to the safe default rather than
@@ -150,6 +166,13 @@ def _get_idle_ttl(config: Optional[dict] = None) -> float:
 class Worker(ABC):
     """Abstract base for a long-lived LLM worker."""
 
+    # Prompts served since this worker's conversation was last reset. The pool
+    # reads it to decide when the transcript has grown far enough to be worth
+    # dropping (see WORKER_RECYCLE_CALLS). Declared at class level, not set in an
+    # ``__init__``, so a subclass that does not chain up still has the counter
+    # (``+=`` rebinds it per instance).
+    calls_since_reset: int = 0
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize/spawn the worker process."""
@@ -165,6 +188,22 @@ class Worker(ABC):
     @abstractmethod
     def is_alive(self) -> bool:
         """True if this worker can still process messages."""
+
+    def context_pct(self) -> float:
+        """Backend-reported context usage for this worker's conversation.
+
+        ``0.0`` when the backend reports nothing (the pool then falls back to the
+        call count), so a subclass with no telemetry needs no override.
+        """
+        return 0.0
+
+    @abstractmethod
+    async def reset_conversation(self) -> None:
+        """Drop the accumulated transcript, leaving the worker ready to serve.
+
+        Must leave ``is_alive()`` true on success so the pool's dead-worker
+        replacement path stays reserved for genuine deaths.
+        """
 
 
 class AcpWorker(Worker):
@@ -240,6 +279,26 @@ class AcpWorker(Worker):
 
     def is_alive(self) -> bool:
         return self._client is not None and self._client.is_process_alive()
+
+    def context_pct(self) -> float:
+        client = self._client
+        if client is None:
+            return 0.0
+        try:
+            return float(client.last_prompt_stats.context_pct)
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+
+    async def reset_conversation(self) -> None:
+        """Spawn a fresh ACP session, discarding the accumulated transcript.
+
+        ``start()`` already tears the previous client down (and moves the sweep
+        shield to the new PID), so re-running it is the whole reset. It costs one
+        cold start per WORKER_RECYCLE_CALLS prompts, far less than the billed
+        auto-compaction the growing transcript would otherwise trigger.
+        """
+        await self.start()
+        self.calls_since_reset = 0
 
 
 class CCWorker(Worker):
@@ -367,6 +426,23 @@ class CCWorker(Worker):
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
+
+    async def reset_conversation(self) -> None:
+        """Respawn the CLI subprocess, discarding the accumulated transcript.
+
+        The transcript lives only in the process's own stream-json conversation,
+        so replacing the process is the reset. ``_spawn()`` cancels the old
+        reader task and installs a fresh event queue, leaving the worker ready.
+        """
+        old = self._proc
+        await self._spawn()
+        if old is not None and old is not self._proc:
+            try:
+                old.kill()
+                await old.wait()
+            except Exception:
+                logger.debug("CCWorker: stale process reap failed", exc_info=True)
+        self.calls_since_reset = 0
 
 
 class LLMPool:
@@ -587,7 +663,40 @@ class LLMPool:
         try:
             return await worker.send_message(prompt, timeout=timeout)
         finally:
-            self.release(idx)
+            try:
+                await self._maybe_recycle(idx, worker)
+            finally:
+                self.release(idx)
+
+    async def _maybe_recycle(self, idx: int, worker: Worker) -> None:
+        """Reset *worker*'s conversation once its transcript has grown enough.
+
+        Runs while the worker is still checked out, so no other caller can send
+        into a half-reset session. Every knowledge prompt is self-contained, so a
+        reset loses nothing — and it must land BEFORE the backend's own
+        auto-compaction, which bills a summarization turn over the whole
+        transcript every time it fires.
+
+        A failed reset is not fatal: the worker is left reporting dead and
+        ``acquire()`` replaces it on the next checkout.
+        """
+        worker.calls_since_reset += 1
+        try:
+            pct = worker.context_pct()
+        except Exception:
+            pct = 0.0
+        by_pct = pct >= WORKER_RECYCLE_PCT
+        if not by_pct and worker.calls_since_reset < WORKER_RECYCLE_CALLS:
+            return
+        reason = f"context at {pct:.0f}%" if by_pct else f"{worker.calls_since_reset} calls"
+        logger.info("LLMPool: recycling worker %d conversation — %s", idx, reason)
+        try:
+            await worker.reset_conversation()
+        except Exception:
+            logger.warning(
+                "LLMPool: worker %d conversation reset failed; will be replaced on "
+                "next acquire", idx, exc_info=True,
+            )
 
     async def send_batch(self, prompts: list[str], timeout: float = DEFAULT_TIMEOUT) -> list[str]:
         """Send multiple prompts concurrently, bounded by pool size.
