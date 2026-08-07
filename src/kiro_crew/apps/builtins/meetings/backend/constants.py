@@ -28,6 +28,39 @@ MAX_CALENDAR_EVENTS = 500
 MAX_MEETING_ID_LEN = 128
 MAX_TITLE_LEN = 300
 MAX_ICS_BYTES = 4 * 1024 * 1024  # refuse absurd .ics payloads
+
+#: Ceiling on one credential value from a settings write. Generous next to a
+#: password or a client id, and small enough that the credential file stays a file
+#: this app can read back in one gulp.
+MAX_CREDENTIAL_VALUE_CHARS = 4096
+
+#: Ceiling on a CalDAV ``REPORT`` Multi-Status response. Larger than
+#: :data:`MAX_ICS_BYTES` because the response wraps one iCalendar document per
+#: event in XML, so the same week of meetings arrives several times bigger.
+MAX_CALDAV_BYTES = 8 * 1024 * 1024
+
+#: A CalDAV ``REPORT`` makes the server run a time-range query across a
+#: collection, which is slower than serving a static ``.ics``.
+CALDAV_TIMEOUT_SECS = 30
+
+#: How long a started OAuth authorization stays redeemable. Long enough for a
+#: human to read a consent screen, short enough that an abandoned flow's verifier
+#: is not sitting in memory for the rest of the session.
+OAUTH_FLOW_TTL_SECS = 10 * 60
+
+#: Refresh an access token this long before it actually expires. A token that
+#: passes the freshness check and then dies in flight surfaces as a 401 halfway
+#: through a sync, which is worse than one extra refresh.
+OAUTH_REFRESH_SKEW_SECS = 120
+
+#: Timeout for a token-endpoint round trip. Shorter than a calendar fetch: this
+#: is one small POST to a provider's auth host, and a hang here blocks a user
+#: sitting in front of a "connecting…" UI.
+OAUTH_TOKEN_TIMEOUT_SECS = 20
+
+#: Ceiling on a token-endpoint response. A token response is a few hundred bytes;
+#: this is orders of magnitude above that and still refuses a hostile stream.
+MAX_OAUTH_RESPONSE_BYTES = 256 * 1024
 ICS_FETCH_TIMEOUT_SECS = 20
 #: Redirects are followed MANUALLY so each hop is SSRF-validated, so the chain
 #: needs its own bound (aiohttp's own `max_redirects` no longer applies).
@@ -86,6 +119,16 @@ CONFIG_FILE = "config.json"
 DICTIONARY_FILE = "dictionary.toml"
 CALENDAR_CACHE_FILE = "calendar-cache.json"
 SESSION_META_FILE = "session.json"
+
+#: Calendar credentials (CalDAV password, Google/M365 OAuth tokens).
+#:
+#: **Deliberately NOT in this list's directory.** Every other name here is
+#: relative to ``app_data_dir("meetings")``; this one is resolved by
+#: :func:`..credentials.credentials_file` under the crew data home instead,
+#: because the app data tree is the one ``store.contain`` opens to agent-driven
+#: paths. Registered in ``security._CREW_SECRET_LEAVES`` so agent file tools
+#: cannot read or write it. See ``backend/credentials.py`` for the full argument.
+CALENDAR_CREDENTIALS_FILE = "calendar-credentials.json"
 TASKS_FILE = "tasks.json"
 
 # The always-on system agent that maintains ``tasks.json``. Not a configurable
@@ -126,8 +169,75 @@ DEFAULT_TASK_PROVIDER = TASK_PROVIDER_LOCAL
 
 # Calendar provider ids (see backend/providers/calendar.py).
 CALENDAR_PROVIDER_ICS = "ics"
+CALENDAR_PROVIDER_CALDAV = "caldav"
+CALENDAR_PROVIDER_GOOGLE = "google"
 CALENDAR_PROVIDER_NONE = "none"
 DEFAULT_CALENDAR_PROVIDER = CALENDAR_PROVIDER_NONE
+
+# ── Google Calendar ──
+#
+# Endpoints are constants rather than config: they are protocol, not preference,
+# and a settable authorization URL is a phishing surface (a rewritten authorize
+# host collects the user's Google password). The only per-installation values are
+# the client id and secret, which live in the credential store.
+GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+
+#: Read-only, because this app only ever displays meetings. The narrower scope is
+#: also the one Google's own verification treats as least sensitive.
+GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+
+#: ``access_type=offline`` is what makes Google issue a refresh token at all, and
+#: ``prompt=consent`` is what makes it issue one AGAIN on a repeat authorization —
+#: without it a reconnect returns only an access token and the calendar stops
+#: working an hour later.
+GOOGLE_AUTHORIZE_EXTRA = {"access_type": "offline", "prompt": "consent"}
+
+#: Ceiling on one page of the events list.
+MAX_GOOGLE_RESPONSE_BYTES = 4 * 1024 * 1024
+
+#: Events requested per page. Google caps `maxResults` at 2500; this keeps a
+#: single page well inside the byte ceiling above.
+GOOGLE_PAGE_SIZE = 250
+
+#: Pages followed before giving up, so a provider that keeps handing back a
+#: ``nextPageToken`` cannot loop forever.
+GOOGLE_MAX_PAGES = 10
+
+# ── Microsoft 365 (Graph) ──
+#
+# Constants for the same reason as Google's: a settable authorize host is a
+# phishing surface for the user's work account.
+#
+# ``/common/`` is the multi-tenant endpoint, so a personal account and a work
+# account both work without the user having to find their tenant id.
+MICROSOFT_AUTHORIZE_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+#: ``calendarView`` rather than ``/events``: it expands a recurring series into
+#: occurrences server-side, which is what lets this provider skip an RRULE engine.
+MICROSOFT_EVENTS_URL = "https://graph.microsoft.com/v1.0/me/calendarView"
+
+#: ``offline_access`` is not optional decoration — it is what makes Microsoft
+#: issue a refresh token at all, the same role ``access_type=offline`` plays for
+#: Google. Without it the calendar stops working when the first access token
+#: expires. ``Calendars.Read`` is read-only because the app only displays meetings.
+MICROSOFT_CALENDAR_SCOPES = (
+    "https://graph.microsoft.com/Calendars.Read",
+    "offline_access",
+)
+
+#: Graph returns ``dateTime`` with NO offset and names the zone separately, so the
+#: reading depends entirely on this header. Asking for UTC makes the naive value
+#: unambiguous instead of something to guess at.
+MICROSOFT_TIMEZONE_HEADER = 'outlook.timezone="UTC"'
+
+MAX_MICROSOFT_RESPONSE_BYTES = 4 * 1024 * 1024
+MICROSOFT_PAGE_SIZE = 250
+MICROSOFT_MAX_PAGES = 10
+
+CALENDAR_PROVIDER_MICROSOFT = "microsoft"
 
 # STT provider ids. KiroCrew's own streaming endpoint is the only one.
 STT_PROVIDER_KIROCREW = "kirocrew"

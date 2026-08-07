@@ -1111,6 +1111,9 @@ class TestCalendarRoutes:
             assert {r["id"] for r in body["providers"]} == {
                 k.CALENDAR_PROVIDER_NONE,
                 k.CALENDAR_PROVIDER_ICS,
+                k.CALENDAR_PROVIDER_CALDAV,
+                k.CALENDAR_PROVIDER_GOOGLE,
+                k.CALENDAR_PROVIDER_MICROSOFT,
             }
 
     @pytest.mark.asyncio
