@@ -60,6 +60,7 @@ function installBridge() {
       calls.owner.push({ panelId, owner })
       return { owner, changed: true }
     }),
+    onAgentOpened: vi.fn(() => () => {}),
     onDidNavigate: vi.fn(() => () => {}),
     onTitleUpdated: vi.fn(() => () => {}),
   }
@@ -207,30 +208,34 @@ describe('useNativeBrowser control handoff', () => {
     await waitFor(() => expect(calls.agentAct.at(-1)?.enabled).toBe(true))
   })
 
-  it('acquires LIGHT (in-process) control of the native view when the Globe turns on', async () => {
+  it('acquires LIGHT (in-process) control once a native page EXISTS, regardless of the Globe', async () => {
     const { calls } = installBridge()
-    const { rerender } = renderHook(
-      ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
-      { initialProps: { act: false } },
-    )
-    // Globe off → no agent owner.
+    const { result } = renderHook(() => useNativeBrowser(PANEL, true, { agentActEnabled: false }))
+    // No page yet → no agent owner to hold.
     await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('none'))
-    // Globe on → request LIGHT: the native view is driven in-process over CDP,
-    // never PLAYWRIGHT (that owner is a separate external browser process).
-    rerender({ act: true })
+    // A page opens → request LIGHT even with the Globe OFF: ownership is "who
+    // holds the debugger", which is needed to READ the page (snapshot /
+    // screenshot). What may be DONE with it is gated per op class in the main
+    // process. Never PLAYWRIGHT (that owner is a separate external browser).
+    act(() => result.current.open('https://example.com'))
     await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
     expect(calls.owner.some(c => c.owner === 'playwright')).toBe(false)
   })
 
-  it('releases control back to NONE when the Globe turns off', async () => {
+  it('keeps LIGHT when the Globe turns off — revocation is enforced per op, not by detaching', async () => {
+    // Detaching on Globe-off was the regression that forced a plain "open this
+    // page" back onto the mirror transport: view-class reads need the debugger.
+    // operate-class ops are refused at the main-process gate instead.
     const { calls } = installBridge()
-    const { rerender } = renderHook(
+    const { result, rerender } = renderHook(
       ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
       { initialProps: { act: true } },
     )
+    act(() => result.current.open('https://example.com'))
     await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
     rerender({ act: false })
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('none'))
+    await waitFor(() => expect(calls.agentAct.at(-1)?.enabled).toBe(false))
+    expect(calls.owner.at(-1)?.owner).toBe('light')
   })
 
   it('drives the control owner even while the panel is disabled (hidden, not destroyed)', async () => {
@@ -239,7 +244,8 @@ describe('useNativeBrowser control handoff', () => {
     // on `enabled` — otherwise glancing at another side-panel tab would drop the
     // agent's hold on the page.
     const { calls } = installBridge()
-    renderHook(() => useNativeBrowser(PANEL, false, { agentActEnabled: true }))
+    const { result } = renderHook(() => useNativeBrowser(PANEL, false, { agentActEnabled: true }))
+    act(() => result.current.open('https://example.com'))
     await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
   })
 })

@@ -109,33 +109,84 @@ function planTransition(current, requested) {
   };
 }
 
+// ── Op classes: what the Globe actually authorizes ───────────────────────────
+//
+// The embedded browser is the DEFAULT renderer for a page the user asked for,
+// so the two op classes answer two different questions.
+//
+//   VIEW     change what the user SEES. `navigate` here is the SAME
+//            `manager.navigate` the human's own panel controls call, with the
+//            same http/https-only guard, so a chat "open this page" is the
+//            user's attended request expressed a different way. Gating it would
+//            buy nothing — the identical end state is one ungated click away —
+//            while costing the native view and silently downgrading the user to
+//            the mirror transport.
+//   OPERATE  act on the page, or READ ITS CONTENT BACK. This is the unattended
+//            agent action design decision §8 is about, and it stays gated on
+//            "let the agent act" (the Globe).
+//
+// Reading is deliberately OPERATE, not VIEW, and the reason is the partition.
+// The embedded view runs on `persist:` (browser-view.js), which holds sessions
+// the user logged into BY HAND — so `snapshot`/`screenshot`/`console` do not just
+// show a page, they lift authenticated content into model context. The human
+// clicking a URL has no equivalent: they read the page with their own eyes, and
+// nothing leaves the machine. The Playwright fallback never had this reach either
+// (it runs isolated with an empty storage state), so an ungated read here would
+// be a NEW capability, reachable by prompt injection in content already read.
+// Showing the user a page does not require handing its contents to the agent, so
+// the native-default goal survives this split intact.
+//
+// Reclassifying an op is a security decision, not a taste one: anything that can
+// change page state on the user's behalf, execute attacker-reachable script, or
+// return page content to the agent belongs in OPERATE.
+const AGENT_VIEW_OPS = Object.freeze([
+  "navigate",
+  "back",
+  "wait_for",
+]);
+
+const AGENT_OPERATE_OPS = Object.freeze([
+  "click",
+  "type",
+  "press_key",
+  "hover",
+  "select_option",
+  "evaluate",
+  // Content reads — gated for the partition reason above, not because they mutate.
+  "snapshot",
+  "screenshot",
+  "console",
+]);
+
+const _VIEW_OP_SET = new Set(AGENT_VIEW_OPS);
+
 /**
- * May the agent take control right now?
+ * Classify one agent op as "view" or "operate".
  *
- * Agent control is UNATTENDED action, so it is gated on the app's general
- * "let the agent act" authorization — the same gate that authorizes agent
- * browsing today, not a new browser-specific toggle (design decision §8).
- * A human driving the page needs no gate: their gesture is the consent.
+ * Unknown ops are treated as "operate" — fail CLOSED. A verb added to the
+ * Electron dispatcher without being classified here must not silently inherit
+ * the ungated path.
  */
-function canAgentControl(state) {
-  const s = state || {};
-  if (!s.agentActEnabled) return { allowed: false, reason: "agent-act-not-authorized" };
-  if (!s.viewOpen) return { allowed: false, reason: "no-browser-view" };
-  return { allowed: true, reason: null };
+function agentOpClass(op) {
+  return _VIEW_OP_SET.has(String(op || "")) ? "view" : "operate";
 }
 
 /**
- * Which control transport should serve the agent's `browser_*` calls?
+ * May the agent take control right now, for an op of this class?
  *
- * Mirrors the display-transport rule in the panel: if frames are streaming, the
- * browser lives in another process (remote gateway / Playwright proxy) and only
- * the proxy can drive it. Otherwise, when a native view is available in this
- * process, drive it in-process over CDP.
+ * `opClass` defaults to "operate" so every existing caller keeps the stricter
+ * behaviour unless it opts in by naming the class.
+ *
+ * A human driving the page needs no gate at all: their gesture is the consent,
+ * and the renderer's own panel controls never consult this function.
  */
-function chooseControlTransport(state) {
+function canAgentControl(state, opClass = "operate") {
   const s = state || {};
-  if (s.framesStreaming) return "proxy";
-  return s.nativeAvailable ? "native" : "proxy";
+  if (opClass !== "view" && !s.agentActEnabled) {
+    return { allowed: false, reason: "agent-act-not-authorized" };
+  }
+  if (!s.viewOpen) return { allowed: false, reason: "no-browser-view" };
+  return { allowed: true, reason: null };
 }
 
 /**
@@ -321,8 +372,10 @@ module.exports = {
   OWNER,
   OWNERS,
   CDP_VERSION,
+  AGENT_VIEW_OPS,
+  AGENT_OPERATE_OPS,
+  agentOpClass,
   planTransition,
   canAgentControl,
-  chooseControlTransport,
   createControlPlane,
 };

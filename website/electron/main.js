@@ -39,9 +39,12 @@ const { initMochi, shutdownMochi } = require("./mochi/index");
 const { initCrewCompanion, shutdownCrewCompanion } = require("./crew-companion/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { createBrowserViewManager, isUntrustedContents } = require("./browser-view");
-// chooseControlTransport is exercised by the routing layer (see Stage 6 notes),
-// not here — main.js only owns the plane and its gate.
-const { canAgentControl, createControlPlane, OWNER } = require("./browser-control");
+const {
+  agentOpClass,
+  canAgentControl,
+  createControlPlane,
+  OWNER,
+} = require("./browser-control");
 const { createBrowserOps } = require("./browser-ops");
 const { createAgentCommandChannel } = require("./browser-agent-channel");
 const { secretCandidates } = require("./home-dir");
@@ -1101,11 +1104,11 @@ function setupWindowContents(win, backendUrl) {
         console.warn(`[browser-control] ${id} ${event} ${JSON.stringify(detail)}`);
       },
     });
-    entry.gate = () =>
+    entry.gate = (opClass) =>
       canAgentControl({
         agentActEnabled: entry.agentAct,
         viewOpen: entry.manager.getState().open,
-      });
+      }, opClass);
 
     browserPanels.set(id, entry);
     return entry;
@@ -1123,6 +1126,24 @@ function setupWindowContents(win, backendUrl) {
   win._mcBrowserPanel = browserPanel;
   win._mcBrowserPanels = browserPanels;
   win._mcDestroyBrowserPanel = destroyBrowserPanel;
+  // Chat sessions this window hosts that MAY host a browser panel, whether or
+  // not one is mounted right now.
+  //
+  // This is what makes the built-in browser the default. The agent command
+  // channel only long-polls the gateway for the session keys it reports, and the
+  // gateway's command bus treats "a key was polled for" as "a live panel exists"
+  // — so a chat whose Browser tab was never opened had NO key, the bus answered
+  // NoPanelError, and the very first "open this page" fell back to the Playwright
+  // mirror. Reporting only `browserPanels.keys()` therefore made the on-demand
+  // bootstrap below unreachable in exactly the case it exists for.
+  //
+  // Kept SEPARATE from `browserPanels` on purpose: closing the panel destroys its
+  // entry (see `browser:close`), and a session must stay reachable across that so
+  // the next request re-opens natively instead of silently degrading.
+  //
+  // Declaring a session grants nothing — every op still runs the per-class gate.
+  const agentSessions = new Set();
+  win._mcAgentSessions = agentSessions;
 
   // ── Agent command channel ──
   // The agent's `browser_*` MCP calls originate in the Python gateway, which has
@@ -1139,11 +1160,18 @@ function setupWindowContents(win, backendUrl) {
     fetchFn: (url, init) => fetch(url, init),
     getGatewayUrl: () => win._mcBackendUrl,
     getSecret: () => readInternalSecret(),
-    // Only panels that actually exist can be driven; an empty list parks the
-    // poller instead of spinning.
-    listPanelIds: () => [...browserPanels.keys()],
+    // Panels that exist PLUS sessions that may host one on demand. Reporting a
+    // key is what registers it with the gateway's command bus, so a declared-but-
+    // unmounted session must appear here or its first navigate can never arrive.
+    // An empty list parks the poller instead of spinning.
+    listPanelIds: () => [...new Set([...browserPanels.keys(), ...agentSessions])],
     dispatch: async (sessionKey, op, args) => {
-      const entry = browserPanel(sessionKey, { create: false });
+      // The embedded browser is the DEFAULT renderer for the agent's pages, so a
+      // `navigate` may CREATE the panel it needs. Any other op has no page to act
+      // on until one exists, so it still requires a live panel.
+      const opClass = agentOpClass(op);
+      const bootstrapping = op === "navigate";
+      const entry = browserPanel(sessionKey, { create: bootstrapping });
       if (!entry) throw new Error(`no native browser panel for session ${sessionKey}`);
       // A `navigate` is what BOOTSTRAPS the view, and the ORDER here matters.
       // `canAgentControl` refuses with `no-browser-view` when nothing is open, so
@@ -1151,31 +1179,52 @@ function setupWindowContents(win, backendUrl) {
       // agent's very first "open this page" would fall back to Playwright and
       // never reach the native browser, defeating the point of routing natively.
       //
-      // Authorization is still enforced first and separately: agent-act must
-      // already be granted. Only the "a view exists" precondition is satisfied by
-      // creating one, never the permission itself.
-      if (op === "navigate" && !entry.manager.getWebContents()) {
-        const pre = entry.gate();
-        if (!pre || !pre.agentActEnabled) {
-          throw new Error("browser control refused: agent-act-not-authorized");
+      // Authorization is still enforced first and separately, per op CLASS: a
+      // view-class op needs no "let the agent act" grant (the user asking for a
+      // page IS the consent, and the human's own panel controls reach the same
+      // `manager.navigate` with no gate at all), while an operate-class op does.
+      // Only the "a view exists" precondition is ever satisfied by creating one,
+      // never the permission itself.
+      if (bootstrapping && !entry.manager.getWebContents()) {
+        const pre = entry.gate(opClass);
+        // Check `allowed`, and tolerate ONLY the absent-view reason we are about
+        // to satisfy by opening one. Reading a property the gate does not return
+        // (it answers {allowed, reason}) would make this branch's verdict a
+        // constant — which is exactly how the pre-native-default code refused
+        // every bootstrap even with the Globe on.
+        if (!pre.allowed && pre.reason !== "no-browser-view") {
+          throw new Error(`browser control refused: ${pre.reason}`);
         }
         // `manager.navigate` creates the view when none is open and applies the
-        // same non-web URL guard as the CDP path.
+        // same http/https-only guard as the CDP path and the human's own control.
         const opened = entry.manager.navigate(String((args && args.url) || ""));
         if (opened && opened.refused) {
           return { ok: false, code: "bad_url", error: `refused non-web URL: ${args && args.url}` };
         }
+        // The view now exists in THIS process but the dashboard owns layout, so
+        // without a rect it would be composited nowhere and the user would see an
+        // empty panel. Tell the SPA to surface the Browser panel for this session
+        // so it mounts, measures and reports bounds (see useNativeBrowser).
+        try {
+          view.webContents.send("browser:agent-opened", {
+            panelId: sessionKey,
+            url: (opened && opened.url) || String((args && args.url) || ""),
+          });
+        } catch {
+          // A torn-down dashboard view must not fail the navigation itself.
+        }
         // Take LIGHT now that a view exists, so ownership is recorded for the ops
         // that follow and the same gate runs against the real post-open state.
-        const takenAfterOpen = await entry.control.setOwner(OWNER.LIGHT, entry.gate());
+        const takenAfterOpen = await entry.control.setOwner(OWNER.LIGHT, entry.gate(opClass));
         if (takenAfterOpen.refused) {
           throw new Error(`browser control refused: ${takenAfterOpen.refused}`);
         }
         return { ok: true, url: (opened && opened.url) || String((args && args.url) || "") };
       }
-      // The agent is acting unattended, so it must hold LIGHT — and taking it
-      // runs the same gate (agent-act authorization) as any other transition.
-      const taken = await entry.control.setOwner(OWNER.LIGHT, entry.gate());
+      // Driving the page over CDP requires LIGHT; taking it runs the gate for
+      // THIS op's class, so an operate-class op still needs the Globe while a
+      // view-class read does not.
+      const taken = await entry.control.setOwner(OWNER.LIGHT, entry.gate(opClass));
       if (taken.refused) throw new Error(`browser control refused: ${taken.refused}`);
       return dispatchBrowserOp(entry, op, args);
     },
@@ -2479,27 +2528,51 @@ app.whenReady().then(async () => {
   // The dashboard renderer is the authority on whether the agent is authorized
   // to act (it owns that toggle), so it pushes the flag; the main process keeps
   // it per panel and evaluates the gate itself on every transition.
+  ipcMain.handle("browser:register-session", (event, panelId) => {
+    // The renderer declares which chat session may host a browser panel, because
+    // only it knows the open chat slots. Idempotent, and NOT an authorization:
+    // it makes the session reachable by the agent command channel, while every
+    // op still runs the per-class gate in `dispatch`.
+    const owner = windowForWebContents(event.sender);
+    const set = owner && owner._mcAgentSessions;
+    const id = typeof panelId === "string" ? panelId.trim() : "";
+    if (!set || !id) return { ok: false };
+    set.add(id);
+    return { ok: true };
+  });
   ipcMain.handle("browser:set-agent-act", async (event, panelId, enabled) => {
     const p = panelFor(event, panelId);
     if (!p) return { ok: false };
     p.agentAct = !!enabled;
-    // Revocation must STOP an agent that is already driving, not merely refuse
-    // its next transition. Flipping the flag alone left the plane still holding
-    // LIGHT with the debugger attached, so ops kept succeeding against a view
-    // that carries the user's logged-in session. Releasing here makes the
-    // withdrawal take effect immediately.
+    // Revocation must STOP an agent that is ALREADY DRIVING, not merely refuse
+    // its next op. `dispatch` checks the gate before an op starts, but an
+    // operate-class op is several awaits long (ref resolution, focus, then the
+    // Input.* send) — so a revoke landing mid-flight would otherwise let the
+    // already-authorized keystroke still reach a logged-in page. Releasing
+    // detaches LIGHT, and `send()` then throws for the rest of that op.
+    //
+    // This does NOT re-couple the built-in browser to the Globe: every op in
+    // `dispatch` re-acquires LIGHT under ITS OWN class gate, so the next
+    // view-class op (snapshot / screenshot / navigate) simply re-attaches via
+    // `gate("view")` with the Globe still off. Only operate-class ops stay
+    // refused, which is the boundary the Globe is for.
     if (!p.agentAct) await p.control.release();
     return { ok: true };
   });
   ipcMain.handle("browser:set-control-owner", async (event, panelId, requested) => {
     const p = panelFor(event, panelId, { create: false });
     if (!p) return null;
-    return p.control.setOwner(requested, p.gate());
+    // Ownership is "who holds the debugger", not "what may be done with it", so
+    // it is acquired under the VIEW class: it needs a live view, not a Globe
+    // grant. Every op then re-runs the gate for its own class in `dispatch`.
+    return p.control.setOwner(requested, p.gate("view"));
   });
   ipcMain.handle("browser:get-control", (event, panelId) => {
     const p = panelFor(event, panelId, { create: false });
     if (!p) return null;
-    return { owner: p.control.getOwner(), attached: p.control.isAttached(), gate: p.gate() };
+    // The reported `gate` answers the question the UI actually asks — "may the
+    // agent ACT on this page?" — so it is the operate-class verdict.
+    return { owner: p.control.getOwner(), attached: p.control.isAttached(), gate: p.gate("operate") };
   });
   // Op dispatch. Deliberately a CLOSED verb set — never a raw CDP method from
   // the caller — so the control surface cannot be widened by whoever calls it.

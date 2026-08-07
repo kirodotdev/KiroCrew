@@ -468,18 +468,24 @@ describe('WebPreviewPanel — native browser transport', () => {
     expect(screen.getByAltText('Live browser session')).toBeInTheDocument()
   })
 
-  it('wires the Globe toggle: ON acquires LIGHT control, OFF releases to NONE', async () => {
+  it('wires the Globe toggle to agent-act authorization, NOT to debugger ownership', async () => {
     const api = installNativeBridge(true)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
     await screen.findByText('Let the agent act')
-    // Globe ON → mirror agent-act authorization AND request LIGHT.
+    // Globe ON → mirror agent-act authorization into the main process.
     act(() => { window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: true } })) })
-    await waitFor(() => expect(api.setControlOwner.mock.calls.at(-1)?.[1]).toBe('light'))
-    expect(api.setAgentAct.mock.calls.at(-1)?.[1]).toBe(true)
-    // Globe OFF → actively release.
+    await waitFor(() => expect(api.setAgentAct.mock.calls.at(-1)?.[1]).toBe(true))
+    // Globe OFF → withdraw the authorization...
     act(() => { window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: false } })) })
-    await waitFor(() => expect(api.setControlOwner.mock.calls.at(-1)?.[1]).toBe('none'))
-    expect(api.setAgentAct.mock.calls.at(-1)?.[1]).toBe(false)
+    await waitFor(() => expect(api.setAgentAct.mock.calls.at(-1)?.[1]).toBe(false))
+    // ...but never by RELEASING control. Ownership follows whether a page EXISTS,
+    // not the Globe, because view-class reads (snapshot / screenshot) need the
+    // debugger too; operate-class ops are refused at the main-process gate
+    // instead. Detaching here is what used to force a plain "open this page"
+    // onto the mirror transport. This bridge has a page open, so once the state
+    // resolves LIGHT is held — and flipping the Globe off does not drop it.
+    // (The very first request is 'none': no page is known until getState lands.)
+    await waitFor(() => expect(api.setControlOwner.mock.calls.at(-1)?.[1]).toBe('light'))
   })
 
   it('hides (never destroys) the native view when the panel goes inactive, and closes it on unmount', async () => {
