@@ -2698,6 +2698,7 @@ class ScriptHookStore:
         subagent_id: str | None = None,
         parent_session_key: str | None = None,
         agent_role: str | None = None,
+        hook_continuation_count: int = 0,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -2729,6 +2730,15 @@ class ScriptHookStore:
             # Unconditional (even when "") so an empty/no-output Stop turn still
             # carries the key and a hook that always reads it never KeyErrors.
             hook_event["assistant_text"] = context
+            # Advisory self-limiting signals: hook_continuation_count is the depth
+            # of the current unbroken continuation run (0 on a normal turn), and
+            # stop_hook_active is its boolean shorthand (count > 0). Kiro's Stop
+            # contract defines no cap and neither field, so these are additive: a
+            # hook may self-limit, diagnose, or surface the count to the model,
+            # while a real gate hook checks its own condition and ignores them.
+            # Stamped unconditionally so the keys are always present.
+            hook_event["hook_continuation_count"] = hook_continuation_count
+            hook_event["stop_hook_active"] = hook_continuation_count > 0
         if tool_name:
             hook_event["tool_name"] = tool_name
         if tool_input is not None:

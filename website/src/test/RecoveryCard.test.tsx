@@ -13,6 +13,7 @@ const STALLED = '[Stalled turn — automatic recovery]'
 const TOOL_STALL = '[Tool stall — automatic recovery]'
 const POSTTOKEN = '[Interrupted turn — automatic recovery]'
 const EMPTY = '[Empty response — automatic recovery]'
+const HOOK = '[Hook continuation — automatic]'
 
 /** A refusal body shaped the way build_refusal_recovery_prompt() emits it. */
 function refusalBody(items: string[]): string {
@@ -119,6 +120,38 @@ describe('parseRecoveryMessage', () => {
     expect(empty?.kind).toBe('empty')
     expect(empty?.title).toBe('No response returned')
     expect(empty?.detail).toBe('empty output · continuing automatically')
+  })
+
+  it('names the hook as the cause and does not claim the turn was interrupted', () => {
+    // A Stop hook returned {"decision":"block","reason":...}; the reason becomes
+    // the body. The turn RAN TO COMPLETION, so any interruption or recovery
+    // wording here would describe an event that never happened.
+    const hook = parseRecoveryMessage(
+      `${HOOK}\nYour previous turn ended by offering a trivial read-only option. Perform it now.`,
+    )
+    expect(hook?.kind).toBe('hook')
+    expect(hook?.title).toBe('Continued by a hook')
+    expect(hook?.detail).toBe('requested by a hook · continuing')
+    expect(hook?.chip).toBe('')
+    expect(hook?.body.startsWith('[')).toBe(false)
+    expect(hook?.body).toContain('trivial read-only option')
+
+    for (const text of [hook?.title, hook?.detail]) {
+      expect(text?.toLowerCase()).not.toContain('interrupt')
+      expect(text?.toLowerCase()).not.toContain('recover')
+      expect(text?.toLowerCase()).not.toContain('stall')
+    }
+  })
+
+  it('does not attribute a hook continuation to the user', () => {
+    // `manual` is the user-pressed Continue row and reads "Continued at your
+    // request". A hook continuation is machine-driven, so it must not borrow it.
+    const hook = parseRecoveryMessage(`${HOOK}\nKeep going.`)
+    const manual = parseRecoveryMessage('[Continue — requested by the user]\nKeep going.')
+
+    expect(hook?.kind).toBe('hook')
+    expect(manual?.kind).toBe('manual')
+    expect(hook?.title).not.toBe(manual?.title)
   })
 })
 

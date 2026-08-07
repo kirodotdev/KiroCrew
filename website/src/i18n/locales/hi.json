@@ -6727,8 +6727,10 @@
       "recoveryCard": {
         "backend_error_continuing": "बैकएंड त्रुटि · स्वतः जारी",
         "cancelled_continuing": "रद्द · जारी",
+        "continued_by_a_hook": "हुक द्वारा जारी किया गया",
         "continued_by_you": "अनुरोध पर जारी किया गया",
         "empty_output_continuing": "खाली आउटपुट · स्वतः जारी",
+        "hook_requested_continuing": "हुक ने अनुरोध किया · जारी",
         "n_patterns": "{{count}} पैटर्न",
         "n_tool_calls_blocked": "{{count}} टूल कॉल अवरुद्ध",
         "no_response_returned": "कोई प्रतिक्रिया नहीं मिली",

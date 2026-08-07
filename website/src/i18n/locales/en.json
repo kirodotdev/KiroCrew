@@ -4598,8 +4598,10 @@
       "recoveryCard": {
         "backend_error_continuing": "backend error · continuing automatically",
         "cancelled_continuing": "cancelled · continuing",
+        "continued_by_a_hook": "Continued by a hook",
         "continued_by_you": "Continued at your request",
         "empty_output_continuing": "empty output · continuing automatically",
+        "hook_requested_continuing": "requested by a hook · continuing",
         "n_patterns": "{{count}} patterns",
         "n_tool_calls_blocked": "{{count}} tool calls blocked",
         "no_response_returned": "No response returned",

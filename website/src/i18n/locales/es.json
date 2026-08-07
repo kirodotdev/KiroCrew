@@ -6802,8 +6802,10 @@
       "recoveryCard": {
         "backend_error_continuing": "error del backend · continuando automáticamente",
         "cancelled_continuing": "cancelado · continuando",
+        "continued_by_a_hook": "Continuado por un hook",
         "continued_by_you": "Continuado a petición tuya",
         "empty_output_continuing": "salida vacía · continuando automáticamente",
+        "hook_requested_continuing": "solicitado por un hook · continuando",
         "n_patterns": "{{count}} patrones",
         "n_tool_calls_blocked": "{{count}} llamadas de herramienta bloqueadas",
         "no_response_returned": "Sin respuesta",
