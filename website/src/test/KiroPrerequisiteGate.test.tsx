@@ -42,6 +42,7 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
     repair_required: false,
     docs_url: 'https://kiro.dev/cli/',
     login_command: 'kiro-cli login',
+    sso_login_command: 'kiro-cli login --use-device-flow --license pro',
     setup_allowed: true,
     sandbox_unavailable: false,
     sandbox_failure_kind: '',
@@ -201,6 +202,15 @@ describe('KiroPrerequisiteGate', () => {
       .toBeInTheDocument()
     // The command is rendered verbatim so it can be copied and typed.
     expect(screen.getByText('kiro-cli login').tagName).toBe('CODE')
+    // Both tiers are offered, each under a label naming which account it signs
+    // into. The sign-in page presents a free Builder ID as a peer of
+    // organization SSO, so a gate that showed only the bare command would let an
+    // SSO user authenticate into the wrong tier and discover it later as
+    // missing models.
+    expect(screen.getByText('kiro-cli login --use-device-flow --license pro').tagName)
+      .toBe('CODE')
+    expect(screen.getByText(/Personal account/)).toBeInTheDocument()
+    expect(screen.getByText(/Organization SSO/)).toBeInTheDocument()
     // The only action is a re-check.
     expect(screen.getByRole('button', { name: /Check again/ })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()

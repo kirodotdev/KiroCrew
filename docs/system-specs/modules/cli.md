@@ -178,14 +178,16 @@ from a different later installation.
   A candidate that already runs is directly usable for sign-in regardless of
   install source; the post-installer attestation file is now write-only
   bookkeeping and does not gate credential access.
-- Installed but signed out: the setup page starts
-  `kiro-cli login --use-device-flow`, relays its sign-in URL/code, and requires
-  a successful `kiro-cli whoami` before continuing. Only the official
-  `app.kiro.dev` sign-in host and the Kiro device-flow `/start` path on
-  `view.awsapps.com` become clickable links. Backend parsing rejects URL
-  userinfo, backslashes, and control characters, and the browser independently
-  reparses and applies the same scheme/port/host/path allowlist before rendering
-  a link.
+- Installed but signed out: the setup page names the commands the USER runs and
+  runs nothing itself — `kiro-cli login` for a personal account (Builder ID,
+  Google, or GitHub), or `kiro-cli login --use-device-flow --license pro` for
+  organization SSO, which prompts for the organization's start URL and region.
+  Both are backend code constants rendered verbatim in a `<code>`, never catalog
+  values, because a translated command cannot be typed. Both tiers are named
+  because the browser portal the bare command opens presents a free Builder ID
+  as a peer of organization SSO; Kiro Crew does not detect which tier applies,
+  so the gate describes the choice and the user makes it. Sign-in completion is
+  observed only through the read-only `kiro-cli whoami` probe.
 - Browser dashboard: the authenticated SPA gate operates on the **gateway
   host**, not the browser host. This covers native Windows source installs,
   Linux gateways, and browsers connected to another machine.

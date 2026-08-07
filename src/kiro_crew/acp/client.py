@@ -713,9 +713,18 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
         self.model_id = model_id
         self.advertised = list(advertised or [])
         usable = ", ".join(self.advertised) if self.advertised else "none advertised"
+        # The identity hint is CONDITIONAL by construction ("if you expected") and
+        # names only a read-only probe. A user genuinely on a free tier is
+        # correctly served by the first sentence and should not be nudged toward
+        # re-authenticating, so this must never read as an instruction to log out:
+        # `whoami` answers "which tier am I actually on" for the user who signed in
+        # to the wrong one, and merely confirms the situation for everyone else.
         super().__init__(
             f"The model {model_id!r} is not available on your account. "
-            f"Available models: {usable}.",
+            f"Available models: {usable}. "
+            f"If you expected this model to be included in your plan, check which "
+            f"account you are signed in as with `kiro-cli whoami` — a Builder ID "
+            f"sign-in carries a different entitlement than organization SSO.",
             transient=False,
         )
 

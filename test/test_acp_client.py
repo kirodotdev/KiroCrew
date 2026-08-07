@@ -8976,6 +8976,15 @@ class TestModelEntitlementPreflight:
         # The actionable part: what they CAN pick.
         assert "claude-sonnet-4.6" in msg
         assert "claude-haiku-4.5" in msg
+        # The identity hint stays CONDITIONAL and read-only. This error also
+        # reaches users who really are on a free tier and for whom picking an
+        # advertised model is the whole fix, so it must not read as an
+        # instruction to re-authenticate: `whoami` only reports which tier is
+        # signed in, and no destructive step is ever named.
+        assert "if you expected" in msg.lower()
+        assert "kiro-cli whoami" in msg
+        assert "logout" not in msg.lower()
+        assert "kiro-cli login" not in msg
         # Terminal, and EXPLICITLY so -- None would send the retry layer back to
         # string-matching, which is what produced the retry rows.
         assert excinfo.value.transient is False
