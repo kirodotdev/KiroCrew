@@ -3017,7 +3017,7 @@ function ChatSidebar({
                       <span className="flex-1">
                         {i18nT('pages.chatSidebar.folders')}
                         {filterHiddenFolders.size > 0 && (
-                          <span className="normal-case tracking-normal"> · {filterHiddenFolders.size} hidden</span>
+                          <span className="normal-case tracking-normal"> · {filterHiddenFolders.size} {i18nT('pages.chatSidebar.hidden')}</span>
                         )}
                       </span>
                     </DropdownMenuItem>

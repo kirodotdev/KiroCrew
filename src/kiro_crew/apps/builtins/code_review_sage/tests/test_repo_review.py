@@ -1,6 +1,7 @@
 """Tests for the repo-review feature: repo-URL parsing, open-PR enumeration
 (gh CLI, mocked), and the durable reviewed-index dedup store."""
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -58,7 +59,8 @@ class TestListOpenPrs(unittest.TestCase):
     def test_parses_jsonl(self):
         jsonl = "\n".join([
             json.dumps({"url": "https://github.com/o/r/pull/1", "number": 1,
-                        "head_sha": "abc", "title": "one"}),
+                        "head_sha": "abc", "title": "one", "author": "ann",
+                        "updated_at": "2026-07-01T00:00:00Z", "draft": False}),
             json.dumps({"url": "https://github.com/o/r/pull/2", "number": 2,
                         "head_sha": "def", "title": "two"}),
             "",  # trailing blank line tolerated
@@ -67,7 +69,12 @@ class TestListOpenPrs(unittest.TestCase):
             prs = pipeline.list_open_prs("o", "r")
         self.assertEqual(len(prs), 2)
         self.assertEqual(prs[0], {"url": "https://github.com/o/r/pull/1", "number": 1,
-                                  "head_sha": "abc", "title": "one"})
+                                  "head_sha": "abc", "title": "one", "author": "ann",
+                                  "updated_at": "2026-07-01T00:00:00Z", "draft": False})
+        # Fields absent from the payload degrade to empty/false, never KeyError —
+        # the picker renders them directly.
+        self.assertEqual(prs[1]["author"], "")
+        self.assertFalse(prs[1]["draft"])
 
     def test_uses_list_argv_no_shell(self):
         captured = {}
@@ -80,7 +87,12 @@ class TestListOpenPrs(unittest.TestCase):
             pipeline.list_open_prs("o", "r")
         self.assertIsInstance(captured["argv"], list)     # never a shell string
         self.assertNotIn("shell", captured["kw"])         # never shell=True
-        self.assertEqual(captured["argv"][:3], ["gh", "api", "repos/o/r/pulls?state=open&per_page=100"])
+        # argv[0] is a VALIDATED absolute gh path (shared with the dashboard PR
+        # panel's resolver), deliberately not a bare "gh" off PATH.
+        self.assertTrue(os.path.isabs(captured["argv"][0]), captured["argv"][0])
+        self.assertEqual(os.path.basename(captured["argv"][0]), "gh")
+        self.assertEqual(captured["argv"][1:3],
+                         ["api", "repos/o/r/pulls?state=open&per_page=100"])
 
     def test_nonzero_exit_raises(self):
         with patch.object(pipeline.subprocess, "run",

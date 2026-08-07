@@ -796,9 +796,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "deploy/scan.py",
         # Bundled app backends: each app's own surface, not core egress.
         "apps/builtins/auto_research/handlers.py",
+        "apps/builtins/code_review_sage/sage_lib/learning.py",
         "apps/builtins/code_review_sage/sage_lib/pipeline.py",
         "apps/builtins/code_review_sage/sage_lib/report.py",
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
+        # `store` DEFINES this app's redactor (`redact_text`) so every reader in the
+        # app can scrub, not just the posting path; `discovery` calls it when reading
+        # the worker-writable pinned-repo file before the sidebar renders it. Both
+        # are the app's own surface, same classification as its siblings above.
+        "apps/builtins/code_review_sage/sage_lib/store.py",
+        "apps/builtins/code_review_sage/sage_lib/discovery.py",
         "apps/builtins/dev_fleet/server.py",
         "apps/builtins/issue_radar/backend/routes.py",
         "apps/builtins/meetings/backend/domain/session.py",

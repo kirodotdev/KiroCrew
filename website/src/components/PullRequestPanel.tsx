@@ -14,7 +14,6 @@ import {
   GitPullRequestClosed,
   GitPullRequestDraft,
   Loader,
-  MessageSquare,
   RefreshCw,
   SkipForward,
   XCircle,
@@ -42,6 +41,7 @@ import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
+import CommentThreads from './CommentThreads'
 import { Btn } from './ui'
 
 
@@ -448,7 +448,7 @@ const CHECK_META = {
   skipped: { icon: SkipForward, color: 'text-muted', get label() { return i18nT('components.pullRequestPanel.check_skipped') } },
 } as const
 
-function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; source: PullRequestSource; onAddToChat: (text: string) => void }) {
+function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; source: PullRequestSource; onAddToChat?: (text: string) => void }) {
   const meta = CHECK_META[check.bucket]
   const Icon = meta.icon
   // `meta.label` is the last-resort status, read where it renders (and in the
@@ -467,7 +467,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
     if (checkUrl) lines.push(`- Details: ${checkUrl}`)
     if (sourceUrl) lines.push(`- Pull request: ${sourceUrl}`)
     lines.push('', 'Investigate why this check is failing and propose a fix.')
-    onAddToChat(lines.join('\n'))
+    onAddToChat?.(lines.join('\n'))
   }
   const details = (
     <>
@@ -495,7 +495,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5">{details}</div>
       )}
-      {check.bucket === 'failed' && (
+      {check.bucket === 'failed' && onAddToChat && (
         <Btn
           type="button"
           onClick={handoff}
@@ -508,73 +508,23 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
   )
 }
 
-function CommentCard({ comment, url, onAddToChat }: { comment: PullRequestComment; url: string; onAddToChat: (text: string) => void }) {
-  const location = comment.path ? `${comment.path}${comment.line ? `:${comment.line}` : ''}` : ''
-  const commentUrl = safeExternalUrl(comment.url)
-  const [expanded, setExpanded] = useState(true)
-  const queryClient = useQueryClient()
-  const resolveMutation = useMutation({
-    mutationFn: () => api.resolvePullRequestThread(url, comment.threadId || ''),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['pull-request-source'] }) },
-  })
-  const canResolve = !!comment.resolvable && !comment.resolved && !!comment.threadId
-  return (
-    <article className="border border-border rounded-lg bg-card overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated/30">
-        <Btn
-          type="button"
-          onClick={() => setExpanded(value => !value)}
-          className="shrink-0 p-0.5 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-          aria-expanded={expanded}
-          aria-label={expanded ? i18nT('components.pullRequestPanel.collapse_comment') : i18nT('components.pullRequestPanel.expand_comment')}
-        >
-          {expanded ? <ChevronDown className="lucide-inline" /> : <ChevronRight className="lucide-inline" />}
-        </Btn>
-        <MessageSquare className="lucide-inline text-muted shrink-0" />
-        <span className="text-[12px] font-medium text-text truncate">{comment.author || i18nT('components.pullRequestPanel.unknown_reviewer')}</span>
-        {comment.state && <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-muted capitalize shrink-0">{comment.state.toLowerCase()}</span>}
-        <div className="ml-auto flex items-center gap-2 shrink-0">
-          <span className="text-[11px] text-muted">{age(comment.createdAt)}</span>
-          {commentUrl && (
-            <a href={commentUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent hover:underline inline-flex items-center gap-1">
-              {i18nT('components.pullRequestPanel.open')} <ExternalLink className="lucide-inline" />
-            </a>
-          )}
-          {resolveMutation.error && (
-            <span className="text-[11px] text-danger">{i18nT('components.pullRequestPanel.could_not_resolve')}</span>
-          )}
-          {canResolve && (
-            <Btn
-              type="button"
-              onClick={() => resolveMutation.mutate()}
-              disabled={resolveMutation.isPending}
-              className="text-[11px] px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Check className="lucide-inline" /> {i18nT('components.pullRequestPanel.resolve')}
-            </Btn>
-          )}
-          {comment.resolved && (
-            <span className="text-[11px] text-muted inline-flex items-center gap-1"><Check className="lucide-inline text-ok" /> {i18nT('components.pullRequestPanel.resolved')}</span>
-          )}
-          <Btn
-            type="button"
-            onClick={() => onAddToChat(`PR comment from ${comment.author || 'a reviewer'}${location ? ` on ${location}` : ''}:\n\n> ${comment.body.replace(/\n/g, '\n> ')}`)}
-            className="text-[11px] px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-          >
-            {i18nT('components.pullRequestPanel.add_to_chat')}
-          </Btn>
-        </div>
-      </div>
-      {expanded && (
-        <>
-          {location && <div className="px-3 pt-2 text-[11px] text-muted truncate">{location}</div>}
-          <div className="px-3 py-2 text-[13px] text-text">
-            {comment.body ? <MarkdownRenderer content={comment.body} /> : <span className="text-muted">{i18nT('components.pullRequestPanel.no_written_comment')}</span>}
-          </div>
-        </>
-      )}
-    </article>
-  )
+/** The text handed to the composer for one comment.
+ *
+ *  The frame is localized and the comment body is quoted verbatim. The composer
+ *  is something the USER reads before sending, so the scaffolding follows the
+ *  dashboard's language (the same reason the failing-check handoff reads its
+ *  status label through the catalog); the reviewer's own words are never
+ *  rewritten. */
+function commentHandoff(c: PullRequestComment): string {
+  const location = c.path ? `${c.path}${c.line ? `:${c.line}` : ''}` : ''
+  const author = c.author || i18nT('components.pullRequestPanel.a_reviewer')
+  const frame = location
+    ? i18nT('components.pullRequestPanel.quoting_a_pull_request_comment_by_author_on_loca', { author, location })
+    : i18nT('components.pullRequestPanel.quoting_a_pull_request_comment_by_author', { author })
+  // Markdown block quote: joined rather than interpolated so no prose-shaped
+  // template literal sits here for the string gate to (rightly) flag.
+  const quoted = '> ' + (c.body || '').split('\n').join('\n> ')
+  return [frame, '', quoted].join('\n')
 }
 
 function EmptyTab({ children }: { children: string }) {
@@ -713,7 +663,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   )
 }
 
-function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSource; tab: SourceTab; onAddToChat: (text: string) => void }) {
+function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSource; tab: SourceTab; onAddToChat?: (text: string) => void }) {
   if (tab === 'description') {
     return source.description
       ? <div className="px-4 py-4 text-[13px]"><MarkdownRenderer content={source.description} /></div>
@@ -782,12 +732,24 @@ function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSour
       </div>
     )
   }
-  return source.comments.length ? (
-    <div className="p-3 flex flex-col gap-3">
-      {source.comments.map((comment, index) => <CommentCard key={comment.id || index} comment={comment} url={source.url} onAddToChat={onAddToChat} />)}
+  // Threads, replies, resolve/unresolve and a top-level comment box all live in
+  // the shared `CommentThreads`. The provider returns a FLAT comment list, but
+  // inline comments carry a `threadId`, so the conversation structure is
+  // recoverable -- and a reply separated from the line it answers is not a review.
+  //
+  // Rendered unconditionally: it owns the "comment on this pull request" composer,
+  // so gating it on an existing comment would make the FIRST comment the one you
+  // cannot post. It draws its own empty state.
+  return (
+    <div className="p-3">
+      <CommentThreads
+        src={source}
+        // The panel owns what it says to the agent; the thread list only
+        // reports which comment was picked.
+        onAddToChat={onAddToChat && ((c) => onAddToChat(commentHandoff(c)))}
+      />
     </div>
-  ) : <EmptyTab>{i18nT('components.pullRequestPanel.no_pr_comments_or_reviews_were_returned')}</EmptyTab>
-}
+  )}
 
 export default function PullRequestPanel({
   sources,
@@ -805,7 +767,10 @@ export default function PullRequestPanel({
   // transcript that lacks the remembered url may simply be a cached one that is
   // still being refetched. Defaults to onSelect for callers that do not care.
   onReconcile?: (url: string) => void
-  onAddToChat: (text: string) => void
+  // Optional so the panel can render outside chat (e.g. the Code Review Sage
+  // page), where there is no composer to hand text to. When absent the
+  // chat-handoff affordances are hidden rather than rendered inert.
+  onAddToChat?: (text: string) => void
 }) {
   const cappedSources = sources.slice(0, MAX_PULL_REQUEST_SOURCES)
   const selected = cappedSources.find(source => source.url === selectedUrl) || cappedSources[0]
@@ -1018,6 +983,11 @@ export default function PullRequestPanel({
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      {/* The source strip only earns its row when there is a choice to make. A
+          single-source host (the Code Review Sage detail pane, where the left rail
+          already picked the pull request) would otherwise get a tab bar holding
+          exactly one tab that does nothing. */}
+      {cappedSources.length > 1 && (
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
         {cappedSources.map(item => (
           <Btn
@@ -1035,6 +1005,7 @@ export default function PullRequestPanel({
           </Btn>
         ))}
       </div>
+      )}
 
       {query.isLoading && <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-muted"><Loader className="lucide-inline animate-spin" />{i18nT('components.pullRequestPanel.loading_source_provider')}</div>}
       {query.error && (
@@ -1097,7 +1068,7 @@ export default function PullRequestPanel({
               <span className="min-w-0 flex-1">
                 <span className={`font-medium ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`}>{mergeBlocker.title}.</span> {mergeBlocker.detail}
               </span>
-              {mergeBlocker.handoff && (
+              {mergeBlocker.handoff && onAddToChat && (
                 <Btn
                   type="button"
                   onClick={() => onAddToChat(mergeBlocker.handoff!)}

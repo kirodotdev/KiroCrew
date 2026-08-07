@@ -110,20 +110,6 @@
     },
     "codeReviewSage": {
       "codeReviewSagePage": {
-        "active_loaded_during_reviews_uncheck_to_disable": "Active — loaded during reviews (uncheck to disable)",
-        "delete_namespace_and_all_its_learnings": "Delete namespace {{name}} and all its learnings",
-        "delete_namespace_confirm": "Delete namespace \"{{name}}\" and all its learnings?",
-        "force_review_all_count": "Force review all ({{count}})",
-        "inactive_check_to_load_during_reviews": "Inactive — check to load during reviews",
-        "load_namespace_during_reviews": "Load namespace {{name}} during reviews",
-        "review": "Review",
-        "review_new": "Review {{count}} new",
-        "running": "Running…",
-        "phase_deep": "deep review…",
-        "phase_done": "reviewed",
-        "phase_failed": "failed",
-        "phase_gating": "design gate…",
-        "phase_queued": "queued"
       }
     },
     "fileExplorer": {
@@ -1475,13 +1461,11 @@
       "checks": "Checks",
       "checks_running": "Checks running",
       "checks_unavailable": "Checks unavailable",
-      "collapse_comment": "Collapse comment",
       "commits": "Commits",
       "confirm_auto_merge": "Confirm auto-merge",
       "could_not_load_this_pull_request": "Could not load this pull request",
       "description": "Description",
       "enable_auto_merge": "Enable auto-merge",
-      "expand_comment": "Expand comment",
       "github_merges_this_pull_request_automatically_on": "GitHub merges this pull request automatically once required checks and reviews pass",
       "github_will_merge_this_pull_request_once_its_req": "GitHub will merge this pull request once its requirements pass",
       "gitlab_merges_this_merge_request_when_the_pipeli": "GitLab merges this merge request when the pipeline succeeds — it merges right away if no pipeline is pending",
@@ -1492,7 +1476,6 @@
       "refresh_pull_request": "Refresh pull request",
       "refreshing_pull_request": "Refreshing pull request",
       "reviews": "Reviews",
-      "unknown_reviewer": "Unknown reviewer",
       "untitled_commit": "Untitled commit",
       "branch_is_behind": "Branch is behind",
       "branch_protection_requirements_approving_reviews": "Branch protection requirements (approving reviews or required checks) are not yet satisfied.",

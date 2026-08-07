@@ -34,16 +34,21 @@ _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/pipeline.py` (run as script)
     sys.path.insert(0, _APP_ROOT)
 
-from sage_lib import adapters, blast_radius, results, store  # noqa: E402
+from sage_lib import adapters, blast_radius, discovery, results, store  # noqa: E402
+
+# Identifies a pending review as OURS. The poster matches on it to delete only its
+# own stale draft (never a human's in-progress one), and the driver matches on it to
+# confirm a delivery it is about to record. One definition so those two readers and
+# the writers below cannot drift apart.
+DRAFT_MARKER = "[code-review-sage]"
 
 
 def _redact(text: str) -> str:
-    """Scrub credentials + exfiltration URLs from LLM-generated text before it is
-    posted to an external surface (the code-review system). No-op when the
-    KiroCrew redaction lib isn't importable (standalone)."""
-    if redact_exfiltration_urls is None or redact_credentials is None:
-        return text
-    return redact_credentials(redact_exfiltration_urls(text)[0])[0]
+    """Scrub credentials + exfiltration URLs before text leaves for an external
+    surface. Delegates to `store`, which owns the redactor so readers outside the
+    posting path can apply the same scrub; kept under this name because tests and
+    other modules patch `pipeline._redact` to observe egress."""
+    return store.redact_text(text)
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +87,23 @@ def list_open_prs(owner: str, repo: str, *, timeout: float = 60.0) -> list[dict]
     ``adapters.parse_repo_url`` before this is called and are interpolated only
     into the ``gh api`` PATH argument (which `gh` treats as an API path, not a
     shell command), so there is no shell-injection surface. Returns
-    ``[{url, number, head_sha, title}]`` in GitHub's order. Raises
-    ``RuntimeError`` (with the stderr tail) if `gh` is missing, unauthenticated,
-    times out, or the repo can't be read."""
+    ``[{url, number, head_sha, title, author, updated_at, draft}]`` in GitHub's
+    order. Raises ``RuntimeError`` (with the stderr tail) if `gh` is missing,
+    unauthenticated, times out, or the repo can't be read.
+
+    The ``gh`` binary is resolved through ``discovery.gh_bin()`` — the same
+    validated resolution the dashboard's PR panel uses — rather than trusting a
+    bare ``gh`` off ``PATH``."""
     path = f"repos/{owner}/{repo}/pulls?state=open&per_page=100"
+    try:
+        gh = discovery.gh_bin()
+    except discovery.GhError as e:
+        raise RuntimeError(str(e)) from e
     argv = [
-        "gh", "api", path, "--paginate",
+        gh, "api", path, "--paginate",
         "--jq", ".[] | {url: .html_url, number: .number, "
-                "head_sha: .head.sha, title: .title}",
+                "head_sha: .head.sha, title: .title, author: .user.login, "
+                "updated_at: .updated_at, draft: .draft}",
     ]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True,
@@ -117,6 +131,9 @@ def list_open_prs(owner: str, repo: str, *, timeout: float = 60.0) -> list[dict]
             "number": obj.get("number"),
             "head_sha": obj.get("head_sha") or "",
             "title": obj.get("title") or "",
+            "author": obj.get("author") or "",
+            "updated_at": obj.get("updated_at") or "",
+            "draft": bool(obj.get("draft")),
         })
     # Non-silent: gh returned 0 but produced non-empty, unparseable output (e.g. a
     # gh build that pretty-prints jq). Don't masquerade that as "no open PRs".
@@ -230,7 +247,7 @@ def _comment_body(finding: dict) -> str:
         f"```{lang}\n{snippet}\n```\n\n"
         f"**Why it matters:** {finding.get('consequence', '').strip()}\n\n"
         f"**Suggestion:** {finding.get('suggestion', '').strip()}\n\n"
-        f"_[code-review-sage]_"
+        f"_{DRAFT_MARKER}_"
     )
     # Redact LLM-generated content before it leaves for an external surface.
     return _redact(body)
@@ -295,7 +312,7 @@ def build_ship_comment(record: dict) -> str:
     if design_block:
         tally.append("design flagged")
     tally_line = ("\n" + " · ".join(tally)) if tally else ""
-    body = f"{header}: {reason}{tally_line}\n\n_[code-review-sage]_"
+    body = f"{header}: {reason}{tally_line}\n\n_{DRAFT_MARKER}_"
     return _redact(body)
 
 
@@ -311,15 +328,39 @@ def build_pending_comments(record: dict) -> list[dict]:
     ship / no-ship call with the reason. It keeps kind ``design`` for the top-level
     anchor + posting accounting."""
     out: list[dict] = []
-    for f in record.get("findings", []) or []:
+    for i, f in enumerate(record.get("findings", []) or []):
         out.append({
             "kind": "finding",
+            # Stable identity for selective posting: the record is frozen once the
+            # review has run, and the report rows are generated from the same list
+            # in the same order, so the index is a durable handle the UI can name
+            # one comment by. Callers filter on this; nothing else keys off it.
+            "key": f"finding:{i}",
             "file": str(f.get("file", "")),
             "line": int(f.get("line", 0) or 0),
             "body": _comment_body(f),   # _comment_body already applies _redact
         })
-    out.append({"kind": "design", "body": build_ship_comment(record)})
+    out.append({"kind": "design", "key": "design",
+                "body": build_ship_comment(record)})
     return out
+
+
+def review_payload_units(payload: dict) -> int:
+    """How many deliverable units a GitHub review payload actually contains.
+
+    The poster is instructed to write ``posted_comments = len(comments) + 1 when
+    body is non-empty``, so delivery evidence is counted in PAYLOAD UNITS. Callers
+    used to compare that against the number of FINDINGS instead, which is a
+    different quantity: a finding with no usable ``{path, line}`` anchor is folded
+    into the review body rather than becoming its own inline comment (see
+    ``build_github_review_payload``). One unanchored finding therefore made a
+    complete delivery look short, and the caller then re-posted comments already on
+    the pull request.
+
+    This is the single place that number is derived, so the comparison in
+    ``post_recorded`` and the durable ``posting_expected`` cannot drift apart.
+    """
+    return len(payload.get("comments") or []) + (1 if payload.get("body") else 0)
 
 
 def build_github_review_payload(record: dict) -> dict:
@@ -340,7 +381,7 @@ def build_github_review_payload(record: dict) -> dict:
     # commit_id (revision) is written by the LLM worker, so redact it too before it
     # reaches the GitHub API — same egress treatment as body/path (idempotent; a
     # real SHA never matches credential/URL patterns).
-    commit_id = _redact(str(record.get("revision", "") or ""))
+    commit_id = _redact(str(record.get("revision", "") or "")).strip()
     body_parts: list[str] = []
     comments: list[dict] = []
     for e in pending:
@@ -366,8 +407,25 @@ def build_github_review_payload(record: dict) -> dict:
         elif text:
             body_parts.append(text)          # unanchored finding -> folded into the body
     payload: dict = {"body": "\n\n".join(p for p in body_parts if p), "comments": comments}
-    if commit_id:
-        payload["commit_id"] = commit_id     # anchors comments to the reviewed head
+    if not commit_id:
+        # Refuse rather than post unanchored. GitHub defaults a review with no
+        # `commit_id` to the pull request's CURRENT head, which silently breaks the
+        # invariant the whole submit path rests on: that a draft is bound to the head
+        # it was written against. The submit guard's stale-head check then compares
+        # the draft's head to the live head and passes trivially — they match because
+        # GitHub stamped it at post time, not because anything reviewed that code.
+        # `APPROVE` would authorize a head no review ever looked at.
+        #
+        # `revision` is not in the result contract's required keys, so a
+        # contract-valid record can reach here without one; that is exactly the
+        # case this refuses. Raising here rather than downstream keeps it a property
+        # of the payload: no caller can construct an unanchored review.
+        raise ValueError(
+            "refusing to build a review payload with no commit_id: the record has no "
+            "`revision`, and GitHub would anchor the draft to the current head "
+            "instead of the reviewed one"
+        )
+    payload["commit_id"] = commit_id         # anchors comments to the reviewed head
     # NOTE: intentionally NO "event" key -> the review stays PENDING (unsubmitted).
     return payload
 

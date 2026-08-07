@@ -613,6 +613,10 @@ export default [
               // same class as `fetch` directly above. Uniquely named so the
               // exclusion cannot mask a `call(...)`/`vq(...)` callee elsewhere.
               '^mdnbCall$', '^mdnbVaultQuery$',
+              // App-local request helpers. Their first argument is an endpoint path
+              // (often a template literal carrying a query string), which is the
+              // same machine value `fetch` above is excluded for.
+              '^(get|send)JSON$',
               'setAttribute', 'getAttribute', 'removeAttribute', 'classList\\.\\w+',
               // STRING COMPARISON. The argument is the value being compared AGAINST,
               // so that call cannot render it — the same reason the plugin already

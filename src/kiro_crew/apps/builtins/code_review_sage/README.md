@@ -3,8 +3,10 @@
 A self-evolving deep code reviewer packaged as a built-in KiroCrew app. Reviews
 **GitHub pull requests**, learns per-repository from shipped fixes + review
 comments + design discussions, and produces a prioritized **Focus Report** so
-you know which changes actually deserve scrutiny. Findings post as a **PENDING
-(draft) GitHub review** that you submit.
+you know which changes actually deserve scrutiny. Findings are read **in the
+app**, next to the pull request they came from — nothing is written to the pull
+request unless you turn on `review.auto_post`, which publishes them as a PENDING
+(draft) review for you to submit.
 
 ## Architecture (V1)
 

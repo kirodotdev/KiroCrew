@@ -76,7 +76,12 @@ test.describe('Builtin App Route resolution', () => {
     await page.goto('/code-review-sage', { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(/\/code-review-sage/)
     await expect(page.getByText('Code Review Sage')).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText(/Self-evolving deep reviewer/)).toBeVisible({ timeout: 10000 })
+    // The old page led with a hero tagline ("Self-evolving deep reviewer…").
+    // The shell replaced it: the rail's identity row carries the name, and the
+    // space the tagline occupied belongs to the report. Assert the section nav
+    // instead — it renders unconditionally, before any repo or run is loaded,
+    // which is what this spec is checking (the route resolves and mounts).
+    await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible({ timeout: 10000 })
   })
 
   // ── /workflows — WorkflowsPage ───────────────────────────────────────────
