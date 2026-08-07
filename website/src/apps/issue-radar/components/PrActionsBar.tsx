@@ -24,7 +24,7 @@ import {
   Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2, AlertTriangle,
 } from 'lucide-react'
 import { Btn } from '../../../components/ui'
-import { usePrActions, PR_ACTION, isMergeReady } from '../lib/prActions'
+import { usePrActions, PR_ACTION, isMergeReady, canArmAutoMerge as rowCanArm } from '../lib/prActions'
 import { providerTerms, isGitlab } from '../lib/links'
 import type { PrDetailData, PullRequest, RepoRef } from '../api'
 
@@ -120,7 +120,26 @@ export default function PrActionsBar({
   // ever produce an error, which is the "do not offer what the provider will refuse"
   // rule this bar follows everywhere else. An MR armed on GitLab's own UI still
   // DISPLAYS as armed via the read-side detail field.
-  const canArmAutoMerge = !isGitlab(repoRef)
+  const providerArms = !isGitlab(repoRef)
+  // Offer ARMING only for a PR the provider will actually accept it on. GitHub
+  // refuses `enablePullRequestAutoMerge` for a PR that is already mergeable ("clean
+  // status"), already merged, a draft, or `dirty` (a conflict), and answers a cold
+  // read with `unknown` — so `canArmAutoMerge` excludes all of those (see
+  // lib/prActions and the spec's four-refusals rule). Read from the live detail, not
+  // the stale list row. Without this gate the button was offered on every open PR and
+  // failed with a provider error on the reflexive case: a ready PR the user wanted to
+  // merge. This is the per-PR twin of the readiness gate the bulk bar already applies.
+  const armable = providerArms && rowCanArm({
+    state: detail?.state ?? pull.state,
+    draft: detail?.draft ?? pull.draft,
+    merged_at: detail?.merged_at ?? pull.merged_at,
+    mergeable_state: detail?.mergeable_state,
+  })
+  // The single button is BOTH affordances: it arms when off and cancels when on.
+  // Show it when arming is meaningful, OR when auto-merge is already armed so the
+  // cancel path stays reachable even once the PR has become mergeable (readiness no
+  // longer `armable`) — hiding it then would strand an armed PR with no way to disarm.
+  const showAutoMerge = providerArms && (armable || autoMergeOn)
   // `mergeable` is the provider's own verdict, and it is TRI-state: null means it is
   // still computing, so the button waits rather than flashing in and out. A draft is
   // never mergeable regardless of what the field says.
@@ -357,7 +376,7 @@ export default function PrActionsBar({
         </Btn>
       )}
 
-      {!closed && canArmAutoMerge && (
+      {!closed && showAutoMerge && (
         <Btn
           onClick={() => actions.setAutoMerge(!autoMergeOn)}
           disabled={Boolean(actions.busy)}

@@ -197,6 +197,10 @@ export default [
       // module parser-facing only, and keep it DOM-free, which is the property
       // that makes that easy to check.
       'src/hooks/themeCss.ts',
+      // Same rationale, different convention: this app keeps its seed prompts in a
+      // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
+      // payload sent over the wire, never rendered.
+      'src/apps/*/lib/prompts.ts',
     ],
     linterOptions: {
       // Every `eslint-disable` comment in this codebase targets the MAIN config's
@@ -461,6 +465,22 @@ export default [
               // presses, so translating it would mislabel their keyboard. Anchored and
               // enumerated, not a pattern: ordinary copy cannot match it.
               '^(Ctrl|Alt|Shift|Cmd|Win)$',
+              // Wire-protocol marker, not copy: the backend stamps `QUEUED:<fp>` onto a
+              // `pr` value that was queued rather than drafted
+              // (`spine/profile.py`: `return f"QUEUED:{fingerprint}"`), and the client only
+              // ever `startsWith()`-matches it. Translating it would break the match — the
+              // string is compared, never shown. Anchored with the colon so it cannot
+              // swallow the word "queued" used as prose.
+              '^QUEUED:$',
+              // Persisted IDENTITY, not copy: this prefix builds the chat-folder NAME that
+              // is also the lookup key (`folders.find(f => f.name === name)`, because there
+              // is no upsert endpoint). Translating it would make a language switch fail to
+              // find the existing folder and silently create a second one per language,
+              // orphaning every prior session. Anchored WITHOUT the trailing space: the
+              // plugin trims the literal before matching (`no-literal-string.js`: `const
+              // trimed = value.trim()`), so a pattern that requires the space can never
+              // match. Verified — the space-bearing version left the warning in place.
+              '^Auto-Improve -$',
             ],
           },
 

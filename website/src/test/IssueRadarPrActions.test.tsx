@@ -109,8 +109,11 @@ describe('PrActionsBar — merge boundaries', () => {
   it('offers Merge only when the provider says the PR is mergeable', async () => {
     // Not a gate bypass — the provider enforces branch protection on its own merge
     // endpoint. But a button on a BLOCKED PR would have only one outcome (a refusal),
-    // so it is not offered there; auto-merge is the affordance for that case.
-    wrap(<PrActionsBar repoRef={REF} pull={PULL} canWrite />)
+    // so it is not offered there; auto-merge is the affordance for that case — and it
+    // is offered precisely because `blocked` is an ARMABLE state (open, not ready
+    // yet), which the provider accepts `enablePullRequestAutoMerge` on.
+    const detail = { ...PULL, mergeable: true, mergeable_state: 'blocked', head_sha: 'abc1234' }
+    wrap(<PrActionsBar repoRef={REF} pull={PULL} detail={detail as never} canWrite />)
     expect(screen.queryByRole('button', { name: /^merge$/i })).toBeNull()
     expect(screen.getByRole('button', { name: /auto-merge/i })).toBeTruthy()
   })
@@ -180,7 +183,9 @@ describe('PrActionsBar — merge boundaries', () => {
   })
 
   it('arms the provider auto-merge rather than merging', async () => {
-    wrap(<PrActionsBar repoRef={REF} pull={PULL} canWrite />)
+    // An armable state (open, not landable yet) is what the provider accepts arming on.
+    const detail = { ...PULL, mergeable: true, mergeable_state: 'blocked', head_sha: 'abc1234' }
+    wrap(<PrActionsBar repoRef={REF} pull={PULL} detail={detail as never} canWrite />)
     await userEvent.click(screen.getByRole('button', { name: /auto-merge/i }))
     await waitFor(() => expect(api.setPrAutoMerge).toHaveBeenCalledWith(REF, 7, true, 'SQUASH'))
   })
@@ -190,6 +195,45 @@ describe('PrActionsBar — merge boundaries', () => {
     wrap(<PrActionsBar repoRef={REF} pull={PULL} detail={detail as never} canWrite />)
     await userEvent.click(screen.getByRole('button', { name: /cancel auto-merge/i }))
     await waitFor(() => expect(api.setPrAutoMerge).toHaveBeenCalledWith(REF, 7, false, 'SQUASH'))
+  })
+
+  it('does NOT offer to arm auto-merge where the provider would refuse it', () => {
+    // The single-PR twin of the bulk bar's readiness gate. GitHub refuses
+    // `enablePullRequestAutoMerge` on a PR that is already mergeable ("clean status"),
+    // already merged, a draft, or `dirty` (a conflict), and answers a cold read with
+    // `unknown` — arming any of these produced the 502 the button reported as failure.
+    // A `null`/absent state (detail not loaded yet) is unknown too, so the button waits
+    // rather than flashing an arm that would fail — the same rule Merge already follows.
+    const refuses = [
+      { mergeable_state: 'clean' },
+      { mergeable_state: 'unknown' },
+      { mergeable_state: 'dirty' },
+      { mergeable_state: 'blocked', draft: true },
+      { merged: true, merged_at: '2026-07-02T00:00:00Z', state: 'closed' },
+      {}, // no detail-derived state at all
+    ]
+    for (const over of refuses) {
+      const detail = { ...PULL, ...over }
+      const { unmount } = wrap(
+        <PrActionsBar repoRef={REF} pull={PULL} detail={detail as never} canWrite />,
+      )
+      expect(
+        screen.queryByRole('button', { name: /auto-merge/i }),
+        JSON.stringify(over),
+      ).toBeNull()
+      unmount()
+    }
+  })
+
+  it('keeps the cancel-auto-merge button reachable even once the PR is mergeable', () => {
+    // Arming is not offered on a `clean` PR, but an ALREADY-ARMED one must still expose
+    // its cancel path — the button is both affordances, and hiding it here would strand
+    // an armed PR with no way to disarm from the app.
+    const detail = {
+      ...PULL, mergeable_state: 'clean', auto_merge: { method: 'SQUASH', enabled_by: 'bob' },
+    }
+    wrap(<PrActionsBar repoRef={REF} pull={PULL} detail={detail as never} canWrite />)
+    expect(screen.getByRole('button', { name: /cancel auto-merge/i })).toBeTruthy()
   })
 })
 

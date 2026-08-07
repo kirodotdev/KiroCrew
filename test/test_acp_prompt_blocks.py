@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import random
 
 import pytest
 
@@ -398,3 +399,79 @@ class TestImageDownscale:
             assert 0x0112 not in out.getexif()  # tag baked away, not carried
             assert h > w  # rotation applied to the pixels -> portrait
             assert max(w, h) <= MAX_IMAGE_EDGE_PX
+
+
+def _noise_image(tmp_path, w, h, name="noise.png", fmt="PNG"):
+    """An image that resists compression, so its encoded size tracks pixel count."""
+    pil = pytest.importorskip("PIL.Image")
+    rnd = random.Random(1234)
+    img = pil.new("RGB", (w, h))
+    img.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(w * h)])
+    p = tmp_path / name
+    img.save(p, format=fmt)
+    return p
+
+
+class TestImageEncodedBudget:
+    """The per-image ENCODED byte ceiling.
+
+    The dimension cap alone is not enough: Bedrock rejects a single image over
+    5 MiB base64, and a raster can sit well inside 2000px while encoding past
+    that. A rejected image is replayed from history every later turn, so letting
+    one through wedges the whole session.
+    """
+
+    def test_default_cap_is_5_mib(self):
+        assert prompt_blocks.MAX_IMAGE_B64_BYTES == 5 * 1024 * 1024
+
+    def test_b64_len_matches_real_encoding(self):
+        for n in (0, 1, 2, 3, 4, 100, 1023, 4096):
+            assert prompt_blocks._b64_len(n) == len(base64.b64encode(b"x" * n))
+
+    def test_image_inside_dimension_cap_but_over_budget_is_shrunk(self, tmp_path):
+        """The exact production defect: dimensions are already legal, so the
+        dimension pass is a no-op, yet the payload still exceeds the wire limit.
+        """
+        p = _noise_image(tmp_path, 900, 900)
+        budget = len(base64.b64encode(p.read_bytes())) // 3
+        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=budget)
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert len(blocks[1]["data"]) <= budget
+        # Shrunk, not passed through: the bug was inlining the original here.
+        assert base64.b64decode(blocks[1]["data"]) != p.read_bytes()
+        assert max(_decoded_size(blocks[1])) < 900
+
+    def test_image_within_budget_is_byte_identical(self, tmp_path):
+        p = _sized_image(tmp_path, 100, 80)
+        original = p.read_bytes()
+        blocks = build_prompt_blocks(f"see {p}")
+        assert base64.b64decode(blocks[1]["data"]) == original
+
+    def test_unshrinkable_image_falls_back_to_a_path(self, tmp_path):
+        """Fail CLOSED: a budget no rendition can meet must leave the path as
+        text rather than inline a payload the backend will reject forever."""
+        p = _noise_image(tmp_path, 400, 400)
+        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=8)
+        assert [b["type"] for b in blocks] == ["text"]
+        assert str(p) in blocks[0]["text"]
+
+    def test_zero_budget_disables_the_check(self, tmp_path):
+        p = _noise_image(tmp_path, 120, 120)
+        original = p.read_bytes()
+        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=0)
+        assert base64.b64decode(blocks[1]["data"]) == original
+
+    def test_budget_applies_after_the_dimension_cap(self, tmp_path):
+        """Both caps hold at once -- shrinking for bytes must not reintroduce an
+        over-dimension rendition, and vice versa."""
+        p = _noise_image(tmp_path, 2400, 2400, name="big.jpg", fmt="JPEG")
+        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=400_000)
+        assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
+        assert len(blocks[1]["data"]) <= 400_000
+
+    def test_shrink_floor_is_respected(self, tmp_path):
+        """The loop never grinds an image below the usable-accuracy floor; it
+        gives up and hands back a path instead."""
+        p = _noise_image(tmp_path, 1000, 1000)
+        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=64)
+        assert [b["type"] for b in blocks] == ["text"]

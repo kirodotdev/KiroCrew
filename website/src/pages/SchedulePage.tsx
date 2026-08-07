@@ -1,11 +1,12 @@
 import { safeSetItem } from '../utils/safeStorage'
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import Clickable from '../components/Clickable'
 import { AnimatePresence, motion } from 'framer-motion'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2 } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder } from 'lucide-react'
 import { api } from '../api/client'
-import { PageHeader, Card, CardTitle, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton } from '../components/ui'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { PageHeader, Card, CardTitle, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton, Input } from '../components/ui'
 import SegmentedControl from '../components/SegmentedControl'
 import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
@@ -23,6 +24,13 @@ import SortableHeader from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { SCHEDULE_PRESETS, type CronPrefill } from '../utils/schedulePresets'
+import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
+import type { CronFolder } from '../utils/cronFolders'
+import CronFolderHeader from '../components/CronFolderHeader'
+import CronJobMoveMenu from '../components/CronJobMoveMenu'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '../components/ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateTimeNumeric } from '../i18n/format'
@@ -98,6 +106,80 @@ const fmtIn = (ts?: number | null) => {
   const d = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600); return `in ${d}d ${h}h`
 }
 
+/**
+ * Empty-state folder chip with confirm-before-delete, inline rename, and error display.
+ * Uses the same inline-edit pattern as CronFolderHeader (Enter=commit, Escape=cancel).
+ */
+function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFolder; onRename: (name: string) => void; onDelete: () => void; error: string | null }) {
+  const [confirming, setConfirming] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editName, setEditName] = useState(folder.name)
+
+  const commitRename = () => {
+    const trimmed = editName.trim()
+    if (trimmed && trimmed !== folder.name) onRename(trimmed)
+    setEditing(false)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-bg-elevated/30 border border-border mb-1.5">
+        <Folder size={14} className="text-accent shrink-0" />
+        {editing ? (
+          <Input
+            autoFocus
+            aria-label={i18nT('pages.schedulePage.cronFolders.rename')}
+            className="bg-bg rounded px-2 py-0.5 flex-none min-w-[120px]"
+            value={editName}
+            onChange={e => setEditName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitRename()
+              if (e.key === 'Escape') setEditing(false)
+            }}
+            onBlur={commitRename}
+          />
+        ) : (
+          <span className="text-sm font-medium text-text">{folder.name}</span>
+        )}
+        <span className="text-[12px] text-muted">{i18nT('pages.schedulePage.cronFolders.job_count', { count: 0 })}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Btn className="!p-1 !border-none ml-auto" aria-label={i18nT('pages.schedulePage.cronFolders.folder_actions')}>
+              <MoreHorizontal size={14} />
+            </Btn>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[140px]">
+            <DropdownMenuItem onSelect={() => { setEditName(folder.name); setTimeout(() => setEditing(true), 0) }}>
+              <Pencil size={13} className="shrink-0" />
+              <span>{i18nT('pages.schedulePage.cronFolders.rename')}</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setConfirming(true)} className="text-danger">
+              <Trash2 size={13} className="shrink-0" />
+              <span>{i18nT('pages.schedulePage.cronFolders.delete_folder')}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      {confirming && (
+        <div className="flex items-center gap-3 px-3 py-1.5 mb-1.5 text-sm rounded-md bg-danger/5 border border-danger/20">
+          <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
+          <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
+            {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
+          </Btn>
+          <Btn onClick={() => setConfirming(false)}>
+            {i18nT('pages.schedulePage.cancel')}
+          </Btn>
+        </div>
+      )}
+      {error && (
+        <div className="px-3 py-1 mb-1.5">
+          <span className="text-danger text-[12px]">{error}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
   const { agents, defaultAgent } = useAgents(0)
@@ -132,10 +214,43 @@ export default function SchedulePage() {
   const [confirmText, setConfirmText] = useState('')
   const sanitizedJobs = useMemo(() => jobs.map(j => ({ ...j, safeMessage: sanitizeLlmOutput(j.message) })), [jobs])
 
+  // ── Cron Folders ──
+  // Folder definitions come through React Query (standard data-fetch path).
+  // Failure degrades gracefully: no page-level error, prior data is kept on a
+  // failed refetch, and `[]` renders the folderless layout.
+  const queryClient = useQueryClient()
+  const { data: cronFolders = [] } = useQuery({
+    queryKey: ['cronFolders'],
+    queryFn: async () => ((await api.cronFolders()) as CronFolder[]) || [],
+  })
+  const refreshFolders = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ['cronFolders'] }),
+    [queryClient],
+  )
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(loadCollapsedFolders)
+  const [folderModal, setFolderModal] = useState<{ mode: 'create'; resolve?: (id: string | undefined) => void } | null>(null)
+  const [folderModalName, setFolderModalName] = useState('')
+  const [folderModalError, setFolderModalError] = useState<string | null>(null)
+  const toggleFolderCollapse = useCallback((folderId: string) => {
+    setCollapsedFolders(prev => {
+      const next = new Set(prev)
+      if (next.has(folderId)) next.delete(folderId)
+      else next.add(folderId)
+      saveCollapsedFolders(next)
+      return next
+    })
+  }, [])
+
+  // Monotonic sequence guard: prevents stale load() responses from overwriting newer state.
+  const loadSeq = useRef(0)
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current
     try {
       setLoadError(null)
+      // Jobs are primary -- folders failure must not break the page.
       const d = await api.crons()
+      if (seq !== loadSeq.current) return // stale response
       const fresh: CronJob[] = d.jobs || []
       setJobs(fresh)
       setSelected(prev => prev ? fresh.find((j: CronJob) => j.id === prev.id) ?? null : null)
@@ -147,9 +262,10 @@ export default function SchedulePage() {
         return next.size === prev.size ? prev : next
       })
     } catch (e) {
+      if (seq !== loadSeq.current) return // stale response
       setLoadError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed_to_load_jobs'))
     } finally {
-      setLoading(false)
+      if (seq === loadSeq.current) setLoading(false)
     }
   }, [])
   useEffect(() => { load() }, [load])
@@ -157,9 +273,61 @@ export default function SchedulePage() {
   // Auto-reload when backend pushes a 'crons' refresh (e.g. job starts/ends,
   // or a run is cancelled) — supersedes interval polling for is_running state.
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  useEffect(() => { if (refreshTrigger > 0) load() }, [refreshTrigger, load])
+  useEffect(() => { if (refreshTrigger > 0) { load(); refreshFolders() } }, [refreshTrigger, load, refreshFolders])
 
   const { running, actionError, setActionError, runNow, openInChat, cancelling, cancelRun } = useCronActions(load)
+
+  // ── Cron Folder handlers (depend on load) ──
+  const handleNewFolder = useCallback(async (moveTo?: boolean): Promise<string | undefined> => {
+    return new Promise<string | undefined>((resolve) => {
+      setFolderModalName('')
+      setFolderModalError(null)
+      setFolderModal({ mode: 'create', resolve: moveTo ? resolve : undefined })
+      // If not moveTo, resolve immediately (fire-and-forget open modal)
+      if (!moveTo) resolve(undefined)
+    })
+  }, [])
+  const handleFolderModalSubmit = useCallback(async () => {
+    const name = folderModalName.trim()
+    if (!name) return
+    try {
+      setFolderModalError(null)
+      const res = await api.createCronFolder(name) as { id: string }
+      await refreshFolders()
+      setFolderModal(prev => { prev?.resolve?.(res.id); return null })
+    } catch (e) {
+      // Keep modal OPEN so user can correct the name — show inline error
+      setFolderModalError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed'))
+    }
+  }, [folderModalName, folderModal, refreshFolders])
+  const handleMoveJob = useCallback(async (jobId: string, folderId: string) => {
+    try {
+      await api.updateCron(jobId, { folder_id: folderId })
+      // Auto-expand the target folder so moved job stays visible
+      if (folderId) {
+        setCollapsedFolders(prev => {
+          if (!prev.has(folderId)) return prev
+          const next = new Set(prev)
+          next.delete(folderId)
+          saveCollapsedFolders(next)
+          return next
+        })
+      }
+      await load()
+    } catch (e) {
+      setActionError({ id: jobId, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') })
+    }
+  }, [load, setActionError])
+  const handleDeleteFolder = useCallback(async (folderId: string) => {
+    try {
+      await api.deleteCronFolder(folderId)
+      setActionError(null)
+      await Promise.all([refreshFolders(), load()])
+    } catch (e) {
+      setActionError({ id: `folder-${folderId}`, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') })
+    }
+  }, [load, refreshFolders, setActionError])
+
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const confirmRevertTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -198,20 +366,29 @@ export default function SchedulePage() {
   const { sorted: sortedScheduleJobs, sort: schedSort, toggle: toggleSchedSort } = useSortableTable(filteredJobs, 'cron-schedule', scheduleComparators, { key: 'nextRun', dir: 'asc' })
 
   // ── Batch selection helpers (operate over the currently visible/filtered rows) ──
-  const allVisibleSelected = sortedScheduleJobs.length > 0 && sortedScheduleJobs.every(j => selectedIds.has(j.id))
-  const someVisibleSelected = sortedScheduleJobs.some(j => selectedIds.has(j.id))
+  // Rows actually visible in the table: jobs inside a collapsed folder render
+  // no row (collapse is bypassed while a filter is active), so select-all must
+  // not silently include them.
+  const visibleScheduleJobs = useMemo(
+    () => cronFilter
+      ? sortedScheduleJobs
+      : sortedScheduleJobs.filter(j => !(j.folder_id && collapsedFolders.has(j.folder_id))),
+    [sortedScheduleJobs, cronFilter, collapsedFolders],
+  )
+  const allVisibleSelected = visibleScheduleJobs.length > 0 && visibleScheduleJobs.every(j => selectedIds.has(j.id))
+  const someVisibleSelected = visibleScheduleJobs.some(j => selectedIds.has(j.id))
   const toggleOne = useCallback((id: string) => {
     setSelectedIds(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
   }, [])
   const toggleAllVisible = useCallback(() => {
     setSelectedIds(prev => {
-      const allSel = sortedScheduleJobs.length > 0 && sortedScheduleJobs.every(j => prev.has(j.id))
+      const allSel = visibleScheduleJobs.length > 0 && visibleScheduleJobs.every(j => prev.has(j.id))
       const n = new Set(prev)
-      if (allSel) sortedScheduleJobs.forEach(j => n.delete(j.id))
-      else sortedScheduleJobs.forEach(j => n.add(j.id))
+      if (allSel) visibleScheduleJobs.forEach(j => n.delete(j.id))
+      else visibleScheduleJobs.forEach(j => n.add(j.id))
       return n
     })
-  }, [sortedScheduleJobs])
+  }, [visibleScheduleJobs])
   const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
   const selectedJobs = useMemo(() => jobs.filter(j => selectedIds.has(j.id)), [jobs, selectedIds])
   const openBatchConfirm = useCallback(() => { setBatchError(null); setConfirmText(''); setBatchConfirm(true) }, [])
@@ -264,6 +441,19 @@ export default function SchedulePage() {
             <div className="flex items-center justify-center py-20"><Skeleton className="h-6 w-32 rounded" /></div>
           ) : jobs.length === 0 && !creating ? (
             <div className="flex flex-col h-full min-h-0">
+              {cronFolders.length > 0 && (
+                <div className="mb-4">
+                  {cronFolders.map(f => (
+                    <EmptyFolderChip
+                      key={`empty-fh-${f.id}`}
+                      folder={f}
+                      onRename={async (name) => { try { await api.updateCronFolder(f.id, { name }); await refreshFolders() } catch (e) { setActionError({ id: `folder-${f.id}`, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}
+                      onDelete={() => handleDeleteFolder(f.id)}
+                      error={actionError?.id === `folder-${f.id}` ? actionError.msg : null}
+                    />
+                  ))}
+                </div>
+              )}
               <div className="flex-1 flex flex-col items-center justify-center text-center min-h-0 py-8">
                 <CalendarClock className="w-16 h-16 text-muted/20 mb-4" strokeWidth={1} aria-hidden="true" />
                 <div className="text-muted text-sm font-medium">{i18nT('pages.schedulePage.no_scheduled_jobs_yet')}</div>
@@ -308,6 +498,14 @@ export default function SchedulePage() {
             <div className="flex items-center justify-between w-full">
               <span className="flex items-center gap-1.5">{i18nT('pages.schedulePage.jobs')} <InfoTip text={i18nT('pages.schedulePage.scheduled_jobs_run_on_the_configured_interval_or')} /></span>
               <div className="flex items-center gap-2">
+                {jobsView !== 'calendar' && jobsView !== 'executions' && (
+                <Btn onClick={() => handleNewFolder()}>
+                  <span className="flex items-center gap-1.5">
+                    <FolderPlus size={14} />
+                    {i18nT('pages.schedulePage.cronFolders.new_folder')}
+                  </span>
+                </Btn>
+                )}
                 <SendBtn onClick={openBlankCreate}>
                   <span className="flex items-center gap-1.5">
                     <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -346,12 +544,43 @@ export default function SchedulePage() {
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[13px] text-muted whitespace-nowrap">{selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
                   <Btn onClick={clearSelection}>{i18nT('pages.schedulePage.clear')}</Btn>
+                  <CronJobMoveMenu
+                    folders={cronFolders}
+                    onMove={async (folderId) => {
+                      const ids = Array.from(selectedIds)
+                      const results = await Promise.allSettled(ids.map(id => api.updateCron(id, { folder_id: folderId })))
+                      const failedIds = ids.filter((_, i) => results[i].status === 'rejected')
+                      if (failedIds.length > 0) {
+                        // Keep the failures selected so the user can retry the move.
+                        setSelectedIds(new Set(failedIds))
+                        setActionError({ id: 'batch-move', msg: i18nT('pages.schedulePage.cronFolders.batch_move_failed', { count: failedIds.length, total: ids.length }) })
+                      } else {
+                        setSelectedIds(new Set())
+                      }
+                      if (folderId) {
+                        setCollapsedFolders(prev => {
+                          if (!prev.has(folderId)) return prev
+                          const next = new Set(prev)
+                          next.delete(folderId)
+                          saveCollapsedFolders(next)
+                          return next
+                        })
+                      }
+                      await load()
+                    }}
+                    onNewFolder={handleNewFolder}
+                  />
                   <Btn danger onClick={openBatchConfirm} title={`Delete ${selectedIds.size} selected job(s)`}>
                     <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete')} {selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
                   </Btn>
                 </div>
               )}
             </div>
+            {actionError?.id === 'batch-move' && (
+              <div className="px-3 py-1.5 mb-2 rounded-md bg-danger/5 border border-danger/20">
+                <span className="text-danger text-[12px]">{actionError.msg}</span>
+              </div>
+            )}
             <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr>
               <th className="px-2.5 py-2 border-b border-border w-[36px] text-center">
                 <input
@@ -378,7 +607,41 @@ export default function SchedulePage() {
               ? <tr><td colSpan={10}><EmptyState icon={<ClipboardList className="lucide-inline" />} title={i18nT('pages.schedulePage.no_cron_jobs')} /></td></tr>
               : sortedScheduleJobs.length === 0
               ? <tr><td colSpan={10}><FilteredEmpty query={cronFilter} onClear={() => setCronFilter('')} noun={i18nT('pages.schedulePage.jobs_noun')} /></td></tr>
-              : sortedScheduleJobs.map(j => (
+              : (() => {
+                const groups = groupJobsByFolder(sortedScheduleJobs, cronFolders, { omitEmpty: !!cronFilter })
+                const hasFolders = cronFolders.length > 0
+                return groups.map(group => {
+                  const folderId = group.folder?.id
+                  // Fix #3: bypass persisted collapse state while filter is active
+                  const isCollapsed = cronFilter ? false : (folderId ? collapsedFolders.has(folderId) : false)
+                  return (
+                    <Fragment key={`group-${folderId || 'ungrouped'}`}>{group.folder && (
+                      <CronFolderHeader
+                        key={`fh-${folderId}`}
+                        folder={group.folder}
+                        jobCount={group.jobs.length}
+                        collapsed={isCollapsed}
+                        onToggleCollapse={() => folderId && toggleFolderCollapse(folderId)}
+                        onRename={async (name) => { if (folderId) { try { await api.updateCronFolder(folderId, { name }); await refreshFolders() } catch (e) { setActionError({ id: `folder-${folderId}`, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } } }}
+                        onDelete={() => folderId && handleDeleteFolder(folderId)}
+                        colSpan={11}
+                      />
+                    )}
+                    {group.folder && actionError?.id === `folder-${folderId}` && (
+                      <tr key={`fe-${folderId}`} className="border-b border-danger/20">
+                        <td colSpan={11} className="px-4 py-1.5">
+                          <span className="text-danger text-[12px]">{actionError.msg}</span>
+                        </td>
+                      </tr>
+                    )}
+                    {!group.folder && hasFolders && group.jobs.length > 0 && (
+                      <tr key="ungrouped-header" className="bg-bg-elevated/30 border-b border-border">
+                        <td colSpan={11} className="px-2.5 py-1.5 text-[12px] text-muted font-medium">
+                          {i18nT('pages.schedulePage.cronFolders.ungrouped')}
+                        </td>
+                      </tr>
+                    )}
+                    {!isCollapsed && group.jobs.map(j => (
               <tr key={j.id} className={`hover:bg-bg-hover transition-colors cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} onClick={() => { setCreating(false); setSelected(selected?.id === j.id ? null : j) }}>
                 <td className="px-2.5 py-2 border-b border-border text-center" onClick={e => e.stopPropagation()}>
                   <input
@@ -404,6 +667,12 @@ export default function SchedulePage() {
                     : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}{' '}
                   <span title={j.has_slot ? i18nT('pages.schedulePage.continue_session') : j.has_result ? i18nT('pages.schedulePage.view_last_result') : i18nT('pages.schedulePage.no_result')}><Btn onClick={() => openInChat(j.id)} disabled={!j.has_result && !j.has_slot}>{j.has_slot ? i18nT('pages.schedulePage.continue') : i18nT('pages.schedulePage.view')}</Btn></span>{' '}
                   <Btn onClick={async () => { try { await api.toggleCron(j.id, !j.enabled); load() } catch (e: unknown) { setActionError({ id: j.id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.failed') }) } }}>{j.enabled ? i18nT('pages.schedulePage.pause') : i18nT('pages.schedulePage.resume')}</Btn>{' '}
+                  <CronJobMoveMenu
+                    folders={cronFolders}
+                    currentFolderId={j.folder_id}
+                    onMove={(fid) => handleMoveJob(j.id, fid)}
+                    onNewFolder={handleNewFolder}
+                  />{' '}
                   <Btn
                     danger
                     disabled={deletingId === j.id}
@@ -413,7 +682,10 @@ export default function SchedulePage() {
                   {actionError?.id === j.id && <span className="text-danger text-[12px] ml-1">{actionError.msg}</span>}
                 </td>
               </tr>
-            ))}</tbody></table></div>
+                    ))}</Fragment>
+                  )
+                })
+              })()}</tbody></table></div>
             </>)}
           </Card>
           </>)}
@@ -442,6 +714,43 @@ export default function SchedulePage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {folderModal && (
+        <Clickable
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100]"
+          onClick={() => { setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }}
+        >
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={i18nT('pages.schedulePage.cronFolders.new_folder')}
+            className="bg-bg-elevated rounded-xl border border-border p-6 w-[360px] max-w-[90vw] shadow-xl animate-scale-in"
+            onClick={e => e.stopPropagation()}
+            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') { setFolderModal(prev => { prev?.resolve?.(undefined); return null }) } }}
+          >
+            <h3 className="text-base font-semibold text-text mb-3">
+              {i18nT('pages.schedulePage.cronFolders.new_folder')}
+            </h3>
+            <Input
+              autoFocus
+              aria-label={i18nT('pages.schedulePage.cronFolders.new_folder_name')}
+              value={folderModalName}
+              onChange={e => setFolderModalName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && folderModalName.trim()) handleFolderModalSubmit() }}
+              placeholder={i18nT('pages.schedulePage.cronFolders.new_folder_name')}
+              className="w-full mb-4"
+            />
+            {folderModalError && <p className="text-danger text-[12px] mb-3">{folderModalError}</p>}
+            <div className="flex gap-2 justify-end">
+              <Btn onClick={() => { setFolderModal(prev => { prev?.resolve?.(undefined); return null }) }}>{i18nT('pages.schedulePage.cancel')}</Btn>
+              <SendBtn onClick={handleFolderModalSubmit} disabled={!folderModalName.trim()}>
+                {i18nT('pages.schedulePage.cronFolders.create')}
+              </SendBtn>
+            </div>
+          </div>
+        </Clickable>
+      )}
 
       {batchConfirm && (
         <Clickable

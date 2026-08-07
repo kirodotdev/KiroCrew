@@ -121,6 +121,30 @@
     }
   },
   "apps": {
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "build",
+        "collects": "coleta",
+        "green": "GREEN",
+        "lint": "lint",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "Mede um repositório do GitHub antes de alterá-lo. Projeta uma métrica de desempenho calibrada (a régua), prova que a métrica é confiável diante de um ganho conhecido e então executa ciclos de manter ou reverter: cada correção candidata é escrita em um worktree isolado, filtrada por uma lista de permissões de edição e pelos testes do próprio repositório, e mantida apenas quando o ganho medido supera a faixa de ruído. As sobreviventes são redigidas como pull requests do GitHub em rascunho, que você revisa e publica.",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "Prova primeiro a própria métrica — uma execução se recusa a começar com uma régua não confiável",
+        "highlight_2": "Cada candidato é medido em A/B, ou RED/GREEN para correções de bugs, nunca apenas “parece certo”",
+        "highlight_3": "Mantém uma mudança só quando o ganho supera a faixa de ruído medida",
+        "highlight_4": "Redige pull requests do GitHub — apenas rascunhos, nunca publicados nem mesclados por você",
+        "highlight_5": "Funciona em um clone sem push, então nada escapa da sandbox sem revisão",
+        "highlight_6": "Uma sessão de conversa retomável por pull request, achado e execução",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "accept": "aceitar",
@@ -689,6 +713,7 @@
         },
         "issueList": {
           "clear_search": "Limpar pesquisa",
+          "loading_the_rest": "Carregando o restante…",
           "closed_issues_are_capped_at_the_100_most_recentl": "As issues fechadas são limitadas às 100 atualizadas mais recentemente",
           "issue_many": "{{count}} issues",
           "issue_one": "{{count}} issue",
@@ -1239,6 +1264,9 @@
         "resize_sidebar": "Redimensionar barra lateral",
         "select_a": "Selecione um",
         "select_an_issue_to_see_its_details": "Selecione uma issue para ver os detalhes.",
+        "selected_issue_hidden_by_filters": "A issue selecionada está oculta pelos filtros ativos.",
+        "selected_change_hidden_by_filters": "O item {{subject}} selecionado está oculto pelos filtros ativos.",
+        "clear_filters": "Limpar filtros",
         "to_see_its_details": "para ver os detalhes."
       },
       "api": {
@@ -3205,6 +3233,87 @@
       }
     }
   },
+  "autoImprovement": {
+    "activityDiscovered": "(descobertos {{discovered}}, novos {{fresh}})",
+    "autocommitHint": "Envia cada alteração verificada diretamente para o ramo base. Ramos protegidos sempre recorrem a um rascunho de pull request.",
+    "autocommitLabel": "Fazer commit direto no ramo (sem pull request)",
+    "band": "faixa",
+    "base": "Base",
+    "branchDefault": "Padrão do repositório",
+    "branchLabel": "Ramo base",
+    "calibrated": "Calibrada",
+    "changesHeading": "Rascunhos de pull requests",
+    "cloneBtn": "Conectar",
+    "colActions": "Ações",
+    "colChange": "Alteração",
+    "colChecks": "Verificações",
+    "colPr": "Pull request",
+    "colVerdict": "Estado",
+    "commitConfirm": "Confirmar esta alteração em {{branch}} e enviá-la? Um commit publicado não pode ser retirado.",
+    "commitFailed": "O commit foi recusado.",
+    "commitFinding": "Fazer commit no ramo",
+    "currentRepo": "Trabalhando em",
+    "cycle": "Ciclo",
+    "defectHeading": "Defeito",
+    "delta": "Diferença medida",
+    "detailUnavailable": "Não há detalhes para esta constatação.",
+    "discussFinding": "Discutir esta constatação",
+    "discussPr": "Discutir esta pull request",
+    "discussRuler": "Discutir a régua",
+    "draftPr": "Rascunho",
+    "findingTitlePrefix": "Constatação",
+    "findingsHeading": "Registro de constatações",
+    "findingsStat": "Constatações",
+    "findingsTruncated": "Exibindo as {{shown}} constatações mais recentes de {{total}}.",
+    "fingerprint": "Impressão digital",
+    "gateHeading": "Verificações",
+    "gateNote": "Nota da verificação",
+    "historyHeading": "Histórico de estados",
+    "hypothesisHeading": "Hipótese de reprodução",
+    "idleStatus": "Ocioso — inicie uma execução para encontrar melhorias e preparar pull requests.",
+    "intro": "Mede um repositório antes de alterá-lo: a métrica é primeiro calibrada e comprovada, e depois os ciclos de manter ou reverter preparam as alterações aprovadas como rascunhos de pull requests para você revisar.",
+    "keptStat": "Mantidas",
+    "loadingDetail": "Carregando detalhes…",
+    "noFindings": "Nenhuma constatação registrada ainda.",
+    "noPrs": "Nenhuma pull request preparada ainda.",
+    "prStat": "Pull requests",
+    "prTitlePrefix": "PR",
+    "pushDisabled": "envio desativado",
+    "queuedOnly": "em fila local, não aberta",
+    "refreshPr": "Atualizar o estado da pull request",
+    "regressed": "Testes com regressão: {{tests}}",
+    "repoLabel": "Repositório do GitHub a melhorar",
+    "reproTest": "Teste de reprodução",
+    "rulerHeading": "A régua",
+    "rulerNotReady": "A régua ainda não está calibrada, portanto nenhum ciclo de melhoria será executado. A calibração comprova que a métrica consegue detectar um ganho conhecido antes de otimizar qualquer coisa.",
+    "rulerReady": "Régua calibrada e pronta",
+    "rulerSessionTitle": "Revisão da régua",
+    "rulerStat": "Régua",
+    "runBtn": "Iniciar execução",
+    "runError": "A execução parou com um erro.",
+    "runningStatus": "Em execução — ciclo {{cycle}}, {{kept}} mantidas, {{drafted}} pull requests preparadas.",
+    "setupHeading": "Repositório",
+    "showDiff": "Ver a alteração",
+    "showPrBody": "Ver a descrição da pull request",
+    "statusCommitted": "Confirmado no branch",
+    "statusDiscardedNoise": "Abaixo da banda de ruído",
+    "statusDuplicate": "Duplicado",
+    "statusError": "Erro de ferramentas",
+    "statusFailedGate": "Rejeitado pelo controle",
+    "statusFailedVerify": "A correção não foi verificada",
+    "statusFiled": "Pull request em rascunho",
+    "statusNoDefect": "Nenhum defeito encontrado",
+    "statusPurged": "Excluído pelo operador",
+    "statusSeen": "Visto",
+    "statusUnavailable": "Indisponível",
+    "stopBtn": "Parar execução",
+    "title": "Automelhoria",
+    "toggleDetail": "Mostrar detalhes da constatação",
+    "truncated": "truncado",
+    "uncalibrated": "Não calibrada",
+    "viewCommit": "Ver commit",
+    "viewPr": "Pull request"
+  },
   "components": {
     "agentDropdownList": {
       "active_in_this_session": "Ativo nesta sessão",
@@ -3699,6 +3808,10 @@
         },
         "skillsProvider": {
           "skills": "Habilidades"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Requer migração"
         }
       },
       "search_everywhere": "Pesquisar em tudo",
@@ -4546,7 +4659,10 @@
       "expand_paste": "Expandir texto colado",
       "paste_lines_many": "[ Colado #{{seq}} · {{count}} linhas ]",
       "paste_lines_one": "[ Colado #{{seq}} · {{count}} linha ]",
-      "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]"
+      "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]",
+      "preview_more_lines_one": "… mais {{count}} linha",
+      "preview_more_lines_many": "… mais {{count}} linhas",
+      "preview_more_lines_other": "… mais {{count}} linhas"
     },
     "projectPicker": {
       "back": "Voltar",
@@ -4988,6 +5104,7 @@
       "screen_capture_drag_the_area_you_want_it_attache": "Captura de tela — arraste a área desejada; ela é anexada automaticamente ao soltar"
     },
     "tagManagerList": {
+      "change_color": "Alterar a cor de {{name}}",
       "delete_tag": "Excluir a tag \"{{name}}\"",
       "delete_tag_2": "Excluir a tag {{name}}",
       "filter_by_tag": "Filtrar por etiqueta",
@@ -4997,6 +5114,7 @@
       "new_tag": "Nova etiqueta… ↵",
       "remove_status_flag_from": "Remover a marcação de status de {{name}}",
       "rename_tag": "Renomear a tag {{name}}",
+      "set_color_to_name": "Definir cor como {{name}}",
       "status_tag_mutually_exclusive_on_cards_click_to": "Etiqueta de status (mutuamente exclusiva nos cartões) — clique para torná-la comum"
     },
     "terminalCompletion": {
@@ -5201,9 +5319,9 @@
       "can_t_embed_an_http_page_here": "Não é possível incorporar uma página http:// aqui",
       "dismiss": "Descartar",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Informe acima a URL do seu servidor de desenvolvimento (ex.: um servidor Vite ou estático em localhost) para\n              visualizar o site em que você está trabalhando — ele recarrega automaticamente conforme você edita.",
-      "exit_expanded_preview": "Sair da prévia expandida",
+      "exit_expanded_preview": "Recolher",
       "expand_preview": "Expandir prévia",
-      "expand_preview_hide_nav_sessions": "Expandir prévia (ocultar navegação e sessões)",
+      "expand_preview_hide_nav_sessions": "Expandir (ocultar navegação e sessões)",
       "forward": "Avançar",
       "http": "http://",
       "let_the_agent_act": "Permitir que o agente aja",
@@ -7846,7 +7964,29 @@
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "workspace",
         "no_skills_yet": "Nenhuma habilidade ainda",
-        "empty_subtitle": "Habilidades ensinam ao agente procedimentos reutilizáveis. Navegue no registro para adicionar uma."
+        "empty_subtitle": "Habilidades ensinam ao agente procedimentos reutilizáveis. Navegue no registro para adicionar uma.",
+        "budget_doorway_static": "Orçamento de contexto →",
+        "budget_back": "Skills",
+        "budget_title": "Orçamento de contexto",
+        "budget_subtitle": "O que cada skill custa quando um gatilho o dispara. Ordenado por gasto, não por nome.",
+        "budget_header": "<total>{{total}}</total> caracteres · últimos 30 dias · top 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "Ordenar",
+        "budget_sort_cost": "Maior custo",
+        "budget_sort_size": "Maior arquivo",
+        "budget_sort_recent": "Usado recentemente",
+        "budget_group_counting": "Conta para o contexto",
+        "budget_group_counting_detail": "{{count}} skills · {{pct}} % do gasto",
+        "budget_group_cold": "Nunca disparado em 30 dias",
+        "budget_group_cold_detail": "{{count}} skills · {{size}} sem uso",
+        "budget_group_frozen": "Já apenas como referência",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} estavam sendo gastos",
+        "budget_chars": "caracteres",
+        "budget_if_fires": "{{size}} se disparar",
+        "budget_every_turn": "{{size}} a cada turno",
+        "budget_renamed": "(renomeado)",
+        "budget_footnote": "Um skill fixado (always: true) ou de um pacote mostra seu custo, mas não tem interruptor.",
+        "budget_empty_title": "Ainda sem dados de orçamento",
+        "budget_empty_subtitle": "Nenhuma skill instalada ainda."
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -8257,7 +8397,7 @@
       "script_python": "script · python",
       "select": "Selecionar {{name}}",
       "select_all_jobs": "Selecionar todos os jobs",
-      "select_deselect_all_jobs_matching_the_current_fi": "Selecionar / desmarcar todos os jobs que correspondem ao filtro atual",
+      "select_deselect_all_jobs_matching_the_current_fi": "Selecionar / desmarcar todos os jobs visíveis (pastas recolhidas excluídas)",
       "selected": "selecionados",
       "start_from_a_pre_made_schedule": "Comece com um agendamento pronto",
       "status": "Status",
@@ -8273,7 +8413,27 @@
       "view": "Ver",
       "view_last_result": "Ver último resultado",
       "you_can_also_create_schedules_by_chatting_try": "Você também pode criar agendamentos pelo chat — tente",
-      "jobs_noun": "tarefas"
+      "jobs_noun": "tarefas",
+      "cronFolders": {
+        "batch_move_failed_many": "Não foi possível mover {{count}} de {{total}} tarefas",
+        "batch_move_failed_one": "Não foi possível mover {{count}} de {{total}} tarefa",
+        "batch_move_failed_other": "Não foi possível mover {{count}} de {{total}} tarefas",
+        "collapse_folder": "Recolher pasta",
+        "confirm_delete_folder": "Excluir \"{{name}}\"? As tarefas ficarão desagrupadas.",
+        "create": "Criar",
+        "delete_folder": "Excluir pasta",
+        "delete_folder_named": "Excluir \"{{name}}\"",
+        "expand_folder": "Expandir pasta",
+        "folder_actions": "Ações da pasta",
+        "job_count_many": "{{count}} tarefas",
+        "job_count_one": "{{count}} tarefa",
+        "job_count_other": "{{count}} tarefas",
+        "move_to_folder": "Mover para pasta",
+        "new_folder": "Nova pasta",
+        "new_folder_name": "Nome da nova pasta",
+        "rename": "Renomear",
+        "ungrouped": "Sem grupo"
+      }
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Filtro aproximado (correspondência parcial)",
@@ -8458,7 +8618,11 @@
         "completion_event_characters_2": "Caracteres do evento de conclusão",
         "completion_event_truncation": "Truncamento do evento de conclusão",
         "composer": "Compositor",
-        "concise_responses": "Respostas concisas",
+        "response_verbosity": "Nível de detalhe das respostas",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Quão sucinta é a prosa do agente. \"Ultraconciso\" escreve para um leitor com TDAH: a resposta surge numa abertura de no máximo três frases, e o detalhe seguinte deve vir em tópicos fáceis de percorrer, não em prosa. Código, comandos e mensagens de erro permanecem literais; avisos de segurança e instruções de vários passos mantêm todo o detalhe em qualquer nível.",
+        "default_normal_length": "Predefinido — comprimento normal",
+        "concise_trim_filler": "Conciso — sem enchimento nem narração",
+        "ultra_concise_3_sentences": "Ultraconciso — resposta em 3 frases e depois detalhe fácil de percorrer",
         "confirm_before_closing_session": "Confirmar antes de fechar a sessão",
         "content_width": "Largura do conteúdo",
         "context": "Contexto",
@@ -8514,7 +8678,6 @@
         "technical_comfort": "Conforto técnico",
         "text_streaming_style": "Estilo de streaming de texto",
         "time_window_for_session_restoration": "Janela de tempo para a restauração de sessões",
-        "trim_filler_and_over_narration_lead_with_the_ans": "Elimina enrolação e narração excessiva: comece pela resposta e mantenha as notas de progresso em alto nível. Código, comandos e mensagens de erro permanecem literais; avisos de segurança e instruções de várias etapas mantêm todos os detalhes.",
         "when_enabled_inline_tool_pills_show_simplified_t": "Quando ativado, as pílulas de ferramenta embutidas mostram a finalidade simplificada do uso da ferramenta em vez do comando exato executado",
         "which_model_new_sessions_start_with_pick_a_model": "Com qual modelo as novas sessões começam quando o agente delas não fixa nenhum. Defina um modelo por agente em Recursos do agente → Crews ou escolha um dentro de uma sessão para substituí-lo ali.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Qual parte do fluxo de um subagente manter ao injetar seu evento de conclusão na sessão pai. Início preserva o começo (padrão, corresponde ao comportamento antigo). Fim preserva o resumo final. Ambos mantém um trecho de cada extremidade com um marcador entre eles.",

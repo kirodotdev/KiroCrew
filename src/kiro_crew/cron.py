@@ -247,6 +247,12 @@ class CronJob:
     hide_in_chat: bool = (
         False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
     )
+    # Cron folder grouping; "" = unfiled. CONTRACT for all consumers
+    # (Schedule UI, calendar, CLI, MCP): an id that does not match a folder
+    # in cron_folders.json MUST be treated as ungrouped — folder deletion
+    # clears assignments only best-effort, so dangling ids are expected and
+    # benign (they self-heal on the job's next folder move).
+    folder_id: str = ""
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
 
     # When agent_sequence is set, it takes precedence over agent_id.
@@ -1111,6 +1117,7 @@ class CronService:
         skip_dates: list[str] | None = None,
         strict_schedule: bool = False,
         hide_in_chat: bool = False,
+        folder_id: str = "",
         command: str = "",
         script: str = "",
         agent_sequence: list[str] | None = None,
@@ -1168,6 +1175,7 @@ class CronService:
             skip_dates=skip_dates,
             strict_schedule=strict_schedule,
             hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
             command=command,
             script=script,
             agent_sequence=agent_sequence,
@@ -1218,6 +1226,7 @@ class CronService:
         skip_dates: list[str] | None = None,
         strict_schedule: bool = False,
         hide_in_chat: bool = False,
+        folder_id: str = "",
         command: str = "",
         script: str = "",
         agent_sequence: list[str] | None = None,
@@ -1280,6 +1289,7 @@ class CronService:
             skip_dates=skip_dates,
             strict_schedule=strict_schedule,
             hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
             command=command,
             script=script,
             agent_sequence=list(agent_sequence) if agent_sequence else [],
@@ -1323,6 +1333,7 @@ class CronService:
         skip_dates: list[str] | None = None,
         strict_schedule: bool = False,
         hide_in_chat: bool = False,
+        folder_id: str = "",
         command: str = "",
         script: str = "",
         agent_sequence: list[str] | None = None,
@@ -1368,6 +1379,7 @@ class CronService:
             skip_dates=skip_dates,
             strict_schedule=strict_schedule,
             hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
             command=command,
             script=script,
             agent_sequence=agent_sequence,
@@ -1485,6 +1497,8 @@ class CronService:
                     job.minimal_context = bool(kwargs["minimal_context"])
                 if "hide_in_chat" in kwargs:
                     job.hide_in_chat = bool(kwargs["hide_in_chat"])
+                if "folder_id" in kwargs:
+                    job.folder_id = kwargs["folder_id"] or ""
                 if "model" in kwargs:
                     job.model = str(kwargs["model"] or "").strip()
 
@@ -2723,6 +2737,7 @@ class CronService:
                     persistent_session=j.get("persistent_session", True),
                     minimal_context=j.get("minimal_context", False),
                     hide_in_chat=j.get("hide_in_chat", False),
+                    folder_id=j.get("folder_id", ""),
                     model=j.get("model", ""),
                     agent_sequence=j.get("agent_sequence", []),
                     env=j.get("env", {}),
@@ -2827,6 +2842,7 @@ class CronService:
                     "persistent_session": j.persistent_session,
                     "minimal_context": j.minimal_context,
                     "hide_in_chat": j.hide_in_chat,
+                    "folder_id": j.folder_id,
                     "model": j.model,
                     "agent_sequence": j.agent_sequence,
                     "env": j.env,

@@ -38,8 +38,8 @@ Two structural facts explain most of the rest:
 - **The real merge gate is human approval plus armed auto-merge.** `PR Readiness`
   is the one status worth watching; individual red checks are strong signals a
   human can weigh.
-- **Fork PRs cannot reach a passing readiness state, by construction.** See
-  [Fork PRs](#fork-prs).
+- **A fork PR is aggregated like any other and can reach a passing readiness
+  state**; CodeQL is the one lane it cannot run. See [Fork PRs](#fork-prs).
 
 Out-of-band lanes that never gate a PR:
 
@@ -357,8 +357,7 @@ commit status plus one `readiness:` label**.
   resolved by `path == "dynamic/github-code-scanning/codeql"`. `skipped` counts as
   passed for it.
 - **Labels:** `readiness: checking` (pending), `readiness: action required` (a
-  blocker), `readiness: maintainer review` (fork), `readiness: passed`. Exactly one
-  is ever present.
+  blocker), `readiness: passed`. Exactly one is ever present.
 
 Two subtleties:
 
@@ -402,13 +401,14 @@ Two subtleties:
 A fork PR gets no repository OIDC credentials or secrets, and this repository's
 managed CodeQL workflow is not scheduled for fork heads. Two consequences.
 
-**Fork PRs cannot reach `readiness: passed`.** Passing public CI, Build and Code
-Review is not full validation, so `pr-readiness.yml` emits a dedicated **red**
-terminal verdict instead: `readiness: maintainer review` with `PR Readiness =
-failure`. It is unmistakable in the merge box and, as a required status check, blocks
-an accidental merge of code the AI reviewers never saw. A maintainer must review
-manually, or re-run validation from a trusted in-repo branch, before merge. This is
-the intended end state for a fork PR, not a bug to route around.
+**A fork PR can still reach `readiness: passed`.** The `fork-*` pipeline below runs
+the AI reviews from the trusted base branch and posts them as check-runs under the
+same names the same-repo lanes use, so `pr-readiness.yml` evaluates a fork from
+those check-runs and a fully green fork is fully validated. CodeQL is the single
+ineligible lane, reported as a non-blocking "Not eligible" note rather than a
+blocker. Readiness therefore says the same thing on a fork as anywhere else: the
+eligible automated validation passed for this revision. Human approval and branch
+protection remain separate gates.
 
 **The `fork-*` pipeline gives fork PRs AI review anyway, in two stages.**
 `fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml` and

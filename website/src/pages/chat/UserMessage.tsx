@@ -19,6 +19,7 @@ interface UserMessageProps {
   content: string
   meta?: Record<string, unknown>
   timestamp?: string
+  timestampTitle?: string
   renderContent: (content: string, meta: Record<string, unknown> | undefined) => React.ReactNode
   canEdit?: boolean
   messageIndex?: number
@@ -29,7 +30,7 @@ interface UserMessageProps {
   mode?: string
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode }: UserMessageProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(content)
   const [copied, setCopied] = useState(false)
@@ -248,7 +249,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, render
             <Pencil size={14} />
           </button>
         )}
-        {timestamp && <span className="text-muted text-[12px] font-mono">{timestamp}</span>}
+        {/* No `font-mono`: see the twin in AssistantMessage's footer — a
+            formatted date is prose, and `font-mono` pinned `var(--mono)`, which
+            the Font Family setting never writes. */}
+        {timestamp && <span className="text-muted text-[12px] tabular-nums" title={timestampTitle}>{timestamp}</span>}
       </div>
     </div>
   )

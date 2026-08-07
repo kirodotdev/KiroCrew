@@ -380,13 +380,25 @@ def format_dashboard_urls(
 
 
 def build_allowed_origins(
-    port: int, local_only: bool, configured_host: str = "", dashboard_url: str = ""
+    port: int,
+    local_only: bool,
+    configured_host: str = "",
+    dashboard_url: str = "",
+    tailnet_host: str = "",
 ) -> set[str]:
     """Compute the set of allowed origins for the dashboard.
 
     When *dashboard_url* is provided, its origin (scheme + host + port)
     is added as-is so that reverse-proxy setups (e.g. Caddy with TLS on
     a custom domain) pass the CSRF check without code changes.
+
+    *tailnet_host* is this machine's MagicDNS name when tailnet access is
+    enabled, and adds ``https://<name>`` — no port, because ``tailscale serve``
+    fronts the dashboard on 443. Kept as a **parameter rather than a lookup** so
+    this function stays pure and testable: the caller owns the daemon call and
+    the validation (``dashboard/tailnet.py``), and passes "" when Tailscale is
+    disabled, absent, or produced nothing trustworthy. Nothing here re-validates
+    it, so nothing may pass an unvalidated value in.
     """
     origins: set[str] = {
         f"http://127.0.0.1:{port}",
@@ -402,6 +414,11 @@ def build_allowed_origins(
         origin = dashboard_origin(dashboard_url)
         if origin:
             origins.add(origin)
+    # Tailnet origin (§4). Already validated by dashboard/tailnet.py — see the
+    # docstring: this function must not be the place that decides whether a
+    # subprocess-derived hostname is trustworthy.
+    if tailnet_host:
+        origins.add(f"https://{tailnet_host}")
     if not local_only:
         mh = machine_hostname()
         if mh:

@@ -1016,6 +1016,32 @@ class TestReviewRoutePinning(unittest.TestCase):
         assert awaited is not None
         self.assertEqual(awaited.kwargs["head_sha"], "abc1234")
 
+    def test_the_head_moved_check_skips_the_mergeability_retry(self):
+        """The check reads only ``head_sha`` (returned eagerly), so it asks
+        ``get_pr_detail`` NOT to pay GitHub's lazy-mergeability retry+sleep.
+
+        That retry is a 1.5s sleep plus a SECOND ``gh`` call, and this check runs
+        once per verdict AND per row of a bulk approve — so on a 50-PR approve the
+        default path was ~75s of pure sleep. ``resolve_mergeable=False`` is what
+        drops it; skipping the retry cannot weaken the pin, since the head is not a
+        lazily-computed field."""
+        client = mock.Mock()
+        client.get_pr_detail.return_value = {"head_sha": "abc1234"}
+        with mock.patch.object(routes, "_connected", return_value=True), \
+                mock.patch.object(routes, "_repo_can_write", return_value=True), \
+                mock.patch.object(provider, "client_for", return_value=client), \
+                mock.patch.object(
+                    routes, "_run_pr_action",
+                    new=mock.AsyncMock(return_value={"state": "APPROVED"}),
+                ):
+            resp = _await(routes._handle_pull_review(_req({
+                "owner": "o", "repo": "r", "number": 7, "event": "approve",
+                "head_sha": "abc1234",
+            })))
+        self.assertEqual(resp.status, 200)
+        client.get_pr_detail.assert_called_once()
+        self.assertIs(client.get_pr_detail.call_args.kwargs.get("resolve_mergeable"), False)
+
 
 class TestPrActionPreamble(unittest.TestCase):
     """The shared gate every PR action goes through. Factored precisely so one of

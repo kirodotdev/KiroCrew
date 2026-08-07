@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Maximize2, Minimize2, Smartphone, Monitor, Check, Crop, MousePointerClick } from 'lucide-react'
+import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop, MousePointerClick } from 'lucide-react'
 
 import { safeSetItem } from '../utils/safeStorage'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
@@ -812,7 +812,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           aria-label={expanded ? i18nT('components.webPreviewPanel.exit_expanded_preview') : i18nT('components.webPreviewPanel.expand_preview')}
           aria-pressed={expanded}
         >
-          {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          {expanded ? <Minimize size={14} /> : <Expand size={14} />}
         </button>
         {/* Divider */}
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 mx-0.5" />

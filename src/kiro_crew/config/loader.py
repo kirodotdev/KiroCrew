@@ -1804,12 +1804,37 @@ class PublishConfig:
 
 
 @dataclass
+class TailscaleConfig:
+    """Tailnet access for the dashboard (RFC: rfc-tailnet-dashboard-access)."""
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Tailnet Access",
+            "Accept this machine's own MagicDNS name as a dashboard origin, so "
+            "`tailscale serve` works without hand-writing dashboard.url. Reads "
+            "the local Tailscale daemon once at startup; contributes nothing if "
+            "Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the "
+            "network bind and does NOT change authentication — every request "
+            "still needs a dashboard session.",
+        ),
+    )
+
+
+@dataclass
 class DashboardConfig:
     url: str = field(
         default="",
         metadata=_meta(
             "Dashboard URL",
             "Public URL for the dashboard (used in Slack links).",
+        ),
+    )
+    tailscale: TailscaleConfig = field(
+        default_factory=TailscaleConfig,
+        metadata=_meta(
+            "Tailscale",
+            "Reach the dashboard over your tailnet via `tailscale serve`.",
         ),
     )
     restore_sessions: bool = field(
@@ -1894,10 +1919,12 @@ class DashboardConfig:
             "Response Verbosity",
             "Controls how terse the agent's prose is. 'default' is normal; "
             "'concise' injects brevity guidelines (lead with the answer, cut "
-            "filler, keep code/errors verbatim) while preserving full detail for "
-            "security warnings, irreversible-action confirmations, and ordered "
-            "multi-step instructions.",
-            enum=["default", "concise"],
+            "filler, keep code/errors verbatim); 'ultra' writes for an ADHD "
+            "reader — the answer lands in a 3-sentence opening, and any detail "
+            "after it must be scannable bullets rather than prose. Both levels "
+            "preserve full detail for security warnings, irreversible-action "
+            "confirmations, and ordered multi-step instructions.",
+            enum=["default", "concise", "ultra"],
         ),
     )
     link_previews: bool = field(
@@ -2234,16 +2261,16 @@ class ExternalRegistryConfig:
 @dataclass
 class SkillsConfig:
     max_triggered: int = field(
-        default=3,
+        default=0,
         metadata=_meta(
             "Max Triggered",
             "Maximum number of skills a single message may flag as relevant (≥0). "
             "Each match injects that skill's full content, unless the skill sets "
-            "inject_on_trigger: false in its frontmatter, in which case it "
-            "contributes a one-line pointer naming it and its path and the agent "
-            "reads the file if the skill applies. Set to 0 to stop flagging "
-            "entirely and rely only on the Available Skills index, $skillname, "
-            "and skill_search.",
+            "inject_on_trigger: false (pointer-only; requires max_triggered > 0 to "
+            "have any effect). Defaults to 0 (disabled): the agent discovers skills "
+            "from the Available Skills index and reads them on demand via cat, "
+            "$skillname, or skill_search. Set to a positive integer to re-enable "
+            "per-turn word-overlap trigger matching.",
         ),
     )
     # ── Lazy skill injection (opt-in, like MCP prewarm) ──
@@ -4853,6 +4880,11 @@ class KiroCrewConfig:
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
+                tailscale=TailscaleConfig(
+                    enabled=_safe_bool(
+                        _safe_dict(dashboard_data.get("tailscale")).get("enabled"), False
+                    ),
+                ),
                 restore_sessions=dashboard_data.get("restore_sessions", False),
                 restore_window_minutes=dashboard_data.get("restore_window_minutes", 30),
                 surface_channel_sessions=dashboard_data.get("surface_channel_sessions", True),
@@ -5096,7 +5128,7 @@ class KiroCrewConfig:
             ),
             heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
             skills=SkillsConfig(
-                max_triggered=_safe_int(skills_data.get("max_triggered", 3), 3),
+                max_triggered=_safe_int(skills_data.get("max_triggered", 0), 0),
                 lazy_load=bool(skills_data.get("lazy_load", False)),
                 auto_create_from_sessions=bool(skills_data.get("auto_create_from_sessions", False)),
                 auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),

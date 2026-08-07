@@ -82,6 +82,8 @@ agent loads only the one it needs.
 | [issue-radar.md](issue-radar.md) | Issue triage and grouping. |
 | [ops-mission-control.md](ops-mission-control.md) | Autonomous ops first responder: alarms, pages and monitors. |
 | [mochi.md](mochi.md) | The Mochi app. |
+| [auto-improvement.md](auto-improvement.md) | Measurement-first self-improvement loop: ruler calibration, keep-or-revert cycles, draft PRs. |
+| [auto-improvement-test-plan.md](auto-improvement-test-plan.md) | Integration test plan for auto-improvement (all endpoints + UI + full loop), against a real GitHub repo. |
 
 ## Operations
 

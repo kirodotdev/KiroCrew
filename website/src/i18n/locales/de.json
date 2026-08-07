@@ -776,6 +776,7 @@
         },
         "issueList": {
           "clear_search": "Suche leeren",
+          "loading_the_rest": "Rest wird geladen…",
           "closed_issues_are_capped_at_the_100_most_recentl": "Geschlossene Issues sind auf die 100 zuletzt aktualisierten begrenzt",
           "issue_one": "{{count}} Issue",
           "issue_other": "{{count}} Issues",
@@ -1315,6 +1316,9 @@
         "resize_sidebar": "Größe der Seitenleiste ändern",
         "select_a": "Wählen Sie ein",
         "select_an_issue_to_see_its_details": "Wählen Sie ein Issue, um seine Details zu sehen.",
+        "selected_issue_hidden_by_filters": "Das ausgewählte Issue wird durch die aktiven Filter ausgeblendet.",
+        "selected_change_hidden_by_filters": "Das ausgewählte {{subject}} wird durch die aktiven Filter ausgeblendet.",
+        "clear_filters": "Filter zurücksetzen",
         "to_see_its_details": "um seine Details zu sehen."
       },
       "api": {
@@ -3165,6 +3169,30 @@
         "description": "Spec-getriebene Entwicklung in Kiro Crew: Verwandle eine Feature-Idee mit einem eingebetteten Agenten in Anforderungen → Design → Aufgaben, prüfe das Markdown direkt in der App und übergib den freigegebenen Plan dann an eine autonome Ausführungssitzung.",
         "page_label": "Spec Builder"
       }
+    },
+    "autoImprovement": {
+      "findingDetail": {
+        "build": "Build",
+        "collects": "erfasst",
+        "green": "GREEN",
+        "lint": "Lint",
+        "red": "RED",
+        "staygreen": "STAYGREEN"
+      },
+      "manifest": {
+        "description": "Misst ein GitHub-Repository, bevor es daran etwas ändert. Entwirft eine kalibrierte Leistungsmetrik (das Maß), weist anhand eines bekannten Gewinns nach, dass die Metrik vertrauenswürdig ist, und führt dann Verbessern-oder-Verwerfen-Zyklen aus: Jede Kandidatenkorrektur entsteht in einem isolierten Worktree, wird gegen eine Bearbeitungs-Allowlist und die Tests des Repositorys geprüft und nur behalten, wenn der gemessene Gewinn das Rauschband übersteigt. Was übrig bleibt, wird als GitHub-Pull-Request im Entwurfsstatus angelegt, den du selbst prüfst und veröffentlichst.",
+        "display_name": "Auto-Improvement",
+        "highlight_1": "Weist zuerst die eigene Metrik nach — ein Lauf startet nicht mit einem unzuverlässigen Maß",
+        "highlight_2": "Jeder Kandidat wird A/B gemessen, bei Fehlerkorrekturen RED/GREEN, niemals nur „sieht richtig aus“",
+        "highlight_3": "Behält eine Änderung nur, wenn der Gewinn das gemessene Rauschband übersteigt",
+        "highlight_4": "Legt GitHub-Pull-Requests an — nur als Entwurf, niemals für dich veröffentlicht oder gemergt",
+        "highlight_5": "Arbeitet auf einem Klon ohne Push-Recht, damit nichts ungeprüft die Sandbox verlässt",
+        "highlight_6": "Eine fortsetzbare Chat-Sitzung pro Pull Request, Befund und Lauf",
+        "page_label": "Auto-Improve"
+      },
+      "setupPanel": {
+        "https_github_com_owner_repo": "https://github.com/owner/repo"
+      }
     }
   },
   "components": {
@@ -3652,6 +3680,10 @@
         },
         "skillsProvider": {
           "skills": "Skills"
+        },
+        "appsProvider": {
+          "apps": "Apps",
+          "needs_migration": "Migration erforderlich"
         }
       },
       "search_everywhere": "Überall suchen",
@@ -4490,7 +4522,9 @@
       "collapse_paste": "Einfügung einklappen",
       "expand_paste": "Einfügung aufklappen",
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
-      "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]"
+      "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]",
+      "preview_more_lines_one": "… {{count}} weitere Zeile",
+      "preview_more_lines_other": "… {{count}} weitere Zeilen"
     },
     "projectPicker": {
       "back": "Zurück",
@@ -4928,6 +4962,7 @@
       "screen_capture_drag_the_area_you_want_it_attache": "Bildschirmaufnahme — ziehen Sie den gewünschten Bereich; er wird beim Loslassen automatisch angehängt"
     },
     "tagManagerList": {
+      "change_color": "Farbe von {{name}} ändern",
       "delete_tag": "Tag „{{name}}“ löschen",
       "delete_tag_2": "Tag {{name}} löschen",
       "filter_by_tag": "Nach Tag filtern",
@@ -4937,6 +4972,7 @@
       "new_tag": "Neuer Tag… ↵",
       "remove_status_flag_from": "Status-Markierung von {{name}} entfernen",
       "rename_tag": "Tag {{name}} umbenennen",
+      "set_color_to_name": "Farbe auf {{name}} setzen",
       "status_tag_mutually_exclusive_on_cards_click_to": "Status-Tag (auf Karten exklusiv) — klicken, um ihn normal zu machen"
     },
     "terminalCompletion": {
@@ -5141,9 +5177,9 @@
       "can_t_embed_an_http_page_here": "Eine http://-Seite kann hier nicht eingebettet werden",
       "dismiss": "Schließen",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Geben Sie oben die URL Ihres Dev-Servers ein (z. B. ein Vite- oder statischer Server auf localhost), um\n              die Site in der Vorschau zu sehen, an der Sie arbeiten — sie wird beim Bearbeiten live neu geladen.",
-      "exit_expanded_preview": "Erweiterte Vorschau beenden",
+      "exit_expanded_preview": "Einklappen",
       "expand_preview": "Vorschau erweitern",
-      "expand_preview_hide_nav_sessions": "Vorschau erweitern (Navigation & Sitzungen ausblenden)",
+      "expand_preview_hide_nav_sessions": "Erweitern (Navigation und Sitzungen ausblenden)",
       "forward": "Weiterleiten",
       "http": "http://",
       "let_the_agent_act": "Dem Agenten erlauben zu handeln",
@@ -7761,7 +7797,29 @@
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "Workspace",
         "no_skills_yet": "Noch keine Fähigkeiten",
-        "empty_subtitle": "Fähigkeiten lehren den Agenten wiederverwendbare Verfahren. Durchsuchen Sie das Register, um eine hinzuzufügen."
+        "empty_subtitle": "Fähigkeiten lehren den Agenten wiederverwendbare Verfahren. Durchsuchen Sie das Register, um eine hinzuzufügen.",
+        "budget_doorway_static": "Kontextbudget →",
+        "budget_back": "Skills",
+        "budget_title": "Kontextbudget",
+        "budget_subtitle": "Was jeder Skill kostet, wenn ein Trigger ihn auslöst. Nach Verbrauch sortiert, nicht nach Namen.",
+        "budget_header": "<total>{{total}}</total> Zeichen · letzte 30 Tage · Top 3 = <pct>{{pct}}</pct>",
+        "budget_sort": "Sortieren",
+        "budget_sort_cost": "Höchste Kosten",
+        "budget_sort_size": "Größte Datei",
+        "budget_sort_recent": "Kürzlich verwendet",
+        "budget_group_counting": "Zählt zum Kontext",
+        "budget_group_counting_detail": "{{count}} Skills · {{pct}} % des Verbrauchs",
+        "budget_group_cold": "In 30 Tagen nie ausgelöst",
+        "budget_group_cold_detail": "{{count}} Skills · {{size}} ungenutzt",
+        "budget_group_frozen": "Bereits nur als Verweis",
+        "budget_group_frozen_detail": "{{count}} · {{chars}} wurden verbraucht",
+        "budget_chars": "Zeichen",
+        "budget_if_fires": "{{size}}, wenn er auslöst",
+        "budget_every_turn": "{{size}} bei jedem Zug",
+        "budget_renamed": "(umbenannt)",
+        "budget_footnote": "Ein angehefteter (always: true) oder paketeigener Skill zeigt seine Kosten, hat aber keinen Schalter.",
+        "budget_empty_title": "Noch keine Budgetdaten",
+        "budget_empty_subtitle": "Noch keine Skills installiert."
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -8171,7 +8229,7 @@
       "script_python": "Skript · Python",
       "select": "{{name}} auswählen",
       "select_all_jobs": "Alle Jobs auswählen",
-      "select_deselect_all_jobs_matching_the_current_fi": "Alle Jobs auswählen/abwählen, die zum aktuellen Filter passen",
+      "select_deselect_all_jobs_matching_the_current_fi": "Alle sichtbaren Jobs auswählen/abwählen (eingeklappte Ordner ausgeschlossen)",
       "selected": "ausgewählt",
       "start_from_a_pre_made_schedule": "Mit einem vorgefertigten Zeitplan beginnen",
       "status": "Status",
@@ -8186,7 +8244,25 @@
       "view": "Ansehen",
       "view_last_result": "Letztes Ergebnis ansehen",
       "you_can_also_create_schedules_by_chatting_try": "Sie können Zeitpläne auch per Chat erstellen — versuchen Sie",
-      "jobs_noun": "Jobs"
+      "jobs_noun": "Jobs",
+      "cronFolders": {
+        "batch_move_failed_one": "{{count}} von {{total}} Job konnte nicht verschoben werden",
+        "batch_move_failed_other": "{{count}} von {{total}} Jobs konnten nicht verschoben werden",
+        "collapse_folder": "Ordner einklappen",
+        "confirm_delete_folder": "\"{{name}}\" löschen? Jobs werden nicht mehr gruppiert.",
+        "create": "Erstellen",
+        "delete_folder": "Ordner löschen",
+        "delete_folder_named": "\"{{name}}\" löschen",
+        "expand_folder": "Ordner aufklappen",
+        "folder_actions": "Ordneraktionen",
+        "job_count_one": "{{count}} Job",
+        "job_count_other": "{{count}} Jobs",
+        "move_to_folder": "In Ordner verschieben",
+        "new_folder": "Neuer Ordner",
+        "new_folder_name": "Name des neuen Ordners",
+        "rename": "Umbenennen",
+        "ungrouped": "Nicht gruppiert"
+      }
     },
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Unscharfer Filter (Teilstring-Übereinstimmung)",
@@ -8371,7 +8447,11 @@
         "completion_event_characters_2": "Zeichen für Abschlussereignis",
         "completion_event_truncation": "Kürzung des Abschlussereignisses",
         "composer": "Eingabefeld",
-        "concise_responses": "Knappe Antworten",
+        "response_verbosity": "Ausführlichkeit der Antworten",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Wie knapp der Agent formuliert. „Ultraknapp“ schreibt für eine Leserin mit ADHS: die Antwort steht in einem Vorspann von maximal drei Sätzen, und Details danach müssen als überfliegbare Stichpunkte statt als Prosa kommen. Code, Befehle und Fehlermeldungen bleiben wortgetreu; Sicherheitswarnungen und mehrstufige Anleitungen behalten auf jeder Stufe alle Details.",
+        "default_normal_length": "Standard – normale Länge",
+        "concise_trim_filler": "Knapp – ohne Füllwörter und Kommentare",
+        "ultra_concise_3_sentences": "Ultraknapp – Antwort in 3 Sätzen, danach überfliegbare Details",
         "confirm_before_closing_session": "Vor dem Schließen der Sitzung bestätigen",
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
@@ -8427,7 +8507,6 @@
         "technical_comfort": "Technische Vertrautheit",
         "text_streaming_style": "Stil des Text-Streamings",
         "time_window_for_session_restoration": "Zeitfenster für die Wiederherstellung von Sitzungen",
-        "trim_filler_and_over_narration_lead_with_the_ans": "Füllwörter und übermäßige Erzählung kürzen: mit der Antwort beginnen, Fortschrittsnotizen auf hoher Ebene halten. Code, Befehle und Fehlermeldungen bleiben wortgetreu; Sicherheitswarnungen und mehrstufige Anweisungen behalten alle Details.",
         "when_enabled_inline_tool_pills_show_simplified_t": "Wenn aktiviert, zeigen Inline-Werkzeug-Pills den vereinfachten Zweck der Werkzeugnutzung anstelle des exakt ausgeführten Befehls",
         "which_model_new_sessions_start_with_pick_a_model": "Mit welchem Modell neue Sitzungen starten, wenn ihr Agent keines festlegt. Lege pro Agent unter Agenten-Fähigkeiten → Crews ein Modell fest oder wähle innerhalb einer Sitzung eines, um es dort zu übersteuern.",
         "which_part_of_a_subagent_s_stream_to_keep_when_i": "Welcher Teil des Streams eines Subagenten beim Einfügen seines Abschlussereignisses in die übergeordnete Sitzung erhalten bleibt. „Kopf“ bewahrt den Anfang (Standard, entspricht dem Legacy-Verhalten). „Ende“ bewahrt die abschließende Zusammenfassung. „Beides“ behält einen Abschnitt von jedem Ende mit einer Markierung dazwischen.",
@@ -9949,5 +10028,86 @@
       "medium": "Mittel",
       "xhigh": "Sehr hoch"
     }
+  },
+  "autoImprovement": {
+    "activityDiscovered": "(gefunden {{discovered}}, neu {{fresh}})",
+    "autocommitHint": "Jede geprüfte Änderung direkt in den Basis-Branch pushen. Geschützte Branches fallen immer auf einen Pull-Request-Entwurf zurück.",
+    "autocommitLabel": "Direkt in den Branch committen (kein Pull Request)",
+    "band": "Rauschband",
+    "base": "Basis",
+    "branchDefault": "Repository-Standard",
+    "branchLabel": "Basis-Branch",
+    "calibrated": "Kalibriert",
+    "changesHeading": "Pull-Request-Entwürfe",
+    "cloneBtn": "Verbinden",
+    "colActions": "Aktionen",
+    "colChange": "Änderung",
+    "colChecks": "Prüfungen",
+    "colPr": "Pull Request",
+    "colVerdict": "Status",
+    "commitConfirm": "Diese Änderung nach {{branch}} committen und pushen? Ein veröffentlichter Commit lässt sich nicht zurückrufen.",
+    "commitFailed": "Der Commit wurde abgelehnt.",
+    "commitFinding": "In den Branch committen",
+    "currentRepo": "Bearbeitet",
+    "cycle": "Zyklus",
+    "defectHeading": "Defekt",
+    "delta": "Gemessene Differenz",
+    "detailUnavailable": "Für diesen Befund sind keine Details verfügbar.",
+    "discussFinding": "Diesen Befund besprechen",
+    "discussPr": "Diesen Pull Request besprechen",
+    "discussRuler": "Den Maßstab besprechen",
+    "draftPr": "Entwurf",
+    "findingTitlePrefix": "Befund",
+    "findingsHeading": "Befundverzeichnis",
+    "findingsStat": "Befunde",
+    "findingsTruncated": "Es werden die {{shown}} neuesten von {{total}} Befunden angezeigt.",
+    "fingerprint": "Fingerprint",
+    "gateHeading": "Prüfungen",
+    "gateNote": "Prüfungshinweis",
+    "historyHeading": "Statusverlauf",
+    "hypothesisHeading": "Reproduktionshypothese",
+    "idleStatus": "Inaktiv — starten Sie einen Lauf, um Verbesserungen zu finden und Pull Requests zu erstellen.",
+    "intro": "Misst ein Repository, bevor es es verändert: zuerst wird die Metrik kalibriert und nachgewiesen, dann bereiten Behalten-oder-Verwerfen-Zyklen die bestandenen Änderungen als Pull-Request-Entwürfe zur Prüfung auf.",
+    "keptStat": "Behalten",
+    "loadingDetail": "Details werden geladen…",
+    "noFindings": "Noch keine Befunde erfasst.",
+    "noPrs": "Noch keine Pull Requests erstellt.",
+    "prStat": "Pull Requests",
+    "prTitlePrefix": "PR",
+    "pushDisabled": "Push deaktiviert",
+    "queuedOnly": "lokal eingereiht, nicht eröffnet",
+    "refreshPr": "Pull-Request-Status aktualisieren",
+    "regressed": "Regressierte Tests: {{tests}}",
+    "repoLabel": "Zu verbesserndes GitHub-Repository",
+    "reproTest": "Reproduktionstest",
+    "rulerHeading": "Der Maßstab",
+    "rulerNotReady": "Der Maßstab ist noch nicht kalibriert, daher läuft kein Verbesserungszyklus. Die Kalibrierung weist nach, dass die Metrik einen bekannten Gewinn erkennen kann, bevor irgendetwas optimiert wird.",
+    "rulerReady": "Maßstab kalibriert und bereit",
+    "rulerSessionTitle": "Maßstab-Review",
+    "rulerStat": "Maßstab",
+    "runBtn": "Lauf starten",
+    "runError": "Der Lauf wurde mit einem Fehler beendet.",
+    "runningStatus": "Läuft — Zyklus {{cycle}}, {{kept}} behalten, {{drafted}} Pull Requests erstellt.",
+    "setupHeading": "Repository",
+    "showDiff": "Änderung anzeigen",
+    "showPrBody": "Pull-Request-Beschreibung anzeigen",
+    "statusCommitted": "In den Branch committet",
+    "statusDiscardedNoise": "Unterhalb des Rauschbands",
+    "statusDuplicate": "Duplikat",
+    "statusError": "Werkzeugfehler",
+    "statusFailedGate": "Vom Gate abgelehnt",
+    "statusFailedVerify": "Fix nicht verifiziert",
+    "statusFiled": "Pull Request als Entwurf",
+    "statusNoDefect": "Kein Defekt gefunden",
+    "statusPurged": "Vom Betreiber gelöscht",
+    "statusSeen": "Gesehen",
+    "statusUnavailable": "Nicht verfügbar",
+    "stopBtn": "Lauf stoppen",
+    "title": "Selbstverbesserung",
+    "toggleDetail": "Befunddetails anzeigen",
+    "truncated": "gekürzt",
+    "uncalibrated": "Nicht kalibriert",
+    "viewCommit": "Commit ansehen",
+    "viewPr": "Pull Request"
   }
 }

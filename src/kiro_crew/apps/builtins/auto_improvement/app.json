@@ -1,0 +1,70 @@
+{
+  "name": "auto-improvement",
+  "version": "1.0.0",
+  "displayName": "Auto-Improvement",
+  "description": "Measures a GitHub repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. Survivors are drafted as GitHub pull requests you review and publish yourself.",
+  "author": "zedmor",
+  "minKiroCrewVersion": "0.1.0",
+  "tags": ["performance", "code-quality", "automation", "agents", "github"],
+  "highlights": [
+    "Proves its own metric first — a run refuses to start on an untrustworthy ruler",
+    "Every candidate is measured A/B, or RED/GREEN for bug fixes, never just 'looks right'",
+    "Keeps a change only when the win clears the measured noise band",
+    "Drafts GitHub pull requests — draft-only, never published or merged for you",
+    "Works on a push-disabled clone, so nothing escapes the sandbox unreviewed",
+    "One resumable chat session per pull request, finding, and run"
+  ],
+  "defaultEnabled": false,
+  "skills": ["skills/ai-discover", "skills/metric-design"],
+  "agents": ["agents/discovery.json", "agents/pr-author.json"],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "mcpServers": {
+    "auto-improvement": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "kiro_crew.apps.builtins.auto_improvement.backend.mcp_server"
+      ],
+      "autoApprove": [
+        "get_status",
+        "get_ruler",
+        "list_findings",
+        "get_finding",
+        "get_progress",
+        "get_deps"
+      ]
+    }
+  },
+  "permissions": {
+    "api": [
+      "/api/apps/auto-improvement",
+      "/api/apps/auto-improvement/*",
+      "/api/chat",
+      "/api/chat/slots/*",
+      "/api/chat/folders",
+      "/api/source/pull-request"
+    ],
+    "events": ["notification"],
+    "network": true,
+    "storage": true
+  },
+  "dependencies": {
+    "commands": ["git", "gh"]
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/auto-improvement",
+        "label": "Auto-Improve",
+        "icon": "Brain"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/auto-improvement/icon.svg",
+  "heroImage": "/app-assets/auto-improvement/hero-light.svg",
+  "heroImageDark": "/app-assets/auto-improvement/hero-dark.svg",
+  "heroImageDetail": "/app-assets/auto-improvement/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/auto-improvement/hero-detail-dark.svg"
+}

@@ -96,7 +96,7 @@ Set via `kirocrew config set agent.sandbox auto`.
     "history_max_days": 365
   },
   "skills": {
-    "max_triggered": 3
+    "max_triggered": 0
   },
   "knowledge": {
     "auto_ingest_artifacts": true,
@@ -205,7 +205,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `skills.max_triggered` | Maximum skills loaded per message (at least 1) | `3` |
+| `skills.max_triggered` | Maximum skills loaded per message (>=0) | `0` |
 | `skills.lazy_load` | Inject only a usage-ranked top-K of on-demand skills at session start and leave the long tail discoverable via search, so a large skills set cannot crowd out memory and lessons | `false` |
 
 ### Knowledge Library

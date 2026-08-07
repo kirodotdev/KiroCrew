@@ -180,6 +180,38 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
 
+def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
+    """The opt-in must survive ``load()`` and a later ``save()``.
+
+    ``DashboardConfig`` is built field-by-field in ``load()``, so a nested
+    section that nobody wires up is silently dropped: the documented
+    ``kirocrew config set dashboard.tailscale.enabled true`` would land in
+    config.json, read back as ``False``, and — because ``to_dict()`` re-serializes
+    the default — be rewritten to ``false`` by the next unrelated ``save()``.
+    That makes the whole feature inert while looking configured, so both halves
+    are pinned here: hydration, and the round trip that would erase it.
+    """
+    assert KiroCrewConfig().dashboard.tailscale.enabled is False
+    assert _load_from_dict({}).dashboard.tailscale.enabled is False
+
+    enabled = _load_from_dict({"dashboard": {"tailscale": {"enabled": True}}})
+    assert enabled.dashboard.tailscale.enabled is True
+
+    # A save() built from the loaded config must not drop the operator's value.
+    assert _load_from_dict(enabled.to_dict()).dashboard.tailscale.enabled is True
+
+    # A malformed section degrades to the default instead of raising.
+    for bad in ("yes", 1, [], None):
+        assert _load_from_dict({"dashboard": {"tailscale": bad}}).dashboard.tailscale.enabled is (
+            False
+        ), bad
+    assert (
+        _load_from_dict({"dashboard": {"tailscale": {"enabled": "true"}}})
+        .dashboard.tailscale.enabled
+        is False
+    )
+
+
 def test_sandbox_allow_unsandboxed_exec_default_is_platform_independent(monkeypatch) -> None:
     """No platform may flip this default on its own.
 

@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1750,6 +1751,32 @@ def _live_port_for(app_name: str, live_port: int | None) -> int | None:
         return None
 
 
+#: Bare python launchers an app manifest may name. Each is substituted with the RUNNING
+#: interpreter, which is the only one guaranteed to import ``kiro_crew``.
+_BARE_PYTHON = frozenset({"python", "python3", "py"})
+
+
+def resolve_stdio_command(cfg: dict) -> dict:
+    """Resolve a bare ``python``/``python3`` MCP command to the running interpreter.
+
+    A manifest that hard-codes ``python3`` does not launch on a native Windows install (a venv
+    there ships ``python.exe`` and no ``python3.exe``), so the spawn fails with ENOENT and the
+    app's MCP tools go silently missing. Plain ``python`` is not a fix either: on Windows
+    ``shutil.which("python")`` can resolve a 0-byte Microsoft-Store reparse point — the case
+    ``platform_compat._is_windows_store_python_stub`` exists for — and kiro-cli strips env when
+    spawning MCP subprocesses, so a PATH lookup can land on an interpreter that cannot import
+    ``kiro_crew`` at all. ``mcp_gateway/rewriter.py`` bakes ``sys.executable`` into its stub
+    entry for exactly that reason; this is the same decision for app manifests.
+
+    Only a BARE launcher is substituted. An absolute path, ``node``, ``docker`` or anything
+    else was chosen deliberately and is left untouched, as is an HTTP entry (no ``command``).
+    """
+    command = cfg.get("command")
+    if isinstance(command, str) and command.strip().lower() in _BARE_PYTHON:
+        cfg["command"] = sys.executable
+    return cfg
+
+
 def _register_mcp_servers(
     app_name: str, manifest: AppManifest, live_port: int | None = None
 ) -> list[str]:
@@ -1801,6 +1828,10 @@ def _register_mcp_servers(
             if is_http:
                 cfg["url"] = _resolve_live_mcp_url(app_name, cfg["url"], live_port=resolved_port)
                 cfg.pop("disabled", None)  # backend is live — ensure enabled
+            else:
+                # A stdio entry: resolve a bare `python`/`python3` to the running
+                # interpreter (see `resolve_stdio_command`).
+                cfg = resolve_stdio_command(cfg) if isinstance(cfg, dict) else cfg
             servers[namespaced] = cfg
             registered.append(namespaced)
         # LAST governance pass before this map hits disk. This file IS read by

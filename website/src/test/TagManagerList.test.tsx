@@ -116,10 +116,63 @@ describe('TagManagerList — shared CRUD (both modes)', () => {
 })
 
 describe('TagManagerList — manage mode', () => {
-  it('renders swatches as static chips, not filter checkboxes', async () => {
+  it('renders swatches as colour buttons, not filter checkboxes', async () => {
     renderList({ mode: 'manage' })
     await screen.findByTestId('tag-row-t1')
     expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.getByTestId('tag-color-t1')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('opens the palette from the swatch and PATCHes the picked colour', async () => {
+    renderList({ mode: 'manage' })
+    const swatch = await screen.findByTestId('tag-color-t1')
+    fireEvent.click(swatch)
+    expect(swatch).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('tag-palette-t1')).toBeInTheDocument()
+    // Pick green from the shared folder palette.
+    fireEvent.click(screen.getByTestId('tag-color-t1-22c55e'))
+    await waitFor(() => expect(api.updateChatTag).toHaveBeenCalledWith('t1', { color: '#22c55e' }))
+    // Palette closes and focus returns to the swatch (not <body>).
+    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
+    expect(document.activeElement).toBe(swatch)
+  })
+
+  it('marks the tag\'s current colour as pressed in the palette', async () => {
+    renderList({ mode: 'manage' })
+    // t1 is #ff0000 (not in the palette) — nothing pressed.
+    fireEvent.click(await screen.findByTestId('tag-color-t1'))
+    const pressed = screen.getByTestId('tag-palette-t1').querySelectorAll('[aria-pressed="true"]')
+    expect(pressed.length).toBe(0)
+  })
+
+  it('Escape closes the palette without persisting and refocuses the swatch', async () => {
+    renderList({ mode: 'manage' })
+    const swatch = await screen.findByTestId('tag-color-t1')
+    fireEvent.click(swatch)
+    fireEvent.keyDown(screen.getByTestId('tag-palette-t1'), { key: 'Escape' })
+    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
+    expect(api.updateChatTag).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(swatch)
+  })
+
+  it('only one palette is open at a time (opening another closes the first)', async () => {
+    renderList({ mode: 'manage' })
+    fireEvent.click(await screen.findByTestId('tag-color-t1'))
+    fireEvent.click(screen.getByTestId('tag-color-t2'))
+    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
+    expect(screen.getByTestId('tag-palette-t2')).toBeInTheDocument()
+  })
+})
+
+describe('TagManagerList — colour palette isolation', () => {
+  it('column-filter mode never renders the colour trigger or palette', async () => {
+    renderList({ mode: 'column-filter', selectedIds: [], onToggleTag: vi.fn() })
+    await screen.findByTestId('tag-row-t1')
+    expect(screen.queryByTestId('tag-color-t1')).toBeNull()
+    // Clicking the filter checkbox must not open a palette either.
+    fireEvent.click(screen.getByLabelText('Include Alpha in filter'))
+    expect(screen.queryByTestId('tag-palette-t1')).toBeNull()
+    expect(api.updateChatTag).not.toHaveBeenCalled()
   })
 })
 
