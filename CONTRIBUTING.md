@@ -21,11 +21,11 @@ it leaves room for an answer nobody had thought of.
 
 ## Finding Something to Work On
 
-Two labels mark work that is ready for someone outside the core team.
-[`good first issue`](https://github.com/kirodotdev/KiroCrew/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-is scoped small and does not assume much context.
-[`help wanted`](https://github.com/kirodotdev/KiroCrew/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-is work the team wants done but is not doing right now.
+Start with the [open issues](https://github.com/kirodotdev/KiroCrew/issues). Issues
+carry an `area:` label naming the subsystem they land in — `area: dashboard`,
+`area: agents`, `area: cron` and so on — so you can filter to the part of the
+codebase you want to work in, and a type label (`bug`, `enhancement`,
+`documentation`) telling you what kind of change it is.
 
 Before starting anything substantial, check whether someone is already on it and
 comment on the issue saying you are picking it up. For a large change, open an

@@ -3095,7 +3095,7 @@ async def _handle_add_settings_label(request: web.Request) -> web.Response:
 #    merge path at all.
 #    There is still deliberately no "override and merge": an override is a
 #    governance decision recorded ON the provider (this repo does it with a reviewed
-#    `/ai-review override` comment plus the `defer-longterm` label), and a button
+#    `/ai-review override` comment), and a button
 #    that silently sheds a required check is the one thing the provider would NOT
 #    adjudicate for us.
 # 2. **Bulk is opt-in per action, not a generic loop.** ``_handle_pulls_bulk``

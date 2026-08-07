@@ -213,7 +213,7 @@ deliberate narrowing:
    (GitLab's separate `/rebase` endpoint does not merge, so it is not a substitute.)
    There is deliberately **no "override and merge"**: an override is a governance
    decision recorded ON the provider (this repo does it with a reviewed
-   `/ai-review override` comment plus the `defer-longterm` label), and shedding a
+   `/ai-review override` comment), and shedding a
    required check is the one thing no automatic gate should do quietly.
    `test_pr_actions.py::TestMergeBoundaries` and `TestMergePrimitive` pin all of it.
 2. **A REVIEW is pinned to a commit too, for the same reason a merge is.** Approving is
