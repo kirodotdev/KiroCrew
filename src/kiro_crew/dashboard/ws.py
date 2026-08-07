@@ -12,6 +12,7 @@ from aiohttp import WSMsgType, web
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
+from kiro_crew.dashboard.chat_utils import subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -332,7 +333,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         if state.subagents:
                             for a in state.subagents.running:
                                 try:
-                                    slot = a.parent_session_key.removeprefix("dashboard:")
+                                    slot = subagent_event_slot(a.parent_session_key)
                                     _replay.append(
                                         {
                                             "type": "subagent_snapshot",
@@ -356,7 +357,11 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             for a in state.subagents.all_agents:
                                 if not a.done:
                                     continue
-                                slot = a.parent_session_key.removeprefix("dashboard:")
+                                # Same slot mapping as the live frames — a raw
+                                # prefix-strip tags replayed cards with a slot
+                                # no tab reads, so the panel rehydrated empty
+                                # after every reconnect for cron/channel tabs.
+                                slot = subagent_event_slot(a.parent_session_key)
                                 try:
                                     _replay.append(
                                         {

@@ -406,9 +406,50 @@ def dashboard_slot_key(session_key: str) -> str:
     receive it: routing a notice, addressing a card, honouring a dashboard-only
     directive.
     """
+    if session_key.startswith("cron:"):
+        # A cron-born tab is named ``cron-<job_id>`` (see cron_inject.py), which
+        # is NOT the session key folded: ``_normalize_slot_key`` turns
+        # ``cron:<id>`` into ``cron_<id>`` (underscore), a slot that has never
+        # existed. Consumers that trusted the fold — sub-agent completion
+        # injection, compaction/recycle notices — silently missed the open cron
+        # tab ("parent slot cron_<id> gone, notification only"), so agent
+        # results reached the bell icon but never the conversation.
+        #
+        # Per-run execution keys carry extra segments — ``cron:<job_id>:<run_id>``
+        # for stateless jobs, ``cron:<job_id>:<agent>`` for agent sequences —
+        # while the surface registry only ever holds the slot's linked key
+        # (``cron:<job_id>``), so the surface gate is checked against both
+        # spellings. Whichever matched, the displaying tab is the job's own.
+        job_id = session_key.removeprefix("cron:").split(":", 1)[0]
+        if not (
+            has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")
+        ):
+            return ""
+        return _normalize_slot_key(f"cron-{job_id}")
     if not has_dashboard_surface(session_key):
         return ""
     return _normalize_slot_key(session_key)
+
+
+def subagent_event_slot(parent_session_key: str) -> str:
+    """The ``slot`` value a per-slot WS event must carry for *parent_session_key*.
+
+    The frontend routes ``subagent_*`` / ``batch_finished`` frames by EXACT
+    match between the frame's ``slot`` and the tab's slot key, so a bare
+    ``removeprefix("dashboard:")`` breaks every non-dashboard parent: a
+    cron-born tab is named ``cron-<id>`` while its session key is
+    ``cron:<id>``, and a channel-born tab is named by its transcript stem
+    (``slack_<ts>``) while its session key stays ``slack:<ts>``. Frames tagged
+    with those raw keys route to a slot no tab reads — the Subagents panel
+    showed "No subagents running" for the entire life of every agent spawned
+    from such a session.
+
+    :func:`dashboard_slot_key` owns the real mapping; fall back to the old
+    prefix-strip when it answers ``""`` (no open tab — nothing routes anywhere
+    either way, but keeping the raw key preserves the historical payload for
+    external WS consumers and log lines).
+    """
+    return dashboard_slot_key(parent_session_key) or parent_session_key.removeprefix("dashboard:")
 
 
 def slot_transcript_key(slot_key: str) -> str:

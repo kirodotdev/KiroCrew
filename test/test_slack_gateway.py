@@ -4179,6 +4179,34 @@ class TestRetriggerRecovery:
         await on_event("subagent_started", info, {})
         orch.dashboard_state.broadcast_ws.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_subagent_event_routes_cron_parent_to_the_cron_tab(self):
+        """Regression: a cron-born parent's events must carry the TAB's slot
+        key (``cron-<id>``), not the raw session key (``cron:<id>``). The
+        frontend routes frames by exact slot match, so the raw key left the
+        Subagents panel permanently on "No subagents running" for every agent
+        spawned from a cron-born session."""
+        from kiro_crew.session_surface import set_dashboard_surfaced
+
+        orch, mock_sm = self._setup()
+        on_event = mock_sm.call_args[1]["on_event"]
+
+        info = MagicMock()
+        info.id = "agent-cron"
+        info.parent_session_key = "cron:188f71e5"
+        info.batch_id = ""
+
+        set_dashboard_surfaced({"cron:188f71e5"})
+        try:
+            await on_event("subagent_spawn", info, {"task": "t", "agent": "a"})
+        finally:
+            set_dashboard_surfaced(())
+
+        orch.dashboard_state.broadcast_ws.assert_called()
+        etype, payload = orch.dashboard_state.broadcast_ws.call_args[0]
+        assert etype == "subagent_spawn"
+        assert payload["slot"] == "cron-188f71e5"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: run() signal handling and bg session

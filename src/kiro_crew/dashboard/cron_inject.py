@@ -93,6 +93,16 @@ def inject_cron_result_to_dashboard(
         else:
             messages = history
         hydrate_slot_from_history(slot, messages)
+    # Publish the (possibly just-created) tab to the dashboard-surface registry
+    # BEFORE anything routes against it. Every gate that asks "does this session
+    # have a tab?" — dashboard_slot_key for sub-agent event routing and
+    # completion injection, widget/question/approval delivery — reads that
+    # registry, and a created-but-unpublished slot silently fails those gates
+    # until some unrelated slot change happens to republish. (Same invariant as
+    # channel_slots.reconcile — see the comment there.)
+    from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
+
+    _sync_dashboard_slots(state)
     if result_text:
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)
