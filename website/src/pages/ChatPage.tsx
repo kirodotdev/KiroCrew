@@ -103,7 +103,8 @@ import { pickSearchScrollBehavior, scrollCurrentMatchIntoView, pollRowSettled, g
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
-import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
+import { voiceInputSupported } from '../hooks/useVoiceInput'
+import { usePersistentVoiceInput } from '../providers/VoiceInputProvider'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import type { TurnStats } from './chat/AssistantMessage'
@@ -1600,7 +1601,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     frozenInputRef.current = null
     frozenCaretRef.current = null
   }, [saveDrafts, spliceDictation])
-  const voice = useVoiceInput(
+  const voice = usePersistentVoiceInput(
     applyVoiceText,
     {
       streaming: sttStreaming,
@@ -6137,4 +6138,3 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </RowDisclosureProvider>
   )
 }
-
