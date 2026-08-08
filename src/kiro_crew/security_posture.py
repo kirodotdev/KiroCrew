@@ -619,6 +619,22 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "exfiltration-URL scanners plus a sensitive-header pass before anything is "
         "written into the archive.",
     ),
+    (
+        "Tag definitions (HTTP + auto-tag)",
+        "dashboard/chat_tags.py",
+        "Tag names supplied by both the POST /api/chat/tags HTTP handler and the "
+        "background auto-tag task are LLM-authored or project-derived and persist "
+        "to tags.json, the dashboard sidebar, and Slack notifications. Both paths "
+        "redact credentials and exfiltration URLs before creation/persistence.",
+    ),
+    (
+        "Background auto-tag (project-derived names)",
+        "dashboard/chat_auto_tag.py",
+        "The background auto-tag task derives tag names from the slot's project "
+        "path and persists them to tags.json and the dashboard sidebar via the "
+        "shared tag-creation path. Names are passed through redact_credentials "
+        "and redact_exfiltration_urls before resolution or persistence.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

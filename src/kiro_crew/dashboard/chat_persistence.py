@@ -514,6 +514,20 @@ def _rehydrate_slot_from_history(
         raw_tags = meta.get("tags")
         if isinstance(raw_tags, list):
             slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
+            # Prune ids missing from the vocabulary: tag deletion commits the
+            # vocab write first (crash-atomic), so a crash mid-delete can
+            # leave dangling ids on the persisted slot line. load_tags() runs
+            # before any slot restore, so state._tags is authoritative here.
+            # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
+            # or I/O failure): pruning then would wipe EVERY assignment and
+            # the next save persists the loss. A legitimately-empty vocabulary
+            # (user deleted the last tag) IS authoritative and must prune —
+            # otherwise a crash mid-delete resurrects the dangling id forever.
+            if getattr(state, "_tags_authoritative", True):
+                known = {t.get("id") for t in state._tags}
+                slot.tags = [t for t in slot.tags if t in known]
+        if meta.get("auto_tagged"):
+            slot._auto_tagged = True
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -850,6 +864,20 @@ def _restore_recent_sessions_steps(
         raw_tags = meta.get("tags")
         if isinstance(raw_tags, list):
             slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
+            # Prune ids missing from the vocabulary: tag deletion commits the
+            # vocab write first (crash-atomic), so a crash mid-delete can
+            # leave dangling ids on the persisted slot line. load_tags() runs
+            # before any slot restore, so state._tags is authoritative here.
+            # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
+            # or I/O failure): pruning then would wipe EVERY assignment and
+            # the next save persists the loss. A legitimately-empty vocabulary
+            # (user deleted the last tag) IS authoritative and must prune —
+            # otherwise a crash mid-delete resurrects the dangling id forever.
+            if getattr(state, "_tags_authoritative", True):
+                known = {t.get("id") for t in state._tags}
+                slot.tags = [t for t in slot.tags if t in known]
+        if meta.get("auto_tagged"):
+            slot._auto_tagged = True
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -1560,6 +1588,11 @@ def _save_slot_to_history(
                 meta_line["color_theme"] = slot.color_theme
             if slot.tags:
                 meta_line["tags"] = list(slot.tags)
+            if getattr(slot, "_auto_tagged", False):
+                # Once-flag for project auto-tagging: without it a restart
+                # re-runs maybe_auto_tag and silently re-adds a tag the user
+                # removed (see chat_auto_tag.maybe_auto_tag).
+                meta_line["auto_tagged"] = True
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
             if slot.linked_session_key:

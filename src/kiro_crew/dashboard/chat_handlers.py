@@ -29,6 +29,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
+from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
@@ -543,6 +544,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         state._background_tasks.add(_tt)
         _tt.add_done_callback(state._background_tasks.discard)
 
+    # Auto-tag: derive a tag from the session's project directory (deterministic,
+    # no LLM). Fire-and-forget, same pattern as auto-title.
+    if not getattr(slot, "_auto_tagged", False):
+        _at = asyncio.create_task(maybe_auto_tag(state, slot))
+        state._background_tasks.add(_at)
+        _at.add_done_callback(state._background_tasks.discard)
+
     # Edition message observer (CPP seam). Fire-and-forget, fail-safe: a
     # companion uses this to auto-ingest doc links pasted into chat. The public
     # Default is a no-op. Guarded so an observer error never blocks the turn;
@@ -643,9 +651,7 @@ def _finite_number(value: Any) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
-def _context_reading(
-    pct: Any, used: Any, window: Any, *, stale: bool
-) -> dict[str, Any]:
+def _context_reading(pct: Any, used: Any, window: Any, *, stale: bool) -> dict[str, Any]:
     """Assemble the context fields from a (pct, used, window) triple.
 
     ``pct`` is the PRIMARY signal and the only one the bar needs: kiro-cli
@@ -721,16 +727,8 @@ async def _context_snapshot_fields_inner(
     if provider is not None:
         return _context_reading(
             provider.context_usage_pct(),
-            (
-                provider.context_used_tokens()
-                if hasattr(provider, "context_used_tokens")
-                else 0
-            ),
-            (
-                provider.context_window_tokens()
-                if hasattr(provider, "context_window_tokens")
-                else 0
-            ),
+            (provider.context_used_tokens() if hasattr(provider, "context_used_tokens") else 0),
+            (provider.context_window_tokens() if hasattr(provider, "context_window_tokens") else 0),
             stale=False,
         )
     # Readings from a previous process live in a file, so the first read is
@@ -951,9 +949,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # One code for BOTH reasons on purpose: a distinct code per reason
             # would turn this 404 into an existence oracle for slots the caller
             # may not know about. The prose stays in `error` for logs.
-            return web.json_response(
-                {"error": "not found", "code": "slot_not_found"}, status=404
-            )
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
         if title:
@@ -1065,14 +1061,10 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
     _reject_pending_approvals(slot)
     cancelled = state.cancel_questions_for_slot(slot.key)
     if cancelled:
-        logger.info(
-            "Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key
-        )
+        logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)
 
 
-async def _reset_slot_session(
-    state: DashboardState, slot: _ChatSlot, session_key: str
-) -> None:
+async def _reset_slot_session(state: DashboardState, slot: _ChatSlot, session_key: str) -> None:
     """Reset a slot's agent session, releasing anything blocked on the old one.
 
     The switch handlers (agent, model, bulk model, reasoning effort, workspace)
@@ -1410,7 +1402,8 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             source="app_isolation",
             resources=f"slot={slot.key}",
             error=(
-                "app cannot access unscoped slots" if not slot._app
+                "app cannot access unscoped slots"
+                if not slot._app
                 else "app does not own this slot"
             ),
         )
@@ -1927,9 +1920,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
     try:
-        await save_slot_off_loop(
-            state, slot, closed=True, closed_at=closed_at, best_effort=False
-        )
+        await save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
     except Exception:
         # Save failed — restore slot so data isn't lost
         logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
@@ -2355,9 +2346,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # to make this call, so there is no pre-emptive gate here to go stale.
         slot.model = prior_model
         logger.warning("Slot %s model rejected: %s", name, exc)
-        return web.json_response(
-            {"error": str(exc), "code": "model_unavailable"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "model_unavailable"}, status=400)
     if went_live:
         _broadcast_context_reset(state, slot.key, provider)
     else:
@@ -2986,6 +2975,22 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # so a tampered/legacy JSONL can't seed a malformed sha that later
         # crashes the compare.
         slot.theme_consent_sha = normalize_theme_consent_sha(meta.get("theme_consent_sha"))
+    # Restore tags + the auto-tag once-flag (mirrors the persistence loaders).
+    # Without the flag, resuming a session whose auto-tag the user removed
+    # would re-run maybe_auto_tag on the next message and silently re-add it.
+    raw_tags = meta.get("tags")
+    if isinstance(raw_tags, list):
+        slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
+        # Prune ids missing from the vocabulary (crash-atomic delete leaves
+        # dangling ids on disk; see api_chat_tag_delete). FAIL-OPEN only when
+        # the vocabulary is UNKNOWN (tags.json parse/I/O failure) — pruning
+        # then would wipe every assignment. A legitimately-empty vocabulary
+        # is authoritative and must prune dangling ids.
+        if getattr(state, "_tags_authoritative", True):
+            known = {t.get("id") for t in state._tags}
+            slot.tags = [t for t in slot.tags if t in known]
+    if meta.get("auto_tagged"):
+        slot._auto_tagged = True
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":
