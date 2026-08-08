@@ -422,7 +422,19 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
 # ── STT (Speech-to-Text) ──
 
 
+#: Whisper model sizes offered in the STT picker and accepted on PUT.
+#:
+#: Maps model -> approximate on-disk download size, which is the number that
+#: actually decides the choice on a laptop. Keys MUST stay in step with
+#: ``_VALID_STT_MODELS`` in the config loader: this dict is the PUT allowlist, so a
+#: model the loader accepts but this omits would be silently rejected by the API.
+#: ``test_stt_model_sizes_cover_valid_models`` pins that.
 _STT_MODEL_SIZES: dict[str, str] = {
+    "tiny": "~75 MB",
+    "base": "~145 MB",
+    "small": "~484 MB",
+    "medium": "~1.5 GB",
+    "large-v3": "~3.1 GB",
     "turbo": "~1.6 GB",
 }
 
@@ -600,8 +612,17 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
 
     The ``mlx`` provider has its own lightweight prerequisite (``pipx install
     mlx-whisper``) and only needs ffmpeg beyond that — it does not require the
-    system-python/whisper toolchain.
+    system-python/whisper toolchain. The ``faster`` provider needs nothing manual
+    at all.
     """
+    if provider == "faster":
+        # Nothing manual: faster-whisper is a pip install of prebuilt wheels, and it
+        # decodes audio through PyAV's bundled FFmpeg — so neither the system ffmpeg
+        # nor the brew/Xcode toolchain the CLI providers need applies here. Returned
+        # before ensure_ffmpeg_in_path() so this path does no filesystem probing for
+        # a binary it will not use.
+        return []
+
     ensure_ffmpeg_in_path()
 
     system = platform.system()
@@ -774,6 +795,8 @@ async def api_stt_install(request: web.Request) -> web.Response:
                 _stt_install_status = {"step": "installing_whisper", "detail": line, "error": ""}
             elif "Installing mlx-whisper" in line:
                 _stt_install_status = {"step": "installing_mlx", "detail": line, "error": ""}
+            elif "Installing faster-whisper" in line:
+                _stt_install_status = {"step": "installing_faster", "detail": line, "error": ""}
             elif "No suitable python3" in line:
                 _stt_install_status = {"step": "installing_python", "detail": line, "error": ""}
             elif "Using:" in line:
@@ -867,6 +890,7 @@ if command -v brew >/dev/null 2>&1; then eval "$(brew shellenv)" 2>/dev/null || 
 def _build_stt_install_script(provider: str = "whisper") -> str:
     """Shell script that installs the runtime for the selected STT provider.
 
+    - ``faster``: installs faster-whisper via pip (CTranslate2, no system ffmpeg).
     - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
     - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
 
@@ -879,6 +903,35 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
     wheel otherwise reports itself as a compiler error.
     """
     prelude = _stt_install_path_prelude()
+    if provider == "faster":
+        # The prelude is still applied, though for a different reason than the other
+        # branches: brew is not required here, but a brew-installed python3 is common
+        # on macOS and the gateway's inherited PATH would not find it.
+        return (
+            prelude
+            + r"""
+# faster-whisper (CTranslate2 backend) — no system ffmpeg required, because audio
+# is decoded in-process through PyAV's bundled FFmpeg.
+# CTranslate2 publishes wheels for Linux x86-64/AArch64, macOS x86-64/ARM64 and
+# Windows x86-64. Windows on ARM has NO wheel: the install fails there, and
+# cli_doctor reports the usable alternatives.
+PY=""
+for py in python3.11 python3.12 python3 python3.13 python3.10; do
+    p=$(command -v "$py" 2>/dev/null) || continue
+    "$p" -c "import sys; sys.exit(0 if 'free-threading' not in sys.version else 1)" 2>/dev/null || continue
+    "$p" -m pip --version >/dev/null 2>&1 || continue
+    PY="$p"; break
+done
+if [ -z "$PY" ]; then
+    echo "ERROR: No suitable python3 with pip found. Install Python 3.10+ first."
+    exit 1
+fi
+echo "Using: $PY ($($PY --version))"
+echo "Installing faster-whisper..."
+"$PY" -m pip install -q --user faster-whisper || { echo "ERROR: pip install faster-whisper failed"; exit 1; }
+echo "Done. faster_whisper=$("$PY" -c "import faster_whisper; print(faster_whisper.__file__)" 2>/dev/null || echo 'check install')"
+"""
+        )
     if provider == "mlx":
         return (
             prelude

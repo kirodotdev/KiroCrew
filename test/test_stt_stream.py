@@ -963,17 +963,22 @@ class TestSttProviderGating:
         monkeypatch.setattr("subprocess.run", fake_run)
         assert core._is_apple_silicon() is False
 
+    # Both lists below are exact on purpose: they pin ORDER as well as membership,
+    # since the dashboard renders them in this sequence. They must track
+    # ``_VALID_STT_PROVIDERS`` in the config loader — adding a provider there
+    # deliberately fails these until the expectation is updated too.
     def test_providers_include_mlx_on_apple_silicon(self, monkeypatch):
         from kiro_crew import apple_speech
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         # `apple` has its own gate (macOS 26 + Swift toolchain); pin it off here so
-        # this test measures only the Apple-Silicon gate.
+        # this test measures only the Apple-Silicon gate. `faster` has no gate — it
+        # is a pip extra, so it is always advertised and stays in the expectation.
         monkeypatch.setattr(
             apple_speech, "availability", lambda: apple_speech.Availability(False, "pinned off")
         )
-        assert core._stt_providers() == ["whisper", "mlx", "transcribe"]
+        assert core._stt_providers() == ["whisper", "mlx", "transcribe", "faster"]
 
     def test_providers_exclude_mlx_off_apple_silicon(self, monkeypatch):
         from kiro_crew import apple_speech
@@ -985,7 +990,7 @@ class TestSttProviderGating:
         )
         providers = core._stt_providers()
         assert "mlx" not in providers
-        assert providers == ["whisper", "transcribe"]
+        assert providers == ["whisper", "transcribe", "faster"]
 
     def test_providers_include_apple_when_supported(self, monkeypatch):
         """`apple` is advertised only where SpeechAnalyzer can actually run."""
@@ -994,7 +999,9 @@ class TestSttProviderGating:
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(apple_speech, "availability", lambda: apple_speech.Availability(True))
-        assert core._stt_providers() == ["whisper", "mlx", "apple", "transcribe"]
+        # `faster` is ungated — a pip extra, not a platform capability — so it is
+        # present in every expectation here regardless of what is being gated.
+        assert core._stt_providers() == ["whisper", "mlx", "apple", "transcribe", "faster"]
 
     def test_providers_exclude_apple_when_toolchain_missing(self, monkeypatch):
         """A host that could run the framework but has no Swift toolchain must not be

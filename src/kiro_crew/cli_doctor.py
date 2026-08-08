@@ -815,7 +815,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     print("\nSpeech-to-Text")
     stt_active = cfg.stt.enabled
     needs_whisper = stt_active and cfg.stt.provider == "whisper"
-    needs_ffmpeg = stt_active  # both providers use ffmpeg
+    # Every provider but ``faster`` shells out to something that needs the system
+    # ffmpeg; faster-whisper decodes in-process through PyAV's bundled copy, so
+    # reporting a missing ffmpeg as an ISSUE there would send the user to install a
+    # binary their configuration never calls.
+    needs_ffmpeg = stt_active and cfg.stt.provider != "faster"
 
     if not stt_active:
         print("  status:      ⏹ disabled (enable from dashboard → Overview → Slack)")
@@ -889,6 +893,36 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         except ImportError:
             print("  boto3:       ⏹ optional AWS SDK not installed")
             print("               Install: pip install 'kirocrew[voice]'")
+
+    # faster-whisper (CTranslate2) is installed on demand, not as a declared extra,
+    # so an unavailable library is the expected first-run state rather than a broken
+    # install. Windows on ARM is called out separately because no CTranslate2 wheel
+    # exists there at all — the install button cannot fix it, and telling the user to
+    # retry would waste their time instead of naming a provider that does work.
+    if stt_active and cfg.stt.provider == "faster":
+        try:
+            from faster_whisper import WhisperModel  # noqa: F401
+
+            print("  faster:      ✅ faster-whisper importable")
+        except ImportError:
+            is_win_arm = _plat.system() == "Windows" and _plat.machine().lower() in (
+                "arm64",
+                "aarch64",
+            )
+            if is_win_arm:
+                print("  faster:      ❌ not available (Windows on ARM — no CTranslate2 wheel)")
+                print(
+                    "               Alternatives: set stt.provider to 'whisper' "
+                    "(local) or 'transcribe' (AWS)"
+                )
+                issues.append("faster-whisper: unavailable on Windows ARM")
+            else:
+                print("  faster:      ❌ not installed")
+                print(
+                    "               Install from dashboard → Settings → "
+                    "Speech-to-Text, or: pip install faster-whisper"
+                )
+                issues.append("faster-whisper")
 
     # ── Slack (optional) ──
     print("\nSlack Integration")

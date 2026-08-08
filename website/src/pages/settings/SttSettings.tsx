@@ -42,7 +42,7 @@ interface SttConfig {
  * full literal keys indexed inline at the `i18nT()` call — the only shape
  * `scripts/check-i18n-keys.mjs` can resolve statically.
  */
-const STEP_LABEL_KEY: Record<string, string> = {
+export const STEP_LABEL_KEY: Record<string, string> = {
   starting: 'pages.settings.sttSettings.step_starting',
   checking: 'pages.settings.sttSettings.step_checking',
   installing_xcode: 'pages.settings.sttSettings.step_installing_xcode',
@@ -51,6 +51,7 @@ const STEP_LABEL_KEY: Record<string, string> = {
   installing_ffmpeg: 'pages.settings.sttSettings.step_installing_ffmpeg',
   installing_whisper: 'pages.settings.sttSettings.step_installing_whisper',
   installing_mlx: 'pages.settings.sttSettings.step_installing_mlx',
+  installing_faster: 'pages.settings.sttSettings.step_installing_faster',
   pulling: 'pages.settings.sttSettings.step_pulling',
   done: 'pages.settings.sttSettings.step_done',
   error: 'pages.settings.sttSettings.step_error',
@@ -72,12 +73,22 @@ function stepLabel(step: string): string {
  * The provider *names* (Whisper, MLX, Transcribe) are DNT — only the
  * parenthetical qualifier is copy.
  */
-const PROVIDER_LABEL_KEY: Record<string, string> = {
+export const PROVIDER_LABEL_KEY: Record<string, string> = {
   whisper: 'pages.settings.sttSettings.provider_whisper',
   mlx: 'pages.settings.sttSettings.provider_mlx',
   apple: 'pages.settings.sttSettings.provider_apple',
   transcribe: 'pages.settings.sttSettings.provider_transcribe',
+  faster: 'pages.settings.sttSettings.provider_faster',
 }
+
+/**
+ * Providers that name their model with a Whisper size (`turbo`, `small`, …) and so
+ * share the `model` field and its picker. `mlx` is excluded: it takes a
+ * HuggingFace repo id in `mlx_model` instead, which is a different control.
+ *
+ * File scope so `check-i18n-keys.mjs` can resolve it, same as `PROVIDER_LABEL_KEY`.
+ */
+export const WHISPER_MODEL_PROVIDERS = ['whisper', 'faster']
 
 /** Localised dropdown label for a provider id, falling back to the raw id. */
 function providerLabel(provider: string): string {
@@ -253,7 +264,7 @@ export default function SttSettings() {
 
         <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} description={i18nT('pages.settings.sttSettings.whisper_and_mlx_run_locally_transcribe_calls_aws')} value={provider} options={providerOptions} optionLabels={providerOptions.map(providerLabel)} onChange={handleProvider} disabled={saving} />
 
-        {provider === 'whisper' && (
+        {WHISPER_MODEL_PROVIDERS.includes(provider) && (
           <SettingsSelect label={i18nT('pages.settings.sttSettings.model')} description={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')} value={stt.model} options={Object.keys(stt.models)} optionLabels={Object.entries(stt.models).map(([n, s]) => `${n} (${s})`)} onChange={v => set({ model: v })} disabled={saving} />
         )}
 
@@ -304,7 +315,7 @@ export default function SttSettings() {
                 {stt.install_detail && <p className="text-muted text-[13px] font-mono truncate">{stt.install_detail}</p>}
                 <div className="mt-2 h-1.5 bg-border rounded-full overflow-hidden">
                   <div className="h-full bg-accent rounded-full transition-all duration-500 animate-pulse"
-                    style={{ width: stt.install_step === 'checking' ? '10%' : stt.install_step === 'installing_xcode' ? '15%' : stt.install_step === 'installing_brew' ? '25%' : stt.install_step === 'installing_python' ? '35%' : stt.install_step === 'installing_ffmpeg' ? '50%' : stt.install_step === 'installing_whisper' || stt.install_step === 'pulling' ? '70%' : '5%' }} />
+                    style={{ width: stt.install_step === 'checking' ? '10%' : stt.install_step === 'installing_xcode' ? '15%' : stt.install_step === 'installing_brew' ? '25%' : stt.install_step === 'installing_python' ? '35%' : stt.install_step === 'installing_ffmpeg' ? '50%' : stt.install_step === 'installing_whisper' || stt.install_step === 'installing_faster' || stt.install_step === 'pulling' ? '70%' : '5%' }} />
                 </div>
               </div>
             ) : (
@@ -314,14 +325,18 @@ export default function SttSettings() {
                     ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.pull_docker_image')}</>
                     : provider === 'mlx'
                       ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_mlx_whisper')}</>
-                      : <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_whisper')}</>}
+                      : provider === 'faster'
+                        ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_faster_whisper')}</>
+                        : <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_whisper')}</>}
                 </Btn>
                 <p className="text-muted text-[13px] mt-2">
                   {stt.docker_mode
                     ? i18nT('pages.settings.sttSettings.pulls_python_3_11_slim_for_docker_based_transcri')
                     : provider === 'mlx'
                       ? i18nT('pages.settings.sttSettings.installs_mlx_whisper_via_pipx_ffmpeg_apple_silic')
-                      : i18nT('pages.settings.sttSettings.installs_openai_whisper_ffmpeg_uses_system_pytho')}
+                      : provider === 'faster'
+                        ? i18nT('pages.settings.sttSettings.installs_faster_whisper_no_ffmpeg_needed')
+                        : i18nT('pages.settings.sttSettings.installs_openai_whisper_ffmpeg_uses_system_pytho')}
                 </p>
               </>
             )}
