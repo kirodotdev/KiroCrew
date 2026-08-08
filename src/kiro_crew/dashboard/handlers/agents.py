@@ -58,6 +58,9 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.security import ENV_VAR_REFERENCE_RE as _ENV_VAR_REFERENCE_RE
+from kiro_crew.security import MCP_ENV_SECRET_VALUE_RE as _MCP_ENV_SECRET_VALUE_RE
+from kiro_crew.security import env_key_is_credential_like as _env_key_is_credential_like
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -651,88 +654,6 @@ MAX_TEMPLATE_STRING_CHARS = 2000
 # vector for smuggling arbitrary structures into a spec kiro-cli executes.
 _MCP_SERVER_ALLOWED_KEYS = frozenset({"command", "args", "env", "timeout"})
 
-#: Env-key TOKENS that indicate a credential VALUE is being inlined into the
-#: template. Agent template JSON is a plain config file — not a secret store —
-#: so a token pasted here would persist in ``~/.kiro/agents/{name}.json`` for
-#: the template's lifetime and travel with any copy of the file. Matched
-#: against ``_``-split tokens of the UPPER-cased key (not substrings), so
-#: ``GITHUB_TOKEN`` matches but ``OAUTH_CLIENT_ID`` and ``AUTHOR`` do not.
-#: A ``${VAR}`` reference value is always allowed — it defers resolution to
-#: the server's process environment, which is exactly the supported way to
-#: give a template's MCP server a credential (nothing literal is persisted).
-_MCP_ENV_SECRET_KEY_TOKENS = frozenset(
-    {
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "PASSWD",
-        "APIKEY",
-        "CREDENTIAL",
-        "CREDENTIALS",
-        # An HTTP Authorization header value IS the credential: servers that
-        # take ``AUTHORIZATION``/``AUTH`` env pass it through verbatim.
-        "AUTHORIZATION",
-        "AUTH",
-    }
-)
-
-#: Multi-token credential key suffixes (checked as adjacent token pairs), so
-#: ``AWS_ACCESS_KEY`` / ``GITHUB_API_KEY`` / ``TLS_PRIVATE_KEY`` match while a
-#: bare ``KEY`` token (``SORT_KEY``, ``PARTITION_KEY``) stays usable.
-_MCP_ENV_SECRET_TOKEN_PAIRS = frozenset(
-    {("API", "KEY"), ("ACCESS", "KEY"), ("PRIVATE", "KEY"), ("AUTH", "TOKEN")}
-)
-
-#: Values that are themselves credential-shaped, regardless of how benign the
-#: key looks (``REGION`` holding a raw AWS key). Reuses the hard credential
-#: markers from :mod:`kiro_crew.security`'s exfil scanning: AWS key IDs,
-#: PEM/SSH key headers, Slack tokens, plus the labelled GitHub/GitLab PAT
-#: prefixes.
-_MCP_ENV_SECRET_VALUE_RE = re.compile(
-    r"(?:"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}"  # AWS access key ID
-    r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub token (PAT/OAuth/server/user/refresh)
-    r"|(?:Bearer|Basic)\s+[A-Za-z0-9+/=_.\-]{8,}"  # HTTP Authorization header value
-    r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub fine-grained PAT
-    r"|glpat-[A-Za-z0-9_-]{20,}"  # GitLab PAT
-    r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
-    r"|-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH)?\s*PRIVATE\s+KEY"  # PEM header
-    r"|eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}"  # JWT
-    r"|://[^/\s:@]+:[^/\s@]+@"  # URL userinfo with password (postgres://u:p@h)
-    r")"
-)
-
-_ENV_VAR_REFERENCE_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$")
-
-
-#: Trailing key tokens that mark the variable as credential METADATA, not the
-#: credential itself: ``AUTH_TOKEN_URL`` / ``OAUTH_TOKEN_ENDPOINT`` hold plain
-#: endpoint config (common MCP server shape), not a secret value. The
-#: credential-shaped VALUE regex below still hard-rejects a real secret pasted
-#: under such a key.
-_MCP_ENV_METADATA_SUFFIXES = frozenset(
-    {"URL", "URI", "ENDPOINT", "PATH", "FILE", "HOST", "NAME", "ID", "MODE", "TYPE", "HEADER"}
-)
-
-
-def _env_key_is_credential_like(key: str) -> bool:
-    """Token-split match: ``GITHUB_TOKEN`` yes, ``OAUTH_CLIENT_ID`` no.
-
-    Splits on ``_``/``-`` and camelCase boundaries so ``DbPassword`` and
-    ``apiToken`` are caught without substring-matching into unrelated words.
-    A metadata suffix (``..._URL``, ``..._ENDPOINT``) exempts the key: it
-    names configuration ABOUT a credential, not the credential itself.
-    """
-    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).upper().replace("-", "_")
-    tokens = [t for t in normalized.split("_") if t]
-    if tokens and tokens[-1] in _MCP_ENV_METADATA_SUFFIXES:
-        return False
-    if any(t in _MCP_ENV_SECRET_KEY_TOKENS for t in tokens):
-        return True
-    return any(
-        (tokens[i], tokens[i + 1]) in _MCP_ENV_SECRET_TOKEN_PAIRS for i in range(len(tokens) - 1)
-    )
-
 
 def _reserved_template_names() -> frozenset[str]:
     """Names the creator may never claim: framework-owned stems + built-ins."""
@@ -1324,6 +1245,117 @@ async def api_agents_installed_create(request: web.Request) -> web.Response:
     state.push_refresh("agents")
     return web.json_response(
         {"ok": True, "name": name, "filename": f"{name}.json", "skills": mapped}, status=201
+    )
+
+
+async def api_agents_installed_update(request: web.Request) -> web.Response:
+    """PUT /api/agents/installed/{name} — full-replace a user-owned agent template.
+
+    Same validation as POST (create), but overwrites the existing file instead
+    of refusing duplicates. The URL name must match the body name. Only user-
+    owned templates (filename == ``{name}.json``) can be updated; package and
+    framework agents are rejected.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
+
+    url_name = request.match_info["name"]
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
+
+    # The body name must match the URL name — no renaming via PUT.
+    body_name = body.get("name", "")
+    if body_name != url_name:
+        return web.json_response(
+            {"error": "body name must match URL name", "code": "name_mismatch", "field": "name"},
+            status=400,
+        )
+
+    state: DashboardState = request.app["state"]
+    loop = asyncio.get_running_loop()
+
+    spec, err = await loop.run_in_executor(
+        discovery_executor(), functools.partial(_build_template_spec, body)
+    )
+    if err is not None:
+        return err
+    assert spec is not None
+    name = spec["name"]
+
+    async with _get_config_lock():
+        target = await asyncio.to_thread(lambda: kiro_agents_dir_path() / f"{name}.json")
+
+        # Only allow update of user-owned templates (file stem == name).
+        if not target.exists():
+            return web.json_response(
+                {"error": f"agent '{name}' not found", "code": "not_found"}, status=404
+            )
+
+        # Verify it is user-owned, not a package or framework agent.
+        try:
+            json.loads(target.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return web.json_response(
+                {"error": "could not read existing template", "code": "read_failed"}, status=500
+            )
+        if target.name in ("kirocrew.json", "kirocrew-lite.json"):
+            return web.json_response(
+                {"error": "cannot modify framework agents", "code": "forbidden"}, status=403
+            )
+
+        mapped: list[str] = []
+        skills = body.get("skills")
+        if skills:
+            mapped, unknown = await loop.run_in_executor(
+                discovery_executor(), apply_skill_mapping, spec, target, state, list(skills)
+            )
+            if unknown:
+                return web.json_response(
+                    {
+                        "error": "unknown skills",
+                        "code": "unknown_skills",
+                        "field": "skills",
+                        "skills": unknown[:20],
+                    },
+                    status=400,
+                )
+
+        try:
+            from kiro_crew.platform.governance import sanitize_agent_config_governance
+
+            await asyncio.to_thread(sanitize_agent_config_governance, spec)
+        except Exception:  # noqa: BLE001
+            logger.warning("governance sanitize failed during template update", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "governance check unavailable; template not updated",
+                    "code": "governance_unavailable",
+                },
+                status=503,
+            )
+
+        if spec.get("allowedTools"):
+            _audit_capability(
+                "capability_agent_template_auto_approve",
+                "granted",
+                f"{spec['name']}:{','.join(spec['allowedTools'])}",
+            )
+
+        # Never persist KiroCrew bookkeeping into the kiro spec.
+        spec.pop("model_managed", None)
+        spec.pop("cc_model", None)
+        target.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response(
+        {"ok": True, "name": name, "filename": f"{name}.json", "skills": mapped}
     )
 
 

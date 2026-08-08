@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Plus, ShieldCheck, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
@@ -85,6 +85,21 @@ interface Props {
   existingNames: string[]
   /** Probed MCP server names, offered as `@server` mount suggestions. */
   mcpServerNames?: string[]
+  /** When set, the dialog opens in edit mode pre-filled with this template's data. */
+  editTarget?: {
+    name: string
+    description?: string
+    model?: string
+    prompt?: string
+    skills?: string[]
+    tools?: string[]
+    allowedTools?: string[]
+    mcpServers?: Record<string, { command: string; args?: string[] }>
+    resources?: string[]
+    deniedCommands?: string[]
+  } | null
+  /** When true, treat editTarget as a clone source (name cleared, submit creates new). */
+  cloneMode?: boolean
 }
 
 /**
@@ -106,6 +121,8 @@ export default function AgentTemplateCreator({
   modelOptions,
   existingNames,
   mcpServerNames = [],
+  editTarget = null,
+  cloneMode = false,
 }: Props) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -122,6 +139,33 @@ export default function AgentTemplateCreator({
   /** Server-side rejection mapped to the field it names; '' key = form-level. */
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
+  const isEdit = !!editTarget && !cloneMode
+
+  useEffect(() => {
+    if (!open) return
+    if (!editTarget) { reset(); return }
+    if (!cloneMode) setName(editTarget.name)
+    else setName('')
+    setDescription(editTarget.description || '')
+    setModel(editTarget.model || '')
+    setPrompt(editTarget.prompt || '')
+    setSkills(editTarget.skills || [])
+    setTools(editTarget.tools || [])
+    setAllowed(editTarget.allowedTools || [])
+    setMcpRows(
+      Object.entries(editTarget.mcpServers || {}).map(([n, s]) => ({
+        name: n,
+        command: s.command,
+        args: (s.args || []).join(' '),
+      }))
+    )
+    setResourcesText((editTarget.resources || []).join('\n'))
+    setDeniedText((editTarget.deniedCommands || []).join('\n'))
+    if (editTarget.resources?.length || editTarget.deniedCommands?.length) setShowAdvanced(true)
+    setFieldErrors({})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editTarget, cloneMode])
+
   const { data: catalog = [], isLoading: catalogLoading } = useQuery<CatalogSkill[]>({
     queryKey: ['skills-catalog'],
     queryFn: async () => {
@@ -132,7 +176,7 @@ export default function AgentTemplateCreator({
     enabled: open,
   })
 
-  const nameTaken = existingNames.includes(name)
+  const nameTaken = !isEdit && existingNames.includes(name)
   const nameInvalid = name !== '' && !NAME_RE.test(name)
   const canSubmit = name !== '' && !nameInvalid && !nameTaken
 
@@ -183,20 +227,38 @@ export default function AgentTemplateCreator({
         mcpServers[n] = { command: row.command.trim(), ...(args ? { args } : {}) }
       }
       const lines = (t: string) => t.split('\n').map(s => s.trim()).filter(Boolean)
-      return api.agentCreate({
+      // Item #2: commit pending tool draft into the payload.
+      const effectiveTools = [...tools]
+      const pendingTool = toolDraft.trim()
+      if (pendingTool && TOOL_REF_RE.test(pendingTool) && !effectiveTools.includes(pendingTool)) {
+        effectiveTools.push(pendingTool)
+      }
+      const payload = {
         name,
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(model && model !== 'auto' ? { model } : {}),
         ...(prompt.trim() ? { prompt } : {}),
         ...(skills.length ? { skills } : {}),
-        ...(tools.length ? { tools } : {}),
-        ...(allowed.length ? { allowedTools: allowed.filter(t => tools.includes(t)) } : {}),
+        ...(effectiveTools.length ? { tools: effectiveTools } : {}),
+        ...(allowed.length ? { allowedTools: allowed.filter(t => effectiveTools.includes(t)) } : {}),
         ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         ...(lines(resourcesText).length ? { resources: lines(resourcesText) } : {}),
         ...(lines(deniedText).length ? { deniedCommands: lines(deniedText) } : {}),
-      })
+      }
+      if (isEdit) {
+        return api.agentUpdate(name, payload)
+      }
+      return api.agentCreate(payload)
     },
-    onMutate: () => setFieldErrors({}),
+    onMutate: () => {
+      setFieldErrors({})
+      // Item #2: visually commit pending tool draft.
+      const pending = toolDraft.trim()
+      if (pending && TOOL_REF_RE.test(pending) && !tools.includes(pending)) {
+        setTools(prev => [...prev, pending])
+        setToolDraft('')
+      }
+    },
     onSuccess: (res: { name?: string }) => {
       const created = res?.name ?? name
       reset()
@@ -275,16 +337,16 @@ export default function AgentTemplateCreator({
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent maxWidth={640} aria-label={i18nT('components.agentTemplateCreator.create_agent_template')}>
+      <DialogContent maxWidth={640} aria-label={isEdit ? i18nT('components.agentTemplateCreator.edit_agent_template') : cloneMode ? i18nT('components.agentTemplateCreator.clone_agent_template') : i18nT('components.agentTemplateCreator.create_agent_template')}>
         <DialogHeader>
-          <DialogTitle>{i18nT('components.agentTemplateCreator.create_agent_template')}</DialogTitle>
+          <DialogTitle>{isEdit ? i18nT('components.agentTemplateCreator.edit_agent_template') : cloneMode ? i18nT('components.agentTemplateCreator.clone_agent_template') : i18nT('components.agentTemplateCreator.create_agent_template')}</DialogTitle>
         </DialogHeader>
         <DialogBody className="space-y-4 max-h-[65vh] overflow-y-auto">
           {/* Identity */}
           <div>
             {/* eslint-disable-next-line jsx-a11y/label-has-for */}
             <label htmlFor="tpl-name" className="text-[11px] text-muted uppercase tracking-wider font-medium">{i18nT('components.agentTemplateCreator.name')}</label>
-            <Input id="tpl-name" autoFocus value={name} placeholder={i18nT('components.agentTemplateCreator.e_g_code_reviewer')} onChange={e => setName(e.target.value.toLowerCase())} className="w-full mt-1 font-mono" />
+            <Input id="tpl-name" autoFocus={!isEdit} value={name} placeholder={i18nT('components.agentTemplateCreator.e_g_code_reviewer')} onChange={e => setName(e.target.value.toLowerCase())} disabled={isEdit} className={`w-full mt-1 font-mono ${isEdit ? 'opacity-60' : ''}`} />
             {nameInvalid && <div role="alert" className="text-[12px] text-danger mt-1">{i18nT('components.agentTemplateCreator.must_start_with_a_letter_or_digit_then_lowercase')}</div>}
             {nameTaken && <div role="alert" className="text-[12px] text-danger mt-1">{i18nT('components.agentTemplateCreator.a_template_with_this_name_already_exists')}</div>}
             {fieldError('name')}
@@ -382,7 +444,10 @@ export default function AgentTemplateCreator({
             {/* Empty-list semantics are a permission surface — a constrained
                 agent left blank ships the FULL default toolset, so the
                 consequence must be visible, not buried in the tooltip. */}
-            <div className="text-[11px] text-muted mt-1">{i18nT('components.agentTemplateCreator.leave_empty_to_use_the_default_toolset')}</div>
+            <div className="text-[11px] text-muted mt-1">
+              {i18nT('components.agentTemplateCreator.leave_empty_to_use_the_default_toolset')}
+              {tools.length > 0 && <> {i18nT('components.agentTemplateCreator.click_the_shield_to_auto_approve')}</>}
+            </div>
             {toolSuggestions.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1.5">
                 {toolSuggestions.slice(0, 12).map(t => (
@@ -391,6 +456,11 @@ export default function AgentTemplateCreator({
                     + {t}
                   </button>
                 ))}
+                {toolSuggestions.length > 12 && (
+                  <span className="px-1.5 py-0.5 text-[11px] text-muted italic">
+                    {i18nT('components.agentTemplateCreator.plus_n_more', { count: String(toolSuggestions.length - 12) })}
+                  </span>
+                )}
               </div>
             )}
             {fieldError('tools')}
@@ -472,7 +542,9 @@ export default function AgentTemplateCreator({
               State resets only after a successful create. */}
           <Btn onClick={onClose}>{i18nT('components.agentTemplateCreator.cancel')}</Btn>
           <Btn primary disabled={!canSubmit || create.isPending} onClick={submit}>
-            {create.isPending ? i18nT('components.agentTemplateCreator.creating') : i18nT('components.agentTemplateCreator.create_template')}
+            {create.isPending
+              ? (isEdit ? i18nT('components.agentTemplateCreator.saving') : i18nT('components.agentTemplateCreator.creating'))
+              : (isEdit ? i18nT('components.agentTemplateCreator.save_changes') : i18nT('components.agentTemplateCreator.create_template'))}
           </Btn>
         </DialogFooter>
       </DialogContent>

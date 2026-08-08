@@ -2343,6 +2343,7 @@ async def start_dashboard(
     # Agents
     app.router.add_get("/api/agents/installed", handlers.api_agents_installed)
     app.router.add_post("/api/agents/installed", handlers.api_agents_installed_create)
+    app.router.add_put("/api/agents/installed/{name}", handlers.api_agents_installed_update)
     app.router.add_get("/api/models", handlers.api_models)
     app.router.add_get("/api/effort-levels", handlers.api_effort_levels)
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)
