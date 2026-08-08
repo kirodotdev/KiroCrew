@@ -108,7 +108,23 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser:set-control-owner", panelId, owner),
   getControl: (panelId) => ipcRenderer.invoke("browser:get-control", panelId),
   control: (panelId, op, args) => ipcRenderer.invoke("browser:control", panelId, op, args),
+  // Declares that a chat session may host a browser panel, so the agent command
+  // channel polls for it even before the Browser tab is ever opened. Grants no
+  // authorization — the per-op class gate is unchanged. There is deliberately no
+  // unregister counterpart: the set holds session-key strings for the window's
+  // lifetime, bounded by the chats visited, and dropping a key would silently
+  // send that chat back to the Playwright fallback.
+  registerSession: (panelId) => ipcRenderer.invoke("browser:register-session", panelId),
   // Events carry their own panelId so a listener can ignore other panels'.
+  // `onAgentOpened` fires when the AGENT bootstrapped a native view for a
+  // session whose Browser panel may not be mounted yet — the dashboard must
+  // surface that panel so it can report bounds, or the page would render to
+  // nowhere.
+  onAgentOpened: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("browser:agent-opened", handler);
+    return () => ipcRenderer.removeListener("browser:agent-opened", handler);
+  },
   onDidNavigate: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on("browser:did-navigate", handler);

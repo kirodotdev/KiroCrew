@@ -3906,6 +3906,38 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     window.addEventListener('kirocrew-browser-frame', onFrame)
     return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
   }, [dispatch])
+  // Declare the active chat session to the Electron main process so the agent
+  // command channel polls the gateway for it. Without this, a chat whose Browser
+  // tab was never opened has no panel entry, the command bus answers "no panel",
+  // and the first "open this page" degrades to the Playwright mirror — the whole
+  // reason the built-in browser looked unused. Registering is not authorization:
+  // every op still runs its per-class gate in the main process.
+  useEffect(() => {
+    const api = (window as unknown as {
+      browserAPI?: { registerSession?: (id: string) => Promise<unknown> }
+    }).browserAPI
+    if (!api?.registerSession || !activeSlot) return      // plain browser (no bridge)
+    void api.registerSession(activeSlot)
+  }, [activeSlot])
+  // Native counterpart of the mirror auto-open above. When the agent opens a page
+  // in the BUILT-IN browser, the WebContentsView is created in the Electron main
+  // process but the dashboard owns layout — until the Browser panel mounts and
+  // reports its rect, the page is composited nowhere and the user sees nothing.
+  // So surface the panel on the main process's `browser:agent-opened` signal.
+  //
+  // Same active-slot guard as the mirror path: a background session's page must
+  // not open another session's panel.
+  useEffect(() => {
+    const api = (window as unknown as {
+      browserAPI?: { onAgentOpened?: (cb: (p: { panelId?: string }) => void) => () => void }
+    }).browserAPI
+    if (!api?.onAgentOpened) return      // plain browser (no preload bridge)
+    return api.onAgentOpened(({ panelId }) => {
+      if (!panelId || panelId !== activeSlotRef.current) return
+      dispatch(openActivityPanel())
+      tabsCtlRef.current.openView('browser')
+    })
+  }, [dispatch])
   // "Run in terminal" (from chat code blocks): open a FRESH terminal tab in
   // this chat and run the command in it, starting in the chat's working dir.
   // The result is echoed back so the code-block button can show sent/failed.

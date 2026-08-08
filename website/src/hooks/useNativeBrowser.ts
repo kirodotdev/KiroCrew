@@ -24,6 +24,7 @@ interface NativeBrowserBridge {
   getState: (panelId: string) => Promise<NativeBrowserState | null>
   setAgentAct: (panelId: string, enabled: boolean) => Promise<{ ok: boolean } | null>
   setControlOwner: (panelId: string, owner: string) => Promise<unknown>
+  onAgentOpened: (cb: (p: { panelId?: string; url?: string }) => void) => () => void
   onDidNavigate: (cb: (p: { panelId?: string; url: string; title: string }) => void) => () => void
   onTitleUpdated: (cb: (p: { panelId?: string; url: string; title: string }) => void) => () => void
 }
@@ -92,17 +93,26 @@ export function useNativeBrowser(
     void api.setAgentAct(panelId, agentActEnabled)
   }, [api, panelId, agentActEnabled])
 
-  // ── Control handoff: the Globe toggle acquires/releases agent control ──
+  // ── Control handoff: who drives the page over CDP ──
   // The native view is driven IN-PROCESS over CDP, so the agent owner for a
   // chat-opened page is LIGHT (never PLAYWRIGHT — that owner is for a SEPARATE
   // external browser process, which is only relevant when NO native view is
-  // available and this hook is inert). Acquiring is UNATTENDED action, so it is
-  // gated on the app's "let the agent use the browser" authorization (the Globe
-  // toggle): Globe ON requests LIGHT (acquire); Globe OFF requests NONE
-  // (actively release). The main process enforces release-before-acquire and,
-  // deliberately, re-evaluates the authorization gate on EVERY request —
-  // including the no-op of re-requesting the current owner — so flipping the
-  // Globe off genuinely detaches the debugger instead of leaving a stale owner.
+  // available and this hook is inert).
+  //
+  // LIGHT is requested whenever a native page EXISTS, not only when the Globe is
+  // on. Ownership is "who holds the debugger", which the agent needs even to
+  // READ the page (snapshot / screenshot); authorization for what it may DO with
+  // it is enforced per op CLASS in the main process (see agentOpClass). Tying
+  // ownership to the Globe instead meant Globe-off actively parked the owner at
+  // NONE, so a plain "open this page" could never be served natively and
+  // silently fell back to the mirror transport.
+  //
+  // The main process still RELEASES on revoke, to kill an operate-class op that
+  // is already in flight — but that is a one-shot detach, not a standing state:
+  // each op in `dispatch` re-acquires LIGHT under its own class gate, so
+  // view-class reads keep working with the Globe off. This effect deliberately
+  // does not re-assert NONE on top of that, which would park ownership and
+  // re-break the native view.
   //
   // Deliberately NOT gated on `enabled`: a hidden-but-alive view the agent is
   // mid-task on must keep its owner (visibility via setInactive is orthogonal to
@@ -114,9 +124,9 @@ export function useNativeBrowser(
     if (!api || !panelId) return
     void api.setControlOwner(
       panelId,
-      agentActEnabled ? CONTROL_OWNER.LIGHT : CONTROL_OWNER.NONE,
+      state?.open ? CONTROL_OWNER.LIGHT : CONTROL_OWNER.NONE,
     )
-  }, [api, panelId, agentActEnabled, state?.open])
+  }, [api, panelId, state?.open])
 
   /** Measure the host element and report it. Cheap and idempotent — the main
    *  process drops reports identical to the applied bounds. */
