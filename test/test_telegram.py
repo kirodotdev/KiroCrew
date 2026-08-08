@@ -888,7 +888,7 @@ class TestTransportAuth:
         assert TELEGRAM_CAPABILITIES.streaming is True
         assert TELEGRAM_CAPABILITIES.edit is True
         assert TELEGRAM_CAPABILITIES.max_message_chars == TELEGRAM_CHUNK_LIMIT
-        assert TELEGRAM_CAPABILITIES.max_buttons == 8
+        assert TELEGRAM_CAPABILITIES.max_buttons == 25
 
 
 class TestTransportReceive:
