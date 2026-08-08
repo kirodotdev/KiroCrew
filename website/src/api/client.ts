@@ -886,6 +886,85 @@ export interface AddInstanceBody {
   id?: string
 }
 
+/* ── Cloud provisioning (GET/POST /api/cloud/*) ──
+ * Shapes mirror the backend launch-job model (cloud/launch_job.py). `size_key`
+ * is the stable CLI id (light|balanced|power); `balanced` is the recommended
+ * "Development" default. */
+
+/** AWS preflight for the cloud launcher. Booleans are per-capability checks;
+ *  `note`/`detail` are server-authored human text rendered verbatim. */
+/** AWS coordinates a cloud lifecycle call needs beyond the stack tag.
+ *
+ *  `instanceId` is only meaningful for destroy, where the gateway uses it to
+ *  drop the local Instances registration alongside the stack.
+ */
+export interface CloudCoords {
+  profile?: string
+  region?: string
+  instanceId?: string
+}
+
+const cloudQuery = (c?: CloudCoords): string => {
+  const q = new URLSearchParams()
+  if (c?.profile) q.set('profile', c.profile)
+  if (c?.region) q.set('region', c.region)
+  if (c?.instanceId) q.set('instance_id', c.instanceId)
+  const s = q.toString()
+  return s ? `?${s}` : ''
+}
+
+export interface CloudPreflight {
+  reachable: boolean
+  account: string
+  arn: string
+  ec2_reachable: boolean
+  cloudformation_reachable: boolean
+  ssm_reachable: boolean
+  note: string
+  detail: string
+  session_manager_plugin: boolean
+  /** Copy-pasteable install command for the GATEWAY's platform, resolved
+   *  server-side (the browser cannot know that host's OS). "" when the platform
+   *  has no one-liner. */
+  session_manager_plugin_command?: string
+}
+
+export type LaunchJobStatus =
+  | 'pending' | 'running' | 'awaiting_signin' | 'done' | 'failed' | 'cancelled'
+export type LaunchStepState = 'pending' | 'active' | 'done' | 'failed' | 'skipped'
+
+/** One step of a launch job (preflight/provision/signin/connect). `label` and
+ *  `detail` are server-authored and rendered verbatim, not translated. */
+export interface LaunchStep {
+  key: string
+  label: string
+  state: LaunchStepState
+  detail?: string
+}
+
+/** The device-code sign-in prompt surfaced while a job is `awaiting_signin`. */
+export interface CloudLaunchSignin {
+  url: string
+  code: string
+  ports?: number[]
+}
+
+export interface LaunchJob {
+  id: string
+  profile: string
+  region: string
+  size_key: string
+  tag: string
+  status: LaunchJobStatus
+  steps: LaunchStep[]
+  instance_id?: string
+  signin?: CloudLaunchSignin | null
+  signin_detected?: boolean
+  error?: string
+  created_at: number
+  updated_at: number
+}
+
 /** Tunnel status surfaced by GET /api/tunnel/status (backend TunnelManager).
  *  Enables mobile dashboard access via a remote tunnel. */
 export interface TunnelStatus {
@@ -1222,6 +1301,42 @@ export const api = {
       ok: boolean
       message: string
     }>,
+  // Cloud provisioning (owner-only) — launch a cloud-hosted remote crew on the
+  // user's OWN AWS account, then register it as an SSM instance on connect. The
+  // launch is a DURABLE gateway job (see cloud/launch_job.py): it survives
+  // dashboard navigation and restart, so the UI polls its state rather than
+  // holding it in memory. `tag` (kc-xxxx) is the cloud lifecycle handle used by
+  // stop/start/destroy; `instance_id` (i-...) is the EC2 id it registers under.
+  cloudPreflight: (profile?: string, region?: string) => {
+    const p = new URLSearchParams()
+    if (profile) p.set('profile', profile)
+    if (region) p.set('region', region)
+    const s = p.toString()
+    return get('/api/cloud/preflight' + (s ? '?' + s : '')).then(j) as Promise<CloudPreflight>
+  },
+  cloudIamPolicy: () => get('/api/cloud/iam-policy').then(j) as Promise<{ policy: string }>,
+  cloudLaunches: () => get('/api/cloud/launch').then(j) as Promise<{ jobs: LaunchJob[] }>,
+  cloudLaunch: (body: { profile: string; region: string; size_key: string }) =>
+    post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
+  cloudLaunchStatus: (id: string) =>
+    get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,
+  cloudLaunchCancel: (id: string) =>
+    post('/api/cloud/launch/' + encodeURIComponent(id) + '/cancel').then(j) as Promise<LaunchJob>,
+  // Fetches the device-code prompt while the job is awaiting sign-in; 409 when
+  // there is no pending prompt (surfaced as ApiError(409) to the caller).
+  cloudLaunchSignin: (id: string) =>
+    post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin').then(j) as Promise<{ signin: CloudLaunchSignin }>,
+  // The gateway resolves the stack from the tag but needs the launch's AWS
+  // coordinates: a crew created under a non-default profile/region is invisible
+  // to the default ones, so omitting them makes stop/start/destroy fail. destroy
+  // also needs instance_id to drop the local Instances registration, otherwise
+  // the crew keeps appearing in the list after its box is gone.
+  cloudStop: (tag: string, coords?: CloudCoords) =>
+    post('/api/cloud/' + encodeURIComponent(tag) + '/stop' + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean }>,
+  cloudStart: (tag: string, coords?: CloudCoords) =>
+    post('/api/cloud/' + encodeURIComponent(tag) + '/start' + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean }>,
+  cloudDestroy: (tag: string, coords?: CloudCoords) =>
+    del('/api/cloud/' + encodeURIComponent(tag) + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean; unregistered?: boolean; source_removed?: boolean }>,
   // Memory
   memoryPreferences: () => fetch('/api/memory/preferences').then(j),
   saveMemoryPreferences: (content: string) => put('/api/memory/preferences', { content }),

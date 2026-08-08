@@ -12,8 +12,8 @@ Description: >-
 Parameters:
   InstanceType:
     Type: String
-    Default: t4g.xlarge
-    Description: EC2 instance type (from the chosen size tier).
+    Default: m7g.2xlarge
+    Description: EC2 instance type (from the chosen size tier; default = Development).
   Architecture:
     Type: String
     Default: arm64
@@ -21,7 +21,7 @@ Parameters:
     Description: CPU architecture; selects the matching Amazon Linux 2023 AMI.
   VolumeSizeGb:
     Type: Number
-    Default: 40
+    Default: 60
     MinValue: 20
     MaxValue: 1000
     Description: gp3 root volume size in GiB.
@@ -318,13 +318,13 @@ Resources:
           RUN_HOME=/home/$RUN_USER
 
           # Provision swap BEFORE install.sh as defense-in-depth headroom. The
-          # light tier (t4g.large = 8 GB) ships with NO swap, and the frontend
-          # build (`tsc -b && vite build` over ~900 npm packages) runs alongside
-          # dnf + a fresh `npm ci` during first boot. The build itself peaks ~3.4
-          # GB (measured), so this is NOT the primary bring-up fix (that was the
-          # SELinux reboot suppressed above) - it is cheap insurance so a tight
-          # 8 GB box degrades to swap instead of a kill. On 16 GB/32 GB tiers it
-          # is unused headroom (harmless). Best-effort: never fail on swap.
+          # frontend build (`tsc -b && vite build` over ~900 npm packages) runs
+          # alongside dnf + a fresh `npm ci` during first boot and peaks ~3.4 GB
+          # (measured). The smallest tier is now 16 GB (8 GB was retired), so this
+          # is NOT the primary bring-up fix (that was the SELinux reboot suppressed
+          # above) - it is cheap insurance so first boot degrades to swap instead
+          # of a kill under a transient spike. Unused headroom on every tier
+          # (harmless). Best-effort: never fail on swap.
           echo "--- provisioning swap (headroom for the vite build) ---"
           if [ ! -e /swapfile ] && [ "$(free -m | awk '/^Swap:/ {print $2}')" = "0" ]; then
             ( fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096 ) 2>/dev/null \
