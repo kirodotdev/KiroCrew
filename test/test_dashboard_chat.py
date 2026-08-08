@@ -11277,8 +11277,11 @@ class TestEmptyResponseRetry:
             # globally replacing asyncio.create_task, which can otherwise let
             # unrelated lifecycle tasks race the assertions under xdist load.
             await _run_chat(state, slot, "test message")
-            for _bg_task in list(state._background_tasks):
+            background_tasks = list(state._background_tasks)
+            for _bg_task in background_tasks:
                 _bg_task.cancel()
+            if background_tasks:
+                await asyncio.gather(*background_tasks, return_exceptions=True)
 
         assert slot._empty_response_retries == 1
         # The message must be re-queued at the front of the queue.
@@ -11294,8 +11297,13 @@ class TestEmptyResponseRetry:
         # _flush_file_changes is intentionally NOT skipped: the try-body call (inside
         # the `if not _retrying_empty` guard) is skipped, but the finally block calls
         # it once unconditionally ("ensure file changes always surface, even on
-        # cancel/error"). So it is called exactly once here, not zero times.
-        assert mock_flush.call_count == 1
+        # cancel/error"). Scope the assertion to this slot because finalization of a
+        # task created by another test can run while this module-level function is
+        # patched and must not change the behavior observed for this turn.
+        own_flushes = [
+            mock_call for mock_call in mock_flush.call_args_list if mock_call.args == (slot,)
+        ]
+        assert len(own_flushes) == 1
 
     @pytest.mark.asyncio
     async def test_empty_response_at_depth_gt0_shows_error_immediately(

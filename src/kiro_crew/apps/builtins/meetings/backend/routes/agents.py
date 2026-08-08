@@ -21,6 +21,7 @@ from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     ACTIVE,
+    START_LOCK,
     BadRequest,
     audit,
     data_root,
@@ -110,6 +111,17 @@ async def handle_toggle_agent(request: web.Request) -> web.Response:
     agent_id = store.safe_agent_id(field_str(body, "agent_id", required=True, max_len=64))
     enable = field_bool(body, "enable", default=True)
 
+    # Enabling an agent creates its output file before committing the metadata.
+    # Keep that complete transaction ordered with meeting deletion so the file
+    # cannot recreate a directory after DELETE has returned 204.
+    async with START_LOCK:
+        return await _toggle_agent_locked(meeting_id, agent_id, enable, root)
+
+
+async def _toggle_agent_locked(
+    meeting_id: str, agent_id: str, enable: bool, root: Any
+) -> web.Response:
+    """Apply one agent toggle while the caller holds ``START_LOCK``."""
     config, agent_def, meta, fname, mdir = await asyncio.to_thread(
         _read_toggle_state, meeting_id, agent_id, enable, root
     )

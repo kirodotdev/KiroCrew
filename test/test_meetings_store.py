@@ -182,6 +182,29 @@ class TestMeetingMeta:
     def test_list_empty_when_no_meetings(self, tmp_path: Path):
         assert store.list_meetings(tmp_path / "empty") == []
 
+    def test_delete_removes_the_complete_meeting_directory(self, root: Path):
+        store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Standup"), root)
+        store.write_tasks("m1", [{"id": "t1", "description": "Ship it"}], root)
+        store.write_agent_output("m1", {"id": "note-taker"}, "# Notes", root)
+
+        assert store.delete_meeting("m1", root) is True
+        assert not store.meeting_dir("m1", root).exists()
+        assert store.list_meetings(root) == []
+
+    def test_delete_unknown_meeting_returns_false(self, root: Path):
+        assert store.delete_meeting("missing", root) is False
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+    def test_delete_refuses_an_in_root_directory_link(self, root: Path):
+        store.write_meeting_meta("target", store.new_meeting_meta("target", "Keep"), root)
+        (store.meetings_root(root) / "alias").symlink_to(
+            store.meeting_dir("target", root), target_is_directory=True
+        )
+
+        with pytest.raises(store.MeetingsPathError):
+            store.delete_meeting("alias", root)
+        assert store.read_meeting_meta("target", root) is not None
+
 
 class TestAgentOutputs:
     def test_filename_by_widget_type(self):

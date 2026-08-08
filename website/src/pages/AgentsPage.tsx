@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { Star, Brain, Plug, Pin, Package, Lock, Hourglass, Bot, ChevronDown, LayoutTemplate, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -383,7 +383,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   /** Monotonic id for the in-flight detail fetch. Without it the LAST response
    *  wins rather than the LAST CLICK: a slow fetch for B landing after C was
    *  selected would swap the pane to B while `confirmDelete` — cleared only by
-   *  the passive effect below — is still armed, so the confirm names and
+   *  the name-change layout effect below — is still armed, so the confirm names and
    *  targets B for a commit, and a click there deletes B's config file. */
   const selectSeq = useRef(0)
 
@@ -421,9 +421,11 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   }, [initialAgentDetail, selectedAgent])
 
   // Backstop for the selections `select()` does not make — the auto-open query
-  // above, and a delete that clears the pane. `select()` disarms synchronously.
+  // above, and a delete that clears the pane. A layout effect resets the pane
+  // before its newly rendered tabs can be activated; `select()` disarms
+  // synchronously before awaiting detail.
   const selectedName = selectedAgent?.name
-  useEffect(() => { setTab('overview'); setConfirmDelete(false); setDeleteError(null) }, [selectedName])
+  useLayoutEffect(() => { setTab('overview'); setConfirmDelete(false); setDeleteError(null) }, [selectedName])
 
   /** Arming the delete unmounts the button that was focused, which would drop
    *  focus to <body> and leave a keyboard user nowhere. Focus moves onto

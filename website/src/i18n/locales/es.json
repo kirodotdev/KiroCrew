@@ -2234,6 +2234,11 @@
       },
       "list": {
         "adHocTitle": "Reunión improvisada",
+        "deleteConfirm": "¿Eliminar “{{title}}” y todas sus notas, diagramas y tareas? Esta acción no se puede deshacer.",
+        "deleteFailed": "No se pudo eliminar esta reunión.",
+        "deleteMeeting": "Eliminar {{title}}",
+        "deleteUnavailable": "Finaliza esta reunión antes de eliminarla",
+        "deleted": "Se eliminó “{{title}}”",
         "empty": "Sin reuniones",
         "emptyHintNoCalendar": "Conecta un calendario en los ajustes, o empieza una reunión improvisada.",
         "emptyHintSynced": "Nada en el calendario, y ninguna reunión trabajada todavía.",

@@ -6,15 +6,17 @@
 // URL because a builtin app resolves from a single top-level path segment (see
 // `apps/builtinRegistry.ts`), so a nested path would never route back here.
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, type MouseEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CalendarClock,
   CalendarPlus,
   CircleDot,
   FileText,
+  Loader2,
   RefreshCw,
   Settings2,
+  Trash2,
 } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
@@ -26,6 +28,7 @@ import {
   Card,
   CardTitle,
   EmptyState,
+  IconButton,
   PageHeader,
   SearchInput,
   Skeleton,
@@ -51,6 +54,14 @@ interface Row {
   end: string
   status: MeetingSummary['status'] | 'scheduled'
   touched: boolean
+}
+
+const LIVE_STATUSES = new Set<Row['status']>(['active', 'paused', 'reviewing'])
+
+function deleteFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : i18nT('apps.meetings.list.deleteFailed')
 }
 
 function mergeRows(events: CalendarEvent[], meetings: MeetingSummary[]): Row[] {
@@ -145,6 +156,17 @@ export default function MeetingsPage() {
       notify(error.message || i18nT('apps.meetings.list.syncFailed'), { type: 'error' }),
   })
 
+  const deleteMeeting = useMutation({
+    mutationFn: ({ eventId }: { eventId: string; title: string }) =>
+      meetingsApi.deleteMeeting(eventId),
+    onSuccess: (_response, { eventId, title }) => {
+      notify(i18nT('apps.meetings.list.deleted', { title }), { type: 'success' })
+      queryClient.removeQueries({ queryKey: ['meetings', safeMeetingId(eventId)] })
+      void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+    },
+    onError: error => notify(deleteFailureMessage(error), { type: 'error' }),
+  })
+
   const rows = useMemo(
     () => mergeRows(calendarQuery.data?.events ?? [], meetingsQuery.data?.meetings ?? []),
     [calendarQuery.data, meetingsQuery.data],
@@ -182,6 +204,13 @@ export default function MeetingsPage() {
     // already inside the backend's `[A-Za-z0-9._-]` charset.
     const eventId = `adhoc-${new Date().toISOString().replace(/[:.]/g, '-')}`
     setRoute({ view: 'meeting', eventId, title: i18nT('apps.meetings.list.adHocTitle') })
+  }
+
+  const requestDelete = (event: MouseEvent<HTMLButtonElement>, row: Row) => {
+    event.stopPropagation()
+    if (window.confirm(i18nT('apps.meetings.list.deleteConfirm', { title: row.title }))) {
+      deleteMeeting.mutate({ eventId: row.eventId, title: row.title })
+    }
   }
 
   return (
@@ -274,40 +303,83 @@ export default function MeetingsPage() {
             />
           ) : (
             <div className="flex flex-col gap-2">
-              {filtered.map(row => (
-                <Clickable
-                  key={row.eventId}
-                  onClick={() =>
-                    setRoute({ view: 'meeting', eventId: row.eventId, title: row.title })
-                  }
-                  className="flex items-center gap-3 px-4 py-3 border border-border rounded-md cursor-pointer hover:border-border-strong transition-colors"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-text font-medium truncate">{row.title}</div>
-                    {formatWhen(row) && (
-                      <div className="text-[12px] text-muted font-mono">{formatWhen(row)}</div>
+              {filtered.map(row => {
+                const rowDeleteError =
+                  deleteMeeting.isError && deleteMeeting.variables?.eventId === row.eventId
+                    ? deleteFailureMessage(deleteMeeting.error)
+                    : ''
+                return (
+                  <div key={row.eventId} className="flex flex-col gap-1">
+                    <Clickable
+                      onClick={() =>
+                        setRoute({ view: 'meeting', eventId: row.eventId, title: row.title })
+                      }
+                      className="flex items-center gap-3 px-4 py-3 border border-border rounded-md cursor-pointer hover:border-border-strong transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-text font-medium truncate">{row.title}</div>
+                        {formatWhen(row) && (
+                          <div className="text-[12px] text-muted font-mono">{formatWhen(row)}</div>
+                        )}
+                      </div>
+                      {row.status === 'active' && (
+                        <Badge variant="ok">{i18nT('apps.meetings.meeting.live')}</Badge>
+                      )}
+                      {row.status === 'reviewing' && (
+                        <Badge variant="warn">{i18nT('apps.meetings.list.reviewing')}</Badge>
+                      )}
+                      {row.status === 'paused' && (
+                        <Badge variant="warn">{i18nT('apps.meetings.meeting.paused')}</Badge>
+                      )}
+                      {row.status === 'ended' && (
+                        <Badge variant="muted">{i18nT('apps.meetings.meeting.ended')}</Badge>
+                      )}
+                      {row.touched && (
+                        <FileText
+                          className="lucide-inline text-muted"
+                          aria-label={i18nT('apps.meetings.list.hasNotes')}
+                        />
+                      )}
+                      {row.touched && (
+                        <IconButton
+                          variant="danger"
+                          className="shrink-0 inline-flex items-center justify-center"
+                          disabled={deleteMeeting.isPending || LIVE_STATUSES.has(row.status)}
+                          title={
+                            LIVE_STATUSES.has(row.status)
+                              ? i18nT('apps.meetings.list.deleteUnavailable')
+                              : i18nT('apps.meetings.list.deleteMeeting', { title: row.title })
+                          }
+                          aria-label={
+                            LIVE_STATUSES.has(row.status)
+                              ? i18nT('apps.meetings.list.deleteUnavailable')
+                              : i18nT('apps.meetings.list.deleteMeeting', { title: row.title })
+                          }
+                          onClick={event => requestDelete(event, row)}
+                        >
+                          {deleteMeeting.isPending
+                            && deleteMeeting.variables?.eventId === row.eventId
+                            ? (
+                                <Loader2
+                                  className="lucide-inline animate-spin motion-reduce:animate-none"
+                                  aria-hidden="true"
+                                />
+                              )
+                            : <Trash2 className="lucide-inline" aria-hidden="true" />}
+                        </IconButton>
+                      )}
+                    </Clickable>
+                    {rowDeleteError && (
+                      <div
+                        role="alert"
+                        className="bg-danger/10 border border-danger/20 rounded-md px-3 py-2 text-[13px] text-danger animate-rise"
+                      >
+                        {rowDeleteError}
+                      </div>
                     )}
                   </div>
-                  {row.status === 'active' && (
-                    <Badge variant="ok">{i18nT('apps.meetings.meeting.live')}</Badge>
-                  )}
-                  {row.status === 'reviewing' && (
-                    <Badge variant="warn">{i18nT('apps.meetings.list.reviewing')}</Badge>
-                  )}
-                  {row.status === 'paused' && (
-                    <Badge variant="warn">{i18nT('apps.meetings.meeting.paused')}</Badge>
-                  )}
-                  {row.status === 'ended' && (
-                    <Badge variant="muted">{i18nT('apps.meetings.meeting.ended')}</Badge>
-                  )}
-                  {row.touched && (
-                    <FileText
-                      className="lucide-inline text-muted"
-                      aria-label={i18nT('apps.meetings.list.hasNotes')}
-                    />
-                  )}
-                </Clickable>
-              ))}
+                )
+              })}
             </div>
           )}
         </Card>

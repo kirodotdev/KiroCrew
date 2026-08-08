@@ -2234,6 +2234,11 @@
       },
       "list": {
         "adHocTitle": "Riunione improvvisata",
+        "deleteConfirm": "Eliminare “{{title}}” e tutti i relativi appunti, diagrammi e azioni? Questa operazione non può essere annullata.",
+        "deleteFailed": "Non è stato possibile eliminare questa riunione.",
+        "deleteMeeting": "Elimina {{title}}",
+        "deleteUnavailable": "Termina questa riunione prima di eliminarla",
+        "deleted": "“{{title}}” è stata eliminata",
         "empty": "Nessuna riunione",
         "emptyHintNoCalendar": "Collega un calendario nelle impostazioni, oppure avvia una riunione improvvisata.",
         "emptyHintSynced": "Niente in calendario, e nessuna riunione ancora lavorata.",

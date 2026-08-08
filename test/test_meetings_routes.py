@@ -12,7 +12,9 @@ process or opens a socket.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -402,6 +404,201 @@ class TestMeetingLifecycleRoutes:
             body = await resp.json()
             assert body["meta"]["title"] == "One"
             assert body["live"] is None
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_the_meeting_and_all_outputs(self, app, root: Path):
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={"title": "Standup"})
+            store.write_tasks("standup", [{"id": "t1", "description": "Ship it"}], root)
+
+            resp = await client.delete(f"{BASE}/meetings/standup")
+            assert resp.status == 204
+            assert (await client.get(f"{BASE}/meetings/standup")).status == 404
+            assert (await (await client.get(f"{BASE}/meetings")).json())["meetings"] == []
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_unknown_meeting_is_404_with_code(self, app):
+        async with client_for(app) as client:
+            resp = await client.delete(f"{BASE}/meetings/ghost")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "meeting_not_found"
+
+    @pytest.mark.asyncio
+    async def test_delete_waits_for_in_flight_initialization(
+        self, app, root: Path, monkeypatch
+    ):
+        from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+                self.waiter = asyncio.Event()
+
+            async def __aenter__(self):
+                if self.lock.locked():
+                    self.waiter.set()
+                await self.lock.acquire()
+                return self
+
+            async def __aexit__(self, *_args):
+                self.lock.release()
+
+        observed_lock = ObservedLock()
+        real_init = meeting_lifecycle._init_meeting
+        init_entered = threading.Event()
+        release_init = threading.Event()
+
+        def blocked_init(*args, **kwargs):
+            init_entered.set()
+            assert release_init.wait(timeout=5)
+            return real_init(*args, **kwargs)
+
+        monkeypatch.setattr(meeting_lifecycle, "START_LOCK", observed_lock)
+        monkeypatch.setattr(meeting_lifecycle, "_init_meeting", blocked_init)
+
+        async with client_for(app) as client:
+            init_request = asyncio.create_task(
+                client.post(f"{BASE}/meetings/standup/init", json={"title": "Standup"})
+            )
+            assert await asyncio.to_thread(init_entered.wait, 5)
+
+            delete_request = asyncio.create_task(client.delete(f"{BASE}/meetings/standup"))
+            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            release_init.set()
+
+            assert (await init_request).status == 200
+            assert (await delete_request).status == 204
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_waits_for_in_flight_agent_toggle(
+        self, app, root: Path, monkeypatch
+    ):
+        from kiro_crew.apps.builtins.meetings.backend.routes import agents, meeting_lifecycle
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = asyncio.Lock()
+                self.waiter = asyncio.Event()
+
+            async def __aenter__(self):
+                if self.lock.locked():
+                    self.waiter.set()
+                await self.lock.acquire()
+                return self
+
+            async def __aexit__(self, *_args):
+                self.lock.release()
+
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={"title": "Standup"})
+
+            observed_lock = ObservedLock()
+            real_toggle = agents._toggle_agent_locked
+            toggle_entered = asyncio.Event()
+            release_toggle = asyncio.Event()
+
+            async def blocked_toggle(*args, **kwargs):
+                toggle_entered.set()
+                await release_toggle.wait()
+                return await real_toggle(*args, **kwargs)
+
+            monkeypatch.setattr(agents, "START_LOCK", observed_lock)
+            monkeypatch.setattr(meeting_lifecycle, "START_LOCK", observed_lock)
+            monkeypatch.setattr(agents, "_toggle_agent_locked", blocked_toggle)
+
+            toggle_request = asyncio.create_task(
+                client.post(
+                    f"{BASE}/meetings/standup/agents",
+                    json={"agent_id": "sketch-artist", "enable": True},
+                )
+            )
+            await asyncio.wait_for(toggle_entered.wait(), timeout=5)
+
+            delete_request = asyncio.create_task(client.delete(f"{BASE}/meetings/standup"))
+            await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
+            release_toggle.set()
+
+            assert (await toggle_request).status == 200
+            assert (await delete_request).status == 204
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_task_mutation_cannot_resurrect_a_deleted_meeting(
+        self, app, root: Path, monkeypatch
+    ):
+        from kiro_crew.apps.builtins.meetings.backend.routes import tasks as task_routes
+
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={"title": "Standup"})
+
+            real_write_tasks = store.write_tasks
+            write_entered = threading.Event()
+            release_write = threading.Event()
+
+            def blocked_write(meeting_id, tasks, data_root=None):
+                write_entered.set()
+                assert release_write.wait(timeout=5)
+                return real_write_tasks(meeting_id, tasks, data_root)
+
+            real_transaction = task_routes.task_mutation_transaction
+            delete_attempted = threading.Event()
+
+            def observed_transaction():
+                delete_attempted.set()
+                return real_transaction()
+
+            monkeypatch.setattr(store, "write_tasks", blocked_write)
+            monkeypatch.setattr(task_routes, "task_mutation_transaction", observed_transaction)
+
+            add_request = asyncio.create_task(
+                client.post(
+                    f"{BASE}/meetings/standup/tasks",
+                    json={"description": "Ship it"},
+                )
+            )
+            assert await asyncio.to_thread(write_entered.wait, 5)
+
+            delete_request = asyncio.create_task(client.delete(f"{BASE}/meetings/standup"))
+            assert await asyncio.to_thread(delete_attempted.wait, 5)
+            release_write.set()
+
+            assert (await add_request).status == 200
+            assert (await delete_request).status == 204
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_add_task_after_delete_is_404_without_recreating_the_directory(
+        self, app, root: Path
+    ):
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={"title": "Standup"})
+            assert (await client.delete(f"{BASE}/meetings/standup")).status == 204
+
+            resp = await client.post(
+                f"{BASE}/meetings/standup/tasks",
+                json={"description": "Late task"},
+            )
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "meeting_not_found"
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_live_meeting(self, app, root: Path, fake_sessions):
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.delete(f"{BASE}/meetings/standup")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "meeting_active"
+            assert _common.ACTIVE.get("standup") is not None
+
+        assert store.read_meeting_meta("standup", root) is not None
 
     @pytest.mark.asyncio
     async def test_get_unknown_meeting_is_404(self, app):
@@ -1686,6 +1883,9 @@ class TestTaskWritesAreSerialized:
 
         meeting_id = "m2"
         count = 16
+        store.write_meeting_meta(
+            meeting_id, store.new_meeting_meta(meeting_id, "Concurrent adds"), root
+        )
         barrier = threading.Barrier(count)
 
         def add(index: int) -> None:

@@ -217,6 +217,8 @@ export const meetingsApi = {
   meetings: () => request<{ meetings: MeetingSummary[] }>('/meetings'),
   meeting: (id: string) =>
     request<{ meta: MeetingMeta; live: LiveStatus | null }>(`/meetings/${encodeURIComponent(id)}`),
+  deleteMeeting: (id: string) =>
+    request<void>(`/meetings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   init: (id: string, title: string) =>
     post<{ meeting_id: string; meta: MeetingMeta }>(
       `/meetings/${encodeURIComponent(id)}/init`,

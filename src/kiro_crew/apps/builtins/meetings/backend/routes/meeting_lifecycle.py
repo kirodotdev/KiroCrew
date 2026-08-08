@@ -6,6 +6,7 @@
 ``POST …/{id}/stop``          flush agents, mark ended
 ``GET  …/meetings``           list every meeting with metadata on disk
 ``GET  …/{id}``               one meeting's metadata
+``DELETE …/{id}``             permanently remove an inactive meeting
 ``GET  …/{id}/outputs``       batch-read every agent output + tasks.json
 ``POST …/{id}/attachments``   add/remove context attachments
 """
@@ -117,9 +118,13 @@ async def handle_meeting_init(request: web.Request) -> web.Response:
     body = await json_body(request, required=False)
     title = field_str(body, "title", default="Meeting", max_len=k.MAX_TITLE_LEN)
 
-    meta = await asyncio.to_thread(
-        _init_meeting, meeting_id, title, body, data_root(request)
-    )
+    # Initialization creates the same directory tree that deletion removes. Keep
+    # the whole worker-thread transaction under the lifecycle lock so a meeting
+    # cannot be recreated after a concurrent delete has returned 204.
+    async with START_LOCK:
+        meta = await asyncio.to_thread(
+            _init_meeting, meeting_id, title, body, data_root(request)
+        )
     return web.json_response({"ok": True, "meeting_id": meeting_id, "meta": meta})
 
 
@@ -143,6 +148,49 @@ async def handle_list_meetings(request: web.Request) -> web.Response:
     # every hit, so it grows with the user's meeting history — off the loop.
     meetings = await asyncio.to_thread(store.list_meetings, data_root(request))
     return web.json_response({"meetings": meetings})
+
+
+def _delete_meeting(meeting_id: str, root: Any) -> bool:
+    """Remove a meeting while excluding every task mutation. BLOCKING."""
+    with task_routes.task_mutation_transaction():
+        return store.delete_meeting(meeting_id, root)
+
+
+async def handle_delete_meeting(request: web.Request) -> web.Response:
+    """Permanently remove an inactive meeting and every app-owned output."""
+    meeting_id = _meeting_id(request)
+    root = data_root(request)
+
+    # Share the lifecycle lock with start/stop so a delete cannot pass the live
+    # check and then race a start that begins writing into the same directory.
+    async with START_LOCK:
+        if ACTIVE.get(meeting_id) is not None:
+            audit(
+                "meetings.delete",
+                meeting_id,
+                outcome="denied",
+                error="meeting is active",
+            )
+            return web.json_response(
+                {
+                    "error": "end the meeting before deleting it",
+                    "code": "meeting_active",
+                },
+                status=409,
+            )
+        # A filing spans a provider call and the local task update. Let it finish
+        # before deleting so the provider cannot create an external item after its
+        # source meeting has disappeared; a filing that starts later sees 404.
+        async with task_routes.task_filing_transaction():
+            deleted = await asyncio.to_thread(_delete_meeting, meeting_id, root)
+
+    if not deleted:
+        return web.json_response(
+            {"error": "meeting not found", "code": "meeting_not_found"},
+            status=404,
+        )
+    audit("meetings.delete", meeting_id, outcome="ok")
+    return web.Response(status=HTTPStatus.NO_CONTENT)
 
 
 def _begin_meeting(

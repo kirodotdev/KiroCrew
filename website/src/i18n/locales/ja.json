@@ -2154,6 +2154,11 @@
       },
       "list": {
         "adHocTitle": "アドホック会議",
+        "deleteConfirm": "「{{title}}」と、そのすべてのノート、図、アクションアイテムを削除しますか？この操作は取り消せません。",
+        "deleteFailed": "この会議を削除できませんでした。",
+        "deleteMeeting": "{{title}}を削除",
+        "deleteUnavailable": "削除する前にこの会議を終了してください",
+        "deleted": "「{{title}}」を削除しました",
         "empty": "会議なし",
         "emptyHintNoCalendar": "設定でカレンダーを接続するか、アドホック会議を開始してください。",
         "emptyHintSynced": "カレンダーに何もなく、まだ作業した会議もありません。",

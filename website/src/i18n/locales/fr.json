@@ -2234,6 +2234,11 @@
       },
       "list": {
         "adHocTitle": "Réunion improvisée",
+        "deleteConfirm": "Supprimer « {{title}} » ainsi que toutes ses notes, ses schémas et ses actions ? Cette opération est irréversible.",
+        "deleteFailed": "Impossible de supprimer cette réunion.",
+        "deleteMeeting": "Supprimer {{title}}",
+        "deleteUnavailable": "Terminez cette réunion avant de la supprimer",
+        "deleted": "« {{title}} » a été supprimée",
         "empty": "Aucune réunion",
         "emptyHintNoCalendar": "Connectez un agenda dans les réglages, ou lancez une réunion improvisée.",
         "emptyHintSynced": "Rien dans l’agenda, et aucune réunion travaillée pour l’instant.",

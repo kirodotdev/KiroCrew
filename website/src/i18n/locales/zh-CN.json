@@ -2154,6 +2154,11 @@
       },
       "list": {
         "adHocTitle": "临时会议",
+        "deleteConfirm": "要删除“{{title}}”及其所有笔记、图示和行动项吗？此操作无法撤销。",
+        "deleteFailed": "无法删除此会议。",
+        "deleteMeeting": "删除“{{title}}”",
+        "deleteUnavailable": "请先结束此会议再将其删除",
+        "deleted": "已删除“{{title}}”",
         "empty": "没有会议",
         "emptyHintNoCalendar": "在设置中连接日历，或者开一个临时会议。",
         "emptyHintSynced": "日历中没有内容，也还没有处理过任何会议。",

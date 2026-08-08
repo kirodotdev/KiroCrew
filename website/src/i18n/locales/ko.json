@@ -2154,6 +2154,11 @@
       },
       "list": {
         "adHocTitle": "즉석 회의",
+        "deleteConfirm": "‘{{title}}’과(와) 모든 노트, 다이어그램, 액션 아이템을 삭제하시겠습니까? 되돌릴 수 없습니다.",
+        "deleteFailed": "이 회의를 삭제할 수 없습니다.",
+        "deleteMeeting": "{{title}} 삭제",
+        "deleteUnavailable": "삭제하기 전에 이 회의를 종료하세요",
+        "deleted": "‘{{title}}’을(를) 삭제했습니다",
         "empty": "회의 없음",
         "emptyHintNoCalendar": "설정에서 캘린더를 연결하거나 즉석 회의를 시작하세요.",
         "emptyHintSynced": "캘린더에 일정이 없고, 아직 진행한 회의도 없습니다.",
