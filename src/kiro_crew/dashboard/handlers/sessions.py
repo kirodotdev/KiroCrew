@@ -116,6 +116,18 @@ _usage_cache: dict[str, object] = {}
 _usage_cache_ts: float = 0.0
 _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
 _usage_fetching = False
+_MAX_BONUS_GRANTS = 32
+_MAX_BONUS_NAME_CHARS = 100
+_MAX_BONUS_CREDITS = 1_000_000.0
+_MAX_BONUS_DAYS_LEFT = 3_650
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_BONUS_DASH_RE = re.compile(
+    r"^([\d.]+)/([\d.]+)\s+used\s+\((\d+)\s+days?\s+left\)$"
+)
+_BONUS_COLON_RE = re.compile(
+    r"^(.+?):\s*([\d.]+)/([\d.]+)\s*\(expires\s+in\s+(\d+)\s+days?\)$",
+    re.IGNORECASE,
+)
 
 # --- Text-scrape gate ------------------------------------------------------
 # The `/usage` text scrape is a REAL billed kiro-cli chat turn, unlike the
@@ -243,9 +255,17 @@ def _safe_float(text: str) -> float | None:
         return None
 
 
+def _safe_int(text: str) -> int | None:
+    """Parse a regex-constrained integer without letting huge input raise."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _parse_usage(raw: str) -> dict[str, object]:
     """Parse structured fields from kiro-cli /usage output."""
-    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw)
+    clean = _ANSI_ESCAPE_RE.sub("", raw)
     result: dict[str, object] = {"raw": ""}
 
     lines = clean.splitlines()
@@ -297,33 +317,61 @@ def _parse_usage(raw: str) -> dict[str, object]:
                 if rate is not None:
                     result["overage_rate"] = rate
 
-    # Bonus / promotional credits are a separate pool kiro-cli lists in its own
-    # section after the plan, e.g.:
-    #     Bonus Credits:
-    #       Welcome bonus: 386.34/500 (expires in 15 days)
-    # This pool is drawn down BEFORE the plan, so while it lasts the plan meter
-    # barely moves — which looked like a frozen counter until we surfaced it.
-    # Capture the first bonus line (first-wins) so the dashboard can pool it into
-    # the header total and show it in the credits modal.
-    in_bonus = False
-    for line in usage_lines:
-        if "Bonus Credits" in line:
-            in_bonus = True
+    # Kiro CLI has shipped both "name: used/total (expires in N days)" and
+    # "name - used/total used (N days left)". Parse both bounded formats and
+    # retain every active grant; one malformed line must not poison the rest.
+    bonus_credits: list[dict[str, object]] = []
+    in_bonus_section = False
+    for raw_line in usage_lines:
+        line = raw_line.strip()
+        if "bonus credits:" in line.casefold():
+            in_bonus_section = True
             continue
-        if not in_bonus or "bonus_limit" in result:
+        if not in_bonus_section:
             continue
-        m = re.search(r"([A-Za-z][A-Za-z0-9 ]*?):\s*([\d.]+)\s*/\s*([\d.]+)", line)
-        if not m:
+        if line.startswith("Credits") or line.startswith("Overages:"):
+            break
+        if not line:
             continue
-        used = _safe_float(m.group(2))
-        limit = _safe_float(m.group(3))
-        if used is not None and limit is not None and limit > 0:
-            result["bonus_label"] = m.group(1).strip()
-            result["bonus_used"] = used
-            result["bonus_limit"] = limit
-            exp = re.search(r"\(([^)]*expires[^)]*)\)", line, re.IGNORECASE)
-            if exp:
-                result["bonus_expires_label"] = exp.group(1).strip()
+        if " - " in line:
+            name, usage_text = line.rsplit(" - ", 1)
+            match = _BONUS_DASH_RE.fullmatch(usage_text.strip())
+            values = match.groups() if match else None
+        else:
+            match = _BONUS_COLON_RE.fullmatch(line)
+            if match:
+                name = match.group(1)
+                values = match.group(2), match.group(3), match.group(4)
+            else:
+                name = ""
+                values = None
+        name = name.strip()
+        if not values or not name or len(name) > _MAX_BONUS_NAME_CHARS:
+            continue
+        used = _safe_float(values[0])
+        total = _safe_float(values[1])
+        days_left = _safe_int(values[2])
+        if (
+            used is None
+            or total is None
+            or days_left is None
+            or used < 0
+            or total <= 0
+            or used > _MAX_BONUS_CREDITS
+            or total > _MAX_BONUS_CREDITS
+            or days_left > _MAX_BONUS_DAYS_LEFT
+            or not name.isprintable()
+        ):
+            continue
+        bonus_credits.append(
+            {"name": name, "used": used, "total": total, "days_left": days_left}
+        )
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
+    # Preserve an observed empty section as an explicit empty list, so callers
+    # can distinguish "no active grants" from an output format with no section.
+    if in_bonus_section:
+        result["bonus_credits"] = bonus_credits
     return result
 
 
@@ -452,6 +500,13 @@ def _redact_strings(value: object) -> object:
     if isinstance(value, list):
         return [_redact_strings(v) for v in value]
     return value
+
+
+def _publish_usage(payload: dict[str, object]) -> None:
+    """Atomically replace the cache served by ``/api/sessions/usage``."""
+    global _usage_cache, _usage_cache_ts
+    _usage_cache = payload
+    _usage_cache_ts = time.time()
 
 
 def _cache_transient_failure() -> None:
@@ -602,8 +657,7 @@ async def _fetch_usage_bg() -> None:
         if not kiro_bin:
             # kiro-cli absent (non-Kiro provider): cache an unavailable marker so
             # the dashboard hides the credit pill instead of polling forever.
-            _usage_cache = {"available": False}
-            _usage_cache_ts = time.time()
+            _publish_usage({"available": False})
             return
         # Identity FIRST, because it is the anchor for credential selection.
         # ``whoami`` is kiro-cli's own account, and it costs no credits; passing
@@ -652,8 +706,7 @@ async def _fetch_usage_bg() -> None:
                         if not k.startswith("_")
                     }
                 )
-            _usage_cache = api_usage
-            _usage_cache_ts = time.time()
+            _publish_usage(api_usage)
             logger.info(
                 "Kiro usage refreshed (api): %s / %s credits",
                 api_usage.get("credits_used", "?"),
@@ -742,8 +795,7 @@ async def _fetch_usage_bg() -> None:
                     if not k.startswith("_")
                 }
             )
-            _usage_cache = parsed
-            _usage_cache_ts = time.time()
+            _publish_usage(parsed)
             logger.info(
                 "Kiro usage refreshed (text): %s credits used",
                 parsed.get("credits_used", "?"),

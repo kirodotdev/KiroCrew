@@ -29,6 +29,15 @@ SAMPLE_USAGE = (
     "Overage billed at $0.04 per credit\n"
 )
 
+SAMPLE_USAGE_WITH_BONUS = (
+    "Estimated Usage | resets on 2026-08-01 | KIRO PRO+\n"
+    "Bonus Credits:\n"
+    "   Welcome bonus - 500.00/500 used (13 days left)\n"
+    "   Amb-Kiro-crew-test - 185.84/2000 used (153 days left)\n"
+    "Credits (635.58 of 2000 covered in plan)\n"
+    "Overages: Disabled\n"
+)
+
 
 class TestParseUsage:
     def test_parses_all_fields(self):
@@ -74,13 +83,33 @@ class TestParseUsage:
         )
         r = _parse_usage(raw)
         assert r["credits_plan"] == 1000.0
-        assert r["bonus_label"] == "Welcome bonus"
-        assert r["bonus_used"] == 386.34
-        assert r["bonus_limit"] == 500.0
-        assert r["bonus_expires_label"] == "expires in 15 days"
+        assert r["bonus_credits"] == [
+            {"name": "Welcome bonus", "used": 386.34, "total": 500.0, "days_left": 15}
+        ]
 
     def test_no_bonus_fields_without_section(self):
-        assert "bonus_limit" not in _parse_usage(SAMPLE_USAGE)
+        assert "bonus_credits" not in _parse_usage(SAMPLE_USAGE)
+
+    def test_parses_every_bounded_bonus_grant_in_dash_format(self):
+        assert _parse_usage(SAMPLE_USAGE_WITH_BONUS)["bonus_credits"] == [
+            {"name": "Welcome bonus", "used": 500.0, "total": 500.0, "days_left": 13},
+            {
+                "name": "Amb-Kiro-crew-test",
+                "used": 185.84,
+                "total": 2000.0,
+                "days_left": 153,
+            },
+        ]
+
+    def test_skips_malformed_or_unbounded_bonus_grants(self):
+        raw = (
+            "Estimated Usage\nBonus Credits:\n"
+            f"{'x' * 101} - 1/10 used (2 days left)\n"
+            "Negative - -1/10 used (2 days left)\n"
+            "Huge - 1/1000001 used (2 days left)\n"
+            "Malformed - nope\nCredits (1 of 10 covered in plan)\n"
+        )
+        assert _parse_usage(raw)["bonus_credits"] == []
 
 
 class TestTransientFailureCache:
