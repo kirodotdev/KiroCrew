@@ -341,7 +341,10 @@ class LivenessOracle:
     Stateful across checks: it tracks the matched shell child (so exit
     detection is exact) and prior counter samples (so movement deltas are
     computed across the dispatch loop's ticks instead of sleeping inline).
-    Call :meth:`reset` at turn start and on every new tool dispatch.
+    Drop the baseline at turn start and on every new tool dispatch. Consumers that
+    run the check inline may :meth:`reset`; one that offloads it must retire the
+    instance with :meth:`fresh` instead, because a timed-out probe keeps writing
+    into the object it was handed (see :meth:`reset`).
 
     Every public check is fully wrapped — any unexpected error returns
     ``(VERDICT_UNKNOWN, ...)``, never raises, never a kill.
@@ -363,10 +366,37 @@ class LivenessOracle:
         self._samples: dict[str, tuple[float, int]] = {}
 
     def reset(self) -> None:
-        """Forget tracked child + samples (new turn / new tool dispatch)."""
+        """Clear tracked child + samples in place.
+
+        Safe only when no detached worker still holds this instance. A consult
+        offloaded to ``subprocess_executor()`` keeps a bound reference to the
+        oracle it sampled into, so clearing in place leaves that writer pointed at
+        the live baseline — where a late write becomes the next generation's
+        starting point and any delta reads as movement. Prefer :meth:`fresh`.
+
+        ``AcpClient`` has no ``reset()`` calls for that reason; it retires the
+        whole instance at each liveness-state boundary. ``AcpSessionHandle`` does
+        still call it, at turn start and on every tool dispatch, and those calls do
+        NOT satisfy the condition above: its ``_consult_oracle_offloaded()`` submits
+        a bound method under a bare ``wait_for`` timeout, so a timed-out probe can
+        outlive the reset. That is a pre-existing gap in the watchdog path, not an
+        endorsement of in-place clearing.
+        """
         self._tracked_child = None
         self._child_gone_ts = None
         self._samples.clear()
+
+    def fresh(self) -> "LivenessOracle":
+        """A new oracle carrying this one's configuration and no samples.
+
+        Callers retire an instance instead of ``reset()``-ing it when a detached
+        worker may still hold a reference to it: samples are keyed without a PID,
+        so a late write would otherwise land on the live baseline and read as
+        movement.
+        """
+        return LivenessOracle(
+            self._proc, now=self._now, sample_min_secs=self._sample_min_secs
+        )
 
     # ── Public checks ──
 

@@ -708,6 +708,19 @@ _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
 # unknown server→client requests so the agent fails fast instead of hanging.
 _JSONRPC_METHOD_NOT_FOUND = -32601
 
+
+def _consume_future_exception(future: asyncio.Future[tuple[str, str]]) -> None:
+    """Retrieve a liveness consult's exception so asyncio does not report it.
+
+    The /proc walk keeps running after its awaiter goes away, so it can finish
+    with an exception nobody reads. ``Future.__del__`` reports that through the
+    loop exception handler, which the gateway records as an unhandled-asyncio
+    crash for what is an ordinary probe failure.
+    """
+    if not future.cancelled():
+        future.exception()
+
+
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
 # synthesize a kind for these well-known literals — unknown ids stay empty
 # so we don't fabricate intent the agent didn't express.
@@ -1894,6 +1907,10 @@ class AcpClient:
         # reaped. Mirrors the kiro shared-runtime path (AcpSessionHandle), which
         # already defers on a WORKING verdict instead of a blunt wall-clock.
         self._liveness_oracle = LivenessOracle()
+        # Keep the executor future, not an await-scoped flag: wait_for can time
+        # out while the underlying thread continues its /proc walk. A pending
+        # future prevents silent-read polling from stacking blocked workers.
+        self._consult_future: asyncio.Future[tuple[str, str]] | None = None
         # Record every observed tool_call (id -> (title, kind)) so the
         # PostToolUse hook fire can recover the tool_name from the result's
         # tool_call_id — the RESULT event carries no title. See
@@ -2578,6 +2595,40 @@ class AcpClient:
         except asyncio.TimeoutError:
             logger.warning("PID %s did not exit after force kill", pid)
 
+    def _retire_liveness_state(self) -> None:
+        """Release the tracked consult and swap in a fresh, configured oracle.
+
+        Both boundaries that drop a movement baseline — turn start in
+        ``_prompt_loop`` under ``_turn_lock``, and process reset — retire rather
+        than ``reset()``,
+        and both must retire the future TOGETHER with the oracle. Their lifetimes
+        cannot diverge: if only the oracle were replaced, a walk wedged during the
+        previous turn would answer every later poll with "prior consult still in
+        flight", so the new turn never samples its own process and the 90s cutoff
+        completes it early — the truncation this gate exists to prevent.
+
+        Releasing the future costs at most one abandoned worker per boundary
+        instead of per silent read, which is the bound this gate is actually for.
+        A walk submitted through ``_consult_liveness_model_wait`` already carries a
+        retrieval callback from submission time, so its eventual exception is
+        consumed even though nobody awaits it any more; the consume/attach here
+        additionally covers a future that did not come from that path.
+
+        ``fresh()`` carries the configuration over: a default-constructed
+        replacement would silently repoint a caller-supplied /proc root, clock or
+        sampling interval. ``getattr`` because the low-level PID lifecycle tests
+        build clients with ``__new__``.
+        """
+        prior_consult = getattr(self, "_consult_future", None)
+        self._consult_future = None
+        if prior_consult is not None:
+            if prior_consult.done():
+                _consume_future_exception(prior_consult)
+            else:
+                prior_consult.add_done_callback(_consume_future_exception)
+        retiring = getattr(self, "_liveness_oracle", None)
+        self._liveness_oracle = retiring.fresh() if retiring is not None else LivenessOracle()
+
     def _reset_state(self) -> None:
         """Reset all session state (call after process is dead)."""
         if self._process:
@@ -2606,6 +2657,9 @@ class AcpClient:
         saved_child_pids = self._child_pids
         self._process = None
         self._pid = None
+        # A walk wedged on the dead PID's /proc entry can never speak for the
+        # replacement process, so release it with the oracle it sampled into.
+        self._retire_liveness_state()
         self._session_id = None
         self._buffer.clear()
         self._stderr_lines.clear()
@@ -3435,6 +3489,15 @@ class AcpClient:
         # comment for the finalization + coverage caveats.
         await self._turn_lock.acquire()
         try:
+            # Retire the liveness state HERE, under the lock, because this is the
+            # one point every prompt path funnels through: send_message (via
+            # _read_prompt_response), send_message_stream, and _dispatch_events.
+            # Retiring in a caller's prologue instead would (a) miss the direct
+            # prompt APIs, leaving their next turn gated by the previous turn's
+            # wedged walk, and (b) run BEFORE this acquire, letting a queued turn
+            # clear the active turn's tracked consult and so allow a second walk
+            # while the first is still pending.
+            self._retire_liveness_state()
             deadline = time.monotonic() + timeout
             consecutive_empty = 0
             last_data_ts = time.monotonic()
@@ -3464,7 +3527,8 @@ class AcpClient:
                         # Consult the liveness oracle on EVERY silent read once
                         # text has streamed — not only at the timeout. The oracle
                         # needs a prior sample to compute a movement delta (its
-                        # first call after reset always reads UNKNOWN/"sampling"),
+                        # first call after a boundary retirement always reads
+                        # UNKNOWN/"sampling"),
                         # so a single consult at the 90s mark would always reap.
                         # Sampling each silent read primes the baseline and keeps
                         # the movement window recent, mirroring the kiro path's
@@ -3588,18 +3652,43 @@ class AcpClient:
           is an inherent property of the shared ``LivenessOracle`` (the kiro
           path has it too); tighter per-branch attribution belongs in
           ``liveness.py``, shared by both callers, not here.
+
+        A timed-out await does not stop its executor thread. Keep that future
+        until the /proc walk finishes and return UNKNOWN on intervening polls,
+        bounding this client to one outstanding consult job per turn.
+        ``_prompt_loop`` retires it at turn start under ``_turn_lock``, so a walk
+        abandoned by one turn never gates the next (at the cost of one abandoned
+        worker per turn, versus one per silent read before this guard existed).
         """
-        pid = getattr(self, "_pid", None)
+        prior = self._consult_future
+        if prior is not None:
+            if not prior.done():
+                return VERDICT_UNKNOWN, "prior consult still in flight"
+            # wait_for cancels shield's outer future, and shield detaches its
+            # inner-done callback in exactly that case. The submission-time
+            # callback below handles that normal path; this consume additionally
+            # covers an already-completed future that never went through it.
+            _consume_future_exception(prior)
+
         try:
+            # Submission stays inside the guard: the caller is a silent-read poll
+            # in _prompt_loop, so a refused executor job (shut down during
+            # teardown, thread creation refused under load) must read as UNKNOWN
+            # rather than abort the live turn.
             loop = asyncio.get_running_loop()
-            return await asyncio.wait_for(
-                loop.run_in_executor(
-                    subprocess_executor(),
-                    self._liveness_oracle.check_model_wait,
-                    pid,
-                ),
-                timeout=10.0,
+            future = loop.run_in_executor(
+                subprocess_executor(),
+                self._liveness_oracle.check_model_wait,
+                getattr(self, "_pid", None),
             )
+            # Attach at SUBMISSION, not only where a later poll or _reset_state
+            # observes it: a turn that reaches the stale cutoff returns with this
+            # walk still running, and an idle client may never look again.
+            # Retrieval is not destructive, so the await below still sees the
+            # result.
+            future.add_done_callback(_consume_future_exception)
+            self._consult_future = future
+            return await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
         except Exception:
             logger.debug("liveness consult failed/timed out", exc_info=True)
             return VERDICT_UNKNOWN, "oracle offload error"
@@ -3716,9 +3805,6 @@ class AcpClient:
         self._permission_options.clear()
         self._stale_eligible = False
         self._tool_dispatched = False
-        # Reset the liveness oracle's movement baseline so this turn's stale
-        # gate measures activity from turn start, not a prior turn's samples.
-        self._liveness_oracle.reset()
         got_complete = False
         saw_agent_switch = False
 
