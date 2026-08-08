@@ -37,6 +37,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import atomic_write
+
 logger = logging.getLogger(__name__)
 
 _REGISTRY_FILE = Path(__file__).resolve().parent / "model_registry.json"
@@ -241,11 +243,9 @@ def persist_kiro_windows() -> None:
     try:
         snapshot = dict(_KIRO_WINDOWS)  # atomic under the GIL; safe vs. concurrent mutation
         path = _kiro_windows_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f)
-        tmp.replace(path)
+        # No mode=: the hand-rolled open() published at the umask default, which
+        # is what the helper applies when mode is omitted.
+        atomic_write(path, json.dumps(snapshot))
     except OSError:  # pragma: no cover - disk full / perms
         logger.debug("Could not persist kiro window cache", exc_info=True)
 

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -465,11 +466,10 @@ class ChannelManager:
         """Persist channel state to disk."""
         os.makedirs(self._CHANNELS_DIR, exist_ok=True)
         path = os.path.join(self._CHANNELS_DIR, f"{channel.id}.json")
-        tmp = path + ".tmp"
         try:
-            with open(tmp, "w") as f:
-                json.dump(channel.serialize(), f)
-            os.replace(tmp, path)
+            # No mode=: the hand-rolled open() published at the umask default,
+            # which is what the helper applies when mode is omitted.
+            atomic_write(path, json.dumps(channel.serialize()))
         except Exception:
             logger.exception("Failed to save channel %s", channel.id)
 
