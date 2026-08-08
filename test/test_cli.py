@@ -4017,27 +4017,16 @@ class TestDoctorEmbeddings:
         _pin_default_config(monkeypatch)
 
     @staticmethod
-    def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True, missing_libs: dict | None = None, loader_setdefaults: str = ""):
-        """Run _doctor with the embeddings runtime/model state stubbed.
-
-        ``loader_setdefaults`` reproduces the real loader's side effect of
-        ``setdefault``-ing LLAMA_CPP_LIB_PATH to its own bundled libs dir, which
-        is what makes reading that var after the load call ambiguous.
-        """
+    def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True):
+        """Run _doctor with the embeddings runtime/model state stubbed."""
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         import kiro_crew.cli_doctor as doc
 
-        def _load():
-            if loader_setdefaults:
-                os.environ.setdefault("LLAMA_CPP_LIB_PATH", loader_setdefaults)
-            return object if runtime_ok else None
-
-        monkeypatch.setattr(doc, "_load_llama_class", _load)
+        monkeypatch.setattr(doc, "_load_llama_class", lambda: object if runtime_ok else None)
         monkeypatch.setattr(
             doc, "_platform_libs_dirname", lambda: "macos_arm64" if platform_supported else None
         )
-        monkeypatch.setattr(doc, "verify_vendored_libs", lambda: missing_libs or {})
         monkeypatch.setattr(doc, "model_file_present", lambda path=None: model_present)
         default_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
@@ -4064,79 +4053,6 @@ class TestDoctorEmbeddings:
         self._run_doctor(tmp_path, monkeypatch, runtime_ok=False, model_present=False)
         out = capsys.readouterr().out
         assert "runtime:     ❌ vendored runtime failed to load" in out
-        # A COMPLETE payload that still fails to load must not be blamed on
-        # packaging — that would send the user reinstalling for nothing.
-        assert "incomplete" not in out
-
-    def test_doctor_names_the_missing_native_libs(self, tmp_path, capsys, monkeypatch):
-        """An incomplete shipped payload names the absent files.
-
-        ctypes reports only "base name 'llama' not found", which reads as an
-        unsupported architecture — so a bare "failed to load" sends diagnosis
-        after the CPU arch instead of the packaging rule that dropped the file
-        on every arch.
-        """
-        self._run_doctor(
-            tmp_path,
-            monkeypatch,
-            runtime_ok=False,
-            model_present=False,
-            missing_libs={"macos_arm64": ["libllama.dylib"]},
-        )
-        out = capsys.readouterr().out
-        assert "Missing native libs for macos_arm64: libllama.dylib" in out
-        assert "packaging" in out
-
-    def test_doctor_blames_the_override_dir_not_the_bundled_tree(
-        self, tmp_path, capsys, monkeypatch
-    ):
-        """Under LLAMA_CPP_LIB_PATH, point at the override — not a reinstall.
-
-        The libs load from the operator's directory, so "reinstall Kiro Crew"
-        would send them to replace a package they are deliberately not loading
-        from, while saying nothing about the dir that actually failed. Mirrors
-        the loader's exemption so the two diagnostics cannot disagree.
-        """
-        monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "/opt/my-gpu-llama")
-        self._run_doctor(
-            tmp_path,
-            monkeypatch,
-            runtime_ok=False,
-            model_present=False,
-            missing_libs={"macos_arm64": ["libllama.dylib"]},
-        )
-        out = capsys.readouterr().out
-        assert "/opt/my-gpu-llama" in out
-        assert "Missing native libs" not in out
-        assert "reinstall Kiro Crew" not in out
-
-    def test_doctor_does_not_mistake_the_loaders_own_setdefault_for_an_override(
-        self, tmp_path, capsys, monkeypatch
-    ):
-        """A complete payload that fails to import is not reported as overridden.
-
-        `_load_llama_class()` `setdefault`s LLAMA_CPP_LIB_PATH to its OWN bundled
-        libs dir, so reading the var AFTER that call cannot distinguish "operator
-        set it" from "the loader just set it to the bundle" — which produced the
-        self-contradiction "the libs load from <bundled path>, not the bundled
-        tree". Doctor must sample the environment before the load.
-        """
-        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
-        # Libs ARE missing, so reading the var too late suppresses the real
-        # packaging diagnosis and prints the override note in its place. With no
-        # missing libs both branches stay silent and the bug is invisible.
-        self._run_doctor(
-            tmp_path,
-            monkeypatch,
-            runtime_ok=False,
-            model_present=False,
-            missing_libs={"macos_arm64": ["libllama.dylib"]},
-            loader_setdefaults="/bundled/_vendor/llama_cpp_libs/x",
-        )
-        out = capsys.readouterr().out
-
-        assert "not the bundled tree" not in out
-        assert "Missing native libs for macos_arm64: libllama.dylib" in out
 
     def test_doctor_unsupported_platform_is_not_an_issue(self, tmp_path, capsys, monkeypatch):
         """No vendored libs for this platform = designed degradation, not a doctor failure."""

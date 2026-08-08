@@ -41,14 +41,12 @@ from kiro_crew.dashboard.origin import (
     parse_dashboard_url,
 )
 from kiro_crew.embeddings import (
-    _LIB_PATH_ENV,
     _load_llama_class,
     _platform_libs_dirname,
     _resolve_model_url,
     default_model_path,
     model_file_present,
     resolve_custom_model,
-    verify_vendored_libs,
 )
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
@@ -763,11 +761,6 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Vector Memory (in-process embeddings) ──
     print("\nVector Memory (in-process embeddings)")
 
-    # Read BEFORE _load_llama_class(): the loader `setdefault`s this var to its
-    # OWN bundled libs dir, so after the call an unset var is indistinguishable
-    # from an operator override pointing at the bundle.
-    _lib_path_override = os.environ.get(_LIB_PATH_ENV, "")
-
     if _load_llama_class() is not None:
         print("  runtime:     ✅ vendored llama-cpp-python importable")
     elif _platform_libs_dirname() is None:
@@ -780,29 +773,6 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         )
     else:
         print("  runtime:     ❌ vendored runtime failed to load")
-        # Distinguish an incomplete SHIPPED payload from a load failure on a
-        # complete one. Both surface as the same ctypes "base name 'llama' not
-        # found", but only the former is a packaging defect the user cannot fix
-        # by configuration — and naming the absent files is what stops the
-        # diagnosis from being misread as an unsupported architecture.
-        #
-        # Mirrors the loader's LLAMA_CPP_LIB_PATH exemption: under an override
-        # the libs load from the operator's directory, so blaming the bundled
-        # tree would send them to reinstall a package they are deliberately not
-        # loading from, while saying nothing about the dir that actually failed.
-        _plat_dir = _platform_libs_dirname()
-        _absent = (
-            [] if _lib_path_override else verify_vendored_libs().get(_plat_dir or "", [])
-        )
-        if _absent:
-            print(f"               Missing native libs for {_plat_dir}: {', '.join(_absent)}")
-            print("               This install's vendored llama.cpp is incomplete (packaging")
-            print("               defect, not an unsupported platform) — reinstall Kiro Crew")
-            print("               from a current release to restore vector memory.")
-        elif _lib_path_override:
-            print(f"               {_LIB_PATH_ENV} is set — the libs load from")
-            print(f"               {_lib_path_override}, not the bundled tree.")
-            print("               Verify that directory holds a complete llama.cpp closure.")
         issues.append("embedding runtime")
 
     # FAISS is an optional accelerator — never a dependency, on any platform.

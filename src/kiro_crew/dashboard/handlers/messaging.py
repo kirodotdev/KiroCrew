@@ -25,7 +25,6 @@ from kiro_crew.browser.command_bus import (
 from kiro_crew.browser.screencast import BROWSER_FRAME_EVENT, build_frame_payload
 from kiro_crew.browser.setup import (
     BROWSER_ENGINES,
-    BROWSER_FIRST_USE_NOTE,
     browser_mode_enabled,
     deregister_playwright_proxy,
     ensure_playwright_installed,
@@ -2348,7 +2347,10 @@ async def _browser_config_finalize(
             install_result = {
                 "ok": True,
                 "step": "browser-deferred",
-                "detail": BROWSER_FIRST_USE_NOTE,
+                "detail": (
+                    "Browser Mode is on. The browser downloads automatically the "
+                    "first time the agent browses."
+                ),
                 "engine": engine,
             }
 

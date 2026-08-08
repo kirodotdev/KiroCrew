@@ -19,6 +19,14 @@ import {
   TAILWIND_RUNTIME_PATH,
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
+import {
+  parseBrandingConfig,
+  applyBrandingToHtml,
+  SHELL_OVERLAY_ALLOWLIST,
+} from './scripts/lib/editionShell.mjs'
+
+/** Shape produced by parseBrandingConfig (editionShell.mjs is untyped .mjs). */
+type EditionBranding = { title?: string; themeColor?: string }
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -251,9 +259,84 @@ function editionExtensionPlugin(): Plugin {
         'Unset KIROCREW_EDITION_DIR for a stock build.\n'
     )
   }
+  // Pre-boot shell branding, resolved eagerly like the composition root so a
+  // malformed branding.json fails the build at startup, not mid-bundle. The
+  // eager read also means a dev server restart is needed after editing
+  // branding.json — consistent with how the composition root itself resolves.
+  // Optional: an edition without one keeps the stock title/theme-color.
+  let branding: EditionBranding = {}
+  let overlayFiles: string[] = []
+  if (editionEntry) {
+    const abs = path.dirname(editionEntry)
+    const brandingPath = path.join(abs, 'branding.json')
+    if (existsSync(brandingPath)) {
+      try {
+        branding = parseBrandingConfig(readFileSync(brandingPath, 'utf-8'))
+      } catch (e: unknown) {
+        throw new Error(`[kirocrew-edition] ${brandingPath}: ${(e as Error).message}`)
+      }
+    }
+    // Only allowlisted shell assets overlay the stock public/ copies; anything
+    // else in the edition's public/ fails the build (fail-loud beats a file
+    // that looks deployed but never ships). Deliberately flat: a subdirectory
+    // is rejected like any other stray entry, so the allowlist stays a list of
+    // exact filenames rather than a path-matching scheme. OS junk dotfiles
+    // (.DS_Store and friends) are skipped, not rejected — the OS creates them
+    // behind the author's back, so failing on them would be noise, not safety.
+    const publicDir = path.join(abs, 'public')
+    if (existsSync(publicDir)) {
+      const entries = readdirSync(publicDir, { withFileTypes: true }).filter(
+        (d) => !d.name.startsWith('.')
+      )
+      const strays = entries.filter(
+        (d) => !d.isFile() || !SHELL_OVERLAY_ALLOWLIST.includes(d.name)
+      )
+      if (strays.length > 0) {
+        throw new Error(
+          `[kirocrew-edition] ${publicDir} contains entries outside the shell-overlay allowlist ` +
+            `(${SHELL_OVERLAY_ALLOWLIST.join(', ')}), or non-files: ` +
+            `${strays.map((d) => d.name).join(', ')}. ` +
+            'The allowlist is what keeps an edition from overwriting index.html, sw.js, or vendor/*.'
+        )
+      }
+      overlayFiles = entries.map((d) => d.name)
+    }
+  }
   return {
     name: 'kirocrew-edition-extension',
     enforce: 'pre',
+    // Patch the pre-boot shell (<title>, <meta name="theme-color">) from the
+    // edition's branding.json. registerThemeBranding() can only retitle the tab
+    // after React mounts; this covers what the browser shows before that (and
+    // what a PWA install dialog samples). order:'pre' runs before Vite's own
+    // HTML transform reprints the tags.
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html: string, ctx: { path: string }) {
+        if (!branding.title && !branding.themeColor) return html
+        // Multi-page build: app panels (src/apps/*/panel.html) come through
+        // this hook too. The pre-boot shell is the root index.html only.
+        if (ctx.path !== '/index.html') return html
+        return applyBrandingToHtml(html, branding)
+      },
+    },
+    // Overlay the allowlisted shell assets (PWA manifest + icons) edition-wins.
+    // Emitted through the bundler so the files are visible to other plugins,
+    // rather than copied over dist after the fact. An emitted asset with a
+    // pinned fileName takes precedence over the same-named publicDir copy
+    // (verified against this config on Vite 8 / Rolldown; the negative case —
+    // publicDir winning — would surface immediately as stock bytes in dist).
+    // Build-only by nature of generateBundle: the dev server keeps serving the
+    // stock public/ files, which the seam docs call out as a known limitation.
+    generateBundle() {
+      for (const file of overlayFiles) {
+        this.emitFile({
+          type: 'asset',
+          fileName: file,
+          source: readFileSync(path.join(path.dirname(editionEntry as string), 'public', file)),
+        })
+      }
+    },
     config() {
       if (editionDir) {
         // Let vite's dev server serve/resolve files from outside the project

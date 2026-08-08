@@ -5592,11 +5592,6 @@
       "split_right_d": "ডানে স্প্লিট করুন (⌘D)",
       "terminal_pane_coming_in_phase_2": "টার্মিনাল প্যান — ফেজ 2-এ আসছে"
     },
-    "sessionRefStrip": {
-      "n_messages": "{{n}} মেসেজ",
-      "remove_reference": "রেফারেন্স সরান",
-      "remove_reference_to": "{{name}}-এর রেফারেন্স সরান"
-    },
     "settings": {
       "click_to_reset": "রিসেট করতে ক্লিক করো",
       "decrease": "কমান",
@@ -7383,7 +7378,6 @@
       "double_click_to_rename": "নাম বদলাতে ডাবল-ক্লিক করুন",
       "drag_to_reorder": "ক্রম বদলাতে ড্র্যাগ করুন",
       "drop_here_to_remove_from_folder": "ফোল্ডার থেকে সরাতে এখানে ছাড়ুন",
-      "drop_to_reference_session": "এই সেশনের রেফারেন্স যোগ করতে এখানে ছাড়ুন",
       "duplicate": "ডুপ্লিকেট করুন",
       "expand_folder_name": "{{name}} ফোল্ডার প্রসারিত করো",
       "expand_group_results": "{{group}} ফলাফল প্রসারিত করো",
@@ -7460,7 +7454,6 @@
       "pinned": "পিন করা",
       "pinned_sessions_are_kept": "পিন করা সেশন রেখে দেওয়া হয়।",
       "popped_out_to_a_separate_window": "আলাদা উইন্ডোতে পপ আউট করা হয়েছে",
-      "private_session_cannot_be_referenced": "ব্যক্তিগত সেশনের রেফারেন্স দেওয়া যায় না",
       "rename": "নাম পরিবর্তন করুন",
       "rename_flag_as_status_or_delete_tags_changes_app": "ট্যাগের নাম পরিবর্তন করুন, স্ট্যাটাস হিসেবে চিহ্নিত করুন, বা মুছে ফেলুন। ট্যাগ যেখানেই দেখানো হয়, পরিবর্তনগুলি সেখানেই প্রযোজ্য হবে।",
       "resets_its_conversation": "এর কথোপকথন রিসেট করে দেয়",

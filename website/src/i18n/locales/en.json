@@ -4065,11 +4065,6 @@
       "split_right_d": "Split right (⌘D)",
       "terminal_pane_coming_in_phase_2": "Terminal pane — coming in Phase 2"
     },
-    "sessionRefStrip": {
-      "n_messages": "{{n}} msgs",
-      "remove_reference": "Remove reference",
-      "remove_reference_to": "Remove reference to {{name}}"
-    },
     "settings": {
       "decrease": "Decrease",
       "increase": "Increase"
@@ -5166,7 +5161,6 @@
       "double_click_to_rename": "Double-click to rename",
       "drag_to_reorder": "Drag to reorder",
       "drop_here_to_remove_from_folder": "Drop here to remove from folder",
-      "drop_to_reference_session": "Drop to reference this session",
       "duplicate": "Duplicate",
       "failed_to_load_preview": "Failed to load preview.",
       "filter": "Filter",
@@ -5208,7 +5202,6 @@
       "pinned": "Pinned",
       "pinned_sessions_are_kept": "Pinned sessions are kept.",
       "popped_out_to_a_separate_window": "Popped out to a separate window",
-      "private_session_cannot_be_referenced": "Private sessions can't be referenced",
       "rename": "Rename",
       "rename_flag_as_status_or_delete_tags_changes_app": "Rename, flag as status, or delete tags. Changes apply everywhere tags are shown.",
       "resets_its_conversation": "resets its conversation",

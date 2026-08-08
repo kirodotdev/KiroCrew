@@ -5508,11 +5508,6 @@
       "split_right_d": "向右分屏（⌘D）",
       "terminal_pane_coming_in_phase_2": "终端窗格 — 将在第二阶段推出"
     },
-    "sessionRefStrip": {
-      "n_messages": "{{n}} 条消息",
-      "remove_reference": "移除引用",
-      "remove_reference_to": "移除对 {{name}} 的引用"
-    },
     "settings": {
       "click_to_reset": "点击重置",
       "decrease": "减少",
@@ -7282,7 +7277,6 @@
       "double_click_to_rename": "双击可重命名",
       "drag_to_reorder": "拖动可重新排序",
       "drop_here_to_remove_from_folder": "拖到此处可从文件夹中移出",
-      "drop_to_reference_session": "拖到此处可引用该会话",
       "duplicate": "复制",
       "expand_folder_name": "展开文件夹 {{name}}",
       "expand_group_results": "展开 {{group}} 的结果",
@@ -7357,7 +7351,6 @@
       "pinned": "已置顶",
       "pinned_sessions_are_kept": "置顶的会话会被保留。",
       "popped_out_to_a_separate_window": "已弹出到独立窗口",
-      "private_session_cannot_be_referenced": "私密会话无法被引用",
       "rename": "重命名",
       "rename_flag_as_status_or_delete_tags_changes_app": "重命名标签、标记为状态或删除标签。更改会在所有显示标签的位置生效。",
       "resets_its_conversation": "重置其对话",

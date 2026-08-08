@@ -74,21 +74,7 @@ registry via `npm_config_registry=https://registry.npmjs.org/` in the child env.
 `@playwright/mcp` is a public package, but a user's ambient `.npmrc` may point the
 default registry at a private mirror (corporate proxy, AWS CodeArtifact) whose
 token expires; without the pin a bare fetch 401s. The pin is env-var based (not an
-argv flag) so npm and npx honor it identically on macOS, Linux, and Windows. A
-network whose only egress is that private mirror can set `KIROCREW_PLAYWRIGHT_CMD`
-to bypass the fetch entirely.
-
-**Version pin (npx hosts).** The enable-time prime records the exact
-`@playwright/mcp` version it resolved to the `playwright-mcp-version` flag, and the
-runtime proxy launches `@playwright/mcp@<that version>` instead of the floating
-`@latest`. This makes an offline launch deterministic (resolves from the warm npx
-cache, no registry round-trip) and stops `latest` from advancing past the browser
-revision provisioned at enable time (the "Executable doesn't exist" drift). The
-flag is validated against a strict semver pattern on read, so a tampered value
-degrades to `@latest` rather than reaching an npx argv; absent, it also falls back
-to `@latest`. It resolves through the shared launch path, not the runtime PATH,
-which setup and the proxy now derive identically via `node_augmented_path` so a
-marker-bootstrapped Node toolchain the gateway did not inherit is found by both.
+argv flag) so npm and npx honor it identically on macOS, Linux, and Windows.
 
 **Provisioning is always advisory — enabling never surfaces a raw error.** Turning
 Browser Mode on registers the proxy (the capability is on) BEFORE and independent
