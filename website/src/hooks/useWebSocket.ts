@@ -128,6 +128,11 @@ export function useWebSocket() {
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const autoSpeakRef = useRef(false)
   const spokenLenRef = useRef(0)  // chars already sent to TTS during streaming
+  // Whether the streaming path synthesized anything this turn. chat_segment
+  // resets spokenLenRef to 0, so the completion pass cannot tell "nothing
+  // spoken yet" (speak the whole reply) from "spoken, then segment-reset"
+  // (speaking from 0 repeats the entire reply) without this.
+  const spokeThisTurnRef = useRef(false)
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
   // #1 streaming-chunk coalescing: accumulate per-slot chunk text and flush
@@ -327,6 +332,7 @@ export function useWebSocket() {
           const newText = full.slice(spokenLenRef.current, lastBound).trim()
           if (newText.length >= 10) {
             spokenLenRef.current = lastBound
+            spokeThisTurnRef.current = true
             synthChainRef.current = synthChainRef.current
               .then(() => api.voiceSynthesize(activeSlot, newText))
               .catch(() => {})
@@ -662,7 +668,7 @@ export function useWebSocket() {
             // trigger (no-op unless an L2 theme with that manifest sound is
             // active + unmuted). User/tool messages don't chime.
             if (data.role === 'assistant') emitThemeSound('message-received')
-            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); spokenLenRef.current = 0; synthChainRef.current = Promise.resolve() }
+            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); spokenLenRef.current = 0; spokeThisTurnRef.current = false; synthChainRef.current = Promise.resolve() }
             if (data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))
             }
@@ -968,13 +974,18 @@ export function useWebSocket() {
               const last = [...msgs].reverse().find(m => m.role === 'assistant')
               if (last) {
                 const remaining = last.content.slice(spokenLenRef.current).trim()
-                if (remaining.length >= 10) {
+                // spokenLen 0 after streaming spoke means chat_segment reset
+                // the counter — "remaining" would then be the whole reply,
+                // repeating everything already spoken.
+                const segmentReset = spokeThisTurnRef.current && spokenLenRef.current === 0
+                if (remaining.length >= 10 && !segmentReset) {
                   synthChainRef.current = synthChainRef.current
                     .then(() => api.voiceSynthesize(data.slot, remaining))
                     .catch(() => {})
                 }
               }
               spokenLenRef.current = 0
+              spokeThisTurnRef.current = false
             } else if (data.slot === store.getState().chat.activeSlot) {
               // Re-check config in case it changed
               api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
