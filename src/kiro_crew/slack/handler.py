@@ -29,10 +29,6 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from kiro_crew.session_map import SessionMap
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
@@ -95,6 +91,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SessionManager
+from kiro_crew.session_map import SessionMap
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -659,8 +656,17 @@ def _conv_state_map(sessions: object) -> "SessionMap | None":
     ``SessionManager`` owns (so writes stay consistent — no second instance can
     clobber them on save). Test doubles without ``_session_map`` return None, in
     which case callers fall back to the in-memory LRU dicts only.
+
+    The type check is load-bearing, not defensive politeness: a bare
+    ``getattr`` is satisfied by any attribute, and an auto-attribute stub (e.g.
+    ``MagicMock``) yields a stand-in whose ``get_flag`` returns a **truthy
+    mock** for every flag. Readers would then mark every session both temporary
+    and incognito — failing closed, but wrongly, and silently. Requiring the
+    real class is what actually delivers the "test doubles fall back to
+    in-memory only" contract this docstring promises.
     """
-    return getattr(sessions, "_session_map", None)
+    sm = getattr(sessions, "_session_map", None)
+    return sm if isinstance(sm, SessionMap) else None
 
 
 def _hydrate_conv_flags(sessions: object, session_key: str) -> None:

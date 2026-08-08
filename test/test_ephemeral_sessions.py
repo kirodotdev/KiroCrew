@@ -1367,3 +1367,362 @@ class TestSessionSlotRecovery:
             assert resp.status == 400
             data = await resp.json()
             assert data["error"] == "unknown session"
+
+
+class TestArchivedRestrictedSessionRecovery:
+    """An archived incognito/temporary tab must stay restricted.
+
+    ``api_chat_slot_close`` drops the slot from ``state._slots`` AND discards
+    its ``state._restricted_keys`` entry, while ``_save_slot_to_history``
+    writes the transcript — including its ``memory_mode`` marker — to disk. A
+    still-live MCP subprocess keeps sending the original session key, so both
+    in-memory signals miss and the gate must fall back to the persisted mode.
+    Without that fallback the establish-session probe (which only tests file
+    EXISTENCE) reads the archived transcript as proof of an ordinary session
+    and memory writes are allowed.
+    """
+
+    @staticmethod
+    def _archive(tmp_path, slot_name, mode):
+        """Write the JSONL an archived session in *mode* leaves behind."""
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        path = sess_dir / f"dashboard_{slot_name}.jsonl"
+        meta = {"_type": "metadata", "created_at": "2026-01-01T00:00:00", "closed": True}
+        if mode != "persistent":
+            meta["memory_mode"] = mode
+        path.write_text(
+            _json.dumps(meta)
+            + "\n"
+            + _json.dumps({"role": "user", "content": "secret", "ts": "2026-01-01T00:00:01"})
+            + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    @pytest.mark.parametrize("mode", ["incognito", "temporary"])
+    @pytest.mark.asyncio
+    async def test_learn_add_denied_for_archived_restricted_session(
+        self, tmp_path, monkeypatch, mode
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _session_has_persisted_history
+
+        state = _make_state(tmp_path)
+        self._archive(tmp_path, "e1", mode)
+        # Preconditions: neither in-memory signal survives the archive, and the
+        # establish-session probe DOES accept the key — so the only thing that
+        # can deny the write is the persisted-mode fallback. Asserting this
+        # keeps the test from passing for the wrong reason (a 400 "unknown
+        # session") if the probe's path resolution ever changes.
+        assert "e1" not in state._slots
+        assert "dashboard:e1" not in state._restricted_keys
+        assert _session_has_persisted_history("e1") is True
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "leaked from ephemeral session", "category": "knowledge"},
+                headers={"X-Session-Key": "dashboard:e1"},
+            )
+            assert resp.status == 403, await resp.text()
+            assert "not allowed" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_learn_add_still_allowed_for_archived_persistent_session(
+        self, tmp_path, monkeypatch
+    ):
+        """The recovery path this rides on must keep working for normal sessions."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        state = _make_state(tmp_path)
+        self._archive(tmp_path, "p1", "persistent")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "legitimate lesson", "category": "knowledge"},
+                headers={"X-Session-Key": "dashboard:p1"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [("incognito", "incognito"), ("temporary", "temporary"), ("persistent", "persistent")],
+    )
+    def test_persisted_memory_mode_reader(self, tmp_path, monkeypatch, mode, expected):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _persisted_session_memory_mode
+
+        self._archive(tmp_path, "s1", mode)
+        assert _persisted_session_memory_mode("s1") == expected
+
+    def test_persisted_memory_mode_unknown_is_none_not_persistent(self, tmp_path, monkeypatch):
+        """Unreadable metadata reads as None (unknown) — never as a mode.
+
+        A valid header that merely LACKS ``memory_mode`` is a legacy persistent
+        session and must read as ``persistent``; anything unparseable must read
+        as ``None`` so the write gate fails closed instead of allowing.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _persisted_session_memory_mode
+
+        assert _persisted_session_memory_mode("missing") is None
+        assert _persisted_session_memory_mode("../escape") is None
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        (sess_dir / "dashboard_corrupt.jsonl").write_text("not json\n{{\n", encoding="utf-8")
+        assert _persisted_session_memory_mode("corrupt") is None
+        # A non-string mode must not be coerced into a truthy value.
+        (sess_dir / "dashboard_weird.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "memory_mode": 42}) + "\n", encoding="utf-8"
+        )
+        assert _persisted_session_memory_mode("weird") is None
+        # Legacy header without the field -> persistent (writes stay allowed).
+        (sess_dir / "dashboard_legacy.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "created_at": "2026-01-01T00:00:00"}) + "\n",
+            encoding="utf-8",
+        )
+        assert _persisted_session_memory_mode("legacy") == "persistent"
+        # A metadata object that is NOT the first line must not define the mode:
+        # append() writes the header first, so a later one is message content.
+        (sess_dir / "dashboard_late.jsonl").write_text(
+            _json.dumps({"role": "user", "content": "hi"})
+            + "\n"
+            + _json.dumps({"_type": "metadata", "memory_mode": "persistent"})
+            + "\n",
+            encoding="utf-8",
+        )
+        assert _persisted_session_memory_mode("late") is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "incognito ",
+            " incognito",
+            "\tincognito\n",
+            "INCOGNITO",
+            "Incognito",
+            "temporary ",
+            "TEMPORARY",
+        ],
+    )
+    def test_whitespace_or_case_variant_modes_do_not_fail_open(
+        self, tmp_path, monkeypatch, raw
+    ):
+        """A restricted mode must not slip through on casing/whitespace.
+
+        The downstream comparison is set membership against
+        INCOGNITO_MEMORY_MODES, so `"incognito "` would lower() to itself, miss
+        the set, and read as unrestricted. Every variant must normalize to the
+        restricted mode (never to None, which would also be wrong here: the
+        header IS parseable and DOES name a restricted mode).
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _persisted_session_memory_mode
+        from kiro_crew.history import INCOGNITO_MEMORY_MODES
+
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        (sess_dir / "dashboard_v1.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "memory_mode": raw}) + "\n", encoding="utf-8"
+        )
+        got = _persisted_session_memory_mode("v1")
+        assert got == raw.strip().lower()
+        assert got in INCOGNITO_MEMORY_MODES, f"{raw!r} escaped the restricted set as {got!r}"
+
+    @pytest.mark.parametrize("raw", ["", "  ", "bogus", "persistent-ish", "incognito2"])
+    def test_unrecognized_mode_reads_as_unknown(self, tmp_path, monkeypatch, raw):
+        """An unrecognised value is unknown (None), not silently permissive."""
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import _persisted_session_memory_mode
+
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        (sess_dir / "dashboard_v2.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "memory_mode": raw}) + "\n", encoding="utf-8"
+        )
+        assert _persisted_session_memory_mode("v2") is None
+
+    @pytest.mark.asyncio
+    async def test_learn_add_denied_for_whitespace_bearing_incognito(self, tmp_path, monkeypatch):
+        """End-to-end: the padded value must still produce a 403, not a 200."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        (sess_dir / "dashboard_pad.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "memory_mode": "incognito "}) + "\n",
+            encoding="utf-8",
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "leaked via a padded mode value", "category": "knowledge"},
+                headers={"X-Session-Key": "dashboard:pad"},
+            )
+            assert resp.status == 403, await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_stem_denies_instead_of_picking_a_winner(self, tmp_path, monkeypatch):
+        """Two transcripts can claim one stem — the gate must not guess.
+
+        ``slot_name`` arrives with its transport namespace stripped
+        (``sk.split(":", 1)[-1]``), so a legacy Slack transcript at
+        ``<ts>.jsonl`` and an archived dashboard slot named after that same ts at
+        ``dashboard_<ts>.jsonl`` both match. Taking the first candidate lets the
+        PERSISTENT Slack file answer for the INCOGNITO dashboard session and the
+        lesson is stored. Existence stays true; the mode must read unknown.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import (
+            _persisted_session_memory_mode,
+            _probe_persisted_session,
+        )
+
+        ts = "1785861252.833429"
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        # Bare stem = legacy Slack transcript, persistent. Probed FIRST.
+        (sess_dir / f"{ts}.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "memory_mode": "persistent"}) + "\n",
+            encoding="utf-8",
+        )
+        # Same stem under the dashboard prefix = archived INCOGNITO slot.
+        (sess_dir / f"dashboard_{ts}.jsonl").write_text(
+            _json.dumps({"_type": "metadata", "memory_mode": "incognito"}) + "\n",
+            encoding="utf-8",
+        )
+        # First-match would report "persistent" here; ambiguity must win.
+        assert _persisted_session_memory_mode(ts) == "persistent"  # first-match, unsafe alone
+        exists, mode = _probe_persisted_session(ts)
+        assert exists is True, "the session does exist — only the mode is unknown"
+        assert mode is None, "ambiguous stem must not resolve to a mode"
+
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "leaked via an ambiguous stem", "category": "knowledge"},
+                headers={"X-Session-Key": f"dashboard:{ts}"},
+            )
+            assert resp.status == 403, await resp.text()
+
+    def test_colon_slot_name_cannot_escape_sessions_dir(self, tmp_path, monkeypatch):
+        """A colon is rejected: on Windows it yields a drive-relative escape.
+
+        ``WindowsPath('.../sessions') / 'D:foo.jsonl'`` evaluates to
+        ``D:foo.jsonl``, outside the sessions directory entirely (POSIX joins it
+        literally and is unaffected), and it also spells an NTFS alternate data
+        stream.
+
+        The rejection is name-based and happens before any filesystem access, so
+        the assertion below is meaningful on every platform. The *plant* is
+        POSIX-only on purpose: on Windows the very path expression under test
+        would write to another drive — i.e. outside ``tmp_path`` — which is
+        exactly the escape being guarded against (and a colon is not a legal
+        NTFS filename character anyway, so the file could not be created there).
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.handlers._shared import (
+            _persisted_session_memory_mode,
+            _persisted_session_path,
+            _session_has_persisted_history,
+        )
+
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            # Plant a real file at the literal POSIX name, so the guard — not a
+            # missing file — is provably what rejects it.
+            (sess_dir / "D:foo.jsonl").write_text(
+                _json.dumps({"_type": "metadata", "memory_mode": "persistent"}) + "\n",
+                encoding="utf-8",
+            )
+            assert (sess_dir / "D:foo.jsonl").exists()
+        for hostile in ("D:foo", "C:evil", "file:stream"):
+            assert _persisted_session_path(hostile) is None, hostile
+            assert _session_has_persisted_history(hostile) is False, hostile
+            assert _persisted_session_memory_mode(hostile) is None, hostile
+
+
+class TestDurableSlackFlagsAtHttpGate:
+    """The HTTP gate must honour a Slack thread's DURABLE privacy flag.
+
+    ``_thread_incognito``/``_thread_temporary`` are process-local and are only
+    populated by ``_hydrate_conv_flags`` on an INBOUND Slack message. A turn no
+    inbound message drove — a cron with ``session="origin"``, a webhook-resumed
+    session, a monitor/autonudge re-injection, a subagent — reaches the gate
+    with empty maps after a gateway restart, even though the user's
+    ``!incognito`` is on disk. The gate must restore before it decides.
+    """
+
+    SLACK_KEY = "slack:1785861252.833429"
+
+    @pytest.fixture()
+    def durable(self, tmp_path, monkeypatch):
+        """A real SessionMap in tmp_path, with the in-memory LRUs emptied."""
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
+        from kiro_crew.slack import handler as _h
+
+        _h._thread_temporary.clear()
+        _h._thread_incognito.clear()
+        yield
+        _h._thread_temporary.clear()
+        _h._thread_incognito.clear()
+
+    @pytest.mark.parametrize("flag", ["incognito", "temporary"])
+    @pytest.mark.asyncio
+    async def test_learn_add_denied_for_durable_slack_flag(self, tmp_path, durable, flag):
+        from kiro_crew.session_map import SessionMap
+        from kiro_crew.slack import handler as _h
+
+        sm = SessionMap()
+        sm.set_flag(self.SLACK_KEY, flag, True)
+        # Preconditions: durable on disk, absent from this process's maps.
+        assert SessionMap().get_flag(self.SLACK_KEY, flag) is True
+        assert _h.is_thread_incognito(self.SLACK_KEY) is False
+        assert _h.is_thread_temporary(self.SLACK_KEY) is False
+
+        state = _make_state(tmp_path)
+        state.sessions._session_map = sm
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/lessons",
+                json={"rule": "leaked from a slack privacy thread", "category": "knowledge"},
+                headers={"X-Session-Key": self.SLACK_KEY},
+            )
+            assert resp.status == 403, await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_learn_add_allowed_for_unflagged_slack_thread(self, tmp_path, durable):
+        """An ordinary Slack thread must stay writable — no over-blocking."""
+        from unittest.mock import MagicMock as _MM
+
+        from kiro_crew.session_map import SessionMap
+
+        state = _make_state(tmp_path)
+        state.sessions._session_map = SessionMap()
+        with patch(
+            "kiro_crew.dashboard.handlers._get_memory",
+            _MM(return_value=_MM(vector_store=None)),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/lessons",
+                    json={"rule": "legitimate slack lesson", "category": "knowledge"},
+                    headers={"X-Session-Key": self.SLACK_KEY},
+                )
+                assert resp.status == 200, await resp.text()
