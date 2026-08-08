@@ -190,6 +190,63 @@ class TestConnect:
         assert rc == 1
         assert "Dashboard tunnel did not become ready" in capsys.readouterr().out
 
+    def test_connect_probes_dashboard_health_on_local_port(self, monkeypatch):
+        # When the tunnel is ready, connect warns (via cli_server's probe) if the
+        # box serves "Dashboard HTML not found" instead of a working SPA.
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: True)
+        monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(
+            connect_mod,
+            "connect",
+            lambda *a, **k: connect_mod.Connection(
+                instance_id="i-0abc",
+                local_port=5599,
+                remote_port=5476,
+                token="tok",
+                url="http://127.0.0.1:5599/?token=tok",
+                ready=True,
+                process=None,  # .wait() skipped
+            ),
+        )
+        probed = {}
+        import kiro_crew.cli_server as cli_server_mod
+
+        monkeypatch.setattr(
+            cli_server_mod,
+            "_probe_dashboard_health",
+            lambda port: probed.setdefault("port", port),
+        )
+        rc = cli_cloud._cloud_connect(_args(profile="", region="", tag="kc-1"))
+        assert rc == 0
+        assert probed.get("port") == 5599
+
+    def test_doctor_reports_dist_state(self, monkeypatch, capsys, tmp_path):
+        # Doctor surfaces whether a launch will ship the prebuilt frontend.
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda a: ("", "us-east-1"))
+        monkeypatch.setattr("shutil.which", lambda name: None)  # no aws CLI
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_install_hint", lambda: "")
+        monkeypatch.setattr(
+            cli_cloud.iam,
+            "reachability_check",
+            lambda *a, **k: {"reachable": False, "note": "offline"},
+        )
+        import kiro_crew.cloud.source as source_mod
+
+        # No dist → warn that the box will build the frontend itself.
+        monkeypatch.setattr(source_mod, "repo_root", lambda: tmp_path)
+        assert cli_cloud._cloud_doctor(_args(profile="", region="")) == 0
+        assert "no pre-built frontend dist" in capsys.readouterr().out
+
+        # Dist present → ok line noting it ships with the launch.
+        dist_index = tmp_path / "src" / "kiro_crew" / "static" / "dist" / "index.html"
+        dist_index.parent.mkdir(parents=True)
+        dist_index.write_text("<html>spa</html>\n")
+        assert cli_cloud._cloud_doctor(_args(profile="", region="")) == 0
+        assert "frontend dist built" in capsys.readouterr().out
+
 
 class TestDestroy:
     def test_destroy_dry_run(self, monkeypatch, capsys):

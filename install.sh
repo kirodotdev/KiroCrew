@@ -305,7 +305,14 @@ cd "$KIROCREW_APP_DIR"
 # ── Frontend (npm + vite) ──
 # Vite emits to website/dist; we stage it into src/kiro_crew/static/dist
 # where setup.py copies it into the package at install time.
-if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
+# A launch that ships the prebuilt bundle (kirocrew cloud launch injects it
+# into the source tarball) skips this step entirely — the on-box npm build is
+# the fallback path, and its failure must FAIL the install: a box with no
+# dist serves the "Dashboard HTML not found" page.
+_frontend_failed=0
+if [ -f "$KIROCREW_APP_DIR/src/kiro_crew/static/dist/index.html" ]; then
+    ok "Frontend shipped pre-built — skipping npm build"
+elif has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     info "Building frontend (website/)…"
     _fe_log="$(mktemp)"
     (
@@ -327,16 +334,19 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
             cp -R "$_dist_src" "$_dist_dst"
             ok "Frontend built and staged → src/kiro_crew/static/dist"
         else
-            warn "website/dist not found after build — dashboard will use legacy fallback"
+            warn "website/dist not found after build"
+            _frontend_failed=1
         fi
     else
-        warn "Frontend build failed — dashboard will use legacy fallback"
+        warn "Frontend build failed"
         [ -s "$_fe_log" ] && tail -5 "$_fe_log" | while IFS= read -r _line; do detail "$_line"; done
+        _frontend_failed=1
     fi
     rm -f "$_fe_log"
 else
     warn "Skipping frontend build (Node.js or website/ not available)"
     detail "Install Node.js 18+ for the full React dashboard experience"
+    _frontend_failed=1
 fi
 
 # ── Python virtual environment & package ──
@@ -381,6 +391,15 @@ else
     die "pip install failed. Check: $_venv/bin/pip --version"
 fi
 rm -f "$_pip_log"
+
+# Without a dist the gateway serves the "Dashboard HTML not found" page — that
+# is not a working install, so fail loudly instead of a silent success. The
+# CloudFormation caller retries install.sh once for transient npm flakes; a
+# real failure now fails the stack's WaitCondition.
+if [ "$_frontend_failed" -eq 1 ] \
+    && [ ! -f "$KIROCREW_APP_DIR/src/kiro_crew/static/dist/index.html" ]; then
+    die "Frontend build failed and no pre-built static/dist shipped — the dashboard would serve nothing. Re-run after fixing npm (or launch with a prebuilt dist)."
+fi
 
 # Record install method so `kirocrew update` uses the right rebuild strategy
 echo "pip" > "$KIROCREW_APP_DIR/.install-method"

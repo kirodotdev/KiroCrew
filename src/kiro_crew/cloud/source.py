@@ -108,10 +108,33 @@ def repo_root() -> Path:
     )
 
 
-def _exclude_filter(ti: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-    """Shared tar member filter: drop excluded dirs + credential-shaped files."""
+# Repo-relative prefix of the prebuilt frontend bundle ``_inject_dist`` ships.
+# ``static/dist`` is git-ignored (and "dist" is in ``_EXCLUDE_DIRS``), so the
+# tarball builders never carry it; it is appended post-filter by that prefix
+# alone.
+_DIST_PREFIX = "src/kiro_crew/static/dist"
+
+
+def _exclude_filter(
+    ti: tarfile.TarInfo, allow_dist_under: Optional[str] = None
+) -> Optional[tarfile.TarInfo]:
+    """Shared tar member filter: drop excluded dirs + credential-shaped files.
+
+    ``allow_dist_under`` names the ONE repo-relative prefix whose members skip
+    only the ``_EXCLUDE_DIRS`` check — used by :func:`_inject_dist` for the
+    prebuilt ``static/dist`` bundle, which otherwise trips on the ``dist``
+    dir name. The suffix / ``.env`` / credential-name checks still apply to
+    every member, so a ``static/dist/.env`` is still refused. Default ``None``
+    keeps every other caller byte-identical.
+    """
+    # Pure-posix join: injected arcnames are already posix and the allow-prefix
+    # comparison must not vary with the host separator.
+    name = "/".join(Path(ti.name).parts)
+    under_dist = allow_dist_under is not None and (
+        name == allow_dist_under or name.startswith(allow_dist_under + "/")
+    )
     parts = set(Path(ti.name).parts)
-    if parts & _EXCLUDE_DIRS:  # excluded / secret-bearing directory anywhere in path
+    if not under_dist and parts & _EXCLUDE_DIRS:  # excluded / secret-bearing dir anywhere
         return None
     if ti.name.endswith(_EXCLUDE_SUFFIXES):  # credential file suffixes
         return None
@@ -315,24 +338,76 @@ def _tar_fallback(root: Path) -> Path:
     return Path(out.name)
 
 
+def _inject_dist(archive: Path, root: Path) -> Path:
+    """Append the prebuilt ``static/dist`` frontend bundle to the tarball.
+
+    ``src/kiro_crew/static/dist`` is git-ignored, so neither ``git archive``
+    nor the tracked-file fallback ever ships it — and without it the box must
+    build the SPA with npm at install time, which fails on under-provisioned
+    tiers and left the gateway serving the "Dashboard HTML not found" page.
+    Vite output is portable static JS/CSS, so a laptop-built bundle serves the
+    box fine.
+
+    Members are appended under the exact ``_DIST_PREFIX`` arcname and STILL run
+    through :func:`_exclude_filter` (with ``allow_dist_under=_DIST_PREFIX``) so
+    the credential checks (``.env``, ``.pem``, ``.npmrc`` …) stay enforced on
+    the injected files. Non-regular files (symlinks, fifos) are skipped — a
+    symlink could point outside the checkout. Returns the archive unchanged
+    when no local dist exists (public-clone launches still build on the box).
+    """
+    dist = root / _DIST_PREFIX
+    if not (dist / "index.html").is_file():
+        logger.info("no prebuilt %s — the box will build the frontend with npm", _DIST_PREFIX)
+        return archive
+    injected = tempfile.NamedTemporaryFile(  # noqa: SIM115 - handed to caller
+        prefix="kirocrew-src-", suffix=".tar.gz", delete=False
+    )
+    injected.close()
+    try:
+        with tarfile.open(archive, "r:gz") as src, tarfile.open(injected.name, "w:gz") as dst:
+            for member in src:
+                fh = src.extractfile(member) if member.isreg() else None
+                dst.addfile(member, fh)
+            for f in sorted(dist.rglob("*")):
+                if not f.is_file() or f.is_symlink():
+                    continue
+                arcname = f"{_DIST_PREFIX}/{f.relative_to(dist).as_posix()}"
+                ti = tarfile.TarInfo(arcname)
+                ti.size = f.stat().st_size
+                if _exclude_filter(ti, allow_dist_under=_DIST_PREFIX) is None:
+                    logger.info("excluding %s from source tarball", arcname)
+                    continue
+                with open(f, "rb") as fh:
+                    dst.addfile(ti, fh)
+    except BaseException:
+        Path(injected.name).unlink(missing_ok=True)
+        raise
+    archive.unlink(missing_ok=True)
+    logger.info("injected prebuilt frontend %s into source tarball", _DIST_PREFIX)
+    return Path(injected.name)
+
+
 def build_source_tarball(root: Optional[Path] = None) -> Path:
     """Package the local source tree into a gzip tarball; return its path.
 
     Uses ``git archive HEAD`` (fast) for a clean checkout, but if the tracked
     working tree is DIRTY (uncommitted edits to tracked files) it uses the
     ``git ls-files`` tar path instead — otherwise the launch would silently ship
-    stale last-commit code. Both paths ship only tracked files.
+    stale last-commit code. Both paths ship only tracked files. Either way the
+    prebuilt ``static/dist`` frontend (when present locally) is appended by
+    :func:`_inject_dist` so the box serves the dashboard without an on-box npm
+    build.
     """
     root = root or repo_root()
     if _tracked_tree_is_dirty(root):
         logger.info("working tree has uncommitted tracked changes; packaging the working tree")
-        return _tar_fallback(root)
+        return _inject_dist(_tar_fallback(root), root)
     archive = _use_git_archive(root)
     if archive is not None:
         logger.info("packaged source via git archive: %s", archive)
-        return archive
+        return _inject_dist(archive, root)
     logger.info("git archive unavailable; using tracked-file tarfile fallback")
-    return _tar_fallback(root)
+    return _inject_dist(_tar_fallback(root), root)
 
 
 def _account_id(profile: str, region: str) -> str:

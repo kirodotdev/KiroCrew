@@ -24,6 +24,57 @@ plus the EC2-specific gotchas people actually hit (from `kirocrew doctor`).
 Both end at the same loopback gateway and both are managed identically once
 registered in **Settings → Remote Crew**.
 
+## Deploy your first Kiro Crew on EC2 (step by step)
+
+This is the shortest path from a fresh laptop to a working cloud Kiro Crew, using
+the one-command launcher (`kirocrew cloud`). Plan on ~10 minutes plus one browser
+sign-in.
+
+**Before you start (laptop prerequisites):**
+
+1. **AWS CLI installed and configured.** `aws sts get-caller-identity` must print
+   your account — if it errors, run `aws configure` (or `aws sso login`) first.
+2. **Session Manager plugin** — `kirocrew cloud doctor` offers to install it, or
+   see [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md).
+3. **Node.js 18+ and npm** — the launcher builds the dashboard frontend on your
+   laptop and ships it pre-built, so the box skips the slow, failure-prone on-box
+   npm build. (`node --version` to check.)
+4. **A git checkout of this repo** with Kiro Crew installed from it — the launcher
+   packages your local source and uploads it to S3 (private-repo safe), it does
+   not clone GitHub on the box.
+
+Then run the checks and launch:
+
+```bash
+kirocrew cloud doctor    # verifies AWS CLI, credentials, plugin, frontend dist
+kirocrew cloud launch    # interactive: picks the recommended tier, region, etc.
+```
+
+- Accept the recommended **balanced** tier (t4g.xlarge, 16 GB). The **light** tier
+  (t4g.large, 8 GB) is under Kiro Crew's ~10 GB working set — fine for a quick
+  look, but expect pressure under real workloads.
+- Launch blocks until the box is **actually serving the dashboard** (the stack's
+  health check verifies the SPA loads, not just that something answers on the
+  port). Typical wait: 10–20 minutes on a cold box.
+- When it finishes it prints a dashboard URL and opens it. **Sign in to Kiro in
+  the browser window** that appears (device-code flow) — chats don't work until
+  this is done. If you launched with `--yes` (non-interactive), run
+  `kirocrew cloud login` afterwards to do this step.
+
+**Coming back later:**
+
+```bash
+kirocrew cloud connect   # reopens the dashboard tunnel (alias: tunnel)
+kirocrew cloud status    # instance state
+kirocrew cloud stop      # stop the box (EBS kept; cheap)
+kirocrew cloud start     # start it again
+kirocrew cloud destroy   # tear everything down (stack + uploaded source)
+```
+
+If `connect` ever prints a "stale dashboard" warning, the box is missing its
+frontend assets — see
+[Dashboard HTML not found](#dashboard-html-not-found-after-launch) below.
+
 ## Way 1 — SSH tunnel
 
 1. On your laptop, forward the gateway's port over SSH (use the **real** gateway
@@ -58,6 +109,43 @@ port, no SSH key.
 ## EC2 gotchas / troubleshooting
 
 These map to warnings in `kirocrew doctor`.
+
+### "Dashboard HTML not found" after launch
+
+The gateway is up but has no frontend assets (`src/kiro_crew/static/dist` is
+missing) — `kirocrew cloud connect` also prints a "stale dashboard" warning in
+this state. Fixes, cheapest first:
+
+1. On the box: `sudo systemctl restart kirocrew` — picks up assets staged after
+   the gateway started.
+2. Still missing? The on-box npm build failed at install time. Install now fails
+   loudly in that case, so re-running `kirocrew cloud launch` (with Node/npm on
+   your laptop, so the frontend ships pre-built) is the reliable fix.
+3. To inspect by hand: `kirocrew cloud connect` keeps working for SSH/SSM access
+   (`aws ssm start-session --target i-…`); the install log is
+   `/var/log/kirocrew-install.log` on the box.
+
+### Launch fails during package install / pip output scrolls by
+
+What looks like "python testing" is pip's dependency resolver on a cold box. The
+template already retries the install once for transient mirror flakes; if the
+stack still rolls back, just re-run `kirocrew cloud launch` — a second run reuses
+the warm dnf/pip caches and almost always gets through. Persistent failures point
+at the instance tier: use **balanced**, not light.
+
+### Stack rolls back with a WaitCondition timeout
+
+The box didn't report healthy within 25 minutes. Read the actual failure reason:
+
+```bash
+aws cloudformation describe-stack-events \
+  --stack-name kirocrew-<tag> \
+  --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].ResourceStatusReason'
+```
+
+The reason carries the last lines of the on-box install log, which names the
+failing step (package install, npm build, gateway start). Fix that step, then
+re-run `kirocrew cloud launch`.
 
 ### MCP tools all fail: "Sandbox backend unavailable … `allow_unsandboxed_exec` is not set"
 

@@ -116,6 +116,11 @@ def _cloud_connect(args: argparse.Namespace) -> int:
         ui.fail(str(exc))
         return 1
     if conn.ready and conn.url:
+        # Warn early if the box serves the "Dashboard HTML not found" page (no
+        # static/dist) instead of letting the user open a broken dashboard.
+        from kiro_crew.cli_server import _probe_dashboard_health
+
+        _probe_dashboard_health(conn.local_port)
         if not conn.token:
             # Tunnel is up but the token mint failed — the URL will hit the
             # dashboard's login wall. Say so instead of implying it's ready.
@@ -358,6 +363,19 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     else:
         ui.fail("AWS not reachable")
         ui.detail(reach.get("note", ""))
+    # Local frontend build state: a launch ships the prebuilt static/dist when
+    # present, so the box skips the fragile on-box npm build. Advisory only.
+    try:
+        from kiro_crew.cloud import source
+
+        dist_index = source.repo_root() / "src" / "kiro_crew" / "static" / "dist" / "index.html"
+    except Exception:
+        dist_index = None
+    if dist_index is not None and dist_index.is_file():
+        ui.ok("frontend dist built (ships pre-built with launch)")
+    else:
+        ui.warn("no pre-built frontend dist — the box will build it with npm (slower, can fail)")
+        ui.detail("Build locally so launches ship it: cd website && npm ci && npm run build")
     return 0
 
 

@@ -339,11 +339,14 @@ Resources:
           echo "--- installing system packages ---"
           # Essentials must succeed. AL2023 provides these in the default repo.
           # KiroCrew's install.sh needs Python >= 3.10; AL2023's default python3
-          # is 3.9, so install python3.11 explicitly (install.sh's _find_python
-          # prefers python3.12/3.11/3.10 over the bare python3).
-          dnf install -y git tmux python3.11 python3.11-pip python3 python3-pip \
-            unzip tar gzip which \
-            || fail "essential package install failed (git/python3.11/unzip)"
+          # is 3.9, so install python3.12 (AL2023.3+) with python3.11 as the
+          # fallback (install.sh's _find_python prefers python3.12/3.11/3.10 over
+          # the bare python3).
+          dnf install -y git tmux python3 python3-pip unzip tar gzip which \
+            || fail "essential package install failed (git/python3/unzip)"
+          dnf install -y python3.12 python3.12-pip \
+            || dnf install -y python3.11 python3.11-pip \
+            || fail "python3.12/3.11 install failed"
           # ripgrep is optional — don't fail the bootstrap if it isn't available.
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
@@ -483,13 +486,24 @@ Resources:
           systemctl daemon-reload
           systemctl enable --now kirocrew.service || fail "could not start kirocrew.service"
 
-          echo "--- waiting for the gateway to answer on 127.0.0.1:5476 ---"
+          echo "--- waiting for the gateway to serve the dashboard on 127.0.0.1:5476 ---"
+          # Healthy = answers AND serves the real SPA. The gateway returns HTTP
+          # 200 with the "Dashboard HTML not found" guidance page when
+          # static/dist is missing, so a bare status check would bless a
+          # dashboard-less box (install.sh fails closed on that first; this is
+          # the backstop). The grep string is the gateway's
+          # DASHBOARD_HTML_NOT_FOUND_MARKER (dashboard/handlers/core.py).
           ok=0
           for i in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:5476/ 2>/dev/null; then ok=1; break; fi
+            if curl -fsS http://127.0.0.1:5476/ 2>/dev/null \
+              | grep -q 'Dashboard HTML not found'; then
+              :
+            elif curl -fsS -o /dev/null http://127.0.0.1:5476/ 2>/dev/null; then
+              ok=1; break
+            fi
             sleep 5
           done
-          [ "$ok" = "1" ] || fail "gateway did not become healthy within 5 minutes"
+          [ "$ok" = "1" ] || fail "gateway did not serve the dashboard within 5 minutes"
 
           echo "=== KiroCrew bootstrap complete $(date -u) ==="
           /opt/aws/bin/cfn-signal -e 0 -r "kirocrew healthy" "$HANDLE" || \
@@ -507,6 +521,8 @@ Resources:
     Properties:
       Handle: !Ref WaitHandle
       # 25 min: cold boot + dnf + NodeSource + npm build (vite) + pip install.
+      # The vite build time only applies when the launch shipped no prebuilt
+      # static/dist (the usual path skips it); keep the budget for that fallback.
       Timeout: "1500"
       Count: 1
 
