@@ -94,6 +94,7 @@ from kiro_crew.computer_use.types import (
     TOOL_SET_VALUE,
     TOOL_TYPE_TEXT,
 )
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_core import (
     _API,
     _http_error_body,
@@ -653,7 +654,7 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
     )
     try:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_API from dashboard.url config) + a fixed internal path; never agent-controlled  # noqa: E501
-        with urllib.request.urlopen(request, timeout=INVOKE_TIMEOUT_SECS) as response:
+        with loopback_urlopen(request, timeout=INVOKE_TIMEOUT_SECS) as response:
             decoded = json.loads(response.read())
     except urllib.error.HTTPError as exc:
         return _http_error_body(exc)

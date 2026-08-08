@@ -56,6 +56,7 @@ from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_shared import (
     ToolCancelled,
@@ -2817,7 +2818,7 @@ def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
     )
     try:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_API from dashboard.url config) + a fixed internal path; never user-controlled  # noqa: E501
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with loopback_urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         # urlopen raises HTTPError on 4xx/5xx; str(e) is only "HTTP Error 400:
@@ -2892,7 +2893,7 @@ def _get(path: str) -> dict:
         headers=headers,
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with loopback_urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -2918,7 +2919,7 @@ def _patch(path: str, body: dict | None = None) -> dict:
     try:
         # _API is the hardcoded loopback dashboard base and `path` is a code
         # literal — never attacker-controlled, so no file:// scheme risk.
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
+        with loopback_urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -2950,7 +2951,7 @@ def _put(path: str, body: dict | None = None) -> dict:
     try:
         # _API is the hardcoded loopback dashboard base and `path` is a code
         # literal — never attacker-controlled, so no file:// scheme risk.
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
+        with loopback_urlopen(req, timeout=30) as resp:  # nosemgrep  # noqa: E501
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -2976,7 +2977,7 @@ def _delete(path: str, body: dict | None = None) -> dict:
         method="DELETE",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with loopback_urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return _http_error_body(e)
@@ -4958,8 +4959,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # it from the X-Internal-Secret header presence (MCP=agent,
         # dashboard=user). This is more secure than trusting a body field
         # and saves the agent from having to remember to set it.
-        # _post helper sends POST; we need PATCH. Use urllib.request directly
-        # (already imported at module top).
+        # _post helper sends POST; we need PATCH. Build the request directly
+        # and send it through loopback_urlopen, which drops any HTTP_PROXY so
+        # X-Internal-Secret cannot leave the host.
         data = json.dumps(update_body).encode()
         headers = {
             "Content-Type": "application/json",
@@ -4972,7 +4974,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{_API}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as http_resp:
+            with loopback_urlopen(req, timeout=30) as http_resp:
                 d = json.loads(http_resp.read())
         except urllib.error.HTTPError as exc:
             try:
@@ -5034,7 +5036,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{_API}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as http_resp:
+            with loopback_urlopen(req, timeout=30) as http_resp:
                 d = json.loads(http_resp.read())
         except urllib.error.HTTPError as exc:
             try:

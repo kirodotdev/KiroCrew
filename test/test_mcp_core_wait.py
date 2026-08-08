@@ -53,7 +53,7 @@ def test_post_marks_transport_errors_as_uncertain():
     """A failed response does not prove that the gateway rejected the spawn."""
     with patch("kiro_crew.mcp_core._resolve_session_key", return_value=""), \
          patch("kiro_crew.mcp_core._internal_secret", return_value="secret"), \
-         patch("kiro_crew.mcp_core.urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+         patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=TimeoutError("timed out")):
         result = _post("/api/spawn", {"task": "maybe accepted"})
 
     assert result == {"error": "timed out", "transport_error": True}
@@ -64,7 +64,7 @@ def test_post_marks_connection_refusal_as_definite_failure():
     refused = urllib.error.URLError(ConnectionRefusedError("connection refused"))
     with patch("kiro_crew.mcp_core._resolve_session_key", return_value=""), \
          patch("kiro_crew.mcp_core._internal_secret", return_value="secret"), \
-         patch("kiro_crew.mcp_core.urllib.request.urlopen", side_effect=refused):
+         patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=refused):
         result = _post("/api/spawn", {"task": "not accepted"})
 
     assert "connection refused" in result["error"]

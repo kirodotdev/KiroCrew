@@ -5,7 +5,7 @@ these tests call the handlers DIRECTLY (never through a subprocess) and assert
 on the routed side effects: which collaborator was called, what was printed, and
 which exit code was raised. Everything that would touch the network, the real
 data home, or a live gateway is mocked -- the module's HTTP paths are exercised
-by patching ``urllib.request.urlopen``, and every filesystem write lands in
+by patching ``kiro_crew.cli_commands.loopback_urlopen``, and every filesystem write lands in
 ``tmp_path``.
 
 Follows the style already established by ``test_cli.py`` (``argparse.Namespace``
@@ -157,7 +157,7 @@ class TestSpawnCli:
         payload = {"agents": [{"id": "a1", "task": "do x", "done": True}, {"id": "a2", "task": "y"}]}
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value="s"),
-            patch("urllib.request.urlopen", return_value=_FakeResponse(payload)),
+            patch("kiro_crew.cli_commands.loopback_urlopen", return_value=_FakeResponse(payload)),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
         out = capsys.readouterr().out
@@ -166,7 +166,7 @@ class TestSpawnCli:
     def test_list_empty_says_so(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("urllib.request.urlopen", return_value=_FakeResponse({"agents": []})),
+            patch("kiro_crew.cli_commands.loopback_urlopen", return_value=_FakeResponse({"agents": []})),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
         assert "No subagents." in capsys.readouterr().out
@@ -177,7 +177,7 @@ class TestSpawnCli:
         err = _http_error(400, json.dumps({"error": "bad spawn"}).encode())
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("urllib.request.urlopen", side_effect=err),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=err),
             pytest.raises(SystemExit) as exc,
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
@@ -189,7 +189,7 @@ class TestSpawnCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("urllib.request.urlopen", side_effect=_http_error(503, b"<html>")),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=_http_error(503, b"<html>")),
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
@@ -200,7 +200,7 @@ class TestSpawnCli:
     ) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=urllib.error.URLError("refused")),
             pytest.raises(SystemExit) as exc,
         ):
             cc._spawn(_ns(spawn_action="list", port=4321))
@@ -217,7 +217,7 @@ class TestSpawnCli:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
             patch(
-                "urllib.request.urlopen",
+                "kiro_crew.cli_commands.loopback_urlopen",
                 return_value=_FakeResponse({"id": "ag1", "task": "t"}),
             ) as uo,
         ):
@@ -236,7 +236,7 @@ class TestSpawnCli:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
             patch.object(cc._time, "sleep") as slept,
-            patch("urllib.request.urlopen", side_effect=responses),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=responses),
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
         assert "final answer" in capsys.readouterr().out
@@ -252,7 +252,7 @@ class TestSpawnCli:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
             patch.object(cc._time, "sleep"),
-            patch("urllib.request.urlopen", side_effect=responses),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=responses),
             pytest.raises(SystemExit) as exc,
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
@@ -266,7 +266,7 @@ class TestSpawnCli:
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
             patch.object(cc._time, "sleep"),
             patch(
-                "urllib.request.urlopen",
+                "kiro_crew.cli_commands.loopback_urlopen",
                 side_effect=[_FakeResponse({"id": "ag4", "task": "t"}), OSError("gone")],
             ),
             pytest.raises(SystemExit),
@@ -278,7 +278,7 @@ class TestSpawnCli:
         err = _http_error(422, json.dumps({"error": "task too long"}).encode())
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("urllib.request.urlopen", side_effect=err),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=err),
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
@@ -287,7 +287,7 @@ class TestSpawnCli:
     def test_run_unreachable_gateway_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("urllib.request.urlopen", side_effect=OSError("no route")),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=OSError("no route")),
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="run", port=9, task="t", fire_and_forget=True))
@@ -1431,7 +1431,7 @@ class _ArtifactHarness:
             patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()),
             patch("kiro_crew.cli_commands.parse_dashboard_url", return_value=("localhost", 5476)),
             patch("kiro_crew.cli_commands._internal_secret", return_value="s"),
-            patch("urllib.request.urlopen", side_effect=self._responses),
+            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=self._responses),
         ]
         started = [p.start() for p in self._patches]
         self.urlopen = started[-1]

@@ -24,6 +24,11 @@ import time
 import urllib.request
 from typing import Any
 
+# Stdlib-only leaf (it imports urllib.request and nothing else), so this
+# top-level import does not pull the gateway into this stdio proxy -- the same
+# constraint that makes _internal_secret() reach for the config.paths leaf.
+from kiro_crew.loopback_http import loopback_urlopen
+
 try:
     from PIL import Image
     _HAS_PIL = True
@@ -329,7 +334,7 @@ def _post_frame_to_gateway(img_bytes: bytes, fmt: str, source: str = "agent") ->
                 headers=headers,
                 method="POST",
             )
-            resp = urllib.request.urlopen(req, timeout=2)
+            resp = loopback_urlopen(req, timeout=2)
             try:
                 _record_subscriber_count(resp.read())
             finally:
@@ -371,7 +376,7 @@ def _post_pump_audit() -> bool:
             headers=headers,
             method="POST",
         )
-        resp = urllib.request.urlopen(req, timeout=2)
+        resp = loopback_urlopen(req, timeout=2)
         try:
             status = resp.getcode()
         finally:
@@ -865,7 +870,7 @@ def _try_native_tool_call(msg: dict[str, Any]) -> dict[str, Any] | None:
     )
     try:
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (http://127.0.0.1 + the fixed /api/browser/command path from _gateway_command_url); only the port varies, from KIROCREW_PORT local config, never user/agent/request input, so no file:// or arbitrary-read is reachable  # noqa: E501
-        with urllib.request.urlopen(req, timeout=_NATIVE_CALL_TIMEOUT_S) as resp:
+        with loopback_urlopen(req, timeout=_NATIVE_CALL_TIMEOUT_S) as resp:
             payload = json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         # The gateway ANSWERED with a status. Only "there is no panel to drive"

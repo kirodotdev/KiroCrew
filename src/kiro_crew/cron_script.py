@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     SandboxUnavailableError,
@@ -340,7 +341,7 @@ class ScriptContext:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with loopback_urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
         except Exception as exc:
             logger.warning("ScriptContext._post(%s) failed: %s", path, exc)

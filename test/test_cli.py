@@ -1481,7 +1481,7 @@ class TestLogout:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _logout(5476)  # Should not raise
 
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
@@ -1505,7 +1505,7 @@ class TestLogout:
         from kiro_crew.cli_server import _logout
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.HTTPError(None, 403, "Forbidden", {}, None),
         ):
             try:
@@ -1524,7 +1524,7 @@ class TestLogout:
         from kiro_crew.cli_server import _logout
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
         ):
             try:
@@ -1547,7 +1547,7 @@ class TestLogout:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             try:
                 _logout(5476)
                 assert False, "should have exited"
@@ -1566,7 +1566,7 @@ class TestStatus:
         from kiro_crew.cli_server import _status
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.HTTPError(
                 "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
             ),
@@ -1581,7 +1581,7 @@ class TestStatus:
         from kiro_crew.cli_server import _status
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.HTTPError(
                 "http://127.0.0.1:5476/api/status", 500, "Internal Server Error", {}, None
             ),
@@ -1596,7 +1596,7 @@ class TestStatus:
         from kiro_crew.cli_server import _status
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
         ):
             _status(self._make_args())
@@ -1622,7 +1622,7 @@ class TestStatus:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _status(self._make_args())
         out = capsys.readouterr().out
         assert "1h 0m" in out
@@ -1632,7 +1632,7 @@ class TestStatus:
         """Non-network exceptions should report gateway as running with unexpected response."""
         from kiro_crew.cli_server import _status
 
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("unexpected")):
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=RuntimeError("unexpected")):
             _status(self._make_args())
         out = capsys.readouterr().out
         assert "running" in out
@@ -3718,7 +3718,7 @@ class TestConfigDirOverride:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _logout(5476)
 
     def test_setup_slack_tokens_writes_to_config_dir(self, tmp_path, monkeypatch):
@@ -3776,7 +3776,7 @@ class TestSpawnCliAuth:
             captured.append(req)
             return mock_resp
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
 
         from kiro_crew.cli_commands import _spawn
 
@@ -3803,7 +3803,7 @@ class TestSpawnCliAuth:
             captured.append(req)
             return mock_resp
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
 
         from kiro_crew.cli_commands import _spawn_run
 
@@ -3832,7 +3832,7 @@ class TestSpawnCliAuth:
                 fp=None,
             )
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
 
         from kiro_crew.cli_commands import _spawn
 
@@ -3865,7 +3865,7 @@ class TestArtifactCli:
         # Surface any HTTP call as a fatal so we can prove the function exited
         # at the security check, not at the network layer.
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_commands.loopback_urlopen",
             lambda *_a, **_kw: pytest.fail("_artifact must refuse before opening any HTTP request"),
         )
 
@@ -3891,7 +3891,7 @@ class TestArtifactCli:
 
         monkeypatch.setattr("kiro_crew.cli_commands.is_sensitive_path", lambda _p: True)
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_commands.loopback_urlopen",
             lambda *_a, **_kw: pytest.fail("_artifact must refuse before opening any HTTP request"),
         )
 
@@ -4221,7 +4221,7 @@ class TestWaitGatewayReady:
         from kiro_crew import cli_server
 
         with patch(
-            "kiro_crew.cli_server.urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=http.client.BadStatusLine("garbage"),
         ):
             assert cli_server._probe_gateway_ready(7777) == 0
@@ -4345,21 +4345,23 @@ class TestWaitGatewayReady:
         resp = MagicMock(status=200)
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=resp) as mock_open:
             assert cli_server._probe_gateway_ready(7777) == 200
         assert mock_open.call_args.args[0] == "http://127.0.0.1:7777/api/ready"
 
     def test_probe_reports_zero_when_unreachable(self):
         from kiro_crew import cli_server
 
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen", side_effect=urllib.error.URLError("down")
+        ):
             assert cli_server._probe_gateway_ready(7777) == 0
 
     def test_probe_reports_the_http_status_of_a_not_ready_gateway(self):
         from kiro_crew import cli_server
 
         err = urllib.error.HTTPError("u", 503, "not ready", {}, None)
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=err):
             assert cli_server._probe_gateway_ready(7777) == 503
 
 
@@ -4391,7 +4393,7 @@ class TestPrintTokenUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -4416,7 +4418,7 @@ class TestPrintTokenUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -4797,7 +4799,10 @@ class TestTokenCommand:
         )
 
         args = argparse.Namespace(ttl="1h", port=7777)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("abc123")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            return_value=self._mock_token_response("abc123"),
+        ):
             _token(args)
 
         out = capsys.readouterr().out
@@ -4825,7 +4830,10 @@ class TestTokenCommand:
         )
 
         args = argparse.Namespace(ttl="1h", port=7777)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("xyz789")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            return_value=self._mock_token_response("xyz789"),
+        ):
             _token(args)
 
         out = capsys.readouterr().out
@@ -4884,7 +4892,9 @@ class TestTokenCommand:
         from kiro_crew.cli_server import _token
 
         self._stub_token_env(tmp_path, monkeypatch)
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen", side_effect=urllib.error.URLError("refused")
+        ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
         assert excinfo.value.code == 1
@@ -4896,7 +4906,9 @@ class TestTokenCommand:
         from kiro_crew.cli_server import _token
 
         self._stub_token_env(tmp_path, monkeypatch)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen", return_value=self._mock_token_response("")
+        ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
         assert excinfo.value.code == 1
@@ -4916,7 +4928,10 @@ class TestTokenCommand:
         from kiro_crew.cli_server import _token
 
         self._stub_token_env(tmp_path, monkeypatch)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("eyJa.b")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            return_value=self._mock_token_response("eyJa.b"),
+        ):
             _token(argparse.Namespace(ttl="1h", port=7777))
         captured = capsys.readouterr()
         lines = [ln for ln in captured.out.splitlines() if ln.strip()]

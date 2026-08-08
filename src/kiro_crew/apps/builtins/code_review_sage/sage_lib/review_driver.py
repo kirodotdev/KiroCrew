@@ -58,6 +58,31 @@ try:
 except ImportError:  # pragma: no cover - standalone fallback
     redact_credentials = redact_exfiltration_urls = None  # type: ignore
 
+# Every loopback call below carries X-Internal-Secret, and urlopen honours
+# HTTP_PROXY for loopback addresses, so a proxied environment would send the
+# secret to the proxy in cleartext. The fallback must therefore stay
+# proxy-disabled too -- degrading to a bare urlopen would leave the standalone
+# path (`python3 sage_lib/review_driver.py`) carrying the leak this closes.
+#
+# It must ALSO refuse redirects, for the same reason the real helper does. An
+# earlier version of this fallback omitted that on the grounds that "these
+# endpoints never return a redirect" -- wrong for `_probe`, whose entire job is
+# to dial candidate ports that may have something other than our gateway
+# listening. A 302 from one of those would replay the secret to whatever host
+# Location names.
+try:
+    from kiro_crew.loopback_http import loopback_urlopen  # type: ignore
+except ImportError:  # pragma: no cover - standalone fallback
+
+    class _FallbackNoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    def loopback_urlopen(req: urllib.request.Request | str, timeout: float):  # type: ignore
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _FallbackNoRedirect()
+        ).open(req, timeout=timeout)
+
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/review_driver.py` (run as script)
     sys.path.insert(0, _APP_ROOT)
@@ -102,7 +127,7 @@ def _api_request(method: str, path: str, body: dict | None = None, timeout: int 
         headers["Content-Type"] = "application/json"
     try:
         req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with loopback_urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except Exception as e:
@@ -447,11 +472,15 @@ def _candidate_ports() -> list[int]:
 
 def _probe(base: str, secret: str) -> bool:
     """True if a KiroCrew gateway is listening at base (any HTTP response, incl.
-    401/404, means it's there; only connection errors mean it isn't)."""
+    401/404, means it's there; only connection errors mean it isn't).
+
+    Proxy-disabled deliberately: ``_gateway_base`` calls this once per candidate
+    port, so a cold resolve that misses sends the secret up to len(candidates)
+    times -- this is the highest-multiplicity secret-bearing send in the app."""
     try:
         req = urllib.request.Request(base + "/api/spawn",
                                      headers={"X-Internal-Secret": secret} if secret else {})
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with loopback_urlopen(req, timeout=3) as resp:
             return resp.status < 500
     except urllib.error.HTTPError:
         return True   # a gateway responded (e.g. 401/404) — it's the right port

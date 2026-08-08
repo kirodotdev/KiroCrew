@@ -53,6 +53,7 @@ from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.security import (
     BUILTIN_DENY_PATTERNS,
     is_sensitive_path,
@@ -172,7 +173,7 @@ def _spawn(args: argparse.Namespace) -> None:
             headers={"X-Internal-Secret": _internal_secret()},
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with loopback_urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             try:
@@ -212,7 +213,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             result = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         try:
@@ -240,7 +241,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         _time.sleep(2)
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with urllib.request.urlopen(poll_req, timeout=5) as resp:
+            with loopback_urlopen(poll_req, timeout=5) as resp:
                 status = json.loads(resp.read())
         except Exception:
             print("Error: lost connection to gateway", file=sys.stderr)
@@ -1463,7 +1464,7 @@ def _artifact(args: argparse.Namespace) -> None:
             h["Content-Type"] = "application/json"
         req = urllib.request.Request(f"{base}{path}", data=data, headers=h, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with loopback_urlopen(req, timeout=30) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:

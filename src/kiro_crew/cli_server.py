@@ -48,6 +48,7 @@ from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
 from kiro_crew.learn import LessonStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.memory import MemoryStore
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.sel import sel
@@ -271,7 +272,7 @@ def _probe_dashboard_health(port: int) -> None:
     """
     try:
         req = urllib.request.Request(f"http://{_CLI_LOOPBACK}:{port}/", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:  # nosemgrep
+        with loopback_urlopen(req, timeout=2) as resp:  # nosemgrep
             body = resp.read(8192).decode("utf-8", errors="replace")
             if DASHBOARD_HTML_NOT_FOUND_MARKER.lower() in body.lower():
                 print(
@@ -319,7 +320,7 @@ def _token(args: argparse.Namespace) -> None:
         url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
     except Exception as exc:
@@ -363,7 +364,7 @@ def _logout(port: int) -> None:
         data=b"{}",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
                 print("✅ All dashboard sessions revoked.")
@@ -882,7 +883,7 @@ def _probe_gateway_ready(port: int, timeout: int = 3) -> int:
         # Loopback-only probe to our own gateway on 127.0.0.1; the URL is
         # internally derived (never attacker-supplied), so the dynamic-URL SSRF
         # audit rule is a false positive here.
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosemgrep
+        with loopback_urlopen(url, timeout=timeout) as resp:  # nosemgrep
             return int(resp.status)
     except urllib.error.HTTPError as e:
         return int(e.code)
@@ -989,7 +990,7 @@ def _print_token_url(port: int) -> None:
             secret = secret_path.read_text().strip()
             url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
             req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with loopback_urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
                 token = data.get("token", "")
             if token:
@@ -1473,7 +1474,7 @@ def _status(args: argparse.Namespace) -> None:
     port = resolve_client_port(getattr(args, "port", None))
     url = f"http://127.0.0.1:{port}/api/status"
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with loopback_urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):

@@ -34,9 +34,11 @@ blocking dispatcher.
 from __future__ import annotations
 
 import asyncio
+import http.server
 import inspect
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -2176,3 +2178,122 @@ class TestTheDriftWalkHonoursTheSnapshotBudget:
             f"the drift/refresh walks used {walks} instead of the snapshot's own 1777 — "
             "an element the model was legitimately shown would be refused"
         )
+
+
+class TestTheInvokeCallIsNeverProxied:
+    """``_invoke``'s HTTP body, exercised for real against two live listeners.
+
+    Every other test in this file patches ``mcp_computer._invoke`` wholesale, so
+    the request-building and opener code inside it had NO coverage — the leak this
+    guards could have been reintroduced without a single failure. That matters
+    more here than at a typical loopback site: this route's request carries
+    ``X-Internal-Secret``, and the gateway handler behind it is the authoritative
+    fail-CLOSED computer-use gate, so a proxy that could answer it is a proxy that
+    could authorise reading a password field.
+
+    Real sockets on port 0 following ``test_cron_trigger.py``: the kernel hands
+    out free ports, so no ``xdist_group`` marker is needed. ``_API`` and
+    ``_internal_secret`` are patched on ``mcp_computer``'s own namespace (it
+    imports both FROM ``mcp_core``, binding local names), which keeps the real
+    secret file out of the test entirely.
+    """
+
+    CANARY = "canary-not-a-real-secret"
+    PROXY_ENV_KEYS = (
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        # getproxies_environment ignores uppercase HTTP_PROXY when REQUEST_METHOD
+        # is set (the httpoxy CGI guard), which would silently void this test.
+        "REQUEST_METHOD",
+    )
+
+    @staticmethod
+    def _serve(sink: list[dict]):
+        """A listener that records the secret it saw and replies with shim-valid JSON."""
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):  # noqa: N802 - stdlib naming
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                sink.append(
+                    {
+                        "requestline": self.requestline,
+                        "secret": self.headers.get("X-Internal-Secret"),
+                        "session_key": self.headers.get("X-Session-Key"),
+                        "body": json.loads(raw),
+                    }
+                )
+                payload = b'{"text": "listener-answered"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, fmt, *args):
+                pass  # keep pytest output clean
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, server.server_address[1]
+
+    def test_the_secret_reaches_the_gateway_and_not_the_proxy(self, monkeypatch):
+        """``HTTP_PROXY`` set, ``no_proxy`` unset: the shape that actually leaks."""
+        gateway_hits: list[dict] = []
+        proxy_hits: list[dict] = []
+        gateway, gateway_port = self._serve(gateway_hits)
+        proxy, proxy_port = self._serve(proxy_hits)
+        try:
+            for key in self.PROXY_ENV_KEYS:
+                monkeypatch.delenv(key, raising=False)
+            monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
+            monkeypatch.setattr(mcp_computer, "_API", f"http://127.0.0.1:{gateway_port}")
+            monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: self.CANARY)
+
+            decoded = mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
+        finally:
+            gateway.shutdown()
+            proxy.shutdown()
+
+        assert proxy_hits == [], f"the internal secret reached the proxy: {proxy_hits}"
+        assert [h["secret"] for h in gateway_hits] == [self.CANARY]
+        # Relative request line confirms a direct connection rather than the
+        # absolute form urllib emits when it treats the host as proxied.
+        assert gateway_hits[0]["requestline"] == f"POST {mcp_computer.INVOKE_PATH} HTTP/1.1"
+        # The round trip completed through the new opener, so the migration did not
+        # trade the leak for a silently-swallowed transport error — ``_invoke``
+        # returns ``{"error": ...}`` for any failure rather than raising.
+        assert decoded == {"text": "listener-answered"}
+        assert gateway_hits[0]["body"]["session_key"] == "dashboard:main"
+
+    def test_no_proxy_naming_localhost_only_still_does_not_expose_it(self, monkeypatch):
+        """``no_proxy=localhost`` is the common corporate default and looks like
+        coverage, but it matches the host STRING — ``_API`` spelled either way must
+        not depend on it."""
+        gateway_hits: list[dict] = []
+        proxy_hits: list[dict] = []
+        gateway, gateway_port = self._serve(gateway_hits)
+        proxy, proxy_port = self._serve(proxy_hits)
+        try:
+            for key in self.PROXY_ENV_KEYS:
+                monkeypatch.delenv(key, raising=False)
+            monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
+            monkeypatch.setenv("no_proxy", "localhost")
+            monkeypatch.setattr(mcp_computer, "_API", f"http://127.0.0.1:{gateway_port}")
+            monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: self.CANARY)
+
+            mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
+        finally:
+            gateway.shutdown()
+            proxy.shutdown()
+
+        assert proxy_hits == [], f"the secret proxied despite no_proxy=localhost: {proxy_hits}"
+        assert [h["secret"] for h in gateway_hits] == [self.CANARY]

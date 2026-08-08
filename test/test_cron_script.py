@@ -601,7 +601,7 @@ class TestScriptContextNotify:
         mock_response.read.return_value = b'{"ok": true}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("kiro_crew.cron_script.loopback_urlopen", return_value=mock_response):
             result = ctx.notify("hello")
         assert result == {"ok": True}
 
@@ -612,7 +612,7 @@ class TestScriptContextNotify:
         mock_response.read.return_value = b'{"error": "forbidden"}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("kiro_crew.cron_script.loopback_urlopen", return_value=mock_response):
             with pytest.raises(RuntimeError, match="forbidden"):
                 ctx.notify("hello")
 
@@ -623,7 +623,9 @@ class TestScriptContextNotify:
         mock_response.read.return_value = b'{"ok": true}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
+        ) as mock_urlopen:
             ctx.notify("secret AKIA1234567890123456 text")
             # Verify the request was made (redaction happens internally)
             mock_urlopen.assert_called_once()
@@ -1001,14 +1003,16 @@ class TestScriptContextPost:
         mock_response.read.return_value = b'{"status": "delivered"}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("kiro_crew.cron_script.loopback_urlopen", return_value=mock_response):
             result = ctx._post("/api/deliver", {"text": "hello"})
         assert result == {"status": "delivered"}
 
     def test_post_failure_returns_error(self):
         job = SimpleNamespace(id="j1", message="test")
         ctx = ScriptContext(job=job)
-        with patch("urllib.request.urlopen", side_effect=Exception("connection refused")):
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", side_effect=Exception("connection refused")
+        ):
             result = ctx._post("/api/deliver", {"text": "hello"})
         assert "error" in result
         assert "connection refused" in result["error"]

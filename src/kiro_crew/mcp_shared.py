@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import (
     CallerContext,
     caller_identity_capability,
@@ -437,7 +438,7 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
             headers=headers,
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with loopback_urlopen(req, timeout=5) as resp:
                 policy = json.loads(resp.read())
         except urllib.error.HTTPError as http_exc:
             # 404 = "agent not resolved" (gateway side hasn't registered

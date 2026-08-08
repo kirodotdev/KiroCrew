@@ -13,7 +13,7 @@ Focus areas (the largest previously-uncovered blocks):
 * the whole ``workflow_*`` tool family (malformed / failed / transport
   responses included).
 
-Every HTTP call is mocked at ``urllib.request.urlopen`` or at mcp_core's own
+Every HTTP call is mocked at ``mcp_core.loopback_urlopen`` or at mcp_core's own
 ``_post`` / ``_get`` seams — nothing here touches the network, a real gateway,
 a subprocess or a fixed port.
 """
@@ -207,18 +207,18 @@ class TestHttpErrorBody:
 class TestVerbHelpers:
     def test_success_decodes_json_body(self, verb: str):
         fn = getattr(mcp_core, verb)
-        with patch("urllib.request.urlopen", return_value=_FakeResponse({"ok": True})):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})):
             assert fn("/api/thing") == {"ok": True}
 
     def test_http_error_is_decoded_through_http_error_body(self, verb: str):
         fn = getattr(mcp_core, verb)
         err = _http_error(404, b'{"error": "not found"}')
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=err):
             assert fn("/api/thing") == {"error": "not found"}
 
     def test_generic_exception_becomes_error_dict(self, verb: str):
         fn = getattr(mcp_core, verb)
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("boom")):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=RuntimeError("boom")):
             assert fn("/api/thing") == {"error": "boom"}
 
     def test_non_latin1_session_key_short_circuits(
@@ -226,7 +226,7 @@ class TestVerbHelpers:
     ):
         fn = getattr(mcp_core, verb)
         monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:chat—1")
-        with patch("urllib.request.urlopen", side_effect=AssertionError("must not be called")):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=AssertionError("must not be called")):
             out = fn("/api/thing")
         assert "invalid in HTTP headers" in out["error"]
 
@@ -236,7 +236,7 @@ class TestVerbHelperBodies:
         for verb, method in (("_patch", "PATCH"), ("_put", "PUT")):
             fn = getattr(mcp_core, verb)
             with patch(
-                "urllib.request.urlopen", return_value=_FakeResponse({"ok": True})
+                "kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})
             ) as m:
                 fn("/api/thing", {"a": 1})
             req = m.call_args[0][0]
@@ -245,14 +245,14 @@ class TestVerbHelperBodies:
             assert req.headers["Content-type"] == "application/json"
 
     def test_delete_without_body_sends_no_content_type(self):
-        with patch("urllib.request.urlopen", return_value=_FakeResponse({"ok": True})) as m:
+        with patch("kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})) as m:
             mcp_core._delete("/api/thing")
         req = m.call_args[0][0]
         assert req.data is None
         assert "Content-type" not in req.headers
 
     def test_delete_with_body_sends_json(self):
-        with patch("urllib.request.urlopen", return_value=_FakeResponse({"ok": True})) as m:
+        with patch("kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})) as m:
             mcp_core._delete("/api/thing", {"rule": "x"})
         req = m.call_args[0][0]
         assert json.loads(req.data.decode()) == {"rule": "x"}
@@ -261,24 +261,24 @@ class TestVerbHelperBodies:
 class TestPostTransportClassification:
     def test_connection_refused_is_not_a_transport_error(self):
         err = urllib.error.URLError(ConnectionRefusedError("refused"))
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=err):
             out = mcp_core._post("/api/spawn", {})
         assert "transport_error" not in out
         assert out["error"]
 
     def test_other_urlerror_is_flagged_transport_error(self):
         err = urllib.error.URLError(TimeoutError("timed out"))
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=err):
             out = mcp_core._post("/api/spawn", {})
         assert out["transport_error"] is True
 
     def test_unexpected_exception_is_flagged_transport_error(self):
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("read timeout")):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=RuntimeError("read timeout")):
             out = mcp_core._post("/api/spawn", {})
         assert out == {"error": "read timeout", "transport_error": True}
 
     def test_http_error_is_not_flagged_transport_error(self):
-        with patch("urllib.request.urlopen", side_effect=_http_error(400, b'{"error": "nope"}')):
+        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=_http_error(400, b'{"error": "nope"}')):
             out = mcp_core._post("/api/spawn", {})
         assert out == {"error": "nope"}
 
