@@ -495,6 +495,28 @@ def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
     return sorted(results, key=lambda x: x[0])
 
 
+# Skills RELOCATED into the kirocrew-dev/ folder (the Kiro Crew development
+# suite). Without this, an upgraded install keeps BOTH the old flat copy
+# and the new nested copy — two divergent copies of the same skill matched
+# nondeterministically by trigger overlap. The flat copy is NOT deleted (it
+# may carry user edits
+# the mtime-preserving sync deliberately protects): its SKILL.md is renamed
+# to SKILL.md.pre-relocation, which removes it from loader discovery while
+# preserving every byte on disk for the user to reconcile. Only done when
+# the nested replacement is verifiably present, so a failed/partial sync
+# never disables the only copy.
+#
+# Module level so the packaging guard in test/test_builtin_skill_packaging.py
+# can assert every destination actually ships: a destination the package never
+# installs makes this migration a permanent no-op and leaves the flat copy as
+# the only one the loader finds.
+_RELOCATED_SKILLS: dict[str, str] = {
+    "prepare-pr": "kirocrew-dev/prepare-pr",
+    "babysit": "kirocrew-dev/babysit",
+    "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
+}
+
+
 def _ensure_builtin_skills(base: Path) -> None:
     """Sync built-in skills: copy new/updated, remove stale.
 
@@ -520,28 +542,13 @@ def _ensure_builtin_skills(base: Path) -> None:
 
     # Remove known stale builtin skills (replaced by MCP tools)
     stale_builtins = {"learn", "subagent", "cron", "kirocrew-core"}
-    # Skills RELOCATED into the kirocrew-dev/ folder (the KiroCrew development
-    # suite). Without this, an upgraded install keeps BOTH the old flat copy
-    # and the new nested copy — two divergent copies of the same skill matched
-    # nondeterministically by trigger overlap. The flat copy is NOT deleted (it
-    # may carry user edits
-    # the mtime-preserving sync deliberately protects): its SKILL.md is renamed
-    # to SKILL.md.pre-relocation, which removes it from loader discovery while
-    # preserving every byte on disk for the user to reconcile. Only done when
-    # the nested replacement is verifiably present, so a failed/partial sync
-    # never disables the only copy.
-    relocated = {
-        "prepare-pr": "kirocrew-dev/prepare-pr",
-        "babysit": "kirocrew-dev/babysit",
-        "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
-    }
     if base.exists():
         for name in stale_builtins:
             stale = base / name
             if stale.is_dir():
                 shutil.rmtree(stale)
                 logger.info("Removed stale builtin skill: %s", name)
-        for old_name, new_name in relocated.items():
+        for old_name, new_name in _RELOCATED_SKILLS.items():
             old_skill_md = base / old_name / "SKILL.md"
             if old_skill_md.is_file() and (base / new_name / "SKILL.md").exists():
                 try:

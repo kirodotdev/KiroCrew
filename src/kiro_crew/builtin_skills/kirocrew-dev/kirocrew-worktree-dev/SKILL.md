@@ -1,19 +1,19 @@
 ---
 name: kirocrew-worktree-dev
-description: "HARD RULE for developing the KiroCrew source repo ITSELF (not for users' own projects): every change is built and verified inside a git worktree, never against the live gateway. Covers worktree creation, the blocking local build gates (pytest + isort + flake8 + mypy + tsc + vitest), the built-dist gotcha, feature flags, live preview paths (dev-backend.sh or isolated pods), and the PR workflow. Use only when building, testing, switching, or verifying a change to KiroCrew's own codebase."
+description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not for users' own projects): every change is built and verified inside a git worktree, never against the live gateway. Covers worktree creation, the blocking local build gates (pytest + isort + flake8 + mypy + tsc + vitest), the built-dist gotcha, feature flags, live preview paths (dev-backend.sh or isolated pods), and the PR workflow. Use only when building, testing, switching, or verifying a change to Kiro Crew's own codebase."
 triggers: kirocrew worktree, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
 repo_scope: src/kiro_crew
 ---
 
-# HARD RULE: KiroCrew development happens inside a git worktree
+# HARD RULE: Kiro Crew development happens inside a git worktree
 
 > **Scope guard: this skill applies ONLY when the working directory is the
-> KiroCrew source repository (or a worktree of it).** If you are working in any
+> Kiro Crew source repository (or a worktree of it).** If you are working in any
 > other project, ignore this skill entirely — its rules (worktree mandate,
-> build gates, single-commit squash, force-push) are KiroCrew-repo conventions
+> build gates, single-commit squash, force-push) are conventions of the Kiro Crew repo
 > and may be wrong or harmful elsewhere.
 
-Every local KiroCrew change — frontend, backend, or both — is developed, built,
+Every local Kiro Crew change — frontend, backend, or both — is developed, built,
 and verified in a dedicated **git worktree**, never by editing the live checkout
 or developing against the running gateway directly. One feature = one worktree.
 This is the single most important rule; violating it is the most common way to
@@ -21,9 +21,9 @@ waste hours.
 
 ## Rule 0 — Every change is developed in a worktree (FE + BE together)
 
-- **Every** KiroCrew change happens in a dedicated worktree. Never edit the
+- **Every** Kiro Crew change happens in a dedicated worktree. Never edit the
   live/production checkout, and never develop against the running gateway.
-- A KiroCrew feature spans **two layers**: `src/kiro_crew/` (backend, Python)
+- A Kiro Crew feature spans **two layers**: `src/kiro_crew/` (backend, Python)
   and `website/` (frontend, React/Vite). A worktree carries both; even a
   backend-only change lives in a worktree.
 - **Single-active model.** Making a worktree "live" swaps the *code* behind the
@@ -242,14 +242,14 @@ git worktree at /workplace/<you>/kirocrew-wt-<name>: ...
 
 That warning is the guard working, not a failure. Consequence to know about: the
 preview runs against the **real install's** agents and MCP servers, so it is safe
-but not self-contained — a change to KiroCrew's own managed MCP servers
+but not self-contained — a change to Kiro Crew's own managed MCP servers
 (`mcp-core`, `mcp-cron`, `mcp-computer`) is not exercised by a worktree preview.
 Verify those with unit tests, or temporarily point the real spec at the worktree
 and put it back afterwards.
 
 **Do not reach for `KIRO_HOME` to get around this yet.** It is kiro-cli's
 directory-wide override — it moves sessions, settings, skills and steering too,
-and KiroCrew still reads the host paths for most of those, so setting it breaks
+and Kiro Crew still reads the host paths for most of those, so setting it breaks
 session resume. Making it a real isolation switch means routing the remaining
 ~two dozen `~/.kiro/**` readers through `kiro_home()` first.
 
