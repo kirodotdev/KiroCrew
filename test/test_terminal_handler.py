@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import pathlib
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1733,85 +1734,78 @@ class TestApiTerminalWs:
         ws.close.assert_not_awaited()
 
 
-# ── scrollback ring buffer + redaction ──
+# ── scrollback ring buffer ──
 
 
-class TestScrollbackRedaction:
-    """The reconnect-replay scrollback feature (ported from the upstream project).
+class TestStreamIsForwardedUnscanned:
+    """The live PTY stream and its scrollback replay are byte copies.
 
-    The port re-anchors redaction onto ``kiro_crew.security`` whose redactors
-    return ``(text, warnings)`` tuples (upstream's ``redaction`` module returns
-    a bare ``str``), so the helper must unpack both — a verbatim copy would
-    have crashed treating the tuple as a string.
+    Scanning PTY output on its way to the browser was removed. It protected
+    nothing the browser does not already show — the user's own shell printed
+    those bytes into a panel only that authenticated operator can see, and any
+    threat that reaches it reaches their real terminal too — while costing real
+    correctness: it hid a token printed on purpose (``gh auth token``), swallowed
+    a device-code login or presigned URL mid-flow, and mis-fired on high-entropy
+    build output such as an npm ``integrity sha512-…`` line. It also forced a
+    decode, and a PTY read ends wherever the kernel had bytes, so a multi-byte
+    character split across two reads became two U+FFFD — permanently corrupting
+    CJK, emoji, and a TUI's box-drawing glyphs.
+
+    The credential boundary is the selection hand-off, which is where output
+    actually reaches a model, and it has no opt-out (``TestApiTerminalRedact``).
     """
 
-    def test_redact_terminal_strips_credentials(self):
-        # An AKIA access-key id in PTY output must be redacted before it is
-        # sent to any client (live frame or replayed scrollback).
-        out = terminal._redact_terminal(b"export AWS_KEY=AKIAIOSFODNN7EXAMPLE\n")
-        assert b"AKIAIOSFODNN7EXAMPLE" not in out
-        assert isinstance(out, bytes)
+    def test_redactors_are_called_only_by_the_selection_handler(self):
+        """Source guard for the single-scan-site design. A scan reappearing on the
+        streaming path brings back both the U+FFFD corruption and the false
+        positives, and leaves two places in the module each claiming to be the
+        credential boundary — so the count is pinned rather than reviewed."""
+        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        # The import lists these names without a paren, so a paren-suffixed
+        # count counts call sites and never the import.
+        assert src.count("redact_credentials(") == 1
+        assert src.count("redact_exfiltration_urls(") == 1
+        scan = src.index("    def _scan(t: str) -> str:")
+        region = src[scan:src.index("\n    try:", scan)]
+        assert "redact_credentials(" in region
+        assert "redact_exfiltration_urls(" in region
 
-    def test_redact_terminal_passes_clean_output_through(self):
-        assert terminal._redact_terminal(b"$ ls -la\n") == b"$ ls -la\n"
+    def test_session_reservation_has_no_await(self):
+        """Source guard for the reservation critical section.
 
-    def test_redact_terminal_handles_invalid_utf8(self):
-        # errors="replace" keeps a stray byte from raising; output is still bytes.
-        out = terminal._redact_terminal(b"\xff\xfeok")
-        assert isinstance(out, bytes)
-        assert b"ok" in out
+        The handler states its own invariant with the comment "Reserve slot
+        synchronously before any await to prevent race condition"; from there
+        through ``registry[session_id] = None`` the max-sessions check and the
+        placeholder assignment are only atomic while nothing suspends between
+        them. An await in there lets two concurrent opens for one session id both
+        pass the check and both spawn a PTY, leaking one untracked.
 
-    def test_scrollback_default_is_empty_bytearray(self):
-        sess = _make_session()
-        assert sess.scrollback == bytearray()
+        Deliberately starts at that comment, not at ``registry.get``: the
+        stale-entry cleanup above it awaits ``_kill_session`` and is pre-existing,
+        which is exactly why the authors drew the line where they did."""
+        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        start = src.index("    # Reserve slot synchronously before any await")
+        end = src.index("        registry[session_id] = None", start)
+        # Strip comments first: the anchor comment itself says the word "await",
+        # so a bare substring check matches the prose and never the code.
+        region = "\n".join(
+            line for line in src[start:end].splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "await" not in region, f"await in the reservation region:\n{region}"
 
-    @pytest.mark.asyncio
-    async def test_scrollback_captured_and_replayed_on_reconnect(self, monkeypatch, tmp_path):
-        """PTY output accumulates in the scrollback ring buffer and is replayed
-        (redacted) to a client that reconnects to the same session."""
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
-        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
-        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
-
-        registry: dict = {}
-        app = _make_app(registry=registry)
-
-        from aiohttp.test_utils import TestClient, TestServer
-
-        async with TestClient(TestServer(app)) as client:
-            async with client.ws_connect("/api/ws/terminal/sb-sess") as ws:
-                await ws.send_bytes(b"echo marker-xyz\n")
-                # Drain at least one frame so read_pty runs and fills scrollback.
-                msg = await ws.receive(timeout=3)
-                assert msg.type == web.WSMsgType.BINARY
-                await ws.close()
-
-            sess = registry["sb-sess"]
-            # Scrollback retained after disconnect, bounded by the ring buffer.
-            assert len(sess.scrollback) > 0
-            assert len(sess.scrollback) <= terminal._SCROLLBACK_MAX
-
-            # Reconnect: the first frame must be the replayed scrollback.
-            async with client.ws_connect("/api/ws/terminal/sb-sess") as ws:
-                replay = await ws.receive(timeout=3)
-                assert replay.type == web.WSMsgType.BINARY
-                assert len(replay.data) > 0
-                await ws.close()
-
-            await terminal._kill_session(registry["sb-sess"])
-
-    @pytest.mark.asyncio
-    async def test_scrollback_trims_to_max(self, monkeypatch):
-        """When PTY output exceeds _SCROLLBACK_MAX, the buffer keeps only the
-        most recent _SCROLLBACK_MAX bytes (the trimming branch in read_pty)."""
-        sess = _make_session()
-        # Simulate the read_pty capture/trim logic directly.
-        for _ in range(0, terminal._SCROLLBACK_MAX * 2, 4096):
-            sess.scrollback.extend(b"x" * 4096)
-            if len(sess.scrollback) > terminal._SCROLLBACK_MAX:
-                sess.scrollback = sess.scrollback[-terminal._SCROLLBACK_MAX:]
-        assert len(sess.scrollback) == terminal._SCROLLBACK_MAX
+    def test_no_send_through_the_session_field_after_an_await(self):
+        """Source guard. ``sess.ws`` is set to None by the WS handler on
+        disconnect, so dereferencing it after a suspension point raises
+        AttributeError — which ``except OSError`` does NOT catch, killing the PTY
+        reader and stopping scrollback capture for a session the client may still
+        reconnect to. Every send must go through a captured local that was
+        revalidated after the await, so the pattern `sess.ws.send` must not exist
+        anywhere in this module."""
+        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        assert "sess.ws.send" not in src
+        # And the read loop's send must revalidate the capture after the lock.
+        assert src.count("if sess.ws is not live or live.closed:") == 1
 
 
 # ── reap_orphaned_terminals ──
@@ -2043,6 +2037,109 @@ class TestTerminalWsIntegration:
                 await ws.close()
 
             await terminal._kill_session(registry["io-sess"])
+
+    @pytest.mark.asyncio
+    async def test_stream_and_replay_forward_output_verbatim(self, monkeypatch, tmp_path):
+        """End-to-end through the real PTY read loop: a credential the user's own
+        shell printed reaches the browser unchanged, and so does the scrollback
+        replayed on reconnect. Neither path scans or rewrites bytes — the scan
+        lives at the selection hand-off (``TestApiTerminalRedact``), which is the
+        only place this output can reach a model. Drives the shipped loop rather
+        than re-deriving it, so a regression in the wiring fails here too."""
+        key = "AKIAIOSFODNN7EXAMPLE"
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async def _drain(ws, needle, budget=60):
+            # The shell echoes the typed line before its output, so read until a
+            # marker resolves rather than trusting a frame count. Stops on
+            # REDACTED too: if a regression starts scanning this path the needle
+            # never arrives, and without that stop the test would burn the whole
+            # budget in receive timeouts instead of failing on its assertion.
+            seen = b""
+            for _ in range(budget):
+                msg = await ws.receive(timeout=5)
+                if msg.type != web.WSMsgType.BINARY:
+                    continue
+                seen += msg.data
+                if needle in seen or b"REDACTED" in seen:
+                    break
+            return seen
+
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/verbatim") as ws:
+                # Split the literal in the TYPED line so the shell's echo of it
+                # cannot satisfy the needle — only the printf's real output joins
+                # the halves. Asserting on the echo would prove far less: it
+                # never reaches the redactors' notion of a credential either way.
+                await ws.send_bytes(f"printf '{key[:13]}''{key[13:]}\\n'\n".encode())
+                live = await _drain(ws, key.encode())
+                await ws.close()
+            assert key.encode() in live
+            assert b"REDACTED" not in live
+
+            # Reconnect: the ring buffer is replayed as the same raw bytes.
+            async with client.ws_connect("/api/ws/terminal/verbatim") as ws:
+                replay = await _drain(ws, key.encode())
+                await ws.close()
+            assert key.encode() in replay
+            assert b"REDACTED" not in replay
+            await terminal._kill_session(registry["verbatim"])
+
+    @pytest.mark.asyncio
+    async def test_multibyte_output_survives_read_boundaries(self, monkeypatch, tmp_path):
+        """A PTY read ends wherever the kernel had bytes, so a multi-byte character
+        is routinely split across two reads. Nothing decodes server-side, so both
+        halves are forwarded and the client's own decoder joins them.
+
+        Decoding each read independently (which scanning the stream required)
+        turned every such split into two U+FFFD, permanently corrupting CJK,
+        emoji and a TUI's box-drawing glyphs — the client cannot recover the
+        original bytes from a replacement char.
+
+        The payload is deliberately ONE line with no newline in it, because a
+        shell that writes line by line hands the reader whole lines and every
+        read then lands on a character boundary by accident — an earlier version
+        of this test passed against the corrupting code for exactly that reason.
+        A single unbroken run of 3-byte characters longer than one 4096-byte read
+        cannot be split cleanly, since 4096 is not a multiple of 3."""
+        char = "中"
+        count = 3000  # 9000 bytes: at least two reads, neither aligned
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/multibyte") as ws:
+                await ws.send_bytes(
+                    f"printf '{char}%.0s' $(seq 1 {count}); printf 'DO''NE\\n'\n".encode()
+                )
+                seen = b""
+                for _ in range(400):
+                    msg = await ws.receive(timeout=10)
+                    if msg.type != web.WSMsgType.BINARY:
+                        continue
+                    seen += msg.data
+                    if b"DONE" in seen:
+                        break
+                await ws.close()
+            await terminal._kill_session(registry["multibyte"])
+
+        assert "\ufffd".encode() not in seen, "a read boundary corrupted a character"
+        assert seen.count(char.encode()) >= count
 
     @pytest.mark.asyncio
     async def test_submitted_line_invalidates_the_cwd_memo(self, monkeypatch, tmp_path):

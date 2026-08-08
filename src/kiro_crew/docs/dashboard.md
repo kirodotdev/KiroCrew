@@ -164,6 +164,20 @@ value when the backend has reported one, else the terminal's spawn directory
 — and wrapped in a code fence so the agent reads it as literal output. Copy
 places the raw selection on the clipboard.
 
+**Credential redaction.** The terminal shows exactly what your shell wrote.
+The live stream is not scanned, so a token you printed on purpose
+(`gh auth token`), a device-code login or presigned URL you are mid-flow on,
+and high-entropy build output such as an npm `integrity sha512-…` line all
+render as themselves. Nothing is gained by hiding them here: this panel is
+your own interactive shell, and anything that could read it could read the
+terminal app next to it.
+
+The scan runs where the output actually leaves your machine's screen — the
+selection hand-off above, the one path by which terminal output reaches the
+agent. That re-scan is unconditional, has no setting to disable it, and reads
+the whole contiguous selection rather than one 4096-byte read at a time, so a
+credential split across a read boundary cannot slip past it.
+
 ## Dark/Light Theme
 
 Toggle via the theme button in the topbar. Persists across sessions.
