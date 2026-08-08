@@ -111,6 +111,7 @@ from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
     MONITOR_START_SCHEMA,
     MONITOR_UPDATE_SCHEMA,
+    OPS_MISSION_CONTROL_ALLOWED_CALLS,
     REGISTER_HOOK_SCHEMA,
     SEARCH_CHAT_HISTORY_SCHEMA,
     SELECT_CREW_SCHEMA,
@@ -2334,6 +2335,73 @@ def _list_tools() -> list[dict[str, Any]]:
                     "summary": {"type": "string", "description": "One-paragraph summary"},
                 },
                 "required": ["owner", "repo", "number"],
+            },
+        },
+        {
+            "name": "ops_mission_control_api",
+            "description": (
+                "Call the Ops Mission Control app's HTTP API with the gateway's "
+                "own credential. This is the ONLY way an agent session reaches "
+                "that API: raw HTTP has no credential and is refused with 403, "
+                "and no CLI or environment variable provides one. Use it for "
+                "every call an ops-mission-control SOP asks for — reading "
+                "state/signals/incidents/rotation/ledger, claiming and "
+                "transitioning incidents, arming the rotation, posting ledger "
+                "entries. Paths are rooted at the app base (pass '/state', not "
+                "the full URL) and only the SOP surface is reachable: "
+                "provider configuration, settings, webhook ingest and the "
+                "human proposal-decision routes are deliberately not callable "
+                "from here."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST"],
+                        "description": "HTTP method",
+                    },
+                    "path": {
+                        "type": "string",
+                        "enum": [
+                            "/state",
+                            "/signals",
+                            "/incidents",
+                            "/handover",
+                            "/rotation",
+                            "/ledger",
+                            "/ledger/contradictions",
+                            "/dispatch",
+                            "/incident/transition",
+                            "/incident/claim",
+                            "/incident/action",
+                            "/rotation/arm",
+                            "/ledger/hygiene",
+                        ],
+                        "description": (
+                            "API path relative to /api/apps/ops-mission-control. "
+                            "GET: /state /signals /incidents /handover /rotation "
+                            "/ledger /ledger/contradictions. POST: /dispatch "
+                            "/incident/transition /incident/claim /incident/action "
+                            "/rotation/arm /ledger /ledger/hygiene."
+                        ),
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional query string without the leading '?', GET only "
+                            "— e.g. 'status=investigating' or 'id=INV-42' on /incidents"
+                        ),
+                    },
+                    "body_json": {
+                        "type": "string",
+                        "description": (
+                            "JSON object for POST bodies, serialized as a string — "
+                            "e.g. '{\"incident_id\": \"INV-42\", \"to\": \"resolved\"}'"
+                        ),
+                    },
+                },
+                "required": ["method", "path"],
             },
         },
     ]
@@ -6218,6 +6286,50 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"Recorded investigation for {_ir_ref}: status `{_ir_body['status']}`, "
             f"verdict `{_ir_verdict}`. It now shows on the item's Issue Radar card."
         )
+
+    if name == "ops_mission_control_api":
+        # Args are validated, enum-checked and pair-checked (custom validator)
+        # by _validate_args via MCP_CORE_SCHEMAS. The pair is re-checked here
+        # against the same frozen allowlist anyway: this allowlist is the whole
+        # authorization story for the tool — the gateway admits these paths for
+        # internal-secret callers, and this handler is the only internal-secret
+        # caller reachable from an agent session — so the check must not depend
+        # on a schema lookup wired somewhere else staying wired.
+        _omc_method = args["method"]
+        _omc_path = args["path"]
+        if (_omc_method, _omc_path) not in OPS_MISSION_CONTROL_ALLOWED_CALLS:
+            return (
+                f"Error: {_omc_method} {_omc_path} is not part of the "
+                "ops-mission-control agent surface."
+            )
+        _omc_body: dict[str, Any] = {}
+        _omc_body_raw = args.get("body_json") or ""
+        if _omc_body_raw:
+            try:
+                _omc_parsed = json.loads(_omc_body_raw)
+            except (json.JSONDecodeError, ValueError):
+                return "Error: body_json is not valid JSON."
+            if not isinstance(_omc_parsed, dict):
+                return "Error: body_json must encode a JSON object."
+            _omc_body = _omc_parsed
+        _omc_query = args.get("query") or ""
+        _omc_url = "/api/apps/ops-mission-control" + _omc_path
+        if _omc_query:
+            _omc_url += "?" + _omc_query
+        _omc_resp = _get(_omc_url) if _omc_method == "GET" else _post(_omc_url, _omc_body)
+        # Serialize compactly and redact on the way OUT: signals, incident
+        # titles and ledger entries carry text from external monitoring
+        # systems and prior LLM turns, so a credential or exfil URL quoted
+        # into one would otherwise flow straight into this agent's context.
+        _omc_text = json.dumps(_omc_resp, ensure_ascii=False, default=str)
+        _omc_cap = 60_000
+        if len(_omc_text) > _omc_cap:
+            _omc_text = (
+                _omc_text[:_omc_cap]
+                + f"\n… truncated ({len(_omc_text)} chars total). Narrow the "
+                "call (e.g. query filters) to see the rest."
+            )
+        return redact(_omc_text)
 
     if name == "set_project":
         args = validate_tool_args(args, SET_PROJECT_SCHEMA)

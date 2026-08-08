@@ -17,21 +17,19 @@ must not run this five times.
 
 ## Authenticate first
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"; TOKEN="${URL#*token=}"
-```
-
-Reuse `$BASE`/`$TOKEN` for every call below and pass `?token=$TOKEN`. Never hardcode a
-port and never hunt for a token elsewhere — see SKILL.md § Calling the API for why.
+Every app API call goes through the `ops_mission_control_api` MCP tool — it
+carries the gateway's own credential and always reaches this instance. Never
+call the API over raw HTTP and never hunt for a credential — see SKILL.md
+§ Calling the API for why. Paths below are relative to the app base, exactly
+as the tool takes them.
 
 ## Steps
 
 1. Run the hygiene pass. It is an HTTP endpoint, not a Python call — there is no
    interpreter for you to call `ledger.hygiene()` from:
 
-   ```bash
-   curl -sS -X POST "$GATEWAY/api/apps/ops-mission-control/ledger/hygiene"
+   ```
+   ops_mission_control_api(method="POST", path="/ledger/hygiene")
    ```
 
    It returns `{"summary": {"deduped": N, "decayed": N, "demoted": N, "pruned": N}, ...}`
@@ -55,8 +53,8 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
 2. Resolve contradictions. Do NOT scan the ledger by eye — the pass already found them
    for you, and `summary.contradictions` in step 1's response is the count:
 
-   ```bash
-   curl -s "$BASE/api/apps/ops-mission-control/ledger/contradictions?token=$TOKEN"
+   ```
+   ops_mission_control_api(method="GET", path="/ledger/contradictions")
    ```
 
    Each result is a pair of entries sharing a fingerprint but claiming DIFFERENT fixes,
@@ -90,12 +88,11 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
    merges into the existing entry — fingerprints union, `use_count` carries forward,
    and trust upgrades to `verified`. It can never weaken what is already known.
 
-   ```bash
-   curl -sS -X POST "$GATEWAY/api/apps/ops-mission-control/ledger" \
-     -H 'Content-Type: application/json' \
-     -d '{"pattern": "<byte-identical to the stored pattern>",
-          "fix": "<byte-identical to the stored fix>",
-          "confidence": "high", "trust": "verified"}'
+   ```
+   ops_mission_control_api(method="POST", path="/ledger",
+     body_json='{"pattern": "<byte-identical to the stored pattern>",
+                 "fix": "<byte-identical to the stored fix>",
+                 "confidence": "high", "trust": "verified"}')
    ```
 
    Change a single character of `pattern` or `fix` and you get a NEW entry rather
