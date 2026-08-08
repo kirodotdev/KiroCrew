@@ -90,6 +90,91 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("java -version") is True
         assert is_read_only_bash("some-tool --help") is True
 
+    def test_allowlisted_verb_may_not_write_via_its_own_output_flag(self):
+        """A write does not need a shell redirect to be a write.
+
+        `_UNSAFE_SHELL_RE` only sees `>`, so a program's own output flag
+        reached the filesystem while the command still classified read-only.
+        """
+        assert is_read_only_bash("tree -o /tmp/pwned") is False
+        assert is_read_only_bash("git diff --output=/tmp/pwned") is False
+        assert is_read_only_bash("git show --output=/tmp/pwned") is False
+        assert is_read_only_bash("git log --output=/tmp/pwned") is False
+        # `file -C` compiles a magic file; `file -c` only prints one.
+        assert is_read_only_bash("file -C -m /tmp/magic.src") is False
+        assert is_read_only_bash("file -c") is True
+
+    def test_pipe_target_may_not_write_via_its_own_output_flag(self):
+        """The pipe allowlist matched only the filter's leading verb."""
+        assert is_read_only_bash("cat f | sort -o /tmp/pwned") is False
+        assert is_read_only_bash("cat f | sort --output=/tmp/pwned") is False
+        # Bundled short cluster supplies the same flag.
+        assert is_read_only_bash("cat f | sort -uo /tmp/pwned") is False
+        # `uniq INPUT OUTPUT` writes its second operand.
+        assert is_read_only_bash("cat f | uniq /tmp/in /tmp/pwned") is False
+        # The read-only spellings of the same filters still pass.
+        assert is_read_only_bash("cat f | sort") is True
+        assert is_read_only_bash("cat f | sort -u") is True
+        assert is_read_only_bash("cat f | uniq -c") is True
+
+    def test_allowlisted_git_verb_may_not_change_a_ref_or_remote(self):
+        """`git branch`/`git tag`/`git remote` have read and write modes.
+
+        The allowlist entries are the listing forms, but a prefix match
+        admitted the destructive spellings under the same verb.
+        """
+        # Ref deletion, rename and copy.
+        assert is_read_only_bash("git branch -D release") is False
+        assert is_read_only_bash("git branch -d release") is False
+        assert is_read_only_bash("git branch -m main hijacked") is False
+        # A bare operand names a ref to create.
+        assert is_read_only_bash("git branch newbranch") is False
+        assert is_read_only_bash("git tag sometag") is False
+        assert is_read_only_bash("git tag -d v1.0.0") is False
+        assert is_read_only_bash("git tag -m msg v1.0.0") is False
+        # Remote configuration: `set-url` repoints where pushes go.
+        assert is_read_only_bash("git remote set-url origin https://evil.example/x.git") is False
+        assert is_read_only_bash("git remote add evil https://evil.example/x.git") is False
+        assert is_read_only_bash("git remote remove origin") is False
+        assert is_read_only_bash("git remote rename origin upstream") is False
+
+    def test_allowlisted_git_verb_may_not_launch_an_editor_or_diff_driver(self):
+        """Both spellings hand control to a program the caller did not name."""
+        # `--edit-description` always opens $EDITOR.
+        assert is_read_only_bash("git branch --edit-description") is False
+        # An external diff driver comes from repo config / .gitattributes.
+        assert is_read_only_bash("git diff --ext-diff") is False
+        assert is_read_only_bash("git log --ext-diff") is False
+
+    def test_read_only_git_inspection_still_auto_approves(self):
+        """The listing and inspection forms must not regress into a prompt."""
+        assert is_read_only_bash("git branch") is True
+        assert is_read_only_bash("git branch -a") is True
+        assert is_read_only_bash("git branch -vv") is True
+        assert is_read_only_bash("git branch --list") is True
+        assert is_read_only_bash("git branch --show-current") is True
+        assert is_read_only_bash("git branch --merged") is True
+        # A bare operand that is the value of a read-only flag is not a new ref.
+        assert is_read_only_bash("git branch --contains HEAD") is True
+        assert is_read_only_bash("git tag") is True
+        assert is_read_only_bash("git tag -l") is True
+        assert is_read_only_bash("git tag -l v1.*") is True
+        assert is_read_only_bash("git remote") is True
+        assert is_read_only_bash("git remote -v") is True
+        assert is_read_only_bash("git remote get-url origin") is True
+
+    def test_side_effect_check_is_case_insensitive_on_the_verb_only(self):
+        """The verb is matched like the allowlist does; flags keep their case.
+
+        The allowlist lowercases before comparing, so an odd verb spelling
+        clears it — the side-effect table has to fold the verb the same way,
+        while `-C` and `-c` must stay distinct.
+        """
+        assert is_read_only_bash("FILE -C -m /tmp/magic.src") is False
+        assert is_read_only_bash("GIT BRANCH -D release") is False
+        assert is_read_only_bash("ls -o") is True
+        assert is_read_only_bash("grep -o pattern file") is True
+
     def test_compound_read_commands(self):
         assert is_read_only_bash("git status && git log --oneline -3") is True
         assert is_read_only_bash("ls -la; echo done") is True
@@ -112,9 +197,7 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("ls -la 2>&1") is True
         # Compound + pipe chains with a /dev/null sink stay read-only.
         assert is_read_only_bash("grep -r foo . 2>/dev/null | head -20") is True
-        assert (
-            is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
-        )
+        assert is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
 
     def test_devnull_does_not_unlock_write_commands(self):
         """The /dev/null exemption must not allowlist a write/exec command."""
