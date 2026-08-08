@@ -519,6 +519,7 @@ export function ChatPanel() {
             checked={preventSleep}
             onChange={v => preventSleepMut.mutate(v)}
             disabled={!mcQ.isSuccess}
+            configKey="dashboard.prevent_sleep"
           />
         </SettingsCard>
       </SettingsSection>
@@ -612,6 +613,7 @@ export function ChatPanel() {
                 .catch(() => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold')))
             }
             disabled={!mcQ.isSuccess}
+            configKey="session.autocompact_pct"
           />
         </SettingsCard>
       </SettingsSection>

@@ -28,11 +28,13 @@ interface SettingsToggleProps {
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
+  /** Backend config key this toggle writes (e.g. 'telemetry.beacon_enabled'). Used by the settings registry and SettingRef linking. */
+  configKey?: string
 }
 
-export function SettingsToggle({ label, description, checked, onChange, disabled }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, checked, onChange, disabled, configKey }: SettingsToggleProps) {
   return (
-    <Clickable data-setting-label={label} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={() => onChange(!checked)} disabled={disabled}>
+    <Clickable data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={() => onChange(!checked)} disabled={disabled}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
         {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
@@ -51,9 +53,9 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
 /* ── Select ── */
 
 /** Shared field wrapper: label + optional hint + optional description */
-function SettingsField({ label, description, hint, children }: { label: string; description?: string; hint?: string; children: React.ReactNode }) {
+function SettingsField({ label, description, hint, configKey, children }: { label: string; description?: string; hint?: string; configKey?: string; children: React.ReactNode }) {
   return (
-    <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
+    <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
         <span className="text-[13px] font-semibold text-text">{label}</span>
         {hint && <InfoTip text={hint} />}
@@ -76,11 +78,13 @@ interface SettingsSelectProps {
   /** Optional action at top of dropdown (e.g. "+ New workspace…") */
   action?: { label: string; onSelect: () => void }
   disabled?: boolean
+  /** Backend config key this select writes. */
+  configKey?: string
 }
 
-export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled }: SettingsSelectProps) {
+export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey }: SettingsSelectProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       <SimpleSelect
         options={options}
         optionLabels={optionLabels}
@@ -112,11 +116,13 @@ interface SettingsInputProps {
   disabled?: boolean
   multiline?: boolean
   'aria-label'?: string
+  /** Backend config key this input writes. */
+  configKey?: string
 }
 
-export function SettingsInput({ label, description, hint, value, onChange, onBlur, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel }: SettingsInputProps) {
+export function SettingsInput({ label, description, hint, value, onChange, onBlur, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       {multiline ? (
         <textarea
           value={value}
@@ -197,11 +203,13 @@ interface SettingsStepperProps {
   onReset?: () => void
   suffix?: string
   disabled?: boolean
+  /** Backend config key this stepper writes. */
+  configKey?: string
 }
 
-export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, suffix = '', disabled }: SettingsStepperProps) {
+export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, suffix = '', disabled, configKey }: SettingsStepperProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -241,11 +249,13 @@ interface SettingsButtonGroupProps {
   options: { value: string; label: string; icon?: React.ReactNode }[]
   onChange: (value: string) => void
   disabled?: boolean
+  /** Backend config key this button group writes. */
+  configKey?: string
 }
 
-export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled }: SettingsButtonGroupProps) {
+export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled, configKey }: SettingsButtonGroupProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       {/* Segmented control: a RECESSED track (`bg-accent`) holding a RAISED
           selected thumb (`bg-elevated` + border + shadow).
 

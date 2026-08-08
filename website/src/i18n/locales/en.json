@@ -4356,6 +4356,18 @@
       "select": "Select",
       "workspace_name": "Workspace name",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "Environment variable {{key}}",
+      "envVarDescription": "Set this environment variable before starting Kiro Crew.",
+      "envVarUnsetDescription": "Unset this environment variable before starting Kiro Crew.",
+      "fileOnlyDescription": "Set this value with the CLI command below.",
+      "copied": "Copied!",
+      "copyFailed": "Copy failed",
+      "copyCommand": "Copy command",
+      "orEditConfigJson": "Alternatively, edit ~/.kiro/crew/config.json directly.",
+      "openSettingsAriaLabel": "Open {{key}} in Settings → {{tab}}",
+      "fileSettingAriaLabel": "File-only setting {{key}}"
     }
   },
   "hooks": {
@@ -5740,7 +5752,8 @@
         "reembedding": "Re-embedding memories…",
         "subtitle": "Runs locally. Changing it re-embeds stored memories in the background.",
         "title": "Embedding Model",
-        "will_revert": "Empty — this will revert to the bundled model."
+        "will_revert": "Empty — this will revert to the bundled model.",
+        "err_env_override_with_ref": "<settingRef/> is set and overrides this setting. Unset it to change the model here."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "Agent for pool processes. Empty uses default agent. Restart required.",
@@ -5928,7 +5941,9 @@
         "select_a_skill_to_view_its_files": "Select a skill to view its files",
         "size_no_deliveries": "{{size}} · not delivered in the last 30 days",
         "skill_md": "SKILL.md",
-        "skills": "Skills"
+        "skills": "Skills",
+        "auto_create_hint": "Kiro Crew can also draft skills from completed sessions automatically — off by default, controlled by <settingRef/>.",
+        "approval_required_hint": "Candidates wait here until you approve them — required by <settingRef/>."
       },
       "steeringTab": {
         "api_standards_md": "api-standards.md",
@@ -6271,9 +6286,9 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Fuzzy filter (substring match)",
       "loading": "Loading…",
-      "no_archives_archives_are_created_when_session_fi": "No archives. Archives are created when session files are rotated (>2MB) or compacted.",
       "reload": "Reload",
-      "select_an_archive_to_view_its_contents": "Select an archive to view its contents."
+      "select_an_archive_to_view_its_contents": "Select an archive to view its contents.",
+      "no_archives_with_compaction_hint": "No archives. Archives are created when session files are rotated (>2MB) or compacted. Auto-compaction is controlled by <settingRef/>."
     },
     "sessionStorage": {
       "back_to_disk": "System · Performance › Disk",
@@ -6644,7 +6659,6 @@
         "enable_it_to_let_this_gateway_open_ssh_tunnels_t": "Enable it to let this gateway open tunnels (SSH or AWS SSM) to your remote crews and switch\n          between them from the top tab bar.",
         "enabled": "enabled",
         "enabled_but_not_active_yet_restart_the_gateway": "Enabled, but not active yet. Restart the gateway (",
-        "equivalent_cli": "Equivalent CLI:",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  leave blank for standard installs",
         "host_1_alias": "host-1-alias",
         "instances_stay_warm_live_tunnel_at_once_the_rest": "remote crews stay warm (live tunnel) at once; the rest reconnect on\n                demand. Tune with",
@@ -6678,14 +6692,14 @@
         "ssm_target_instance_id": "SSM target (instance id)",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "The gateway opens a tunnel (SSH or AWS SSM) and mints a short-lived token on connect.\n        The local forward port mirrors the remote port, so each connected remote crew must\n        use a distinct remote port.",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "The user the remote gateway runs as — SSM commands run via sudo -u. Use ubuntu on Ubuntu AMIs.",
-        "then": "then",
         "to_fully_tear_down_any_tunnels_still_running_fro": "to fully tear down any tunnels still running from before.",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "to start the tunnel manager and activate remote crew switching.",
         "token_ttl": "Token TTL",
         "ttl": "· ttl",
         "tunnels_via_aws_ssm_start_session_no_inbound_ssh": "Tunnels via aws ssm start-session — no inbound SSH port or key needed. Requires the AWS CLI, the session-manager-plugin, and ssm:StartSession permission.",
         "up_to": "Up to",
-        "use_an_absolute_path_no": ").\n            Use an absolute path (no"
+        "use_an_absolute_path_no": ").\n            Use an absolute path (no",
+        "enable_via_setting": "Alternatively, set <settingRef/>, then run <restartCmd/>."
       },
       "mcpPoolableServers": {
         "blocked": "blocked",
@@ -7028,7 +7042,6 @@
       "daily_trend_point": "{{date}} · cold {{cold}} · warm {{warm}} · {{count}} starts",
       "days": "days.",
       "distribution_col": "Distribution",
-      "enable_with": "Enable with",
       "fault_rate": "Fault rate",
       "group_by": "Group by",
       "growth_col": "Growth",
@@ -7040,7 +7053,6 @@
       "mean_col": "Mean",
       "mean_credits_by_occupancy": "Mean credits per turn, bucketed by context used",
       "measured_from_token_records": "Measured locally from the sessions listed here over the last {{days}}d — kept regardless of the telemetry switch",
-      "metrics_stay_local": ". Metrics stay local (",
       "min_col": "min",
       "min_max": "min {{min}} · max {{max}}",
       "model_col": "Model",
@@ -7050,7 +7062,6 @@
       "no_startups_recorded": "No startups recorded in this window",
       "no_telemetry_recorded_yet_in_the_last": "No telemetry recorded yet in the last",
       "no_turns_yet": "No turns yet",
-      "nothing_leaves_this_machine": ") — nothing leaves this machine.",
       "occupancy_p50": "Occupancy (p50)",
       "occupancy_p90": "Occupancy (p90)",
       "otel_has_no_per_conversation_split": "OTEL histograms carry no session id, so these are whole-process figures — turn latency cannot be attributed to a single conversation from this store.",
@@ -7103,7 +7114,8 @@
       "warm_start_p50": "Warm start (p50)",
       "was_value": "was {{value}}",
       "window_last": "OTEL sections · window: last",
-      "window_tokens_col": "Window (tokens)"
+      "window_tokens_col": "Window (tokens)",
+      "off_body": "Enable with <settingRef/>. Metrics stay local (<metricsDir/>) — nothing leaves this machine."
     },
     "terminalPopoutFrame": {
       "return": "Return to dock",
@@ -7354,6 +7366,7 @@
       "present": "present,",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
-    }
+    },
+    "sessionMemoryCard": {}
   }
 }

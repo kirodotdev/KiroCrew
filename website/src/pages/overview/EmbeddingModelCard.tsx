@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Cpu, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Input, Badge } from '../../components/ui'
 import Modal from '../../components/Modal'
 import { i18nT } from '../../i18n/t'
+import { SettingRef } from '../../components/settingRef/SettingRef'
 
 /** Live re-embed progress, mirrored from the backend's ReembedProgress. */
 export interface ReembedState {
@@ -119,6 +121,22 @@ export function embedModelErrorMessage(err: unknown): string {
   }
 }
 
+/** Extract the machine-readable error code from an API error (for conditional rendering). */
+export function embedModelErrorCode(err: unknown): string {
+  let obj: Record<string, unknown> = {}
+  if (err != null && typeof err === 'object') {
+    obj = err as Record<string, unknown>
+    const raw = obj.body
+    if (typeof raw === 'string' && raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') obj = { ...obj, ...parsed }
+      } catch { /* ignore */ }
+    }
+  }
+  return typeof obj.code === 'string' ? obj.code : ''
+}
+
 const POLL_MS = 2000
 
 export default function EmbeddingModelCard() {
@@ -126,7 +144,7 @@ export default function EmbeddingModelCard() {
   const [path, setPath] = useState('')
   const [touched, setTouched] = useState(false)
   const [checking, setChecking] = useState(false)
-  const [checked, setChecked] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [checked, setChecked] = useState<{ ok: boolean; msg: string; code?: string } | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [applying, setApplying] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -175,7 +193,7 @@ export default function EmbeddingModelCard() {
       const mb = Math.round((r.size_bytes ?? 0) / (1024 * 1024))
       setChecked({ ok: true, msg: i18nT('pages.overview.embedModel.check_ok', { mb }) })
     } catch (e) {
-      setChecked({ ok: false, msg: embedModelErrorMessage(e) })
+      setChecked({ ok: false, msg: embedModelErrorMessage(e), code: embedModelErrorCode(e) })
     } finally { setChecking(false) }
   }, [path])
 
@@ -188,7 +206,7 @@ export default function EmbeddingModelCard() {
       setChecked(null)
       await load()
     } catch (e) {
-      setChecked({ ok: false, msg: embedModelErrorMessage(e) })
+      setChecked({ ok: false, msg: embedModelErrorMessage(e), code: embedModelErrorCode(e) })
     } finally { setApplying(false) }
   }, [path, load])
 
@@ -236,7 +254,18 @@ export default function EmbeddingModelCard() {
         {checked && !checking && (
           <div className={`text-[11px] mt-1.5 flex items-start gap-1 ${checked.ok ? 'text-ok' : 'text-danger'}`}>
             {checked.ok ? <CheckCircle className="lucide-inline" /> : <XCircle className="lucide-inline" />}
-            <span>{checked.msg}</span>
+            <span>
+              {checked.code === 'env_override_active' ? (
+                <Trans
+                  i18nKey="pages.overview.embedModel.err_env_override_with_ref"
+                  components={{
+                    settingRef: <SettingRef kind="env" configKey="KIROCREW_EMBED_MODEL_PATH" valuePlaceholder="path" envIntent="unset" />,
+                  }}
+                />
+              ) : (
+                checked.msg
+              )}
+            </span>
           </div>
         )}
 

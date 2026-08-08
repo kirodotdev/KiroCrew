@@ -59,7 +59,11 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return web.json_response(
-            {"error": "auto-nudge disabled (KIROCREW_AUTONUDGE not set)"}, status=503
+            {
+                "error": "auto-nudge disabled (KIROCREW_AUTONUDGE not set)",
+                "code": "autonudge_disabled",
+            },
+            status=503,
         )
     state: DashboardState = request.app["state"]
     try:
@@ -116,7 +120,13 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
     """
     svc = _autonudge_get()
     if svc is None:
-        return web.json_response({"error": "auto-nudge disabled"}, status=503)
+        return web.json_response(
+            {
+                "error": "auto-nudge disabled",
+                "code": "autonudge_disabled",
+            },
+            status=503,
+        )
     loop_id = request.match_info["loop_id"]
     try:
         body = await request.json()
@@ -142,7 +152,13 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
     """DELETE /api/autonudge/{loop_id} — stop and remove a loop."""
     svc = _autonudge_get()
     if svc is None:
-        return web.json_response({"error": "auto-nudge disabled"}, status=503)
+        return web.json_response(
+            {
+                "error": "auto-nudge disabled",
+                "code": "autonudge_disabled",
+            },
+            status=503,
+        )
     loop_id = request.match_info["loop_id"]
     # Capture slot_key for audit before removal (loop is gone after remove()).
     existing = next((lp for lp in svc.list_all() if lp.id == loop_id), None)

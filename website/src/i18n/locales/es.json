@@ -6123,6 +6123,18 @@
       "select": "Seleccionar",
       "workspace_name": "Nombre del espacio de trabajo",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "envVarAriaLabel": "Variable de entorno {{key}}",
+      "envVarDescription": "Establece esta variable de entorno antes de iniciar Kiro Crew.",
+      "envVarUnsetDescription": "Elimina esta variable de entorno antes de iniciar Kiro Crew.",
+      "fileOnlyDescription": "Establece este valor con el siguiente comando de CLI.",
+      "copied": "¡Copiado!",
+      "copyFailed": "Error al copiar",
+      "copyCommand": "Copiar comando",
+      "orEditConfigJson": "Alternativamente, edita ~/.kiro/crew/config.json directamente.",
+      "openSettingsAriaLabel": "Abrir {{key}} en Configuración → {{tab}}",
+      "fileSettingAriaLabel": "Configuración solo de archivo {{key}}"
     }
   },
   "hooks": {
@@ -8438,7 +8450,8 @@
         "reembedding": "Regenerando embeddings…",
         "subtitle": "Se ejecuta localmente. Cambiarlo vuelve a generar los embeddings de las memorias en segundo plano.",
         "title": "Modelo de embeddings",
-        "will_revert": "Vacío: volverá al modelo incluido."
+        "will_revert": "Vacío: volverá al modelo incluido.",
+        "err_env_override_with_ref": "<settingRef/> está configurada y anula esta configuración. Desactívala para cambiar el modelo aquí."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "Agente para los procesos del pool. Si está vacío, se usa el agente predeterminado. Requiere reinicio.",
@@ -8730,7 +8743,9 @@
         "this_skill_changed_after_this_update_was_written": "Este skill cambió después de escribirse esta actualización, así que aplicarla ahora desharía esos cambios más nuevos. La aprobación está bloqueada — descarta este candidato y se propondrá una actualización nueva contra la versión actual.",
         "update": "Actualizar",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "espacio de trabajo"
+        "workspace": "espacio de trabajo",
+        "auto_create_hint": "Kiro Crew también puede crear borradores de habilidades a partir de sesiones completadas automáticamente — desactivado por defecto, controlado por <settingRef/>.",
+        "approval_required_hint": "Los candidatos esperan aquí hasta que los apruebes — requerido por <settingRef/>."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenciones markdown siempre activas que se inyectan en cada sesión. Los archivos globales están en ~/.kiro/steering y aplican en todas partes; los archivos del espacio de trabajo están en <project>/.kiro/steering y aplican solo a ese proyecto.",
@@ -9250,11 +9265,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "Filtro aproximado (coincidencia parcial)",
       "loading": "Cargando…",
-      "no_archives_archives_are_created_when_session_fi": "No hay archivos. Los archivos se crean cuando los ficheros de sesión se rotan (>2MB) o se compactan.",
       "no_matches_for_query": "No hay resultados para \"{{query}}\".",
       "reload": "Recargar",
       "select_an_archive_to_view_its_contents": "Selecciona un archivo para ver su contenido.",
-      "truncated_showing_first_200kb": "… truncado (se muestran los primeros 200KB) …"
+      "truncated_showing_first_200kb": "… truncado (se muestran los primeros 200KB) …",
+      "no_archives_with_compaction_hint": "No hay archivos. Los archivos se crean cuando los ficheros de sesión se rotan (>2MB) o se compactan. La compactación automática se controla mediante <settingRef/>."
     },
     "sessionStorage": {
       "back_to_disk": "Sistema · Rendimiento › Disco",
@@ -9819,7 +9834,6 @@
         "enabled": "activado",
         "enabled_but_not_active_yet_restart_the_gateway": "Activado, pero aún no está activo. Reinicia el gateway (",
         "enabling": "Activando…",
-        "equivalent_cli": "CLI equivalente:",
         "failed_to_add_remote_crew": "No se pudo añadir el crew remoto",
         "failed_to_load_remote_crews": "No se pudieron cargar los crews remotos",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  déjalo en blanco para instalaciones estándar",
@@ -9857,7 +9871,6 @@
         "ssm_target_instance_id": "Destino SSM (id de instancia)",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "La pasarela abre un túnel (SSH o AWS SSM) y emite un token de corta duración al conectar.\n        El puerto de reenvío local refleja el puerto remoto, por lo que cada crew remoto conectado\n        debe usar un puerto remoto distinto.",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "El usuario con el que se ejecuta la pasarela remota: los comandos SSM se ejecutan con sudo -u. Usa ubuntu en AMI de Ubuntu.",
-        "then": "luego",
         "to_fully_tear_down_any_tunnels_still_running_fro": "para cerrar por completo los túneles que sigan en ejecución desde antes.",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "para iniciar el gestor de túneles y activar el cambio entre crews remotos.",
         "token_left": "· token: quedan {{time}}",
@@ -9867,7 +9880,8 @@
         "unknown_error": "error desconocido",
         "up_to": "Hasta",
         "update_setting_failed": "No se pudo actualizar el ajuste: {{error}}",
-        "use_an_absolute_path_no": ").\n            Usa una ruta absoluta (sin"
+        "use_an_absolute_path_no": ").\n            Usa una ruta absoluta (sin",
+        "enable_via_setting": "Alternativamente, configura <settingRef/> y luego ejecuta <restartCmd/>."
       },
       "mcpPoolableServers": {
         "blocked": "bloqueado",
@@ -10543,7 +10557,6 @@
       "daily_trend_point": "{{date}} · en frío {{cold}} · en caliente {{warm}} · {{count}} inicios",
       "days": "días.",
       "distribution_col": "Distribución",
-      "enable_with": "Actívala con",
       "fault_rate": "Tasa de fallos",
       "group_by": "Agrupar por",
       "growth_col": "Crecimiento",
@@ -10555,7 +10568,6 @@
       "mean_col": "Media",
       "mean_credits_by_occupancy": "Créditos medios por turno, agrupados por contexto usado",
       "measured_from_token_records": "Medido localmente a partir de las sesiones aquí listadas en los últimos {{days}} días — se conserva independientemente del interruptor de telemetría",
-      "metrics_stay_local": ". Las métricas se quedan en local (",
       "min_col": "mín",
       "min_max": "mín {{min}} · máx {{max}}",
       "model_col": "Modelo",
@@ -10565,7 +10577,6 @@
       "no_startups_recorded": "Sin arranques registrados en esta ventana",
       "no_telemetry_recorded_yet_in_the_last": "Aún no se ha registrado telemetría en los últimos",
       "no_turns_yet": "Sin turnos aún",
-      "nothing_leaves_this_machine": ") — nada sale de esta máquina.",
       "occupancy_p50": "Ocupación (p50)",
       "occupancy_p90": "Ocupación (p90)",
       "otel_has_no_per_conversation_split": "Los histogramas OTEL no llevan id de sesión, así que estas cifras son del proceso completo — la latencia por turno no se puede atribuir a una conversación concreta desde este almacén.",
@@ -10621,7 +10632,8 @@
       "warm_start_p50": "Arranque en caliente (p50)",
       "was_value": "antes {{value}}",
       "window_last": "Secciones OTEL · ventana: últimos",
-      "window_tokens_col": "Ventana (tokens)"
+      "window_tokens_col": "Ventana (tokens)",
+      "off_body": "Activar con <settingRef/>. Las métricas se quedan locales (<metricsDir/>) — nada sale de esta máquina."
     },
     "terminalPopoutFrame": {
       "return": "Volver al dock",
@@ -10882,7 +10894,8 @@
     "worldsPopout": {
       "hide_controls": "Ocultar los controles",
       "show_controls": "Mostrar los controles"
-    }
+    },
+    "sessionMemoryCard": {}
   },
   "privacyDisclosure": {
     "anonymousHeartbeatBody": "Como máximo uno al día. Identifica una copia instalada, no a una persona.",
@@ -10914,7 +10927,8 @@
     "shellWindowsCmdLabel": "Símbolo del sistema de Windows",
     "toggleDescription": "Se guarda para los próximos inicios.",
     "toggleLabel": "Enviar señal de uso anónima",
-    "toggleSaveFailed": "No se pudo guardar tu elección de telemetría. Vuelve a intentarlo."
+    "toggleSaveFailed": "No se pudo guardar tu elección de telemetría. Vuelve a intentarlo.",
+    "envOverrideWithSettingRef": "El heartbeat está desactivado porque <settingRef/> está configurada en este entorno. Desactívala para gestionar la telemetría aquí."
   },
   "settings": {
     "display": {

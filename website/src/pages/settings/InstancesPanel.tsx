@@ -33,6 +33,9 @@ import { removeWarm } from '../../store/instancesSlice'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration, fmtUnit } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Trans } from 'react-i18next'
+
+import { SettingRef } from '../../components/settingRef/SettingRef'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-success',
   connecting: 'bg-warning',
@@ -423,8 +426,13 @@ export function InstancesPanel() {
         </Btn>
         <ErrorNotice message={actionErr} className="mt-2" />
         <p className="mt-2 text-[12px] text-muted">
-          {i18nT('pages.settings.instancesPanel.equivalent_cli')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_config_set_instances_enabled_true')}</code> {i18nT('pages.settings.instancesPanel.then')}{' '}
-          <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>.
+          <Trans
+            i18nKey="pages.settings.instancesPanel.enable_via_setting"
+            components={{
+              settingRef: <SettingRef configKey="instances.enabled" />,
+              restartCmd: <code className="text-text">kirocrew restart</code>,
+            }}
+          />
         </p>
       </Card>
     )
@@ -529,7 +537,7 @@ export function InstancesPanel() {
               </div>
               <p className="mt-2 text-[12px] text-muted">
                 {i18nT('pages.settings.instancesPanel.up_to')} {warmCap} {i18nT('pages.settings.instancesPanel.instances_stay_warm_live_tunnel_at_once_the_rest')}{' '}
-                <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_config_set_instances_warm_set_cap_n')}</code>.
+                <SettingRef configKey="instances.warm_set_cap" />.
               </p>
             </Card>
           ) : (

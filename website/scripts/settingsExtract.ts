@@ -172,6 +172,54 @@ function extractStringProp(source: string, propName: string): string | undefined
 }
 
 /**
+ * Walk source from `start` (just after `<Component`) to find the complete
+ * props string, respecting brace depth so `>` inside `{...}` (arrow fns,
+ * ternaries) doesn't terminate the match early.
+ *
+ * Returns the props text (between the tag name and the closing `/>` or `>`),
+ * or null if we can't find a valid close within a reasonable window.
+ */
+function extractJsxProps(source: string, start: number): string | 'ceiling' | 'unbalanced' | null {
+  let depth = 0
+  let inString: '"' | "'" | '`' | null = null
+  const max = Math.min(source.length, start + 4000) // safety ceiling
+  for (let i = start; i < max; i++) {
+    const ch = source[i]
+    // Handle string state: skip characters inside quoted strings
+    if (inString !== null) {
+      if (ch === '\\') {
+        i++ // skip escaped character
+        continue
+      }
+      if (ch === inString) {
+        // Template literal: only exit if not an interpolation ${...}
+        // (We don't need to track interpolation depth because we only care
+        // about the template ending backtick at the top level of the string.)
+        inString = null
+      }
+      continue
+    }
+    // Not inside a string — check for string openers
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inString = ch
+      continue
+    }
+    if (ch === '{') {
+      depth++
+    } else if (ch === '}') {
+      depth--
+      if (depth < 0) return 'unbalanced'
+    } else if (ch === '>' && depth === 0) {
+      // Found the real closing `>` (or `/>` — the `/` is part of the preceding text)
+      return source.slice(start, i)
+    }
+  }
+  // Distinguish: hit the 4000-char ceiling vs hit EOF with unbalanced braces
+  if (depth !== 0) return 'unbalanced'
+  return 'ceiling'
+}
+
+/**
  * Extract settings entries from a single TSX source string.
  */
 export function extractFromSource(
@@ -187,16 +235,31 @@ export function extractFromSource(
   let skipped = 0
 
   for (const primitiveName of PRIMITIVES) {
-    const tagRe = new RegExp(`<${primitiveName}\\b([^>]*(?:\\n[^>]*)*)/?\\s*>`, 'g')
-    let tagMatch: RegExpExecArray | null
-    while ((tagMatch = tagRe.exec(source)) !== null) {
-      const props = tagMatch[1]
+    // Match the opening tag and capture all props until the self-closing `/>`
+    // or closing `>`. The naive `[^>]*` breaks when props contain `>` inside
+    // JSX expression braces (e.g. `onChange={v => f(v)}`). Instead, we find
+    // the tag start and then walk forward respecting brace depth to locate the
+    // true end of the opening tag.
+    const tagStartRe = new RegExp(`<${primitiveName}\\b`, 'g')
+    let tagStartMatch: RegExpExecArray | null
+    while ((tagStartMatch = tagStartRe.exec(source)) !== null) {
+      const propsStart = tagStartMatch.index + tagStartMatch[0].length
+      const props = extractJsxProps(source, propsStart)
+      if (props === 'ceiling' || props === 'unbalanced') {
+        const snippet = source.slice(propsStart, propsStart + 60).replace(/\n/g, ' ')
+        console.warn(
+          `[settingsExtract] SKIP (${props}) in ${fileName}: <${primitiveName} ${snippet}…`,
+        )
+        skipped++
+        continue
+      }
       const label = extractStringProp(props, 'label')
       if (!label) {
         skipped++
         continue
       }
       const description = extractStringProp(props, 'description')
+      const configKey = extractStringProp(props, 'configKey')
       entries.push({
         id: '',
         label,
@@ -205,6 +268,7 @@ export function extractFromSource(
         type: PRIMITIVE_MAP[primitiveName],
         occurrence: 1,
         ...(params ? { params } : {}),
+        ...(configKey ? { configKey } : {}),
       })
     }
   }

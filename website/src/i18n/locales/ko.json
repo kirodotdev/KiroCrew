@@ -5953,6 +5953,18 @@
       "select": "선택",
       "workspace_name": "워크스페이스 이름",
       "workspace_name_2": "workspace-name"
+    },
+    "settingRef": {
+      "copied": "복사됨!",
+      "copyCommand": "명령 복사",
+      "copyFailed": "복사 실패",
+      "envVarAriaLabel": "환경 변수 {{key}}",
+      "envVarDescription": "Kiro Crew를 시작하기 전에 이 환경 변수를 설정하세요.",
+      "envVarUnsetDescription": "Kiro Crew를 시작하기 전에 이 환경 변수를 해제하세요.",
+      "fileOnlyDescription": "아래 CLI 명령으로 이 값을 설정하세요.",
+      "fileSettingAriaLabel": "파일 전용 설정 {{key}}",
+      "openSettingsAriaLabel": "{{key}}을(를) 설정 → {{tab}}에서 열기",
+      "orEditConfigJson": "또는 ~/.kiro/crew/config.json 파일을 직접 편집하세요."
     }
   },
   "hooks": {
@@ -6685,7 +6697,11 @@
       "v": "v",
       "ver": "버전",
       "widgets_files_and_snippets_live_tracked_with_ver": "위젯·파일·스니펫 — 버전 기록과 함께 실시간 추적",
-      "your_artifacts": "내 아티팩트"
+      "your_artifacts": "내 아티팩트",
+      "from_your_chats": "채팅에서 가져옴",
+      "show_all_count": "모두 보기 ({{count}})",
+      "show_less": "간략히 보기",
+      "star_a_document_in_from_your_chats_to_save_it_he": "저장된 아티팩트가 아직 없습니다 — \"채팅에서 가져옴\"에서 문서에 별표를 눌러 여기에 저장하세요."
     },
     "capabilitiesPage": {
       "agent_capabilities": "에이전트 기능",
@@ -6976,7 +6992,8 @@
         "tool_call_blocked": "도구 호출이 차단되었습니다",
         "tool_stopped_responding": "도구가 응답하지 않습니다",
         "turn_interrupted": "턴이 중단되었습니다",
-        "turn_stalled": "턴이 멈춰 있습니다"
+        "turn_stalled": "턴이 멈춰 있습니다",
+        "session_busy_continuing": "세션 사용 중 · 자동으로 계속됩니다"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "색상 팔레트는 표시 설정에서 변경할 수 있습니다",
@@ -8219,7 +8236,8 @@
         "reembedding": "메모리 재임베딩 중…",
         "subtitle": "로컬에서 실행됩니다. 변경하면 저장된 메모리를 백그라운드에서 다시 임베딩합니다.",
         "title": "임베딩 모델",
-        "will_revert": "비어 있음 — 번들된 모델로 되돌아갑니다."
+        "will_revert": "비어 있음 — 번들된 모델로 되돌아갑니다.",
+        "err_env_override_with_ref": "<settingRef/>이(가) 설정되어 있어 이 설정을 재정의합니다. 여기에서 모델을 변경하려면 해제하세요."
       },
       "kiroCrewCfgTab": {
         "agent_for_pool_processes_empty_uses_default_agen": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다. 재시작이 필요합니다.",
@@ -8505,7 +8523,9 @@
         "this_skill_changed_after_this_update_was_written": "이 업데이트가 작성된 뒤 스킬이 변경되어, 지금 적용하면 그 이후의 변경 사항이 취소됩니다. 승인이 차단되었습니다 — 이 후보를 무시하면 현재 버전을 기준으로 새 업데이트가 제안됩니다.",
         "update": "업데이트",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "워크스페이스"
+        "workspace": "워크스페이스",
+        "auto_create_hint": "Kiro Crew는 완료된 세션에서 자동으로 스킬 초안을 작성할 수도 있습니다 — 기본적으로 꺼져 있으며 <settingRef/>로 제어됩니다.",
+        "approval_required_hint": "후보는 승인할 때까지 여기서 대기합니다 — <settingRef/>에 의해 필수입니다."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "모든 세션에 주입되는 상시 적용 Markdown 규약입니다. 전역 파일은 ~/.kiro/steering에 있으며 모든 곳에 적용되고, 워크스페이스 파일은 <project>/.kiro/steering에 있으며 해당 프로젝트에만 적용됩니다.",
@@ -9017,11 +9037,11 @@
     "sessionArchive": {
       "fuzzy_filter_substring_match": "퍼지 필터 (부분 문자열 일치)",
       "loading": "불러오는 중…",
-      "no_archives_archives_are_created_when_session_fi": "아카이브가 없습니다. 아카이브는 세션 파일이 순환(>2MB)되거나 압축될 때 생성됩니다.",
       "no_matches_for_query": "‘{{query}}’와(과) 일치하는 항목이 없습니다.",
       "reload": "다시 불러오기",
       "select_an_archive_to_view_its_contents": "아카이브를 선택하면 내용을 볼 수 있습니다.",
-      "truncated_showing_first_200kb": "… 잘림 (처음 200KB만 표시) …"
+      "truncated_showing_first_200kb": "… 잘림 (처음 200KB만 표시) …",
+      "no_archives_with_compaction_hint": "아카이브가 없습니다. 아카이브는 세션 파일이 순환(>2MB)되거나 압축될 때 생성됩니다. 자동 압축은 <settingRef/>에 의해 제어됩니다."
     },
     "sessionStorage": {
       "back_to_disk": "시스템 · 성능 › 디스크",
@@ -9586,7 +9606,6 @@
         "enabled": "활성화됨",
         "enabled_but_not_active_yet_restart_the_gateway": "활성화되었지만 아직 적용되지 않았습니다. 게이트웨이를 다시 시작하세요(",
         "enabling": "활성화 중…",
-        "equivalent_cli": "동등한 CLI:",
         "failed_to_add_remote_crew": "리모트 크루를 추가하지 못했습니다",
         "failed_to_load_remote_crews": "리모트 크루를 불러오지 못했습니다",
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew — 표준 설치라면 비워 두세요",
@@ -9624,7 +9643,6 @@
         "ssm_target_instance_id": "SSM 대상(인스턴스 ID)",
         "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "게이트웨이는 연결할 때 터널(SSH 또는 AWS SSM)을 열고 짧은 수명의 토큰을 발급합니다.\n 로컬 포워드 포트가 리모트 포트를 그대로 따르므로, 연결된 리모트 크루는 각각\n 서로 다른 리모트 포트를 사용해야 합니다.",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "리모트 게이트웨이가 실행되는 사용자입니다 — SSM 명령은 sudo -u를 통해 실행됩니다. Ubuntu AMI에서는 ubuntu를 사용하세요.",
-        "then": "그다음",
         "to_fully_tear_down_any_tunnels_still_running_fro": "이전부터 실행 중인 터널을 완전히 정리하려면 이렇게 하세요.",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "터널 관리자를 시작하고 리모트 크루 전환을 활성화하려면 이렇게 하세요.",
         "token_left": "· 토큰 {{time}} 남음",
@@ -9634,7 +9652,8 @@
         "unknown_error": "알 수 없는 오류",
         "up_to": "최대",
         "update_setting_failed": "설정을 업데이트하지 못했습니다: {{error}}",
-        "use_an_absolute_path_no": ").\n 절대 경로를 사용하세요(다음은 사용할 수 없습니다:"
+        "use_an_absolute_path_no": ").\n 절대 경로를 사용하세요(다음은 사용할 수 없습니다:",
+        "enable_via_setting": "또는 <settingRef/>를 설정한 후 <restartCmd/>를 실행하세요."
       },
       "mcpPoolableServers": {
         "blocked": "차단됨",
@@ -9688,7 +9707,8 @@
         "sources": "소스",
         "test": "테스트",
         "use_default": "기본값 사용",
-        "volume": "음량"
+        "volume": "음량",
+        "preset_pulse": "펄스"
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",
@@ -10309,7 +10329,6 @@
       "daily_trend_point": "{{date}} · 콜드 {{cold}} · 웜 {{warm}} · 시작 {{count}}회",
       "days": "일.",
       "distribution_col": "분포",
-      "enable_with": "활성화 방법",
       "fault_rate": "장애율",
       "group_by": "그룹 기준",
       "growth_col": "증가율",
@@ -10321,7 +10340,6 @@
       "mean_col": "평균",
       "mean_credits_by_occupancy": "컨텍스트 사용량으로 구간을 나눈 턴당 평균 크레딧",
       "measured_from_token_records": "최근 {{days}}일간 여기 표시된 세션에서 로컬로 측정 — 텔레메트리 설정과 무관하게 보관",
-      "metrics_stay_local": ". 메트릭은 로컬에 보관됩니다 (",
       "min_col": "최소",
       "min_max": "최소 {{min}} · 최대 {{max}}",
       "model_col": "모델",
@@ -10331,7 +10349,6 @@
       "no_startups_recorded": "이 기간에 기록된 시작이 없습니다",
       "no_telemetry_recorded_yet_in_the_last": "아직 기록된 텔레메트리가 없습니다. 최근",
       "no_turns_yet": "아직 턴이 없습니다",
-      "nothing_leaves_this_machine": ") — 이 머신을 벗어나는 것은 없습니다.",
       "occupancy_p50": "사용률(p50)",
       "occupancy_p90": "사용률(p90)",
       "otel_has_no_per_conversation_split": "OTEL 히스토그램에는 세션 ID가 없으므로 이 수치는 프로세스 전체 값입니다 — 이 저장소에서는 턴 지연 시간을 개별 대화에 귀속할 수 없습니다.",
@@ -10381,7 +10398,8 @@
       "warm_start_p50": "웜 스타트(p50)",
       "was_value": "이전 {{value}}",
       "window_last": "OTEL 섹션 · 기간: 최근",
-      "window_tokens_col": "윈도(토큰)"
+      "window_tokens_col": "윈도(토큰)",
+      "off_body": "<settingRef/>로 활성화하세요. 메트릭은 로컬(<metricsDir/>)에 유지되며 이 컴퓨터를 벗어나지 않습니다."
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",
@@ -10666,7 +10684,8 @@
     "shellWindowsCmdLabel": "Windows 명령 프롬프트",
     "toggleDescription": "이후 실행을 위해 저장됩니다.",
     "toggleLabel": "익명 사용 하트비트 전송",
-    "toggleSaveFailed": "텔레메트리 선택을 저장할 수 없습니다. 다시 시도하세요."
+    "toggleSaveFailed": "텔레메트리 선택을 저장할 수 없습니다. 다시 시도하세요.",
+    "envOverrideWithSettingRef": "<settingRef/>이(가) 이 환경에 설정되어 있어 하트비트가 꺼져 있습니다. 여기에서 텔레메트리를 관리하려면 해제하세요."
   },
   "settings": {
     "display": {

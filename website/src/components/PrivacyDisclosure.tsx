@@ -1,8 +1,10 @@
 import { EyeOff, HardDrive, PackageCheck, Radio } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { Toggle } from './ui'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { SettingRef } from './settingRef/SettingRef'
 
 /** Read-only CLI twins of the toggle, kept for headless hosts and for the one
  * case the toggle cannot win: a `config.local.json` overlay or the env var. */
@@ -154,9 +156,12 @@ export function TelemetryToggle() {
       )}
       {!govOverride && envOverride && (
         <p className="text-[12px] text-muted mt-1">
-          {i18nT('privacyDisclosure.envOverrideNote', {
-            envVar: statusQ.data?.env_var ?? 'KIROCREW_TELEMETRY_DISABLED',
-          })}
+          <Trans
+            i18nKey="privacyDisclosure.envOverrideWithSettingRef"
+            components={{
+              settingRef: <SettingRef kind="env" configKey={statusQ.data?.env_var ?? 'KIROCREW_TELEMETRY_DISABLED'} envIntent="unset" />,
+            }}
+          />
         </p>
       )}
       {!govOverride && !envOverride && overlayOverride && (

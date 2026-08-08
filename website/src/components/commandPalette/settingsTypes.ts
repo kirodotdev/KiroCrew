@@ -36,4 +36,10 @@ export interface SettingEntry {
    * a panel that never mounts.
    */
   params?: Record<string, string>
+  /**
+   * Backend config key this setting writes (e.g. 'telemetry.beacon_enabled').
+   * Used by SettingRef to resolve a config key to its UI deep-link.
+   * Undefined for settings that don't map to a single config path.
+   */
+  configKey?: string
 }
