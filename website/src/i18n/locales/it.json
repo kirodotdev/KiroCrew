@@ -5728,6 +5728,41 @@
       "title": "Modelli di pianificazione",
       "subtitle": "Parti da una pianificazione predefinita — la esamini e la salvi prima che venga eseguito qualcosa.",
       "use_template": "Usa il modello {{title}}"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "È anche il nome del file di configurazione e il valore passato a --agent. Solo lettere, cifre, punto, trattino e trattino basso.",
+      "blank_template": "Modello vuoto",
+      "cancel": "Annulla",
+      "copies_an_existing_template_s_tools_mcp_servers": "Copia gli strumenti, i server MCP e le skill di un modello esistente. Un modello vuoto può leggere e cercare senza chiedere, ma deve chiedere prima di scrivere file o eseguire un comando.",
+      "create_template": "Crea modello",
+      "creating": "Creazione in corso…",
+      "description": "Descrizione",
+      "duplicate_agent_template": "Duplica modello di agente",
+      "e_g_researcher": "ad es. ricercatore",
+      "failed_to_create_template": "Impossibile creare il modello",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "Lascia vuoto per mantenere il prompt del modello copiato, o per usare quello predefinito del backend su un modello vuoto. Modificabile in seguito.",
+      "name": "Nome",
+      "name_is_required": "Il nome è obbligatorio",
+      "new_agent_template": "Nuovo modello di agente",
+      "start_from": "Parti da",
+      "start_from_template": "Parti da un modello",
+      "system_prompt": "Prompt di sistema",
+      "what_this_agent_is_for": "A cosa serve questo agente",
+      "you_are_a_research_assistant": "Sei un assistente di ricerca…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "Un valore file:// punta a un file di prompt sul disco. Sostituirlo con del testo qui scollega il modello da quel file.",
+      "description": "Descrizione",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew riscrive questo modello a ogni installazione, quindi il suo prompt e la sua descrizione non sono modificabili qui. Duplicalo per ottenere una copia modificabile.",
+      "revert": "Ripristina",
+      "save": "Salva",
+      "save_failed": "Salvataggio non riuscito",
+      "saved": "Salvato",
+      "saving": "Salvataggio…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "Mostrata nel selettore degli agenti e nell’editor delle crew.",
+      "system_prompt": "Prompt di sistema",
+      "what_this_agent_is_for": "A cosa serve questo agente",
+      "you_are_a_research_assistant": "Sei un assistente di ricerca…"
     }
   },
   "hooks": {
@@ -5909,11 +5944,12 @@
       "skills": "Skill",
       "spawn_tasks_from_chat_or_cli": "Avvia attività dalla chat o dalla CLI",
       "subagents": "Subagenti",
-      "system_prompt": "Prompt di sistema",
       "tools": "Strumenti",
       "tools_2": "strumenti",
       "type_to_filter": "Digita per filtrare…",
-      "usage": "Utilizzo"
+      "usage": "Utilizzo",
+      "duplicate": "Duplica",
+      "new_template": "Nuovo modello"
     },
     "aidlc": {
       "dagView": {

@@ -5523,6 +5523,41 @@
       "subtitle": "从预设计划开始 — 在任何任务运行前，你先审阅并保存。",
       "title": "定时任务模板",
       "use_template": "使用“{{title}}”模板"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "同时也是配置文件名和传给 --agent 的值。只能用字母、数字、点、短横和下划线。",
+      "blank_template": "空白模板",
+      "cancel": "取消",
+      "copies_an_existing_template_s_tools_mcp_servers": "复制现有模板的工具、MCP 服务器和技能。空白模板可以直接读取和搜索，无需询问，但写入文件或运行命令前会先询问。",
+      "create_template": "创建模板",
+      "creating": "正在创建…",
+      "description": "描述",
+      "duplicate_agent_template": "复制代理模板",
+      "e_g_researcher": "例如 researcher",
+      "failed_to_create_template": "创建模板失败",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "留空则保留所复制模板的提示词；空白模板则使用后端默认值。之后可以修改。",
+      "name": "名称",
+      "name_is_required": "必须填写名称",
+      "new_agent_template": "新建代理模板",
+      "start_from": "创建方式",
+      "start_from_template": "基于模板",
+      "system_prompt": "系统提示词",
+      "what_this_agent_is_for": "这个代理用来做什么",
+      "you_are_a_research_assistant": "你是一名研究助手…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "file:// 值指向磁盘上的提示词文件。在这里改成文本会让模板与此文件解除关联。",
+      "description": "描述",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew 每次安装都会重写此模板，所以它的提示词和描述在这里不可编辑。复制一份即可获得可编辑的副本。",
+      "revert": "还原",
+      "save": "保存",
+      "save_failed": "保存失败",
+      "saved": "已保存",
+      "saving": "正在保存…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "显示在代理选择器和 Crew 编辑器中。",
+      "system_prompt": "系统提示词",
+      "what_this_agent_is_for": "这个代理用来做什么",
+      "you_are_a_research_assistant": "你是一名研究助手…"
     }
   },
   "hooks": {
@@ -5702,11 +5737,12 @@
       "skills": "技能",
       "spawn_tasks_from_chat_or_cli": "从聊天或 CLI 派生任务",
       "subagents": "子代理",
-      "system_prompt": "系统提示词",
       "tools": "工具",
       "tools_2": "工具",
       "type_to_filter": "输入以筛选…",
-      "usage": "用量"
+      "usage": "用量",
+      "duplicate": "复制",
+      "new_template": "新建模板"
     },
     "aidlc": {
       "dagView": {

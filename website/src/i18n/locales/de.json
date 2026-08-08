@@ -5585,6 +5585,41 @@
     "searchableSelect": {
       "no_matches": "Keine Treffer",
       "search": "Suchen…"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "Außerdem der Name der Konfigurationsdatei und der Wert, der an --agent übergeben wird. Nur Buchstaben, Ziffern, Punkt, Bindestrich und Unterstrich.",
+      "blank_template": "Leere Vorlage",
+      "cancel": "Abbrechen",
+      "copies_an_existing_template_s_tools_mcp_servers": "Kopiert Tools, MCP-Server und Skills einer bestehenden Vorlage. Eine leere Vorlage kann ohne Rückfrage lesen und suchen, muss aber fragen, bevor sie Dateien schreibt oder einen Befehl ausführt.",
+      "create_template": "Vorlage erstellen",
+      "creating": "Wird erstellt…",
+      "description": "Beschreibung",
+      "duplicate_agent_template": "Agentenvorlage duplizieren",
+      "e_g_researcher": "z. B. researcher",
+      "failed_to_create_template": "Vorlage konnte nicht erstellt werden",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "Leer lassen, um den Prompt der kopierten Vorlage zu behalten oder bei einer leeren Vorlage den Standard des Backends zu verwenden. Später bearbeitbar.",
+      "name": "Name",
+      "name_is_required": "Name ist erforderlich",
+      "new_agent_template": "Neue Agentenvorlage",
+      "start_from": "Ausgangspunkt",
+      "start_from_template": "Von Vorlage starten",
+      "system_prompt": "System-Prompt",
+      "what_this_agent_is_for": "Wofür dieser Agent gedacht ist",
+      "you_are_a_research_assistant": "Du bist ein Forschungsassistent…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "Ein file://-Wert verweist auf eine Prompt-Datei auf der Festplatte. Wenn du ihn hier durch Text ersetzt, wird die Vorlage von dieser Datei gelöst.",
+      "description": "Beschreibung",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew schreibt diese Vorlage bei jeder Installation neu, daher sind ihr Prompt und ihre Beschreibung hier nicht bearbeitbar. Dupliziere sie, um eine bearbeitbare Kopie zu erhalten.",
+      "revert": "Zurücksetzen",
+      "save": "Speichern",
+      "save_failed": "Speichern fehlgeschlagen",
+      "saved": "Gespeichert",
+      "saving": "Wird gespeichert…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "Wird in der Agentenauswahl und im Crew-Editor angezeigt.",
+      "system_prompt": "System-Prompt",
+      "what_this_agent_is_for": "Wofür dieser Agent gedacht ist",
+      "you_are_a_research_assistant": "Du bist ein Forschungsassistent…"
     }
   },
   "hooks": {
@@ -5765,11 +5800,12 @@
       "skills": "Skills",
       "spawn_tasks_from_chat_or_cli": "Aufgaben aus dem Chat oder der CLI starten",
       "subagents": "Subagenten",
-      "system_prompt": "System-Prompt",
       "tools": "Werkzeuge",
       "tools_2": "Werkzeuge",
       "type_to_filter": "Zum Filtern tippen…",
-      "usage": "Verbrauch"
+      "usage": "Verbrauch",
+      "duplicate": "Duplizieren",
+      "new_template": "Neue Vorlage"
     },
     "aidlc": {
       "dagView": {

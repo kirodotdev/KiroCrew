@@ -5604,6 +5604,41 @@
       "subtitle": "既成スケジュールから開始します — 実行される前に、内容を確認して保存できます。",
       "title": "スケジュールテンプレート",
       "use_template": "「{{title}}」テンプレートを使用"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "設定ファイル名および --agent に渡す値にもなります。使用できるのは英数字、ドット、ダッシュ、アンダースコアのみです。",
+      "blank_template": "空のテンプレート",
+      "cancel": "キャンセル",
+      "copies_an_existing_template_s_tools_mcp_servers": "既存のテンプレートのツール、MCP サーバー、スキルをコピーします。空のテンプレートは確認なしで読み取りと検索ができますが、ファイルの書き込みやコマンドの実行の前には確認が必要です。",
+      "create_template": "テンプレートを作成",
+      "creating": "作成中…",
+      "description": "説明",
+      "duplicate_agent_template": "エージェントテンプレートを複製",
+      "e_g_researcher": "例: researcher",
+      "failed_to_create_template": "テンプレートの作成に失敗しました",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "空欄のままにすると、コピー元テンプレートのプロンプトを保持します。空のテンプレートの場合はバックエンドのデフォルトを使用します。後から編集できます。",
+      "name": "名前",
+      "name_is_required": "名前は必須です",
+      "new_agent_template": "新規エージェントテンプレート",
+      "start_from": "作成元",
+      "start_from_template": "テンプレートから作成",
+      "system_prompt": "システムプロンプト",
+      "what_this_agent_is_for": "このエージェントの用途",
+      "you_are_a_research_assistant": "あなたはリサーチアシスタントです…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "file:// の値はディスク上のプロンプトファイルを指します。ここでテキストに置き換えると、テンプレートはそのファイルから切り離されます。",
+      "description": "説明",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew はインストールごとにこのテンプレートを書き換えるため、プロンプトと説明はここでは編集できません。複製すると編集可能なコピーが得られます。",
+      "revert": "元に戻す",
+      "save": "保存",
+      "save_failed": "保存に失敗しました",
+      "saved": "保存しました",
+      "saving": "保存中…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "エージェントピッカーとクルーエディターに表示されます。",
+      "system_prompt": "システムプロンプト",
+      "what_this_agent_is_for": "このエージェントの用途",
+      "you_are_a_research_assistant": "あなたはリサーチアシスタントです…"
     }
   },
   "hooks": {
@@ -5793,11 +5828,12 @@
       "skills": "スキル",
       "spawn_tasks_from_chat_or_cli": "チャットまたはCLIからタスクを生成",
       "subagents": "サブエージェント",
-      "system_prompt": "システムプロンプト",
       "tools": "ツール",
       "tools_2": "ツール",
       "type_to_filter": "フィルタリングに入力…",
-      "usage": "使用"
+      "usage": "使用",
+      "duplicate": "複製",
+      "new_template": "新規テンプレート"
     },
     "aidlc": {
       "dagView": {

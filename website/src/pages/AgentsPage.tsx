@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
+import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown, Plus, Copy } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
 import { api } from '../api/client'
@@ -9,6 +9,8 @@ import Clickable from '../components/Clickable'
 import { SourceBadge, StatCard, PageHeader, EmptyState, Btn, Input } from '../components/ui'
 import ModelDropdownList from '../components/ModelDropdownList'
 import AgentSkillsEditor from '../components/AgentSkillsEditor'
+import AgentTemplateEditor from '../components/AgentTemplateEditor'
+import AgentTemplateCreateDialog from '../components/AgentTemplateCreateDialog'
 import { LAYOUT } from '../components/layout'
 import InfoTip from '../components/InfoTip'
 import { useProvider } from '../providers'
@@ -79,6 +81,14 @@ interface AgentDetail extends Partial<InstalledAgent> {
   toolsSettings?: { execute_bash?: { deniedCommands?: string[] } }
   /** `skill://` resources the catalog editor cannot express (wildcards, foreign paths). */
   unmanaged_skills?: string[]
+  /**
+   * True when Kiro Crew owns the spec and rewrites it on install, so its prompt
+   * and description are not editable. Served by the backend rather than derived
+   * from `source` here: `source` is filename-derived and only marks the two
+   * user-facing specs, while several more managed files (knowledge, research,
+   * heartbeat) present as ordinary built-ins.
+   */
+  managed?: boolean
 }
 
 export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
@@ -135,6 +145,19 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const defaultAgent = defaultAgentData ?? ''
 
   const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null)
+  // `''` closes the dialog; `'blank'` opens it with no source; any other value is
+  // the template to duplicate. One state instead of an open flag plus a source
+  // avoids the intermediate render where the dialog is open with a stale source.
+  const [createFrom, setCreateFrom] = useState('')
+  const selectAgent = async (name: string) => {
+    try {
+      setSelectedAgent(await api.agentDetail(name))
+    } catch {
+      /* List rows carry display NAMES; the editor round-trips catalog KEYS, so drop them rather than offer unsavable chips. */
+      const row = installed.find(a => a.name === name)
+      setSelectedAgent(row ? { ...row, skills: undefined } : { name })
+    }
+  }
   const modelOptions = useAvailableModels()
   const { open: modelDropOpen, setOpen: setModelDropOpen, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelOptions)
   // Roving-focus keyboard nav for the model dropdown (shared with StyledSelect/AgentSelector).
@@ -197,7 +220,10 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           </div>
         ) : installed.length > 0 && (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 animate-rise shadow-sm hover:border-border-strong hover:shadow-md transition-all overflow-hidden">
-            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={i18nT('pages.agentsPage.agent_templates_grouped_by_package_update_and_un')} /></h3></div>
+            <div className="px-5 pt-5 pb-3 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={i18nT('pages.agentsPage.agent_templates_grouped_by_package_update_and_un')} /></h3>
+              <Btn className="flex items-center gap-1 px-2 py-1 text-[12px] shrink-0" onClick={() => setCreateFrom('blank')}><Plus className="lucide-inline" /> {i18nT('pages.agentsPage.new_template')}</Btn>
+            </div>
             <div className="flex" style={{ height: `${LAYOUT.AGENT_LIST_HEIGHT}px` }}>
               {/* Agent list — scrollable */}
               <div className="w-[280px] shrink-0 border-r border-border overflow-y-auto p-2">
@@ -208,7 +234,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     const key = a.package || a.name; (g[key] ||= []).push(a); return g
                   }, {})
                   const renderAgent = (a: typeof installed[0], showDelete?: boolean) => (
-                    <Clickable key={a.name} className={`flex flex-col gap-1.5 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={async () => { try { const d = await api.agentDetail(a.name); setSelectedAgent(d) } catch { /* List rows carry display NAMES; the editor round-trips catalog KEYS, so drop them rather than offer unsavable chips. */ setSelectedAgent({ ...a, skills: undefined }) } }}>
+                    <Clickable key={a.name} className={`flex flex-col gap-1.5 px-3 py-2.5 rounded-md border transition-all cursor-pointer mb-1 ${selectedAgent?.name === a.name ? 'list-selected bg-accent-subtle border-accent/40' : 'bg-bg-elevated border-transparent hover:bg-bg-hover hover:border-border-strong'}`} onClick={() => selectAgent(a.name)}>
                       {/* Row 1: the name owns the full column width; badge + delete are pinned right and never steal the name's space. */}
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="text-[13px] font-mono font-semibold text-text truncate flex-1 min-w-0" title={a.name}>{a.name}</span>
@@ -285,12 +311,30 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       </div>
                       {(() => { const a = installed.find(a => a.name === selectedAgent.name); return a?.package ? <span className="text-[11px] text-aim bg-aim/10 px-2 py-0.5 rounded-md border border-aim/30">{a.filename?.startsWith('local-') ? <Pin className="lucide-inline" /> : <Package className="lucide-inline" />} {a.package}</span> : null })()}
                     </div>
+                    <Btn className="flex items-center gap-1 px-2 py-0.5 text-[12px] shrink-0" onClick={() => setCreateFrom(selectedAgent.name)}><Copy className="lucide-inline" /> {i18nT('pages.agentsPage.duplicate')}</Btn>
                   </div>
                   {/* `typeof` guard, not a bare truthiness check: an object is
                       truthy, so a foreign spec's structured `description` would
                       pass `&&` and then throw React error #31 as a JSX child —
-                      the same whole-tab crash `modelLabel` guards on `model`. */}
-                  {typeof selectedAgent.description === 'string' && selectedAgent.description && <div className="text-[13px] text-muted mb-3 leading-relaxed">{selectedAgent.description}</div>}
+                      the same whole-tab crash `modelLabel` guards on `model`.
+                      The same rule applies to `prompt`, which is rendered as
+                      text and fed into a controlled textarea. */}
+                  <AgentTemplateEditor
+                    key={selectedAgent.name}
+                    agentName={selectedAgent.name}
+                    description={typeof selectedAgent.description === 'string' ? selectedAgent.description : ''}
+                    prompt={typeof selectedAgent.prompt === 'string' ? selectedAgent.prompt : ''}
+                    // A detail fetch that failed leaves the real spec UNKNOWN, so
+                    // the editor is locked rather than offering a write over a
+                    // blank field that would erase the prompt on disk. `skills`
+                    // is the same signal the skills editor below gates on.
+                    managed={selectedAgent.managed !== false || selectedAgent.skills === undefined}
+                    onSaved={(agentName, patch) => {
+                      // Ignore a save that resolved after the selection moved on.
+                      setSelectedAgent(prev => (prev && prev.name === agentName ? { ...prev, ...patch } : prev))
+                      refetchInstalled()
+                    }}
+                  />
                   {selectedAgent.skills === undefined ? (
                     /* The agent-detail fetch failed, so the real mapping is
                      * UNKNOWN. An empty-but-enabled editor here is destructive:
@@ -321,7 +365,6 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       }}
                     />
                   )}
-                  {selectedAgent.prompt && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.system_prompt')}</div><pre className="text-[12px] text-text font-mono bg-bg-elevated rounded-md p-2.5 border border-border overflow-x-auto max-h-[160px] overflow-y-auto whitespace-pre-wrap leading-relaxed">{typeof selectedAgent.prompt === 'string' && selectedAgent.prompt.startsWith('file://') ? selectedAgent.prompt : (selectedAgent.prompt || '').slice(0, 2000)}</pre></div>}
                   {selectedAgent.tools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.tools')}</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.tools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-text">{t}</span>)}</div></div>}
                   {selectedAgent.allowedTools && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.auto_approved')}</div><div className="flex flex-wrap gap-1.5">{(selectedAgent.allowedTools as string[]).map((t: string) => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-ok/10 border border-ok/30 text-ok">{t}</span>)}</div></div>}
                   {selectedAgent.mcpServers && <div className="mb-3"><div className="text-[12px] text-muted font-medium uppercase tracking-wider mb-1">{i18nT('pages.agentsPage.mcp_servers')}</div><div className="flex flex-wrap gap-1.5">{Object.keys(selectedAgent.mcpServers).map((s: string) => {
@@ -443,6 +486,22 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
             ))}</tbody></table>
         </div>
       </div>
+      {/* Kept MOUNTED and driven by `open` rather than conditionally rendered:
+          Radix tracks dismissable layers in a global stack, and unmounting the
+          subtree the instant it closes skips the layer's deregistration. */}
+      <AgentTemplateCreateDialog
+        open={!!createFrom}
+        templates={installed.map(a => a.name)}
+        initialFrom={createFrom && createFrom !== 'blank' ? createFrom : undefined}
+        onClose={() => setCreateFrom('')}
+        onCreated={name => {
+          setCreateFrom('')
+          refetchInstalled()
+          // Select the new template so its editors are immediately in reach —
+          // creating one and then having to find it in the list is a dead end.
+          selectAgent(name)
+        }}
+      />
     </>
   )
 }

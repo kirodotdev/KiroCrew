@@ -5666,6 +5666,41 @@
       "subtitle": "আগে থেকে তৈরি একটি সময়সূচি থেকে শুরু করুন — কিছু চালু হওয়ার আগে আপনি তা দেখে সংরক্ষণ করবেন।",
       "title": "সময়সূচি টেমপ্লেট",
       "use_template": "{{title}} টেমপ্লেট ব্যবহার করুন"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "এটি কনফিগ ফাইলের নাম, আর --agent-এ পাঠানো মানও। শুধু অক্ষর, সংখ্যা, ডট, ড্যাশ ও আন্ডারস্কোর চলবে।",
+      "blank_template": "ফাঁকা টেমপ্লেট",
+      "cancel": "বাতিল",
+      "copies_an_existing_template_s_tools_mcp_servers": "একটি বিদ্যমান টেমপ্লেটের টুল, MCP সার্ভার ও স্কিল কপি করে। ফাঁকা টেমপ্লেট জিজ্ঞাসা ছাড়াই পড়তে ও খুঁজতে পারে, কিন্তু ফাইল লেখার বা কমান্ড চালানোর আগে অনুমতি নিতে হয়।",
+      "create_template": "টেমপ্লেট তৈরি করো",
+      "creating": "তৈরি হচ্ছে…",
+      "description": "বিবরণ",
+      "duplicate_agent_template": "এজেন্ট টেমপ্লেট ডুপ্লিকেট",
+      "e_g_researcher": "যেমন researcher",
+      "failed_to_create_template": "টেমপ্লেট তৈরি করা যায়নি",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "কপি করা টেমপ্লেটের প্রম্পট রাখতে, বা ফাঁকা টেমপ্লেটে ব্যাকএন্ডের ডিফল্ট ব্যবহার করতে খালি রাখো। পরে বদলানো যাবে।",
+      "name": "নাম",
+      "name_is_required": "নাম দেওয়া দরকার",
+      "new_agent_template": "নতুন এজেন্ট টেমপ্লেট",
+      "start_from": "শুরুর ভিত্তি",
+      "start_from_template": "টেমপ্লেট থেকে শুরু",
+      "system_prompt": "সিস্টেম প্রম্পট",
+      "what_this_agent_is_for": "এই এজেন্ট কী কাজের জন্য",
+      "you_are_a_research_assistant": "তুমি একজন রিসার্চ অ্যাসিস্ট্যান্ট…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "file:// দিয়ে দেওয়া মান ডিস্কে থাকা একটি প্রম্পট ফাইলকে দেখায়। এখানে টেক্সট বসিয়ে দিলে টেমপ্লেটটি সেই ফাইল থেকে আলাদা হয়ে যাবে।",
+      "description": "বিবরণ",
+      "kiro_crew_rewrites_this_template_on_every_instal": "প্রতিবার ইনস্টলের সময় Kiro Crew এই টেমপ্লেটটি আবার লেখে, তাই এর প্রম্পট ও বিবরণ এখানে বদলানো যায় না। বদলানো যায় এমন কপি পেতে এটি ডুপ্লিকেট করো।",
+      "revert": "ফিরিয়ে নাও",
+      "save": "সেভ করো",
+      "save_failed": "সেভ করা যায়নি",
+      "saved": "সেভ হয়েছে",
+      "saving": "সেভ হচ্ছে…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "এজেন্ট পিকার ও ক্রু এডিটরে দেখানো হবে।",
+      "system_prompt": "সিস্টেম প্রম্পট",
+      "what_this_agent_is_for": "এই এজেন্ট কী কাজের জন্য",
+      "you_are_a_research_assistant": "তুমি একজন রিসার্চ অ্যাসিস্ট্যান্ট…"
     }
   },
   "hooks": {
@@ -5846,11 +5881,12 @@
       "skills": "স্কিল",
       "spawn_tasks_from_chat_or_cli": "চ্যাট বা CLI থেকে টাস্ক চালু করুন",
       "subagents": "সাবএজেন্ট",
-      "system_prompt": "সিস্টেম প্রম্পট",
       "tools": "টুল",
       "tools_2": "টুল",
       "type_to_filter": "ফিল্টার করতে টাইপ করুন…",
-      "usage": "ব্যবহার"
+      "usage": "ব্যবহার",
+      "duplicate": "ডুপ্লিকেট",
+      "new_template": "নতুন টেমপ্লেট"
     },
     "aidlc": {
       "dagView": {

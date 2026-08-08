@@ -1219,6 +1219,7 @@ export const api = {
   // Agents
   agentsInstalled: () => fetch('/api/agents/installed').then(j),
   agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
+  agentCreate: (body: object) => fetch('/api/agents/detail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
   agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
   // KiroCrew agents

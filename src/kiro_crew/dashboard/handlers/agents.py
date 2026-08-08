@@ -1040,6 +1040,323 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     )
 
 
+#: A template name has to be safe as a bare filename stem (``<name>.json`` inside
+#: the agents dir) AND usable as a kiro-cli ``--agent`` argument. The character
+#: class excludes the separators and ``..`` that a traversal would need, so no
+#: separate traversal check is required to keep the write inside the dir — the
+#: post-join containment assert below is belt and braces, not the primary guard.
+_VALID_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+_MAX_AGENT_NAME_LEN = 64
+_MAX_AGENT_DESCRIPTION_LEN = 500
+#: Generous by design: a system prompt is prose and some are genuinely long.
+#: The cap exists so one request cannot write an unbounded file, not to express
+#: an opinion about prompt length.
+_MAX_AGENT_PROMPT_LEN = 100_000
+
+
+def _managed_agent_filenames() -> tuple[str, ...]:
+    """The agent spec filenames Kiro Crew itself writes and rewrites.
+
+    Read through ``agent_files`` rather than duplicated as literals so adding a
+    managed spec there automatically protects it here — both from being shadowed
+    by a new template of the same name and from prompt/description edits that
+    the next install would silently revert.
+    """
+    from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+
+    return OWNED_KIRO_AGENT_FILES
+
+
+def _reserved_agent_names() -> set[str]:
+    """Names a new template may not take.
+
+    The managed specs' own stems (a template called ``kirocrew`` would either
+    collide with the file or shadow it by ``name``), plus ``default`` — the
+    built-in agent that has no config file and is special-cased by
+    :func:`api_agent_detail`.
+    """
+    return {Path(f).stem for f in _managed_agent_filenames()} | {"default"}
+
+
+#: The spec a blank new template starts from.
+#:
+#: ``tools`` is the surface the agent CAN reach; ``allowedTools`` is the subset
+#: auto-approved without asking. The split is the whole security story of a
+#: template, so a created one starts with a useful tool surface but auto-approves
+#: only side-effect-free reads — an agent that can edit files or run a command
+#: has to ask the first time. Kiro Crew's own privileged MCP servers
+#: (``@kirocrew-core`` and friends: spawn, cron, computer use) are deliberately
+#: absent; a user who wants that surface duplicates ``kirocrew`` instead of
+#: starting blank, which is an explicit act rather than a default.
+_BLANK_TEMPLATE_TOOLS = (
+    "execute_bash",
+    "fs_read",
+    "fs_write",
+    "code",
+    "grep",
+    "glob",
+    "web_fetch",
+    "web_search",
+)
+_BLANK_TEMPLATE_ALLOWED_TOOLS = ("fs_read", "code", "grep", "glob")
+
+
+def _blank_template_spec() -> dict[str, Any]:
+    """A minimal, schema-clean kiro agent spec for a from-scratch template.
+
+    Only fields kiro-cli understands: it rejects a spec with unknown fields and
+    then resolves no agent at all, so the safest new spec is a small one.
+    """
+    return {
+        "tools": list(_BLANK_TEMPLATE_TOOLS),
+        "allowedTools": list(_BLANK_TEMPLATE_ALLOWED_TOOLS),
+        "resources": ["file://.kiro/steering/**/*.md"],
+    }
+
+
+def _validate_new_agent_name(raw: Any) -> tuple[str, str, str]:
+    """Return ``(name, code, message)`` for a requested template name.
+
+    ``code`` is empty when the name is acceptable. The machine-readable code is
+    what the dashboard branches on; the prose is advisory (RFC 9457 3.1.3).
+    """
+    if not isinstance(raw, str):
+        return "", "name_required", "name must be a string"
+    name = raw.strip()
+    if not name:
+        return "", "name_required", "name is required"
+    if len(name) > _MAX_AGENT_NAME_LEN:
+        return (
+            "",
+            "name_too_long",
+            f"name must be at most {_MAX_AGENT_NAME_LEN} characters",
+        )
+    if not _VALID_AGENT_NAME_RE.match(name):
+        return (
+            "",
+            "invalid_agent_name",
+            "name may contain only letters, digits, dot, dash and underscore, "
+            "and must start with a letter or digit",
+        )
+    if name in _reserved_agent_names():
+        return "", "agent_name_reserved", f"'{name}' is reserved"
+    return name, "", ""
+
+
+def _validate_spec_text(raw: Any, field: str, limit: int) -> tuple[str, str, str]:
+    """Return ``(value, code, message)`` for a free-text spec field."""
+    if not isinstance(raw, str):
+        return "", f"{field}_invalid", f"{field} must be a string"
+    if len(raw) > limit:
+        return "", f"{field}_too_long", f"{field} must be at most {limit} characters"
+    return raw, "", ""
+
+
+def _read_agent_specs(agents_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Every parseable spec in *agents_dir*, as ``(path, data)`` pairs.
+
+    Unreadable and non-object files are skipped rather than raising: the dir is
+    shared with other tools, and one bad file must not block creating a template.
+    """
+    out: list[tuple[Path, dict[str, Any]]] = []
+    try:
+        candidates = sorted(agents_dir.glob("*.json"))
+    except OSError:
+        return out
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            out.append((path, data))
+    return out
+
+
+def _clone_source_spec(
+    specs: list[tuple[Path, dict[str, Any]]], source: str
+) -> dict[str, Any] | None:
+    """The spec to copy for a ``from`` request, matched the way kiro-cli resolves.
+
+    Both the declared ``name`` and the file stem are accepted because a
+    package-installed agent's file is ``<package>-<name>.json`` while its
+    identity is the ``name`` field.
+    """
+    for path, data in specs:
+        if spec_str(data, "name") == source or path.stem == source:
+            return data
+    return None
+
+
+async def api_agent_create(request: web.Request) -> web.Response:
+    """POST /api/agents/detail — create a new agent template.
+
+    Writes ``<name>.json`` into the agents dir, either from a conservative blank
+    baseline or as a copy of an existing template (``from``).
+
+    ``tools``, ``allowedTools`` and ``toolsSettings`` are deliberately NOT
+    accepted from the request body. They are the privilege surface — the
+    auto-approve list and the bash deny patterns — so a create call cannot mint
+    a spec that auto-approves everything. A copy inherits them from a spec that
+    already exists on disk; a blank template gets the read-only baseline. Editing
+    them is a separate, deliberate capability this endpoint does not grant.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+
+    def _denied(code: str, message: str) -> web.Response:
+        """A 400 that is also recorded — a rejected create is worth an audit line."""
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.create",
+            outcome="denied",
+            source="dashboard",
+            resources=str(body.get("name", ""))[:_MAX_AGENT_NAME_LEN],
+            error=code,
+        )
+        return web.json_response({"error": message, "code": code}, status=400)
+
+    name, code, message = _validate_new_agent_name(body.get("name"))
+    if code:
+        return _denied(code, message)
+    description, code, message = _validate_spec_text(
+        body.get("description", ""), "description", _MAX_AGENT_DESCRIPTION_LEN
+    )
+    if code:
+        return _denied(code, message)
+    prompt, code, message = _validate_spec_text(
+        body.get("prompt", ""), "prompt", _MAX_AGENT_PROMPT_LEN
+    )
+    if code:
+        return _denied(code, message)
+    raw_from = body.get("from", "")
+    if not isinstance(raw_from, str):
+        return _denied("invalid_from", "from must be a string")
+    clone_from = raw_from.strip()
+
+    state: DashboardState = request.app["state"]
+    agents_dir = kiro_agents_dir_path()
+    target = agents_dir / f"{name}.json"
+    # The name regex already excludes every separator, so this cannot fail; it is
+    # here so a future loosening of the regex trips this instead of writing
+    # outside the agents dir.
+    if target.parent.resolve() != agents_dir.resolve():
+        return _denied("invalid_agent_name", "invalid name")
+
+    async with _get_config_lock():
+        specs = await asyncio.to_thread(_read_agent_specs, agents_dir)
+        # Reject a name any EXISTING spec already answers to, not just a file-name
+        # collision: kiro-cli resolves by the ``name`` field, so a second spec
+        # declaring a package agent's name makes which one wins a coin flip.
+        for path, data in specs:
+            if spec_str(data, "name") == name or path.stem == name:
+                _sel().log_api_access(
+                    caller=request.get("user", "dashboard"),
+                    operation="agent_template.create",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=name,
+                    error="agent_template_exists",
+                )
+                return web.json_response(
+                    {"error": f"'{name}' already exists", "code": "agent_template_exists"},
+                    status=409,
+                )
+
+        if clone_from:
+            source = _clone_source_spec(specs, clone_from)
+            if source is None:
+                return web.json_response(
+                    {
+                        "error": f"template '{clone_from}' not found",
+                        "code": "source_template_not_found",
+                    },
+                    status=404,
+                )
+            spec: dict[str, Any] = json.loads(json.dumps(source))
+        else:
+            spec = _blank_template_spec()
+        spec["name"] = name
+        if description:
+            spec["description"] = description
+        else:
+            spec.pop("description", None)
+        if prompt:
+            spec["prompt"] = prompt
+        elif not clone_from:
+            spec.pop("prompt", None)
+        # Kiro Crew bookkeeping that older specs may carry; kiro-cli rejects
+        # unknown fields and drops the whole agent, so a copy must not inherit it.
+        spec.pop("model_managed", None)
+        spec.pop("cc_model", None)
+
+        payload = json.dumps(spec, indent=2) + "\n"
+
+        def _write() -> str:
+            """Create the file exclusively; returns an error code or ''."""
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                # O_EXCL, not a write after the collision scan above: the scan and
+                # the write are two steps, and the kernel is the only party that
+                # can make "create only if absent" atomic against a concurrent
+                # POST or another tool writing the same path.
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return "agent_template_exists"
+            except OSError as exc:
+                logger.warning("Failed to create agent template %s: %s", target, exc)
+                return "agent_template_write_failed"
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+            except OSError as exc:
+                logger.warning("Failed to write agent template %s: %s", target, exc)
+                target.unlink(missing_ok=True)
+                return "agent_template_write_failed"
+            return ""
+
+        write_code = await asyncio.to_thread(_write)
+
+    if write_code:
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.create",
+            outcome="failure",
+            source="dashboard",
+            resources=name,
+            error=write_code,
+        )
+        if write_code == "agent_template_exists":
+            return web.json_response(
+                {"error": f"'{name}' already exists", "code": write_code}, status=409
+            )
+        return web.json_response(
+            {"error": "could not write agent template", "code": write_code}, status=500
+        )
+
+    # The list_agents() cache keys on a (count, newest-mtime-ns) signature, which
+    # a write inside the current mtime granularity would not move.
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="agent_template.create",
+        outcome="success",
+        source="dashboard",
+        resources=f"{name} (from={clone_from})" if clone_from else name,
+    )
+    return web.json_response({"ok": True, "name": name})
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/DELETE/PATCH /api/agents/detail/{name} — view, delete, or update agent config."""
     name = request.match_info["name"]
@@ -1089,6 +1406,38 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 {"error": f"at most {MAX_AGENT_SKILLS} skills per agent"},
                                 status=400,
                             )
+                    # ``prompt`` and ``description`` are validated here, with
+                    # ``skills``, so a bad value is rejected before any state
+                    # mutation rather than half-applying a combined PATCH.
+                    text_edits: dict[str, str] = {}
+                    for field, limit in (
+                        ("prompt", _MAX_AGENT_PROMPT_LEN),
+                        ("description", _MAX_AGENT_DESCRIPTION_LEN),
+                    ):
+                        if field not in patch_body:
+                            continue
+                        if f.name in _managed_agent_filenames():
+                            # Both fields are rewritten from the shipped defaults
+                            # on every install and at boot self-heal, so accepting
+                            # the edit would show a save that silently reverts.
+                            return web.json_response(
+                                {
+                                    "error": (
+                                        f"{f.stem} is managed by Kiro Crew; its "
+                                        f"{field} cannot be edited"
+                                    ),
+                                    "code": "agent_template_managed",
+                                },
+                                status=400,
+                            )
+                        value, code, message = _validate_spec_text(
+                            patch_body[field], field, limit
+                        )
+                        if code:
+                            return web.json_response(
+                                {"error": message, "code": code}, status=400
+                            )
+                        text_edits[field] = value
                     mapped: list[str] = []
                     loop = asyncio.get_running_loop()
                     async with _get_config_lock():
@@ -1141,6 +1490,14 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # kiro-cli rejects unknown fields and drops the agent.
                         data.pop("model_managed", None)
                         data.pop("cc_model", None)
+                        # An empty string means "no value", not the literal "":
+                        # the key is dropped so the spec stays minimal and reads
+                        # back through spec_str() as absent.
+                        for field, value in text_edits.items():
+                            if value:
+                                data[field] = value
+                            else:
+                                data.pop(field, None)
                         f.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
                     # The list_agents() cache keys on a (count, newest-mtime-ns)
                     # signature; two writes inside the same mtime granularity
@@ -1148,7 +1505,13 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     clear_list_agents_cache()
                     state.push_refresh("agents")
                     return web.json_response(
-                        {"ok": True, "model": data.get("model", ""), "skills": mapped}
+                        {
+                            "ok": True,
+                            "model": data.get("model", ""),
+                            "skills": mapped,
+                            "prompt": spec_str(data, "prompt"),
+                            "description": spec_str(data, "description"),
+                        }
                     )
                 # ``skills`` / ``unmanaged_skills`` are computed, response-only
                 # views of ``resources`` — never written back into the spec
@@ -1170,6 +1533,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         "model": spec_model(data),
                         "skills": keys,
                         "unmanaged_skills": unmanaged_uris,
+                        # Whether Kiro Crew owns this spec and rewrites it on
+                        # install. Served rather than re-derived client-side so
+                        # the editor disables exactly the fields PATCH refuses,
+                        # instead of keeping a second copy of the owned-file list
+                        # in TypeScript that would drift from agent_files.py.
+                        "managed": f.name in _managed_agent_filenames(),
                     }
                 )
         except (json.JSONDecodeError, OSError):
@@ -1178,7 +1547,9 @@ async def api_agent_detail(request: web.Request) -> web.Response:
     if name == "default":
         if request.method != "GET":
             return web.json_response({"error": "cannot modify built-in default agent"}, status=400)
-        return web.json_response({"name": "default", "model": ""})
+        # No file to edit, so it is managed by definition — the editor must not
+        # offer fields whose PATCH the branch above already refuses.
+        return web.json_response({"name": "default", "model": "", "managed": True})
 
     return web.json_response({"error": "not found"}, status=404)
 

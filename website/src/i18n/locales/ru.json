@@ -5790,6 +5790,41 @@
     "searchableSelect": {
       "no_matches": "Нет совпадений",
       "search": "Поиск…"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "Также имя файла конфигурации и значение, передаваемое в --agent. Только буквы, цифры, точка, дефис и подчёркивание.",
+      "blank_template": "Пустой шаблон",
+      "cancel": "Отмена",
+      "copies_an_existing_template_s_tools_mcp_servers": "Копирует инструменты, MCP-серверы и навыки существующего шаблона. Пустой шаблон может читать и искать без запроса, но перед записью файлов или запуском команды должен спросить.",
+      "create_template": "Создать шаблон",
+      "creating": "Создание...",
+      "description": "Описание",
+      "duplicate_agent_template": "Дублирование шаблона агента",
+      "e_g_researcher": "например, researcher",
+      "failed_to_create_template": "Не удалось создать шаблон",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "Оставь пустым, чтобы сохранить промпт скопированного шаблона или взять значение по умолчанию из бэкенда для пустого. Изменить можно позже.",
+      "name": "Имя",
+      "name_is_required": "Имя обязательно",
+      "new_agent_template": "Новый шаблон агента",
+      "start_from": "Основа",
+      "start_from_template": "На основе шаблона",
+      "system_prompt": "Системный промпт",
+      "what_this_agent_is_for": "Для чего нужен этот агент",
+      "you_are_a_research_assistant": "Ты — исследовательский ассистент..."
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "Значение file:// указывает на файл с промптом на диске. Если заменить его текстом здесь, шаблон отвяжется от этого файла.",
+      "description": "Описание",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew перезаписывает этот шаблон при каждой установке, поэтому его промпт и описание здесь изменить нельзя. Дублируй его, чтобы получить редактируемую копию.",
+      "revert": "Откатить",
+      "save": "Сохранить",
+      "save_failed": "Не удалось сохранить",
+      "saved": "Сохранено",
+      "saving": "Сохранение...",
+      "shown_in_the_agent_picker_and_the_crew_editor": "Отображается в списке выбора агента и редакторе команды.",
+      "system_prompt": "Системный промпт",
+      "what_this_agent_is_for": "Для чего нужен этот агент",
+      "you_are_a_research_assistant": "Ты — исследовательский ассистент..."
     }
   },
   "hooks": {
@@ -5972,11 +6007,12 @@
       "skills": "Навыки",
       "spawn_tasks_from_chat_or_cli": "Запускайте задачи из чата или CLI",
       "subagents": "Субагенты",
-      "system_prompt": "Системный промпт",
       "tools": "Инструменты",
       "tools_2": "инструментов",
       "type_to_filter": "Введите текст для фильтра…",
-      "usage": "Использование"
+      "usage": "Использование",
+      "duplicate": "Дублировать",
+      "new_template": "Новый шаблон"
     },
     "aidlc": {
       "dagView": {

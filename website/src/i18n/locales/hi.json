@@ -5666,6 +5666,41 @@
     "searchableSelect": {
       "no_matches": "कोई मेल नहीं",
       "search": "खोजें…"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "यही कॉन्फ़िग फ़ाइल का नाम है और --agent को पास की जाने वाली वैल्यू भी। सिर्फ़ अक्षर, अंक, डॉट, डैश और अंडरस्कोर।",
+      "blank_template": "खाली टेम्पलेट",
+      "cancel": "रद्द करें",
+      "copies_an_existing_template_s_tools_mcp_servers": "किसी मौजूदा टेम्पलेट के टूल, MCP सर्वर और स्किल कॉपी करता है। खाली टेम्पलेट बिना पूछे पढ़ और खोज सकता है, लेकिन फ़ाइल लिखने या कमांड चलाने से पहले पूछना पड़ता है।",
+      "create_template": "टेम्पलेट बनाएँ",
+      "creating": "बनाया जा रहा है…",
+      "description": "विवरण",
+      "duplicate_agent_template": "एजेंट टेम्पलेट की कॉपी बनाएँ",
+      "e_g_researcher": "उदाहरण: researcher",
+      "failed_to_create_template": "टेम्पलेट बनाने में विफल",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "कॉपी किए गए टेम्पलेट का प्रॉम्प्ट रखने के लिए, या खाली टेम्पलेट पर बैकएंड का डिफ़ॉल्ट इस्तेमाल करने के लिए इसे खाली छोड़ दें। बाद में एडिट किया जा सकता है।",
+      "name": "नाम",
+      "name_is_required": "नाम ज़रूरी है",
+      "new_agent_template": "नया एजेंट टेम्पलेट",
+      "start_from": "किससे शुरू करें",
+      "start_from_template": "टेम्पलेट से शुरू करें",
+      "system_prompt": "सिस्टम प्रॉम्प्ट",
+      "what_this_agent_is_for": "यह एजेंट किस काम के लिए है",
+      "you_are_a_research_assistant": "तुम एक रिसर्च असिस्टेंट हो…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "file:// वैल्यू डिस्क पर मौजूद किसी प्रॉम्प्ट फ़ाइल की ओर इशारा करती है। यहाँ टेक्स्ट से बदलने पर टेम्पलेट उस फ़ाइल से अलग हो जाएगा।",
+      "description": "विवरण",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew हर इंस्टॉल पर इस टेम्पलेट को दोबारा लिखता है, इसलिए इसका प्रॉम्प्ट और विवरण यहाँ एडिट नहीं किए जा सकते। एडिट करने योग्य कॉपी पाने के लिए इसकी कॉपी बनाएँ।",
+      "revert": "रिवर्ट करें",
+      "save": "सहेजें",
+      "save_failed": "सहेजना विफल",
+      "saved": "सहेजा गया",
+      "saving": "सहेजा जा रहा है…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "एजेंट पिकर और क्रू एडिटर में दिखता है।",
+      "system_prompt": "सिस्टम प्रॉम्प्ट",
+      "what_this_agent_is_for": "यह एजेंट किस काम के लिए है",
+      "you_are_a_research_assistant": "तुम एक रिसर्च असिस्टेंट हो…"
     }
   },
   "hooks": {
@@ -5846,11 +5881,12 @@
       "skills": "स्किल",
       "spawn_tasks_from_chat_or_cli": "चैट या CLI से कार्य स्पॉन करें",
       "subagents": "सब-एजेंट",
-      "system_prompt": "सिस्टम प्रॉम्प्ट",
       "tools": "टूल",
       "tools_2": "टूल",
       "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…",
-      "usage": "उपयोग"
+      "usage": "उपयोग",
+      "duplicate": "कॉपी बनाएँ",
+      "new_template": "नया टेम्पलेट"
     },
     "aidlc": {
       "dagView": {

@@ -5728,6 +5728,41 @@
       "subtitle": "Empieza con una programación predefinida — tú la revisas y la guardas antes de que se ejecute nada.",
       "title": "Plantillas de programación",
       "use_template": "Usar la plantilla {{title}}"
+    },
+    "agentTemplateCreateDialog": {
+      "also_the_config_filename_and_the_value_passed_to": "También es el nombre del archivo de configuración y el valor que se pasa a --agent. Solo letras, dígitos, punto, guion y guion bajo.",
+      "blank_template": "Plantilla en blanco",
+      "cancel": "Cancelar",
+      "copies_an_existing_template_s_tools_mcp_servers": "Copia las herramientas, los servidores MCP y las habilidades de una plantilla existente. Una plantilla en blanco puede leer y buscar sin preguntar, pero tiene que preguntar antes de escribir archivos o ejecutar un comando.",
+      "create_template": "Crear plantilla",
+      "creating": "Creando…",
+      "description": "Descripción",
+      "duplicate_agent_template": "Duplicar plantilla de agente",
+      "e_g_researcher": "p. ej. investigador",
+      "failed_to_create_template": "No se pudo crear la plantilla",
+      "leave_empty_to_keep_the_copied_template_s_prompt": "Déjalo vacío para conservar el prompt de la plantilla copiada, o para usar el valor predeterminado del backend en una plantilla en blanco. Se puede editar después.",
+      "name": "Nombre",
+      "name_is_required": "El nombre es obligatorio",
+      "new_agent_template": "Nueva plantilla de agente",
+      "start_from": "Empezar desde",
+      "start_from_template": "Empezar desde una plantilla",
+      "system_prompt": "Prompt del sistema",
+      "what_this_agent_is_for": "Para qué sirve este agente",
+      "you_are_a_research_assistant": "Eres un asistente de investigación…"
+    },
+    "agentTemplateEditor": {
+      "a_file_value_points_at_a_prompt_file_on_disk_rep": "Un valor file:// apunta a un archivo de prompt en el disco. Si lo reemplazas por texto aquí, la plantilla se desvincula de ese archivo.",
+      "description": "Descripción",
+      "kiro_crew_rewrites_this_template_on_every_instal": "Kiro Crew reescribe esta plantilla en cada instalación, así que su prompt y su descripción no se pueden editar aquí. Duplícala para obtener una copia editable.",
+      "revert": "Revertir",
+      "save": "Guardar",
+      "save_failed": "No se pudo guardar",
+      "saved": "Guardado",
+      "saving": "Guardando…",
+      "shown_in_the_agent_picker_and_the_crew_editor": "Se muestra en el selector de agentes y en el editor de crews.",
+      "system_prompt": "Prompt del sistema",
+      "what_this_agent_is_for": "Para qué sirve este agente",
+      "you_are_a_research_assistant": "Eres un asistente de investigación…"
     }
   },
   "hooks": {
@@ -5909,11 +5944,12 @@
       "skills": "Habilidades",
       "spawn_tasks_from_chat_or_cli": "Lanza tareas desde el chat o la CLI",
       "subagents": "Subagentes",
-      "system_prompt": "Prompt del sistema",
       "tools": "Herramientas",
       "tools_2": "herramientas",
       "type_to_filter": "Escribe para filtrar…",
-      "usage": "Uso"
+      "usage": "Uso",
+      "duplicate": "Duplicar",
+      "new_template": "Plantilla nueva"
     },
     "aidlc": {
       "dagView": {

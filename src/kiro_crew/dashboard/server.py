@@ -2335,6 +2335,7 @@ async def start_dashboard(
     app.router.add_get("/api/agents/detail/{name}", handlers.api_agent_detail)
     app.router.add_patch("/api/agents/detail/{name}", handlers.api_agent_detail)
     app.router.add_delete("/api/agents/detail/{name}", handlers.api_agent_detail)
+    app.router.add_post("/api/agents/detail", handlers.api_agent_create)
     # KiroCrew Agent CRUD
     app.router.add_get("/api/agents", handlers.api_kirocrew_agents)
     app.router.add_get(

@@ -60,6 +60,7 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     _get_config_lock,
     _installed_agent_config,
     api_agent_config,
+    api_agent_create,
     api_agent_detail,
     api_agents_installed,
     api_capability_agents_install,
