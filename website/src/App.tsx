@@ -1638,7 +1638,7 @@ export default function App() {
         <Route path="*" element={<Navigate to={initialPopoutPath} replace />} />
       </Routes>
     ) : isEmbed ? (
-      <div className="h-screen w-screen overflow-hidden bg-bg flex flex-col">
+      <div className="h-screen supports-[height:100dvh]:h-dvh w-screen overflow-hidden bg-bg flex flex-col">
         <KiroCrewNavBridge />
         <EmbedTabStrip />
         <div className="flex-1 min-h-0">
@@ -1651,7 +1651,10 @@ export default function App() {
         </div>
       </div>
     ) : (
-    <div className="h-screen w-screen flex flex-col overflow-hidden bg-bg">
+    /* h-dvh (100vh fallback) so the shell tracks the visible viewport on
+       mobile: a 100vh shell extends under the browser's collapsible UI,
+       which hides the bottom row (the chat composer) on phones. */
+    <div className="h-screen supports-[height:100dvh]:h-dvh w-screen flex flex-col overflow-hidden bg-bg">
       {/* Embedded remote panes receive their switcher model from the parent via
           this bridge (option B) — no-op in the top-level dashboard. */}
       <EmbeddedHostBridge />
