@@ -15,7 +15,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory,
   appendMessage, resumeFromHistory, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   selectComposerBusy,
   selectContinuable,
   selectTurnInterrupted,
@@ -4656,6 +4656,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     api.editQueuedMessage(activeSlot, queueId, trimmed).catch(() => {})
   }, [activeSlot, dispatch])
 
+  const handleReorderQueued = useCallback((queueId: string, direction: 'next' | 'later') => {
+    if (!activeSlot) return
+    const slot = activeSlot
+    const ids = queuedMessages.map(m => m.meta?.queueId as string).filter(Boolean)
+    const from = ids.indexOf(queueId)
+    const to = direction === 'next' ? from - 1 : from + 1
+    if (from < 0 || to < 0 || to >= ids.length) return
+    const next = [...ids]
+    ;[next[from], next[to]] = [next[to], next[from]]
+    // Optimistically reorder; WS event reconciles other clients. Roll back to
+    // the pre-move order if the PUT fails, so the UI never shows an order the
+    // backend will not execute.
+    dispatch(reorderQueuedMessages({ slot, order: next }))
+    api.reorderQueuedMessages(slot, next).catch(() => {
+      dispatch(reorderQueuedMessages({ slot, order: ids }))
+    })
+  }, [activeSlot, dispatch, queuedMessages])
+
 
   // Search: map message index → displayItems index for scroll-to-match
   const messageToDisplayIdx = useMemo(() => {
@@ -5673,7 +5691,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
-              <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
+              <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
               {showHistorySuggestions && (

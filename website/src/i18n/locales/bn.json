@@ -5403,6 +5403,8 @@
       "edit_queued_message": "সারিতে থাকা বার্তা সম্পাদনা করুন",
       "interrupt_current_turn_and_send_this_now": "বর্তমান টার্ন থামিয়ে এটি এখনই পাঠান",
       "queued": "সারিতে",
+      "run_later": "পরে চালান",
+      "run_sooner": "আগে চালান",
       "ready_processing_after_the_current_turn": "প্রস্তুত — বর্তমান টার্নের পরে প্রক্রিয়া করা হবে",
       "save": "সংরক্ষণ করুন",
       "save_edit": "সম্পাদনা সংরক্ষণ করুন",

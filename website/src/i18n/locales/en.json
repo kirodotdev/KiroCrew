@@ -3948,6 +3948,8 @@
       "edit_queued_message": "Edit queued message",
       "interrupt_current_turn_and_send_this_now": "Interrupt current turn and send this now",
       "queued": "queued",
+      "run_later": "Run later",
+      "run_sooner": "Run sooner",
       "ready_processing_after_the_current_turn": "ready — processing after the current turn",
       "save": "Save",
       "save_edit": "Save edit",
