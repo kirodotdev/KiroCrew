@@ -87,6 +87,9 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,255}$")
 _REPO_SPEC = FieldSpec(name="repo", type=str, max_len=255, pattern=_REPO_RE)
 _REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,128}$")
 _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
+# EC2 subnet ids are `subnet-` + 8 (EC2-Classic era) or 17 hex chars.
+_SUBNET_ID_RE = re.compile(r"^subnet-[0-9a-f]{8,17}$")
+_SUBNET_ID_SPEC = FieldSpec(name="subnet_id", type=str, max_len=24, pattern=_SUBNET_ID_RE)
 
 
 def _validate_cidr(cidr: str) -> str:
@@ -158,6 +161,10 @@ def validate_tag(tag: str) -> str:
     return val
 
 
+def validate_subnet_id(subnet_id: str) -> str:
+    return validate_field(subnet_id, _SUBNET_ID_SPEC) or ""
+
+
 @dataclass
 class DeployResult:
     """Outcome of a launch."""
@@ -199,8 +206,14 @@ def azs_offering_instance_type(instance_type: str, profile: str, region: str) ->
     return {o.get("Location", "") for o in offerings if o.get("Location")}
 
 
-def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str]:
-    """Resolve a (vpc_id, subnet_id) to launch into.
+def discover_network(
+    profile: str, region: str, instance_type: str = ""
+) -> tuple[str, str, str]:
+    """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
+
+    ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
+    whether the instance needs a public IP (IGW egress requires one; a NAT
+    subnet must NOT get one).
 
     Prefers the account's **default VPC** and a public subnet within it. When an
     ``instance_type`` is given, the subnet is chosen in an AZ that actually
@@ -228,7 +241,7 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
         if len(vpc_list) != 1:
             raise aws.AWSError(
                 "no default VPC found — create one (`aws ec2 create-default-vpc`) "
-                "or specify a VPC/subnet, then retry.",
+                "or pass `--subnet <subnet-id>`, then retry.",
                 action="ec2:DescribeVpcs",
             )
     vpc_id = vpc_list[0]["VpcId"]
@@ -271,20 +284,72 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
     egress = _subnet_egress_kinds(vpc_id, profile, region)  # {subnet_id: "igw"|"nat"}
     nat = [s for s in candidates if egress.get(s["SubnetId"]) == "nat"]
     if nat:
-        return vpc_id, nat[0]["SubnetId"]
+        return vpc_id, nat[0]["SubnetId"], "nat"
     igw = [s for s in candidates if egress.get(s["SubnetId"]) == "igw"]
     if igw:
         # Prefer one that also auto-assigns a public IP, but the template's
-        # AssociatePublicIpAddress makes any IGW subnet workable.
+        # conditional AssociatePublicIpAddress makes any IGW subnet workable.
         igw.sort(key=lambda s: not s.get("MapPublicIpOnLaunch"))
-        return vpc_id, igw[0]["SubnetId"]
+        return vpc_id, igw[0]["SubnetId"], "igw"
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
         "gateway or NAT). KiroCrew needs outbound access to install packages and "
         "reach SSM. Add an internet gateway + public route (or a NAT), or pass a "
-        "subnet that has one, then retry.",
+        "subnet that has one via `--subnet`, then retry.",
         action="ec2:DescribeRouteTables",
     )
+
+
+def resolve_explicit_subnet(
+    subnet_id: str, profile: str, region: str, instance_type: str = ""
+) -> tuple[str, str, str]:
+    """Resolve a user-chosen ``--subnet`` to ``(vpc_id, subnet_id, egress_kind)``.
+
+    The explicit path skips VPC discovery entirely (the point of the flag:
+    launching into a dedicated VPC that auto-discovery would never pick while a
+    default VPC exists) but keeps the launch-time guarantees discover_network
+    provides: the subnet must exist, its AZ must offer ``instance_type``, and it
+    must have a verified internet-egress route (NAT or IGW) — a subnet without
+    egress would hang the launch until the WaitCondition timeout, so fail fast
+    with actionable text instead.
+    """
+    data = aws.checked_json(
+        ["ec2", "describe-subnets", "--subnet-ids", subnet_id],
+        profile,
+        region,
+        action="ec2:DescribeSubnets",
+    )
+    subnet_list = data.get("Subnets", []) if isinstance(data, dict) else []
+    if not subnet_list:
+        raise aws.AWSError(
+            f"subnet {subnet_id} not found in {region} — check the id and --region.",
+            action="ec2:DescribeSubnets",
+        )
+    subnet = subnet_list[0]
+    vpc_id = subnet.get("VpcId", "")
+    az = subnet.get("AvailabilityZone", "")
+    if instance_type:
+        try:
+            ok_azs = azs_offering_instance_type(instance_type, profile, region)
+        except aws.AWSError:
+            ok_azs = set()  # non-fatal — same fallback as discover_network
+        if ok_azs and az not in ok_azs:
+            raise aws.AWSError(
+                f"subnet {subnet_id} is in {az}, which does not offer "
+                f"{instance_type} — pick a subnet in one of "
+                f"{', '.join(sorted(ok_azs))}, or a different size.",
+                action="ec2:DescribeInstanceTypeOfferings",
+            )
+    egress = _subnet_egress_kinds(vpc_id, profile, region)
+    if subnet_id not in egress:
+        raise aws.AWSError(
+            f"subnet {subnet_id} has no verified internet egress route (NAT or "
+            "internet gateway). Kiro Crew needs outbound access to install "
+            "packages and reach SSM — add a NAT (or IGW) default route to the "
+            "subnet's route table, then retry.",
+            action="ec2:DescribeRouteTables",
+        )
+    return vpc_id, subnet_id, egress[subnet_id]
 
 
 def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
@@ -360,6 +425,7 @@ def build_deploy_argv(
     tier: sizes.SizeTier,
     vpc_id: str,
     subnet_id: str,
+    associate_public_ip: str = "true",
     permissions_boundary_arn: str,
     repo: str = "",
     ref: str = "",
@@ -380,6 +446,7 @@ def build_deploy_argv(
         f"VolumeSizeGb={tier.disk_gb}",
         f"VpcId={vpc_id}",
         f"SubnetId={subnet_id}",
+        f"AssociatePublicIp={associate_public_ip}",
         f"StackTag={tag}",
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
     ]
@@ -416,6 +483,7 @@ def deploy(
     tier: sizes.SizeTier,
     profile: str = "",
     region: str = "",
+    subnet_id: str = "",
     repo: str = "",
     ref: str = "",
     allow_ssh_cidr: str = "",
@@ -428,15 +496,19 @@ def deploy(
 
     When ``ship_source`` (default) the local source is packaged and uploaded to
     S3 so the instance installs from it (private-repo safe) instead of cloning
-    GitHub. ``dry_run`` returns the exact argv without calling AWS. ``proc_sink``
-    is forwarded to :func:`aws.run_aws` for the (long) deploy call so a caller
-    running deploy on a background thread can terminate the child on Ctrl+C.
+    GitHub. ``subnet_id`` pins the launch to an explicit subnet (validated by
+    :func:`resolve_explicit_subnet`) instead of auto-discovery. ``dry_run``
+    returns the exact argv without calling AWS. ``proc_sink`` is forwarded to
+    :func:`aws.run_aws` for the (long) deploy call so a caller running deploy on
+    a background thread can terminate the child on Ctrl+C.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
     tag = validate_tag(tag)
     profile = validate_profile(profile)
     region = validate_region(region)
+    if subnet_id:
+        subnet_id = validate_subnet_id(subnet_id)
     if allow_ssh_cidr:
         allow_ssh_cidr = _validate_cidr(allow_ssh_cidr)
     if repo:
@@ -452,7 +524,8 @@ def deploy(
             tag=tag,
             tier=tier,
             vpc_id="<auto>",
-            subnet_id="<auto>",
+            subnet_id=subnet_id or "<auto>",
+            associate_public_ip="<auto>",
             permissions_boundary_arn="<auto>",
             repo=repo,
             ref=ref,
@@ -500,9 +573,16 @@ def deploy(
                 logger.info("could not remove uploaded source after failed launch")
 
     # Any failure from here to a successful deploy orphans the uploaded source —
-    # network discovery included — so clean it up on the way out.
+    # network discovery/validation included — so clean it up on the way out.
     try:
-        vpc_id, subnet_id = discover_network(profile, region, tier.instance_type)
+        if subnet_id:
+            vpc_id, subnet_id, egress_kind = resolve_explicit_subnet(
+                subnet_id, profile, region, tier.instance_type
+            )
+        else:
+            vpc_id, subnet_id, egress_kind = discover_network(
+                profile, region, tier.instance_type
+            )
     except Exception:
         _cleanup_uploaded_source()
         raise
@@ -511,6 +591,10 @@ def deploy(
         tier=tier,
         vpc_id=vpc_id,
         subnet_id=subnet_id,
+        # A NAT-routed (private) subnet must NOT get a public IP — it is unused
+        # surface and can violate SCPs that deny RunInstances-with-public-IP.
+        # An IGW subnet REQUIRES one for egress.
+        associate_public_ip="false" if egress_kind == "nat" else "true",
         permissions_boundary_arn=boundary_arn,
         repo="" if ship_source else repo,
         ref="" if ship_source else ref,

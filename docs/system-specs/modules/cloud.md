@@ -67,7 +67,7 @@ claim that a hostile in-process agent is fully contained.
 | Module | Role |
 |--------|------|
 | `aws.py` | The single `run_aws` chokepoint — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
-| `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network`; tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
+| `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM. |
@@ -97,15 +97,32 @@ a fallback when no `SourceBucket` is passed.
 `_subnet_egress_kinds` classifies each subnet's effective route table (explicit
 association, else the VPC main table) as NAT (`NatGatewayId`/`NetworkInterfaceId`
 default route) or IGW (`igw-` default route). It prefers a **NAT** subnet (works
-regardless of a public IP), then an **IGW** subnet — and the template's Instance
-`NetworkInterfaces` block forces `AssociatePublicIpAddress: true`, so an
-IGW-routed subnet works even when its `MapPublicIpOnLaunch` is false. A subnet
+regardless of a public IP), then an **IGW** subnet — and the launcher threads the
+resolved egress kind into the template's `AssociatePublicIp` parameter: **IGW →
+`true`** (the Instance `NetworkInterfaces` block attaches a public IP, so an
+IGW-routed subnet works even when its `MapPublicIpOnLaunch` is false), **NAT →
+`false`** (a private-subnet instance gets NO public IP — it would be unused
+surface and can violate SCPs that deny RunInstances-with-public-IP). A subnet
 with only a local route (no 0.0.0.0/0 egress) is never chosen — the deploy would
 otherwise hang to the `WaitCondition` timeout. An **explicit** route-table
 association overrides the main table even when it has no egress: a subnet bound
 to a local-only table is treated as no-egress (excluded from the main-table
-fallback), so it can't be mistaken for having the main table's egress. The
-optional SSH CIDR is also **normalized** (host bits cleared, `1.2.3.4/24` →
+fallback), so it can't be mistaken for having the main table's egress.
+
+`launch --subnet <subnet-id>` bypasses discovery entirely —
+`resolve_explicit_subnet` pins the launch to the given subnet (the only way to
+target a dedicated/private-subnet VPC while a default VPC exists, since
+discovery always prefers the default VPC). The explicit path keeps discovery's
+launch-time guarantees: the subnet must exist in the region, its AZ must offer
+the chosen instance type, and it must pass the same `_subnet_egress_kinds`
+egress check (NAT or IGW) — each failing fast with actionable text instead of
+hanging to the `WaitCondition` timeout, and the same NAT→no-public-IP /
+IGW→public-IP parameter wiring applies. `--subnet` applies only to a **new**
+stack; reusing an existing stack warns interactively that its network is fixed,
+and **hard-fails under `--yes`** — a script's explicitly requested pin must not
+be silently ignored.
+
+The optional SSH CIDR is also **normalized** (host bits cleared, `1.2.3.4/24` →
 `1.2.3.0/24`) so the SG ingress rule is canonical. `get_stack_failures` sorts the
 specific bootstrap reason ahead of CloudFormation's generic `[WaitCondition]`
 cascade lines (events are newest-first, so the generic line would otherwise bury
