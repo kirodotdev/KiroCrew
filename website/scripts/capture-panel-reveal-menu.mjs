@@ -37,11 +37,30 @@ const DOC = [
   '',
 ].join('\n')
 
-/** Expected ⋯ items per locale — the assertion, not just a caption. */
+/** The ⋯ menu's FULL inventory in DOM order, per locale.
+ *
+ * Widened from the two restored labels to the whole list for the reason #1083
+ * exists: an assertion that names only the entries someone thought to name
+ * cannot catch the disappearance of one nobody named. `MarkdownPanel.test.tsx`
+ * holds the same inventory at the unit level; this is the rendered-DOM copy,
+ * which additionally proves the catalog keys resolve rather than falling back
+ * to raw key strings.
+ */
 const EXPECTED = {
-  en: ['Open with default app', 'Show in file manager'],
-  'zh-CN': ['用默认应用打开', '在文件管理器中显示'],
+  en: [
+    'Refresh', 'Full screen', 'Add to artifacts', 'Add to Knowledge',
+    'Open with default app', 'Show in file manager',
+    'Copy path', 'Copy content', 'Download',
+  ],
+  'zh-CN': [
+    '刷新', '全屏', '添加到工件', '添加到知识库',
+    '用默认应用打开', '在文件管理器中显示',
+    '复制路径', '复制内容', '下载',
+  ],
 }
+
+/** The entry to hover, so the highlight row lands on what this harness guards. */
+const HOVER = { en: 'Show in file manager', 'zh-CN': '在文件管理器中显示' }
 
 mkdirSync(OUT, { recursive: true })
 
@@ -69,7 +88,7 @@ const extra = async (path, route) => {
   }
   if (path.startsWith('/api/knowledge/sources')) { await json(route, { sources: [] }); return true }
   if (path.startsWith('/api/knowledge/config')) {
-    await json(route, { enabled: true, formats: ['.md', '.txt', '.pdf'] })
+    await json(route, { enabled: true, supported_formats: ['.md', '.txt', '.pdf'] })
     return true
   }
   if (path.startsWith('/api/artifacts')) { await json(route, { artifacts: [] }); return true }
@@ -138,12 +157,13 @@ async function main() {
 
     const items = (await menu.locator('[role="menuitem"]').allInnerTexts()).map(s => s.trim())
     console.log(`ITEMS ${theme}/${lang}`, JSON.stringify(items))
-    for (const want of EXPECTED[lang]) {
-      if (!items.some(t => t === want)) failures.push(`${theme}/${lang}: missing "${want}"`)
+    const want = EXPECTED[lang]
+    if (JSON.stringify(items) !== JSON.stringify(want)) {
+      failures.push(`${theme}/${lang}: inventory drifted\n      want ${JSON.stringify(want)}\n      got  ${JSON.stringify(items)}`)
     }
 
     // Hover the restored pair so the highlight row lands on the change itself.
-    await menu.getByText(EXPECTED[lang][1], { exact: true }).hover()
+    await menu.getByText(HOVER[lang], { exact: true }).hover()
     await page.waitForTimeout(150)
 
     // The non-English pass is a CATALOG assertion, not a picture: this capture
@@ -166,7 +186,7 @@ async function main() {
     console.error('FAIL\n  ' + failures.join('\n  '))
     process.exit(1)
   }
-  console.log('OK: both restored entries present in every theme/locale captured')
+  console.log('OK: full menu inventory matches in every theme/locale captured')
 }
 
 main().catch(err => { console.error(err); process.exit(1) })
