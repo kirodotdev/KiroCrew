@@ -67,7 +67,7 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # setMessageReaction — used for the steer-ack receipt
-    files_inbound=False,  # photos/stickers are dropped in receive(), matching prior behavior
+    files_inbound=True,  # photos/documents ingested via telegram/attachments.py
     files_outbound=False,
     rich_blocks=False,
     threads=True,
@@ -210,13 +210,13 @@ class TelegramTransport(MessagingTransport):
         The low-level client long-polls and normalizes updates into
         ``TelegramInbound``; this adapter maps that onto the neutral
         ``InboundMessage``, enforces deny-by-default auth, and hands an
-        authorized message to the turn dispatcher. Non-text updates
-        (photos/stickers) are dropped.
+        authorized message to the turn dispatcher. Attachment-only messages
+        (no text/caption) are accepted; sticker-only messages are dropped.
         """
         if not isinstance(raw_envelope, TelegramInbound):
             return
         inbound = raw_envelope
-        if not inbound.text:
+        if not inbound.text and not inbound.attachments:
             return
         # Chat-type gate (fail closed). A bot added to a group receives every
         # message and its replies land in that chat, so we serve ONLY a real
@@ -252,6 +252,7 @@ class TelegramTransport(MessagingTransport):
             thread_id=(str(inbound.message_thread_id) if inbound.message_thread_id else None),
             message_id=inbound.message_id,
             chat_type=inbound.chat_type,
+            attachments=list(inbound.attachments),
         )
         if not self.authorize(msg):
             return

@@ -483,3 +483,78 @@ def cleanup(paths: list[str]) -> None:
             os.unlink(p)
         except OSError:
             pass
+
+
+async def transcribe_audio_attachments(result: IngestResult, source: str) -> IngestResult:
+    """Transcribe every audio path on *result* in place, then return it.
+
+    Channel-neutral second half of audio ingestion: :func:`ingest_attachments`
+    (with ``handle_audio=True``) downloads audio and hands back
+    :attr:`IngestResult.audio_paths`; this turns those paths into prompt-ready
+    transcript blocks, or into visible rejections when speech-to-text is
+    unavailable or fails.
+
+    Lives here rather than in each channel adapter so the transcript wording and
+    the STT-unavailable handling cannot drift between channels — Discord and
+    Telegram previously carried byte-identical copies of this block.
+
+    ``source`` names the channel for log lines only; it does not change behaviour.
+
+    ``kiro_crew.transcribe`` is imported lazily so this module — a shared core
+    imported on many paths — does not pull the optional voice extra at import
+    time.
+    """
+    if not result.audio_paths:
+        return result
+
+    from kiro_crew.transcribe import is_available as stt_available
+    from kiro_crew.transcribe import transcribe_audio
+
+    try:
+        available = await asyncio.to_thread(stt_available)
+    except Exception:
+        logger.exception("%s: failed to check speech-to-text availability", source)
+        available = False
+
+    if not available:
+        result.rejections.extend(
+            "[Audio attachment — transcription is unavailable]" for _ in result.audio_paths
+        )
+        return result
+
+    for path in result.audio_paths:
+        try:
+            transcript = await transcribe_audio(path)
+        except Exception:
+            logger.exception("%s: audio transcription raised", source)
+            transcript = None
+        if transcript:
+            result.text_blocks.append(
+                f"[Voice memo transcription]\n{transcript}\n[End of transcription]"
+            )
+        else:
+            result.rejections.append("[Audio attachment — transcription failed]")
+
+    return result
+
+
+def append_attachment_context(text: str, result: IngestResult) -> str:
+    """Append prompt-ready attachment material to the user's message text.
+
+    Image paths are appended as bare lines (the ACP encoder's path regex picks
+    them up and inlines each as a base64 image content block). Text and
+    rejection blocks follow, separated by blank lines for prompt readability.
+
+    Channel-neutral: every transport that ingests attachments uses this same
+    layout, so the model sees a consistent attachment presentation regardless
+    of whether the user sent from Slack, Discord, or Telegram.
+    """
+    if result.image_paths:
+        paths_text = "\n".join(result.image_paths)
+        text = f"{text}\n{paths_text}" if text else paths_text
+
+    blocks = [*result.text_blocks, *result.rejections]
+    if blocks:
+        blocks_text = "\n\n".join(blocks)
+        text = f"{text}\n\n{blocks_text}" if text else blocks_text
+    return text

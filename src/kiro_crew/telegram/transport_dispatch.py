@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.messaging.attachments import append_attachment_context
+from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
@@ -44,6 +46,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
+from kiro_crew.telegram.attachments import process_telegram_attachments
 from kiro_crew.telegram.commands import (
     ConversationState,
     parse_command,
@@ -309,6 +312,7 @@ class TelegramDispatcher:
         # on _acquired so we never release a semaphore we didn't hold. Mirrors
         # slack/transport_dispatch.py.
         _acquired = False
+        attachment_temp_paths: list[str] = []
         try:
             # Ack placeholder first (before the potentially slow cold-start);
             # on_turn_start is idempotent so the driver's later call no-ops.
@@ -319,6 +323,15 @@ class TelegramDispatcher:
             _acquired = True
             if is_new:
                 await self.sessions.set_channel(session_key, channel_id)
+            # ── Attachment ingestion (mirrors Discord) ──
+            if msg.attachments:
+                attachment_result = await process_telegram_attachments(
+                    self.client, msg.attachments
+                )
+                attachment_temp_paths = list(attachment_result.temp_paths)
+                text = append_attachment_context(text, attachment_result)
+            if not text:
+                return
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
@@ -421,6 +434,7 @@ class TelegramDispatcher:
             self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)
+            await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
 
         # Now that the turn is released, run anything that queued during it
         # (queue_mode == "queue"). ``drain`` is False for drained turns so the
@@ -450,7 +464,15 @@ class TelegramDispatcher:
         assert self.client is not None
         chat_id = int(msg.conversation_id)
         mode = override_mode or self.cfg.messaging.queue_mode
-        if mode != "queue":
+        # An attachment-bearing message can never take the steer path: ``steer``
+        # forwards TEXT ONLY, so steering a photo/document message would deliver
+        # its caption and silently drop every file. Such a message always goes to
+        # the queue path below, which carries ``attachments`` through the drain.
+        # Mirrors discord/transport_dispatch.py's identical gate -- Telegram was
+        # missing it, and album buffering makes it far more reachable: a follow-up
+        # typed during the debounce window starts a turn, so the album's own flush
+        # arrives mid-turn and would have been steered as caption-only.
+        if mode != "queue" and not msg.attachments:
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer when a turn is GENUINELY in flight. ``is_busy`` stays
@@ -497,7 +519,10 @@ class TelegramDispatcher:
         # bubble. If the turn finished in the window the message is not queued, so
         # we run it now (re-entering handle_message, which re-strips the directive
         # and runs it as a fresh turn) instead of stranding it.
-        if not await self._enqueue_with_receipt(session_key, chat_id, text, thread=thread):
+        if not await self._enqueue_with_receipt(
+            session_key, chat_id, text, thread=thread,
+            attachments=list(msg.attachments) if msg.attachments else None,
+        ):
             await self.handle_message(msg)
 
     async def _drain_queue(
@@ -521,6 +546,7 @@ class TelegramDispatcher:
         (matching what ``enqueue`` persists for DM channels: text only).
         """
         texts: list[str] = []
+        all_attachments: list[Any] = []
         remainder: list[tuple[str, str, dict]] = []
         async with self._receipt_lock:
             # Drain the ENTIRE queue under the lock, then split: the first
@@ -534,10 +560,14 @@ class TelegramDispatcher:
                     break
                 if len(texts) < _MAX_COLLAPSE:
                     texts.append(item[1])
+                    all_attachments.extend(item[2].get("attachments") or [])
                 else:
                     remainder.append(item)
-            for _ts, rtext, _kw in remainder:
-                self.sessions.enqueue(session_key, str(time.time()), rtext, force=True)
+            for _ts, rtext, rkw in remainder:
+                self.sessions.enqueue(
+                    session_key, str(time.time()), rtext, force=True,
+                    attachments=list(rkw.get("attachments") or []),
+                )
             if texts:
                 await self._receipt_flip_locked(session_key, chat_id, texts, len(remainder))
         if not texts:
@@ -562,6 +592,7 @@ class TelegramDispatcher:
                 # would drain a queued forum message under the DM key instead.
                 thread_id=thread,
                 chat_type=chat_type,
+                attachments=all_attachments,
             ),
             drain=False,
             # Drained payloads are pure turn content: a queued "/new" must reach
@@ -572,7 +603,13 @@ class TelegramDispatcher:
     # ── Mid-turn queue receipt (single, in-place, persistent record) ───────
 
     async def _enqueue_with_receipt(
-        self, session_key: str, chat_id: int, text: str, *, thread: int | None = None
+        self,
+        session_key: str,
+        chat_id: int,
+        text: str,
+        *,
+        thread: int | None = None,
+        attachments: list[Any] | None = None,
     ) -> bool:
         """Atomically enqueue a mid-turn message and create/grow its collapsing
         "⏳ Queued (N): …" receipt, under ``_receipt_lock``.
@@ -587,7 +624,10 @@ class TelegramDispatcher:
         """
         assert self.client is not None
         async with self._receipt_lock:
-            if not self.sessions.enqueue(session_key, str(time.time()), text, force=False):
+            if not self.sessions.enqueue(
+                session_key, str(time.time()), text, force=False,
+                attachments=list(attachments or []),
+            ):
                 return False
             receipt = self._queue_receipts.get(session_key)
             if receipt is None:
