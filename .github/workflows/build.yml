@@ -50,15 +50,28 @@ jobs:
           mkdir -p src/kiro_crew/static
           cp -R website/dist src/kiro_crew/static/dist
 
-      - name: Build wheel
+      # Build the sdist too, not just the wheel: `--wheel` alone reads
+      # package_data and never evaluates MANIFEST.in, so a MANIFEST regression
+      # that strips the vendored native libs is INVISIBLE to a wheel-only build
+      # here. The release lane builds the published wheel FROM the sdist, so
+      # that regression would first surface at tag push — after it reached main.
+      - name: Build wheel + sdist
         run: |
           pip install --upgrade build
-          python -m build --wheel
+          python -m build
 
       - name: Verify wheel installs cleanly
         run: |
           pip install dist/*.whl
           kirocrew --version
+
+      # The PR-time vendored-lib gate. Without it the only such gate on a PR is
+      # the pytest guard, which MODELS MANIFEST.in rather than executing it — so
+      # this is what proves the real artifacts. Shared with build-wheel.yml so
+      # the two lanes cannot drift; a gate that diverges stops guarding without
+      # ever failing.
+      - name: Verify vendored native libs survived into the wheel + sdist
+        run: python scripts/verify_vendored_payload.py
 
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
