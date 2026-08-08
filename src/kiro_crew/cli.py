@@ -696,6 +696,150 @@ def _consolidate_cmd(args) -> None:
     print("\nDone. Check ~/.kiro/crew/skills/auto/ for new skills.")
 
 
+def _fd_targets_file(fd: int, path: Path) -> bool:
+    """True when *fd* is open on the same inode *path* names.
+
+    Used to detect a detach-spawned gateway: ``_spawn_detached_gateway``
+    redirects the child's stdout/stderr INTO ``gateway.log``, and from inside
+    the child that redirect is only visible by comparing device/inode numbers.
+    Any failure (fd closed, file missing, platform without usable inode
+    numbers) answers ``False`` — callers then keep the foreground behavior,
+    which is what a false negative degrades to today.
+    """
+    try:
+        st_fd = os.fstat(fd)
+        st_path = path.stat()
+    except OSError:
+        return False
+    return (st_fd.st_dev, st_fd.st_ino) == (st_path.st_dev, st_path.st_ino)
+
+
+def _redirect_fds_to(path: Path, fds: tuple[int, ...] = (1, 2)) -> None:
+    """Re-point raw *fds* at *path* (append mode) via ``dup2``.
+
+    After the boot rotation renames ``gateway.log`` → ``gateway.log.prev``,
+    a detach-spawned gateway's inherited stdout/stderr still reference the
+    RENAMED inode, so raw writes that bypass the logging module (uncaught
+    tracebacks, inherited child-process stderr) would land in the rotated
+    file instead of the live one. ``dup2`` swaps the descriptors in place;
+    ``sys.stdout``/``sys.stderr`` objects keep working because they address
+    the fd *number*, not the open file description. Best-effort: on failure
+    the fds keep pointing where they already were.
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except OSError:
+        pass  # a broken std stream must not abort gateway boot
+    try:
+        raw_fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError:
+        return
+    try:
+        for fd in fds:
+            try:
+                os.dup2(raw_fd, fd)
+            except OSError:
+                pass  # leave this fd as-is; the others may still succeed
+    finally:
+        os.close(raw_fd)
+
+
+def _setup_cli_logging(command: str | None, verbose: int) -> None:
+    """Configure console echo + persistent ``gateway.log`` logging.
+
+    Foreground invocations get the classic shape: ``basicConfig`` console
+    handler on the root logger (stderr) plus a rotating file handler on the
+    ``kiro_crew`` logger.
+
+    A detach-spawned gateway (``_spawn_detached_gateway``) arrives with
+    stdout/stderr already redirected INTO ``gateway.log``. In that mode the
+    console handler would write a second, console-formatted copy (no [PID])
+    of every ``kiro_crew`` record into the SAME file the file handler writes
+    to — records propagate to root — doubling log volume and halving the
+    rotation window. Detected via device/inode comparison, and then:
+
+    - the console echo is skipped entirely;
+    - the file handler attaches to the ROOT logger instead, so third-party
+      WARNINGs that previously reached the file only through the stderr
+      redirect still land, now formatted and PID-stamped;
+    - after the boot rotation, fds 1/2 are re-pointed at the live log so raw
+      writes (uncaught tracebacks, child stderr) do not land in ``.prev``.
+    """
+    if verbose >= 2:
+        level = logging.DEBUG
+    elif verbose >= 1:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+
+    log_file = config_dir() / "gateway.log"
+    # Detect BEFORE the boot rotation below: rotation renames the file, and
+    # the inode comparison must see the file stderr actually inherited.
+    detached = _fd_targets_file(2, log_file)
+
+    if detached:
+        # Console echo would double-write into gateway.log — skip it. Set the
+        # root level to what basicConfig would have set so third-party
+        # loggers gate identically in both modes.
+        logging.getLogger().setLevel(logging.WARNING)
+    else:
+        logging.basicConfig(
+            level=logging.WARNING,  # third-party libs stay quiet
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    # KiroCrew loggers: --verbose CLI flag takes precedence, otherwise
+    # fall back to the persistent log_level from config.
+    if verbose == 0:
+        try:
+            _cfg = KiroCrewConfig.load()
+            _persisted = _cfg.agent.log_level.upper()
+            level = getattr(logging, _persisted, logging.WARNING)
+        except Exception:
+            pass  # config missing or corrupt — keep default WARNING
+    logging.getLogger("kiro_crew").setLevel(level)
+
+    # Persistent file log — respects the configured log_level.
+    # On startup, rotate gateway.log → gateway.log.prev so a crash's final
+    # lines are never lost.  Only for `gateway` subcommand
+    # to avoid renaming the file while the gateway is actively writing.
+    # encoding="utf-8" is REQUIRED on Windows: KiroCrew logs non-ASCII glyphs and
+    # the default file encoding there is cp1252, so a RotatingFileHandler without
+    # it raises UnicodeEncodeError on the first non-ASCII log record (logging
+    # swallows it, but it spams "--- Logging error ---" tracebacks and drops the
+    # line). ensure_utf8_console() only fixes the console streams, not this file
+    # handler.
+    if command == "gateway":
+        prev_log = log_file.with_suffix(".log.prev")
+        if log_file.exists() and log_file.stat().st_size > 0:
+            try:
+                log_file.replace(prev_log)
+            except OSError:
+                pass  # race or permission — keep going
+        if detached:
+            _redirect_fds_to(log_file)
+    fh = RotatingFileHandler(log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    # In detached mode the handler also serves the root logger: cap its level
+    # at WARNING so third-party WARNINGs keep flowing even when kiro_crew's
+    # own configured level is stricter (kiro_crew records below `level` are
+    # already filtered at the kiro_crew logger, so this cannot over-log).
+    fh.setLevel(min(level, logging.WARNING) if detached else level)
+    fh.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s [PID %(process)d]: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    if detached:
+        # Root attach: kiro_crew records arrive once via propagation, and
+        # third-party WARNINGs land formatted — replacing what the accidental
+        # stderr echo used to provide unformatted.
+        logging.getLogger().addHandler(fh)
+    else:
+        logging.getLogger("kiro_crew").addHandler(fh)
+
+
 def main() -> None:
     """Entry point — parse args and dispatch to the appropriate subcommand."""
     # On Windows, force stdout/stderr to UTF-8 BEFORE anything prints — KiroCrew's
@@ -1897,55 +2041,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     # own $KIROCREW_HOME (an override → migration is a no-op there anyway).
     ensure_data_home()
 
-    if args.verbose >= 2:
-        level = logging.DEBUG
-    elif args.verbose >= 1:
-        level = logging.INFO
-    else:
-        level = logging.WARNING
-    logging.basicConfig(
-        level=logging.WARNING,  # third-party libs stay quiet
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    # KiroCrew loggers: --verbose CLI flag takes precedence, otherwise
-    # fall back to the persistent log_level from config.
-    if args.verbose == 0:
-        try:
-            _cfg = KiroCrewConfig.load()
-            _persisted = _cfg.agent.log_level.upper()
-            level = getattr(logging, _persisted, logging.WARNING)
-        except Exception:
-            pass  # config missing or corrupt — keep default WARNING
-    logging.getLogger("kiro_crew").setLevel(level)
-
-    # Persistent file log — respects the configured log_level.
-    # On startup, rotate gateway.log → gateway.log.prev so a crash's final
-    # lines are never lost.  Only for `gateway` subcommand
-    # to avoid renaming the file while the gateway is actively writing.
-    # encoding="utf-8" is REQUIRED on Windows: KiroCrew logs non-ASCII glyphs and
-    # the default file encoding there is cp1252, so a RotatingFileHandler without
-    # it raises UnicodeEncodeError on the first non-ASCII log record (logging
-    # swallows it, but it spams "--- Logging error ---" tracebacks and drops the
-    # line). ensure_utf8_console() only fixes the console streams, not this file
-    # handler.
-    _log_file = config_dir() / "gateway.log"
-    if args.command == "gateway":
-        _prev_log = _log_file.with_suffix(".log.prev")
-        if _log_file.exists() and _log_file.stat().st_size > 0:
-            try:
-                _log_file.replace(_prev_log)
-            except OSError:
-                pass  # race or permission — keep going
-    _fh = RotatingFileHandler(_log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    _fh.setLevel(level)
-    _fh.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)s %(name)s [PID %(process)d]: %(message)s",
-            datefmt="%H:%M:%S",
-        )
-    )
-    logging.getLogger("kiro_crew").addHandler(_fh)
+    # Console + gateway.log logging. Extracted to a helper because the
+    # detach-spawned gateway needs double-write protection (stderr IS
+    # gateway.log in that mode) — see _setup_cli_logging.
+    _setup_cli_logging(args.command, args.verbose)
 
     # No subcommand given (`kirocrew` with no args) — show banner + help and exit.
     # Without this guard, the `args.command.startswith("mcp-")` branch later
