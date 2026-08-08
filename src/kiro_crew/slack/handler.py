@@ -83,6 +83,8 @@ from kiro_crew.providers.base import (
 from kiro_crew.safety_override import (
     SafetyOverride,
     apply_config_duration,
+    describe_grant_lifetime,
+    describe_new_grant,
     grant_declared_yolo,
     safety_override,
 )
@@ -498,38 +500,6 @@ _trusted_sessions: set[str] = set()
 # (agent.yolo_duration, default 6h) — a per-surface TTL made the behavior
 # unpredictable without buying security. Read the live value, never this.
 _YOLO_TTL_SECS = SafetyOverride._ADHOC_TTL_DEFAULT
-
-
-def _fmt_duration(secs: int) -> str:
-    """Render an ad-hoc TTL for a user-facing message (e.g. "6h", "30min")."""
-    if secs % 3600 == 0:
-        return f"{secs // 3600}h"
-    return f"{secs // 60}min"
-
-
-_NO_EXPIRY_TEXT = "stays on until Kiro Crew restarts"
-
-
-def describe_grant_lifetime() -> str:
-    """Describe the LIVE grant's lifetime truthfully.
-
-    A grant can have no timed expiry at all, in which case ``remaining_secs()``
-    is -1. Claiming such a grant "auto-expires" would tell the operator the
-    skip-every-approval mode disarms itself when it never does.
-    """
-    so = safety_override()
-    if not so.is_active():
-        return "off"
-    if so.is_permanent:
-        return _NO_EXPIRY_TEXT
-    return f"{max(0, so.remaining_secs()) // 60}min remaining"
-
-
-def describe_new_grant(result_ttl: int) -> str:
-    """Describe the lifetime of a grant that was just created."""
-    if result_ttl <= 0:
-        return _NO_EXPIRY_TEXT
-    return f"auto-expires in {_fmt_duration(result_ttl)}"
 
 
 # Allowed user IDs for Slack access (set by gateway at startup).

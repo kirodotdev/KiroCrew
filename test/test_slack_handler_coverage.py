@@ -24,6 +24,7 @@ import pytest
 from conftest import MockSlackClient
 from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.safety_override import NO_EXPIRY_TEXT, fmt_grant_duration
 from kiro_crew.slack import handler as h
 
 
@@ -1710,11 +1711,11 @@ class TestPureHelpers:
         assert "full reasoning" in out
 
     def test_fmt_duration(self):
-        assert h._fmt_duration(7200) == "2h"
-        assert h._fmt_duration(1800) == "30min"
+        assert fmt_grant_duration(7200) == "2h"
+        assert fmt_grant_duration(1800) == "30min"
 
     def test_describe_new_grant(self):
-        assert h.describe_new_grant(0) == h._NO_EXPIRY_TEXT
+        assert h.describe_new_grant(0) == NO_EXPIRY_TEXT
         assert h.describe_new_grant(3600) == "auto-expires in 1h"
 
     def test_describe_grant_lifetime_off(self):

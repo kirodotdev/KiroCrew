@@ -281,8 +281,15 @@ are also accepted for muscle-memory parity with Telegram, which uses `/` only.
 
 The prefix is recognized only when the original text is not itself a command,
 and the payload after it is **turn content, never a command**: `/queue /new`
-queues the literal text `/new`. A bare `/steer` or `/queue` with no body is
-treated as an ordinary message.
+queues the literal text `/new`.
+
+A bare `/steer` or `/queue` carrying no message body matches neither the command
+parser nor the override parser. **Telegram** answers it with the directive's
+usage, because the alternative is handing the literal string `/queue` to the
+model, which then answers it as chat text — indistinguishable, to the user, from
+the feature not existing. **Discord** still treats the bare token as an ordinary
+message; the two channels therefore diverge on this one case until the guard is
+ported.
 
 ### Hard cancel: `/stop`
 

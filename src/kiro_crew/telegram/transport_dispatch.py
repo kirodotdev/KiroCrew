@@ -4,7 +4,7 @@
 hands the ``InboundMessage`` to :meth:`TelegramDispatcher.handle_message`,
 which mirrors the Slack transport dispatch:
 
-    command intercept (/new, /compact, /help)
+    command intercept (/new, /compact, /model, /yolo, /help)
     -> construct TelegramRenderer + on_turn_start (immediate ack placeholder)
     -> session acquire -> context build
     -> TurnDriver.run(provider, renderer)   # shared redaction + approval ladder
@@ -12,8 +12,9 @@ which mirrors the Slack transport dispatch:
     -> renderer.close() + session release   # in finally
 
 ``on_callback`` resolves interactive tool approvals (``a:<rid>:<1|0>`` ->
-``TelegramApprovalDecider.resolve_global``) and re-injects ``[OPTIONS:]``
-choices (``opt:<i>``) as fresh turns.
+``TelegramApprovalDecider.resolve_global``), applies ``/model`` picks
+(``m:<index>``) and re-injects ``[OPTIONS:]`` choices (``opt:<i>``) as fresh
+turns.
 
 Dependency direction is ``telegram -> messaging`` (allowed). The security
 ``tool_gate`` and spawn auto-approve are wired inline off ``ctx_builder.hooks``
@@ -43,10 +44,14 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.telegram.commands import (
     ConversationState,
+    build_help_text,
+    is_bare_mid_turn_override,
     parse_command,
+    parse_command_argument,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
@@ -76,23 +81,7 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 # stays queued and drains after the next turn (logged for observability).
 _MAX_COLLAPSE = 50
 
-_HELP_TEXT = """\
-🦞 Kiro Crew — Telegram
-
-Commands:
-/new — Start a fresh conversation
-/compact — Compress context (when it gets long)
-/link — Mirror this conversation's dashboard tab here
-/unlink — Stop mirroring
-/stop — Stop the current reply and clear the queue
-/help — Show this message
-
-While a reply is running, prefix a message to control it:
-/queue <msg> — answer it after the current turn
-/steer <msg> — fold it into the running turn now
-
-Just send a message to chat. Replies stream in real-time.
-"""
+_HELP_TEXT = build_help_text()
 
 
 def _short(text: str, limit: int = 40) -> str:
@@ -139,6 +128,29 @@ class _QueueReceipt:
     texts: list[str]
 
 
+# How long a /model picker stays pressable, and how many pickers are retained.
+# Both are bounds on unbounded growth (one entry per press-less /model), not UX
+# knobs: an expired or evicted picker answers "reopen /model" rather than acting
+# on a stale list.
+_MODEL_PICKER_TTL_SECS = 300.0
+_MODEL_PICKER_MAX = 50
+#: Buttons a picker shows. Telegram renders a one-per-row keyboard fine at this
+#: size, and the list is the account's own model set, not a catalogue.
+_MODEL_PICKER_LIMIT = 24
+
+
+@dataclass
+class _ModelPicker:
+    """A posted /model keyboard, resolving a button index back to a model id."""
+
+    route: tuple[str, str]
+    chat_id: int
+    message_id: int
+    created_at: float
+    #: ``(model_id, label)`` in button order. ``model_id`` "" is the Auto row.
+    choices: tuple[tuple[str, str], ...]
+
+
 class TelegramDispatcher:
     """Coordinates Telegram turns onto the shared ``TurnDriver``.
 
@@ -181,6 +193,15 @@ class TelegramDispatcher:
         # start, popped in finally. Records text only — no buffer slicing, so
         # none of the old steer-split fragility.
         self._active_renderers: dict[str, TelegramRenderer] = {}
+        # route -> the model id the user picked with /model, applied to every
+        # session this conversation starts from now on. Keyed by ROUTE, not
+        # session_key, so the choice survives /new and the idle/daily rotation
+        # (a model is a preference about the peer, not about one session).
+        self._model_pref: dict[tuple[str, str], str] = {}
+        # Live /model pickers awaiting a button press. Telegram caps
+        # callback_data at 64 bytes and model ids routinely exceed that, so the
+        # button carries an INDEX into this table instead of the id itself.
+        self._model_pickers: dict[str, _ModelPicker] = {}
 
     # ── Turn dispatch (transport's dispatch callback) ──────────────────────
 
@@ -261,6 +282,24 @@ class TelegramDispatcher:
         if cmd == "stop":
             await self._handle_stop(route, chat_id)
             return
+        if cmd == "model":
+            await self._handle_model(route, chat_id, parse_command_argument(text))
+            return
+        if cmd == "yolo":
+            await self._handle_yolo(
+                chat_id, parse_command_argument(text), user_id, thread=reply_thread
+            )
+            return
+        # A lone "/queue" / "/steer" is a directive missing its message body.
+        # Answering with the usage beats forwarding the token to the model, which
+        # would answer the literal string and read as a broken feature.
+        if interpret_commands and override_mode is None and is_bare_mid_turn_override(text):
+            await self._reply(
+                chat_id,
+                "Those take a message: /queue <msg> or /steer <msg>.",
+                thread=reply_thread,
+            )
+            return
 
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
         # in-flight turn BEFORE any idle/daily rotation. Rotating first could
@@ -314,7 +353,14 @@ class TelegramDispatcher:
             # on_turn_start is idempotent so the driver's later call no-ops.
             await renderer.on_turn_start()
             provider, is_new, resumed = await self.sessions.get_or_create(
-                session_key, agent=agent, channel_id=channel_id
+                session_key,
+                agent=agent,
+                channel_id=channel_id,
+                # "" is the Auto row's stored value; collapse it to None so Auto
+                # means "as if never picked". get_or_create gates its own model
+                # resolution on `model is None`, so passing "" would skip that
+                # and land on the provider factory's narrower fallback instead.
+                model=self._model_pref.get(route) or None,
             )
             _acquired = True
             if is_new:
@@ -366,6 +412,11 @@ class TelegramDispatcher:
                     and self.ctx_builder.hooks.auto_approve_subagent_spawn
                     and title == "spawn_run"
                 ),
+                # /yolo: read the grant per request, not once at boot, so turning
+                # it on (or letting it expire) takes effect on the very next tool
+                # instead of after a gateway restart. TurnDriver runs the
+                # PreToolUse gate BEFORE this, so a hard deny still wins.
+                auto_approve_session=lambda: safety_override().is_active(),
                 tool_gate=_tool_gate,
             )
             accumulated = await driver.run(full_message)
@@ -675,6 +726,221 @@ class TelegramDispatcher:
             thread=thread,
         )
 
+    # ── /yolo (global auto-approve grant) ──────────────────────────────────
+
+    async def _handle_yolo(
+        self, chat_id: int, arg: str, user_id: int, *, thread: int | None = None
+    ) -> None:
+        """Report or change the global auto-approve grant.
+
+        Reads and writes the process-wide :func:`safety_override` grant — the
+        SAME one the dashboard toggle and Slack's ``/kirocrew yolo`` drive, so a
+        grant taken here shows up (and expires) everywhere. Reachable only by an
+        allow-listed Telegram user, because ``transport.receive`` is
+        deny-by-default and owner-only before dispatch ever runs.
+
+        Turning it on does NOT weaken the PreToolUse security gate: the
+        sensitive-path keystone, governance ceiling and deny-list all run ahead
+        of the auto-approve ladder in ``TurnDriver``, so a hard DENY still wins.
+
+        The three grant mutators run off-loop: ``activate`` resolves the ad-hoc
+        duration through a live config read and every one of them writes a SEL
+        record (activation's is ``critical=True``), so calling them inline would
+        put filesystem latency on the event loop and stall every other chat and
+        heartbeat task on a slow disk.
+        """
+        so = safety_override()
+        action = arg.strip().lower().split()[0] if arg.strip() else ""
+
+        if action in ("on", "off", "renew"):
+            outcome = "allowed"
+            if action == "on":
+                if so.is_active():
+                    reply = f"🟢 YOLO is already ON ({describe_grant_lifetime()})."
+                elif (await asyncio.to_thread(so.activate, "telegram")).active:
+                    reply = (
+                        f"🟢 YOLO ON ({describe_grant_lifetime()}) — every tool "
+                        f"auto-approves. Denied-by-policy tools are still blocked."
+                    )
+                else:
+                    reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
+                    outcome = "denied"
+            elif action == "off":
+                if so.is_active():
+                    await asyncio.to_thread(so.deactivate, "telegram")
+                reply = "🔴 YOLO OFF — tools ask for approval again."
+            else:
+                renewed = (await asyncio.to_thread(so.renew, "telegram")).renewed
+                reply = (
+                    f"🟢 YOLO renewed ({describe_grant_lifetime()})."
+                    if renewed
+                    else "🔴 YOLO is not active — use /yolo on first."
+                )
+            sel().log_api_access(
+                caller=str(user_id),
+                operation="telegram.yolo_mode",
+                outcome=outcome,
+                source="telegram",
+                resources=f"yolo_{action}",
+            )
+            await self._reply(chat_id, reply, thread=thread)
+            return
+
+        status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
+        await self._reply(
+            chat_id,
+            f"YOLO is {status}.\nUsage: /yolo on | off | renew",
+            thread=thread,
+        )
+
+    # ── /model (inline-button model picker) ────────────────────────────────
+
+    def _model_choices(self, session_key: str) -> tuple[tuple[str, str], ...]:
+        """``(model_id, label)`` rows to offer for this session.
+
+        The ONLY source is what this session's backend advertised at
+        ``session/new`` — the set THIS account may actually use, carrying the
+        backend's own ids. That is deliberate on both counts: a static catalogue
+        would offer models the account cannot reach (a refusal mid-conversation),
+        and its display keys would need per-backend translation before the wire,
+        whereas an advertised id is what ``set_model`` accepts verbatim.
+
+        Returns just the Auto row when nothing is advertised (no live session
+        yet), which the caller reads as "there is nothing to pick".
+        """
+        rows: list[tuple[str, str]] = [("", "Auto (let the backend choose)")]
+        provider = self.sessions.get_provider(session_key)
+        advertised = getattr(provider, "available_models", None)
+        if not callable(advertised):
+            return tuple(rows)
+        try:
+            entries = [m for m in advertised() if isinstance(m, dict)]
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("telegram /model: available_models failed", exc_info=True)
+            return tuple(rows)
+        for entry in entries:
+            model_id = str(entry.get("modelId") or "").strip()
+            # "auto" is already offered as the first row; listing it twice would
+            # give the same choice two buttons.
+            if not model_id or model_id == "auto":
+                continue
+            rows.append((model_id, str(entry.get("name") or model_id)))
+        return tuple(rows[:_MODEL_PICKER_LIMIT])
+
+    def _prune_model_pickers(self, now: float) -> None:
+        """Drop expired pickers, then the oldest ones past the retention cap."""
+        for token, picker in list(self._model_pickers.items()):
+            if now - picker.created_at > _MODEL_PICKER_TTL_SECS:
+                self._model_pickers.pop(token, None)
+        while len(self._model_pickers) > _MODEL_PICKER_MAX:
+            oldest = min(self._model_pickers, key=lambda t: self._model_pickers[t].created_at)
+            self._model_pickers.pop(oldest, None)
+
+    async def _handle_model(self, route: tuple[str, str], chat_id: int, arg: str) -> None:
+        """Post the model keyboard (or report the current pick for a bare arg).
+
+        Deliberately button-only: a free-text model id means guessing at names
+        the user has no way to enumerate, and a typo lands as a rejected
+        ``set_model`` mid-conversation. Any argument is treated as "show me the
+        list" rather than parsed.
+        """
+        assert self.client is not None
+        session_key = self._session_key(route)
+        thread = self._route_thread(route)
+        choices = self._model_choices(session_key)
+        if len(choices) <= 1:
+            await self._reply(
+                chat_id,
+                "No model list available yet — send a message first, then /model.",
+                thread=thread,
+            )
+            return
+
+        current = self._model_pref.get(route, "")
+        current_label = next(
+            (label for mid, label in choices if mid == current),
+            current or "Auto",
+        )
+        header = f"Current model: {current_label}\nPick one:"
+        if arg.strip():
+            # An argument is not an id to apply — say so once, then show the
+            # list anyway so the message is still a step forward.
+            header = f"/model takes no argument — pick from the list.\n\n{header}"
+        keyboard = [
+            [{"text": f"{'• ' if mid == current else ''}{label}", "callback_data": f"m:{index}"}]
+            for index, (mid, label) in enumerate(choices)
+        ]
+        message_id = await self._reply(
+            chat_id,
+            header,
+            thread=thread,
+            reply_markup={"inline_keyboard": keyboard},
+        )
+        if message_id is None:
+            return
+        now = time.time()
+        self._prune_model_pickers(now)
+        self._model_pickers[f"{chat_id}:{message_id}"] = _ModelPicker(
+            route=route,
+            chat_id=chat_id,
+            message_id=message_id,
+            created_at=now,
+            choices=choices,
+        )
+
+    async def _apply_model(self, route: tuple[str, str], model_id: str) -> str:
+        """Record *model_id* for *route* and push it to the live session.
+
+        *model_id* comes verbatim from the session's advertised list, so it is
+        already the id this backend accepts — no canonical translation, which
+        would differ per backend and could mangle an id that was correct.
+
+        The preference is stored unconditionally so it reaches the NEXT session
+        even when there is nothing live to switch (the common case right after
+        ``/new``). When a session does exist, the switch is attempted in place —
+        ``session/set_model`` carries the conversation across — and the semaphore
+        is taken atomically so the switch cannot interleave JSON-RPC with a turn
+        on the same stdio channel.
+
+        Returns the user-facing outcome line.
+        """
+        label = model_id or "Auto"
+        self._model_pref[route] = model_id
+        session_key = self._session_key(route)
+        deferred = f"✅ Model set to {label} — it applies to your next message."
+        # Auto has no ACP id meaning "let the backend choose", so it can only be
+        # recorded; the next session start resolves it from config. Claiming a
+        # live switch here would be a lie.
+        if not model_id or not self.sessions.has_session(session_key):
+            return deferred
+        if not await self.sessions.try_acquire(session_key):
+            return (
+                f"✅ Model set to {label}, but a reply is still running — "
+                f"it takes effect on your next message."
+            )
+        try:
+            provider = self.sessions.get_provider(session_key)
+            set_model = getattr(getattr(provider, "client", None), "set_model", None)
+            if set_model is None:
+                return deferred
+            await set_model(model_id)
+        except Exception as exc:
+            logger.warning(
+                "telegram /model: live set_model failed for %s: %s",
+                session_key,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            # The stored preference still stands, so the next session gets it —
+            # but do not claim the running conversation switched when it did not.
+            return (
+                f"⚠️ Couldn't switch this conversation to {label} "
+                f"({type(exc).__name__}) — it applies to your next message."
+            )
+        finally:
+            self.sessions.release(session_key)
+        return f"✅ Now using {label}."
+
     # ── Inline-button handler (client's on_callback) ───────────────────────
 
     async def on_callback(self, cb: "TelegramCallback") -> None:
@@ -763,6 +1029,48 @@ class TelegramDispatcher:
                 verdict = "⌛ This approval already expired."
             await self.client.edit_message(
                 cb.chat_id, cb.message_id, verdict, reply_markup={"inline_keyboard": []}
+            )
+            return
+
+        # Model pick: "m:<index>" into the picker posted on this message.
+        if data.startswith("m:"):
+            token = f"{cb.chat_id}:{cb.message_id}"
+            picker = self._model_pickers.get(token)
+            expired = picker is not None and (
+                time.time() - picker.created_at > _MODEL_PICKER_TTL_SECS
+            )
+            try:
+                index = int(data[2:])
+            except ValueError:
+                index = -1
+            if picker is None or expired or not (0 <= index < len(picker.choices)):
+                # Covers expired, evicted, and already-consumed alike — the
+                # wording must not claim "expired" for a picker that was simply
+                # used, which is what a double-press hits.
+                self._model_pickers.pop(token, None)
+                await self.client.edit_message(
+                    cb.chat_id,
+                    cb.message_id,
+                    "⌛ This model list is no longer active — send /model again.",
+                    reply_markup={"inline_keyboard": []},
+                )
+                return
+            # Consume the picker BEFORE applying: the switch takes a round-trip,
+            # and a second press in that window would otherwise apply twice.
+            self._model_pickers.pop(token, None)
+            model_id, label = picker.choices[index]
+            outcome = await self._apply_model(picker.route, model_id)
+            sel().log_api_access(
+                caller=str(cb.user_id) or "unknown",
+                operation="telegram.set_model",
+                outcome="allowed",
+                source="telegram",
+                resources=f"model={label}",
+            )
+            # One edit carries both the result text and the retired keyboard, so
+            # the buttons never outlive the choice they represent.
+            await self.client.edit_message(
+                cb.chat_id, cb.message_id, outcome, reply_markup={"inline_keyboard": []}
             )
             return
 
