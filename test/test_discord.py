@@ -667,10 +667,10 @@ class TestDiscordAttachmentAdapter:
             return "spoken words"
 
         monkeypatch.setattr(
-            "kiro_crew.discord.attachments.stt_available", lambda: True
+            "kiro_crew.transcribe.is_available", lambda: True
         )
         monkeypatch.setattr(
-            "kiro_crew.discord.attachments.transcribe_audio", _transcribe
+            "kiro_crew.transcribe.transcribe_audio", _transcribe
         )
 
         result = await process_discord_attachments(
@@ -704,7 +704,7 @@ class TestDiscordAttachmentAdapter:
             return False
 
         monkeypatch.setattr(
-            "kiro_crew.discord.attachments.stt_available", _available
+            "kiro_crew.transcribe.is_available", _available
         )
         result = await process_discord_attachments(
             client,  # type: ignore[arg-type]
