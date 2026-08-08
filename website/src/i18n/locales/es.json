@@ -5486,6 +5486,8 @@
       "edit_queued_message": "Editar el mensaje en cola",
       "interrupt_current_turn_and_send_this_now": "Interrumpir el turno actual y enviar esto ahora",
       "queued": "en cola",
+      "run_later": "Ejecutar después",
+      "run_sooner": "Ejecutar antes",
       "ready_processing_after_the_current_turn": "listo: se procesará después del turno actual",
       "save": "Guardar",
       "save_edit": "Guardar la edición",

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
-import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2 } from 'lucide-react'
+import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { ChatMessage } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -141,11 +141,14 @@ function EditInput({ initial, onCommit, onCancel }: {
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = true }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
   onEdit?: (queueId: string, content: string) => void
+  /** Move a queued message one step toward the front (`next`) or the back
+   *  (`later`) of the run order. Index 0 runs first. */
+  onReorder?: (queueId: string, direction: 'next' | 'later') => void
   /** When true (default) the front collapsed card fuses into the surface directly
    *  below it (the input box) via a negative bottom margin + a flat, borderless bottom
    *  edge. Set false when a non-fusable element sits between the queue and the input box
@@ -307,6 +310,33 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                   ) : (
                     <>
                       <span className="truncate flex-1">{m.content}</span>
+                      {/* Reorder arrows only make sense with 2+ cards, and only
+                          in the expanded stack where the run order is visible.
+                          Index 0 runs first and renders at the BOTTOM of the
+                          expanded stack, so "run sooner" moves the card DOWN
+                          visually: ArrowDown = sooner, ArrowUp = later. */}
+                      {onReorder && expanded && messages.length > 1 && (
+                        <>
+                          <button
+                            className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                            title={i18nT('components.queueStack.run_sooner')}
+                            aria-label={i18nT('components.queueStack.run_sooner')}
+                            disabled={i === 0}
+                            onClick={(e) => { e.stopPropagation(); onReorder(queueId!, 'next') }}
+                          >
+                            <ArrowDown size={13} />
+                          </button>
+                          <button
+                            className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                            title={i18nT('components.queueStack.run_later')}
+                            aria-label={i18nT('components.queueStack.run_later')}
+                            disabled={i === messages.length - 1}
+                            onClick={(e) => { e.stopPropagation(); onReorder(queueId!, 'later') }}
+                          >
+                            <ArrowUp size={13} />
+                          </button>
+                        </>
+                      )}
                       {onEdit && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
@@ -364,5 +394,6 @@ export default memo(QueueStackInner, (prev, next) =>
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&
-  prev.onEdit === next.onEdit
+  prev.onEdit === next.onEdit &&
+  prev.onReorder === next.onReorder
 )

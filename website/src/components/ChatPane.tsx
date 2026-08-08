@@ -21,7 +21,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch } from '../store'
-import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, reorderQueuedMessages } from '../store/chatSlice'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { displayModel } from '../lib/model'
@@ -230,6 +230,21 @@ export default function ChatPane({
     api.cancelQueuedMessage(slotKey, queueId).catch(() => undefined)
   }, [dispatch, slotKey])
   const onInterruptQueued = useCallback((queueId: string) => { api.interruptSlot(slotKey, queueId).catch(() => undefined) }, [slotKey])
+  const onReorderQueued = useCallback((queueId: string, direction: 'next' | 'later') => {
+    const ids = queuedMessages.map(m => m.meta?.queueId as string).filter(Boolean)
+    const from = ids.indexOf(queueId)
+    const to = direction === 'next' ? from - 1 : from + 1
+    if (from < 0 || to < 0 || to >= ids.length) return
+    const next = [...ids]
+    ;[next[from], next[to]] = [next[to], next[from]]
+    // Optimistically reorder; WS event reconciles other clients. Roll back to
+    // the pre-move order if the PUT fails, so the UI never shows an order the
+    // backend will not execute.
+    dispatch(reorderQueuedMessages({ slot: slotKey, order: next }))
+    api.reorderQueuedMessages(slotKey, next).catch(() => {
+      dispatch(reorderQueuedMessages({ slot: slotKey, order: ids }))
+    })
+  }, [dispatch, slotKey, queuedMessages])
   // Split-view panes render tool calls with the full ToolCallLine (purpose / input /
   // output / live status) instead of the SDK's bare pill. ToolCallLine's slot-aware
   // selectors read THIS slot's per-slot tool log, so a background pane shows the same
@@ -295,7 +310,7 @@ export default function ChatPane({
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onReorder={onReorderQueued} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the

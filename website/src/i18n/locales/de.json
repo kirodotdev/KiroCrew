@@ -5403,6 +5403,8 @@
       "edit_queued_message": "Wartende Nachricht bearbeiten",
       "interrupt_current_turn_and_send_this_now": "Aktuellen Zug unterbrechen und dies jetzt senden",
       "queued": "in Warteschlange",
+      "run_later": "Später ausführen",
+      "run_sooner": "Früher ausführen",
       "ready_processing_after_the_current_turn": "bereit — wird nach dem aktuellen Zug verarbeitet",
       "save": "Speichern",
       "save_edit": "Änderung speichern",

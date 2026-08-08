@@ -5320,6 +5320,8 @@
       "edit_queued_message": "대기 중인 메시지 편집",
       "interrupt_current_turn_and_send_this_now": "현재 턴을 중단하고 지금 보내기",
       "queued": "대기 중",
+      "run_later": "나중에 실행",
+      "run_sooner": "먼저 실행",
       "ready_processing_after_the_current_turn": "준비 완료 — 현재 턴이 끝난 뒤 처리합니다",
       "save": "저장",
       "save_edit": "편집 내용 저장",
