@@ -49,6 +49,9 @@ _USER_AGENT = "KiroCrew/1.0 (mcp-discovery)"
 # is a few KB; anything bigger is malformed or hostile.
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
+# Chunk size for reading HTTP responses (64 KB).
+_HTTP_READ_CHUNK_BYTES = 65536
+
 # _meta key under which the registry reports official status metadata.
 _META_OFFICIAL = "io.modelcontextprotocol.registry/official"
 
@@ -84,14 +87,22 @@ async def _fetch_json(url: str) -> Any | None:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers={"User-Agent": _USER_AGENT}) as resp:
                 if resp.status == 404:
+                    await resp.release()
                     return None
                 if resp.status != 200:
+                    resp.close()
                     raise ProviderUnavailableError(f"registry returned HTTP {resp.status}")
                 # Bound the read — resp.text() would buffer unbounded.
-                body = await resp.content.read(_MAX_RESPONSE_BYTES + 1)
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    raise ProviderUnavailableError("registry response too large")
-                return json.loads(body.decode("utf-8"))
+                body = bytearray()
+                while True:
+                    chunk = await resp.content.read(_HTTP_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+                    if len(body) > _MAX_RESPONSE_BYTES:
+                        resp.close()
+                        raise ProviderUnavailableError("registry response too large")
+                return json.loads(bytes(body).decode("utf-8", errors="replace"))
     except ProviderUnavailableError:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, OSError) as exc:
