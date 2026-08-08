@@ -158,6 +158,7 @@ class TelegramDispatcher:
         agent: str | None = None,
         conv_log: "ConversationLog | None" = None,
         approval_mode: str = APPROVAL_INTERACTIVE,
+        channel_name: str = "telegram",
     ) -> None:
         self.sessions = sessions
         self.ctx_builder = ctx_builder
@@ -166,6 +167,7 @@ class TelegramDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        self.channel_name = channel_name
         self.client: "TelegramClient | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
         # session_key -> the single in-place "queued" receipt bubble tracking
@@ -883,7 +885,7 @@ class TelegramDispatcher:
         slot, comp = route
         gen = self._conv.current_gen(route)
         return build_dm_session_key(
-            "telegram",
+            self.channel_name,
             self._resolve_agent(),
             comp,
             gen=gen,
@@ -895,7 +897,7 @@ class TelegramDispatcher:
         slot, comp = route
         return seed_generation(
             self.sessions,
-            channel="telegram",
+            channel=self.channel_name,
             agent=self._resolve_agent(),
             user_id=comp,
             dm_scope=self.cfg.messaging.dm_scope,

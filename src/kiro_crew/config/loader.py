@@ -2255,6 +2255,15 @@ class KiroCrewAgentConfig:
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
     )
+    telegram_account: str = field(
+        default="",
+        metadata=_meta(
+            "Telegram Account",
+            "Bind this agent to a named Telegram account from "
+            "telegram.accounts. Messages received by that bot are routed to "
+            "this agent. Empty means no binding (uses default agent routing).",
+        ),
+    )
 
 
 @dataclass
@@ -3709,6 +3718,39 @@ def _coerce_str_ids(raw: object) -> list[str]:
 _GITLAB_HOST_NAME_RE = _re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
 
 
+def _parse_telegram_accounts(raw: object) -> dict[str, "TelegramAccountConfig"]:
+    """Parse the ``telegram.accounts`` map from raw config JSON.
+
+    Each value is a dict with optional keys matching :class:`TelegramAccountConfig`.
+    Invalid entries (non-dict values, missing bot_token) are skipped so a
+    hand-edited config never crashes gateway startup.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, TelegramAccountConfig] = {}
+    for account_id, acct_data in raw.items():
+        if not isinstance(account_id, str) or not isinstance(acct_data, dict):
+            continue
+        # Account IDs become part of the session-key channel namespace
+        # (e.g. "telegram.finance"). Reject any that contain characters the
+        # session-key format reserves (colon, whitespace, dots) or are empty.
+        if not account_id or not account_id.replace("-", "").replace("_", "").isalnum():
+            continue
+        token = str(acct_data.get("bot_token", "")).strip()
+        if not token:
+            continue
+        out[account_id] = TelegramAccountConfig(
+            bot_token=token,
+            allowed_user_ids=_coerce_int_ids(acct_data.get("allowed_user_ids")),
+            allow_forum=_safe_bool(acct_data.get("allow_forum"), False),
+            allowed_forum_chat_ids=_coerce_int_ids(acct_data.get("allowed_forum_chat_ids")),
+            soft_threshold_pct=max(
+                1, min(100, _coerce_int(acct_data.get("soft_threshold_pct"), 80))
+            ),
+        )
+    return out
+
+
 def _coerce_gitlab_hosts(raw: object) -> list[str]:
     """Coerce the self-hosted GitLab allowlist to clean ``host[:port]`` entries.
 
@@ -3784,6 +3826,58 @@ def _coerce_int(raw: object, default: int) -> int:
 
 
 @dataclass
+class TelegramAccountConfig:
+    """A single named Telegram bot account within a multi-account gateway.
+
+    Each account has its own bot token and allow-list, enabling one gateway
+    process to serve multiple Telegram bots simultaneously. The account binds
+    to an agent via the agents map (``telegram_account`` field).
+    """
+
+    bot_token: str = field(
+        default="",
+        metadata=_meta(
+            "Bot Token",
+            "Telegram Bot API token for this account.",
+            tags=["telegram"],
+            sensitive=True,
+        ),
+    )
+    allowed_user_ids: list[int] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed User IDs",
+            "Numeric Telegram user IDs permitted to DM this bot account.",
+            tags=["telegram"],
+        ),
+    )
+    allow_forum: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Forum Topics",
+            "Serve forum Topics for this account.",
+            tags=["telegram"],
+        ),
+    )
+    allowed_forum_chat_ids: list[int] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Forum Chat IDs",
+            "Supergroup chat_ids permitted for this account.",
+            tags=["telegram"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "Prompt threshold for this account.",
+            tags=["telegram"],
+        ),
+    )
+
+
+@dataclass
 class TelegramConfig:
     enabled: bool = field(
         default=False,
@@ -3840,6 +3934,40 @@ class TelegramConfig:
             tags=["telegram"],
         ),
     )
+    accounts: dict[str, TelegramAccountConfig] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Accounts",
+            "Named Telegram bot accounts for multi-bot operation. Each key is an "
+            "account ID (e.g. 'main', 'finance') mapping to its own bot_token and "
+            "allow-list. When present, takes precedence over the top-level "
+            "bot_token/allowed_user_ids. When absent, the top-level fields are "
+            "treated as a single 'default' account (backward compatible).",
+            tags=["telegram"],
+        ),
+    )
+
+    def resolved_accounts(self) -> dict[str, "TelegramAccountConfig"]:
+        """Return the effective account map.
+
+        If ``accounts`` is populated, return it directly. Otherwise synthesize a
+        single ``"default"`` account from the legacy top-level fields. This
+        provides full backward compatibility: existing single-token configs work
+        unchanged.
+        """
+        if self.accounts:
+            return self.accounts
+        if not self.bot_token:
+            return {}
+        return {
+            "default": TelegramAccountConfig(
+                bot_token=self.bot_token,
+                allowed_user_ids=list(self.allowed_user_ids),
+                allow_forum=self.allow_forum,
+                allowed_forum_chat_ids=list(self.allowed_forum_chat_ids),
+                soft_threshold_pct=self.soft_threshold_pct,
+            )
+        }
 
 
 @dataclass
@@ -4538,6 +4666,7 @@ class KiroCrewConfig:
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
+                        telegram_account=entry.get("telegram_account", ""),
                     )
 
         # Migrate workspaces from flat or structured format
@@ -4816,6 +4945,7 @@ class KiroCrewConfig:
                 ),
                 allow_forum=bool(telegram_data.get("allow_forum", False)),
                 allowed_forum_chat_ids=_coerce_int_ids(telegram_data.get("allowed_forum_chat_ids")),
+                accounts=_parse_telegram_accounts(telegram_data.get("accounts")),
             ),
             weixin=WeixinConfig(
                 enabled=bool(weixin_data.get("enabled", False)),

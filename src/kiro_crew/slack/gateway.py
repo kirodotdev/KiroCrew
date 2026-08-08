@@ -864,7 +864,9 @@ class GatewayOrchestrator:
         # cfg.telegram.bot_token; all other settings come from the typed
         # cfg.telegram dataclass (no ad-hoc config.json re-parse).
         self._telegram_bot_token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
-        self._telegram_enabled = bool(cfg.telegram.enabled and self._telegram_bot_token)
+        self._telegram_enabled = bool(
+            cfg.telegram.enabled and (self._telegram_bot_token or cfg.telegram.accounts)
+        )
         self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
         # Forum-topic gate (fail closed): serve supergroup forum Topics only when
         # allow_forum is set AND the supergroup's chat_id is allow-listed.
