@@ -5320,6 +5320,8 @@
       "edit_queued_message": "キューに入っているメッセージを編集",
       "interrupt_current_turn_and_send_this_now": "現在のターンを中断して今すぐ送信",
       "queued": "キューに入っています",
+      "run_later": "後で実行",
+      "run_sooner": "先に実行",
       "ready_processing_after_the_current_turn": "準備完了 — 現在のターンの後で処理します",
       "save": "保存",
       "save_edit": "編集を保存",

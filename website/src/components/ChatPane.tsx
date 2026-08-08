@@ -230,6 +230,33 @@ export default function ChatPane({
     api.cancelQueuedMessage(slotKey, queueId).catch(() => undefined)
   }, [dispatch, slotKey])
   const onInterruptQueued = useCallback((queueId: string) => { api.interruptSlot(slotKey, queueId).catch(() => undefined) }, [slotKey])
+  const onReorderQueued = useCallback((queueId: string, direction: 'next' | 'later') => {
+    // Build the order from ALL queued messages in the slot, not just the
+    // interactive ones QueueStack renders: hidden system deliveries and
+    // recovery continuations are queued too, and submitting only the visible
+    // ids would let the backend append the omitted ones at the tail, silently
+    // demoting automation. The swap happens between adjacent VISIBLE cards but
+    // is expressed inside the complete id sequence.
+    const fullIds = allMessages
+      .filter(m => m.role === 'queued')
+      .map(m => m.meta?.queueId as string)
+      .filter(Boolean)
+    const visibleIds = queuedMessages.map(m => m.meta?.queueId as string).filter(Boolean)
+    const vFrom = visibleIds.indexOf(queueId)
+    const vTo = direction === 'next' ? vFrom - 1 : vFrom + 1
+    if (vFrom < 0 || vTo < 0 || vTo >= visibleIds.length) return
+    const a = fullIds.indexOf(visibleIds[vFrom])
+    const b = fullIds.indexOf(visibleIds[vTo])
+    if (a < 0 || b < 0) return
+    const next = [...fullIds]
+    ;[next[a], next[b]] = [next[b], next[a]]
+    // No optimistic dispatch: the server commits and broadcasts queue_reorder
+    // to every client including this one, and that WS event is the
+    // authoritative store update. A local dispatch with rollback-on-failure
+    // could restore a stale order when the server committed but the HTTP
+    // response was lost, leaving this client in conflict with execution order.
+    api.reorderQueuedMessages(slotKey, next).catch(() => undefined)
+  }, [slotKey, allMessages, queuedMessages])
   // Split-view panes render tool calls with the full ToolCallLine (purpose / input /
   // output / live status) instead of the SDK's bare pill. ToolCallLine's slot-aware
   // selectors read THIS slot's per-slot tool log, so a background pane shows the same
@@ -295,7 +322,7 @@ export default function ChatPane({
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onReorder={onReorderQueued} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the

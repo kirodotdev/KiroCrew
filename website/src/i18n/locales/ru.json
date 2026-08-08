@@ -5569,6 +5569,8 @@
       "edit_queued_message": "Изменить сообщение в очереди",
       "interrupt_current_turn_and_send_this_now": "Прервать текущий ход и отправить сейчас",
       "queued": "в очереди",
+      "run_later": "Выполнить позже",
+      "run_sooner": "Выполнить раньше",
       "ready_processing_after_the_current_turn": "готово — обработка после текущего хода",
       "save": "Сохранить",
       "save_edit": "Сохранить правку",

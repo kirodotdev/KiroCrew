@@ -38,6 +38,7 @@ import reducer, {
   sideClose,
   appendQueuedMessage,
   editQueuedMessage,
+  reorderQueuedMessages,
   cancelQueuedMessage,
   selectSlotSubagentsActive,
   selectSlotPendingSpawnApprovals,
@@ -1771,6 +1772,66 @@ describe('warmSlotCache (background cache warm)', () => {
     const state0 = reducer(initial, setActiveSlot('chat-1'))
     const state = reducer(state0, warmSlotCache.fulfilled(null, 'w1', 'chat-1'))
     expect(state.slotMessages).toEqual(state0.slotMessages)
+  })
+})
+
+describe('queue reorder reducer', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+  const withQueued3 = () => {
+    let state = reducer(initial, setActiveSlot('chat-1'))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'first', ts: 't1', queue_id: 'q1' }))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'second', ts: 't2', queue_id: 'q2' }))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'third', ts: 't3', queue_id: 'q3' }))
+    return state
+  }
+  const queuedIds = (state: ReturnType<typeof reducer>) =>
+    state.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId)
+
+  it('reorders queued messages to the given id sequence', () => {
+    let state = withQueued3()
+    state = reducer(state, reorderQueuedMessages({ slot: 'chat-1', order: ['q3', 'q1', 'q2'] }))
+    expect(queuedIds(state)).toEqual(['q3', 'q1', 'q2'])
+    expect(state.messages.filter(m => m.role === 'queued').map(m => m.content)).toEqual(['third', 'first', 'second'])
+  })
+
+  it('keeps ids missing from the order after the ordered ones (backend semantics)', () => {
+    let state = withQueued3()
+    state = reducer(state, reorderQueuedMessages({ slot: 'chat-1', order: ['q2'] }))
+    expect(queuedIds(state)).toEqual(['q2', 'q1', 'q3'])
+  })
+
+  it('ignores unknown ids in the order', () => {
+    let state = withQueued3()
+    state = reducer(state, reorderQueuedMessages({ slot: 'chat-1', order: ['ghost', 'q2', 'q1', 'q3'] }))
+    expect(queuedIds(state)).toEqual(['q2', 'q1', 'q3'])
+  })
+
+  it('does not move non-queued messages: queued slots are re-filled in place', () => {
+    let state = reducer(initial, setActiveSlot('chat-1'))
+    state = reducer(state, appendMessage({ role: 'user', content: 'hello', cls: 'msg msg-u' }))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'first', ts: 't1', queue_id: 'q1' }))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'second', ts: 't2', queue_id: 'q2' }))
+    const before = state.messages.map(m => m.role)
+    state = reducer(state, reorderQueuedMessages({ slot: 'chat-1', order: ['q2', 'q1'] }))
+    expect(state.messages.map(m => m.role)).toEqual(before)
+    expect(queuedIds(state)).toEqual(['q2', 'q1'])
+    expect(state.messages[0].content).toBe('hello')
+  })
+
+  it('is a no-op with fewer than two queued messages', () => {
+    let state = reducer(initial, setActiveSlot('chat-1'))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-1', content: 'only', ts: 't1', queue_id: 'q1' }))
+    const before = state.messages
+    state = reducer(state, reorderQueuedMessages({ slot: 'chat-1', order: ['q1'] }))
+    expect(state.messages).toEqual(before)
+  })
+
+  it('targets slotMessages for a non-active slot', () => {
+    let state = reducer(initial, setActiveSlot('chat-1'))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-2', content: 'a', ts: 't1', queue_id: 'qa' }))
+    state = reducer(state, appendQueuedMessage({ slot: 'chat-2', content: 'b', ts: 't2', queue_id: 'qb' }))
+    state = reducer(state, reorderQueuedMessages({ slot: 'chat-2', order: ['qb', 'qa'] }))
+    expect((state.slotMessages['chat-2'] || []).filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(['qb', 'qa'])
   })
 })
 

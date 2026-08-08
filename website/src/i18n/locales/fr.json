@@ -5486,6 +5486,8 @@
       "edit_queued_message": "Modifier le message en file d'attente",
       "interrupt_current_turn_and_send_this_now": "Interrompre le tour en cours et envoyer maintenant",
       "queued": "en file d'attente",
+      "run_later": "Exécuter plus tard",
+      "run_sooner": "Exécuter plus tôt",
       "ready_processing_after_the_current_turn": "prêt — traitement après le tour en cours",
       "save": "Enregistrer",
       "save_edit": "Enregistrer la modification",

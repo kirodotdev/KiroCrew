@@ -2380,6 +2380,27 @@ const chatSlice = createSlice({
       const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
       if (idx >= 0) msgs[idx].content = content
     },
+    /** Reorder queued messages to match the given queue-id sequence (from the
+     *  backend queue_reorder WS event or an optimistic local update). Queued
+     *  messages are re-slotted in place - the positions they occupy in the
+     *  message list stay fixed, only which queued message sits at each
+     *  position changes. Ids missing from `order` keep their relative order
+     *  after the ordered ones (mirrors the backend's semantics). */
+    reorderQueuedMessages(state, action: PayloadAction<{ slot: string; order: string[] }>) {
+      const { slot, order } = action.payload
+      if (isUnsafeKey(slot)) return
+      const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
+      if (!msgs) return
+      const queuedIdx: number[] = []
+      msgs.forEach((m, i) => { if (m.role === 'queued' && (m.meta?.queueId as string)) queuedIdx.push(i) })
+      if (queuedIdx.length < 2) return
+      const byId = new Map(queuedIdx.map(i => [msgs[i].meta?.queueId as string, msgs[i]]))
+      const ordered = order.filter(id => byId.has(id)).map(id => byId.get(id)!)
+      const orderedSet = new Set(order)
+      const remaining = queuedIdx.map(i => msgs[i]).filter(m => !orderedSet.has(m.meta?.queueId as string))
+      const next = [...ordered, ...remaining]
+      queuedIdx.forEach((msgIdx, k) => { msgs[msgIdx] = next[k] })
+    },
     /** Add a queued message (from backend queue_push WS event). */
     appendQueuedMessage: {
       reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string }>) {
@@ -2756,7 +2777,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, clearQuestionCard, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage,
+  removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
