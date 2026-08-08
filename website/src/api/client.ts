@@ -8,8 +8,11 @@ import type {
   PullRequestStatusBatch,
   PublishProviderDescriptor,
   SessionDoc,
+  SessionInventoryDetail,
+  SessionInventoryList,
   SessionStorageCleanup,
   SessionStorageReport,
+  SessionTrashResult,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
@@ -1115,6 +1118,15 @@ export const api = {
       .then(j) as Promise<{ restored: number }>,
   sessionStorageEmpty: (batchIds: string[]) =>
     post('/api/system/session-storage/empty', { batch_ids: batchIds }).then(j) as Promise<{ freed_bytes: number }>,
+  /** Session inventory — the flat list contract (§1). */
+  sessionInventory: () =>
+    get('/api/system/session-storage/sessions').then(j) as Promise<SessionInventoryList>,
+  /** Session detail — lazy per-row fetch (§2). */
+  sessionInventoryDetail: (uid: string) =>
+    get(`/api/system/session-storage/sessions/${encodeURIComponent(uid)}`).then(j) as Promise<SessionInventoryDetail>,
+  /** Move explicit selection to trash (§3). */
+  sessionInventoryTrash: (uids: string[]) =>
+    post('/api/system/session-storage/trash', { uids }).then(j) as Promise<SessionTrashResult>,
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   // Per-turn context injection breakdown for one session. Independent of the
   // telemetry main switch: the usage rows it reads are always written.

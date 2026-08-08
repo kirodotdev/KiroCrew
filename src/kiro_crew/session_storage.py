@@ -143,11 +143,24 @@ class SessionIndex:
 
     stem_to_sid: Mapping[str, str] = field(default_factory=dict)
     active_sids: frozenset[str] = frozenset()
+    # Sessions with a turn in flight RIGHT NOW, which is a strictly narrower set
+    # than *active_sids*. Kept separate rather than folded in: a reclaim is
+    # refused for everything in ``active_sids`` either way, so this exists to let
+    # a caller say WHY — "in use at this instant" and "idle but still resumable"
+    # are different facts and only the first is a hazard. Nothing here loosens a
+    # refusal; an empty set means "no running-state signal available", which the
+    # reporting path must read as unknown rather than as idle.
+    live_sids: frozenset[str] = frozenset()
 
     @property
     def active_stems(self) -> frozenset[str]:
         """Transcript stems belonging to a session that is still resumable."""
         return frozenset(stem for stem, sid in self.stem_to_sid.items() if sid in self.active_sids)
+
+    @property
+    def live_stems(self) -> frozenset[str]:
+        """Transcript stems belonging to a session running right now."""
+        return frozenset(stem for stem, sid in self.stem_to_sid.items() if sid in self.live_sids)
 
     def stems_for(self, sid: str) -> tuple[str, ...]:
         return tuple(stem for stem, owner in self.stem_to_sid.items() if owner == sid)
@@ -163,6 +176,11 @@ class SessionUnit:
     bytes: int
     mtime: float
     active: bool
+    # True only while a turn is in flight. A subset of *active*: everything live is
+    # also active, so no refusal depends on this field — it exists so a screen can
+    # tell "in use right now" apart from "idle but the product could resume it",
+    # which is the difference between a hazard and a preference.
+    live: bool = False
 
     def age_days(self, now: float) -> float:
         return max(0.0, (now - self.mtime) / _SECONDS_PER_DAY)
@@ -342,11 +360,13 @@ def _scan_units(index: SessionIndex) -> list[SessionUnit]:
             record(uid, size, mtime)
 
     active_stems = index.active_stems
+    live_stems = index.live_stems
     units = []
     for uid, size in sizes.items():
         sid = sids.get(uid, "")
         owned = tuple(stems.get(uid, []))
         active = sid in index.active_sids or any(stem in active_stems for stem in owned)
+        live = sid in index.live_sids or any(stem in live_stems for stem in owned)
         units.append(
             SessionUnit(
                 uid=uid,
@@ -355,6 +375,7 @@ def _scan_units(index: SessionIndex) -> list[SessionUnit]:
                 bytes=size,
                 mtime=mtimes.get(uid, 0.0),
                 active=active,
+                live=live,
             )
         )
     return units
@@ -494,6 +515,20 @@ def measure(index: SessionIndex, *, now: float | None = None) -> StorageReport:
         sum(1 for u in units if u.stems and not u.sid),
     )
     return report
+
+
+def list_units(index: SessionIndex) -> list[SessionUnit]:
+    """Every session on disk as one unit each, with its total size and age.
+
+    The inventory screen's row source. Exposed separately from :func:`measure`
+    because that answers "how much in total" and deliberately collapses to
+    aggregates, while a list needs the individual sessions back.
+
+    A filesystem scan only — no file CONTENT is read, so this stays usable on a
+    six-figure store. Anything requiring a read (a title's metadata line, a first
+    message, a turn or image count) is fetched per row instead.
+    """
+    return _scan_units(index)
 
 
 def select_reclaimable(

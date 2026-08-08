@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from aiohttp import web
@@ -27,12 +28,17 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import transcript_stems
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_digest import digest
 from kiro_crew.session_map import SessionMap
 from kiro_crew.session_storage import (
+    MIN_RECLAIM_AGE_DAYS,
     SessionIndex,
     SessionStorageError,
+    SessionUnit,
     empty_trash,
     list_trash,
+    list_units,
     measure,
     move_to_trash,
     restore,
@@ -61,7 +67,7 @@ def _sel():
     return _pkg.sel()
 
 
-def _build_index() -> SessionIndex:
+def _build_index(state: DashboardState | None = None) -> SessionIndex:
     """Pair every mapped session's replay log with its transcript files.
 
     Stems come from :func:`kiro_crew.history.transcript_stems`, which returns both
@@ -69,10 +75,22 @@ def _build_index() -> SessionIndex:
     may still log under. Using only the canonical stem would leave a legacy
     transcript looking like it belongs to no session — and therefore reclaimable
     while the session is still resumable.
+
+    *state*, when given, additionally marks the sessions with a turn in flight.
+    That set is only ever used to EXPLAIN a refusal, never to grant one: every
+    refusal is already decided by ``active_sids``, which is the whole map. Omitting
+    the state therefore cannot make anything reclaimable that would not be —
+    it only costs the caller the ability to say which sessions are truly busy.
     """
     mapping = SessionMap().mapped_sids_by_key()
     stem_to_sid = {stem: sid for key, sid in mapping.items() for stem in transcript_stems(key)}
-    return SessionIndex(stem_to_sid=stem_to_sid, active_sids=frozenset(mapping.values()))
+    running = state.running_session_keys() if state is not None else frozenset()
+    live_sids = frozenset(sid for key, sid in mapping.items() if key in running)
+    return SessionIndex(
+        stem_to_sid=stem_to_sid,
+        active_sids=frozenset(mapping.values()),
+        live_sids=live_sids,
+    )
 
 
 def _deny(operation: str, request: web.Request) -> web.Response:
@@ -363,3 +381,300 @@ async def api_session_storage_empty(request: web.Request) -> web.Response:
         resources=f"freed:{freed}",
     )
     return web.json_response({"freed_bytes": freed})
+
+
+# ------------------------------------------------------------------ inventory
+#
+# The list surface. Where the report above answers "how much in total", these
+# answer "which sessions, and may I have this one back" — the question a person
+# actually acts on.
+#
+# The split across three endpoints is a cost boundary, not taste. Titles are one
+# readline() per transcript and are cheap enough to serve for every row; a first
+# message, a turn count and an image count each need the WHOLE file, which at six
+# figures of sessions is not servable on open. So those are fetched per row, when
+# a row expands.
+
+
+def _origin(unit: SessionUnit) -> str:
+    """A display-ready provenance line, e.g. ``dashboard · chat-70``.
+
+    Composed from the id, so it carries no translatable prose — the parts are
+    literal channel and slot names. A unit with no transcript stem is one that
+    only exists in the replay store, which is what a subagent looks like on disk;
+    it has no channel to name, so its own id is the honest answer.
+
+    The result is scrubbed by the caller before it ships: a session id may be
+    only loosely constrained (``_UNIT_ID_RE`` admits the alphanumeric shape of an
+    access-key id), and this string IS rendered, so it gets the same treatment as
+    any other content on the way out.
+    """
+    stem = unit.stems[0] if unit.stems else ""
+    if not stem:
+        return unit.uid
+    channel, _, rest = stem.partition("_")
+    return f"{channel} · {rest}" if rest else stem
+
+
+def _redact(text: str) -> str:
+    """Scrub a string that came out of a user's transcript.
+
+    Both fields this screen shows — a session's title and its first message —
+    are conversation content, so either can carry a pasted key or a credential
+    in a URL. Per the ``security-controls`` rule every LLM- or user-originated
+    string is passed through both scrubbers, in this order, before it reaches a
+    dashboard surface.
+    """
+    if not text:
+        return text
+    cleaned, _ = redact_exfiltration_urls(text)
+    cleaned, _ = redact_credentials(cleaned)
+    return cleaned
+
+
+def _titles_by_stem(conversation_log: Any) -> dict[str, str]:
+    """Map transcript stem to its session title.
+
+    ``list_sessions`` reads only each file's first metadata line and caches on
+    mtime, so this stays a readline per session rather than a full read. The log
+    is taken from dashboard state rather than constructed here precisely so that
+    cache is shared. A session that never got a title simply has no entry.
+    """
+    try:
+        rows = conversation_log.list_sessions()
+    except Exception:
+        logger.debug("session titles unreadable", exc_info=True)
+        return {}
+    # Only string titles. The resume path assigns a client-supplied `body["title"]`
+    # to the slot without validating its type, so a number can reach the persisted
+    # metadata — and a number is truthy, so a plain `.get("title")` check would let
+    # it through to the scrubbers and turn a read into a 500.
+    return {
+        row["key"]: row["title"]
+        for row in rows
+        if row.get("key") and isinstance(row.get("title"), str) and row["title"]
+    }
+
+
+def _inventory_payload(state: DashboardState) -> dict[str, Any]:
+    index = _build_index(state)
+    units = list_units(index)
+    titles = _titles_by_stem(state.conversation_log)
+    report = measure(index)
+
+    sessions = []
+    # Biggest first: the screen exists to answer "what is taking the space", so the
+    # answer should be the first row rather than something to sort for. Sorted on
+    # the units, not on the built payload, because the rows are heterogeneous dicts.
+    for unit in sorted(units, key=lambda u: u.bytes, reverse=True):
+        title = _redact(next((titles[stem] for stem in unit.stems if stem in titles), ""))
+        # A session with NO transcript half is one that was never a conversation in
+        # the product: a subagent run, which only ever writes a replay log. Those
+        # are what the client folds into a single group.
+        #
+        # Deliberately NOT "absent from the session map": a mapped entry is pruned
+        # once a session stops being resumable, so keying on the map would sweep a
+        # titled conversation the user still recognises into the anonymous group —
+        # and those are exactly the rows worth showing, because being unmapped is
+        # also what makes them reclaimable.
+        background = not unit.stems
+        sessions.append(
+            {
+                "uid": unit.uid,
+                "title": title,
+                "origin": _redact(_origin(unit)),
+                "bytes": unit.bytes,
+                "mtime": unit.mtime,
+                # Not advisory: a client must not offer to reclaim one of these,
+                # and the module refuses it independently if a client tries.
+                "active": unit.active,
+                # Why it is refused. `live` is a turn in flight, which is the real
+                # hazard; `active and not live` is merely "the product could still
+                # resume this", which is a policy choice rather than a danger. Both
+                # are refused today; separating them stops the screen telling a user
+                # a month-old idle conversation is "in use".
+                "live": unit.live,
+                "background": background,
+            }
+        )
+    return {
+        "total_bytes": report.total_bytes,
+        "total_sessions": report.total_sessions,
+        "reclaimable_bytes": report.reclaimable_bytes,
+        "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "sessions": sessions,
+        "trash": {
+            "bytes": report.trash_bytes,
+            "still_on_disk": True,
+            "instant": report.trash_same_filesystem,
+            "batches": [
+                {
+                    "batch_id": batch.batch_id,
+                    "created_at": batch.created_at,
+                    "reason": batch.reason,
+                    "sessions": batch.sessions,
+                    "bytes": batch.bytes,
+                }
+                for batch in list_trash()
+            ],
+        },
+    }
+
+
+async def api_session_inventory(request: web.Request) -> web.Response:
+    """GET /api/system/session-storage/sessions — one row per session.
+
+    Uncached and scan-bound like the report, so it is fetched when the screen
+    opens or after an action, never on a poll.
+    """
+    state: DashboardState = request.app["state"]
+    data = await asyncio.to_thread(_inventory_payload, state)
+    return web.json_response(data)
+
+
+def _detail_payload(uid: str) -> dict[str, Any] | None:
+    index = _build_index()
+    unit = next((u for u in list_units(index) if u.uid == uid), None)
+    if unit is None:
+        return None
+    d = digest(unit.uid, unit.stems, unit.sid)
+    return {
+        "uid": unit.uid,
+        "first_message": _redact(d.first_message),
+        "turns": d.turns,
+        "images": d.images,
+        "bytes": unit.bytes,
+        "mtime": unit.mtime,
+    }
+
+
+async def api_session_inventory_detail(request: web.Request) -> web.Response:
+    """GET /api/system/session-storage/sessions/{uid} — one row's detail.
+
+    Reads whole files, so it is deliberately per-row and must never be called in
+    a loop over the list. An unreadable or malformed file degrades to empty
+    values rather than failing: the row still has a real size to show, and a
+    truncated transcript is not a reason to refuse to talk about the session.
+    """
+    uid = request.match_info.get("uid", "")
+    if not uid:
+        return _bad_request("uid is required.", "invalid_uid")
+    data = await asyncio.to_thread(_detail_payload, uid)
+    if data is None:
+        return web.json_response({"error": "No such session.", "code": "unknown"}, status=404)
+    return web.json_response(data)
+
+
+def _classify(uids: list[str], index: SessionIndex, now: float) -> tuple[list[str], list[dict]]:
+    """Split a client's selection into what may move and what may not, with reasons.
+
+    This exists because :func:`move_to_trash` is all-or-nothing by design: one
+    live or too-fresh session in the list and the WHOLE call raises, moving
+    nothing. That is the right guarantee for the module — a selection either
+    happens or it does not — but it makes a bulk screen useless if a single row
+    went live while the user was reading.
+
+    So the eligible ones are separated here and only those are handed over, which
+    means the module's refusal never has to fire on a normal request. The
+    guarantee is NOT weakened: it still re-reads the session map inside the lock
+    and still refuses anything live, so this pre-pass can only ever be more
+    conservative than the authority, never less.
+    """
+    by_uid = {u.uid: u for u in list_units(index)}
+    eligible: list[str] = []
+    refused: list[dict] = []
+    for uid in uids:
+        unit = by_uid.get(uid)
+        if unit is None:
+            refused.append({"uid": uid, "reason": "unknown"})
+        elif unit.live:
+            # A turn is in flight. The one genuinely hazardous case.
+            refused.append({"uid": uid, "reason": "in_use"})
+        elif unit.active:
+            # Idle, but the product could still resume it. Refused today; calling
+            # this "in use" would be a lie the user can disprove by looking at the
+            # last-used date.
+            refused.append({"uid": uid, "reason": "resumable"})
+        elif unit.age_days(now) < MIN_RECLAIM_AGE_DAYS:
+            refused.append({"uid": uid, "reason": "too_fresh"})
+        else:
+            eligible.append(uid)
+    return eligible, refused
+
+
+async def api_session_inventory_trash(request: web.Request) -> web.Response:
+    """POST /api/system/session-storage/trash — move a named selection to the trash.
+
+    Unlike ``cleanup``, which derives its own selection from an age threshold,
+    this accepts the rows a person ticked. That is safe because the authority did
+    not move to the client: :func:`move_to_trash` re-reads the session map inside
+    the mutation lock and unions the active sets, so a selection that has gone
+    stale can only be refused, never honoured against a live session.
+
+    Sessions the server would not take are reported per uid rather than silently
+    dropped — doing less than the user asked without saying so is a defect.
+    """
+    state: DashboardState = request.app["state"]
+    if _is_restricted_session(state, request):
+        return _deny("session_storage.trash", request)
+
+    body = await _json_body(request)
+    if body is None:
+        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    uids = _optional_str_list(body, "uids")
+    if uids is _MALFORMED:
+        return _bad_request("uids must be a list of strings.", "invalid_selection")
+    # Omitting the selection must NOT widen to "everything": this endpoint exists
+    # to act on named rows, and there is no meaningful default for which.
+    if not uids:
+        return _bad_request("uids is required.", "nothing_specified")
+    if len(uids) > _MAX_SELECTION:
+        return _bad_request("Too many sessions in one request.", "selection_too_large")
+
+    # The running-state signal only LABELS a refusal, so passing state here
+    # cannot widen what may be taken: active_sids still refuses the whole map.
+    index = await asyncio.to_thread(_build_index, state)
+    eligible, refused = await asyncio.to_thread(_classify, uids, index, time.time())
+
+    if refused:
+        # A refusal is a security-relevant outcome, not a quiet detail of a 200.
+        # Someone asked to remove specific conversations and was told no; audited
+        # here so the record shows the attempt and which sessions were protected.
+        # Emitted for a PARTIAL refusal too, otherwise a request that took nine of
+        # ten sessions would leave the tenth's protection unrecorded.
+        _sel().log_api_access(
+            caller=_read_session_key(request),
+            operation="session_storage.trash",
+            outcome="denied",
+            source="dashboard",
+            resources=",".join(f"{r['uid']}:{r['reason']}" for r in refused)[:512],
+        )
+    if not eligible:
+        return web.json_response({"sessions": 0, "bytes": 0, "batch_id": "", "refused": refused})
+
+    try:
+        batch = await asyncio.to_thread(
+            move_to_trash,
+            eligible,
+            reason=REASON_MANUAL,
+            index=index,
+            refresh=_build_index,
+        )
+    except SessionStorageError as exc:
+        return _refused(exc, "trash_refused")
+
+    _sel().log_api_access(
+        caller=_read_session_key(request),
+        operation="session_storage.trash",
+        outcome="success",
+        source="dashboard",
+        resources=f"{batch.batch_id}:{batch.sessions}",
+    )
+    return web.json_response(
+        {
+            "sessions": batch.sessions,
+            "bytes": batch.bytes,
+            "batch_id": batch.batch_id,
+            "refused": refused,
+        }
+    )

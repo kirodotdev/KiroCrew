@@ -474,3 +474,261 @@ class TestIndexConstruction:
             "1785861252.833429": "bbbb2222",
         }
         assert index.active_stems == frozenset(index.stem_to_sid)
+
+
+class TestWhyAReclaimIsRefused:
+    """A refusal must name the real reason.
+
+    Both states are refused today, so these tests do not assert new power — they
+    assert that the product stops telling a user a month-old idle conversation is
+    "in use", which is a claim the user can disprove by reading the date next to it.
+    """
+
+    @staticmethod
+    def _recorded_session(crew_home: Path, kiro_home: Path, sid: str, key: str) -> None:
+        """A session that IS in the map: a transcript, a replay log, and the entry."""
+        stem = key.replace(":", "_")
+        transcript = crew_home / "sessions" / f"{stem}.jsonl"
+        transcript.write_text('{"_type": "metadata"}\n')
+        mtime = time.time() - 30 * _DAY
+        os.utime(transcript, (mtime, mtime))
+        _retired(kiro_home, sid, age_days=30)
+        for directory in (crew_home, crew_home / "crew"):
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "session_map.json").write_text(json.dumps({key: {"sid": sid}}))
+
+    def _request_with_running(self, uids: list[str], running: frozenset[str]):
+        req = _request("POST", "/api/system/session-storage/trash", {"uids": uids})
+        state = req.app["state"]
+        # Set explicitly. A MagicMock would answer `in` with False and make this
+        # pass for the wrong reason, asserting against an interface nobody has.
+        state.running_session_keys.return_value = running
+        state.conversation_log.list_sessions.return_value = []
+        return req
+
+    @pytest.mark.asyncio
+    async def test_an_idle_recorded_session_is_refused_as_resumable_not_in_use(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        sid = "aaaaaaaa-0000-4000-8000-000000000001"
+        self._recorded_session(crew_home, kiro_home, sid, "dashboard:chat-9")
+
+        req = self._request_with_running([sid], frozenset())
+        with patch.object(handler, "_sel", _sel_stub):
+            resp = await handler.api_session_inventory_trash(req)
+
+        body = json.loads(resp.body)
+        assert body["sessions"] == 0, "still refused — this test asserts the reason, not new power"
+        assert body["refused"] == [{"uid": sid, "reason": "resumable"}]
+
+    @pytest.mark.asyncio
+    async def test_a_running_session_is_refused_as_in_use(self, stores: tuple[Path, Path]) -> None:
+        crew_home, kiro_home = stores
+        sid = "aaaaaaaa-0000-4000-8000-000000000002"
+        key = "dashboard:chat-10"
+        self._recorded_session(crew_home, kiro_home, sid, key)
+
+        req = self._request_with_running([sid], frozenset({key}))
+        with patch.object(handler, "_sel", _sel_stub):
+            resp = await handler.api_session_inventory_trash(req)
+
+        body = json.loads(resp.body)
+        assert body["sessions"] == 0
+        assert body["refused"] == [{"uid": sid, "reason": "in_use"}]
+
+    @pytest.mark.asyncio
+    async def test_the_row_reports_running_separately_from_resumable(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        sid = "aaaaaaaa-0000-4000-8000-000000000003"
+        key = "dashboard:chat-11"
+        self._recorded_session(crew_home, kiro_home, sid, key)
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = []
+        resp = await handler.api_session_inventory(req)
+
+        rows = {row["uid"]: row for row in json.loads(resp.body)["sessions"]}
+        assert rows[sid]["active"] is True, "recorded, so still refused"
+        assert rows[sid]["live"] is False, "nothing is running, so it is not in use"
+
+
+class TestTranscriptContentIsRedacted:
+    """A title and a first message are conversation content.
+
+    Either can carry a key someone pasted into a chat, so both are scrubbed
+    before they reach the dashboard — the same rule the artifact surface follows.
+    """
+
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+
+    @pytest.mark.asyncio
+    async def test_a_credential_in_a_title_never_reaches_the_list(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        sid = "cccccccc-0000-4000-8000-000000000001"
+        key = "dashboard:chat-20"
+        TestWhyAReclaimIsRefused._recorded_session(crew_home, kiro_home, sid, key)
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = [
+            {"key": key.replace(":", "_"), "title": f"deploy with {self.SECRET} today"}
+        ]
+        resp = await handler.api_session_inventory(req)
+
+        body = resp.body.decode()
+        assert self.SECRET not in body
+        rows = {r["uid"]: r for r in json.loads(body)["sessions"]}
+        assert "deploy with" in rows[sid]["title"], "only the secret is scrubbed, not the title"
+
+    @pytest.mark.asyncio
+    async def test_a_credential_in_a_first_message_never_reaches_the_detail(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        sid = "cccccccc-0000-4000-8000-000000000002"
+        TestWhyAReclaimIsRefused._recorded_session(crew_home, kiro_home, sid, "dashboard:chat-21")
+
+        secret = self.SECRET
+
+        class _Digest:
+            first_message = f"here is my key {secret}"
+            turns = 3
+            images = 0
+
+        with patch.object(handler, "digest", lambda *a, **k: _Digest()):
+            req = _request("GET", f"/api/system/session-storage/sessions/{sid}")
+            req.match_info["uid"] = sid
+            resp = await handler.api_session_inventory_detail(req)
+
+        body = resp.body.decode()
+        assert self.SECRET not in body
+        assert "here is my key" in body
+
+
+class TestRefusalsAreAudited:
+    """Being told "no" is an outcome the audit log has to carry.
+
+    Someone asked to remove specific conversations and did not get to. Recording
+    only the successes would leave the protection invisible.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_fully_refused_selection_is_audited_as_denied(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        sid = "dddddddd-0000-4000-8000-000000000001"
+        TestWhyAReclaimIsRefused._recorded_session(crew_home, kiro_home, sid, "dashboard:chat-30")
+
+        req = _request("POST", "/api/system/session-storage/trash", {"uids": [sid]})
+        req.app["state"].running_session_keys.return_value = frozenset()
+        sel = _sel_stub()
+        with patch.object(handler, "_sel", lambda: sel):
+            resp = await handler.api_session_inventory_trash(req)
+
+        assert json.loads(resp.body)["sessions"] == 0
+        outcomes = [c.kwargs["outcome"] for c in sel.log_api_access.call_args_list]
+        assert "denied" in outcomes, "a refusal must leave a denied event"
+        denial = next(
+            c for c in sel.log_api_access.call_args_list if c.kwargs["outcome"] == "denied"
+        )
+        assert sid in denial.kwargs["resources"]
+        assert "resumable" in denial.kwargs["resources"], "the reason belongs in the record"
+
+    @pytest.mark.asyncio
+    async def test_a_partial_refusal_is_audited_alongside_the_success(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Nine taken and one protected must record BOTH, not just the nine."""
+        crew_home, kiro_home = stores
+        protected = "dddddddd-0000-4000-8000-000000000002"
+        TestWhyAReclaimIsRefused._recorded_session(
+            crew_home, kiro_home, protected, "dashboard:chat-31"
+        )
+        # An unmapped, old session: eligible, so the request partially succeeds.
+        takeable = "dddddddd-0000-4000-8000-000000000003"
+        _retired(kiro_home, takeable, age_days=45)
+
+        req = _request("POST", "/api/system/session-storage/trash", {"uids": [protected, takeable]})
+        req.app["state"].running_session_keys.return_value = frozenset()
+        sel = _sel_stub()
+        with patch.object(handler, "_sel", lambda: sel):
+            resp = await handler.api_session_inventory_trash(req)
+
+        body = json.loads(resp.body)
+        assert body["sessions"] == 1, "the eligible one still moves"
+        assert [r["uid"] for r in body["refused"]] == [protected]
+        outcomes = [c.kwargs["outcome"] for c in sel.log_api_access.call_args_list]
+        assert "denied" in outcomes and "success" in outcomes, outcomes
+
+
+class TestAMalformedTitleCannotCrashTheList:
+    """A title is not guaranteed to be a string.
+
+    The resume path assigns a client-supplied ``body["title"]`` to the slot with no
+    type check of its own, so a number reaches the persisted metadata. A number is
+    truthy, so a plain presence check would hand it to the scrubbers and turn a read
+    into a 500.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_numeric_title_is_skipped_rather_than_raising(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        sid = "eeeeeeee-0000-4000-8000-000000000001"
+        key = "dashboard:chat-40"
+        TestWhyAReclaimIsRefused._recorded_session(crew_home, kiro_home, sid, key)
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = [
+            {"key": key.replace(":", "_"), "title": 12345},
+            {"key": "other_stem", "title": None},
+        ]
+
+        resp = await handler.api_session_inventory(req)
+
+        assert resp.status == 200
+        rows = {r["uid"]: r for r in json.loads(resp.body)["sessions"]}
+        # The row still lists — it just falls back to its origin for a label.
+        assert rows[sid]["title"] == ""
+        assert rows[sid]["origin"], "the row is still identifiable without a title"
+
+
+class TestACredentialInASessionIdIsScrubbed:
+    """A session id is only loosely constrained, and ``origin`` is rendered.
+
+    ``_UNIT_ID_RE`` admits ``[A-Za-z0-9._-]``, which is exactly the shape of an
+    access-key id — so a session whose key happens to be one would otherwise put it
+    on screen as the row's provenance line.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_access_key_shaped_session_id_is_not_rendered(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A replay-only unit keyed by the offending id, which is what `_origin`
+        # falls back to when there is no transcript stem.
+        _retired(kiro_home, secret, age_days=40)
+
+        req = _request("GET", "/api/system/session-storage/sessions")
+        state = req.app["state"]
+        state.running_session_keys.return_value = frozenset()
+        state.conversation_log.list_sessions.return_value = []
+        resp = await handler.api_session_inventory(req)
+
+        rows = {r["uid"]: r for r in json.loads(resp.body)["sessions"]}
+        assert secret in rows, "the row must still be listed and actionable"
+        assert secret not in rows[secret]["origin"], "the DISPLAYED string is scrubbed"

@@ -105,6 +105,15 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Session storage inventory",
+        "dashboard/handlers/session_storage.py",
+        "A session's title and its first message, served by "
+        "`GET /api/system/session-storage/sessions` and its per-row detail. Both are "
+        "conversation content read straight off a transcript, so either can carry a "
+        "key someone pasted into a chat — the same output-boundary reason as the "
+        "session-memory titles below.",
+    ),
+    (
         "Skill context budget",
         "dashboard/handlers/skill_budget.py",
         "Skill display names served by `GET /api/skills/-/budget`. An auto-skill's "

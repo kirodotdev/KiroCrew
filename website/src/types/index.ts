@@ -110,6 +110,61 @@ export interface SessionStorageCleanup {
   dry_run?: boolean
 }
 
+/* ── Session inventory (contract §1–§3) ── */
+
+/** One session row in the inventory list. */
+export interface SessionInventoryItem {
+  uid: string
+  title: string
+  origin: string
+  bytes: number
+  mtime: number
+  active: boolean
+  /** A turn is in flight. Narrower than `active`: everything live is active,
+   *  but an idle session that the product could still resume is not live. */
+  live: boolean
+  background: boolean
+}
+
+/** GET /api/system/session-storage/sessions */
+export interface SessionInventoryList {
+  total_bytes: number
+  total_sessions: number
+  reclaimable_bytes: number
+  reclaim_blocked_reason: string
+  sessions: SessionInventoryItem[]
+  trash: {
+    bytes: number
+    still_on_disk: boolean
+    instant: boolean
+    batches: SessionStorageBatch[]
+  }
+}
+
+/** GET /api/system/session-storage/sessions/{uid} — lazy detail */
+export interface SessionInventoryDetail {
+  uid: string
+  first_message: string
+  turns: number
+  images: number
+  bytes: number
+  mtime: number
+}
+
+/** One uid the server refused in POST .../trash */
+export interface SessionTrashRefusal {
+  uid: string
+  reason: 'in_use' | 'too_fresh' | 'unknown'
+}
+
+/** POST /api/system/session-storage/trash response */
+export interface SessionTrashResult {
+  sessions: number
+  bytes: number
+  batch_id: string
+  refused: SessionTrashRefusal[]
+}
+
 export interface CronJob {
   id: string; name: string; message: string
   enabled: boolean; schedule: string; last_status: string
