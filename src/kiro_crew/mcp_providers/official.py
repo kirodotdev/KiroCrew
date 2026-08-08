@@ -45,6 +45,10 @@ _HTTP_TIMEOUT_SECS = 10.0
 # User-Agent for our requests (good citizenship).
 _USER_AGENT = "KiroCrew/1.0 (mcp-discovery)"
 
+# Per-iteration read size for the EOF loop below. The cap on TOTAL size
+# is _MAX_RESPONSE_BYTES; this only bounds one read call.
+_READ_CHUNK_BYTES = 64 * 1024
+
 # Maximum response body size (5 MiB) — a search page or single server doc
 # is a few KB; anything bigger is malformed or hostile.
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -87,11 +91,16 @@ async def _fetch_json(url: str) -> Any | None:
                     return None
                 if resp.status != 200:
                     raise ProviderUnavailableError(f"registry returned HTTP {resp.status}")
-                # Bound the read — resp.text() would buffer unbounded.
-                body = await resp.content.read(_MAX_RESPONSE_BYTES + 1)
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    raise ProviderUnavailableError("registry response too large")
-                return json.loads(body.decode("utf-8"))
+                # Read to EOF in bounded chunks; a single read(n) can return a partial body.
+                body = bytearray()
+                while True:
+                    chunk = await resp.content.read(_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+                    if len(body) > _MAX_RESPONSE_BYTES:
+                        raise ProviderUnavailableError("registry response too large")
+                return json.loads(bytes(body).decode("utf-8"))
     except ProviderUnavailableError:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, OSError) as exc:
