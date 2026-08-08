@@ -1,12 +1,15 @@
 """Tests for CLI module."""
 
 import argparse
+import asyncio
 import contextlib
 import hashlib
 import json
 import os
 import subprocess
 import sys
+import threading
+import types
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -5003,3 +5006,655 @@ class TestBannerBranding:
         # The 'Cl' of Claw is `/ __| |` + `(__| / _`; Crew is `/ __|_ _` + `(__| '_/`.
         for name, b in (("cli", MAIN), ("cli_chat", CHAT), ("cloud", CLOUD)):
             assert "(__| / _`" not in b, f"{name} banner still spells Claw"
+
+
+class TestChatPermissionRequest:
+    """`kirocrew chat` must ANSWER a permission request, and answering one is an
+    authorization decision.
+
+    Every case drives the real ``_send_and_print`` against a provider whose
+    stream cannot finish until the request is answered, and against a real
+    ``HookManager`` -- not a stub returning the verdict the test wants.
+    """
+
+    #: Bounds a stalled turn so the suite fails instead of hanging. Never
+    #: reached when the request is answered.
+    _TIMEOUT = 10.0
+
+    @pytest.fixture(autouse=True)
+    def _fresh_stdin_state(self, monkeypatch):
+        """Poisoning is process-wide state; monkeypatch restores it per test."""
+        import kiro_crew.cli_chat as cli_chat
+
+        monkeypatch.setattr(cli_chat, "_stdin_poisoned", False)
+
+    @staticmethod
+    def _event(*, title="Terminal", command=None, tool_name=""):
+        """A permission request in the shape the wire delivers.
+
+        ``tool_input`` rather than ``raw_tool_params`` carries the command,
+        because that is where a permission_request puts it -- the fallback the
+        gate depends on to recover what really executes.
+        """
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id=7,
+            title=title,
+            tool_kind="execute",
+            is_shell=command is not None,
+            tool_input=json.dumps({"command": command}) if command else "",
+            tool_name=tool_name,
+            # Advertised by a real backend; the CLI must NOT read these -- option
+            # ids are backend-specific and the ACP layer owns the mapping.
+            options=[{"id": "allow", "label": "Allow Once"}],
+        )
+
+    class _GatedProvider:
+        """Cannot finish its turn until the permission is answered.
+
+        Provider calls and audit records land in ONE ``trace`` so their relative
+        order is observable, not just their presence.
+        """
+
+        def __init__(self, event, trace):
+            self._event, self.trace = event, trace
+            self.answered = asyncio.Event()
+
+        @property
+        def calls(self):
+            return [t for t in self.trace if t[0] in ("approve", "reject")]
+
+        async def stream(self, message):
+            from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="I'll check that. ")
+            yield self._event
+            await self.answered.wait()
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        async def approve_tool(self, request_id, *, always: bool = False):
+            self.trace.append(("approve", request_id, always))
+            self.answered.set()
+
+        async def reject_tool(self, request_id):
+            self.trace.append(("reject", request_id, False))
+            self.answered.set()
+
+        def context_usage_pct(self):
+            return 0.0
+
+    @staticmethod
+    def _gate():
+        """A gate carrying the REAL HookManager: the built-in sensitive-path and
+        denied-command rules are the thing under test in several cases."""
+        import kiro_crew.cli_chat as cli_chat
+        from kiro_crew.hooks import HookManager, HooksConfig
+
+        return cli_chat._ToolGate(hooks=HookManager(HooksConfig.from_dict({})), agent="cli-tester")
+
+    @staticmethod
+    def _patch_env(monkeypatch, *, tty=True, trace=None, answer="d"):
+        """Wire the seams every case shares. Returns the stdin-read record.
+
+        The blocking read is patched at ``_read_line_blocking`` -- the single
+        blocking seam -- NOT at the choice helper or the gate, so the exact-match
+        rule, the daemon-thread plumbing, the gate call and the audit ordering
+        all run as production code.
+        """
+        import kiro_crew.cli_chat as cli_chat
+
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: tty, raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: tty, raising=False)
+        monkeypatch.setattr(
+            cli_chat,
+            "sel",
+            lambda: types.SimpleNamespace(
+                log_tool_invocation=lambda **kw: (
+                    trace.append(("sel", kw)) if trace is not None else None
+                )
+            ),
+        )
+        reads = {"n": 0, "prompts": []}
+
+        def fake_read(prompt=""):
+            reads["n"] += 1
+            reads["prompts"].append(prompt)
+            if answer is EOFError:
+                raise EOFError
+            return answer
+
+        monkeypatch.setattr(cli_chat, "_read_line_blocking", fake_read)
+        return reads
+
+    async def _drive(self, monkeypatch, *, event=None, interactive=True, tty=True, answer="d"):
+        """Run one gated turn. Returns (provider, sel records, stdin reads).
+
+        ``interactive`` is the command mode the caller passes and ``tty`` is
+        patched onto the real streams, so the production ``_can_prompt`` decides
+        -- patching that helper would test the stub rather than the rule.
+        """
+        import kiro_crew.cli_chat as cli_chat
+
+        trace: list = []
+        provider = self._GatedProvider(event or self._event(), trace)
+        reads = self._patch_env(monkeypatch, tty=tty, trace=trace, answer=answer)
+        await asyncio.wait_for(
+            cli_chat._send_and_print(
+                provider, "run it", interactive=interactive, gate=self._gate()
+            ),
+            timeout=self._TIMEOUT,
+        )
+        return provider, [t[1] for t in trace if t[0] == "sel"], reads
+
+    # ── The security gate ────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_a_benign_title_cannot_hide_a_sensitive_command(self, monkeypatch, capsys):
+        """The gate judges what executes, not what the model called it.
+
+        ``title`` for a shell tool is an LLM-authored description, so a
+        credential read labelled "List project files" is the bypass that keying
+        on the title alone would let through. The user is never even asked.
+        """
+        provider, sels, reads = await self._drive(
+            monkeypatch,
+            event=self._event(title="List project files", command="cat ~/.ssh/id_rsa"),
+            answer="a",  # the user WOULD have allowed it
+        )
+        assert provider.calls == [("reject", 7, False)]
+        assert reads["n"] == 0
+        # A stable code, not the gate's reason: the reason names the very path
+        # being protected, and an audit record must not restate it.
+        assert sels[0]["error"] == "hook_deny"
+        assert ".ssh" not in json.dumps(sels[0])
+        # The reason still reaches the terminal, and it has to be the REAL one:
+        # `is_shell` with no command also denies, via the gate's deny-by-default
+        # backstop, so "it was denied" would pass just as well when the command
+        # is never forwarded at all.
+        err = capsys.readouterr().err
+        assert "sensitive credential path" in err
+        assert "could not be verified" not in err
+
+    @pytest.mark.asyncio
+    async def test_a_denied_command_is_not_the_users_to_override(self, monkeypatch):
+        provider, sels, reads = await self._drive(
+            monkeypatch,
+            event=self._event(title="Tidy the workspace", command="rm -rf /"),
+            answer="a",
+        )
+        assert provider.calls == [("reject", 7, False)]
+        assert reads["n"] == 0
+        assert [s["outcome"] for s in sels] == ["denied"]
+
+    # ── The audit record ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "event_kw,answer,order,code",
+        [
+            (dict(title="x", command="rm -rf /"), "a", ["sel", "reject"], "hook_deny"),
+            ({}, "a", ["sel", "approve"], ""),
+            ({}, "d", ["sel", "reject"], "user_denied"),
+        ],
+    )
+    async def test_the_audit_precedes_the_transport(
+        self, monkeypatch, event_kw, answer, order, code
+    ):
+        """A transport failure must not erase the decision, and the code stays a
+        stable token so the log is queryable and quotes nothing.
+
+        Asserting the interleaved trace, rather than two separate lists, is what
+        makes this an ordering test.
+        """
+        provider, sels, _ = await self._drive(
+            monkeypatch, event=self._event(**event_kw), answer=answer
+        )
+        assert [t[0] for t in provider.trace] == order
+        assert sels[0]["error"] == code
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "event_kw,expected,forbidden",
+        [
+            # The canonical `_meta.kiro` identity wins over LLM prose.
+            (
+                dict(title="do something friendly", tool_name="mcp__files__read"),
+                "mcp__files__read",
+                "friendly",
+            ),
+            # No canonical name: the title is all there is, so scrub it -- SEL
+            # does not redact for its callers.
+            (dict(title="deploy with AKIAIOSFODNN7EXAMPLE"), None, "AKIAIOSFODNN7EXAMPLE"),
+        ],
+    )
+    async def test_the_audited_identity_is_not_model_authored(
+        self, monkeypatch, event_kw, expected, forbidden
+    ):
+        _, sels, _ = await self._drive(monkeypatch, event=self._event(**event_kw), answer="a")
+        if expected is not None:
+            assert sels[0]["tool_name"] == expected
+        assert forbidden not in sels[0]["tool_name"]
+
+    # ── The human decision ───────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "answer,call,outcome",
+        [("a", ("approve", 7, False), "allowed"), ("d", ("reject", 7, False), "denied")],
+    )
+    async def test_the_turn_completes_whatever_the_human_answers(
+        self, monkeypatch, capsys, answer, call, outcome
+    ):
+        """Denial answers the gate; it must not abandon the turn."""
+        provider, sels, reads = await self._drive(monkeypatch, answer=answer)
+        assert provider.calls == [call]
+        assert reads["n"] == 1
+        assert [s["outcome"] for s in sels] == [outcome]
+        assert "done" in capsys.readouterr().out  # text after the gate reached stdout
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "answer,allows",
+        # A prefix match reads `abort` as an allow -- the opposite of intent.
+        # The other rejects are what a person types when a single-key prompt did
+        # not register, plus the do-nothing answers.
+        [(a, True) for a in ("a", "A", " a ", "a\n")]
+        + [(a, False) for a in ("abort", "allow", "always", "wait", "ad", "x", "", EOFError)],
+    )
+    async def test_only_the_exact_allow_token_approves(self, monkeypatch, answer, allows):
+        provider, sels, _ = await self._drive(monkeypatch, answer=answer)
+        assert provider.calls == [("approve", 7, False) if allows else ("reject", 7, False)]
+        assert [s["outcome"] for s in sels] == ["allowed" if allows else "denied"]
+
+    @pytest.mark.asyncio
+    async def test_no_answer_grants_a_persistent_approval(self, monkeypatch):
+        """There is no "always allow": a backend that records one stops sending
+        permission requests for matching calls, and a request never sent is a
+        call this ladder never runs and never audits."""
+        for answer in ("a", "w", "always"):
+            provider, _, reads = await self._drive(monkeypatch, answer=answer)
+            assert all(not always for kind, _, always in provider.calls if kind == "approve")
+        # The prompt must not advertise an option the responder cannot honour.
+        assert "always" not in reads["prompts"][0].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "interactive,tty",
+        [
+            # `-m` is documented as non-interactive, so a terminal does not
+            # license a prompt: a script under a pty would block on a question
+            # nobody is watching for.
+            (False, True),
+            # And a prompt nobody can see is a hang, not consent.
+            (True, False),
+        ],
+    )
+    async def test_a_prompt_nobody_can_answer_denies_without_reading_stdin(
+        self, monkeypatch, capsys, interactive, tty
+    ):
+        provider, sels, reads = await self._drive(
+            monkeypatch, interactive=interactive, tty=tty, answer="a"
+        )
+        assert provider.calls == [("reject", 7, False)]
+        assert reads["n"] == 0
+        assert sels[0]["error"] == "noninteractive"
+        captured = capsys.readouterr()
+        assert "done" in captured.out  # the turn still finished
+        assert "Denied automatically" in captured.err
+        # A redirected stream encodes with the locale codec -- non-ASCII there
+        # raises UnicodeEncodeError.
+        captured.err.encode("ascii")
+
+    # ── What the human is shown ──────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "command,expected,absent",
+        [
+            ("git status --short", "Command: git status --short", None),
+            # Collapsed to one line: a heredoc must not reflow the question.
+            ("printf 'a\\n\\tb'\nwc -l", "Command: printf 'a\\n\\tb' wc -l", None),
+            # Capped, with the cut made explicit.
+            ("echo " + "x" * 400, "... [truncated]", "x" * 400),
+            # Redacted on the way to the screen.
+            ("deploy --key AKIAIOSFODNN7EXAMPLE", None, "AKIAIOSFODNN7EXAMPLE"),
+            # Nothing to show for a non-shell call.
+            (None, None, "Command:"),
+        ],
+    )
+    async def test_a_shell_prompt_shows_what_will_actually_run(
+        self, monkeypatch, capsys, command, expected, absent
+    ):
+        """Approving on an LLM-authored title alone is consent to a description.
+
+        The gate already keys on ``shell_command``; the human deciding needs the
+        same ground truth.
+        """
+        await self._drive(
+            monkeypatch,
+            event=self._event(title="Run a helpful script", command=command),
+            answer="a",
+        )
+        out = capsys.readouterr().out
+        # Non-vacuous control: for a shell call the line must have been printed
+        # at all, or an "absent" assertion passes for a request that never
+        # reached the prompt.
+        assert ("Command:" in out) is (command is not None)
+        if expected:
+            assert expected in out
+        if absent:
+            assert absent not in out
+
+    # ── stdin lifecycle ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_the_event_loop_keeps_running_while_the_prompt_waits(self, monkeypatch):
+        """The turn is parked INSIDE an active stream, not at an idle REPL.
+
+        The blocking read does not return until a loop-side ticker has advanced,
+        so a synchronous implementation deadlocks and this times out rather than
+        passing quietly.
+        """
+        import kiro_crew.cli_chat as cli_chat
+
+        ticks, released = {"n": 0}, threading.Event()
+
+        async def _ticker():
+            while True:
+                await asyncio.sleep(0.01)
+                ticks["n"] += 1
+                if ticks["n"] >= 3:
+                    released.set()
+
+        def blocking_read(prompt=""):
+            # Waits for the LOOP to progress: only reachable off the loop thread.
+            assert released.wait(timeout=self._TIMEOUT), "event loop was blocked"
+            return "a"
+
+        self._patch_env(monkeypatch)
+        monkeypatch.setattr(cli_chat, "_read_line_blocking", blocking_read)
+        provider = self._GatedProvider(self._event(), [])
+        ticker = asyncio.create_task(_ticker())
+        try:
+            await asyncio.wait_for(
+                cli_chat._send_and_print(provider, "run it", interactive=True, gate=self._gate()),
+                timeout=self._TIMEOUT,
+            )
+        finally:
+            ticker.cancel()
+        assert provider.calls == [("approve", 7, False)]
+
+    @pytest.mark.asyncio
+    async def test_a_poisoned_session_never_starts_a_second_reader(self, monkeypatch):
+        """No later entry point may race the abandoned reader for keystrokes --
+        not a second permission prompt, and not the REPL."""
+        import kiro_crew.cli_chat as cli_chat
+
+        self._patch_env(monkeypatch)
+        monkeypatch.setattr(cli_chat, "_stdin_poisoned", True)
+
+        def never(prompt=""):
+            raise AssertionError("a poisoned session read stdin")
+
+        monkeypatch.setattr(cli_chat, "_read_line_blocking", never)
+        monkeypatch.setattr("builtins.input", never)
+
+        provider = self._GatedProvider(self._event(), [])
+        with pytest.raises(cli_chat.StdinPoisonedError):
+            await cli_chat._send_and_print(provider, "run it", interactive=True, gate=self._gate())
+        with pytest.raises(cli_chat.StdinPoisonedError):
+            await cli_chat._interactive(provider, types.SimpleNamespace())
+
+    @pytest.mark.asyncio
+    async def test_teardown_never_awaits_the_backend(self, monkeypatch):
+        """Cancelling frees the coroutine, not the reader thread, and a wedged
+        transport must not swallow the cancellation being delivered.
+
+        The abandoned reader stays parked and takes the next line the user types
+        -- measured -- so stdin has to be marked unusable. And ``CancelledError``
+        has already been raised once with nothing to re-deliver it, so awaiting a
+        ``reject_tool`` that never returns would leave the Ctrl-C that asked for
+        this teardown unable to land.
+        """
+        import kiro_crew.cli_chat as cli_chat
+
+        entered = threading.Event()
+
+        class _HungReject(self._GatedProvider):
+            async def reject_tool(self, request_id):
+                self.trace.append(("reject", request_id, False))
+                await asyncio.Event().wait()  # never returns
+
+        def blocking_read(prompt=""):
+            entered.set()
+            threading.Event().wait(timeout=self._TIMEOUT)
+            return "a"
+
+        trace: list = []
+        self._patch_env(monkeypatch, trace=trace)
+        monkeypatch.setattr(cli_chat, "_read_line_blocking", blocking_read)
+        provider = _HungReject(self._event(), trace)
+        task = asyncio.create_task(
+            cli_chat._send_and_print(provider, "run it", interactive=True, gate=self._gate())
+        )
+        await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5.0)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=self._TIMEOUT)
+        assert cli_chat._stdin_poisoned is True
+        assert provider.calls == []  # nothing was awaited on the way out
+        assert [s[1]["error"] for s in trace if s[0] == "sel"] == ["session_aborted"]
+
+    # ── Unchanged behaviour ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_stream_without_a_permission_request_is_unchanged(self, capsys):
+        import kiro_crew.cli_chat as cli_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        class _PlainProvider(self._GatedProvider):
+            async def stream(self, message):
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="hello ")
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="world")
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+        provider = _PlainProvider(self._event(), [])
+        await cli_chat._send_and_print(provider, "hi")
+        assert capsys.readouterr().out == "hello world\n"
+        assert provider.calls == []
+
+    # ── Terminal controls on the consent surface ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_osc52_title_cannot_reach_the_terminal(self, monkeypatch, capsys):
+        # An OSC 52 sequence in a model-authored title writes the user's
+        # clipboard if it reaches the terminal. Neither ESC nor BEL -- the
+        # sequence's introducer and terminator -- may survive to the prompt.
+        title = "Read file\x1b]52;c;aGVsbG8=\x07 please"
+        await self._drive(monkeypatch, event=self._event(title=title))
+        out = capsys.readouterr().out
+        assert "\x1b" not in out and "\x07" not in out
+        assert "]52;c;aGVsbG8=" in out  # neutralised to inert text, not dropped
+        assert "Read file" in out
+
+    @pytest.mark.asyncio
+    async def test_csi_sequence_cannot_reach_the_terminal(self, monkeypatch, capsys):
+        # CSI can move the cursor and erase what is already drawn, so a title
+        # could repaint the question the user is answering. The newline is part
+        # of the same class: a multi-line title pushes the prompt off screen.
+        title = "Delete\x1b[2K\x1b[1Anothing\nimportant"
+        await self._drive(monkeypatch, event=self._event(title=title))
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if ln.startswith("Permission required:"))
+        assert "\x1b" not in line
+        assert line == "Permission required: Delete [2K [1Anothing important"
+
+    @pytest.mark.asyncio
+    async def test_control_characters_in_a_command_are_neutralised(self, monkeypatch, capsys):
+        # The shell command is untrusted display text on the same surface, and
+        # keeps its existing one-line collapse contract.
+        event = self._event(title="Run it", command="echo \x1b]52;c;x\x07hi\nls")
+        await self._drive(monkeypatch, event=event)
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if ln.startswith("Command:"))
+        assert "\x1b" not in line and "\x07" not in line
+        assert line == "Command: echo ]52;c;x hi ls"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_title_and_command_display_unchanged(self, monkeypatch, capsys):
+        # The control-stripping must not disturb ordinary text: this is the
+        # control for the three cases above.
+        event = self._event(title="Run the test suite", command="pytest -q test/test_cli.py")
+        await self._drive(monkeypatch, event=event)
+        out = capsys.readouterr().out
+        assert "Permission required: Run the test suite" in out
+        assert "Command: pytest -q test/test_cli.py" in out
+
+    # ── Canonical MCP identity reaches the shared gate ───────────────────
+
+    @pytest.mark.asyncio
+    async def test_canonical_mcp_identity_is_forwarded_and_denies(self, monkeypatch):
+        # The wiring guard: a permission_request carrying the trusted _meta.kiro
+        # server + tool names must reach HookManager as those fields, so a
+        # governance rule naming the canonical mcp__server__tool denies the call
+        # -- the backend is rejected and the human is never asked.
+        import kiro_crew.cli_chat as cli_chat
+        import kiro_crew.hooks as hooks_mod
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+        seen: list[str] = []
+
+        def fake_gov(ctx, name, *a, **k):
+            seen.append(name)
+            if name == "mcp__weather:srv__wipe_disk":
+                return "Blocked by governance policy: denied"
+            return None
+
+        monkeypatch.setattr(hooks_mod, "_governance_denial", fake_gov)
+        event = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id=7,
+            title="Check the forecast",  # benign model-authored prose
+            tool_kind="other",
+            mcp_server_name="weather:srv",
+            tool_name="wipe_disk",
+            options=[{"id": "allow", "label": "Allow Once"}],
+        )
+        trace: list = []
+        provider = self._GatedProvider(event, trace)
+        reads = self._patch_env(monkeypatch, tty=True, trace=trace, answer="a")
+        await asyncio.wait_for(
+            cli_chat._send_and_print(provider, "run it", interactive=True, gate=self._gate()),
+            timeout=self._TIMEOUT,
+        )
+
+        assert "mcp__weather:srv__wipe_disk" in seen  # forwarded, not just the title
+        assert provider.calls == [("reject", 7, False)]
+        assert reads["n"] == 0  # the human was never asked
+        assert [s[1]["error"] for s in trace if s[0] == "sel"] == ["hook_deny"]
+
+
+class TestChatProviderShutdown:
+    """``provider.start()`` hands back a live backend process, so every exit from
+    the turn -- return, error, or cancellation -- has to run ``shutdown()``."""
+
+    class _FakeProvider:
+        def __init__(self):
+            self.started = 0
+            self.shutdowns = 0
+
+        async def start(self):
+            self.started += 1
+
+        async def shutdown(self):
+            self.shutdowns += 1
+
+        def context_usage_pct(self):
+            return 0.0
+
+    def _patch(self, monkeypatch, provider):
+        import kiro_crew.cli_chat as cli_chat
+        from kiro_crew.config import KiroCrewConfig
+
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(lambda: KiroCrewConfig()))
+        monkeypatch.setattr(
+            cli_chat, "build_provider_factory", lambda cfg: (lambda *a, **k: provider)
+        )
+        monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent: None)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_runs_when_the_turn_is_cancelled(self, monkeypatch):
+        # A permission prompt cancelled at the terminal raises through the turn
+        # by design. The backend must still be torn down, and the cancellation
+        # must still reach the caller.
+        import kiro_crew.cli_chat as cli_chat
+
+        provider = self._FakeProvider()
+        self._patch(monkeypatch, provider)
+
+        async def cancelled(*a, **k):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(cli_chat, "_send_and_print", cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            await cli_chat._chat("hello", None)
+        assert provider.shutdowns == 1
+
+    @pytest.mark.asyncio
+    async def test_shutdown_runs_when_the_turn_raises(self, monkeypatch):
+        import kiro_crew.cli_chat as cli_chat
+
+        provider = self._FakeProvider()
+        self._patch(monkeypatch, provider)
+
+        async def boom(*a, **k):
+            raise RuntimeError("backend died")
+
+        monkeypatch.setattr(cli_chat, "_send_and_print", boom)
+        with pytest.raises(RuntimeError, match="backend died"):
+            await cli_chat._chat("hello", None)
+        assert provider.shutdowns == 1
+
+    @pytest.mark.asyncio
+    async def test_shutdown_runs_exactly_once_on_the_normal_path(self, monkeypatch):
+        import kiro_crew.cli_chat as cli_chat
+
+        provider = self._FakeProvider()
+        self._patch(monkeypatch, provider)
+
+        async def ok(*a, **k):
+            return None
+
+        monkeypatch.setattr(cli_chat, "_send_and_print", ok)
+        await cli_chat._chat("hello", None)
+        assert provider.shutdowns == 1
+
+    @pytest.mark.asyncio
+    async def test_gc_runs_even_when_shutdown_raises(self, monkeypatch):
+        # gc.collect() collects the subprocess transports while the loop is
+        # still open; a failing shutdown must not skip it, and must not replace
+        # the exception already propagating.
+        import kiro_crew.cli_chat as cli_chat
+
+        class _BadShutdown(self._FakeProvider):
+            async def shutdown(self):
+                self.shutdowns += 1
+                raise RuntimeError("shutdown failed")
+
+        provider = _BadShutdown()
+        self._patch(monkeypatch, provider)
+        collected = {"n": 0}
+        monkeypatch.setattr(cli_chat.gc, "collect", lambda: collected.__setitem__("n", 1))
+
+        async def cancelled(*a, **k):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(cli_chat, "_send_and_print", cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            await cli_chat._chat("hello", None)
+        assert provider.shutdowns == 1
+        assert collected["n"] == 1

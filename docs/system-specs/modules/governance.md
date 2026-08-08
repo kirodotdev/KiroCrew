@@ -611,7 +611,25 @@ read-your-writes should add it deliberately, with its own tests.
   profile, title)` (governance, incl. the `commands` scope, and MCP titles
   `mcp__server__tool` converted to `@server/tool`) → first-party app-own MCP
   server auto-approve → read-only auto-approve →
-  user `auto_approve_tools` loop**. A governance deny wins over a user
+  user `auto_approve_tools` loop**. **Canonical MCP identity.** For a call
+  carrying BOTH trusted `_meta.kiro` fields, the gate reconstructs
+  `mcp__<mcp_server_name>__<mcp_tool_name>` once on the common path and runs the
+  deny-floor and `gate_decision` against it **in addition to** the display title
+  and raw command — never instead of them. `select_tool_title` prefers the
+  model's prose `description`, so an ordinary MCP call whose per-tool rule names
+  the real tool would otherwise miss the ceiling and reach interactive approval,
+  where a human "allow" runs a policy-denied tool. The two are not competing
+  spellings of one fact: the canonical name is the trusted, non-model-authored
+  statement of WHICH tool is invoked and is what a per-tool rule matches, while
+  the title and raw command carry the path/command/content signals that a tool
+  identity does not express. Each covers a security dimension the other cannot,
+  so a deny on EITHER denies the call: a `~/.aws/credentials` title still denies
+  behind a harmless canonical name, and a denied canonical name still denies
+  behind benign prose. Because this enforcement is
+  on the common path, the first-party app-own auto-approve below does **not**
+  repeat it; what remains load-bearing there is the identity requirement itself
+  (an absent `mcp_tool_name` leaves the canonical name empty, so the tool cannot
+  be identified and is not auto-approved). A governance deny wins over a user
   auto-approve, and the read-only auto-approve fast-path runs strictly AFTER
   both the deny-floor and `gate_decision`, so a read-only classification can
   never re-admit a denied/governed call. **First-party app-own MCP server

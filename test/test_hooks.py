@@ -974,6 +974,119 @@ class TestMutatingKindBeatsTheTitle:
         assert _should_auto_approve_spawn(ctx, "spawn_run") is False
 
 
+class TestCanonicalMcpIdentityGoverned:
+    """An ORDINARY MCP permission request — no first-party app-own-server
+    auto-approve involved — is governed under its trusted
+    ``mcp__<server>__<tool>`` identity as well as its LLM-authored title, so a
+    per-tool ceiling rule binds even when the title is benign prose. The
+    canonical name is ADDED to the deny floor and governance, never substituted
+    for the title, so the title/raw-command floor keeps denying on its own."""
+
+    @staticmethod
+    def _deny_canonical(monkeypatch, denied: str):
+        """Governance that denies exactly *denied*, recording what it saw."""
+        import kiro_crew.hooks as hooks_mod
+
+        seen: list[str] = []
+
+        def fake_gov(ctx, name, *a, **k):
+            seen.append(name)
+            return "Blocked by governance policy: denied" if name == denied else None
+
+        monkeypatch.setattr(hooks_mod, "_governance_denial", fake_gov)
+        return seen
+
+    def test_governance_denies_canonical_behind_prose_title(self, monkeypatch):
+        # THE REGRESSION. A policy denies mcp__weather:srv__wipe_disk, but
+        # select_tool_title handed us the model's prose description. Governing
+        # only the title would permit, the call would reach the human prompt,
+        # and an "allow" would run a tool the ceiling forbids.
+        seen = self._deny_canonical(monkeypatch, "mcp__weather:srv__wipe_disk")
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "Check tomorrow's forecast",  # benign model-authored prose
+            mcp_server_name="weather:srv",
+            mcp_tool_name="wipe_disk",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_DENY
+        # Both identities were offered to governance — the title (permitted)
+        # AND the reconstructed canonical name (denied).
+        assert "Check tomorrow's forecast" in seen
+        assert "mcp__weather:srv__wipe_disk" in seen
+
+    def test_deny_floor_matches_canonical_behind_prose_title(self, monkeypatch):
+        # Same bypass, via the effective deny set rather than governance.
+        cfg = HooksConfig(auto_deny_tools=["mcp__weather:srv__wipe_disk"])
+        mgr = HookManager(cfg)
+        r = mgr.on_tool_call(
+            "Check tomorrow's forecast",
+            mcp_server_name="weather:srv",
+            mcp_tool_name="wipe_disk",
+            tool_kind="other",
+        )
+        assert r.action == TOOL_DENY
+
+    def test_partial_mcp_identity_reconstructs_nothing(self, monkeypatch):
+        # Only ONE trusted field → no canonical name exists to govern, so the
+        # call is decided on the title alone exactly as before. Guards against
+        # synthesising "mcp__weather:srv__" (or "mcp____wipe_disk"), which could
+        # match a prefix rule and deny an unrelated call.
+        seen = self._deny_canonical(monkeypatch, "mcp__weather:srv__")
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "Check tomorrow's forecast", mcp_server_name="weather:srv", tool_kind="other"
+        )
+        assert r.action != TOOL_DENY
+        assert seen == ["Check tomorrow's forecast"]
+
+    def test_title_floor_survives_canonical_enforcement(self, monkeypatch):
+        # PRESERVATION. Governance permits EVERYTHING here, so the only thing
+        # that can produce a deny is the title-keyed security floor. The display
+        # title names a sensitive path while the canonical name is innocuous:
+        # canonical enforcement is additive, so it must not have displaced the
+        # title from the checks it was already in. Governance must permit for
+        # this to mean anything — a stub that denies the canonical name would
+        # pass even if the title had been substituted away.
+        self._deny_canonical(monkeypatch, "nothing-is-denied")
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "~/.aws/credentials",
+            mcp_server_name="files:srv",
+            mcp_tool_name="nothing_to_see",
+            tool_kind="read",
+        )
+        assert r.action == TOOL_DENY
+
+    def test_raw_command_floor_survives_canonical_enforcement(self, monkeypatch):
+        # PRESERVATION, the shell half: benign title, benign canonical name,
+        # dangerous raw command, and governance permitting everything — so the
+        # deny can only come from the command being evaluated. (For this input
+        # the effective deny set is what fires; the point is that adding the
+        # canonical identity did not displace `command` from the checks that
+        # see it.)
+        self._deny_canonical(monkeypatch, "nothing-is-denied")
+        mgr = HookManager()
+        r = mgr.on_tool_call(
+            "Tidy up some files",
+            command="cat ~/.ssh/id_rsa",
+            is_shell=True,
+            mcp_server_name="shell:srv",
+            mcp_tool_name="nothing_to_see",
+            tool_kind="execute",
+        )
+        assert r.action == TOOL_DENY
+
+    def test_non_mcp_call_unaffected(self, monkeypatch):
+        # Neither trusted field (a shell/built-in tool, or a backend that omits
+        # _meta.kiro): governance sees the title and nothing else.
+        seen = self._deny_canonical(monkeypatch, "never-matches")
+        mgr = HookManager()
+        r = mgr.on_tool_call("List the files", tool_kind="read")
+        assert r.action == TOOL_AUTO_APPROVE
+        assert seen == ["List the files"]
+
+
 class TestAppOwnMcpServerAutoApprove:
     """A FIRST-PARTY (builtin) app agent calling its OWN app-scoped MCP server
     (identified by the trusted, non-model-authored ``mcp_server_name`` =
