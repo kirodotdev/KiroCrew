@@ -4139,6 +4139,22 @@ _CREW_SECRET_LEAVES: list[str] = [
     # agent must not be able to write it. The app's own backend opens it directly
     # rather than through this gate, so it keeps working.
     "workspace/md-notebook/vaults.json",
+    # The Meetings builtin's calendar credentials: a CalDAV password and the
+    # Google / Microsoft 365 OAuth refresh + access tokens. Each is a live bearer
+    # credential for the user's calendar — a refresh token in particular survives
+    # until revoked, so an agent that could read this file would keep reading the
+    # user's schedule long after the session ended. It is a leaf (not a flat
+    # ``~/.kiro/crew`` entry) so it is generated for BOTH ``_CREW_HOME_PREFIXES``,
+    # since ``config_dir()`` can resolve to the legacy ``.kirocrew`` data-home
+    # during a migration fallback and the tokens must be protected there too.
+    #
+    # It lives under ``workspace/`` rather than in ``apps/meetings/data/`` on
+    # purpose: that data tree is what the app's own ``store.contain`` bounds
+    # agent-driven paths against, and keeping a credential outside it removes the
+    # reachability question instead of answering it. The app's backend
+    # (``meetings/backend/credentials.py``) opens the file directly rather than
+    # through this gate, so the user's calendar connection keeps working.
+    "workspace/meetings/calendar-credentials.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
     "sel_hmac.key",

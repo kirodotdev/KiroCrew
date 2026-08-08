@@ -16,6 +16,7 @@ scheme/address validator, and the document path through a local file.
 
 from __future__ import annotations
 
+import base64
 import itertools
 import json
 import socket
@@ -25,7 +26,9 @@ import types
 from concurrent import futures
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pytest
 from meetings_helpers import (  # noqa: F401
@@ -37,6 +40,16 @@ from yarl import URL
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend.providers import calendar as cal
 from kiro_crew.apps.builtins.meetings.backend.providers import tasks as taskprov
+
+
+class _AnyPort:
+    """Stands in for ``link_unfurl.ALLOWED_PORTS`` when a test server binds an
+    ephemeral port. Only ``in`` is used against that frozenset, so accepting
+    everything is the whole contract — and it beats materializing 65k ints.
+    """
+
+    def __contains__(self, _port: object) -> bool:
+        return True
 
 
 def _ics(*events: str, prodid: str = "-//test//EN") -> str:
@@ -527,8 +540,21 @@ class TestUrlValidation:
         assert target.host == "example.test"
         assert target.port == 443
 
-    def test_port_is_taken_from_the_url(self, public_dns: None):
-        assert cal._normalize_url("https://example.test:8443/cal.ics").port == 8443
+    def test_the_default_https_port_is_filled_in(self, public_dns: None):
+        """The pin is keyed on (host, port), so the port can never be left unset."""
+        assert cal._normalize_url("https://example.test/cal.ics").port == 443
+
+    def test_a_non_standard_port_is_refused(self, public_dns: None):
+        """Deliberately narrower than "any port the URL names".
+
+        The shared vet allows 80 and 443 only, and https-only leaves 443. A calendar
+        on some other port is nearly always an internal service, and the ports are
+        the cheapest place to stop this endpoint being used to probe for one. The
+        calendar feature has never shipped, so no working configuration is broken by
+        starting strict; relaxing later is a one-line change to that allow-list.
+        """
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url("https://example.test:8443/cal.ics")
 
     def test_host_is_keyed_as_the_connector_will_see_it(self, public_dns: None):
         """The pin is looked up by yarl's ``raw_host``, so it must be stored that way.
@@ -593,7 +619,9 @@ class TestUrlValidation:
         """
         import inspect
 
-        source = inspect.getsource(cal.IcsCalendarProvider)
+        # The call site is `fetch_vetted`, which is where the hop loop lives now
+        # that every provider shares it.
+        source = inspect.getsource(cal.fetch_vetted)
         assert "calendar redirect URL is malformed" in source
 
     def test_missing_host_refused(self):
@@ -831,7 +859,7 @@ class TestCertificateVerificationStaysOn:
 
         code = "\n".join(
             line.split("#", 1)[0]
-            for line in inspect.getsource(cal.IcsCalendarProvider._fetch_url).splitlines()
+            for line in inspect.getsource(cal.fetch_vetted).splitlines()
         )
         assert "_PinnedResolver()" in code
         assert "use_dns_cache=False" in code
@@ -911,7 +939,12 @@ class TestDnsRebindingIsRefused:
         the pin, the connector, the hop loop — runs for real.
         """
         monkeypatch.setattr(cal, "_ALLOWED_SCHEMES", ("https", "http"))
-        monkeypatch.setattr(cal, "_refuse_private_address", lambda _addr: None)
+        # The address vet is `link_unfurl`'s, so the two refusals to lift are its:
+        # the private-address rule (127.0.0.1 IS the test server) and the 80/443
+        # port rule (the server binds an ephemeral port). Neutralized on that
+        # module, which is where the real code reads them from.
+        monkeypatch.setattr(cal.link_unfurl, "_reject_if_internal_ip", lambda _c: None)
+        monkeypatch.setattr(cal.link_unfurl, "ALLOWED_PORTS", _AnyPort())
 
     @pytest.mark.asyncio
     async def test_the_fetch_lands_on_the_vetted_address_not_the_rebound_one(
@@ -1127,12 +1160,42 @@ class TestLocalIcsRead:
 class TestCalendarRegistry:
     def test_defaults_registered(self):
         ids = {row["id"] for row in cal.available_calendar_providers()}
-        assert ids == {k.CALENDAR_PROVIDER_NONE, k.CALENDAR_PROVIDER_ICS}
+        assert ids == {
+            k.CALENDAR_PROVIDER_NONE,
+            k.CALENDAR_PROVIDER_ICS,
+            k.CALENDAR_PROVIDER_CALDAV,
+            k.CALENDAR_PROVIDER_GOOGLE,
+            k.CALENDAR_PROVIDER_MICROSOFT,
+        }
 
     def test_ics_declares_it_needs_a_source(self):
         rows = {row["id"]: row for row in cal.available_calendar_providers()}
         assert rows[k.CALENDAR_PROVIDER_ICS]["requires_source"] is True
         assert rows[k.CALENDAR_PROVIDER_NONE]["requires_source"] is False
+
+    def test_caldav_declares_it_needs_a_source(self):
+        rows = {row["id"]: row for row in cal.available_calendar_providers()}
+        assert rows[k.CALENDAR_PROVIDER_CALDAV]["requires_source"] is True
+
+    def test_listing_providers_does_not_touch_the_credential_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Rendering the settings picker must not read the disk.
+
+        ``available_calendar_providers`` constructs EVERY registered factory just
+        to read its label, inside a broad ``except`` that drops a row on failure.
+        A provider that loaded credentials in ``__init__`` would therefore put a
+        file read behind the picker and, if it raised, vanish from the list with
+        only a log line to say why.
+        """
+        from kiro_crew.apps.builtins.meetings.backend import credentials as creds
+
+        def explode() -> Path:
+            raise AssertionError("the credential store was touched while listing")
+
+        monkeypatch.setattr(creds, "credentials_file", explode)
+        ids = {row["id"] for row in cal.available_calendar_providers()}
+        assert k.CALENDAR_PROVIDER_CALDAV in ids
 
     def test_unknown_id_degrades_to_none(self):
         assert cal.get_calendar_provider("corporate-calendar").provider_id == (
@@ -1217,12 +1280,31 @@ class TestRedirectsAreRevalidated:
     """
 
     def test_the_fetch_disables_automatic_redirects(self):
-        """Pins the flag itself: without it, no per-hop validation can run."""
+        """Pins the flag itself: without it, no per-hop validation can run.
+
+        Inspects ``fetch_vetted`` rather than ``IcsCalendarProvider._fetch_url``:
+        the hop loop moved there when CalDAV / Google / Microsoft 365 needed the
+        same posture, and one shared copy is the point. The provider is pinned
+        separately, below, as a caller of it.
+        """
+        import inspect
+
+        src = inspect.getsource(cal.fetch_vetted)
+        assert "allow_redirects=False" in src
+        assert "_REDIRECT_STATUSES" in src
+
+    def test_the_ics_provider_fetches_through_the_shared_gate(self):
+        """The provider must not grow a second, unreviewed hop loop.
+
+        If this fails because ``_fetch_url`` learned to talk to aiohttp directly
+        again, that is the regression: every SSRF property in this file is pinned
+        against ``fetch_vetted``, and a provider bypassing it inherits none of them.
+        """
         import inspect
 
         src = inspect.getsource(cal.IcsCalendarProvider._fetch_url)
-        assert "allow_redirects=False" in src
-        assert "_REDIRECT_STATUSES" in src
+        assert "fetch_vetted(" in src
+        assert "ClientSession" not in src
 
     @pytest.mark.parametrize(
         "target",
@@ -1245,9 +1327,12 @@ class TestRedirectsAreRevalidated:
         assert k.ICS_MAX_REDIRECTS >= 1
         import inspect
 
-        src = inspect.getsource(cal.IcsCalendarProvider._fetch_url)
-        assert "ICS_MAX_REDIRECTS" in src
-        assert "redirected too many times" in src
+        # The bound is the shared fetch's `max_redirects`, which the .ics provider
+        # passes `ICS_MAX_REDIRECTS` into — so both halves are pinned.
+        loop_src = inspect.getsource(cal.fetch_vetted)
+        assert "max_redirects" in loop_src
+        assert "redirected too many times" in loop_src
+        assert "ICS_MAX_REDIRECTS" in inspect.getsource(cal.IcsCalendarProvider._fetch_url)
 
 
 def _passthrough_target(url: str) -> cal.VettedTarget:
@@ -1419,3 +1504,1024 @@ class TestRedirectLoopAgainstARealServer:
                 await cal.IcsCalendarProvider(base)._fetch_url(base)
         finally:
             await runner.cleanup()
+
+
+class TestCredentialDoesNotSurviveACrossOriginRedirect:
+    """An ``Authorization`` header must not follow a redirect off its origin.
+
+    The ``.ics`` fetch never sent a credential, so this class covers a property
+    that arrived with :func:`cal.fetch_vetted` for CalDAV / Google / Microsoft 365.
+    The threat is concrete: a calendar host — or anything that can forge its
+    ``Location`` — bounces the request to a host it controls and is handed the
+    user's live password or bearer token. The redirect is still FOLLOWED, it just
+    arrives unauthenticated, so the failure is visible instead of silent.
+
+    ``headers`` and ``auth_headers`` are separate parameters for exactly this
+    reason, and these tests pin the difference: a plain header rides every hop.
+    """
+
+    @staticmethod
+    async def _serve(handler, *, method: str = "GET"):
+        from aiohttp import web as aioweb
+
+        app = aioweb.Application()
+        app.router.add_route(method, "/{tail:.*}", handler)
+        runner = aioweb.AppRunner(app)
+        await runner.setup()
+        site = aioweb.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        return runner, f"http://127.0.0.1:{runner.addresses[0][1]}"
+
+    @pytest.mark.asyncio
+    async def test_auth_rides_a_same_origin_redirect(self, monkeypatch: pytest.MonkeyPatch):
+        """Staying on the addressed origin keeps the credential — otherwise a
+        provider whose server legitimately redirects internally could never
+        authenticate at all."""
+        from aiohttp import web as aioweb
+
+        seen: list[str | None] = []
+
+        async def handler(request):
+            seen.append(request.headers.get("Authorization"))
+            if request.path == "/start":
+                raise aioweb.HTTPFound("/final")
+            return aioweb.Response(text="ok")
+
+        runner, base = await self._serve(handler)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        try:
+            body = await cal.fetch_vetted(
+                f"{base}/start", auth_headers={"Authorization": "Basic c3VwZXItc2VjcmV0"}
+            )
+        finally:
+            await runner.cleanup()
+
+        assert body == b"ok"
+        assert seen == ["Basic c3VwZXItc2VjcmV0", "Basic c3VwZXItc2VjcmV0"]
+
+    @pytest.mark.asyncio
+    async def test_auth_is_dropped_when_the_redirect_leaves_the_origin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Two real servers: the first redirects to the second, which must NOT be
+        handed the credential."""
+        from aiohttp import web as aioweb
+
+        leaked: list[str | None] = []
+
+        async def attacker(request):
+            leaked.append(request.headers.get("Authorization"))
+            return aioweb.Response(text="landed")
+
+        attacker_runner, attacker_base = await self._serve(attacker)
+
+        async def origin(request):
+            raise aioweb.HTTPFound(f"{attacker_base}/steal")
+
+        origin_runner, origin_base = await self._serve(origin)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        try:
+            body = await cal.fetch_vetted(
+                f"{origin_base}/start",
+                auth_headers={"Authorization": "Basic c3VwZXItc2VjcmV0"},
+            )
+        finally:
+            await origin_runner.cleanup()
+            await attacker_runner.cleanup()
+
+        # The hop happened, so the failure mode is a visible auth failure rather
+        # than a silent credential disclosure.
+        assert body == b"landed"
+        assert leaked == [None], f"credential leaked to another origin: {leaked}"
+
+    @pytest.mark.asyncio
+    async def test_a_plain_header_is_not_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        """Only ``auth_headers`` is origin-scoped; ``headers`` is not.
+
+        Pins that the split is real. A provider that put its credential in
+        ``headers`` would get no protection, which is why the docstring on
+        ``fetch_vetted`` says which one to use.
+        """
+        from aiohttp import web as aioweb
+
+        seen: list[str | None] = []
+
+        async def second(request):
+            seen.append(request.headers.get("X-Trace"))
+            return aioweb.Response(text="ok")
+
+        second_runner, second_base = await self._serve(second)
+
+        async def first(request):
+            raise aioweb.HTTPFound(f"{second_base}/next")
+
+        first_runner, first_base = await self._serve(first)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        try:
+            await cal.fetch_vetted(f"{first_base}/start", headers={"X-Trace": "keep-me"})
+        finally:
+            await first_runner.cleanup()
+            await second_runner.cleanup()
+
+        assert seen == ["keep-me"]
+
+
+class TestANonGetRequestOnlyFollowsMethodPreservingRedirects:
+    """301/302/303 tell a client to retry with GET.
+
+    For the ``.ics`` GET that is harmless. For a CalDAV ``REPORT`` it would turn a
+    calendar-query into a plain GET of some other resource and then parse whatever
+    came back — a wrong answer that looks like a right one. Those are refused; the
+    method-preserving 307/308 are followed.
+    """
+
+    @staticmethod
+    async def _serve(handler, *, method: str):
+        from aiohttp import web as aioweb
+
+        app = aioweb.Application()
+        app.router.add_route(method, "/{tail:.*}", handler)
+        runner = aioweb.AppRunner(app)
+        await runner.setup()
+        site = aioweb.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        return runner, f"http://127.0.0.1:{runner.addresses[0][1]}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [301, 302, 303])
+    async def test_a_method_changing_redirect_is_refused(
+        self, status: int, monkeypatch: pytest.MonkeyPatch
+    ):
+        from aiohttp import web as aioweb
+
+        async def handler(request):
+            return aioweb.Response(status=status, headers={"Location": "/elsewhere"})
+
+        runner, base = await self._serve(handler, method="REPORT")
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        try:
+            with pytest.raises(cal.CalendarError, match="change the request method"):
+                await cal.fetch_vetted(base, method="REPORT", body=b"<query/>")
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_a_307_is_followed_with_the_method_and_body_intact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from aiohttp import web as aioweb
+
+        bodies: list[bytes] = []
+
+        async def handler(request):
+            bodies.append(await request.read())
+            if request.path == "/start":
+                return aioweb.Response(status=307, headers={"Location": "/final"})
+            return aioweb.Response(text="done")
+
+        runner, base = await self._serve(handler, method="REPORT")
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        try:
+            out = await cal.fetch_vetted(
+                f"{base}/start", method="REPORT", body=b"<query/>"
+            )
+        finally:
+            await runner.cleanup()
+
+        assert out == b"done"
+        # The body survived the hop — that is what "method preserving" has to mean.
+        assert bodies == [b"<query/>", b"<query/>"]
+
+    @pytest.mark.asyncio
+    async def test_a_get_still_follows_a_302(self, monkeypatch: pytest.MonkeyPatch):
+        """The refusal above must not have narrowed the GET path."""
+        from aiohttp import web as aioweb
+
+        async def handler(request):
+            if request.path == "/start":
+                raise aioweb.HTTPFound("/final")
+            return aioweb.Response(text="ok")
+
+        runner, base = await self._serve(handler, method="GET")
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        try:
+            assert await cal.fetch_vetted(f"{base}/start") == b"ok"
+        finally:
+            await runner.cleanup()
+
+
+# ── CalDAV ──────────────────────────────────────────────────────────────────
+
+_VEVENT_TEMPLATE = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:{uid}
+SUMMARY:{summary}
+DTSTART:{start}
+DTEND:{end}
+END:VEVENT
+END:VCALENDAR"""
+
+
+def _multistatus(*calendar_data: str) -> str:
+    """A CalDAV ``REPORT`` response wrapping each iCalendar document."""
+    responses = "".join(
+        "<D:response><D:propstat><D:prop>"
+        f"<C:calendar-data>{data}</C:calendar-data>"
+        "</D:prop></D:propstat></D:response>"
+        for data in calendar_data
+    )
+    return (
+        '<?xml version="1.0" encoding="utf-8" ?>'
+        '<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+        f"{responses}</D:multistatus>"
+    )
+
+
+def _soon(hours: int) -> str:
+    """An iCalendar UTC stamp *hours* from now, inside the sync window."""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).strftime("%Y%m%dT%H%M%SZ")
+
+
+class _FakeCalDav:
+    """A local server that answers a CalDAV ``REPORT``, recording what it got."""
+
+    def __init__(self, body: str, *, status: int = 207) -> None:
+        self._body = body
+        self._status = status
+        self.requests: list[dict[str, Any]] = []
+        self._runner: Any = None
+        self.base = ""
+
+    async def __aenter__(self) -> _FakeCalDav:
+        from aiohttp import web as aioweb
+
+        async def handler(request):
+            self.requests.append(
+                {
+                    "method": request.method,
+                    "headers": dict(request.headers),
+                    "body": (await request.read()).decode("utf-8"),
+                }
+            )
+            return aioweb.Response(
+                status=self._status, text=self._body, content_type="application/xml"
+            )
+
+        app = aioweb.Application()
+        app.router.add_route("REPORT", "/{tail:.*}", handler)
+        self._runner = aioweb.AppRunner(app)
+        await self._runner.setup()
+        site = aioweb.TCPSite(self._runner, "127.0.0.1", 0)
+        await site.start()
+        self.base = f"http://127.0.0.1:{self._runner.addresses[0][1]}/cal/"
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self._runner.cleanup()
+
+
+@pytest.fixture()
+def caldav_creds(tmp_path: Path):
+    """Point the credential store at a temp dir and seed CalDAV credentials."""
+    from kiro_crew.apps.builtins.meetings.backend import credentials as creds
+
+    creds.set_credentials_home(tmp_path / "creds")
+    yield creds
+    creds.set_credentials_home(None)
+
+
+class TestCalDavProvider:
+    """The CalDAV path, driven against a local fake server.
+
+    No real network, matching this module's rule: the SSRF gate is stubbed to a
+    pass-through so a loopback server is reachable, and everything downstream of
+    the gate — the REPORT body, the auth header, the Multi-Status parse — runs for
+    real.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_reports_and_parses_the_events(
+        self, monkeypatch: pytest.MonkeyPatch, caldav_creds
+    ):
+        await caldav_creds.write_for(
+            k.CALENDAR_PROVIDER_CALDAV, {"username": "alice", "password": "pw"}
+        )
+        body = _multistatus(
+            _VEVENT_TEMPLATE.format(
+                uid="evt-a", summary="Standup", start=_soon(2), end=_soon(3)
+            ),
+            _VEVENT_TEMPLATE.format(
+                uid="evt-b", summary="Review", start=_soon(5), end=_soon(6)
+            ),
+        )
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeCalDav(body) as server:
+            events = await cal.CalDavCalendarProvider(server.base).fetch(days=7)
+            got = server.requests
+
+        assert [e.title for e in events] == ["Standup", "Review"]
+        assert got[0]["method"] == "REPORT"
+        assert got[0]["headers"]["Depth"] == "1"
+        assert "calendar-query" in got[0]["body"]
+        assert "time-range" in got[0]["body"]
+
+    @pytest.mark.asyncio
+    async def test_it_sends_basic_auth_built_from_the_credential_store(
+        self, monkeypatch: pytest.MonkeyPatch, caldav_creds
+    ):
+        await caldav_creds.write_for(
+            k.CALENDAR_PROVIDER_CALDAV, {"username": "alice@example.com", "password": "s3cr3t"}
+        )
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeCalDav(_multistatus()) as server:
+            await cal.CalDavCalendarProvider(server.base).fetch(days=1)
+            sent = server.requests[0]["headers"]["Authorization"]
+
+        expected = base64.b64encode(b"alice@example.com:s3cr3t").decode("ascii")
+        assert sent == f"Basic {expected}"
+
+    @pytest.mark.asyncio
+    async def test_the_credential_travels_as_auth_headers_so_a_redirect_drops_it(self):
+        """Structural, because the leak it prevents cannot be seen from outside.
+
+        ``fetch_vetted`` only origin-scopes what arrives in ``auth_headers``; a
+        provider that put its Basic credential in ``headers`` would send the
+        user's password to whatever host a forged ``Location`` named.
+        """
+        import inspect
+
+        src = inspect.getsource(cal.CalDavCalendarProvider.fetch)
+        assert "auth_headers={" in src
+        # The Authorization value must appear in the auth_headers argument, not
+        # in the plain headers dict.
+        auth_pos = src.index("auth_headers={")
+        headers_pos = src.index("headers={")
+        assert src.index("Authorization") > auth_pos > headers_pos
+
+    @pytest.mark.asyncio
+    async def test_no_source_is_explained_not_a_stack_trace(self, caldav_creds):
+        with pytest.raises(cal.CalendarError, match="CalDAV collection URL"):
+            await cal.CalDavCalendarProvider("").fetch()
+
+    @pytest.mark.asyncio
+    async def test_missing_credentials_are_explained(self, caldav_creds):
+        with pytest.raises(cal.CalendarError, match="username and password"):
+            await cal.CalDavCalendarProvider("https://dav.example/cal/").fetch()
+
+    @pytest.mark.asyncio
+    async def test_a_partial_credential_is_still_refused(self, caldav_creds):
+        """A username with no password must not produce a half-formed header."""
+        await caldav_creds.write_for(k.CALENDAR_PROVIDER_CALDAV, {"username": "alice"})
+        with pytest.raises(cal.CalendarError, match="username and password"):
+            await cal.CalDavCalendarProvider("https://dav.example/cal/").fetch()
+
+    @pytest.mark.asyncio
+    async def test_an_unauthorized_response_does_not_echo_the_password(
+        self, monkeypatch: pytest.MonkeyPatch, caldav_creds
+    ):
+        await caldav_creds.write_for(
+            k.CALENDAR_PROVIDER_CALDAV, {"username": "alice", "password": "do-not-log-me"}
+        )
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeCalDav("nope", status=401) as server:
+            with pytest.raises(cal.CalendarError) as excinfo:
+                await cal.CalDavCalendarProvider(server.base).fetch()
+
+        assert "401" in str(excinfo.value)
+        assert "do-not-log-me" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_a_recurring_series_folds_to_its_earliest_instance(
+        self, monkeypatch: pytest.MonkeyPatch, caldav_creds
+    ):
+        """Overrides share the series UID, so they share an event_id.
+
+        Two rows with one id would share a meeting DIRECTORY, which is the
+        collision ``_event_id_for`` exists to prevent. The earliest start wins.
+        """
+        await caldav_creds.write_for(
+            k.CALENDAR_PROVIDER_CALDAV, {"username": "a", "password": "b"}
+        )
+        later = _soon(9)
+        earlier = _soon(4)
+        body = _multistatus(
+            _VEVENT_TEMPLATE.format(uid="series-1", summary="Weekly", start=later, end=_soon(10)),
+            _VEVENT_TEMPLATE.format(
+                uid="series-1", summary="Weekly", start=earlier, end=_soon(5)
+            ),
+        )
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeCalDav(body) as server:
+            events = await cal.CalDavCalendarProvider(server.base).fetch(days=7)
+
+        assert len(events) == 1
+        assert events[0].start == f"{earlier[:4]}-{earlier[4:6]}-{earlier[6:8]}T" + (
+            f"{earlier[9:11]}:{earlier[11:13]}:{earlier[13:15]}Z"
+        )
+
+    @pytest.mark.asyncio
+    async def test_one_unparseable_calendar_object_does_not_lose_the_others(
+        self, monkeypatch: pytest.MonkeyPatch, caldav_creds
+    ):
+        await caldav_creds.write_for(
+            k.CALENDAR_PROVIDER_CALDAV, {"username": "a", "password": "b"}
+        )
+        body = _multistatus(
+            "this is not iCalendar at all",
+            _VEVENT_TEMPLATE.format(uid="good", summary="Kept", start=_soon(2), end=_soon(3)),
+        )
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeCalDav(body) as server:
+            events = await cal.CalDavCalendarProvider(server.base).fetch(days=7)
+
+        assert [e.title for e in events] == ["Kept"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_collection_is_an_empty_list_not_an_error(
+        self, monkeypatch: pytest.MonkeyPatch, caldav_creds
+    ):
+        """A calendar with nothing in it is a legitimate answer.
+
+        Unlike ``NoCalendarProvider``, where an empty result would hide a config
+        typo, a configured CalDAV collection that returns no events genuinely has
+        none this week.
+        """
+        await caldav_creds.write_for(
+            k.CALENDAR_PROVIDER_CALDAV, {"username": "a", "password": "b"}
+        )
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeCalDav(_multistatus()) as server:
+            assert await cal.CalDavCalendarProvider(server.base).fetch(days=7) == []
+
+
+class TestCalDavXmlIsHardened:
+    """The Multi-Status is XML from a REMOTE server.
+
+    Measured on this interpreter, not assumed: stdlib ``ElementTree`` expands
+    internal entities (a nine-line "billion laughs" grows to thousands of
+    characters, and each nesting level multiplies that), while EXTERNAL entities
+    are already refused as undefined — so file disclosure is closed and expansion
+    is the hole. An entity bomb needs an internal DTD, so the DOCTYPE is refused
+    outright and no entity-graph analysis is needed.
+    """
+
+    def test_an_entity_bomb_is_refused(self):
+        bomb = (
+            '<?xml version="1.0"?>'
+            "<!DOCTYPE lolz ["
+            '<!ENTITY lol "lol">'
+            '<!ENTITY lol1 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">'
+            '<!ENTITY lol2 "&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;&lol1;">'
+            "]>"
+            "<root>&lol2;</root>"
+        ).encode("utf-8")
+        with pytest.raises(cal.CalendarError, match="document type declaration"):
+            cal._parse_xml_safely(bomb)
+
+    def test_the_refusal_is_a_blanket_doctype_rule(self):
+        """Even a DOCTYPE with no entities is refused.
+
+        The rule is deliberately coarse: a legitimate CalDAV Multi-Status carries
+        no DOCTYPE, so refusing all of them costs nothing real and removes the
+        need to decide which entity declarations are safe.
+        """
+        with pytest.raises(cal.CalendarError, match="document type declaration"):
+            cal._parse_xml_safely(b'<?xml version="1.0"?><!DOCTYPE root><root/>')
+
+    def test_external_entities_are_refused_too(self, tmp_path: Path):
+        """Belt and braces: pins that no file read is reachable through the XML."""
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET", encoding="utf-8")
+        xxe = (
+            f'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file://{secret}">]>'
+            "<root>&x;</root>"
+        ).encode("utf-8")
+        with pytest.raises(cal.CalendarError):
+            cal._parse_xml_safely(xxe)
+
+    def test_malformed_xml_is_a_calendar_error_not_a_parse_error(self):
+        """The route turns ``CalendarError`` into a 502; a bare ``ParseError``
+        would escape as a 500."""
+        with pytest.raises(cal.CalendarError, match="could not be parsed"):
+            cal._parse_xml_safely(b"<multistatus><unclosed>")
+
+    def test_a_legitimate_multistatus_still_parses(self):
+        payload = _multistatus(
+            _VEVENT_TEMPLATE.format(uid="u1", summary="Ok", start=_soon(1), end=_soon(2))
+        ).encode("utf-8")
+        events = cal._events_from_multistatus(payload, days=7)
+        assert [e.title for e in events] == ["Ok"]
+
+
+# ── Google Calendar ─────────────────────────────────────────────────────────
+
+
+class _FakeGoogleEvents:
+    """A local stand-in for ``events.list``, recording each request."""
+
+    def __init__(self, *pages: dict[str, Any], status: int = 200) -> None:
+        self._pages = list(pages)
+        self._status = status
+        self.requests: list[dict[str, Any]] = []
+        self._runner: Any = None
+        self.url = ""
+
+    async def __aenter__(self) -> _FakeGoogleEvents:
+        from aiohttp import web as aioweb
+
+        async def handler(request):
+            self.requests.append(
+                {"query": dict(request.query), "headers": dict(request.headers)}
+            )
+            index = min(len(self.requests) - 1, len(self._pages) - 1)
+            if self._status != 200:
+                return aioweb.Response(status=self._status, text="denied")
+            return aioweb.json_response(self._pages[index])
+
+        app = aioweb.Application()
+        app.router.add_get("/events", handler)
+        self._runner = aioweb.AppRunner(app)
+        await self._runner.setup()
+        site = aioweb.TCPSite(self._runner, "127.0.0.1", 0)
+        await site.start()
+        self.url = f"http://127.0.0.1:{self._runner.addresses[0][1]}/events"
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self._runner.cleanup()
+
+
+def _google_item(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": "gid-1",
+        "status": "confirmed",
+        "summary": "Design review",
+        "start": {"dateTime": "2026-08-05T09:00:00+09:00"},
+        "end": {"dateTime": "2026-08-05T10:00:00+09:00"},
+        "location": "Room 4",
+        "organizer": {"displayName": "Alice", "email": "alice@example.com"},
+        "attendees": [{"displayName": "Bob"}, {"email": "carol@example.com"}],
+        "description": "agenda",
+    }
+    base.update(over)
+    return base
+
+
+@pytest.fixture()
+def google_connected(tmp_path: Path):
+    """A credential store with Google already connected and a live token."""
+    import time as _time
+
+    from kiro_crew.apps.builtins.meetings.backend import credentials as creds
+
+    creds.set_credentials_home(tmp_path / "creds")
+    yield creds, _time
+    creds.set_credentials_home(None)
+
+
+class TestGoogleCalendarProvider:
+    @staticmethod
+    async def _connect(creds, _time) -> None:
+        await creds.write_for(
+            k.CALENDAR_PROVIDER_GOOGLE,
+            {
+                "client_id": "cid",
+                "refresh_token": "rt",
+                "access_token": "live-token",
+                "expires_at": str(_time.time() + 3600),
+            },
+        )
+
+    def test_it_does_not_require_a_source(self):
+        rows = {row["id"]: row for row in cal.available_calendar_providers()}
+        # It reads the signed-in user's `primary` calendar; asking for a calendar
+        # id is not something a user has to hand.
+        assert rows[k.CALENDAR_PROVIDER_GOOGLE]["requires_source"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_unconnected_account_is_explained(self, google_connected):
+        with pytest.raises(cal.CalendarError, match="not connected"):
+            await cal.GoogleCalendarProvider().fetch()
+
+    @pytest.mark.asyncio
+    async def test_it_sends_the_bearer_token_and_the_right_query(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeGoogleEvents({"items": [_google_item()]}) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            events = await cal.GoogleCalendarProvider().fetch(days=7)
+            req = api.requests[0]
+
+        assert req["headers"]["Authorization"] == "Bearer live-token"
+        # singleEvents=true is what makes Google expand a recurring series
+        # server-side, which is why this provider needs no RRULE engine.
+        assert req["query"]["singleEvents"] == "true"
+        assert req["query"]["orderBy"] == "startTime"
+        assert "timeMin" in req["query"] and "timeMax" in req["query"]
+        assert [e.title for e in events] == ["Design review"]
+
+    @pytest.mark.asyncio
+    async def test_the_bearer_token_travels_as_auth_headers(self):
+        """So a redirect off googleapis.com cannot carry it away."""
+        import inspect
+
+        src = inspect.getsource(cal.GoogleCalendarProvider.fetch)
+        auth_pos = src.index("auth_headers={")
+        assert src.index("Bearer") > auth_pos
+
+    @pytest.mark.asyncio
+    async def test_an_offset_timestamp_becomes_utc(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """09:00+09:00 is 00:00Z. Reading the offset as UTC would name the wrong
+        instant, so the ordering and the sync window would both be wrong."""
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        start = (datetime.now(timezone.utc) + timedelta(hours=5)).astimezone(
+            timezone(timedelta(hours=9))
+        )
+        item = _google_item(
+            start={"dateTime": start.isoformat()},
+            end={"dateTime": (start + timedelta(hours=1)).isoformat()},
+        )
+        async with _FakeGoogleEvents({"items": [item]}) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            events = await cal.GoogleCalendarProvider().fetch(days=7)
+
+        assert events[0].start == start.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_whole_day_event_is_read_as_midnight_utc(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        day = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d")
+        item = _google_item(start={"date": day}, end={"date": day})
+        async with _FakeGoogleEvents({"items": [item]}) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            events = await cal.GoogleCalendarProvider().fetch(days=7)
+
+        assert events[0].start == f"{day}T00:00:00Z"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_instance_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """A cancelled occurrence still appears in the list; showing it would put
+        a phantom meeting in the user's day."""
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        page = {
+            "items": [
+                _google_item(id="dead", status="cancelled", start=None, end=None),
+                _google_item(id="alive", summary="Kept"),
+            ]
+        }
+        async with _FakeGoogleEvents(page) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            events = await cal.GoogleCalendarProvider().fetch(days=7)
+
+        assert [e.title for e in events] == ["Kept"]
+
+    @pytest.mark.asyncio
+    async def test_an_item_with_no_usable_start_is_skipped_not_fatal(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        page = {
+            "items": [
+                _google_item(id="bad", start={"dateTime": "not-a-timestamp"}),
+                _google_item(id="ok", summary="Survived"),
+            ]
+        }
+        async with _FakeGoogleEvents(page) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            events = await cal.GoogleCalendarProvider().fetch(days=7)
+
+        assert [e.title for e in events] == ["Survived"]
+
+    @pytest.mark.asyncio
+    async def test_it_follows_nextpagetoken(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        first = {"items": [_google_item(id="p1", summary="One")], "nextPageToken": "tok-2"}
+        second = {"items": [_google_item(id="p2", summary="Two")]}
+        async with _FakeGoogleEvents(first, second) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            events = await cal.GoogleCalendarProvider().fetch(days=7)
+            requests = api.requests
+
+        assert len(requests) == 2
+        assert requests[1]["query"]["pageToken"] == "tok-2"
+        assert sorted(e.title for e in events) == ["One", "Two"]
+
+    @pytest.mark.asyncio
+    async def test_endless_pagination_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """A provider that always returns a nextPageToken must not loop forever."""
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        forever = {"items": [_google_item()], "nextPageToken": "always"}
+        async with _FakeGoogleEvents(forever) as api:
+            monkeypatch.setattr(k, "GOOGLE_EVENTS_URL", api.url)
+            await cal.GoogleCalendarProvider().fetch(days=7)
+            assert len(api.requests) == k.GOOGLE_MAX_PAGES
+
+    @pytest.mark.asyncio
+    async def test_a_non_json_body_is_a_calendar_error(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        with pytest.raises(cal.CalendarError, match="not JSON"):
+            cal._json_object(b"<html>error</html>")
+
+    def test_the_endpoints_are_constants_not_configuration(self):
+        """A settable authorize URL is a phishing surface: a rewritten host
+        collects the user's Google password. Only the client id/secret are
+        per-installation."""
+        assert k.GOOGLE_AUTHORIZE_URL.startswith("https://accounts.google.com/")
+        assert k.GOOGLE_TOKEN_URL.startswith("https://oauth2.googleapis.com/")
+        assert k.GOOGLE_CALENDAR_SCOPE.endswith("calendar.readonly")
+        # Read-only, because the app only ever displays meetings.
+        assert "readonly" in k.GOOGLE_CALENDAR_SCOPE
+
+    def test_offline_access_and_reconsent_are_requested(self):
+        """Without access_type=offline Google issues no refresh token, and
+        without prompt=consent a RECONNECT issues none either -- the calendar
+        would then stop working an hour after every reconnect."""
+        assert k.GOOGLE_AUTHORIZE_EXTRA["access_type"] == "offline"
+        assert k.GOOGLE_AUTHORIZE_EXTRA["prompt"] == "consent"
+
+    def test_the_oauth_client_matches_the_constants(self):
+        client = cal.google_oauth_client()
+        assert client.provider_id == k.CALENDAR_PROVIDER_GOOGLE
+        assert client.authorize_url == k.GOOGLE_AUTHORIZE_URL
+        assert client.token_url == k.GOOGLE_TOKEN_URL
+        assert client.scopes == (k.GOOGLE_CALENDAR_SCOPE,)
+
+
+# ── Microsoft 365 (Graph) ───────────────────────────────────────────────────
+
+
+class _FakeGraph:
+    """A local stand-in for Graph's ``calendarView``."""
+
+    def __init__(self, *pages: dict[str, Any]) -> None:
+        self._pages = list(pages)
+        self.requests: list[dict[str, Any]] = []
+        self._runner: Any = None
+        self.url = ""
+
+    async def __aenter__(self) -> _FakeGraph:
+        from aiohttp import web as aioweb
+
+        async def handler(request):
+            self.requests.append(
+                {"query": dict(request.query), "headers": dict(request.headers)}
+            )
+            index = min(len(self.requests) - 1, len(self._pages) - 1)
+            page = dict(self._pages[index])
+            # Graph paginates with a FULL url; rewrite the placeholder so it
+            # points back at this server.
+            if page.get("@odata.nextLink") == "NEXT":
+                page["@odata.nextLink"] = f"{self.url}?page=2"
+            return aioweb.json_response(page)
+
+        app = aioweb.Application()
+        app.router.add_get("/calendarView", handler)
+        self._runner = aioweb.AppRunner(app)
+        await self._runner.setup()
+        site = aioweb.TCPSite(self._runner, "127.0.0.1", 0)
+        await site.start()
+        self.url = f"http://127.0.0.1:{self._runner.addresses[0][1]}/calendarView"
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self._runner.cleanup()
+
+
+def _graph_item(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "id": "AAMk-1",
+        "isCancelled": False,
+        "subject": "Sprint planning",
+        "start": {"dateTime": "2026-08-05T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-08-05T10:00:00.0000000", "timeZone": "UTC"},
+        "location": {"displayName": "Teams"},
+        "organizer": {"emailAddress": {"name": "Dana", "address": "dana@example.com"}},
+        "attendees": [{"emailAddress": {"name": "Eve"}}],
+        "bodyPreview": "the agenda",
+    }
+    base.update(over)
+    return base
+
+
+class TestMicrosoftCalendarProvider:
+    @staticmethod
+    async def _connect(creds, _time) -> None:
+        await creds.write_for(
+            k.CALENDAR_PROVIDER_MICROSOFT,
+            {
+                "client_id": "cid",
+                "refresh_token": "rt",
+                "access_token": "graph-token",
+                "expires_at": str(_time.time() + 3600),
+            },
+        )
+
+    def test_it_does_not_require_a_source(self):
+        rows = {row["id"]: row for row in cal.available_calendar_providers()}
+        assert rows[k.CALENDAR_PROVIDER_MICROSOFT]["requires_source"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_unconnected_account_is_explained(self, google_connected):
+        with pytest.raises(cal.CalendarError, match="not connected"):
+            await cal.MicrosoftCalendarProvider().fetch()
+
+    @pytest.mark.asyncio
+    async def test_it_asks_graph_for_utc_and_sends_the_bearer_token(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """The Prefer header is load-bearing: Graph's dateTime has no offset, so
+        without it the naive value would be in the mailbox's zone and read as
+        UTC."""
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeGraph({"value": [_graph_item()]}) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            events = await cal.MicrosoftCalendarProvider().fetch(days=7)
+            req = api.requests[0]
+
+        assert req["headers"]["Authorization"] == "Bearer graph-token"
+        assert req["headers"]["Prefer"] == 'outlook.timezone="UTC"'
+        assert "startDateTime" in req["query"] and "endDateTime" in req["query"]
+        assert [e.title for e in events] == ["Sprint planning"]
+
+    @pytest.mark.asyncio
+    async def test_it_reads_the_nested_organizer_and_attendee_names(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """Graph nests the name one level deeper than Google, inside
+        ``emailAddress``."""
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        async with _FakeGraph({"value": [_graph_item()]}) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            events = await cal.MicrosoftCalendarProvider().fetch(days=7)
+
+        assert events[0].organizer == "Dana"
+        assert events[0].attendees == ["Eve"]
+        assert events[0].location == "Teams"
+
+    @pytest.mark.asyncio
+    async def test_a_named_timezone_is_applied_to_the_naive_stamp(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """A response that ignored the Prefer header must not be misread.
+
+        The stamp is wall-clock in ``timeZone``, so the zone is APPLIED to it
+        rather than converted from UTC.
+        """
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        soon = datetime.now(timezone.utc) + timedelta(hours=6)
+        wall = soon.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%dT%H:%M:%S.0000000")
+        item = _graph_item(
+            start={"dateTime": wall, "timeZone": "Asia/Tokyo"},
+            end={"dateTime": wall, "timeZone": "Asia/Tokyo"},
+        )
+        async with _FakeGraph({"value": [item]}) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            events = await cal.MicrosoftCalendarProvider().fetch(days=7)
+
+        assert events[0].start == soon.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @pytest.mark.asyncio
+    async def test_a_windows_zone_name_falls_back_to_utc(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        """Graph often answers with ``Tokyo Standard Time``, which is not an IANA
+        key. A visible meeting at a possibly-wrong hour beats one that is not
+        there — the same stance ``_tzid_of`` already takes."""
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        stamp = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%S.0000000"
+        )
+        item = _graph_item(
+            start={"dateTime": stamp, "timeZone": "Tokyo Standard Time"},
+            end={"dateTime": stamp, "timeZone": "Tokyo Standard Time"},
+        )
+        async with _FakeGraph({"value": [item]}) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            events = await cal.MicrosoftCalendarProvider().fetch(days=7)
+
+        assert events[0].start == f"{stamp[:19]}Z"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_occurrence_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        page = {
+            "value": [
+                _graph_item(id="x", isCancelled=True, subject="Dropped"),
+                _graph_item(id="y", subject="Kept"),
+            ]
+        }
+        async with _FakeGraph(page) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            events = await cal.MicrosoftCalendarProvider().fetch(days=7)
+
+        assert [e.title for e in events] == ["Kept"]
+
+    @pytest.mark.asyncio
+    async def test_it_follows_the_odata_nextlink(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        first = {"value": [_graph_item(id="a", subject="One")], "@odata.nextLink": "NEXT"}
+        second = {"value": [_graph_item(id="b", subject="Two")]}
+        async with _FakeGraph(first, second) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            events = await cal.MicrosoftCalendarProvider().fetch(days=7)
+            requests = api.requests
+
+        assert len(requests) == 2
+        assert sorted(e.title for e in events) == ["One", "Two"]
+
+    @pytest.mark.asyncio
+    async def test_a_nextlink_at_a_private_address_is_refused_by_the_gate(
+        self, google_connected
+    ):
+        """The pagination URL comes from the response BODY, so it is exactly as
+        untrusted as a redirect ``Location`` — and gets the same gate."""
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url("https://169.254.169.254/graph")
+
+    @pytest.mark.asyncio
+    async def test_endless_pagination_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch, google_connected
+    ):
+        creds, _time = google_connected
+        await self._connect(creds, _time)
+        monkeypatch.setattr(cal, "_normalize_url", _passthrough_target)
+        forever = {"value": [_graph_item()], "@odata.nextLink": "NEXT"}
+        async with _FakeGraph(forever) as api:
+            monkeypatch.setattr(k, "MICROSOFT_EVENTS_URL", api.url)
+            await cal.MicrosoftCalendarProvider().fetch(days=7)
+            assert len(api.requests) == k.MICROSOFT_MAX_PAGES
+
+    def test_offline_access_is_requested(self):
+        """Without ``offline_access`` Microsoft issues no refresh token at all, so
+        the calendar would stop working when the first access token expires."""
+        assert "offline_access" in k.MICROSOFT_CALENDAR_SCOPES
+
+    def test_the_scope_is_read_only(self):
+        assert "Calendars.Read" in k.MICROSOFT_CALENDAR_SCOPES[0]
+        assert not any("ReadWrite" in s for s in k.MICROSOFT_CALENDAR_SCOPES)
+
+    def test_the_endpoints_are_constants_and_multi_tenant(self):
+        # `/common/` so a personal and a work account both work without the user
+        # having to find a tenant id.
+        assert "/common/" in k.MICROSOFT_AUTHORIZE_URL
+        assert k.MICROSOFT_AUTHORIZE_URL.startswith("https://login.microsoftonline.com/")
+        assert k.MICROSOFT_EVENTS_URL.startswith("https://graph.microsoft.com/")
+        # calendarView, not /events: it expands a recurring series server-side.
+        assert k.MICROSOFT_EVENTS_URL.endswith("/calendarView")
+
+    def test_the_oauth_client_matches_the_constants(self):
+        client = cal.microsoft_oauth_client()
+        assert client.provider_id == k.CALENDAR_PROVIDER_MICROSOFT
+        assert client.authorize_url == k.MICROSOFT_AUTHORIZE_URL
+        assert client.token_url == k.MICROSOFT_TOKEN_URL
+        assert client.scopes == tuple(k.MICROSOFT_CALENDAR_SCOPES)

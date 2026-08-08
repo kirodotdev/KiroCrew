@@ -174,6 +174,28 @@ def register_routes(app: web.Application) -> None:
     router.add_get(f"{BASE}/calendar", route(calendar_routes.handle_get_calendar))
     router.add_post(f"{BASE}/calendar/sync", route(calendar_routes.handle_calendar_sync))
     router.add_get(
+        f"{BASE}/calendar/credentials",
+        route(calendar_routes.handle_get_calendar_credentials),
+    )
+    router.add_put(
+        f"{BASE}/calendar/credentials",
+        route(calendar_routes.handle_put_calendar_credentials),
+    )
+    router.add_post(
+        f"{BASE}/calendar/credentials/forget",
+        route(calendar_routes.handle_forget_calendar_credentials),
+    )
+    router.add_post(
+        f"{BASE}/calendar/oauth/start", route(calendar_routes.handle_oauth_start)
+    )
+    # The provider redirects the user's BROWSER here, so it answers HTML rather
+    # than JSON. The path is built from the same constant the start handler uses
+    # for the redirect URI, so the two cannot drift.
+    router.add_get(
+        f"{BASE}{calendar_routes.OAUTH_CALLBACK_PATH}",
+        route(calendar_routes.handle_oauth_callback),
+    )
+    router.add_get(
         f"{BASE}/calendar/providers", route(calendar_routes.handle_calendar_providers)
     )
 
