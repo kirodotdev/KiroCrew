@@ -6,6 +6,7 @@
 ``POST …/{id}/stop``          flush agents, mark ended
 ``GET  …/meetings``           list every meeting with metadata on disk
 ``GET  …/{id}``               one meeting's metadata
+``DELETE …/{id}``             permanently remove an inactive meeting
 ``GET  …/{id}/outputs``       batch-read every agent output + tasks.json
 ``POST …/{id}/attachments``   add/remove context attachments
 """
@@ -143,6 +144,39 @@ async def handle_list_meetings(request: web.Request) -> web.Response:
     # every hit, so it grows with the user's meeting history — off the loop.
     meetings = await asyncio.to_thread(store.list_meetings, data_root(request))
     return web.json_response({"meetings": meetings})
+
+
+async def handle_delete_meeting(request: web.Request) -> web.Response:
+    """Permanently remove an inactive meeting and every app-owned output."""
+    meeting_id = _meeting_id(request)
+    root = data_root(request)
+
+    # Share the lifecycle lock with start/stop so a delete cannot pass the live
+    # check and then race a start that begins writing into the same directory.
+    async with START_LOCK:
+        if ACTIVE.get(meeting_id) is not None:
+            audit(
+                "meetings.delete",
+                meeting_id,
+                outcome="denied",
+                error="meeting is active",
+            )
+            return web.json_response(
+                {
+                    "error": "end the meeting before deleting it",
+                    "code": "meeting_active",
+                },
+                status=HTTPStatus.CONFLICT,
+            )
+        deleted = await asyncio.to_thread(store.delete_meeting, meeting_id, root)
+
+    if not deleted:
+        return web.json_response(
+            {"error": "meeting not found", "code": "meeting_not_found"},
+            status=HTTPStatus.NOT_FOUND,
+        )
+    audit("meetings.delete", meeting_id, outcome="ok")
+    return web.Response(status=HTTPStatus.NO_CONTENT)
 
 
 def _begin_meeting(

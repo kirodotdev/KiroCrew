@@ -6,7 +6,7 @@
 // URL because a builtin app resolves from a single top-level path segment (see
 // `apps/builtinRegistry.ts`), so a nested path would never route back here.
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, type MouseEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CalendarClock,
@@ -15,6 +15,7 @@ import {
   FileText,
   RefreshCw,
   Settings2,
+  X,
 } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
@@ -26,6 +27,7 @@ import {
   Card,
   CardTitle,
   EmptyState,
+  IconButton,
   PageHeader,
   SearchInput,
   Skeleton,
@@ -52,6 +54,8 @@ interface Row {
   status: MeetingSummary['status'] | 'scheduled'
   touched: boolean
 }
+
+const LIVE_STATUSES = new Set<Row['status']>(['active', 'paused', 'reviewing'])
 
 function mergeRows(events: CalendarEvent[], meetings: MeetingSummary[]): Row[] {
   const byId = new Map<string, Row>()
@@ -145,6 +149,17 @@ export default function MeetingsPage() {
       notify(error.message || i18nT('apps.meetings.list.syncFailed'), { type: 'error' }),
   })
 
+  const deleteMeeting = useMutation({
+    mutationFn: ({ eventId }: { eventId: string; title: string }) =>
+      meetingsApi.deleteMeeting(eventId),
+    onSuccess: (_response, { title }) => {
+      notify(i18nT('apps.meetings.list.deleted', { title }), { type: 'success' })
+      void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+    },
+    onError: () =>
+      notify(i18nT('apps.meetings.list.deleteFailed'), { type: 'error' }),
+  })
+
   const rows = useMemo(
     () => mergeRows(calendarQuery.data?.events ?? [], meetingsQuery.data?.meetings ?? []),
     [calendarQuery.data, meetingsQuery.data],
@@ -182,6 +197,13 @@ export default function MeetingsPage() {
     // already inside the backend's `[A-Za-z0-9._-]` charset.
     const eventId = `adhoc-${new Date().toISOString().replace(/[:.]/g, '-')}`
     setRoute({ view: 'meeting', eventId, title: i18nT('apps.meetings.list.adHocTitle') })
+  }
+
+  const requestDelete = (event: MouseEvent<HTMLButtonElement>, row: Row) => {
+    event.stopPropagation()
+    if (window.confirm(i18nT('apps.meetings.list.deleteConfirm', { title: row.title }))) {
+      deleteMeeting.mutate({ eventId: row.eventId, title: row.title })
+    }
   }
 
   return (
@@ -305,6 +327,28 @@ export default function MeetingsPage() {
                       className="lucide-inline text-muted"
                       aria-label={i18nT('apps.meetings.list.hasNotes')}
                     />
+                  )}
+                  {row.touched && (
+                    <IconButton
+                      variant="danger"
+                      className="shrink-0 [&>svg]:relative [&>svg]:top-[0.5px]"
+                      disabled={deleteMeeting.isPending || LIVE_STATUSES.has(row.status)}
+                      title={
+                        LIVE_STATUSES.has(row.status)
+                          ? i18nT('apps.meetings.list.deleteUnavailable')
+                          : i18nT('apps.meetings.list.deleteMeeting', { title: row.title })
+                      }
+                      aria-label={
+                        LIVE_STATUSES.has(row.status)
+                          ? i18nT('apps.meetings.list.deleteUnavailable')
+                          : i18nT('apps.meetings.list.deleteMeeting', { title: row.title })
+                      }
+                      onClick={event => requestDelete(event, row)}
+                    >
+                      {deleteMeeting.isPending && deleteMeeting.variables?.eventId === row.eventId
+                        ? <RefreshCw className="lucide-inline animate-spin" aria-hidden="true" />
+                        : <X className="lucide-inline" aria-hidden="true" />}
+                    </IconButton>
                   )}
                 </Clickable>
               ))}

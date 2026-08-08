@@ -404,6 +404,37 @@ class TestMeetingLifecycleRoutes:
             assert body["live"] is None
 
     @pytest.mark.asyncio
+    async def test_delete_removes_the_meeting_and_all_outputs(self, app, root: Path):
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={"title": "Standup"})
+            store.write_tasks("standup", [{"id": "t1", "description": "Ship it"}], root)
+
+            resp = await client.delete(f"{BASE}/meetings/standup")
+            assert resp.status == 204
+            assert (await client.get(f"{BASE}/meetings/standup")).status == 404
+            assert (await (await client.get(f"{BASE}/meetings")).json())["meetings"] == []
+
+        assert not store.meeting_dir("standup", root).exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_unknown_meeting_is_404_with_code(self, app):
+        async with client_for(app) as client:
+            resp = await client.delete(f"{BASE}/meetings/ghost")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "meeting_not_found"
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_live_meeting(self, app, root: Path, fake_sessions):
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.delete(f"{BASE}/meetings/standup")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "meeting_active"
+            assert _common.ACTIVE.get("standup") is not None
+
+        assert store.read_meeting_meta("standup", root) is not None
+
+    @pytest.mark.asyncio
     async def test_get_unknown_meeting_is_404(self, app):
         async with client_for(app) as client:
             assert (await client.get(f"{BASE}/meetings/ghost")).status == 404

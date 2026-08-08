@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ from typing import Any
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.meetings")
@@ -415,6 +417,39 @@ def list_meetings(root: Path | None = None) -> list[dict[str, Any]]:
             }
         )
     return results
+
+
+def delete_meeting(meeting_id: str, root: Path | None = None) -> bool:
+    """Permanently remove one meeting's app-owned data directory.
+
+    The meeting id passes through the same containment barrier as every read and
+    write. A directory link is rejected before resolving the deletion target: an
+    in-root link to another meeting is still the wrong identity and must never
+    turn deleting one row into deleting another meeting's notes.
+
+    Returns ``False`` when no meeting metadata exists, so the route can preserve
+    the list/get contract's 404 for an unknown id.
+    """
+    safe_id = safe_meeting_id(meeting_id)
+    entry = meetings_root(root) / safe_id
+    resolved = contain(entry, operation="meetings.delete", root=root)
+
+    # ``contain`` deliberately follows links to detect an escape. For deletion,
+    # following an in-root link would still select the wrong meeting directory.
+    if is_link_or_junction(entry):
+        _audit("meetings.delete", safe_id, outcome="denied")
+        raise MeetingsPathError("meeting directory must not be a link", status=403)
+
+    with meta_transaction():
+        meta = contain(
+            resolved / k.SESSION_META_FILE,
+            operation="meetings.delete_meta",
+            root=root,
+        )
+        if not meta.is_file():
+            return False
+        shutil.rmtree(resolved)
+    return True
 
 
 # ── tasks ───────────────────────────────────────────────────────────────────

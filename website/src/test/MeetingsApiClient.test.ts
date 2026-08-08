@@ -88,6 +88,11 @@ describe('meetingsApi transport', () => {
     expect(fetchMock.mock.calls[0][1].method).toBe('PATCH')
 
     fetchMock.mockClear()
+    await meetingsApi.deleteMeeting('m')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/apps/meetings/meetings/m')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+
+    fetchMock.mockClear()
     await meetingsApi.deleteTask('m', 't1')
     expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
     // A DELETE with a body is unusual enough to be worth pinning: the backend

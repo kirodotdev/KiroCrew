@@ -50,6 +50,7 @@ GET    /task-providers              registered task providers + the active one
 
 GET    /meetings                    every meeting with metadata on disk
 GET    /meetings/{id}               one meeting's metadata + live status
+DELETE /meetings/{id}               permanently remove an inactive meeting's local data
 POST   /meetings/{id}/init          create folder/metadata/tasks/outputs (idempotent)
 POST   /meetings/{id}/start         activate: seed outputs, spawn agent sessions
 POST   /meetings/{id}/status        {status} — active | paused | reviewing | ended
@@ -86,6 +87,12 @@ meetings/<safe_id>/tasks.json    extracted action items
 meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
 ```
+
+Deleting a meeting removes its complete per-meeting directory (metadata, tasks,
+notes, and diagrams). The route refuses a meeting with a live in-process session
+with `409 meeting_active`; the dashboard keeps the row's delete affordance visible
+but disabled for active, paused, and reviewing states. Calendar events are owned by
+their provider, so deleting local meeting data does not delete the source event.
 
 `ensure_data_dirs()` creates the subtree and seeds `dictionary.toml` +
 `config.json` at app startup (an `on_startup` hook, run on the executor). It
