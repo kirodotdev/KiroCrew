@@ -219,9 +219,15 @@ class TestWalkHonoursKiroIgnore:
         (root / "docs").mkdir(parents=True)
         (root / "docs" / "design.md").write_text("# Design")
         (root / "README.md").write_text("# Readme")
-        (root / "cdk.out" / "asset.abc123").mkdir(parents=True)
-        (root / "cdk.out" / "manifest.json").write_text("{}")
-        (root / "cdk.out" / "asset.abc123" / "bundle.md").write_text("generated")
+        # DELIBERATELY not ``cdk.out``: that directory joined HARD_SKIP_DIRS
+        # (never walked, regardless of .kiroignore) in the same-day change
+        # that skips CDK output by default — a canary inside it is invisible
+        # even with no rule file, which inverts what these tests assert.
+        # ``synth.out`` is generated-output-shaped but NOT default-skipped,
+        # so discovery vs .kiroignore-driven exclusion stays observable.
+        (root / "synth.out" / "asset.abc123").mkdir(parents=True)
+        (root / "synth.out" / "manifest.json").write_text("{}")
+        (root / "synth.out" / "asset.abc123" / "bundle.md").write_text("generated")
         (root / "coverage").mkdir()
         (root / "coverage" / "report.md").write_text("generated")
         return root
@@ -236,7 +242,7 @@ class TestWalkHonoursKiroIgnore:
         assert any("report.md" in p for p in paths)
 
     def test_matching_paths_are_excluded(self, project):
-        (project / ".kiroignore").write_text("cdk.out/\n/coverage/\n")
+        (project / ".kiroignore").write_text("synth.out/\n/coverage/\n")
         paths = self._walk_paths(project)
         assert any("design.md" in p for p in paths)
         assert any("README.md" in p for p in paths)
@@ -246,7 +252,7 @@ class TestWalkHonoursKiroIgnore:
 
     def test_ignored_directories_are_pruned_from_the_walk(self, project, monkeypatch):
         """The tree must never be DESCENDED, not merely filtered after the fact."""
-        (project / ".kiroignore").write_text("cdk.out/\n")
+        (project / ".kiroignore").write_text("synth.out/\n")
         visited: list[str] = []
         real_walk = os.walk
 
@@ -259,7 +265,7 @@ class TestWalkHonoursKiroIgnore:
 
         monkeypatch.setattr(fw_mod.os, "walk", spy)
         self._walk_paths(project)
-        assert not any("cdk.out" in v for v in visited)
+        assert not any("synth.out" in v for v in visited)
         assert any(v.endswith("docs") for v in visited)
 
     def test_the_rule_file_itself_is_not_indexed(self, project):
@@ -276,7 +282,7 @@ class TestWalkHonoursKiroIgnore:
     def test_malformed_file_degrades_without_losing_valid_rules(self, project):
         """A junk line costs that line only; the scan never raises."""
         path = project / ".kiroignore"
-        path.write_bytes(b"cdk.out/\n\xff\xfe not utf-8 \xff\n[unclosed\n")
+        path.write_bytes(b"synth.out/\n\xff\xfe not utf-8 \xff\n[unclosed\n")
         paths = self._walk_paths(project)
         assert not any("bundle.md" in p for p in paths)
         # Everything the valid rule did not name is still discovered.
@@ -284,7 +290,7 @@ class TestWalkHonoursKiroIgnore:
         assert any("report.md" in p for p in paths)
 
     def test_unreadable_rule_file_never_fails_the_scan(self, project, monkeypatch):
-        (project / ".kiroignore").write_text("cdk.out/\n")
+        (project / ".kiroignore").write_text("synth.out/\n")
 
         def boom(*a, **kw):
             raise OSError("nope")
