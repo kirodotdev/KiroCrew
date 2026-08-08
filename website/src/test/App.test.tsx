@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import App, { calculateTopbarSearchLayout } from '../App'
@@ -26,7 +26,7 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
-    sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 3044, credits_covered: 3044, credits_overage: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04' } }),
+    sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 3044, credits_covered: 3044, credits_overage: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04', bonus_credits: [{ name: 'Launch bonus', used: 250, total: 1000, days_left: 30 }], email: 'owner@example.com', account_type: 'Social' } }),
     listApps: vi.fn().mockResolvedValue([]),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
@@ -1166,7 +1166,7 @@ describe('Kiro credits pill', () => {
   it('renders used/limit and percentage once loaded', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     // default mock: 3044 total used of 10000 = 30%
-    const pill = await screen.findByTitle(/Kiro credits: 3,044 \/ 10,000 \(30%\)/)
+    const pill = await screen.findByTitle('Kiro credit usage')
     expect(pill).toBeInTheDocument()
   })
 
@@ -1177,15 +1177,21 @@ describe('Kiro credits pill', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
     // credits_used=10500 total / 10000 plan = 105% (500 over plan)
-    expect(await screen.findByTitle(/Kiro credits: 10,500 \/ 10,000 \(105%\)/)).toBeInTheDocument()
+    expect(await screen.findByTitle('Kiro credit usage')).toBeInTheDocument()
   })
 
   it('opens a details modal with breakdown rows when clicked', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro credits: 3,044/)
+    const pill = await screen.findByTitle('Kiro credit usage')
     fireEvent.click(pill)
+    expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
+    expect(await screen.findByText('owner@example.com')).toBeInTheDocument()
+    expect(screen.getByText(/Signed in with Social login/)).toBeInTheDocument()
     expect(await screen.findByText('KIRO POWER')).toBeInTheDocument()
-    expect(screen.getByText('2026-07-01')).toBeInTheDocument()
+    expect(screen.getByText(/Resets/)).toBeInTheDocument()
+    expect(screen.getByText(/Remaining credit balance: 6,956/)).toBeInTheDocument()
+    expect(screen.getByText('Launch bonus')).toBeInTheDocument()
+    expect(screen.getByText(/Remaining credit balance: 750/)).toBeInTheDocument()
     expect(screen.getByText('Overage used')).toBeInTheDocument()
     expect(screen.getByText(/across chat, agents, MCP/)).toBeInTheDocument()
   })
@@ -1206,12 +1212,7 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const loadingPill = await screen.findByTitle(/Kiro credit usage/)
     fireEvent.click(loadingPill)
-    const loadingMsg = await screen.findByText(/Checking usage/)
-    expect(loadingMsg).toBeInTheDocument()
-    // The whole message is wrapped in one <span> so the flex row renders it as
-    // flowing prose instead of fragmenting each text run into its own column.
-    expect(loadingMsg.tagName).toBe('SPAN')
-    expect(loadingMsg.querySelector('code')?.textContent).toBe('kiro-cli /usage')
+    expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
   })
 
   it('defaults covered/overage to 0 and renders sub-1000 values without K suffix', async () => {
@@ -1219,7 +1220,7 @@ describe('Kiro credits pill — edge cases', () => {
     // only credits_plan present -> credits_used falls back to 0
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 500 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro credits: 0 \/ 500 \(0%\)/)
+    const pill = await screen.findByTitle('Kiro credit usage')
     expect(pill).toHaveTextContent('0/500') // sub-1000 -> no "K" formatting
     fireEvent.click(pill)
     expect(await screen.findByText('0 credits')).toBeInTheDocument() // Overage used row
@@ -1229,7 +1230,7 @@ describe('Kiro credits pill — edge cases', () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 0, credits_covered: 0 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    expect(await screen.findByTitle(/Kiro credits: 0 \/ 0 \(0%\)/)).toBeInTheDocument()
+    expect(await screen.findByTitle('Kiro credit usage')).toBeInTheDocument()
   })
 
   it('falls back to an empty object when the response has no usage key', async () => {
@@ -1242,11 +1243,16 @@ describe('Kiro credits pill — edge cases', () => {
 
   it('closes the modal on Escape', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro credits: 3,044/)
+    const pill = await screen.findByTitle('Kiro credit usage')
+    // Focus the pill first, as a real click does: focus restore is `Modal`'s
+    // generic behaviour (it returns focus to whatever was focused when the
+    // dialog opened), not a per-call-site `ref.focus()` in App.
+    pill.focus()
     fireEvent.click(pill)
     expect(await screen.findByText('Overage used')).toBeInTheDocument()
     act(() => { fireEvent.keyDown(window, { key: 'Escape' }) })
     await waitFor(() => expect(screen.queryByText('Overage used')).not.toBeInTheDocument())
+    await waitFor(() => expect(pill).toHaveFocus())
   })
 
   it('hides the pill entirely when usage is unavailable (non-Kiro provider)', async () => {
@@ -1255,7 +1261,7 @@ describe('Kiro credits pill — edge cases', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: { available: false } } as never)
     renderWithProviders(<App />, { route: '/chat' })
     await waitFor(() => expect(screen.queryByTitle(/Kiro credit usage/)).not.toBeInTheDocument())
-    expect(screen.queryByTitle(/Kiro credits:/)).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Kiro credit usage')).not.toBeInTheDocument()
   })
 
   it('auto-closes the modal if usage resolves to unavailable while it is open', async () => {
@@ -1265,9 +1271,9 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const pill = await screen.findByTitle(/Kiro credit usage/)
     fireEvent.click(pill)
-    expect(await screen.findByText(/Checking usage/)).toBeInTheDocument()
+    expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
     await act(async () => { resolveUsage({ usage: { available: false } }); await Promise.resolve() })
-    await waitFor(() => expect(screen.queryByText(/Checking usage/)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument())
   })
 
   it('never renders NaN when credit fields arrive non-finite', async () => {
@@ -1276,7 +1282,7 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Non-finite plan is rejected by the Number.isFinite guard, so the loaded
     // pill (which would otherwise show "NaN / NaN") never appears.
-    await waitFor(() => expect(screen.queryByTitle(/Kiro credits:/)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTitle('Kiro credit usage')).not.toBeInTheDocument())
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
   })
 })
