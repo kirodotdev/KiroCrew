@@ -3442,7 +3442,7 @@ function ChatSidebar({
           </motion.div>
         ) : (
           // Trello-style horizontal column strip
-          <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
+          <div className={`flex-1 ${orderedColumns.length > 1 ? 'overflow-x-auto' : 'overflow-x-hidden'} overflow-y-hidden flex gap-2 p-2`} data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {
               const colSlots = filteredSlots.filter(s => columnMatches(col, s.tags || []))
               const colTags = col.tag_ids.map(tid => tagById[tid]).filter(Boolean) as ChatTag[]
@@ -3451,7 +3451,7 @@ function ChatSidebar({
                 // Board column is a drag-and-drop drop zone (column reorder + session
                 // card drop); mouse-only drag handlers, so scope-disable the rule.
                 // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-                <div key={col.id} data-testid={`column-${col.id}`} className="flex flex-col flex-1 min-w-[220px] bg-card border border-border rounded-md overflow-hidden"
+                <div key={col.id} data-testid={`column-${col.id}`} className="flex flex-col flex-1 min-w-0 bg-card border border-border rounded-md overflow-hidden" style={{ minWidth: orderedColumns.length > 1 ? '220px' : undefined }}
                   onDragOver={e => {
                     const types = e.dataTransfer.types
                     // Accept column reorder on the entire column surface
@@ -3510,7 +3510,7 @@ function ChatSidebar({
                     <button
                       type="button"
                       data-testid={`column-add-after-${col.id}`}
-                      className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px] disabled:cursor-wait disabled:opacity-50"
+                      className={`text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px] disabled:cursor-wait disabled:opacity-50${orderedColumns.length <= 1 ? ' hidden' : ''}`}
                       title={i18nT('pages.chatSidebar.add_column_after_this_one')}
                       aria-label={i18nT('pages.chatSidebar.add_column_after_this_one')}
                       disabled={addColumnAfterMutation.isPending}
@@ -3519,7 +3519,7 @@ function ChatSidebar({
                     <button
                       type="button"
                       data-testid={`column-delete-${col.id}`}
-                      className="text-muted hover:text-danger bg-transparent border-none cursor-pointer shrink-0 p-[2px]"
+                      className={`text-muted hover:text-danger bg-transparent border-none cursor-pointer shrink-0 p-[2px]${orderedColumns.length <= 1 ? ' hidden' : ''}`}
                       title={i18nT('pages.chatSidebar.delete_column')}
                       aria-label={i18nT('pages.chatSidebar.delete_column')}
                       onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_this_column'))) deleteColumnMutation.mutate(col.id) }}
