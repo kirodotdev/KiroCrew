@@ -209,6 +209,33 @@ class TestCrossProcessLock:
         assert not missing, f"cross-process rewrite lost {len(missing)} appends"
 
 
+class TestMessageCacheRewriteSerialization:
+    def test_cache_fill_holds_the_writer_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        held = False
+
+        class ObservedLock:
+            def __enter__(self) -> None:
+                nonlocal held
+                held = True
+
+            def __exit__(self, *_args) -> None:
+                nonlocal held
+                held = False
+
+        def cache_fill(_key: str) -> list[dict]:
+            assert held
+            return []
+
+        monkeypatch.setattr(log, "_file_lock", lambda _key: ObservedLock())
+        monkeypatch.setattr(log, "_read_messages_locked", cache_fill)
+
+        assert log._read_messages("k") == []
+        assert not held
+
+
 # ── On-loop offload discipline: structurally enforced, not convention-only ────
 class TestOnLoopPersistDiscipline:
     """The PR routes ~15 on-loop callers off the loop (append_off_loop /
