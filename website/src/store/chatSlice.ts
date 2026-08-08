@@ -601,9 +601,13 @@ function applyNonActiveFrame(
     }
   }
   if (role === 'user') {
-    sa.toolLog = []
-    for (const m of msgs) {
-      if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
+    // A steered message does not start a new turn — skip the "stale permissions"
+    // cleanup so the approval bar remains visible and answerable (#1667).
+    if (!meta?.steer) {
+      sa.toolLog = []
+      for (const m of msgs) {
+        if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
+      }
     }
     // Reconcile the optimistic user bubble (appendSlotMessage) rather than
     // pushing a 2nd identical one when the server echoes the user frame — same
@@ -645,8 +649,10 @@ export const selectSlotSubagents = (state: RootState, slot: string | null): Reco
  *  so each grid pane's approval bar reflects ITS slot, not the global active one. */
 export const selectSlotPendingApproval = (state: RootState, slot: string | null): ChatMessage | null => {
   const msgs = slot ? selectSlotMessages(state, slot) : state.chat.messages
+  // Find the last NON-steer user message — steered messages don't start a new
+  // turn, so they must not hide a pending approval bar (#1667).
   let lastUserIdx = -1
-  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user') { lastUserIdx = i; break } }
+  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i].meta?.steer) { lastUserIdx = i; break } }
   for (let i = msgs.length - 1; i > lastUserIdx; i--) {
     const m = msgs[i]
     if (m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id) return m
@@ -2297,12 +2303,16 @@ const chatSlice = createSlice({
       }
       // New user message = new turn — clear activity log
       if (role === 'user') {
-        state.toolLog = []
-        // Auto-resolve any stale permissions from previous turn so they don't block the new turn
-        for (const m of state.messages) {
-          if (m.role === 'permission' && !m.meta?.resolved) {
-            if (m.meta) m.meta.resolved = 'rejected'
-            else m.meta = { resolved: 'rejected' }
+        // A steered message does not start a new turn — skip the "stale permissions"
+        // cleanup so the approval bar remains visible and answerable (#1667).
+        if (!meta?.steer) {
+          state.toolLog = []
+          // Auto-resolve any stale permissions from previous turn so they don't block the new turn
+          for (const m of state.messages) {
+            if (m.role === 'permission' && !m.meta?.resolved) {
+              if (m.meta) m.meta.resolved = 'rejected'
+              else m.meta = { resolved: 'rejected' }
+            }
           }
         }
       }
