@@ -68,7 +68,11 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     rich_blocks=False,
     threads=True,
     max_message_chars=DISCORD_CHUNK_LIMIT,
-    max_buttons=5,  # per action row (max 5 rows -> 25 total)
+    # 25 = TOTAL interactive choices (5 buttons/row x 5 action rows -- the
+    # platform max the renderer actually ships). The previous 5 was the
+    # per-row layout number, not a total. Enforced via apply_options_cap in
+    # the renderer; overflow degrades to a numbered text list.
+    max_buttons=25,
     supports_proactive_send=True,
 )
 

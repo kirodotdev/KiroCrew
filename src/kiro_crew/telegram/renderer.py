@@ -31,7 +31,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.renderer import Renderer, apply_options_cap
 from kiro_crew.messaging.transport import TransportCapabilities
 
 if TYPE_CHECKING:
@@ -506,7 +506,12 @@ class TelegramRenderer(Renderer):
         # seal -- so the choices ship as a keyboard on the sealed message instead of
         # being frozen as literal protocol text the user cannot act on.
         body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
+        # apply_options_cap may EXPAND the body (numbered overflow lines), and
+        # the rotation above ran before that expansion -- re-check, or a
+        # near-limit answer with over-cap options seals past the transport cap.
+        await self._rotate_on_length()
         keyboard = build_inline_keyboard(opts) if opts else None
         sealed = bool(self._segment_text().strip()) or keyboard is not None
         await self._seal_current(keyboard=keyboard)
@@ -744,6 +749,7 @@ class TelegramRenderer(Renderer):
         # overflows, rotation would otherwise seal the options text into an
         # earlier message and the keyboard would never attach.
         body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
         keyboard = build_inline_keyboard(opts) if opts else None
         # No-rotation fallback: steers were injected but kiro-cli emitted no

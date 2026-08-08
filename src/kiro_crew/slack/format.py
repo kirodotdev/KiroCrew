@@ -6,6 +6,7 @@ import re
 from typing import Callable, NamedTuple
 
 from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
 
 SLACK_MAX_TEXT = 39_000
@@ -80,8 +81,23 @@ def build_options_blocks(
     *,
     redactor: Callable[[str], str] | None = None,
 ) -> list[dict]:
-    """Build Slack Block Kit checkboxes + Send button for multi-select OPTIONS."""
-    safe = _redact_choices(choices[:10], redactor)  # checkboxes support up to 10
+    """Build Slack Block Kit checkboxes + Send button for multi-select OPTIONS.
+
+    This is the single chokepoint for every Slack producer of OPTIONS blocks
+    (renderer footer, legacy handler, cron delivery, subagent footer,
+    send_message, dashboard mirror), so the ``max_buttons`` cap lives HERE:
+    the first ``SLACK_CAPABILITIES.max_buttons`` choices render as checkbox
+    options (the platform caps a checkboxes element at 10) and any overflow
+    degrades to a numbered context block the user can answer by typing.
+    Overflow is redacted like the widget labels — same LLM-authored text,
+    same wire.
+    """
+    # Circular import: slack/transport.py imports SLACK_MSG_LIMIT from this
+    # module at top level, so the capabilities object must be imported lazily.
+    from kiro_crew.slack.transport import SLACK_CAPABILITIES
+
+    kept, overflow = cap_choices(choices, SLACK_CAPABILITIES)
+    safe = _redact_choices(kept, redactor)
     options = [
         {
             "text": {"type": "plain_text", "text": choice[:75]},
@@ -89,7 +105,7 @@ def build_options_blocks(
         }
         for choice in safe
     ]
-    return [
+    blocks: list[dict] = [
         {
             "type": "actions",
             "elements": [
@@ -107,6 +123,47 @@ def build_options_blocks(
             ],
         },
     ]
+    if overflow:
+        # Chunk instead of slicing: a single [:2900] would re-create the
+        # silent data loss this cap exists to remove, one layer down. Slack
+        # caps a context mrkdwn element at ~3000 chars; pack WHOLE numbered
+        # lines (never split a choice mid-line) into up to three blocks.
+        # BOUNDED: Slack rejects messages over 50 blocks outright — an
+        # unbounded loop would make a pathological trailer delete the whole
+        # footer. When even three blocks overflow, the tail is dropped with
+        # a VISIBLE count marker; never silent.
+        lines = format_overflow(_redact_choices(overflow, redactor), start=len(safe)).split("\n")
+        packed: list[str] = []
+        shown = 0
+        for line in lines:
+            if packed and len(packed[-1]) + 1 + len(line) <= 2900:
+                packed[-1] += "\n" + line
+            elif len(packed) < 3:
+                packed.append(line[:2900])
+            else:
+                break
+            shown += 1
+        for piece in packed:
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": piece}],
+                }
+            )
+        omitted = len(overflow) - shown
+        if omitted > 0:
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"_…{omitted} more choices omitted (list too long)_",
+                        }
+                    ],
+                }
+            )
+    return blocks
 
 
 def build_options_selected_blocks(
@@ -115,12 +172,20 @@ def build_options_selected_blocks(
     *,
     redactor: Callable[[str], str] | None = None,
 ) -> list[dict]:
-    """Render OPTIONS as static text with selected choices highlighted."""
+    """Render OPTIONS as static text with selected choices highlighted.
+
+    Input arrives re-derived from the rendered message's blocks, so it is
+    already ≤ the cap; the shared ``cap_choices`` keeps the two paths driven
+    by one value so they cannot drift.
+    """
+    from kiro_crew.slack.transport import SLACK_CAPABILITIES  # circular (see above)
+
     if isinstance(selected_indices, int):
         selected_indices = [selected_indices]
     selected_set = set(selected_indices)
+    kept, _ = cap_choices(choices, SLACK_CAPABILITIES)
     parts = []
-    for i, choice in enumerate(_redact_choices(choices[:10], redactor)):
+    for i, choice in enumerate(_redact_choices(kept, redactor)):
         if i in selected_set:
             parts.append(f"*{choice[:72]}*")
         else:

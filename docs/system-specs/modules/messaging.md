@@ -63,7 +63,7 @@ Declares what a channel can do. Defaults are deliberately conservative (the What
 | `rich_blocks` | `False` | feature flag |
 | `threads` | `False` | feature flag |
 | `max_message_chars` | `4096` | quantitative — Slack ~40000, Telegram 4096, Discord 2000, WhatsApp 4096 |
-| `max_buttons` | `3` | interactive choices per prompt (WhatsApp reply buttons = 3) |
+| `max_buttons` | `3` | TOTAL interactive choices per prompt (WhatsApp reply buttons = 3); enforced via `apply_options_cap` — overflow degrades to a numbered text list |
 | `supports_proactive_send` | `True` | send-policy (WhatsApp: `False` outside its 24h window) |
 
 `to_dict()` serializes all fields. The integer *parameters* (not booleans) capture where channels differ quantitatively so the `Renderer` can chunk / degrade rather than assume a single shape.

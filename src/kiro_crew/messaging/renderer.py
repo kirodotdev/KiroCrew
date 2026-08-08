@@ -5,14 +5,18 @@ The ``TurnDriver`` consumes provider events and emits the channel-neutral
 that maps those abstract events onto its native surface.
 
 ``prompt_choice`` is a FIRST-CLASS event (not generic "permission text"):
-each Renderer maps it to its native interactive widget. NOTE: despite the
-existence of ``capabilities.max_buttons``, no renderer reads it today — the
-caps are hardcoded per channel (Slack ``choices[:10]``, Discord
-``options[:25]``, Telegram uncapped) and the no-widget channels strip the
-trailer unconditionally. Capping on the declared value and degrading to a
-numbered text reply is the INTENDED contract, tracked in the capability
-ledger (``test/test_capability_ledger.py``); do not write code that assumes
-it is already enforced.
+each Renderer maps it to its native interactive widget. ``[OPTIONS: a | b]``
+trailers are the TEXT path: each widget-capable renderer re-parses the
+trailer from its own accumulated text and MUST route the parsed list through
+:func:`apply_options_cap` before building widgets, so at most
+``capabilities.max_buttons`` choices render interactively and the remainder
+degrades to a numbered text list the user can answer by typing. The cap is
+ENFORCED (see ``test/test_capability_ledger.py``) and pinned per channel by
+the cross-channel contract test in ``test/test_options_cap_contract.py`` —
+a widget-capable renderer that skips the helper fails that test.
+Channels declaring ``max_buttons=0`` render no widget and today strip the
+trailer entirely; the numbered-text fallback for them lands with the
+approval-ladder work.
 """
 
 from __future__ import annotations
@@ -79,6 +83,71 @@ def chunk_text(text: str, max_chars: int) -> list[str]:
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
     return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+
+def cap_choices(
+    choices: list[str], capabilities: TransportCapabilities
+) -> tuple[list[str], list[str]]:
+    """Split a parsed ``[OPTIONS:]`` list at ``capabilities.max_buttons``.
+
+    Returns ``(kept, overflow)``. ``max_buttons <= 0`` keeps nothing (the
+    zero-widget channels own their trailer handling). Pure — callers that
+    must transform choices before display (Slack redacts at the sink) split
+    here and format overflow themselves via :func:`format_overflow`.
+    """
+    n = capabilities.max_buttons
+    if n <= 0:
+        return [], choices
+    return choices[:n], choices[n:]
+
+
+def format_overflow(overflow: list[str], start: int) -> str:
+    """Number overflow choices continuing after ``start`` widget slots.
+
+    Widget + text form ONE list: ``start=3`` yields ``4. …``. The user
+    answers an overflow choice by typing it — a typed reply is a plain
+    message on every channel, so no reply-parser is required.
+
+    Mention syntax is neutralized at this sink: widget labels render as
+    plain text, but overflow lands in the message BODY, where the platforms
+    parse mentions — a prompt-injected ``@everyone`` / ``<!channel>`` choice
+    would otherwise mass-notify. ZWSP insertion matches the precedent in
+    ``discord/session_resume.py``: ``@\\u200b`` breaks discord/telegram
+    @-mentions and slack ``<@U…>``; ``<\\u200b!`` breaks slack broadcast
+    ranges (``<!channel>``, ``<!here>``, ``<!everyone>``).
+    """
+    safe = (c.replace("@", "@\u200b").replace("<!", "<\u200b!") for c in overflow)
+    return "\n".join(f"{start + i + 1}. {c}" for i, c in enumerate(safe))
+
+
+def apply_options_cap(
+    body: str, choices: list[str], capabilities: TransportCapabilities
+) -> tuple[str, list[str]]:
+    """Enforce ``capabilities.max_buttons`` on a parsed ``[OPTIONS:]`` list.
+
+    The ``max_buttons`` analogue of :func:`chunk_text`. Widget-capable
+    renderers call this between parsing the trailer and building the native
+    widget, so the cap lives in shared code and the per-channel contract
+    test can pin it.
+
+    Returns ``(body, kept_choices)``:
+
+    * ``len(choices) <= max_buttons`` — byte-identical pass-through.
+    * overflow — the first ``max_buttons`` choices are kept for the widget;
+      the remainder is appended to ``body`` as a numbered text list
+      (numbering continues after the widget slots). Previously overflow was
+      silently dropped: the user never learned those choices existed.
+    * ``max_buttons <= 0`` — returns ``(body, [])``; zero-widget channels
+      own their trailer handling (today: strip).
+    """
+    if capabilities.max_buttons <= 0:
+        return body, []
+    kept, overflow = cap_choices(choices, capabilities)
+    if not overflow:
+        return body, kept
+    lines = format_overflow(overflow, start=len(kept))
+    sep = "\n\n" if body and not body.endswith("\n") else "\n" if body else ""
+    return f"{body}{sep}{lines}", kept
 
 
 class Renderer(ABC):

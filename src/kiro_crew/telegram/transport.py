@@ -61,8 +61,12 @@ DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 # message_thread_id, receive() populates InboundMessage.thread_id, and
 # forum_gate_outcome authorizes on it. (This was previously declared False —
 # wrongly; declarations must match the code, not the DM-only common case.)
-# max_buttons=8 is Telegram's per-row limit; NOTE the renderer does not yet
-# apply it (see the capability ledger — the field is aspirational).
+# max_buttons=25: TOTAL interactive choices per prompt (the renderer packs 2
+# per row -> up to 13 scrollable rows), parity with discord's platform-
+# practical total. Enforced via apply_options_cap; overflow degrades to a
+# numbered text list. The genuinely unbounded keyboard was the defect this
+# closes (huge lists 400); 9-25 choice keyboards worked before and still do.
+# (The old declared 8 was a mislabeled per-row number, never a chosen total.)
 TELEGRAM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
@@ -72,7 +76,7 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     rich_blocks=False,
     threads=True,
     max_message_chars=TELEGRAM_CHUNK_LIMIT,
-    max_buttons=8,
+    max_buttons=25,
     supports_proactive_send=True,
 )
 
