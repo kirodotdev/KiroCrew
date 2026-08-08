@@ -14,7 +14,7 @@ import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
 import type { PlanStepInput } from '../../api/client'
-import { OPTION_MARKER_RE } from '../../utils/optionsMarker'
+import { OPTION_MARKER_RE, stripPartialOptionMarker } from '../../utils/optionsMarker'
 import { i18nT } from '../../i18n/t'
 import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
@@ -118,7 +118,13 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // Applied state impossible to reach. setApplied is stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (applied) setApplied(false) }, [effectiveContent])
-  const { text } = parseOptions(effectiveContent)
+  const { text: parsedText } = parseOptions(effectiveContent)
+  // While the marker line is still arriving it has no closing `]`, so
+  // OPTION_MARKER_RE can't match it yet and the raw `[OPTIONS: …` would type
+  // itself out as prose before flipping to pills at turn end. Suppress the
+  // growing tail — streaming only, so a finished message still renders an
+  // unterminated marker (prose about the syntax, or a truncated turn) as written.
+  const text = isStreaming ? stripPartialOptionMarker(parsedText) : parsedText
   // Pull kiro-cli's [STEERING …] acknowledgments out of the prose; render them as
   // chips instead of raw markers. Feed the cleaned text (marker removed) to the
   // stream so the raw tag never renders.
