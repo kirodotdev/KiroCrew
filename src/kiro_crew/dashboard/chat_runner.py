@@ -148,7 +148,7 @@ from kiro_crew.llm_helpers import (
     transient_retry_delay,
 )
 from kiro_crew.messaging.identity import publish_turn_identity
-from kiro_crew.messaging.link import SLACK_NAMESPACE
+from kiro_crew.messaging.link import SLACK_NAMESPACE, telemetry_channel_of
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.platform import redact_via_context
@@ -4830,6 +4830,7 @@ async def _run_chat(
                 # so cards don't stay stuck "running".
                 _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
                 _u = event.usage
+                _telemetry_session_key = effective_session_key(slot)
                 # Capture per-turn stats for the assistant-message footer.
                 # Prefer the provider-reported duration (claude_code) over the
                 # local wall clock (kiro/acp reports duration_ms=0).
@@ -4865,7 +4866,10 @@ async def _run_chat(
                         _record_model,
                         event,
                         provider=_provider_name,
-                        surface="dashboard",
+                        # The row stays keyed by its dashboard slot for title and
+                        # navigation joins; source follows the session the turn
+                        # actually ran on, including linked channel sessions.
+                        surface=telemetry_channel_of(_telemetry_session_key),
                         # Resolved agent, not the slot alias: resolve_agent_bindings
                         # maps e.g. "default" to "kirocrew" before dispatch, so the
                         # alias would credit an agent that never ran.
