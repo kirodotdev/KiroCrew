@@ -21,12 +21,14 @@ mirror ``test_slack_gateway.py`` / ``test_turn_duration_slack.py``.
 from __future__ import annotations
 
 import asyncio
+import math
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import subagent as _sa
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack import gateway as gw
@@ -1107,6 +1109,62 @@ class TestDigestChunkSize:
         assert gw._digest_chunk_size() == 1
         monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE", "99999")
         assert gw._digest_chunk_size() == 1000
+
+
+class TestDigestHoldSecs:
+    """``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS`` parse guard (issue #2215): the
+    latency half of the digest split must never crash import, and 0 is the
+    documented opt-out back to count-trigger-only delivery."""
+
+    def test_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", raising=False)
+        assert _sa._digest_hold_secs() == 120.0
+
+    def test_explicit_value_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "45.5")
+        assert _sa._digest_hold_secs() == 45.5
+
+    def test_malformed_value_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "not-a-number")
+        assert _sa._digest_hold_secs() == 120.0
+
+    def test_zero_and_negative_disable_the_deadline(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "0")
+        assert _sa._digest_hold_secs() == 0.0
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "-30")
+        assert _sa._digest_hold_secs() == 0.0
+
+    def test_clamped_to_the_per_agent_hard_ceiling(self, monkeypatch):
+        """A deadline beyond the reap window is meaningless — the member is
+        already dead by then and the wave closes on its own."""
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "999999")
+        assert _sa._digest_hold_secs() == float(_sa._TIMEOUT_SECS)
+
+    def test_nan_is_malformed_input_not_a_deadline(self, monkeypatch):
+        """GPT 5.6 BLOCKING: NaN parses but loses every comparison, so it is
+        neither disabled (``nan <= 0`` False) nor bounded (``min(nan, x)`` is
+        nan). It would make the sweep force a flush on the FIRST hold, and
+        ``int(nan)`` then raises during digest composition — after the hold
+        clocks were cleared and ``flushed`` advanced — permanently withholding
+        the results the deadline exists to release."""
+        for spelling in ("nan", "NaN", "-nan"):
+            monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", spelling)
+            got = _sa._digest_hold_secs()
+            assert not math.isnan(got), f"{spelling!r} leaked NaN into the deadline"
+            assert got == 120.0
+            # The two downstream operations a NaN would have broken:
+            # the sweep's grace-window comparison, and digest composition's int().
+            assert (5.0 < got) is True, "a fresh hold must stay inside the window"
+            assert (99999.0 < got) is False, "an aged hold must leave the window"
+            assert int(got) == 120
+
+    def test_infinity_is_clamped_not_leaked(self, monkeypatch):
+        """+inf clamps to the ceiling; -inf is a valid opt-out. Unlike NaN,
+        both order correctly, so neither needs rejecting."""
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "inf")
+        assert _sa._digest_hold_secs() == float(_sa._TIMEOUT_SECS)
+        monkeypatch.setenv("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", "-inf")
+        assert _sa._digest_hold_secs() == 0.0
 
 
 class TestHeartbeatSlackParts:

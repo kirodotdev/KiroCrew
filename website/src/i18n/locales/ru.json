@@ -6919,6 +6919,7 @@
       "folder_actions": "Действия с папкой",
       "folder_breadcrumb": "Путь по папкам",
       "folder_color": "Цвет папки",
+      "from_your_chats": "Из ваших чатов",
       "gallery": "Галерея",
       "import_from_a_file": "Импортировать из файла…",
       "kind": "Тип",
@@ -6955,6 +6956,9 @@
       "slug": "Slug",
       "source": "Источник",
       "star_artifact": "Отметить артефакт",
+      "show_all_count": "Показать все ({{count}})",
+      "show_less": "Показать меньше",
+      "star_a_document_in_from_your_chats_to_save_it_he": "Сохранённых артефактов пока нет — добавьте документ из раздела \"Из ваших чатов\" в избранное, чтобы сохранить его здесь.",
       "star_creates_a_starred_artifact_from_this_docume": "В избранное (создаёт избранный артефакт из этого документа)",
       "star_document": "Добавить документ в избранное",
       "starred": "Избранные",
@@ -10030,7 +10034,8 @@
         "sources": "Источники",
         "test": "Проверить",
         "use_default": "Использовать по умолчанию",
-        "volume": "Громкость"
+        "volume": "Громкость",
+        "preset_pulse": "Пульс"
       },
       "postureDisclosure": {
         "filter": "Фильтр: {{label}}",

@@ -6,8 +6,8 @@
  * `i18n-shard.mjs` is deliberately single-locale — `join <dir> <tag>` writes one
  * catalog per invocation. That is the right shape for the primitive and the wrong
  * shape for the job: Phase 1 adds ~1767 keys, and `catalogParity.test.ts` demands
- * every one of them in all 10 non-English catalogs in the SAME commit, so a
- * translation run is inherently a 10-way fan-out. Doing that by hand is ten
+ * every one of them in all 11 non-English catalogs in the SAME commit, so a
+ * translation run is inherently an 11-way fan-out. Doing that by hand is eleven
  * chances to skip a locale and discover it as a red `Frontend Tests`.
  *
  * This script does NOT call a model. It renders the prompt and checks the answer;
@@ -63,10 +63,10 @@ export const PHASE6_CATEGORIES = ['template', 'object-prop', 'array']
 
 /**
  * Parse the shipped locales out of `languages.ts` rather than duplicating them.
- * A second hardcoded list is a second thing to forget when language #12 ships;
+ * A second hardcoded list is a second thing to forget when language #13 ships;
  * `translateDriver.test.ts` asserts this parse against the real
  * `SUPPORTED_LANGUAGES` so a format change here fails loudly instead of silently
- * translating nine languages out of ten.
+ * translating ten languages out of eleven.
  */
 export function parseLanguages(source) {
   const block = source.match(/SUPPORTED_LANGUAGES[^=]*=\s*\[([\s\S]*?)\n\]/)
@@ -115,7 +115,9 @@ export function placeholders(value) {
  * flag any word that merely contains `Git`, and a term absent from the English
  * is not required to appear in the translation.
  */
-export function checkValue({ key, en, tr, dnt = [], categories = null, pluralBases = null }) {
+export function checkValue({
+  key, en, tr, dnt = [], categories = null, pluralBases = null, locale = null,
+}) {
   const findings = []
   const push = (rule, detail) => findings.push({ key, rule, detail })
 
@@ -130,8 +132,24 @@ export function checkValue({ key, en, tr, dnt = [], categories = null, pluralBas
   const nl = s => (String(s).match(/\n/g) ?? []).length
   if (nl(en) !== nl(tr)) push('newline-count', `en=${nl(en)} tr=${nl(tr)}`)
 
+  // Hangul immediately after the term is a BOUNDARY, not a continuation of it.
+  // Korean agglutinates — a 조사 attaches straight onto the Latin run
+  // (`GitHub에서`, `MCP를`) — so a plain letter-boundary reports every correct
+  // Korean use of a do-not-translate term as a dropped one: 54 findings on a
+  // catalog that carries all of them verbatim.
+  //
+  // Scoped to the locale that needs it, not applied globally. Japanese and
+  // Chinese also run scripts through `\p{L}`, but `ja.md` §1.1 asks for a space
+  // at the boundary, so relaxing it there would only weaken a check that
+  // currently passes. Absent a locale, stay strict.
+  const WORDISH = '[\\p{L}\\p{N}]'
+  const agglutinates = String(locale ?? '').toLowerCase().split('-')[0] === 'ko'
+  const after = agglutinates
+    ? `(?:(?!${WORDISH})|(?=\\p{Script=Hangul}))`
+    : `(?!${WORDISH})`
   for (const term of dnt) {
-    const re = new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'u')
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(`(?<!${WORDISH})${escaped}${after}`, 'u')
     if (re.test(en) && !re.test(tr)) push('dnt-missing', `"${term}" is in the English but not the translation`)
   }
 
@@ -483,7 +501,11 @@ function cmdVerify(baseDir, code) {
       if (!(k in expected)) findings.push({ key: k, rule: 'unknown-key', detail: `not expected for ${code} in ${shard}` })
     }
     for (const k of Object.keys(expected)) {
-      if (k in tr) findings.push(...checkValue({ key: k, en: expected[k], tr: tr[k], dnt, categories, pluralBases }))
+      if (k in tr) {
+        findings.push(...checkValue({
+          key: k, en: expected[k], tr: tr[k], dnt, categories, pluralBases, locale: code,
+        }))
+      }
     }
     const ratio = passthroughRatio(
       Object.fromEntries(Object.entries(expected).filter(([k]) => k in tr)),

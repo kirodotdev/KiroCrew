@@ -4017,16 +4017,37 @@ class TestDoctorEmbeddings:
         _pin_default_config(monkeypatch)
 
     @staticmethod
-    def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True, missing_libs: dict | None = None, loader_setdefaults: str = ""):
+    def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True, missing_libs: dict | None = None, loader_setdefaults: str = "", lib_path_override: str | None = None):
         """Run _doctor with the embeddings runtime/model state stubbed.
 
         ``loader_setdefaults`` reproduces the real loader's side effect of
         ``setdefault``-ing LLAMA_CPP_LIB_PATH to its own bundled libs dir, which
         is what makes reading that var after the load call ambiguous.
+
+        ``lib_path_override`` controls the LLAMA_CPP_LIB_PATH the doctor sees:
+        ``None`` (default) CLEARS it — the var LEAKS between tests otherwise,
+        because both the ``loader_setdefaults`` path and the real embeddings
+        loader plant it via ``os.environ.setdefault`` (invisible to
+        monkeypatch teardown), so whichever test ran first in the pytest
+        worker poisoned override-sensitive assertions (shard-layout-dependent
+        CI failures). A string sets the override deliberately, via monkeypatch
+        so it is restored on teardown.
         """
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         import kiro_crew.cli_doctor as doc
+
+        if lib_path_override is None:
+            # setenv FIRST so monkeypatch records a teardown action even when
+            # the var is ABSENT: delenv(raising=False) on a missing var
+            # registers nothing, so the loader_setdefaults path's direct
+            # os.environ.setdefault would still leak into later tests in
+            # workers where the var was never set (GPT review). The
+            # setenv+delenv pair restores the original state either way.
+            monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "")
+            monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
+        else:
+            monkeypatch.setenv("LLAMA_CPP_LIB_PATH", lib_path_override)
 
         def _load():
             if loader_setdefaults:
@@ -4105,6 +4126,7 @@ class TestDoctorEmbeddings:
             runtime_ok=False,
             model_present=False,
             missing_libs={"macos_arm64": ["libllama.dylib"]},
+            lib_path_override="/opt/my-gpu-llama",
         )
         out = capsys.readouterr().out
         assert "/opt/my-gpu-llama" in out

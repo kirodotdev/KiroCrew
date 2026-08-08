@@ -2,14 +2,14 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
+import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
 import { DndContext, PointerSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
-import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
+import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input, IconButton } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import RemoteArtifactCard from '../components/RemoteArtifactCard'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -1021,6 +1021,24 @@ function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pinningSl
   )
 }
 
+/** The star-to-materialize affordance shared by the table/tree rows and the
+ * gallery section, so the two views cannot drift (this PR is already the
+ * second "feature existed in one view only" fix of this class). */
+function SessionDocStar({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolean; onMaterialize: (path: string, sessionKey?: string) => void }) {
+  return (
+    <IconButton
+      variant="accent"
+      disabled={busy}
+      onClick={() => onMaterialize(d.path, d.session_key)}
+      title={i18nT('pages.artifactsPage.star_creates_a_starred_artifact_from_this_docume')}
+      aria-label={i18nT('pages.artifactsPage.star_document')}
+      className="shrink-0"
+    >
+      {busy ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
+    </IconButton>
+  )
+}
+
 /** A single unsaved session-document row (from "your chats"). Leading star
  * materializes it into a real, starred artifact. Shares the same columns as
  * ArtifactRow so both live in one unified table. */
@@ -1029,21 +1047,11 @@ function SessionDocRow({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolea
   return (
     <tr className="transition-colors hover:bg-bg-hover">
       <td className="px-2.5 py-2 border-b border-border text-center">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onMaterialize(d.path, d.session_key)}
-          className="p-0.5 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default text-muted/40 hover:text-accent"
-          title={i18nT('pages.artifactsPage.star_creates_a_starred_artifact_from_this_docume')}
-          aria-label={i18nT('pages.artifactsPage.star_document')}
-          aria-pressed={false}
-        >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
-        </button>
+        <SessionDocStar d={d} busy={busy} onMaterialize={onMaterialize} />
       </td>
       <td className="px-2.5 py-2 border-b border-border">
         <div className="flex items-center gap-1.5 min-w-0">
-          <FileText size={13} className="text-emerald-400 shrink-0" />
+          <FileText size={13} className="text-ok shrink-0" />
           <span className="text-sm text-text-strong font-medium truncate">{d.name}</span>
         </div>
         <div className="text-[11px] text-muted truncate max-w-[420px]">{d.path}</div>
@@ -1056,6 +1064,102 @@ function SessionDocRow({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolea
       <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted whitespace-nowrap">{_timeAgo(isoToTs(d.updated_at))}</td>
       <td className="px-2.5 py-2 border-b border-border"></td>
     </tr>
+  )
+}
+
+/** Unsaved session documents in the GALLERY view. The table and tree views
+ * fold these into their rows (SessionDocRow) — but the gallery is the DEFAULT
+ * view, so without this section a document badged "Artifact" in the chat
+ * transcript is invisible on this page until the user discovers the table
+ * toggle. Same affordance as SessionDocRow: the leading star materializes the
+ * document into a real, starred artifact. */
+/* Cap the docs section so an active user's cross-session firehose cannot push
+ * the saved library — the page's primary content — below the fold (the same
+ * burial this section exists to cure, inverted). Same disclosure pattern as
+ * FileChangeChips' COLLAPSED_COUNT. */
+const SESSION_DOCS_COLLAPSED = 5
+const SESSION_DOCS_COLLAPSE_KEY = 'mc-artifacts-session-docs-collapsed'
+
+function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }: {
+  docs: SessionDoc[]
+  /** True while the session-docs query is in flight — renders a fixed-height
+   *  skeleton so the section does not pop in and shift the gallery under the
+   *  user's cursor once the query resolves. */
+  pending: boolean
+  onMaterialize: (path: string, sessionKey?: string) => void
+  materializingPath: string | null
+}) {
+  const [expanded, setExpanded] = useState(false)
+  // Persisted: a user who never intends to save these docs can put the section
+  // away for good; the header stays as a one-click way back.
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(SESSION_DOCS_COLLAPSE_KEY) === '1',
+  )
+  const listRef = useRef<HTMLDivElement>(null)
+  const toggleCollapsed = () => {
+    setCollapsed((v) => {
+      safeSetItem(SESSION_DOCS_COLLAPSE_KEY, v ? '' : '1')
+      return !v
+    })
+  }
+  // A successful materialize unmounts its row; without this, focus falls to
+  // <body> and keyboard users lose their place. Re-anchor on the list.
+  const handleMaterialize = (path: string, sessionKey?: string) => {
+    onMaterialize(path, sessionKey)
+    listRef.current?.focus()
+  }
+  if (pending && !docs.length) {
+    // Fixed-height placeholder (~header + one row) reserving the slot.
+    return (
+      <Card className="mt-0 p-3" aria-busy="true">
+        <div className="h-[24px] w-40 rounded bg-bg-hover animate-pulse mb-2" />
+        <div className="h-[32px] rounded-lg bg-bg-hover animate-pulse" />
+      </Card>
+    )
+  }
+  if (!docs.length) return null
+  const overflow = docs.length > SESSION_DOCS_COLLAPSED
+  const visible = overflow && !expanded ? docs.slice(0, SESSION_DOCS_COLLAPSED) : docs
+  return (
+    <Card className="mt-0 p-3">
+      <CardTitle className={collapsed ? 'mb-0 px-1' : 'mb-2 px-1'}>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-expanded={!collapsed}
+          className="flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
+        >
+          {collapsed ? <ChevronRight size={14} className="shrink-0 text-muted" /> : <ChevronDown size={14} className="shrink-0 text-muted" />}
+          {i18nT('pages.artifactsPage.from_your_chats')}
+          {collapsed && <span className="text-muted font-normal">({docs.length})</span>}
+        </button>
+      </CardTitle>
+      {!collapsed && (
+      <div ref={listRef} tabIndex={-1} className="flex flex-col gap-0.5 outline-none">
+        {visible.map((d) => (
+          <div key={d.path} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg">
+            <SessionDocStar d={d} busy={materializingPath === d.path} onMaterialize={handleMaterialize} />
+            <FileText size={13} className="text-ok shrink-0" />
+            <span className="text-sm text-text-strong font-medium truncate min-w-0 max-w-[280px]">{d.name}</span>
+            <span className="text-[11px] text-muted truncate min-w-0 flex-1">{d.path}</span>
+            <span className="text-[12px] text-muted truncate min-w-0 max-w-[180px]" title={d.session_title}>{d.session_title}</span>
+            <span className="text-[12px] text-muted whitespace-nowrap shrink-0">{_timeAgo(isoToTs(d.updated_at))}</span>
+          </div>
+        ))}
+        {overflow && (
+          <Btn
+            onClick={() => setExpanded((v) => !v)}
+            className="justify-center w-full px-2 py-1.5 rounded-lg text-[11.5px] font-medium border-none"
+            aria-expanded={expanded}
+          >
+            {expanded
+              ? <><ChevronUp size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.show_less')}</>
+              : <><ChevronDown size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.show_all_count', { count: docs.length })}</>}
+          </Btn>
+        )}
+      </div>
+      )}
+    </Card>
   )
 }
 
@@ -1730,6 +1834,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
       qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
     },
   })
+  const handleMaterialize = useCallback(
+    (path: string, sessionKey?: string) => materializeMut.mutate({ path, sessionKey }),
+    [materializeMut],
+  )
+  const materializingPath = materializeMut.isPending
+    ? ((materializeMut.variables as { path: string } | undefined)?.path ?? null)
+    : null
   const sessionDocs = useMemo(() => {
     let docs = (sessionDocsQ.data?.docs || []).filter((d) => !d.saved)
     if (kindFilter) docs = docs.filter((d) => docFileType(d.path) === kindFilter)
@@ -1764,7 +1875,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
       ? asMessage(addArtifactMut.error)
       : newArtifactMut.error
         ? asMessage(newArtifactMut.error)
-        : null
+        : materializeMut.error
+          ? asMessage(materializeMut.error)
+          : null
 
   if (isLoading) return <div className="p-6 text-muted">{i18nT('pages.artifactsPage.loading')}</div>
 
@@ -1779,7 +1892,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <div className="text-sm text-danger font-medium">{i18nT('pages.artifactsPage.error')}</div>
               <div className="text-[13px] text-danger/90 mt-0.5">{errMessage || mutErr || addError}</div>
             </div>
-            <Btn aria-label={i18nT('app.dismiss')} onClick={() => { deleteMut.reset(); addArtifactMut.reset(); newArtifactMut.reset(); setAddError(null) }} className="text-danger/60 hover:text-danger shrink-0"><X className="lucide-inline" /></Btn>
+            <Btn aria-label={i18nT('app.dismiss')} onClick={() => { deleteMut.reset(); addArtifactMut.reset(); newArtifactMut.reset(); materializeMut.reset(); setAddError(null) }} className="text-danger/60 hover:text-danger shrink-0"><X className="lucide-inline" /></Btn>
           </div>
         )}
 
@@ -1955,12 +2068,29 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               </div>
             )}
 
+            {/* Session docs render ABOVE the masonry: at ≥30 artifacts the
+              * virtualized gallery becomes a viewport-height scroller, and a
+              * section after it would hide below the fold — the exact
+              * discoverability gap this feature exists to close. Table/tree
+              * views fold the docs into their own rows instead. Skipped while
+              * folder-scoped (docs are unfiled) and in the Starred view. */}
+            {view === 'grid' && !pinnedOnly && !tagFilter && (filtersActive || !scopeFolderId) && (
+              <SessionDocsGallery
+                docs={sessionDocs}
+                pending={sessionDocsQ.isPending}
+                onMaterialize={handleMaterialize}
+                materializingPath={materializingPath}
+              />
+            )}
+
             {gridEntries.length === 0 && (view === 'grid' || filtersActive) ? (
               (artifacts.length === 0 && folders.length === 0) ? (
                 <EmptyState
                   icon={<Bookmark className="lucide-inline" />}
                   title={i18nT('pages.artifactsPage.no_artifacts_yet')}
-                  subtitle={i18nT('pages.artifactsPage.click_the_bookmark_icon_on_any_rendered_widget_i')}
+                  subtitle={sessionDocs.length > 0 && !pinnedOnly
+                    ? i18nT('pages.artifactsPage.star_a_document_in_from_your_chats_to_save_it_he')
+                    : i18nT('pages.artifactsPage.click_the_bookmark_icon_on_any_rendered_widget_i')}
                 />
               ) : (
                 <div className="text-muted italic px-2.5 py-3.5 text-sm">
@@ -1988,9 +2118,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
                 onTogglePin={handleTogglePin}
                 pinningSlug={pinningSlug}
-                sessionDocs={pinnedOnly ? [] : sessionDocs}
-                onMaterialize={pinnedOnly ? undefined : (path, sessionKey) => materializeMut.mutate({ path, sessionKey })}
-                materializingPath={materializeMut.isPending ? ((materializeMut.variables as { path: string } | undefined)?.path ?? null) : null}
+                sessionDocs={pinnedOnly || tagFilter ? [] : sessionDocs}
+                onMaterialize={pinnedOnly ? undefined : handleMaterialize}
+                materializingPath={materializingPath}
               />
             ) : (
               <LibraryTree
@@ -2006,9 +2136,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 pinningSlug={pinningSlug}
                 overFolderId={overFolderId}
                 dragActive={!!activeDrag}
-                sessionDocs={pinnedOnly ? [] : sessionDocs}
-                onMaterialize={pinnedOnly ? undefined : (path, sessionKey) => materializeMut.mutate({ path, sessionKey })}
-                materializingPath={materializeMut.isPending ? ((materializeMut.variables as { path: string } | undefined)?.path ?? null) : null}
+                sessionDocs={pinnedOnly || tagFilter ? [] : sessionDocs}
+                onMaterialize={pinnedOnly ? undefined : handleMaterialize}
+                materializingPath={materializingPath}
               />
             )}
 

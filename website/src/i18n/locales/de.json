@@ -6729,6 +6729,7 @@
       "folder_actions": "Ordneraktionen",
       "folder_breadcrumb": "Ordner-Navigationspfad",
       "folder_color": "Ordnerfarbe",
+      "from_your_chats": "Aus deinen Chats",
       "gallery": "Galerie",
       "import_from_a_file": "Aus einer Datei importieren …",
       "kind": "Art",
@@ -6765,6 +6766,9 @@
       "slug": "Slug",
       "source": "Quelle",
       "star_artifact": "Artefakt markieren",
+      "show_all_count": "Alle anzeigen ({{count}})",
+      "show_less": "Weniger anzeigen",
+      "star_a_document_in_from_your_chats_to_save_it_he": "Noch keine gespeicherten Artefakte — markiere ein Dokument unter \"Aus deinen Chats\", um es hier zu speichern.",
       "star_creates_a_starred_artifact_from_this_docume": "Markieren (erstellt ein markiertes Artefakt aus diesem Dokument)",
       "star_document": "Dokument markieren",
       "starred": "Markiert",
@@ -9802,7 +9806,8 @@
         "sources": "Quellen",
         "test": "Testen",
         "use_default": "Standard verwenden",
-        "volume": "Lautstärke"
+        "volume": "Lautstärke",
+        "preset_pulse": "Puls"
       },
       "postureDisclosure": {
         "filter": "{{label}} filtern",

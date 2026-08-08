@@ -354,6 +354,50 @@ _STALL_IDLE_SECS = (
     120  # seconds with no stream activity before a running subagent is surfaced as "stalled"
 )
 
+# Wave-digest HOLD DEADLINE: the maximum time a COMPLETED wave member's result
+# may sit undelivered while the gateway waits for the digest chunk to fill.
+#
+# The chunk-size trigger alone (``SUBAGENT_DIGEST_CHUNK_SIZE``, default 10) is
+# a COUNT trigger, and the concurrency cap makes typical waves 2-5 members —
+# so the count can never be reached and the only flush that ever fires is the
+# wave-close one. Every sibling's result is then withheld for the SLOWEST
+# member's entire remaining runtime; a member that HANGS rather than fails
+# withholds them for the full ``_TIMEOUT_SECS`` reap (30 min), which is
+# indistinguishable from a dead session (issue #2215).
+#
+# This deadline is the latency half of that one-knob-two-jobs split: the count
+# trigger keeps bounding digest SIZE for large waves, while the deadline caps
+# worst-case delivery LATENCY for every wave size. A wave whose members all
+# finish within the deadline of each other still delivers ONE consolidated
+# digest — the deliberate small-wave behavior is unchanged.
+#
+# Tunable via ``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS``; 0/negative disables the
+# deadline (count-trigger-only, i.e. pre-fix behavior). Guarded parse: a
+# malformed value must never crash import.
+_DEFAULT_DIGEST_HOLD_SECS = 120.0
+
+
+def _digest_hold_secs() -> float:
+    try:
+        val = float(os.environ.get("KIROCREW_SUBAGENT_DIGEST_HOLD_SECS", ""))
+    except (TypeError, ValueError):
+        return _DEFAULT_DIGEST_HOLD_SECS
+    if math.isnan(val):
+        # NaN parses fine but loses every comparison, so it would be neither
+        # disabled (``nan <= 0`` is False) nor bounded (``min(nan, x)`` is nan)
+        # — the sweep's ``age < DIGEST_HOLD_SECS`` would also be False, forcing
+        # a flush on the FIRST hold, and ``int(nan)`` then raises inside digest
+        # composition AFTER the hold clocks were cleared and ``flushed`` was
+        # advanced. That permanently withholds the very results this deadline
+        # exists to release, so NaN is malformed input, not a deadline.
+        return _DEFAULT_DIGEST_HOLD_SECS
+    if val <= 0:
+        return 0.0  # explicit opt-out
+    return min(val, float(_TIMEOUT_SECS))
+
+
+DIGEST_HOLD_SECS = _digest_hold_secs()
+
 
 def _timeout_context(info: "SubagentInfo", *, include_elapsed: bool = True) -> str:
     """Build a human-readable context string for timeout errors."""
@@ -924,6 +968,19 @@ class SubagentInfo:
     # restart mid-wave would silently lose every held completion. The gateway
     # marks held members delivered when the digest fires.
     _digest_held: bool = False
+    # ``time.time()`` when the gateway HELD this member's delivery for the wave
+    # digest; 0.0 once that hold has been flushed (or never held). Separate from
+    # ``_digest_held`` on purpose: that flag is the restart-safety contract read
+    # by the run loop, and must not be mutated by the hold-deadline sweep. This
+    # timestamp is the sweep's only input — see ``_sweep_digest_holds``.
+    _digest_held_at: float = 0.0
+    # True ONLY for the synthetic record that :meth:`force_digest_flush`
+    # announces to release held results whose hold deadline expired. It is NOT a
+    # wave member: it carries the wave's ``batch_id`` so the gateway can find
+    # the wave's digest buffer, but the gateway must skip every per-member side
+    # effect for it (WS terminal event, orchestration tracker accounting,
+    # done/ok/err counters, digest lines) and only force the flush.
+    _digest_flush_only: bool = False
     # A reap/stop has STARTED but may still be in its (awaiting) teardown. Split
     # out of `reaped` because that flag carries two incompatible meanings: the
     # cancel-recovery scheduler needs it set BEFORE the teardown awaits (or it
@@ -1650,6 +1707,12 @@ class SubagentManager:
                 self._sweep_stuck_waves(now)
             except Exception:
                 logger.debug("Reaper: stuck-wave sweep failed", exc_info=True)
+            # Digest hold deadline: release completed wave results that a
+            # straggler (or a hung member) has been withholding.
+            try:
+                self._sweep_digest_holds(now)
+            except Exception:
+                logger.debug("Reaper: digest-hold sweep failed", exc_info=True)
             try:
                 self._sweep_conversations(now)
             except Exception:
@@ -3912,6 +3975,128 @@ class SubagentManager:
                 " — reconciled by reaper liveness backstop)",
                 parent_session_key=parent,
             )
+
+    def _sweep_digest_holds(self, now: float) -> None:
+        """Reaper backstop: release wave results whose HOLD DEADLINE expired.
+
+        The gateway holds a completed member's per-agent injection until the
+        wave's digest chunk fires. Both of the chunk's triggers are event-driven
+        — a COUNT trigger (``SUBAGENT_DIGEST_CHUNK_SIZE`` completions pending)
+        and wave close — so neither can fire while a straggler is simply *not
+        finishing*. With the default count (10) above any realistic wave size,
+        the only flush that ever fires is the wave-close one, and a member that
+        HANGS rather than fails withholds every sibling's finished result for
+        the full ``_TIMEOUT_SECS`` reap window (issue #2215).
+
+        This sweep is the timer the event-driven triggers lack: when the OLDEST
+        outstanding hold in a wave has aged past :data:`DIGEST_HOLD_SECS` and
+        the wave is still live, it announces a synthetic *flush-only* record
+        through the single completion consumer (the same re-entry mechanism
+        :meth:`record_lost_submission` uses), which forces the partial digest
+        out. Ordinary fast waves never reach the deadline, so the deliberate
+        "small wave = one consolidated digest" behavior is untouched.
+        """
+        if DIGEST_HOLD_SECS <= 0 or self._on_done is None:
+            return  # deadline disabled — count-trigger-only
+        oldest: dict[str, float] = {}
+        parents: dict[str, str] = {}
+        totals: dict[str, int] = {}
+        for info in list(self._agents.values()):
+            _bid = info.batch_id
+            if not _bid or info._digest_held_at <= 0.0:
+                continue
+            _prev = oldest.get(_bid)
+            if _prev is None or info._digest_held_at < _prev:
+                oldest[_bid] = info._digest_held_at
+            parents.setdefault(_bid, info.parent_session_key)
+            totals.setdefault(_bid, info.batch_total)
+        for batch_id, held_at in oldest.items():
+            age = now - held_at
+            if age < DIGEST_HOLD_SECS:
+                continue  # still inside the grace window
+            if not self.batch_members_pending(batch_id):
+                # The wave is closing on its own — the real wave-close flush is
+                # already in flight (or the held flags are stale bookkeeping).
+                # Forcing a partial digest here would race it and could emit a
+                # duplicate chunk for the same members.
+                continue
+            logger.warning(
+                "Reaper: wave %s held results for %.0fs (deadline %.0fs) —"
+                " forcing partial digest flush",
+                batch_id,
+                age,
+                DIGEST_HOLD_SECS,
+            )
+            self.force_digest_flush(
+                batch_id,
+                parents.get(batch_id, ""),
+                totals.get(batch_id, 0),
+                age,
+            )
+
+    def force_digest_flush(
+        self,
+        batch_id: str,
+        parent_session_key: str,
+        batch_total: int,
+        held_secs: float,
+    ) -> None:
+        """Announce a synthetic *flush-only* record to release a wave's held
+        results without waiting for another member to complete.
+
+        The record is deliberately NOT a wave member: ``_digest_flush_only``
+        tells the gateway to skip every per-member side effect (terminal WS
+        event, orchestration accounting, done/ok/err counters, digest lines) and
+        only force the pending chunk out. Announcing it through ``_on_done`` —
+        rather than reaching into the gateway's digest buffers — reuses the one
+        completion consumer that owns digest composition, routing, and the
+        held-tombstone settle contract.
+        """
+        if not batch_id or self._on_done is None:
+            return
+        info = SubagentInfo(
+            id=uuid.uuid4().hex[:8],
+            task=f"(wave digest flush — results held {int(held_secs)}s)",
+            parent_session_key=parent_session_key,
+            done=True,
+            batch_id=batch_id,
+            batch_total=max(0, int(batch_total)),
+        )
+        info._digest_flush_only = True
+        try:
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="digest_hold_expired",
+                metadata={"batch_id": batch_id, "held_secs": int(held_secs)},
+            )
+        except Exception:
+            logger.debug("SEL audit failed for digest hold expiry", exc_info=True)
+        try:
+            self._tasks[f"flush-{info.id}"] = asyncio.ensure_future(
+                self._announce_digest_flush(info)
+            )
+        except RuntimeError:
+            pass  # no running loop (sync/test context)
+
+    async def _announce_digest_flush(self, info: SubagentInfo) -> None:
+        """Run the flush-only announce with the SAME settle contract as ``_run``.
+
+        ``_settle_digest_holds`` must run only after ``_on_done`` returns
+        cleanly: a routing failure has to leave the held members undelivered so
+        orphan reconciliation can still recover them after a restart. This path
+        has no run loop to enforce that ordering, so it enforces it here.
+        """
+        assert self._on_done is not None
+        try:
+            await self._on_done(info)
+        except Exception:
+            logger.warning(
+                "Digest hold flush announce failed for wave %s", info.batch_id, exc_info=True
+            )
+            return
+        self._settle_digest_holds(info)
 
     def _settle_digest_holds(self, info: SubagentInfo) -> None:
         """Settle delivery tombstones for wave members whose injection was

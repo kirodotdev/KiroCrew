@@ -58,6 +58,51 @@ describe('ChatInput', () => {
     })
   })
 
+  describe('above-composer stacking order', () => {
+    // The tip / folder-suggestion band must stay flush against the input box:
+    // options belong with the transcript above it, never between it and the
+    // composer. DOCUMENT_POSITION_FOLLOWING === 4.
+    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING
+
+    it('renders aboveComposer below the options row and above the textarea', () => {
+      renderWithProviders(
+        <ChatInput
+          {...defaultProps}
+          aboveComposer={<div data-testid="tip-band">tip</div>}
+          followUpOptions={['first option', 'second option']}
+          onFollowUpSelect={vi.fn()}
+        />
+      )
+      const option = screen.getByRole('button', { name: 'first option' })
+      const tip = screen.getByTestId('tip-band')
+      const textarea = screen.getByLabelText('Message input')
+
+      expect(option.compareDocumentPosition(tip) & FOLLOWING).toBe(FOLLOWING)
+      expect(tip.compareDocumentPosition(textarea) & FOLLOWING).toBe(FOLLOWING)
+    })
+
+    it('keeps aboveComposer below the knowledge chip', () => {
+      renderWithProviders(
+        <ChatInput
+          {...defaultProps}
+          aboveComposer={<div data-testid="tip-band">tip</div>}
+          knowledgeChip={<div data-testid="knowledge-chip">ctx</div>}
+        />
+      )
+      const chip = screen.getByTestId('knowledge-chip')
+      const tip = screen.getByTestId('tip-band')
+
+      expect(chip.compareDocumentPosition(tip) & FOLLOWING).toBe(FOLLOWING)
+    })
+
+    it('still renders aboveComposer when the options row is absent', () => {
+      renderWithProviders(
+        <ChatInput {...defaultProps} aboveComposer={<div data-testid="tip-band">tip</div>} />
+      )
+      expect(screen.getByTestId('tip-band')).toBeInTheDocument()
+    })
+  })
+
   describe('offline state', () => {
     it('disables Send button when connected=false even with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)

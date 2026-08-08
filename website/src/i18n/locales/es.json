@@ -6824,6 +6824,7 @@
       "folder_actions": "Acciones de carpeta",
       "folder_breadcrumb": "Ruta de carpetas",
       "folder_color": "Color de la carpeta",
+      "from_your_chats": "De tus chats",
       "gallery": "Galería",
       "import_from_a_file": "Importar desde un archivo…",
       "kind": "Tipo",
@@ -6860,6 +6861,9 @@
       "slug": "Slug",
       "source": "Origen",
       "star_artifact": "Destacar el artefacto",
+      "show_all_count": "Mostrar todo ({{count}})",
+      "show_less": "Mostrar menos",
+      "star_a_document_in_from_your_chats_to_save_it_he": "Aún no hay artefactos guardados: destaca un documento en \"De tus chats\" para guardarlo aquí.",
       "star_creates_a_starred_artifact_from_this_docume": "Destacar (crea un artefacto destacado a partir de este documento)",
       "star_document": "Destacar documento",
       "starred": "Destacados",
@@ -9916,7 +9920,8 @@
         "sources": "Fuentes",
         "test": "Probar",
         "use_default": "Usar el valor predeterminado",
-        "volume": "Volumen"
+        "volume": "Volumen",
+        "preset_pulse": "Pulso"
       },
       "postureDisclosure": {
         "filter": "Filtrar {{label}}",

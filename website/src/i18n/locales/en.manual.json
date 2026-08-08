@@ -3365,6 +3365,7 @@
         "preset_ding": "Ding",
         "preset_none": "Silent",
         "preset_pop": "Pop",
+        "preset_pulse": "Pulse",
         "priority_for": "Priority for {{name}}",
         "use_default": "Use default"
       },

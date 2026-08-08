@@ -15,6 +15,14 @@ export interface McNotificationDetail {
 export const TURN_DONE_KIND = 'turn' as const
 
 /**
+ * Sound kind for tool-approval prompts. Synthesized by the websocket layer on
+ * `approval` frames — the agent is blocked waiting for a user decision. Uses
+ * a distinct preset from turn-complete so the user can distinguish "needs my
+ * action" from "finished, no action needed" without looking.
+ */
+export const APPROVAL_KIND = 'approval' as const
+
+/**
  * Whether a finished turn warrants a chime. Policy: every real turn
  * completion chimes — active chat or background, focused or not — so the
  * user always gets an audible cue when any session finishes. Two

@@ -6729,6 +6729,7 @@
       "folder_actions": "फ़ोल्डर क्रियाएँ",
       "folder_breadcrumb": "फ़ोल्डर ब्रेडक्रंब",
       "folder_color": "फ़ोल्डर रंग",
+      "from_your_chats": "तुम्हारी चैट से",
       "gallery": "गैलरी",
       "import_from_a_file": "फ़ाइल से आयात करें…",
       "kind": "प्रकार",
@@ -6765,6 +6766,9 @@
       "slug": "स्लग",
       "source": "स्रोत",
       "star_artifact": "आर्टिफ़ैक्ट को स्टार करें",
+      "show_all_count": "सब दिखाएँ ({{count}})",
+      "show_less": "कम दिखाएँ",
+      "star_a_document_in_from_your_chats_to_save_it_he": "अभी कोई सहेजा गया आर्टिफ़ैक्ट नहीं है — \"तुम्हारी चैट से\" में किसी दस्तावेज़ को स्टार करो ताकि वह यहाँ सहेजा जाए।",
       "star_creates_a_starred_artifact_from_this_docume": "स्टार करें (इस दस्तावेज़ से एक स्टार किया गया आर्टिफ़ैक्ट बनाता है)",
       "star_document": "दस्तावेज़ स्टार करें",
       "starred": "स्टार किए गए",
@@ -9802,7 +9806,8 @@
         "sources": "स्रोत",
         "test": "परखें",
         "use_default": "डिफ़ॉल्ट इस्तेमाल करें",
-        "volume": "वॉल्यूम"
+        "volume": "वॉल्यूम",
+        "preset_pulse": "पल्स"
       },
       "postureDisclosure": {
         "filter": "{{label}} फ़िल्टर करो",

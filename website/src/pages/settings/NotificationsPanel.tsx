@@ -30,6 +30,7 @@ const PRESET_LABEL_KEY: Record<SoundPreset, string> = {
   ding: 'pages.settings.notificationsPanel.preset_ding',
   blip: 'pages.settings.notificationsPanel.preset_blip',
   pop: 'pages.settings.notificationsPanel.preset_pop',
+  pulse: 'pages.settings.notificationsPanel.preset_pulse',
 }
 const DEFAULT_SENTINEL = 'default'
 const OVERRIDE_OPTIONS: string[] = [DEFAULT_SENTINEL, ...PRESET_OPTIONS]

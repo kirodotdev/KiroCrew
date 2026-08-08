@@ -2046,8 +2046,6 @@ function ChatInput({
     <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
       style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
 
-      {aboveComposer}
-
       {/* Knowledge context chip */}
       {!showGhost && knowledgeChip}
 
@@ -2055,6 +2053,13 @@ function ChatInput({
       {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
           <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={onFollowUpSelect} onSend={sendFollowUp} quickSend={quickSend} layout={followUpLayout} />
       )}
+
+      {/* Tip / folder-suggestion band — LAST above the composer so it always
+          hugs the input box. Options (FollowUpBar) answer the assistant's
+          question and belong with the transcript above; the tip is an ambient
+          note attached to the composer, so a taller options row must never
+          push it away from the box. */}
+      {aboveComposer}
 
       {/* Drag handle — always visible, sits above approval bar or input */}
       {/* Pointer-drag resize handle for the message input (double-click resets).

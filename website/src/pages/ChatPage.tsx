@@ -5708,10 +5708,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                    width must always match the input box) while still pushing
                    chat content up like QueueStack (team decision: never cover
                    thinking/output; queue and question card keep priority via
-                   tipSuppressed). */
+                   tipSuppressed). ChatInput renders this slot LAST in the
+                   above-composer stack, so the card stays flush against the
+                   input box and an options row sits above it. */
                 <AnimatePresence>
                   {folderSuggestion && activeSlot ? (
-                    <div className="pb-1.5" key="folder-suggestion">
+                    <div className="pt-1.5" key="folder-suggestion">
                       <FolderSuggestionCard
                         folderName={folderSuggestion.folderName}
                         breadcrumb={folderSuggestion.breadcrumb}
@@ -5720,7 +5722,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       />
                     </div>
                   ) : activeTip && (
-                    <div className="pb-1.5" key="tip">
+                    <div className="pt-1.5" key="tip">
                       <TipCard tip={activeTip} onDismiss={dismissTip} />
                     </div>
                   )}
