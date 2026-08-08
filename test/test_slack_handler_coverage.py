@@ -1104,20 +1104,48 @@ class TestPrivacyModifiers:
         assert len(slack.actions) == posts
 
     @pytest.mark.asyncio
-    async def test_flags_are_persisted_on_the_session_map(self, slack, sessions, owner):
-        sessions._session_map = MagicMock()
+    async def test_flags_are_persisted_on_the_session_map(
+        self, slack, sessions, owner, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
+        from kiro_crew.session_map import SessionMap
+
+        sessions._session_map = SessionMap()
         await h._apply_temporary_modifier("t1", "U1", "C1", slack, sessions, "t1")
         await h._apply_incognito_modifier("t1", "U1", "C1", slack, sessions, "t1")
-        sessions._session_map.set_flag.assert_any_call("t1", "temporary", True)
-        sessions._session_map.set_flag.assert_any_call("t1", "incognito", True)
+        # Assert real durability rather than that set_flag was called: a FRESH
+        # map must read both flags back off disk, which is the property the
+        # restart path actually depends on.
+        fresh = SessionMap()
+        assert fresh.get_flag("t1", "temporary") is True
+        assert fresh.get_flag("t1", "incognito") is True
 
     def test_hydrate_conv_flags_without_session_map(self, sessions):
         h._hydrate_conv_flags(sessions, "t1")
         assert not h.is_thread_temporary("t1")
 
-    def test_hydrate_conv_flags_restores_both(self, sessions):
+    def test_conv_state_map_rejects_auto_attribute_stub(self, sessions):
+        """An auto-attribute stub must NOT be mistaken for a real SessionMap.
+
+        ``MagicMock().get_flag(...)`` returns a truthy mock, so accepting one
+        here would mark every session both temporary and incognito.
+        """
         sessions._session_map = MagicMock()
-        sessions._session_map.get_flag.return_value = True
+        assert h._conv_state_map(sessions) is None
+        h._hydrate_conv_flags(sessions, "t1")
+        assert not h.is_thread_temporary("t1")
+        assert not h.is_thread_incognito("t1")
+
+    def test_hydrate_conv_flags_restores_both(self, sessions, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", tmp_path / "kiro")
+        from kiro_crew.session_map import SessionMap
+
+        sm = SessionMap()
+        sm.set_flag("t1", "temporary", True)
+        sm.set_flag("t1", "incognito", True)
+        sessions._session_map = sm
         h._hydrate_conv_flags(sessions, "t1")
         assert h.is_thread_temporary("t1") and h.is_thread_incognito("t1")
 

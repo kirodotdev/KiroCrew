@@ -2864,9 +2864,10 @@ class ConversationLog:
                             d = json.loads(line.strip())
                         except (json.JSONDecodeError, ValueError):
                             continue
-                        if d.get("_type") == "metadata" and d.get("memory_mode") in (
-                            "incognito",
-                            "temporary",
+                        if (
+                            d.get("_type") == "metadata"
+                            and str(d.get("memory_mode", "")).lower()
+                            in INCOGNITO_MEMORY_MODES
                         ):
                             is_restricted = True
                             break
