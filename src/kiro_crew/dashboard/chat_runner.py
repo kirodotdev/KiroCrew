@@ -63,6 +63,7 @@ from kiro_crew.dashboard.chat_title import (
     _maybe_auto_title,
     _rephrase_plan_lite,
     _reset_auto_run_for_new_plan,
+    maybe_refresh_title,
 )
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
@@ -2463,6 +2464,14 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
         title_task = asyncio.create_task(_maybe_auto_title(state, slot))
         state._background_tasks.add(title_task)
         title_task.add_done_callback(state._background_tasks.discard)
+    else:
+        # Already titled: re-examine an AUTO title at bounded milestones so
+        # long sessions aren't stuck with a name generated from their very
+        # first message. Self-guarding (origin/milestone/in-flight checks in
+        # maybe_refresh_title) — the common case returns without any LLM call.
+        refresh_task = asyncio.create_task(maybe_refresh_title(state, slot))
+        state._background_tasks.add(refresh_task)
+        refresh_task.add_done_callback(state._background_tasks.discard)
 
 
 async def _run_chat(

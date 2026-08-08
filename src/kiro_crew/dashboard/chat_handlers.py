@@ -34,6 +34,8 @@ from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
+    _rehydrate_title_origin,
+    _rehydrate_title_refresh_mark,
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
@@ -957,6 +959,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             title, _ = redact_credentials(title)
             slot.title = title
             slot._titled = True
+            # A pinned title is caller-explicit: record origin "user" so the
+            # background title refresh never rewrites it (this endpoint can
+            # address an ALREADY-auto-titled slot whose origin would otherwise
+            # stay "auto"), and bump the epoch so an in-flight background
+            # attempt stands down instead of clobbering the pin.
+            slot._title_origin = "user"
+            slot._title_epoch += 1
         # Bind to an artifact if provided (companion chat). Validate
         # against the artifact slug grammar so an injection-shaped value can never
         # land on the slot; anything invalid is silently dropped. Uniqueness (≤1
@@ -1008,7 +1017,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # client's slot updates behind one session's file lock. The in-memory slot
     # is the source of truth and was already broadcast at block exit; a failed
     # write re-arms the periodic flush (best_effort).
-    if folder_id:
+    # A pinned title must persist too (not just a folder move): without the
+    # write, a restart rehydrates the previous title with a refreshable "auto"
+    # origin and the background refresh may rewrite the pin.
+    if folder_id or title:
         await save_slot_off_loop(state, slot, force=True)
     return web.json_response(state.serialize_slot(slot))
 
@@ -2936,19 +2948,44 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # map can no longer name its session.
         channel_origin=is_channel_session_key(history_key),
     )
+    # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
+    # call always sends a ``title`` (see website/src/api/client.ts
+    # resumeChatSlot: ``title: title || key``), and that value is client
+    # chrome — often a STALE echo of an older name (a notification deep link,
+    # a sidebar row rendered before a background refresh landed). Classifying
+    # request titles (echo vs override) is unwinnable against staleness: a
+    # stale echo is indistinguishable from a deliberate override. So the
+    # request title is used ONLY when no persisted title exists; otherwise the
+    # persisted title and its provenance are restored exactly like the
+    # chat_persistence loaders (resume is the THIRD hydration path).
+    meta = state.conversation_log.get_metadata(history_key)
+    raw_persisted_title = meta.get("title")
+    # Accept the persisted title only when it is a string: a legacy or
+    # hand-corrupted JSONL could carry a non-string here, and redacting it
+    # would raise TypeError and 500 the resume. Non-string == absent.
+    persisted_title = raw_persisted_title if isinstance(raw_persisted_title, str) else ""
     title = body.get("title", "")
-    if title:
+    if persisted_title:
+        safe_title, _ = redact_exfiltration_urls(persisted_title)
+        safe_title, _ = redact_credentials(safe_title)
+        slot.title = safe_title
+        slot._titled = True
+        slot._title_origin = _rehydrate_title_origin(True, meta.get("title_origin"))
+        slot._title_refresh_mark = _rehydrate_title_refresh_mark(
+            meta.get("title_refresh_mark")
+        )
+    elif title:
+        # Never-titled session with a caller-supplied name: apply it, with
+        # conservative "user" provenance (unknown origin — the background
+        # refresh must never rewrite it) and an epoch bump so any in-flight
+        # background attempt stands down.
         slot.title = title
         slot._titled = True
-    else:
-        sessions = state.conversation_log.list_sessions()
-        for s in sessions:
-            if s.get("key") == history_key:
-                slot.title = s.get("title", history_key)
-                slot._titled = True
-                break
-    # Restore original created_at from history metadata
-    meta = state.conversation_log.get_metadata(history_key)
+        slot._title_origin = "user"
+        slot._title_epoch += 1
+    # else: untitled on disk and no caller name — leave the slot untitled
+    # (mirrors _rehydrate_slot_from_history: ``_titled = bool(meta title)``),
+    # so the auto-titler can still name it on the next turn.
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]
     if meta.get("agent"):
