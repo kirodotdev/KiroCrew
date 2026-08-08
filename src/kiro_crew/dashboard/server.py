@@ -38,6 +38,7 @@ from kiro_crew.dashboard import (
     chat,
     handlers,
     handlers_channel,
+    handlers_cloud,
     handlers_instances,
     handlers_project,
     openai_compat,
@@ -2704,6 +2705,19 @@ async def start_dashboard(
     app.router.add_post(
         "/api/instances/{id}/send-session", handlers_instances.api_instances_send_session
     )
+
+    # Cloud provisioning (owner-only, user-initiated) — provision a Kiro Crew
+    # instance in the user's own AWS account as a durable launch job.
+    app.router.add_get("/api/cloud/preflight", handlers_cloud.api_cloud_preflight)
+    app.router.add_get("/api/cloud/iam-policy", handlers_cloud.api_cloud_iam_policy)
+    app.router.add_get("/api/cloud/launch", handlers_cloud.api_cloud_launch_list)
+    app.router.add_post("/api/cloud/launch", handlers_cloud.api_cloud_launch_create)
+    app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)
+    app.router.add_post("/api/cloud/launch/{id}/cancel", handlers_cloud.api_cloud_launch_cancel)
+    app.router.add_post("/api/cloud/launch/{id}/signin", handlers_cloud.api_cloud_launch_signin)
+    app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
+    app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)
+    app.router.add_delete("/api/cloud/{tag}", handlers_cloud.api_cloud_destroy)
 
     # Misc (notifications GET/clear and send-message via _register_mcp_routes)
     app.router.add_get("/api/notifications", handlers.api_notifications)

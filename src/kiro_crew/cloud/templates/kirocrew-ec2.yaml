@@ -12,8 +12,8 @@ Description: >-
 Parameters:
   InstanceType:
     Type: String
-    Default: t4g.xlarge
-    Description: EC2 instance type (from the chosen size tier).
+    Default: m7g.2xlarge
+    Description: EC2 instance type (from the chosen size tier; default = Development).
   Architecture:
     Type: String
     Default: arm64
@@ -21,7 +21,7 @@ Parameters:
     Description: CPU architecture; selects the matching Amazon Linux 2023 AMI.
   VolumeSizeGb:
     Type: Number
-    Default: 40
+    Default: 60
     MinValue: 20
     MaxValue: 1000
     Description: gp3 root volume size in GiB.
@@ -83,6 +83,17 @@ Parameters:
     Default: main
     AllowedPattern: "^[A-Za-z0-9_./-]{1,128}$"
     Description: Git ref (branch/tag) to install when cloning.
+  DashboardPort:
+    Type: Number
+    Default: 5476
+    MinValue: 1024
+    MaxValue: 65535
+    Description: >-
+      Port the crew's gateway listens on. The local tunnel MIRRORS this port
+      (the remote gateway only trusts CSRF/WebSocket Origins on its own
+      configured port), so every simultaneously-connected crew needs a distinct
+      value and it must not collide with the operator's own gateway port. The
+      launcher allocates one; 5476 is the default only for a direct deploy.
   AllowSshCidr:
     Type: String
     Default: ""
@@ -318,13 +329,13 @@ Resources:
           RUN_HOME=/home/$RUN_USER
 
           # Provision swap BEFORE install.sh as defense-in-depth headroom. The
-          # light tier (t4g.large = 8 GB) ships with NO swap, and the frontend
-          # build (`tsc -b && vite build` over ~900 npm packages) runs alongside
-          # dnf + a fresh `npm ci` during first boot. The build itself peaks ~3.4
-          # GB (measured), so this is NOT the primary bring-up fix (that was the
-          # SELinux reboot suppressed above) - it is cheap insurance so a tight
-          # 8 GB box degrades to swap instead of a kill. On 16 GB/32 GB tiers it
-          # is unused headroom (harmless). Best-effort: never fail on swap.
+          # frontend build (`tsc -b && vite build` over ~900 npm packages) runs
+          # alongside dnf + a fresh `npm ci` during first boot and peaks ~3.4 GB
+          # (measured). The smallest tier is now 16 GB (8 GB was retired), so this
+          # is NOT the primary bring-up fix (that was the SELinux reboot suppressed
+          # above) - it is cheap insurance so first boot degrades to swap instead
+          # of a kill under a transient spike. Unused headroom on every tier
+          # (harmless). Best-effort: never fail on swap.
           echo "--- provisioning swap (headroom for the vite build) ---"
           if [ ! -e /swapfile ] && [ "$(free -m | awk '/^Swap:/ {print $2}')" = "0" ]; then
             ( fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096 ) 2>/dev/null \
@@ -435,6 +446,11 @@ Resources:
             git clone --depth 1 --branch "${KirocrewRef}" -- "${KirocrewRepo}" kirocrew
           fi
           cd kirocrew
+          # A cloud crew is useless without its dashboard, so require the frontend
+          # build (install.sh treats a build failure as non-fatal by default, for
+          # local CLI users). This makes install.sh exit non-zero on a failed build —
+          # which is what lets the retry below actually re-run it.
+          export KIROCREW_REQUIRE_FRONTEND=1
           # Retry install.sh once on a cold first boot. Observed on the light tier:
           # the very first run can be signal-killed mid-build (no clean error, no
           # kernel OOM) under first-boot contention (cloud-init + SSM registration
@@ -452,6 +468,30 @@ Resources:
           chmod +x /tmp/kcfetch.sh
           chown $RUN_USER /tmp/kcfetch.sh
           sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew install.sh failed"
+
+          echo "--- verifying the dashboard SPA was actually built ---"
+          # install.sh treats a frontend build failure as a NON-FATAL warning (it
+          # falls back to a "legacy" page) -- correct for a local CLI user who may
+          # not even have Node, but wrong for a cloud crew whose entire purpose is
+          # the remote dashboard. With no built SPA the gateway serves a ~782-byte
+          # "not built" stub that still returns HTTP 200, so the health probe below
+          # passes and the stack reaches CREATE_COMPLETE while the crew's pane can
+          # never load -- a green launch that hands the user a dead, billing box.
+          # Make a missing build FATAL here: fail the WaitCondition (folding the
+          # build log into the reason) so the stack rolls back with a real error
+          # instead. install.sh stages website/dist -> src/kiro_crew/static/dist.
+          DIST_INDEX="$RUN_HOME/kirocrew/src/kiro_crew/static/dist/index.html"
+          if [ ! -f "$DIST_INDEX" ]; then
+            # Surface WHY the build failed, straight from the setup log, so the failure
+            # is diagnosable even when the crew installed from a CLONED source whose
+            # install.sh does not itself hard-fail (the default clone-of-main path,
+            # where install.sh treats a build failure as a non-fatal warning). Grep the
+            # actual npm/vite/tsc error out of the log and fold it into the reason --
+            # fail() otherwise only carries the log's tail, which at this point is
+            # install.sh's success banner, not the earlier build error.
+            fe_err="$(grep -aiE 'npm error|npm ERR|error TS[0-9]|vite|Killed|Cannot find module|ENOSPC|no space left|out of memory|FATAL ERROR|Skipping frontend build' "$LOG" 2>/dev/null | tr -d '\r"\\' | tail -n 12 | tr '\n' '|' | tail -c 500)"
+            fail "dashboard frontend build missing (no static/dist). Build errors: ${fe_err:-<none captured; check /var/log/kirocrew-setup.log on the instance>}"
+          fi
 
           echo "--- installing the systemd service ---"
           sudo -u $RUN_USER bash -lc "
@@ -476,6 +516,9 @@ Resources:
           WorkingDirectory=$RUN_HOME
           Environment=HOME=$RUN_HOME
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+          # The local tunnel mirrors this port, so the crew must listen on the
+          # port the launcher allocated for it — not the built-in default.
+          Environment=KIROCREW_PORT=${DashboardPort}
 
           [Install]
           WantedBy=multi-user.target
@@ -483,10 +526,10 @@ Resources:
           systemctl daemon-reload
           systemctl enable --now kirocrew.service || fail "could not start kirocrew.service"
 
-          echo "--- waiting for the gateway to answer on 127.0.0.1:5476 ---"
+          echo "--- waiting for the gateway to answer on 127.0.0.1:${DashboardPort} ---"
           ok=0
           for i in $(seq 1 60); do
-            if curl -fsS -o /dev/null http://127.0.0.1:5476/ 2>/dev/null; then ok=1; break; fi
+            if curl -fsS -o /dev/null http://127.0.0.1:${DashboardPort}/ 2>/dev/null; then ok=1; break; fi
             sleep 5
           done
           [ "$ok" = "1" ] || fail "gateway did not become healthy within 5 minutes"

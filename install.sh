@@ -332,6 +332,7 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
         npm run build 2>>"$_fe_log"
     ) &
     spinner $! "Installing npm packages & building React app…"
+    _fe_ok=0
     if wait $!; then
         _dist_src="$KIROCREW_APP_DIR/website/dist"
         _dist_dst="$KIROCREW_APP_DIR/src/kiro_crew/static/dist"
@@ -340,14 +341,31 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
             mkdir -p "$(dirname "$_dist_dst")"
             cp -R "$_dist_src" "$_dist_dst"
             ok "Frontend built and staged → src/kiro_crew/static/dist"
-        else
-            warn "website/dist not found after build — dashboard will use legacy fallback"
+            _fe_ok=1
         fi
-    else
-        warn "Frontend build failed — dashboard will use legacy fallback"
-        [ -s "$_fe_log" ] && tail -5 "$_fe_log" | while IFS= read -r _line; do detail "$_line"; done
     fi
-    rm -f "$_fe_log"
+    if [ "$_fe_ok" != "1" ]; then
+        # The build did not produce a usable bundle. For a local CLI install this is
+        # non-fatal — the dashboard falls back to a legacy page and the CLI still
+        # works. For a cloud crew the dashboard IS the product, so
+        # KIROCREW_REQUIRE_FRONTEND=1 makes it FATAL: dump the build log and exit
+        # non-zero. That lets the cloud bootstrap RETRY the whole install on the warm
+        # box (first-boot contention — the common cause — self-heals), and if it still
+        # fails the real npm/vite error reaches the failure reason instead of being
+        # swallowed behind a "legacy fallback" warning.
+        if [ -s "$_fe_log" ]; then
+            echo "----- frontend build log (tail) -----"
+            tail -n 20 "$_fe_log"
+            echo "-------------------------------------"
+        fi
+        rm -f "$_fe_log"
+        if [ "${KIROCREW_REQUIRE_FRONTEND:-0}" = "1" ]; then
+            die "Frontend build failed and KIROCREW_REQUIRE_FRONTEND=1 — no static/dist produced (see the build log above)"
+        fi
+        warn "Frontend build failed — dashboard will use legacy fallback"
+    else
+        rm -f "$_fe_log"
+    fi
 else
     warn "Skipping frontend build (Node.js or website/ not available)"
     detail "Install Node.js 22+ (24 LTS recommended) for the full React dashboard experience"

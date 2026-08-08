@@ -366,6 +366,7 @@ def build_deploy_argv(
     allow_ssh_cidr: str = "",
     source_bucket: str = "",
     source_key: str = "",
+    dashboard_port: int = 0,
 ) -> list[str]:
     """Assemble the exact ``aws cloudformation deploy`` argv (also the dry-run output).
 
@@ -383,6 +384,10 @@ def build_deploy_argv(
         f"StackTag={tag}",
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
     ]
+    # Only sent when the caller allocated one, so a direct deploy keeps the
+    # template default rather than being pinned by an implicit 0.
+    if dashboard_port:
+        overrides.append(f"DashboardPort={dashboard_port}")
     # Prefer the S3 source (private-repo safe); else pass git repo/ref fallback.
     if source_bucket:
         overrides.append(f"SourceBucket={source_bucket}")
@@ -420,6 +425,7 @@ def deploy(
     ref: str = "",
     allow_ssh_cidr: str = "",
     ship_source: bool = True,
+    dashboard_port: int = 0,
     disable_rollback: bool = False,
     dry_run: bool = False,
     proc_sink: Optional[Any] = None,
@@ -459,6 +465,7 @@ def deploy(
             allow_ssh_cidr=allow_ssh_cidr,
             source_bucket="<auto>" if ship_source else "",
             source_key=f"{tag}/kirocrew-src.tar.gz" if ship_source else "",
+            dashboard_port=dashboard_port,
         )
         return DeployResult(
             tag=tag,
@@ -517,6 +524,7 @@ def deploy(
         allow_ssh_cidr=allow_ssh_cidr,
         source_bucket=source_bucket,
         source_key=source_key,
+        dashboard_port=dashboard_port,
     )
     # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
     # on the gateway being healthy). "No changes" exits 0 with a message on reuse.

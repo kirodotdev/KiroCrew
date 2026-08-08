@@ -2052,6 +2052,13 @@ class DashboardState:
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)
         self.instances_manager: Any = None  # lazy-init in server.py (SshTunnelManager)
         self.instances_registry: Any = None  # lazy-init in server.py (InstancesRegistry)
+        # Cloud provisioning launch jobs (lazy-init in handlers_cloud).
+        self.cloud_launch_store: Any = None  # LaunchJobStore
+        self.cloud_launch_cancels: Any = None  # dict[str, threading.Event]
+        self.cloud_launch_engine: Any = None  # test-injected LaunchEngine (None -> RealLaunchEngine)
+        self.cloud_launch_sync: bool = False  # tests set True to run launches inline
+        self.cloud_launch_reaped: bool = False  # orphan reap is once per process
+        self.cloud_launch_lock: Any = None  # asyncio.Lock serializing launch creation
         # MCP gateway control plane — wired by GatewayOrchestrator AFTER
         # dashboard init (the broker starts before dashboard_state exists).
         # Read by the /api/mcp-gateway/* handlers off request.app['state'].

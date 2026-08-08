@@ -211,6 +211,64 @@ def session_manager_plugin_install_hint() -> str:
     )
 
 
+def session_manager_plugin_install_command() -> str:
+    """A copy-pasteable install command for THIS host, or "" if none fits.
+
+    The plugin has to exist on the machine running the gateway, and only this
+    process knows what that machine is — a browser showing the dashboard cannot
+    tell (it may be a remote gateway on Linux while the user is on a Mac). So the
+    remedy is resolved here and handed to callers rather than hardcoded in the UI,
+    where a single macOS/Homebrew line would be wrong for every Linux host.
+
+    Packages come from AWS's public distribution bucket, the same source
+    :func:`install_session_manager_plugin` uses. Returns "" when the platform has
+    no one-liner (callers should fall back to the doc URL); in practice the cloud
+    surfaces are POSIX-only, so Darwin and Linux are the reachable cases.
+    """
+    system = platform.system()
+    arch = _normalized_arch()
+    base = "https://s3.amazonaws.com/session-manager-downloads/plugin/latest"
+
+    if system == "Darwin":
+        # Homebrew's cask is the public homebrew/cask one and installs AWS's own
+        # package, so prefer it when brew is actually present — it is shorter and
+        # keeps the plugin upgradable. Otherwise fall back to AWS's pkg directly,
+        # which needs no package manager at all.
+        if shutil.which("brew"):
+            return "brew install --cask session-manager-plugin"
+        url = f"{base}/{'mac_arm64' if arch == 'arm64' else 'mac'}/session-manager-plugin.pkg"
+        # Download into a private mktemp dir (0700, owner-only) rather than a
+        # predictable /tmp path. On a shared host a local user could preplant or
+        # swap `/tmp/session-manager-plugin.pkg` and have the trailing
+        # `sudo installer` run attacker scripts as root; mktemp -d removes both the
+        # predictable name and the sticky-/tmp race. Clean it up afterward.
+        return (
+            'd="$(mktemp -d)"; '
+            f'curl -fsSL -o "$d/session-manager-plugin.pkg" "{url}" '
+            '&& sudo installer -pkg "$d/session-manager-plugin.pkg" -target /; '
+            'rm -rf "$d"'
+        )
+
+    if system == "Linux":
+        if shutil.which("dpkg"):
+            deb = f"{base}/{'ubuntu_arm64' if arch == 'arm64' else 'ubuntu_64bit'}/session-manager-plugin.deb"
+            # Private mktemp dir, not a predictable /tmp path — same root-substitution
+            # concern as the macOS pkg above (`sudo dpkg -i` on an attacker-swappable
+            # file in sticky /tmp). Clean it up afterward.
+            return (
+                'd="$(mktemp -d)"; '
+                f'curl -fsSL -o "$d/session-manager-plugin.deb" "{deb}" '
+                '&& sudo dpkg -i "$d/session-manager-plugin.deb"; '
+                'rm -rf "$d"'
+            )
+        installer = shutil.which("dnf") or shutil.which("yum")
+        if installer:
+            rpm = f"{base}/{'linux_arm64' if arch == 'arm64' else 'linux_64bit'}/session-manager-plugin.rpm"
+            return f'sudo {Path(installer).name} install -y "{rpm}"'
+
+    return ""
+
+
 def install_session_manager_plugin() -> PluginInstallResult:
     """Install the local AWS Session Manager plugin for SSM port-forwarding."""
     if session_manager_plugin_installed():
