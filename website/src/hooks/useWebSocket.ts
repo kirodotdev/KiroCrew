@@ -557,7 +557,14 @@ export function useWebSocket() {
             }
             // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
             if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
+              // Android Chrome throws "Illegal constructor" for page-context
+              // Notification; an uncaught throw here kills the whole message
+              // handler, so the native toast is best-effort.
+              try {
+                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
+              } catch {
+                /* unsupported platform */
+              }
             }
             dispatch(addNotification({
               kind: 'approval',
