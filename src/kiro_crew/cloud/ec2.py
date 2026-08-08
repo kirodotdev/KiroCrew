@@ -486,6 +486,13 @@ def deploy(
     # access needed). Fall back to a git clone only if source shipping is off.
     source_bucket = source_key = ""
     if ship_source:
+        # Build the frontend locally first so the tarball ships a prebuilt
+        # static/dist and the box never has to run an on-box npm build (the
+        # failure mode that launched a dashboard-less box). Best-effort: no
+        # npm on the laptop just means the box builds as before.
+        from kiro_crew import frontend
+
+        frontend.build_and_stage(log=lambda msg: logger.info("cloud launch: %s", msg))
         source_bucket, source_key = source_mod.upload_source(tag, profile, region)
 
     def _cleanup_uploaded_source() -> None:

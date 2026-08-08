@@ -279,7 +279,8 @@ def _probe_dashboard_health(port: int) -> None:
                 print(
                     "⚠️  Warning: gateway is serving a stale dashboard "
                     "(assets missing — likely an update pruned the "
-                    "running install). Restart the gateway to fix.",
+                    "running install). Restart the gateway to fix "
+                    "(on a cloud box: sudo systemctl restart kirocrew).",
                     file=sys.stderr,
                 )
     except Exception:

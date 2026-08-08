@@ -304,12 +304,125 @@ class TestBuildTarball:
             tarball.unlink()
 
     def test_clean_tree_prefers_git_archive(self, monkeypatch, tmp_path):
-        # The fast path (git archive) is still used when the tree is clean.
+        # The fast path (git archive) is still used when the tree is clean —
+        # the tarball is the git-archive output, passed through _inject_dist
+        # (a no-op without a local static/dist, which tmp_path lacks).
         monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
-        sentinel = tmp_path / "archive.tar.gz"
-        sentinel.write_bytes(b"x")
-        monkeypatch.setattr(source, "_use_git_archive", lambda root: sentinel)
-        assert source.build_source_tarball(tmp_path) == sentinel
+
+        def _fake_archive(root):
+            out = tmp_path / "archive.tar.gz"
+            with tarfile.open(out, "w:gz") as tf:
+                payload = tmp_path / "app.py"
+                payload.write_text("x=1\n")
+                tf.add(payload, arcname="app.py")
+            return out
+
+        monkeypatch.setattr(source, "_use_git_archive", _fake_archive)
+        tarball = source.build_source_tarball(tmp_path)
+        try:
+            with tarfile.open(tarball) as tf:
+                assert "app.py" in tf.getnames()
+        finally:
+            tarball.unlink()
+
+
+class TestInjectDist:
+    """``_inject_dist`` ships the git-ignored prebuilt frontend in the tarball."""
+
+    @staticmethod
+    def _make_archive(tmp_path: Path, names: list[str]) -> Path:
+        out = tmp_path / "in.tar.gz"
+        with tarfile.open(out, "w:gz") as tf:
+            for name in names:
+                payload = tmp_path / "payload.txt"
+                payload.write_text("x=1\n")
+                tf.add(payload, arcname=name)
+        return out
+
+    @staticmethod
+    def _make_dist(root: Path) -> Path:
+        dist = root / "src" / "kiro_crew" / "static" / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<html>spa</html>\n")
+        (dist / "assets" / "app.js").write_text("// bundle\n")
+        return dist
+
+    def test_dist_members_injected(self, tmp_path):
+        self._make_dist(tmp_path)
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert "install.sh" in names
+            assert f"{source._DIST_PREFIX}/index.html" in names
+            assert f"{source._DIST_PREFIX}/assets/app.js" in names
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_no_dist_returns_archive_unchanged(self, tmp_path):
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        assert source._inject_dist(archive, tmp_path) == archive
+        assert archive.exists()  # not rewritten/removed
+
+    def test_dist_symlinks_never_shipped(self, tmp_path):
+        dist = self._make_dist(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret beyond the tree\n")
+        link = dist / "linked.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink creation not permitted here")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert not any("linked.txt" in n for n in names)
+            assert not any("outside.txt" in n for n in names)
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_dist_secret_files_still_filtered(self, tmp_path):
+        # allow_dist_under skips only the _EXCLUDE_DIRS ("dist") check — the
+        # credential checks (.env, .npmrc, .pem) still apply inside the bundle.
+        dist = self._make_dist(tmp_path)
+        (dist / ".env").write_text("TOKEN=x\n")
+        (dist / ".npmrc").write_text("//registry/:_authToken=x\n")
+        (dist / "cert.pem").write_text("-----BEGIN-----\n")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert f"{source._DIST_PREFIX}/index.html" in names
+            assert not any(n.endswith(".env") for n in names)
+            assert not any(n.endswith(".npmrc") for n in names)
+            assert not any(n.endswith(".pem") for n in names)
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_exclude_filter_default_still_drops_dist(self):
+        # The prefix allow is opt-in: without allow_dist_under, "dist" members
+        # (e.g. node_modules/pkg/dist/junk.js) stay excluded as before.
+        ti = tarfile.TarInfo("node_modules/pkg/dist/junk.js")
+        assert source._exclude_filter(ti) is None
+        assert source._exclude_filter(ti, allow_dist_under=source._DIST_PREFIX) is None
+        ok = tarfile.TarInfo(f"{source._DIST_PREFIX}/index.html")
+        assert source._exclude_filter(ok) is None  # default unchanged
+        assert source._exclude_filter(ok, allow_dist_under=source._DIST_PREFIX) is ok
+
+    def test_allow_dist_under_does_not_allow_sibling_prefix(self):
+        # The allow is an exact prefix: a path under "dist-evil" is NOT under
+        # "dist", so the allow must not rescue it. This one has no literal "dist"
+        # part so it passes either way — the discriminating case is below.
+        not_under = tarfile.TarInfo("src/kiro_crew/static/dist-evil/x.js")
+        assert source._exclude_filter(not_under, allow_dist_under=source._DIST_PREFIX) is not_under
+        # A member that IS under a "dist" dir but NOT the exact allowed prefix
+        # must stay excluded even when the allow is active.
+        other_dist = tarfile.TarInfo("website/node_modules/pkg/dist/junk.js")
+        assert source._exclude_filter(other_dist, allow_dist_under=source._DIST_PREFIX) is None
 
 
 class TestBucketNaming:

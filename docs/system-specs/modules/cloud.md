@@ -72,7 +72,7 @@ claim that a hostile in-process agent is fully contained.
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM. |
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. |
-| `source.py` | Package the local checkout (`git archive`, tarfile fallback) and upload to a per-account S3 bucket; secret-excluding filter shared by both paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
+| `source.py` | Package the local checkout (`git archive`, tarfile fallback) and upload to a per-account S3 bucket; secret-excluding filter shared by both paths. `_inject_dist` appends the prebuilt `src/kiro_crew/static/dist` (git-ignored, so never tracked-only-shipped) to either tarball path, each member still passed through the secret filter (`allow_dist_under` skips only the `dist` dir-name check for that exact prefix; `.env`/`.pem`/credential-name checks still apply, symlinks never followed). Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
 | `config.py` | Persisted profile / region / tag (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` — bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
 | `ui.py` / `wizard.py` | Terminal UI + the interactive launch flow. `_deploy_with_progress` runs the blocking deploy on a daemon thread and captures the `aws cloudformation deploy` child via a `proc_sink`, so a Ctrl+C on the main (poll) thread terminates it instead of orphaning it (~1800s). An unknown `--size`/`size_key` on the public `launch()` entrypoint yields a clean rc=1 + message, not an uncaught `KeyError`. Resuming a saved stack (`launch` after `stop`) first calls `_ensure_running_and_ssm_ready` — starts a `stopped` instance and waits for SSM `Online` before sign-in/tunnel (which are SSM-only and would otherwise fail); a `terminated` instance fails clean pointing at `--new`. `last_tag` is persisted (`cfg.save()`) **only after** a deploy confirms healthy — a failed first launch leaves no saved pointer, so the next `launch` retries clean instead of resuming a rolled-back/instance-less stack; `_saved_launch_is_usable` additionally ignores a stale saved tag (from an older build) whose stack is in a `_FAILED_STATES` status or has no instance. |
@@ -83,15 +83,23 @@ claim that a hostile in-process agent is fully contained.
 CloudFormation stack, one `aws cloudformation deploy` (change-set based), atomic
 rollback, one-command `delete-stack` teardown. AMI resolves from the public
 `resolve:ssm` Amazon-Linux-2023 alias per arch (no hardcoded AMI ids). A
-`WaitCondition` + `cfn-signal` blocks the deploy until the gateway is healthy; a
-failed bootstrap folds the on-box setup-log tail into the signal reason so the
-cause survives the rollback.
+`WaitCondition` + `cfn-signal` blocks the deploy until the gateway is healthy —
+where healthy means the root URL answers **and** its body lacks the gateway's
+"Dashboard HTML not found" marker (the dashboard-less fallback page is still
+HTTP 200, so a bare status check would bless a frontend-less box). A failed
+bootstrap folds the on-box setup-log tail into the signal reason so the cause
+survives the rollback.
 
 Because the public repo is private, the box can't `git clone` it: the launcher
 packages the local checkout and uploads it to a launcher-owned bucket
 (`kirocrew-src-<account>-<region>`); the instance downloads it with its own IAM
 role (`s3:GetObject` scoped to the single object). A public `git clone` remains
-a fallback when no `SourceBucket` is passed.
+a fallback when no `SourceBucket` is passed. Before packaging, `ec2.deploy`
+best-effort builds the laptop's frontend (`frontend.build_and_stage`) so the
+tarball carries a prebuilt `static/dist`; `install.sh` then skips the on-box
+npm build when that bundle is present, and **fails closed** when the build
+failed AND no dist shipped — a box without the frontend is not a working
+install.
 
 `discover_network` is **egress-kind-aware**, not just "has a default route":
 `_subnet_egress_kinds` classifies each subnet's effective route table (explicit
