@@ -4,13 +4,29 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from kiro_crew.dashboard.cron_inject import inject_cron_result_to_dashboard
+from kiro_crew.session_surface import set_dashboard_surfaced
+
+
+@pytest.fixture(autouse=True)
+def _reset_surface_registry():
+    """inject_cron_result_to_dashboard publishes to the process-global
+    dashboard-surface registry; reset it so keys from these mock states
+    never leak into other tests."""
+    set_dashboard_surfaced(())
+    yield
+    set_dashboard_surfaced(())
 
 
 def _make_state(history_messages=None):
     """Create a mock DashboardState with conversation_log."""
     state = MagicMock()
     slots = {}
+    # Real dict: inject_cron_result_to_dashboard publishes the surface registry
+    # via _sync_dashboard_slots, which iterates state._slots.values().
+    state._slots = slots
 
     def get_or_create_slot(name=None, agent=""):
         if name not in slots:
@@ -113,6 +129,31 @@ class TestInjectCronResultToDashboard:
         job = _make_job()
         inject_cron_result_to_dashboard(state, job, "result")
         state.push_slots_update.assert_called_once()
+
+    def test_publishes_the_tab_to_the_surface_registry(self):
+        """Regression: the cron tab must be surfaced the moment it is created.
+
+        Every gate that asks "does this session have a tab?" — sub-agent event
+        routing, completion injection, widget/question delivery — reads the
+        surface registry via has_dashboard_surface. A created-but-unpublished
+        slot fails those gates until some unrelated slot change republishes,
+        so the first cron run's sub-agents stayed invisible and their results
+        were never injected."""
+        from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+        from kiro_crew.session_surface import (
+            has_dashboard_surface,
+            set_dashboard_surfaced,
+        )
+
+        set_dashboard_surfaced(())
+        try:
+            state = _make_state()
+            job = _make_job(job_id="188f71e5")
+            inject_cron_result_to_dashboard(state, job, "result")
+            assert has_dashboard_surface("cron:188f71e5") is True
+            assert dashboard_slot_key("cron:188f71e5") == "cron-188f71e5"
+        finally:
+            set_dashboard_surfaced(())
 
 
 class TestPersistsResultToConversationLog:

@@ -84,7 +84,7 @@ from kiro_crew.cron_script import resolve_script_path, run_command_sandboxed, ru
 from kiro_crew.dashboard import start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key, subagent_event_slot
 from kiro_crew.dashboard.cron_inject import (
     context_meter_reading,
     inject_cron_result_to_dashboard,
@@ -3670,12 +3670,20 @@ class GatewayOrchestrator:
     def _init_subagents(self) -> None:
         """Initialize the subagent manager."""
 
+        # Per-slot WS events route by EXACT slot-key match in the frontend —
+        # `subagent_event_slot` maps a parent session key to the tab that
+        # displays it (cron-born tabs are `cron-<id>`, channel-born tabs their
+        # transcript stem), falling back to the legacy prefix-strip when no
+        # tab is open. A raw `removeprefix("dashboard:")` here left the
+        # Subagents panel permanently empty for cron/channel-born sessions.
+        _event_slot = subagent_event_slot
+
         async def _broadcast_subagent_status(info: SubagentInfo, event: str) -> None:
             """Broadcast subagent status change via WS for per-slot tracking."""
             if not self.dashboard_state:
                 return
             try:
-                slot = info.parent_session_key.removeprefix("dashboard:")
+                slot = _event_slot(info.parent_session_key)
                 agents = (
                     self.subagent_mgr.running_agents_for(info.parent_session_key)
                     if self.subagent_mgr
@@ -4098,7 +4106,7 @@ class GatewayOrchestrator:
                                 "batch_finished",
                                 {
                                     "batch_id": _batch_id,
-                                    "slot": parent_key.removeprefix("dashboard:"),
+                                    "slot": _event_slot(parent_key),
                                     "total": bp["total"],
                                     "ok": bp["ok"],
                                     "err": bp["err"],
@@ -4776,7 +4784,7 @@ class GatewayOrchestrator:
             agent_id = request_id.removeprefix("spawn:")
             info = self.subagent_mgr.get(agent_id) if self.subagent_mgr is not None else None
             slot = (
-                info.parent_session_key.removeprefix("dashboard:")
+                _event_slot(info.parent_session_key)
                 if info and info.parent_session_key
                 else ""
             )
@@ -4825,7 +4833,7 @@ class GatewayOrchestrator:
         async def _subagent_event(etype: str, info: SubagentInfo, extra: dict) -> None:
             if not self.dashboard_state:
                 return
-            slot_name = info.parent_session_key.removeprefix("dashboard:")
+            slot_name = _event_slot(info.parent_session_key)
             base = {"id": info.id, "slot": slot_name}
             # Batch identity rides every frame when present so the UI can
             # group/aggregate a wave without a lookup table. (Type guard:
