@@ -9373,20 +9373,17 @@
         "copy_command": "Copiar comando",
         "couldn_t_check_for_updates": "No se pudieron buscar actualizaciones",
         "couldn_t_check_for_updates_2": "No se pudieron buscar actualizaciones.",
-        "couldn_t_load_the_changelog": "No se pudo cargar el registro de cambios.",
         "download_failed": "La descarga ha fallado",
         "download_install": "Descargar e instalar",
         "download_the_latest_version": "descargar la última versión",
         "downloaded_and_verified_the_app_restarts_to_fini": "Descargada y verificada. La app se reinicia para terminar la instalación; también puedes salir más tarde y se instalará al cerrar.",
         "downloading": "Descargando...",
-        "hide_full_changelog": "▾ Ocultar el registro de cambios completo",
         "insider": "Insider",
         "install_failed": "No se pudo instalar la actualización",
         "installing_quiet_note": "Instalando — Kiro Crew dejará de responder durante uno o dos minutos y luego se reiniciará solo.",
         "is_available": "está disponible.",
         "loading_changelog": "Cargando el registro de cambios…",
         "manual_install_fallback": "Si la actualización no funciona, puedes {{link}} y reinstalar sobre esta copia. Se conservan tus ajustes, chats y archivos.",
-        "no_changelog_available": "No hay registro de cambios disponible.",
         "not_checked_yet": "Sin comprobar todavía",
         "notify_when_an_update_is_available": "Avisar cuando haya una actualización disponible",
         "open_source_under_the_apache_2_0_license": "Código abierto con licencia Apache 2.0",
@@ -9427,7 +9424,7 @@
         "updating_gateway_restarting": "Actualizando — reiniciando el gateway…",
         "updating_restarts_the_gateway_active_sessions_wi": "Actualizar reinicia el gateway — las sesiones activas se desconectarán brevemente.",
         "v": "v",
-        "view_full_changelog": "▸ Ver el registro de cambios completo",
+        "view_all_releases": "Ver todas las versiones",
         "view_this_commit_on_github": "Ver este commit en GitHub",
         "what_s_new": "Novedades",
         "you_are_on_the_latest_version": "Tienes la última versión.",
@@ -9931,6 +9928,22 @@
         "no_matches_for_query": "No hay resultados para “{{query}}”.",
         "show": "Mostrar",
         "unavailable": "no disponible"
+      },
+      "releases": {
+        "badge_in_progress": "En curso",
+        "detail_no_date": "Fecha desconocida",
+        "detail_on_prerelease": "Tienes la versión preliminar {{version}}",
+        "detail_unreleased": "Aún no publicada",
+        "empty_in_progress": "Todavía no se han escrito las notas de esta versión.",
+        "empty_released": "Esta versión se publicó sin notas.",
+        "list_label": "Versiones",
+        "load_failed": "No se pudieron cargar las notas de la versión.",
+        "loading": "Cargando las versiones…",
+        "row_current_no_notes": "Tu versión · sin notas escritas",
+        "row_no_notes": "Sin notas escritas",
+        "stale_note": "Esta lista proviene de tu compilación ({{version}}) y puede que no incluya entradas más recientes.",
+        "unavailable": "No hay notas de la versión disponibles en esta compilación.",
+        "view_commits": "Ver los commits en GitHub"
       },
       "reportProblemCard": {
         "blurb": "¿Algo no funciona? Envíanos un informe de diagnóstico — antes se eliminan los secretos de los registros.",
@@ -10973,6 +10986,10 @@
       "overview": {
         "description": "Estado del sistema, actividad y uso y memoria de un vistazo",
         "label": "Resumen"
+      },
+      "releases": {
+        "description": "Notas de cada versión publicada",
+        "label": "Versiones"
       },
       "security": {
         "description": "Postura de seguridad, capas de defensa, certificaciones y clasificación de datos",

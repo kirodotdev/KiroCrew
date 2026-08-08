@@ -9259,20 +9259,17 @@
         "copy_command": "Befehl kopieren",
         "couldn_t_check_for_updates": "Suche nach Aktualisierungen fehlgeschlagen",
         "couldn_t_check_for_updates_2": "Suche nach Aktualisierungen fehlgeschlagen.",
-        "couldn_t_load_the_changelog": "Das Änderungsprotokoll konnte nicht geladen werden.",
         "download_failed": "Download fehlgeschlagen",
         "download_install": "Herunterladen & installieren",
         "download_the_latest_version": "die neueste Version herunterladen",
         "downloaded_and_verified_the_app_restarts_to_fini": "Heruntergeladen und verifiziert. Die App startet neu, um die Installation abzuschließen; Sie können sie auch später beenden, dann wird beim Verlassen installiert.",
         "downloading": "Wird heruntergeladen…",
-        "hide_full_changelog": "▾ Vollständiges Änderungsprotokoll ausblenden",
         "insider": "Insider",
         "install_failed": "Die Aktualisierung konnte nicht installiert werden",
         "installing_quiet_note": "Wird installiert — Kiro Crew wird für ein oder zwei Minuten still und startet sich dann selbst neu.",
         "is_available": "ist verfügbar.",
         "loading_changelog": "Änderungsprotokoll wird geladen…",
         "manual_install_fallback": "Wenn die Aktualisierung nicht funktioniert, können Sie {{link}} und über diese Kopie neu installieren. Ihre Einstellungen, Chats und Dateien bleiben erhalten.",
-        "no_changelog_available": "Kein Änderungsprotokoll verfügbar.",
         "not_checked_yet": "Noch nicht geprüft",
         "notify_when_an_update_is_available": "Benachrichtigen, wenn eine Aktualisierung verfügbar ist",
         "open_source_under_the_apache_2_0_license": "Open Source unter der Apache-2.0-Lizenz",
@@ -9313,7 +9310,7 @@
         "updating_gateway_restarting": "Wird aktualisiert — Gateway startet neu…",
         "updating_restarts_the_gateway_active_sessions_wi": "Die Aktualisierung startet das Gateway neu — aktive Sitzungen werden kurz getrennt.",
         "v": "v",
-        "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen",
+        "view_all_releases": "Alle Releases anzeigen",
         "view_this_commit_on_github": "Diesen Commit auf GitHub anzeigen",
         "what_s_new": "Neuigkeiten",
         "you_are_on_the_latest_version": "Sie verwenden die neueste Version.",
@@ -9817,6 +9814,22 @@
         "no_matches_for_query": "Keine Treffer für „{{query}}“.",
         "show": "Anzeigen",
         "unavailable": "nicht verfügbar"
+      },
+      "releases": {
+        "badge_in_progress": "In Arbeit",
+        "detail_no_date": "Datum unbekannt",
+        "detail_on_prerelease": "Sie verwenden die Vorabversion {{version}}",
+        "detail_unreleased": "Noch nicht veröffentlicht",
+        "empty_in_progress": "Für diese Version wurden noch keine Versionshinweise geschrieben.",
+        "empty_released": "Diese Version wurde ohne Versionshinweise veröffentlicht.",
+        "list_label": "Versionen",
+        "load_failed": "Die Versionshinweise konnten nicht geladen werden.",
+        "loading": "Releases werden geladen…",
+        "row_current_no_notes": "Ihre Version · keine Hinweise vorhanden",
+        "row_no_notes": "Keine Hinweise vorhanden",
+        "stale_note": "Diese Liste stammt aus Ihrem Build ({{version}}) und enthält möglicherweise keine neueren Einträge.",
+        "unavailable": "In diesem Build sind keine Versionshinweise verfügbar.",
+        "view_commits": "Commits auf GitHub anzeigen"
       },
       "reportProblemCard": {
         "blurb": "Etwas funktioniert nicht? Senden Sie uns einen Diagnosebericht — Protokolle werden zuvor von Geheimnissen befreit.",
@@ -10852,6 +10865,10 @@
       "overview": {
         "description": "Systemzustand, Aktivität sowie Verbrauch & Erinnerung auf einen Blick",
         "label": "Übersicht"
+      },
+      "releases": {
+        "description": "Versionshinweise zu jeder Version",
+        "label": "Releases"
       },
       "security": {
         "description": "Sicherheitslage, Verteidigungsschichten, Zertifizierungen und Datenklassifizierung",

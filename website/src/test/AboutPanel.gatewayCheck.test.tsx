@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
+import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 
 /** Route the component's three GETs; /api/update/check answers with `check`. */
@@ -44,7 +45,9 @@ function mountWeb() {
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <AboutPanel />
+        <MemoryRouter>
+          <AboutPanel />
+        </MemoryRouter>
       </QueryClientProvider>
     </Provider>,
   )

@@ -423,6 +423,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_log_level,
     api_log_level_get,
     api_logs,
+    api_releases,
     api_stream,
     api_update_apply,
     api_update_auto,

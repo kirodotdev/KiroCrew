@@ -9373,20 +9373,17 @@
         "copy_command": "Copier la commande",
         "couldn_t_check_for_updates": "Impossible de rechercher des mises à jour",
         "couldn_t_check_for_updates_2": "Impossible de rechercher des mises à jour.",
-        "couldn_t_load_the_changelog": "Impossible de charger le journal des modifications.",
         "download_failed": "Échec du téléchargement",
         "download_install": "Télécharger et installer",
         "download_the_latest_version": "télécharger la dernière version",
         "downloaded_and_verified_the_app_restarts_to_fini": "Téléchargée et vérifiée. L'application redémarre pour terminer l'installation ; vous pouvez aussi quitter plus tard et elle s'installera à la fermeture.",
         "downloading": "Téléchargement...",
-        "hide_full_changelog": "▾ Masquer le journal complet des modifications",
         "insider": "Insider",
         "install_failed": "Impossible d'installer la mise à jour",
         "installing_quiet_note": "Installation — Kiro Crew va rester silencieux une minute ou deux, puis redémarrer de lui-même.",
         "is_available": "est disponible.",
         "loading_changelog": "Chargement du journal des modifications…",
         "manual_install_fallback": "Si la mise à jour ne fonctionne pas, vous pouvez {{link}} et réinstaller par-dessus cette copie. Vos paramètres, conversations et fichiers sont conservés.",
-        "no_changelog_available": "Aucun journal des modifications disponible.",
         "not_checked_yet": "Pas encore vérifié",
         "notify_when_an_update_is_available": "Me prévenir quand une mise à jour est disponible",
         "open_source_under_the_apache_2_0_license": "Open source sous licence Apache 2.0",
@@ -9427,7 +9424,7 @@
         "updating_gateway_restarting": "Mise à jour — redémarrage de la passerelle…",
         "updating_restarts_the_gateway_active_sessions_wi": "La mise à jour redémarre la passerelle — les sessions actives seront brièvement déconnectées.",
         "v": "v",
-        "view_full_changelog": "▸ Voir le journal complet des modifications",
+        "view_all_releases": "Voir toutes les versions",
         "view_this_commit_on_github": "Voir ce commit sur GitHub",
         "what_s_new": "Nouveautés",
         "you_are_on_the_latest_version": "Vous utilisez la dernière version.",
@@ -9931,6 +9928,22 @@
         "no_matches_for_query": "Aucun résultat pour “{{query}}”.",
         "show": "Afficher",
         "unavailable": "indisponible"
+      },
+      "releases": {
+        "badge_in_progress": "En cours",
+        "detail_no_date": "Date inconnue",
+        "detail_on_prerelease": "Tu utilises la préversion {{version}}",
+        "detail_unreleased": "Pas encore publiée",
+        "empty_in_progress": "Les notes de version de cette version n'ont pas encore été rédigées.",
+        "empty_released": "Cette version est sortie sans notes de version.",
+        "list_label": "Versions",
+        "load_failed": "Impossible de charger les notes de version.",
+        "loading": "Chargement des versions…",
+        "row_current_no_notes": "Ta version · aucune note rédigée",
+        "row_no_notes": "Aucune note rédigée",
+        "stale_note": "Cette liste provient de ton build ({{version}}) et peut ne pas inclure les entrées plus récentes.",
+        "unavailable": "Aucune note de version n'est disponible dans ce build.",
+        "view_commits": "Voir les commits sur GitHub"
       },
       "reportProblemCard": {
         "blurb": "Quelque chose ne fonctionne pas ? Envoyez-nous un rapport de diagnostic — les secrets sont d’abord masqués dans les journaux.",
@@ -10973,6 +10986,10 @@
       "overview": {
         "description": "État du système, activité, utilisation et mémoire en un coup d'œil",
         "label": "Vue d'ensemble"
+      },
+      "releases": {
+        "description": "Notes de version pour chaque version",
+        "label": "Versions"
       },
       "security": {
         "description": "Posture de sécurité, couches de défense, certifications et classification des données",

@@ -9145,20 +9145,17 @@
         "copy_command": "复制命令",
         "couldn_t_check_for_updates": "无法检查更新",
         "couldn_t_check_for_updates_2": "无法检查更新。",
-        "couldn_t_load_the_changelog": "无法加载更新日志。",
         "download_failed": "下载失败",
         "download_install": "下载并安装",
         "download_the_latest_version": "下载最新版本",
         "downloaded_and_verified_the_app_restarts_to_fini": "已下载并校验。应用将重启以完成安装；你也可以稍后退出，退出时会自动安装。",
         "downloading": "正在下载…",
-        "hide_full_changelog": "▾ 隐藏完整更新日志",
         "insider": "Insider",
         "install_failed": "无法安装更新",
         "installing_quiet_note": "正在安装——Kiro Crew 会安静一两分钟，然后自动重启。",
         "is_available": "可用。",
         "loading_changelog": "正在加载更新日志…",
         "manual_install_fallback": "如果更新无法完成，你可以{{link}}并覆盖安装。你的设置、对话和文件都会保留。",
-        "no_changelog_available": "无可用更新日志。",
         "not_checked_yet": "尚未检查",
         "notify_when_an_update_is_available": "有可用更新时通知我",
         "open_source_under_the_apache_2_0_license": "基于 Apache 2.0 许可证开源",
@@ -9199,7 +9196,7 @@
         "updating_gateway_restarting": "正在更新 — 网关重启中…",
         "updating_restarts_the_gateway_active_sessions_wi": "更新会重启网关 — 活动会话将短暂断开。",
         "v": "v",
-        "view_full_changelog": "▸ 查看完整更新日志",
+        "view_all_releases": "查看全部更新日志",
         "view_this_commit_on_github": "在 GitHub 上查看此提交",
         "what_s_new": "新增内容",
         "you_are_on_the_latest_version": "你已使用最新版本。",
@@ -9703,6 +9700,22 @@
         "no_matches_for_query": "无匹配结果：“{{query}}”。",
         "show": "展开",
         "unavailable": "不可用"
+      },
+      "releases": {
+        "badge_in_progress": "进行中",
+        "detail_no_date": "日期未知",
+        "detail_on_prerelease": "你正在使用预览版 {{version}}",
+        "detail_unreleased": "尚未发布",
+        "empty_in_progress": "此版本的更新日志尚未撰写。",
+        "empty_released": "此版本发布时未附更新日志。",
+        "list_label": "版本",
+        "load_failed": "无法加载更新日志。",
+        "loading": "正在加载更新日志…",
+        "row_current_no_notes": "你的版本 · 未撰写更新日志",
+        "row_no_notes": "未撰写更新日志",
+        "stale_note": "此列表来自你的构建版本（{{version}}），可能不包含更新的条目。",
+        "unavailable": "此构建版本没有可用的更新日志。",
+        "view_commits": "在 GitHub 上查看提交"
       },
       "reportProblemCard": {
         "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",
@@ -10731,6 +10744,10 @@
       "overview": {
         "description": "系统健康状况、活动以及用量与记忆一览",
         "label": "概览"
+      },
+      "releases": {
+        "description": "各版本的更新日志",
+        "label": "更新日志"
       },
       "security": {
         "description": "安全态势、防御层级、认证与数据分级",

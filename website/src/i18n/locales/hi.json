@@ -9259,20 +9259,17 @@
         "copy_command": "कमांड कॉपी करें",
         "couldn_t_check_for_updates": "अपडेट जाँचे नहीं जा सके",
         "couldn_t_check_for_updates_2": "अपडेट जाँचे नहीं जा सके।",
-        "couldn_t_load_the_changelog": "चेंजलॉग लोड नहीं हो सका।",
         "download_failed": "डाउनलोड विफल",
         "download_install": "डाउनलोड और इंस्टॉल",
         "download_the_latest_version": "नवीनतम संस्करण डाउनलोड करें",
         "downloaded_and_verified_the_app_restarts_to_fini": "डाउनलोड और सत्यापित हो गया। इंस्टॉल पूरा करने के लिए ऐप पुनः आरंभ होगा; आप बाद में ऐप बंद भी कर सकते हैं और बंद होने पर यह इंस्टॉल हो जाएगा।",
         "downloading": "डाउनलोड हो रहा है...",
-        "hide_full_changelog": "▾ पूरा चेंजलॉग छिपाएँ",
         "insider": "इनसाइडर",
         "install_failed": "अपडेट इंस्टॉल नहीं हो सका",
         "installing_quiet_note": "इंस्टॉल हो रहा है — Kiro Crew एक-दो मिनट के लिए शांत रहेगा, फिर स्वयं पुनः आरंभ हो जाएगा।",
         "is_available": "उपलब्ध है।",
         "loading_changelog": "चेंजलॉग लोड हो रहा है…",
         "manual_install_fallback": "अगर अपडेट करना काम न करे, तो आप {{link}} और इस कॉपी के ऊपर दोबारा इंस्टॉल कर सकते हैं। आपकी सेटिंग्स, चैट और फ़ाइलें बनी रहती हैं।",
-        "no_changelog_available": "कोई चेंजलॉग उपलब्ध नहीं है।",
         "not_checked_yet": "अभी जाँचा नहीं गया",
         "notify_when_an_update_is_available": "अपडेट उपलब्ध होने पर सूचित करें",
         "open_source_under_the_apache_2_0_license": "Apache 2.0 लाइसेंस के अंतर्गत ओपन सोर्स",
@@ -9313,7 +9310,7 @@
         "updating_gateway_restarting": "अपडेट हो रहा है — गेटवे पुनः आरंभ हो रहा है…",
         "updating_restarts_the_gateway_active_sessions_wi": "अपडेट करने पर गेटवे पुनः आरंभ होता है — सक्रिय सत्र कुछ पल के लिए डिस्कनेक्ट हो जाएँगे।",
         "v": "v",
-        "view_full_changelog": "▸ पूरा चेंजलॉग देखें",
+        "view_all_releases": "सभी रिलीज़ देखो",
         "view_this_commit_on_github": "इस कमिट को GitHub पर देखें",
         "what_s_new": "नया क्या है",
         "you_are_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।",
@@ -9817,6 +9814,22 @@
         "no_matches_for_query": "इसके लिए कोई मिलान नहीं: “{{query}}”।",
         "show": "दिखाएँ",
         "unavailable": "अनुपलब्ध"
+      },
+      "releases": {
+        "badge_in_progress": "प्रगति पर",
+        "detail_no_date": "तारीख़ अज्ञात",
+        "detail_on_prerelease": "तुम प्री-रिलीज़ {{version}} पर हो",
+        "detail_unreleased": "अभी रिलीज़ नहीं हुआ",
+        "empty_in_progress": "इस संस्करण के रिलीज़ नोट्स अभी लिखे नहीं गए हैं।",
+        "empty_released": "यह संस्करण बिना रिलीज़ नोट्स के जारी हुआ।",
+        "list_label": "संस्करण",
+        "load_failed": "रिलीज़ नोट्स लोड नहीं किए जा सके।",
+        "loading": "रिलीज़ लोड हो रहे हैं…",
+        "row_current_no_notes": "तुम्हारा संस्करण · कोई नोट्स नहीं लिखे गए",
+        "row_no_notes": "कोई नोट्स नहीं लिखे गए",
+        "stale_note": "यह सूची तुम्हारे बिल्ड ({{version}}) से आती है और हो सकता है कि इसमें नई प्रविष्टियाँ शामिल न हों।",
+        "unavailable": "इस बिल्ड में कोई रिलीज़ नोट्स उपलब्ध नहीं हैं।",
+        "view_commits": "GitHub पर कमिट देखो"
       },
       "reportProblemCard": {
         "blurb": "कुछ काम नहीं कर रहा? हमें डायग्नोस्टिक रिपोर्ट भेजें — लॉग से सीक्रेट पहले ही हटा दिए जाते हैं।",
@@ -10852,6 +10865,10 @@
       "overview": {
         "description": "सिस्टम स्वास्थ्य, गतिविधि, और उपयोग व मेमोरी एक नज़र में",
         "label": "अवलोकन"
+      },
+      "releases": {
+        "description": "हर संस्करण के रिलीज़ नोट्स",
+        "label": "रिलीज़"
       },
       "security": {
         "description": "सुरक्षा स्थिति, रक्षा की परतें, प्रमाणन और डेटा वर्गीकरण",

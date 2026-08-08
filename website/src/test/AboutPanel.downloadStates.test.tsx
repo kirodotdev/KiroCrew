@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 
 import { store } from '../store'
+import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 
 type UpdateState = Record<string, unknown>
@@ -48,7 +49,9 @@ function mountWithStates(info: Record<string, unknown> = {}) {
   const utils = render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <AboutPanel />
+        <MemoryRouter>
+          <AboutPanel />
+        </MemoryRouter>
       </QueryClientProvider>
     </Provider>,
   )

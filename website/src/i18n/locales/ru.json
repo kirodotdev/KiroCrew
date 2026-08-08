@@ -9487,20 +9487,17 @@
         "copy_command": "Копировать команду",
         "couldn_t_check_for_updates": "Не удалось проверить обновления",
         "couldn_t_check_for_updates_2": "Не удалось проверить обновления.",
-        "couldn_t_load_the_changelog": "Не удалось загрузить список изменений.",
         "download_failed": "Не удалось скачать",
         "download_install": "Скачать и установить",
         "download_the_latest_version": "скачать последнюю версию",
         "downloaded_and_verified_the_app_restarts_to_fini": "Загружено и проверено. Для завершения установки приложение перезапустится; можно также выйти позже — установка произойдёт при выходе.",
         "downloading": "Загрузка...",
-        "hide_full_changelog": "▾ Скрыть полный журнал изменений",
         "insider": "Insider",
         "install_failed": "Не удалось установить обновление",
         "installing_quiet_note": "Установка — Kiro Crew на минуту-две перестанет отвечать, а затем перезапустится сам.",
         "is_available": "доступна.",
         "loading_changelog": "Загрузка списка изменений…",
         "manual_install_fallback": "Если обновление не сработает, вы можете {{link}} и переустановить поверх этой копии. Настройки, чаты и файлы сохранятся.",
-        "no_changelog_available": "Список изменений недоступен.",
         "not_checked_yet": "Ещё не проверялось",
         "notify_when_an_update_is_available": "Уведомлять о доступном обновлении",
         "open_source_under_the_apache_2_0_license": "Открытый код под лицензией Apache 2.0",
@@ -9541,7 +9538,7 @@
         "updating_gateway_restarting": "Обновление — шлюз перезапускается…",
         "updating_restarts_the_gateway_active_sessions_wi": "Обновление перезапускает шлюз — активные сессии на короткое время отключатся.",
         "v": "v",
-        "view_full_changelog": "▸ Показать полный журнал изменений",
+        "view_all_releases": "Посмотреть все выпуски",
         "view_this_commit_on_github": "Посмотреть этот коммит на GitHub",
         "what_s_new": "Что нового",
         "you_are_on_the_latest_version": "У вас установлена последняя версия.",
@@ -10045,6 +10042,22 @@
         "no_matches_for_query": "Нет совпадений для «{{query}}».",
         "show": "Показать",
         "unavailable": "недоступно"
+      },
+      "releases": {
+        "badge_in_progress": "В работе",
+        "detail_no_date": "Дата неизвестна",
+        "detail_on_prerelease": "У вас установлен предварительный выпуск {{version}}",
+        "detail_unreleased": "Ещё не выпущено",
+        "empty_in_progress": "Заметки о выпуске для этой версии ещё не написаны.",
+        "empty_released": "Эта версия вышла без заметок о выпуске.",
+        "list_label": "Версии",
+        "load_failed": "Не удалось загрузить заметки о выпуске.",
+        "loading": "Загрузка выпусков…",
+        "row_current_no_notes": "Ваша версия · заметки не написаны",
+        "row_no_notes": "Заметки не написаны",
+        "stale_note": "Этот список взят из вашей сборки ({{version}}) и может не содержать более новых записей.",
+        "unavailable": "В этой сборке заметки о выпуске недоступны.",
+        "view_commits": "Посмотреть коммиты на GitHub"
       },
       "reportProblemCard": {
         "blurb": "Что-то не работает? Отправьте нам диагностический отчёт — секреты удаляются из логов заранее.",
@@ -11094,6 +11107,10 @@
       "overview": {
         "description": "Состояние системы, активность, расход и память — всё сразу",
         "label": "Обзор"
+      },
+      "releases": {
+        "description": "Заметки о выпуске для каждой версии",
+        "label": "Выпуски"
       },
       "security": {
         "description": "Состояние безопасности, уровни защиты, сертификации и классификация данных",

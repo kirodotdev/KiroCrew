@@ -9259,20 +9259,17 @@
         "copy_command": "কমান্ড কপি করুন",
         "couldn_t_check_for_updates": "আপডেট খোঁজা যায়নি",
         "couldn_t_check_for_updates_2": "আপডেট খোঁজা যায়নি।",
-        "couldn_t_load_the_changelog": "চেঞ্জলগ লোড করা যায়নি।",
         "download_failed": "ডাউনলোড ব্যর্থ হয়েছে",
         "download_install": "ডাউনলোড ও ইনস্টল",
         "download_the_latest_version": "সর্বশেষ সংস্করণ ডাউনলোড",
         "downloaded_and_verified_the_app_restarts_to_fini": "ডাউনলোড ও যাচাই সম্পন্ন। ইনস্টল শেষ করতে অ্যাপটি রিস্টার্ট হবে; আপনি পরে বন্ধ করলেও প্রস্থানের সময় এটি ইনস্টল হয়ে যাবে।",
         "downloading": "ডাউনলোড হচ্ছে...",
-        "hide_full_changelog": "▾ পূর্ণ চেঞ্জলগ লুকাও",
         "insider": "ইনসাইডার",
         "install_failed": "আপডেট ইনস্টল করা যায়নি",
         "installing_quiet_note": "ইনস্টল হচ্ছে — Kiro Crew এক-দুই মিনিটের জন্য নিশ্চুপ থাকবে, তারপর নিজেই রিস্টার্ট হবে।",
         "is_available": "উপলব্ধ।",
         "loading_changelog": "চেঞ্জলগ লোড হচ্ছে…",
         "manual_install_fallback": "আপডেট কাজ না করলে, আপনি {{link}} করে এই কপির উপরেই আবার ইনস্টল করতে পারেন। আপনার সেটিংস, চ্যাট এবং ফাইল অটুট থাকবে।",
-        "no_changelog_available": "কোনো চেঞ্জলগ নেই।",
         "not_checked_yet": "এখনও পরীক্ষা করা হয়নি",
         "notify_when_an_update_is_available": "আপডেট পাওয়া গেলে জানাও",
         "open_source_under_the_apache_2_0_license": "Apache 2.0 লাইসেন্সের অধীনে ওপেন সোর্স",
@@ -9313,7 +9310,7 @@
         "updating_gateway_restarting": "আপডেট হচ্ছে — গেটওয়ে রিস্টার্ট হচ্ছে…",
         "updating_restarts_the_gateway_active_sessions_wi": "আপডেট করলে গেটওয়ে রিস্টার্ট হয় — সক্রিয় সেশনগুলো অল্প সময়ের জন্য সংযোগ হারাবে।",
         "v": "v",
-        "view_full_changelog": "▸ পূর্ণ চেঞ্জলগ দেখো",
+        "view_all_releases": "সব রিলিজ দেখুন",
         "view_this_commit_on_github": "GitHub-এ এই কমিট দেখুন",
         "what_s_new": "নতুন কী আছে",
         "you_are_on_the_latest_version": "আপনি সর্বশেষ সংস্করণ ব্যবহার করছেন।",
@@ -9817,6 +9814,22 @@
         "no_matches_for_query": "কোনো মিল পাওয়া যায়নি: “{{query}}”।",
         "show": "দেখান",
         "unavailable": "অনুপলব্ধ"
+      },
+      "releases": {
+        "badge_in_progress": "চলমান",
+        "detail_no_date": "তারিখ অজানা",
+        "detail_on_prerelease": "আপনি প্রি-রিলিজ {{version}} ব্যবহার করছেন",
+        "detail_unreleased": "এখনো প্রকাশিত হয়নি",
+        "empty_in_progress": "এই সংস্করণের রিলিজ নোট এখনো লেখা হয়নি।",
+        "empty_released": "এই সংস্করণটি কোনো রিলিজ নোট ছাড়াই প্রকাশিত হয়েছে।",
+        "list_label": "সংস্করণ",
+        "load_failed": "রিলিজ নোট লোড করা যায়নি।",
+        "loading": "রিলিজ লোড হচ্ছে…",
+        "row_current_no_notes": "আপনার সংস্করণ · কোনো নোট লেখা হয়নি",
+        "row_no_notes": "কোনো নোট লেখা হয়নি",
+        "stale_note": "এই তালিকাটি আপনার বিল্ড ({{version}}) থেকে এসেছে, তাই এতে নতুন এন্ট্রি না-ও থাকতে পারে।",
+        "unavailable": "এই বিল্ডে কোনো রিলিজ নোট উপলব্ধ নেই।",
+        "view_commits": "GitHub-এ কমিট দেখুন"
       },
       "reportProblemCard": {
         "blurb": "কিছু কাজ করছে না? আমাদের একটি ডায়াগনস্টিক রিপোর্ট পাঠান — লগ থেকে সিক্রেট আগেই মুছে ফেলা হয়।",
@@ -10852,6 +10865,10 @@
       "overview": {
         "description": "এক নজরে সিস্টেমের স্বাস্থ্য, অ্যাক্টিভিটি, এবং ব্যবহার ও মেমরি",
         "label": "ওভারভিউ"
+      },
+      "releases": {
+        "description": "প্রতিটি সংস্করণের রিলিজ নোট",
+        "label": "রিলিজ"
       },
       "security": {
         "description": "নিরাপত্তার অবস্থা, প্রতিরক্ষা স্তর, সার্টিফিকেশন, এবং ডেটা শ্রেণিবিন্যাস",

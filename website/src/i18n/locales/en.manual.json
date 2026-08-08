@@ -3129,14 +3129,12 @@
         "update_error_server": "The update server returned an error.",
         "update_error_server_status": "The update server returned an error (HTTP {{status}}).",
         "update_error_unknown": "Something went wrong. Try checking for updates again.",
-        "hide_full_changelog": "▾ Hide Full Changelog",
         "insider": "Insider",
         "stable": "Stable",
         "update_failed": "Update failed",
         "update_noun": "update",
         "update_now": "Update now",
         "update_to_version": "Update to v{{version}}",
-        "view_full_changelog": "▸ View Full Changelog",
         "channel_help_show": "▸ What's the difference between Stable and Insider?",
         "channel_help_hide": "▾ Hide",
         "channel_explainer_stable": "Tested releases only. Fewer updates, and fewer surprises.",
@@ -3840,6 +3838,10 @@
       "overview": {
         "description": "System health, activity, and usage & memory at a glance",
         "label": "Overview"
+      },
+      "releases": {
+        "description": "Release notes for each version",
+        "label": "Releases"
       },
       "security": {
         "description": "Security posture, defense layers, certifications, and data classification",
