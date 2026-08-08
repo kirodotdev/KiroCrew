@@ -5592,6 +5592,11 @@
       "split_right_d": "Nach rechts teilen (⌘D)",
       "terminal_pane_coming_in_phase_2": "Terminal-Bereich — kommt in Phase 2"
     },
+    "sessionRefStrip": {
+      "n_messages": "{{n}} Nachr.",
+      "remove_reference": "Referenz entfernen",
+      "remove_reference_to": "Referenz auf {{name}} entfernen"
+    },
     "settings": {
       "click_to_reset": "Klicken zum Zurücksetzen",
       "decrease": "Verkleinern",
@@ -7378,6 +7383,7 @@
       "double_click_to_rename": "Doppelklicken zum Umbenennen",
       "drag_to_reorder": "Ziehen zum Umsortieren",
       "drop_here_to_remove_from_folder": "Hier ablegen, um aus dem Ordner zu entfernen",
+      "drop_to_reference_session": "Hier ablegen, um diese Sitzung zu referenzieren",
       "duplicate": "Duplizieren",
       "expand_folder_name": "Ordner {{name}} ausklappen",
       "expand_group_results": "Ergebnisse für {{group}} ausklappen",
@@ -7454,6 +7460,7 @@
       "pinned": "Angepinnt",
       "pinned_sessions_are_kept": "Angepinnte Sitzungen werden beibehalten.",
       "popped_out_to_a_separate_window": "In ein separates Fenster ausgekoppelt",
+      "private_session_cannot_be_referenced": "Private Sitzungen können nicht referenziert werden",
       "rename": "Umbenennen",
       "rename_flag_as_status_or_delete_tags_changes_app": "Tags umbenennen, als Status markieren oder löschen. Änderungen gelten überall, wo Tags angezeigt werden.",
       "resets_its_conversation": "setzt seine Unterhaltung zurück",

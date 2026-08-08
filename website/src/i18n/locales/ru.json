@@ -5760,6 +5760,11 @@
       "split_right_d": "Разделить вправо (⌘D)",
       "terminal_pane_coming_in_phase_2": "Панель терминала — появится на этапе 2"
     },
+    "sessionRefStrip": {
+      "n_messages": "{{n}} сообщ.",
+      "remove_reference": "Удалить ссылку",
+      "remove_reference_to": "Удалить ссылку на {{name}}"
+    },
     "settings": {
       "click_to_reset": "Нажми, чтобы сбросить",
       "decrease": "Уменьшить",
@@ -7580,6 +7585,7 @@
       "double_click_to_rename": "Двойной щелчок — переименовать",
       "drag_to_reorder": "Перетащите, чтобы изменить порядок",
       "drop_here_to_remove_from_folder": "Перетащите сюда, чтобы убрать из папки",
+      "drop_to_reference_session": "Перетащите сюда, чтобы добавить ссылку на эту сессию",
       "duplicate": "Дублировать",
       "expand_folder_name": "Развернуть папку «{{name}}»",
       "expand_group_results": "Развернуть результаты «{{group}}»",
@@ -7660,6 +7666,7 @@
       "pinned": "Закреплено",
       "pinned_sessions_are_kept": "Закреплённые сессии сохраняются.",
       "popped_out_to_a_separate_window": "Открыто в отдельном окне",
+      "private_session_cannot_be_referenced": "На приватные сессии нельзя ссылаться",
       "rename": "Переименовать",
       "rename_flag_as_status_or_delete_tags_changes_app": "Переименуйте тег, отметьте его как статус или удалите. Изменения применяются везде, где показаны теги.",
       "resets_its_conversation": "сбрасывает её диалог",

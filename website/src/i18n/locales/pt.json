@@ -5676,6 +5676,11 @@
       "split_right_d": "Dividir à direita (⌘D)",
       "terminal_pane_coming_in_phase_2": "Painel de terminal — chega na Fase 2"
     },
+    "sessionRefStrip": {
+      "n_messages": "{{n}} msgs",
+      "remove_reference": "Remover referência",
+      "remove_reference_to": "Remover a referência a {{name}}"
+    },
     "settings": {
       "click_to_reset": "Clique para redefinir",
       "decrease": "Diminuir",
@@ -7479,6 +7484,7 @@
       "double_click_to_rename": "Clique duas vezes para renomear",
       "drag_to_reorder": "Arraste para reordenar",
       "drop_here_to_remove_from_folder": "Solte aqui para remover da pasta",
+      "drop_to_reference_session": "Solte aqui para referenciar esta sessão",
       "duplicate": "Duplicar",
       "expand_folder_name": "Expandir a pasta {{name}}",
       "expand_group_results": "Expandir os resultados de {{group}}",
@@ -7557,6 +7563,7 @@
       "pinned": "Fixada",
       "pinned_sessions_are_kept": "As sessões fixadas são mantidas.",
       "popped_out_to_a_separate_window": "Destacada em uma janela separada",
+      "private_session_cannot_be_referenced": "Sessões privadas não podem ser referenciadas",
       "rename": "Renomear",
       "rename_flag_as_status_or_delete_tags_changes_app": "Renomeie, marque como status ou exclua tags. As alterações se aplicam em todos os lugares onde as tags aparecem.",
       "resets_its_conversation": "redefine sua conversa",

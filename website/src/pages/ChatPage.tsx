@@ -123,6 +123,8 @@ import { toSlug } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
+import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
+import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
@@ -819,8 +821,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // survives slot switches / refresh instead of degrading to literal text.
   const pasteDrafts = useRef<Record<string, PasteBlock[]>>(null!)
   if (pasteDrafts.current === null) pasteDrafts.current = loadPasteDrafts()
+  // Per-slot session references staged by dragging a session onto this pane.
+  // Persisted (sessionStorage) so a slot switch restores the refs belonging to
+  // the slot being shown — which is also what stops one slot's staged refs from
+  // smearing onto another.
+  const sessionRefDrafts = useRef<Record<string, SessionRef[]>>(null!)
+  if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current) }, [])
+  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current) }, [])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
     saveDraftsTimer.current = setTimeout(() => { saveDraftsTimer.current = null; saveDrafts() }, DRAFT_SAVE_DEBOUNCE_MS)
@@ -1279,9 +1287,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     for (const [k, v] of Object.entries(storedFiles)) { if (!(k in fileDrafts.current)) fileDrafts.current[k] = v }
     const storedPastes = loadPasteDrafts()
     for (const [k, v] of Object.entries(storedPastes)) { if (!(k in pasteDrafts.current)) pasteDrafts.current[k] = v }
+    const storedSessionRefs = loadSessionRefDrafts()
+    for (const [k, v] of Object.entries(storedSessionRefs)) { if (!(k in sessionRefDrafts.current)) sessionRefDrafts.current[k] = v }
     if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
+    if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
     prevSlot.current = activeSlot
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
     const draftFallback = activeSlot ? drafts.current[activeSlot] ?? '' : ''
@@ -1303,6 +1314,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setPasteBlocks(activeSlot
       ? (pasteDrafts.current[activeSlot] ?? []).map(b => ({ ...b }))
       : [])
+    // Restore the incoming slot's staged session references (copy per record so
+    // the live state and the stored draft never share a reference).
+    setPendingSessions(activeSlot
+      ? (sessionRefDrafts.current[activeSlot] ?? []).map(r => ({ ...r }))
+      : [])
     knowledgeFetchRef.current.clearResults()
     setUploadError('')
     flushDrafts()
@@ -1313,6 +1329,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
+    if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
     flushDrafts()
   }, [flushDrafts])
   // Flush pending draft save on tab close / refresh (debounce may not fire)
@@ -1321,6 +1338,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
       if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
       if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
+      if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
       flushDrafts()
     }
     window.addEventListener('beforeunload', h)
@@ -1386,6 +1404,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // draft key is composerSlotRef; slot-change effect handles that transition.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pasteBlocks, saveDraftsDebounced])
+  // Session references staged by dragging a session from the list onto this
+  // pane. Serialized as LINKS on send — never the referenced transcript.
+  const [pendingSessions, setPendingSessions] = useState<SessionRef[]>([])
+  const pendingSessionsRef = useRef(pendingSessions)
+  useEffect(() => {
+    pendingSessionsRef.current = pendingSessions
+    // Key off composerSlotRef, not activeSlot (see the composerSlotRef note).
+    const s = composerSlotRef.current
+    if (s) {
+      setSessionRefDraft(sessionRefDrafts.current, s, pendingSessions)
+      saveDraftsDebounced()
+    }
+    // draft key is composerSlotRef; slot-change effect handles that transition.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSessions, saveDraftsDebounced])
+  /** Stage a dropped session. Ignores duplicates and overflow (addSessionRef
+   *  returns the same array, so this is a no-op re-render-free path). */
+  const stageSessionRef = useCallback((ref: SessionRef) => {
+    setPendingSessions(prev => addSessionRef(prev, ref))
+  }, [])
+  const unstageSessionRef = useCallback((key: string) => {
+    setPendingSessions(prev => removeSessionRef(prev, key))
+  }, [])
+  /**
+   * Whether a dropped session reference has a composer to land in.
+   *
+   * This predicate exists because the same defect appeared on three separate
+   * surfaces: a drop is accepted, `pendingSessions` is set, and nothing ever
+   * renders it — a silent black hole. Naming the condition once means a fourth
+   * surface cannot quietly reintroduce it.
+   *
+   *  - `splitMode`: SessionGridView renders its own ChatInput per cell and
+   *    ChatPage's composer is unmounted.
+   *  - no `activeSlot`: ChatPage renders an empty state instead of a composer,
+   *    the per-slot persist effect has no key to write under, and the
+   *    slot-restore effect resets `pendingSessions` to `[]` on the next
+   *    activation — so the ref is discarded rather than merely hidden.
+   *
+   * (embed 'sessions' mode needs no clause: it renders no chat pane at all, so
+   * there is no `chatPaneEl` to hand over.)
+   */
+  const canStageSessionRef = !splitMode && !!activeSlot
+  // The chat pane element, held in STATE (not a ref) because ChatSidebar portals
+  // its drop zone into it — a ref's assignment does not re-render, so the portal
+  // would never mount on the first paint.
+  const [chatPaneEl, setChatPaneEl] = useState<HTMLDivElement | null>(null)
   // Advance the composer draft key AFTER the three persist effects above. React
   // runs effects in declaration order, so on a slot switch each persist effect
   // has already written its changed value against the OUTGOING slot before this
@@ -3088,7 +3152,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // widget action pre-filled. Cleared on every send so it can't go stale.
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     widgetPrefillRef.current = null
-    if (!raw && !pendingFilesRef.current.length) return
+    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return
 
     // Sending while STREAMING dictation is live ends the dictation. The panel
     // advertises "Enter to send", so this path is reachable by design — and
@@ -3139,7 +3203,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // failed send can put them back (prepareSendPayload's `filePaths` drops
     // images, which would silently lose them on restore).
     const sentFiles = pendingFilesRef.current.slice()
-    const { txt, displayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
+    // Staged refs belong to the COMPOSER, so only a send that consumes the
+    // composer may carry them. An `optionText` send (a follow-up option click)
+    // supplies its own text and deliberately leaves the composer untouched —
+    // the clear below is skipped for exactly that reason. Consuming refs there
+    // anyway would attach them to an unrelated message AND leave them staged, so
+    // the same links would go out again on the user's next real send.
+    //
+    // Gated on the same condition as the clear, so the two can never disagree in
+    // either direction: no send-without-clear (duplicate) and no clear-without-
+    // send (silent loss). Scoped to refs on purpose — `pendingFiles` has carried
+    // this shape since long before this feature, and changing it here would widen
+    // the PR into pre-existing attachment behaviour.
+    const sentSessionRefs = optionText ? [] : pendingSessionsRef.current.slice()
+    const { txt: typedTxt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
+    // Staged session references become plain markdown links appended to the
+    // message — deliberately a POINTER, not the referenced transcript. Inlining
+    // another session's content would spend a large share of THIS session's
+    // context window in one turn and can trip autocompact, compacting away the
+    // conversation the reference was meant to enrich. The agent follows the link
+    // on demand instead, through a read path that is already bounded, redacted,
+    // and incognito-refusing server-side.
+    //
+    // The link is built by the SAME helper the session menu's "Copy link" uses,
+    // so a referenced session and a hand-copied one are the same string.
+    //
+    // Appended to the sent and displayed text alike: unlike a paste token there
+    // is no collapsed form to preserve in the bubble, so what the user sees is
+    // exactly what was sent. Appending (never splicing) also means paste-token
+    // ranges found earlier in the string are untouched.
+    const txt = appendSessionRefLinks(typedTxt, sentSessionRefs)
+    const displayTxt = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
     // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
     // intact so the user bubble can render them as clickable chips.
     const activePastes = pasteBlocksRef.current
@@ -3156,7 +3250,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     setPrefillHint(false)
     if (!optionText) {
-      setInput(''); setPendingFiles([]); setPasteBlocks([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; saveDrafts() }
+      setInput(''); setPendingFiles([]); setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
@@ -3220,6 +3314,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         if (sameSlot || !uiSlot) newSessionRef.current = forceNew || !uiSlot
         const keepFiles = onScreen ? pendingFilesRef.current : (uiSlot ? fileDrafts.current[uiSlot] ?? [] : [])
         const restoredFiles = [...new Set([...keepFiles, ...sentFiles])]
+        // Session refs merge by key (they carry no sequence to collide on, unlike
+        // pastes), keeping whatever the user staged since the failed send.
+        const keepRefs = onScreen ? pendingSessionsRef.current : (uiSlot ? sessionRefDrafts.current[uiSlot] ?? [] : [])
+        const restoredRefs = mergeSessionRefs(keepRefs, sentSessionRefs)
         const keepPastes = onScreen ? pasteBlocksRef.current : (uiSlot ? pasteDrafts.current[uiSlot] ?? [] : [])
         const keptPasteIds = new Set(keepPastes.map(b => b.id))
         // Collapsed pastes resolve by `seq`, not id, and a paste made while the
@@ -3253,7 +3351,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             ? keepText
             : `${keepText.replace(/\s+$/, '')}\n\n${payload}`
         if (onScreen && uiSlot) {
-          setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles)
+          setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
           // clearPending() above already consumed the knowledge selection, so a
           // retry would otherwise go out WITHOUT the context the user picked. Slot-
           // gated: selection is per-slot, so re-injecting while the user views another
@@ -3329,6 +3427,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           setDraft(drafts.current, uiSlot, restoredText)
           setPasteDraft(pasteDrafts.current, uiSlot, restoredPastes)
           setFileDraft(fileDrafts.current, uiSlot, restoredFiles)
+          setSessionRefDraft(sessionRefDrafts.current, uiSlot, restoredRefs)
           saveDrafts()
         }
         return
@@ -3364,6 +3463,71 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (slot) dispatch(startLocalTurn(slot))
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10_000)
+    /**
+     * Put the composer back the way it was before this send.
+     *
+     * Called from BOTH failure shapes: a transport error (fetch rejected) and a
+     * REJECTED RESPONSE (`!body.queued && !body.ok` — e.g. an expired cookie
+     * answering 403). Both mean the message did not go out, so both must recover
+     * identically; previously only the transport branch restored, so a dropped
+     * connection kept the user's message while a 403 discarded it.
+     *
+     * Persist for `slot` unconditionally (recoverable on disk), but only touch
+     * the live input/blocks when `slot` is the one on screen. Compare against
+     * activeSlotRef.current, NOT the closure's `activeSlot`: a new-session /
+     * forceNew send creates a fresh slot and switches the UI to it, so the
+     * closure value is stale — using it would leave the user's just-typed message
+     * empty on the very session they are now viewing. The ref reflects what is
+     * actually on screen, so it restores visibly for a new-session failure while
+     * still not splicing a targeted send's text into an unrelated slot.
+     *
+     * Restores `typedTxt` — what the user actually TYPED — and brings the staged
+     * references back as chips, rather than restoring the link-appended `txt`.
+     * Restoring `txt` preserved the reference (the link is in the text) but left
+     * it as a raw URL, and re-staging the chips ON TOP of that text would make
+     * the retry append each link a SECOND time. Splitting them puts the composer
+     * back in exactly its pre-send state: chip visible, link appended once on
+     * retry. Paste blocks come back too, or the restored text would show a dead
+     * `[ Paste #N · M lines ]` literal. Shares the create-failure path's merge
+     * rule so a reference staged while the send was in flight is not clobbered.
+     */
+    const restoreComposerAfterFailedSend = () => {
+      if (!slot) return
+      const onScreenNow = slot === activeSlotRef.current
+      const liveRefs = onScreenNow ? pendingSessionsRef.current : (sessionRefDrafts.current[slot] ?? [])
+      const refsBack = mergeSessionRefs(liveRefs, sentSessionRefs)
+      // MERGE, never overwrite. The send is in flight for up to 10s, and the user
+      // can type a fresh message in that window — clobbering it with the failed
+      // payload would lose newer work to recover older. Mirrors the create-failure
+      // path above: keep what is there, append the failed payload unless it is
+      // already the same text, and re-sequence the carried paste blocks so two
+      // blocks cannot claim one `[ Paste #N ]` marker.
+      const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
+      const keepPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
+      const keptIds = new Set(keepPastes.map(b => b.id))
+      const { text: carriedText, blocks: carriedPastes } = remapCarriedBlocks(
+        typedTxt,
+        activePastes.filter(b => !keptIds.has(b.id)),
+        new Set(keepPastes.map(b => b.seq)),
+      )
+      const pastesBack = [...keepPastes, ...carriedPastes]
+      // Joined rather than interpolated: the blank line between the kept draft and
+      // the recovered payload is message structure, not copy, and keeping it out of
+      // a template literal keeps this line off the i18n gate honestly rather than
+      // by exemption (same treatment as appendSessionRefLinks).
+      const textBack = !keepText.trim()
+        ? carriedText
+        : keepText.trim() === carriedText.trim()
+          ? keepText
+          : [keepText.replace(/\s+$/, ''), carriedText].join('\n\n')
+      setDraft(drafts.current, slot, textBack)
+      setPasteDraft(pasteDrafts.current, slot, pastesBack)
+      setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
+      saveDrafts()
+      if (onScreenNow) {
+        setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
+      }
+    }
     try {
       const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload)
       clearTimeout(timeout)
@@ -3371,6 +3535,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (!body.queued && !body.ok) {
         dispatch(setSlotRunning(false))
         dispatch(appendMessage({ role: 'error', content: body.error || i18nT('pages.chatPage.send_failed'), cls: '' }))
+        // The server explicitly accepted neither (`ok` nor `queued`), so nothing
+        // was sent — recovering the composer cannot duplicate a delivered turn.
+        restoreComposerAfterFailedSend()
       }
     } catch (e: unknown) {
       clearTimeout(timeout)
@@ -3379,24 +3546,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       } else {
         dispatch(setSlotRunning(false))
         dispatch(appendMessage({ role: 'error', content: i18nT('pages.chatPage.connection_error'), cls: '' }))
-        // Restore draft so the user doesn't lose their message.
-        // Also restore the paste blocks backing any tokens in `txt`, otherwise
-        // the restored text shows a dead `[ Paste #N · M lines ]` literal.
-        // Persist for `slot` unconditionally (recoverable on disk), but only
-        // touch the live input/blocks when `slot` is the one on screen. Compare
-        // against activeSlotRef.current, NOT the closure's `activeSlot`: a
-        // new-session/forceNew send creates a fresh slot and switches the UI to
-        // it, so the closure value is stale — using it would leave the user's
-        // just-typed message empty on the very session they're now viewing.
-        // The ref reflects what's actually on screen, so it restores the text
-        // visibly for a new-session failure while still not splicing a targeted
-        // send's text into an unrelated slot the user is looking at.
-        if (slot) {
-          setDraft(drafts.current, slot, txt)
-          setPasteDraft(pasteDrafts.current, slot, activePastes)
-          saveDrafts()
-          if (slot === activeSlotRef.current) { setInput(txt); setPasteBlocks(activePastes) }
-        }
+        restoreComposerAfterFailedSend()
       }
     }
     // `send` is deliberately kept stable: it reads volatile values (agent,
@@ -4415,6 +4565,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // (appendSlotMessage) instead of rendering a duplicate.
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true } }))
     steerMutation.mutate(llmTxt)
+    // Staged session references are deliberately NOT part of steering: neither
+    // carried into the payload nor cleared. `steerMutation`'s onError only logs,
+    // so anything cleared here is gone for good — text, attachments and pastes
+    // have always been discarded on a failed steer, and adding refs to that set
+    // would lose a reference the user cannot recover except by dragging again.
+    // Leaving them staged is lossless and predictable: the chip stays in the
+    // composer and rides the next real send, which does have a restore path.
     setInput(''); setPendingFiles([]); setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
@@ -5045,6 +5202,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           onOpenSplit={() => enterSplit(activeSlot)}
           onSelectSlot={() => setSplitMode(false)}
           onOpenSource={revealSourceLink}
+          // Only offer the pane as a drop target when a composer exists to show
+          // the chip — see canStageSessionRef for why this is a named predicate.
+          chatDropTarget={canStageSessionRef ? chatPaneEl : null}
+          onDropSessionRef={stageSessionRef}
         />
       </OverlayDrawer>
       )}
@@ -5055,7 +5216,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: '-0.5rem' } : {}), '--mc-content-width': CONTENT_WIDTH[chatConfig.contentWidth].messages, '--mc-input-width': CONTENT_WIDTH[chatConfig.contentWidth].input } as React.CSSProperties}>
+      <div ref={setChatPaneEl} className={`relative flex flex-col bg-bg min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: '-0.5rem' } : {}), '--mc-content-width': CONTENT_WIDTH[chatConfig.contentWidth].messages, '--mc-input-width': CONTENT_WIDTH[chatConfig.contentWidth].input } as React.CSSProperties}>
         {snipFrame && (
           <SnipOverlay
             frame={snipFrame}
@@ -5587,6 +5748,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               pendingFiles={pendingFiles}
               resizedInfo={resizedInfo}
               onRemoveFile={p => setPendingFiles(prev => prev.filter(x => x !== p))}
+              pendingSessions={pendingSessions}
+              onRemoveSessionRef={unstageSessionRef}
               onFileSelect={path => setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])}
               onFileOpen={handleFileOpen}
               project={currentSlot?.project || ''}

@@ -5508,6 +5508,11 @@
       "split_right_d": "右に分割 (⌘D)",
       "terminal_pane_coming_in_phase_2": "ターミナルペイン — フェーズ 2 で提供予定"
     },
+    "sessionRefStrip": {
+      "n_messages": "{{n}} 件",
+      "remove_reference": "参照を削除",
+      "remove_reference_to": "{{name}} への参照を削除"
+    },
     "settings": {
       "click_to_reset": "クリックしてリセット",
       "decrease": "減少",
@@ -7277,6 +7282,7 @@
       "double_click_to_rename": "ダブルクリックして名前を変更",
       "drag_to_reorder": "ドラッグして並べ替え",
       "drop_here_to_remove_from_folder": "ここにドロップしてフォルダーから外す",
+      "drop_to_reference_session": "ここにドロップしてこのセッションを参照",
       "duplicate": "複製",
       "expand_folder_name": "フォルダー {{name}} を展開",
       "expand_group_results": "{{group}} の結果を展開",
@@ -7351,6 +7357,7 @@
       "pinned": "固定済み",
       "pinned_sessions_are_kept": "固定したセッションは保持されます。",
       "popped_out_to_a_separate_window": "別ウィンドウに切り離しました",
+      "private_session_cannot_be_referenced": "プライベートなセッションは参照できません",
       "rename": "名前を変更",
       "rename_flag_as_status_or_delete_tags_changes_app": "タグの名前変更、ステータス指定、削除ができます。変更はタグが表示されるすべての場所に適用されます。",
       "resets_its_conversation": "会話がリセットされます",
