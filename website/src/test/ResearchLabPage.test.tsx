@@ -9,7 +9,7 @@
  *   - Setup wizard: steps, sub-questions, validation pass/fail, submit
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -214,18 +214,94 @@ describe('ResearchLabPage', () => {
     )
   })
 
-  it('deletes a campaign from the detail view after confirm', async () => {
+  // The delete confirmation must be the in-app dialog, never window.confirm:
+  // the native confirm is synchronous and freezes the renderer's event loop,
+  // so a Quit event queued behind it fires the instant it dismisses — killing
+  // the app before the DELETE request is sent (the campaign survives).
+  it('clicking Delete opens the in-app confirm dialog and never calls window.confirm', async () => {
     vi.mocked(api.researchCampaigns).mockResolvedValue([DONE])
     vi.mocked(api.researchCampaign).mockResolvedValue(DONE)
-    vi.mocked(api.researchDelete).mockResolvedValue({ deleted: true })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const user = userEvent.setup()
     renderPage()
     await waitFor(() => expect(screen.getByText('A finished question about caching strategies')).toBeInTheDocument())
     await user.click(screen.getByText('A finished question about caching strategies'))
     await waitFor(() => expect(screen.getByRole('button', { name: /Delete/i })).toBeInTheDocument())
     await user.click(screen.getByRole('button', { name: /Delete/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Delete campaign?')).toBeInTheDocument()
+    expect(within(dialog).getByText(/This cannot be undone/i)).toBeInTheDocument()
+    expect(confirmSpy).not.toHaveBeenCalled()
+    // Opening the dialog alone must not delete anything.
+    expect(vi.mocked(api.researchDelete)).not.toHaveBeenCalled()
+  })
+
+  it('confirming the dialog fires the DELETE', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([DONE])
+    vi.mocked(api.researchCampaign).mockResolvedValue(DONE)
+    vi.mocked(api.researchDelete).mockResolvedValue({ deleted: true })
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByText('A finished question about caching strategies')).toBeInTheDocument())
+    await user.click(screen.getByText('A finished question about caching strategies'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Delete/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /Delete/i }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /Delete/i }))
     await waitFor(() => expect(vi.mocked(api.researchDelete)).toHaveBeenCalledWith('bbbb2222'))
+  })
+
+  // A failed DELETE must not be silent: the dialog stays open and surfaces the
+  // error inline, so the user gets a message and a retry cue instead of a
+  // campaign that just looks un-deleted (mirrors SchedulePage's delete dialog).
+  it('a failed DELETE keeps the dialog open and shows the error inline', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([DONE])
+    vi.mocked(api.researchCampaign).mockResolvedValue(DONE)
+    vi.mocked(api.researchDelete).mockRejectedValue(new Error('backend unreachable'))
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByText('A finished question about caching strategies')).toBeInTheDocument())
+    await user.click(screen.getByText('A finished question about caching strategies'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Delete/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /Delete/i }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /Delete campaign/i }))
+    await waitFor(() => expect(within(dialog).getByText('backend unreachable')).toBeInTheDocument())
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Retry path stays live: the confirm button is re-enabled after failure.
+    expect(within(dialog).getByRole('button', { name: /Delete campaign/i })).toBeEnabled()
+  })
+
+  it('disables both buttons and shows Deleting… while the DELETE is in flight', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([DONE])
+    vi.mocked(api.researchCampaign).mockResolvedValue(DONE)
+    // Never-resolving promise pins the mutation in its pending state.
+    vi.mocked(api.researchDelete).mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.researchDelete>)
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByText('A finished question about caching strategies')).toBeInTheDocument())
+    await user.click(screen.getByText('A finished question about caching strategies'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Delete/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /Delete/i }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /Delete campaign/i }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: /Deleting/i })).toBeDisabled())
+    expect(within(dialog).getByRole('button', { name: /Cancel/i })).toBeDisabled()
+  })
+
+  it('cancelling the dialog does not delete', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([DONE])
+    vi.mocked(api.researchCampaign).mockResolvedValue(DONE)
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByText('A finished question about caching strategies')).toBeInTheDocument())
+    await user.click(screen.getByText('A finished question about caching strategies'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Delete/i })).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /Delete/i }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: /Cancel/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(vi.mocked(api.researchDelete)).not.toHaveBeenCalled()
   })
 
   it('shows a failed banner with the error and resumes the campaign', async () => {
