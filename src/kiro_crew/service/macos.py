@@ -16,6 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
@@ -161,25 +162,17 @@ class ServiceInstallError(RuntimeError):
 def _write_plist_atomic(contents: str) -> None:
     """Write the plist atomically.
 
-    Writes to a sibling temp file in the same directory, then
-    ``os.replace`` to swap into place. ``os.replace`` is atomic on POSIX
-    when source and destination are on the same filesystem, so a SIGINT
-    or crash mid-write leaves either the old plist or no plist at all —
-    never a partial XML document that ``launchctl load`` would reject.
+    ``os.replace`` is atomic on POSIX when source and destination are on the
+    same filesystem, so a SIGINT or crash mid-write leaves either the old plist
+    or no plist at all, never a partial XML document that ``launchctl load``
+    would reject. Delegates to the shared helper, which also retries the rename
+    on a sharing violation.
     """
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=PLIST_PATH.name + ".", suffix=".tmp", dir=str(PLIST_DIR)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(contents)
-        os.replace(tmp_path, PLIST_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
-        raise
+    # mode=0o600 is NOT optional here. mkstemp created the temp owner-only and
+    # this function never widened it, so the published plist is 0o600 today.
+    # Letting atomic_write fall back to _get_default_mode() (0o666 & ~umask,
+    # normally 0o644) would loosen a file that currently is not world-readable.
+    atomic_write(PLIST_PATH, contents, mode=0o600)
 
 
 def _launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess[str]:

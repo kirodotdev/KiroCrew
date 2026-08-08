@@ -36,6 +36,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.theme_validate import (
     _THEME_ASSET_CSP,
     _THEME_ASSET_CT,
@@ -350,20 +351,13 @@ def _atomic_write_theme_json(target: Path, text: str) -> None:
     reader ever sees either the old or the new complete file, never a partial
     one. Callers MUST hold ``_theme_install_lock(slug)`` so the exists-check and
     this write are one critical section (closes the create/update TOCTOU).
+
+    ``mode=0o600`` is not optional. ``mkstemp`` created the temp owner-only and
+    this function never widened it, so the theme JSON this publishes is 0o600
+    today. Omitting the mode would publish at the umask default (0o644)
+    instead, which is a permission change dressed up as a refactor.
     """
-    fd, tmp = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.stem}-", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, target)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_write(target, text, mode=0o600)
 
 
 def _read_theme_bytes_nolink(slug: str, target: Path) -> bytes | None:

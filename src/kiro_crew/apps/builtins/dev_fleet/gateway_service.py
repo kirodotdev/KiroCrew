@@ -63,12 +63,12 @@ from __future__ import annotations
 
 import os
 import re
-import uuid
 from pathlib import Path
 from typing import Awaitable, Callable, Protocol
 
 # service.* is import-safe on every platform (it only touches launchctl/systemctl
 # when called) and never imports apps.*, so there is no cycle to dodge here.
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.service.common import launchd_live_program
 from kiro_crew.service.macos import (
     PLIST_PATH,
@@ -138,14 +138,13 @@ def atomic_write_text(path: Path, content: str) -> None:
     """Write *content* to *path* atomically (temp sibling + ``os.replace``).
 
     ``os.replace`` is an atomic same-filesystem rename, so a crash or partial
-    write never leaves a half-written service definition behind.
+    write never leaves a half-written service definition behind. Delegates to the
+    shared helper, which also retries the rename on a Windows sharing violation
+    (a concurrent reader holding the target open) rather than surfacing it as a
+    failed write, and writes UTF-8 explicitly rather than at whatever the
+    process locale happens to be.
     """
-    tmp = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
-    try:
-        tmp.write_text(content)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    atomic_write(path, content)
 
 
 class GatewayServiceBackend(Protocol):

@@ -31,7 +31,6 @@ import re
 import shutil
 import stat
 import sys
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +47,7 @@ from kiro_crew.agent_files import (
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
@@ -84,26 +84,19 @@ def _atomic_json_write(path: Path, data: dict) -> None:
     ACP process with exit code 1.  rename() is atomic on Linux when source
     and destination are on the same filesystem.
 
-    Uses mkstemp for a unique temp file per call so concurrent writers
-    to the same path don't clobber each other's temp files.
+    Uses the shared ``atomic_write`` helper, which additionally retries the
+    ``os.replace`` on a Windows sharing violation (a concurrent reader holding
+    the target open) rather than surfacing it as a failed write.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    # The mode is read off the EXISTING file and passed through, so a config an
+    # operator has deliberately tightened survives the rewrite (0o644 for a file
+    # that does not exist yet). atomic_write applies it to the temp before the
+    # payload lands, so the file is never briefly more permissive than intended.
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            try:
-                mode = stat.S_IMODE(path.stat().st_mode)
-            except FileNotFoundError:
-                mode = 0o644
-            platform_compat.fchmod_safe(f.fileno(), mode)
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o644
+    atomic_write(path, json.dumps(data, indent=2) + "\n", mode=mode)
 
 
 # Resolved per call, never captured at import: an import-time binding freezes

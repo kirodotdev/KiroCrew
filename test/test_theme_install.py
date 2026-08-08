@@ -26,7 +26,9 @@ structure/security logic lives, so no aiohttp app is needed. Covers:
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -379,8 +381,12 @@ class TestAtomicWriteThemeJson:
         target = tmp_path / "sunset.json"
         _atomic_write_theme_json(target, json.dumps({"slug": "sunset"}) + "\n")
         assert json.loads(target.read_text("utf-8")) == {"slug": "sunset"}
-        # No leftover ".sunset-*.tmp" scratch files in the directory.
-        assert list(tmp_path.glob(".sunset-*.tmp")) == []
+        # No leftover temp files. This must glob "*.tmp" and not the old
+        # ".sunset-*.tmp" name: the helper's mkstemp sets no prefix, so a
+        # prefixed glob can never match and would assert nothing at all.
+        # "*.tmp" is the stronger check anyway, since pathlib matches dotfiles
+        # and so it still catches a legacy-named leftover.
+        assert list(tmp_path.glob("*.tmp")) == []
 
     def test_overwrite_is_atomic_and_complete(self, tmp_path: Path) -> None:
         target = tmp_path / "sunset.json"
@@ -389,7 +395,7 @@ class TestAtomicWriteThemeJson:
         # os.replace overwrites in place — the new complete content wins, and
         # exactly one file exists (no torn half-write, no temp residue).
         assert json.loads(target.read_text("utf-8")) == {"v": 2}
-        assert list(tmp_path.glob(".sunset-*.tmp")) == []
+        assert list(tmp_path.glob("*.tmp")) == []
 
     def test_failed_write_leaves_no_partial_or_temp(self, tmp_path: Path) -> None:
         target = tmp_path / "sunset.json"
@@ -399,7 +405,21 @@ class TestAtomicWriteThemeJson:
         with pytest.raises(TypeError):
             _atomic_write_theme_json(target, 123)  # type: ignore[arg-type]
         assert not target.exists()
-        assert list(tmp_path.glob(".sunset-*.tmp")) == []
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="asserts POSIX permission bits")
+    def test_published_theme_stays_owner_only(self, tmp_path: Path) -> None:
+        """The helper publishes at the umask default unless told otherwise.
+
+        This function's temp came from ``mkstemp`` and was never widened, so the
+        theme JSON has always landed at 0600. Dropping the explicit ``mode``
+        would widen it to 0644 with no other symptom, so pin the mode here
+        rather than trusting the call site to keep the argument.
+        """
+        target = tmp_path / "sunset.json"
+        _atomic_write_theme_json(target, json.dumps({"slug": "sunset"}) + "\n")
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
 class TestThemeInstallGovernanceAudit:

@@ -40,7 +40,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Literal, TypedDict
 
-from kiro_crew.platform_compat import chmod_safe, file_lock
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.platform_compat import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -193,15 +194,17 @@ def write_queue_atomic(queue_path: str | Path, data: MochiQueue) -> None:
 
     0600 like every other Mochi state file: the queue is the planner's task
     list — what the user asked for and what the pet intends to do — and it was
-    the one file landing at the umask default (0644) because it writes its own
-    temp file rather than going through ``atomic_write`` (whose mkstemp is
-    already owner-only). Same reasoning as the watchlist and stats files.
+    the one file landing at the umask default (0644) because it wrote its own
+    temp file rather than going through ``atomic_write``. It now goes through
+    ``atomic_write`` with an explicit 0600, which also cleans up the temp when
+    the write fails (the hand-rolled version left it behind) and retries the
+    rename on a Windows sharing violation.
     """
-    path = Path(queue_path)
-    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    chmod_safe(tmp_path, 0o600)
-    os.replace(tmp_path, path)
+    atomic_write(
+        Path(queue_path),
+        json.dumps(data, indent=2, ensure_ascii=False),
+        mode=0o600,
+    )
 
 
 # ── Pure functions ─────────────────────────────────────────────────────────
