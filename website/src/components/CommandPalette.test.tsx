@@ -293,6 +293,74 @@ describe('useCommandPalette — global trigger', () => {
     act(() => result.current.close())
     expect(result.current.open).toBe(false)
   })
+
+  it('⌘K does NOT open when focus is inside an xterm terminal', () => {
+    // Simulate an xterm hierarchy: .xterm root > hidden textarea (the keyboard
+    // sink that xterm uses for input, where the event's target would be).
+    const xtermRoot = document.createElement('div')
+    xtermRoot.className = 'xterm'
+    const xtermTextarea = document.createElement('textarea')
+    xtermRoot.appendChild(xtermTextarea)
+    document.body.appendChild(xtermRoot)
+
+    try {
+      const { result } = renderHook(() => useCommandPalette())
+      act(() => {
+        fireEvent.keyDown(xtermTextarea, { key: 'k', metaKey: true })
+      })
+      // The palette must stay closed — xterm should handle ⌘K (clear screen).
+      expect(result.current.open).toBe(false)
+    } finally {
+      xtermRoot.remove()
+    }
+  })
+
+  it('Ctrl+K does NOT open when focus is inside an xterm terminal', () => {
+    // Ctrl+K is isModKEvent (ctrlKey + k), so the narrowed guard still
+    // suppresses it in a terminal — matching the original behavior. The
+    // guard change only unblocks custom chords and double-Shift.
+    const xtermRoot = document.createElement('div')
+    xtermRoot.className = 'xterm'
+    const xtermTextarea = document.createElement('textarea')
+    xtermRoot.appendChild(xtermTextarea)
+    document.body.appendChild(xtermRoot)
+
+    try {
+      const { result } = renderHook(() => useCommandPalette())
+      act(() => {
+        fireEvent.keyDown(xtermTextarea, { key: 'k', ctrlKey: true })
+      })
+      expect(result.current.open).toBe(false)
+    } finally {
+      xtermRoot.remove()
+    }
+  })
+
+  it('custom chord DOES open the palette even when focus is inside an xterm terminal', () => {
+    // The palette guard is scoped to isModKEvent only — custom chords and
+    // double-Shift do NOT conflict with the PTY and must still fire in terminals.
+    localStorage.setItem(
+      QUICK_SEARCH_SHORTCUT_KEY,
+      JSON.stringify({ mode: 'custom', custom: { key: 'p', mod: true } }),
+    )
+    const xtermRoot = document.createElement('div')
+    xtermRoot.className = 'xterm'
+    const xtermTextarea = document.createElement('textarea')
+    xtermRoot.appendChild(xtermTextarea)
+    document.body.appendChild(xtermRoot)
+
+    try {
+      const { result } = renderHook(() => useCommandPalette())
+      act(() => {
+        // Ctrl+P (non-mac: mod = ctrl) from within the terminal — not a mod-k event
+        fireEvent.keyDown(xtermTextarea, { key: 'p', code: 'KeyP', ctrlKey: true })
+      })
+      expect(result.current.open).toBe(true)
+    } finally {
+      xtermRoot.remove()
+      localStorage.removeItem(QUICK_SEARCH_SHORTCUT_KEY)
+    }
+  })
 })
 
 describe('useCommandPalette — Enable shortcuts toggle', () => {

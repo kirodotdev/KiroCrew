@@ -68,6 +68,18 @@ export const DOUBLE_SHIFT_WINDOW_MS = 250
 /** Live read of the global shortcuts toggle (default on; '0' means disabled). */
 const shortcutsEnabled = () => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0'
 
+/**
+ * True when focus is inside an xterm instance (the hidden textarea that xterm
+ * uses as its keyboard sink, or any element inside the `.xterm` root). All
+ * palette shortcuts must pass through when a terminal has focus so the shell
+ * can receive keys like ⌘K (clear screen in many shells via `bind -x`).
+ * Mirrors the identical guard in {@link useKeyboardShortcuts}.
+ */
+function isTerminalTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  return !!el && typeof el.closest === 'function' && !!el.closest('.xterm')
+}
+
 export interface UseCommandPalette {
   /** Whether the palette is currently shown. */
   open: boolean
@@ -97,6 +109,16 @@ export function useCommandPalette(): UseCommandPalette {
       // unaffected. Reset any pending first Shift tap so re-enabling can't
       // resume a half-formed double-tap from across the disabled window.
       if (!shortcutsEnabled()) {
+        lastShiftRef.current = 0
+        return
+      }
+
+      // Let ⌘K / Ctrl+K pass through when a terminal has keyboard focus —
+      // that is the one palette binding that conflicts with the PTY (⌘K clears
+      // the screen; CliPanel's own wrapper handler handles it). Custom chords
+      // and double-Shift do NOT conflict with the PTY, so they must still work
+      // when a terminal is focused. Only the mod-K event is suppressed here.
+      if (isModKEvent(e) && isTerminalTarget(e.target)) {
         lastShiftRef.current = 0
         return
       }
