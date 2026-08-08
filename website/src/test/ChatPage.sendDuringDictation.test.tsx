@@ -9,6 +9,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
+import { VoiceSessionProvider } from '../providers/VoiceSessionProvider'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
@@ -45,27 +46,40 @@ const voice = vi.hoisted(() => {
   return v
 })
 voice.toggle = vi.fn(() => { voice.recording = !voice.recording })
-vi.mock('../hooks/useVoiceInput', () => ({
-  useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; streaming?: boolean }) => {
-    voice.onPartial = opts?.onPartial ?? null
-    voice.onText = onText
-    return ({
-    recording: voice.recording,
-    transcribing: false,
-    sessionOwner: null,
-    streamEnabled: !!opts?.streaming,
-    toggle: voice.toggle,
-    prewarm: vi.fn(),
-    error: null,
-    level: 0,
-    deviceLabel: '',
-    clearError: vi.fn(),
-    partial: '',
-    sampleRef: { current: { level: 0, centroid: 0.5, onset: 0 } },
-    })
-  },
-  voiceInputSupported: true,
-}))
+vi.mock('../hooks/useVoiceInput', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  return {
+    useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; streaming?: boolean }) => {
+      voice.onPartial = opts?.onPartial ?? null
+      voice.onText = onText
+      const [, rerender] = React.useState(0)
+      // Wrap toggle to also trigger a re-render of the host (VoiceSessionProvider)
+      // so the new recording value propagates through context to ChatPage.
+      const wrappedToggle = React.useCallback(() => {
+        voice.toggle()
+        rerender((c: number) => c + 1)
+      }, [rerender])
+      return ({
+        recording: voice.recording,
+        transcribing: false,
+        sessionOwner: null,
+        streamEnabled: !!opts?.streaming,
+        toggle: wrappedToggle,
+        cancel: vi.fn(),
+        switchDevice: vi.fn(),
+        deviceSwitchIsLive: false,
+        prewarm: vi.fn(),
+        error: null,
+        level: 0,
+        deviceLabel: '',
+        clearError: vi.fn(),
+        partial: '',
+        sampleRef: { current: { level: 0, centroid: 0.5, onset: 0 } },
+      })
+    },
+    voiceInputSupported: true,
+  }
+})
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
@@ -120,7 +134,7 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>) {
       <QueryClientProvider client={qc}>
         <Provider store={store}>
           <ThemeProvider>
-            <MemoryRouter><ChatPage /></MemoryRouter>
+            <MemoryRouter><VoiceSessionProvider><ChatPage /></VoiceSessionProvider></MemoryRouter>
           </ThemeProvider>
         </Provider>
       </QueryClientProvider>,

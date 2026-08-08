@@ -11,6 +11,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { store } from './store'
 import { BrandingProvider } from './hooks/useBranding'
 import { ProviderProvider } from './providers'
+import { VoiceSessionProvider } from './providers/VoiceSessionProvider'
 import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
@@ -106,7 +107,7 @@ createRoot(document.getElementById('root')!).render(
                       element={(
                         <BrandingProvider>
                           <ProviderProvider>
-                            <DashboardBootstrap>{withCommitProfiler('app', <App />)}</DashboardBootstrap>
+                            <DashboardBootstrap><VoiceSessionProvider>{withCommitProfiler('app', <App />)}</VoiceSessionProvider></DashboardBootstrap>
                           </ProviderProvider>
                         </BrandingProvider>
                       )}
