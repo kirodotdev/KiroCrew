@@ -4651,10 +4651,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     const trimmed = content.trim()
     if (!trimmed) return
-    // Optimistically update the card; WS event reconciles other clients
-    dispatch(editQueuedMessage({ slot: activeSlot, queue_id: queueId, content: trimmed }))
-    api.editQueuedMessage(activeSlot, queueId, trimmed).catch(() => {})
-  }, [activeSlot, dispatch])
+    // Optimistically update the card; WS event reconciles other clients. On a
+    // failed PATCH, roll back - otherwise the card shows edited text while the
+    // agent still receives the original message.
+    const slot = activeSlot
+    const original = queuedMessages.find(m => (m.meta?.queueId as string) === queueId)?.content
+    dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed }))
+    api.editQueuedMessage(slot, queueId, trimmed).catch(() => {
+      if (original !== undefined) dispatch(editQueuedMessage({ slot, queue_id: queueId, content: original }))
+    })
+  }, [activeSlot, dispatch, queuedMessages])
 
 
   // Search: map message index → displayItems index for scroll-to-match
