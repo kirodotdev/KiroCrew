@@ -533,12 +533,28 @@ class FolderWatcher:
         # copy collapses any matching one-shot upload. O(k*n) over the k changed files
         # rather than a full O(n^2) corpus sweep (knowledge/dedup.py).
         if getattr(self.pipeline, "_dedup_enabled", True):
-            for fpath in ingested_paths:
-                try:
-                    dedup_document(self.store, source_id, file_path=fpath, apply=True)
-                except Exception:
-                    logger.debug("Per-file dedup skipped for %s", fpath, exc_info=True)
+            # Offloaded in ONE hop for all k files: dedup_document rebuilds the entire
+            # entity graph per collapse (_load_graph), so the cost scales with the
+            # corpus AND the number of duplicates found. Run inline it stalls the loop
+            # past the loop-stall watchdog on a large KB and the supervisor respawns
+            # straight into the same scan -- a crash loop. Mirrors the already-offloaded
+            # dedup sites in ingestion.py and watcher.py; the RLock-guarded graph plus
+            # thread-local sqlite connections make this thread-safe.
+            await asyncio.to_thread(self._dedup_ingested, source_id, ingested_paths)
         return stats
+
+    def _dedup_ingested(self, source_id: str, paths: list[str]) -> None:
+        """Targeted cross-source dedup for each freshly ingested path.
+
+        Synchronous by design and always reached through ``asyncio.to_thread`` --
+        it is the blocking half of the scan and must never run on the event loop.
+        One path's failure must not abandon the rest, so each is guarded.
+        """
+        for fpath in paths:
+            try:
+                dedup_document(self.store, source_id, file_path=fpath, apply=True)
+            except Exception:
+                logger.debug("Per-file dedup skipped for %s", fpath, exc_info=True)
 
     def _walk(self, root: str, ignore_patterns: list[str], extra_skip_dirs: set[str],
               include_extensions: set[str] | None = None,
