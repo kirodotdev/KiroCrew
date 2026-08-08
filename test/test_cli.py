@@ -4076,6 +4076,7 @@ class TestDoctorEmbeddings:
         after the CPU arch instead of the packaging rule that dropped the file
         on every arch.
         """
+        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
         self._run_doctor(
             tmp_path,
             monkeypatch,
