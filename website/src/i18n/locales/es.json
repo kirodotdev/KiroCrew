@@ -4456,6 +4456,8 @@
       "search_everywhere": "Buscar en todo",
       "search_for_anything": "Busca cualquier cosa",
       "search_scope": "Buscar {{scope}}…",
+      "retry": "Reintentar",
+      "search_failed": "La búsqueda falló",
       "searching": "Buscando…",
       "tab": "tab"
     },

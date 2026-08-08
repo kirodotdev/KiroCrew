@@ -4385,6 +4385,8 @@
       "search_everywhere": "हर जगह खोजें",
       "search_for_anything": "कुछ भी खोजें",
       "search_scope": "{{scope}} खोजो…",
+      "retry": "पुनः प्रयास करें",
+      "search_failed": "खोज विफल",
       "searching": "खोजा जा रहा है…",
       "tab": "tab"
     },
