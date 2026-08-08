@@ -471,7 +471,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
                       type="button"
                       onClick={h.column.getToggleSortingHandler()}
                       className={`border-transparent bg-transparent px-0 py-0 gap-1 text-[10px] font-medium ${
-                        dir ? 'text-accent' : 'text-muted'
+                        dir ? 'text-accent' : 'text-muted hover:text-text'
                       }`}
                     >
                       {flexRender(h.column.columnDef.header, h.getContext())}

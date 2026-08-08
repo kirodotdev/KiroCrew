@@ -26,8 +26,8 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
         primary
           ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)]'
           : danger
-            ? 'border-border bg-transparent text-muted hover:text-danger hover:border-danger'
-            : 'border-border bg-transparent text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover'
+            ? 'border-border bg-transparent text-text hover:text-danger hover:border-danger'
+            : 'border-border bg-transparent text-text hover:border-border-strong hover:bg-bg-hover'
       }`, className)}
       {...rest}
     >
