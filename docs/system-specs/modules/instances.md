@@ -492,6 +492,51 @@ The legacy `ssm_proxy_ssh_host` helper (registering the id as `ssh_host` behind 
 `~/.ssh/config` `ProxyCommand`) is retained for reference only and is no longer
 used by the managed path.
 
+### Provisioning from the dashboard (`/api/cloud/*`)
+
+The Remote Crew settings page can create an EC2 crew in the user's own AWS
+account without dropping to the CLI. `dashboard/handlers_cloud.py` exposes the
+launcher behind the same owner-only guard as `/api/instances/*`: an
+authenticated owner (`request["user"]`), non-Slack, POSIX only, `403` otherwise.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |
+| `GET /api/cloud/iam-policy` | The minimum IAM policy document to paste into the user's account. |
+| `GET /api/cloud/launch` | List launch jobs, in progress and finished. |
+| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. |
+| `GET /api/cloud/launch/{id}` | Poll one job: per-step state plus the device-code prompt while signing in. |
+| `POST /api/cloud/launch/{id}/cancel` | Request cancellation; honored between steps and inside the sign-in wait. A cancel during provisioning is acted on when the deploy returns, and the stack it created is rolled back. |
+| `POST /api/cloud/launch/{id}/signin` | Acknowledge the device-code prompt (`409` when none is pending). |
+| `POST /api/cloud/{tag}/stop` | Stop the instance behind a stack tag. |
+| `POST /api/cloud/{tag}/start` | Start it again. |
+| `DELETE /api/cloud/{tag}` | Terminate the stack (`wait=False`; a denied human-action check surfaces as `403`). |
+
+**A launch is a durable job, not a request.** It outlives both the HTTP call and
+the browser tab: `cloud/launch_job.py` writes one JSON file per job under
+`<config_dir>/cloud/launch-jobs/` and rewrites it after **every** state
+transition, so progress survives navigating away and a reload. The steps are
+`preflight → provision → signin → connect`, and
+`RealLaunchEngine` (`cloud/launch_engine.py`) binds them to the existing
+`iam.reachability_check`, `ec2.deploy`, `login.start_device_login` and
+`connect.register_instance` — the dashboard path adds no AWS logic of its own,
+and registration lands in this registry exactly as the CLI's does.
+
+**A restart does not resume a launch — it terminalizes it.** The worker is a
+daemon thread, so a gateway restart takes it with the process while the job file
+still reads `running`. `LaunchJobStore.reap_orphans()` runs on first store use in
+a new process and marks every non-terminal job it does not own as `failed`
+("interrupted"), because the alternative is worse than an error: a progress card
+that can never advance, and a `cancel` that returns 200 while signalling a thread
+that no longer exists. Ownership is tracked (`adopt()`) so a live process never
+reaps its own in-flight jobs. The CloudFormation stack may well have completed in
+AWS, so the message points the user at their crew list rather than implying
+nothing was created.
+
+Because the gateway cannot answer the device login on the user's behalf, a job
+parks in `awaiting_signin` with the verification URL and user code exposed as
+job state until the owner confirms it in the browser.
+
 ### What is reachable through which mechanism
 
 | Need | Where it goes |

@@ -42,7 +42,7 @@ const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
 }
 
 /** Human-friendly duration ("3h 12m", "45m", "30s"). */
-function humanizeSecs(secs: number): string {
+export function humanizeSecs(secs: number): string {
   if (secs <= 0) return fmtUnit(0, 'second', { maximumFractionDigits: 0 })
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
@@ -51,7 +51,7 @@ function humanizeSecs(secs: number): string {
   return fmtUnit(secs, 'second', { maximumFractionDigits: 0 })
 }
 
-function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
+export function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
   const dot = STATE_DOT[status.state] ?? 'bg-muted'
   return (
     <span className="inline-flex items-center gap-1.5 text-[13px] text-muted">
@@ -62,7 +62,7 @@ function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
   )
 }
 
-function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPorts: number[] }) {
+export function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPorts: number[] }) {
   const [name, setName] = useState('')
   const [method, setMethod] = useState<'ssh' | 'ssm'>('ssh')
   const [sshHost, setSshHost] = useState('')
