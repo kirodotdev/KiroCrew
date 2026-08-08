@@ -153,6 +153,24 @@ export const BasePathCtx = createContext<string | null>(null)
 export const CompactImagesCtx = createContext<boolean>(false)
 
 /**
+ * A per-message token appended to local image URLs.
+ *
+ * `/api/file-raw?path=…` addresses a file by PATH, so every impression of a file
+ * an agent rewrites across turns resolves to one URL — and a browser treats one
+ * URL in one document as one resource. The second `<img>` is then served from the
+ * in-document memory cache with no network request at all, so the new message
+ * paints the OLD bytes. Measured in Chrome: without a distinct URL the edited
+ * file is never re-fetched, and no HTTP cache header changes that — `ETag`,
+ * `Cache-Control: no-cache` and even `no-store` are not consulted, because the
+ * request is never made.
+ *
+ * Making the URL per-message gives each impression its own cache entry, so a new
+ * message shows the current bytes while an earlier one keeps what it fetched.
+ * Stable within a message, so re-renders and streaming do not re-request.
+ */
+export const ImageVersionCtx = createContext<string | null>(null)
+
+/**
  * Per-consumer override for rendered markdown LINKS.
  *
  * A provider returns its own element for the hrefs it wants to own, or null to
@@ -683,6 +701,7 @@ function ImgWithFallback({
   const [loaded, setLoaded] = useState(false)
   const basePath = useContext(BasePathCtx)
   const compact = useContext(CompactImagesCtx)
+  const version = useContext(ImageVersionCtx)
   if (!src) return null
   const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.')
     || (basePath && !src.startsWith('http'))
@@ -694,6 +713,10 @@ function ImgWithFallback({
     } else {
       url = `/api/file-raw?path=${encodeURIComponent(src)}`
     }
+    // See ImageVersionCtx: without this every impression of a rewritten file
+    // shares one cache entry and a new message renders the previous bytes. The
+    // backend reads only `path`, so the extra parameter is inert server-side.
+    if (version) url += `&v=${encodeURIComponent(version)}`
   } else {
     url = src
   }
@@ -1696,6 +1719,10 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           lightbox scoping on the div above is unaffected) and lives in this module
           so a caller that mocks it in tests never needs to re-export the context. */}
       <CompactImagesCtx.Provider value={compactImages}>
+      {/* ImageVersionCtx: scopes local image URLs to this message so an agent
+          rewriting one file across turns is not served the previous bytes from
+          the in-document resource cache. */}
+      <ImageVersionCtx.Provider value={messageTs ?? null}>
         {blocks.map((block, i) => (
           // Key on startLine (stable across streaming) instead of block.type, so
           // a code -> diff reclassification mid-stream doesn't unmount the
@@ -1720,6 +1747,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             softBreaks={softBreaks}
           />
         ))}
+      </ImageVersionCtx.Provider>
       </CompactImagesCtx.Provider>
       </PathActionCtx.Provider>
       </PathProbeCtx.Provider>

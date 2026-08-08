@@ -270,8 +270,15 @@ export default [
               // A URL query built from an already-encoded value, e.g.
               // `${PATH}?id=${encodeURIComponent(x)}`. A request path is a server
               // contract; translating it would 404. Full-string for the same reason as
-              // above; the literals that reach the linter here are `?id=` and `?since=`.
-              String.raw`^\?[a-z_]+=$`,
+              // above; the literals that reach the linter here are `?id=`, `?since=`
+              // and `&v=`.
+              //
+              // The leading character is `[?&]`, not `?` alone: a CONTINUATION
+              // parameter is exactly the same server contract as the first one, and a
+              // URL carrying two parameters has to spell one of them with `&`. The
+              // shape stays just as tight — prose takes neither a leading `?`/`&` nor
+              // a trailing `=`, so this still reports real copy.
+              String.raw`^[?&][a-z_]+=$`,
 
               // A catalog KEY assembled at runtime, e.g.
               // `apps.crewCompanion.state.${slot}`. Translating a key would break the
