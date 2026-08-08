@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
+import functools
 import json
 import logging
 import os
 import re
 import subprocess
+import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from aiohttp import web
@@ -23,6 +26,7 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
@@ -54,6 +58,13 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.security import ENV_VAR_REFERENCE_RE as _ENV_VAR_REFERENCE_RE
+from kiro_crew.security import MCP_ENV_SECRET_VALUE_RE as _MCP_ENV_SECRET_VALUE_RE
+from kiro_crew.security import env_key_is_credential_like as _env_key_is_credential_like
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_credentials,
+)
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
@@ -614,6 +625,740 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     return web.json_response([a.to_dict() for a in agents])
 
 
+# ── Agent Template authoring (POST /api/agents/installed) ──
+
+# Lowercase-safe filename charset: the name doubles as the on-disk file stem
+# (``{name}.json``), so the charset must exclude path separators, ``..`` runs
+# that could traverse, and anything Windows rejects in a filename. Writing the
+# stem equal to the spec ``name`` also guarantees list_agents() classifies the
+# result as user-owned ("builtin"), never as a package file.
+_TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+# Tool references: plain built-ins ("fs_read"), MCP server mounts ("@server"),
+# per-tool grants ("@server/tool"), and app-scoped servers ("@app:server").
+_TOOL_REF_RE = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._:/@-]{0,199}$")
+
+_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+MAX_TEMPLATE_DESCRIPTION_CHARS = 2000
+MAX_TEMPLATE_PROMPT_CHARS = 100_000
+MAX_TEMPLATE_TOOLS = 200
+MAX_TEMPLATE_MCP_SERVERS = 20
+MAX_TEMPLATE_MCP_ARGS = 100
+MAX_TEMPLATE_DENIED_COMMANDS = 500
+MAX_TEMPLATE_RESOURCES = 100
+MAX_TEMPLATE_STRING_CHARS = 2000
+
+# Only shape-validated keys are copied into an mcpServers entry. An allowlist
+# (rather than pass-through) keeps the authoring endpoint from becoming a
+# vector for smuggling arbitrary structures into a spec kiro-cli executes.
+_MCP_SERVER_ALLOWED_KEYS = frozenset({"command", "args", "env", "timeout"})
+
+
+def _reserved_template_names() -> frozenset[str]:
+    """Names the creator may never claim: framework-owned stems + built-ins."""
+    stems = {Path(f).stem for f in OWNED_KIRO_AGENT_FILES}
+    stems.add("default")
+    return frozenset(stems)
+
+
+def _template_field_error(field: str, message: str, code: str) -> web.Response:
+    """400 carrying the offending ``field`` so the form can keep the draft."""
+    return web.json_response({"error": message, "code": code, "field": field}, status=400)
+
+
+def _str_list_or_none(
+    value: Any, field: str, *, max_items: int, item_re: re.Pattern[str] | None = None
+) -> tuple[list[str] | None, web.Response | None]:
+    """Validate an optional list-of-strings field; ``(value, error)`` result."""
+    if value is None:
+        return None, None
+    if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+        return None, _template_field_error(
+            field, f"{field} must be a list of strings", "field_invalid"
+        )
+    if len(value) > max_items:
+        return None, _template_field_error(
+            field, f"at most {max_items} {field} entries", "too_many_entries"
+        )
+    for s in value:
+        if not s or len(s) > MAX_TEMPLATE_STRING_CHARS:
+            return None, _template_field_error(
+                field,
+                f"{field} entries must be 1-{MAX_TEMPLATE_STRING_CHARS} characters",
+                "field_invalid",
+            )
+        if item_re is not None and not item_re.fullmatch(s):
+            return None, _template_field_error(
+                field, f"invalid {field} entry: {s[:80]}", "field_invalid"
+            )
+    return list(dict.fromkeys(value)), None
+
+
+def _validate_mcp_servers(value: Any) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Validate the optional ``mcpServers`` object; ``(value, error)`` result."""
+    if value is None:
+        return None, None
+    if not isinstance(value, dict):
+        return None, _template_field_error(
+            "mcpServers", "mcpServers must be an object", "field_invalid"
+        )
+    if len(value) > MAX_TEMPLATE_MCP_SERVERS:
+        return None, _template_field_error(
+            "mcpServers", f"at most {MAX_TEMPLATE_MCP_SERVERS} MCP servers", "too_many_entries"
+        )
+    out: dict[str, Any] = {}
+    for srv_name, srv in value.items():
+        if not isinstance(srv_name, str) or not _MCP_SERVER_NAME_RE.fullmatch(srv_name):
+            return None, _template_field_error(
+                "mcpServers", f"invalid MCP server name: {str(srv_name)[:80]}", "field_invalid"
+            )
+        if not isinstance(srv, dict):
+            return None, _template_field_error(
+                "mcpServers", f"MCP server '{srv_name}' must be an object", "field_invalid"
+            )
+        unknown = set(srv) - _MCP_SERVER_ALLOWED_KEYS
+        if unknown:
+            return None, _template_field_error(
+                "mcpServers",
+                f"MCP server '{srv_name}' has unsupported keys: {', '.join(sorted(unknown))}",
+                "field_invalid",
+            )
+        command = srv.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None, _template_field_error(
+                "mcpServers", f"MCP server '{srv_name}' needs a non-empty command", "field_invalid"
+            )
+        entry: dict[str, Any] = {"command": command.strip()}
+        args = srv.get("args")
+        if args is not None:
+            if (
+                not isinstance(args, list)
+                or len(args) > MAX_TEMPLATE_MCP_ARGS
+                or not all(isinstance(a, str) and len(a) <= MAX_TEMPLATE_STRING_CHARS for a in args)
+            ):
+                return None, _template_field_error(
+                    "mcpServers",
+                    f"MCP server '{srv_name}' args must be a list of strings",
+                    "field_invalid",
+                )
+            for i, arg in enumerate(args):
+                # Args land verbatim in the persisted JSON AND the server's
+                # argv — the same no-credentials contract as env values.
+                # Screen every arg's content, plus credential-named flags
+                # (``--token X`` / ``--token=X``) carrying a literal value;
+                # ``${VAR}`` references and metadata flags (``--token-file``)
+                # stay allowed, exactly like env keys.
+                if _MCP_ENV_SECRET_VALUE_RE.search(arg) or redact_credentials(arg)[1]:
+                    return None, _template_field_error(
+                        "mcpServers",
+                        f"MCP server '{srv_name}' args contain a credential-shaped value",
+                        "env_secret_rejected",
+                    )
+                if not arg.startswith("--"):
+                    continue
+                flag, sep, inline_val = arg[2:].partition("=")
+                if not _env_key_is_credential_like(flag):
+                    continue
+                value = inline_val if sep else (args[i + 1] if i + 1 < len(args) else "")
+                if value and not _ENV_VAR_REFERENCE_RE.fullmatch(value.strip()):
+                    return None, _template_field_error(
+                        "mcpServers",
+                        f"MCP server '{srv_name}' args pass a literal secret to {arg[:40]}",
+                        "env_secret_rejected",
+                    )
+            entry["args"] = list(args)
+        env = srv.get("env")
+        if env is not None:
+            if not isinstance(env, dict) or not all(
+                isinstance(k, str)
+                and isinstance(v, str)
+                and 0 < len(k) <= MAX_TEMPLATE_STRING_CHARS
+                and len(v) <= MAX_TEMPLATE_STRING_CHARS
+                for k, v in env.items()
+            ):
+                return None, _template_field_error(
+                    "mcpServers",
+                    f"MCP server '{srv_name}' env must map strings to strings",
+                    "field_invalid",
+                )
+            for env_key, env_val in env.items():
+                # ${VAR} / $VAR references defer to the server's process
+                # environment — nothing literal is persisted, so they are the
+                # supported way to give a template's MCP server a credential
+                # (matching what hand-authored agent files already do).
+                if _ENV_VAR_REFERENCE_RE.fullmatch(env_val.strip()):
+                    continue
+                if _env_key_is_credential_like(env_key):
+                    return None, _template_field_error(
+                        "mcpServers",
+                        f"MCP server '{srv_name}' env key '{env_key[:64]}' looks like a "
+                        "credential; use a ${VAR} reference to the server's process "
+                        "environment instead of a literal value",
+                        "env_secret_rejected",
+                    )
+                if _MCP_ENV_SECRET_VALUE_RE.search(env_val) or redact_credentials(env_val)[1]:
+                    return None, _template_field_error(
+                        "mcpServers",
+                        f"MCP server '{srv_name}' env value for '{env_key[:64]}' looks like "
+                        "a credential; use a ${VAR} reference to the server's process "
+                        "environment instead of a literal value",
+                        "env_secret_rejected",
+                    )
+            entry["env"] = dict(env)
+        timeout = srv.get("timeout")
+        if timeout is not None:
+            if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+                return None, _template_field_error(
+                    "mcpServers",
+                    f"MCP server '{srv_name}' timeout must be a positive integer",
+                    "field_invalid",
+                )
+            entry["timeout"] = timeout
+        out[srv_name] = entry
+    return out, None
+
+
+def _build_template_spec(body: dict[str, Any]) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Validate a create-template payload into a writable kiro agent spec.
+
+    Returns ``(spec, None)`` on success or ``(None, error_response)``. The
+    ``skills`` key is validated for shape here but mapped to ``skill://``
+    resources by the caller (it needs the enumerated catalog). Every rejection
+    names the offending field so the client can surface it without discarding
+    the rest of the draft.
+    """
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return None, _template_field_error("name", "name is required", "name_required")
+    if not _TEMPLATE_NAME_RE.fullmatch(name):
+        return None, _template_field_error(
+            "name",
+            "name must be 1-64 chars: lowercase letters, digits, '.', '_' or '-', starting with a letter or digit",
+            "name_invalid",
+        )
+    if name in _reserved_template_names():
+        return None, _template_field_error("name", f"'{name}' is a reserved name", "name_reserved")
+
+    spec: dict[str, Any] = {"name": name}
+
+    description = body.get("description")
+    if description is not None:
+        if not isinstance(description, str) or len(description) > MAX_TEMPLATE_DESCRIPTION_CHARS:
+            return None, _template_field_error(
+                "description",
+                f"description must be a string of at most {MAX_TEMPLATE_DESCRIPTION_CHARS} characters",
+                "field_invalid",
+            )
+        if description.strip():
+            spec["description"] = description.strip()
+
+    model = body.get("model")
+    if model is not None:
+        if not isinstance(model, str):
+            return None, _template_field_error("model", "model must be a string", "field_invalid")
+        # "" / "auto" mean "let the backend pick" — expressed by omitting the key.
+        if model and model != "auto":
+            spec["model"] = model
+
+    prompt = body.get("prompt")
+    if prompt is not None:
+        if not isinstance(prompt, str) or len(prompt) > MAX_TEMPLATE_PROMPT_CHARS:
+            return None, _template_field_error(
+                "prompt",
+                f"prompt must be a string of at most {MAX_TEMPLATE_PROMPT_CHARS} characters",
+                "field_invalid",
+            )
+        if prompt.strip():
+            stripped = prompt.strip()
+            if stripped.startswith("file://"):
+                # kiro-cli treats a ``file://`` prompt as a URI and reads that
+                # file into model context on agent start (set_mode) — a
+                # template naming ``~/.ssh/id_rsa`` here would exfiltrate the
+                # key through the system prompt. Same vetting as resources.
+                prompt_path = os.path.expanduser(stripped[len("file://") :])
+                if ".." in PurePosixPath(prompt_path.replace("\\", "/")).parts:
+                    # A relative ``..`` resolves against the agent's RUNTIME
+                    # working directory — unknowable here, so no static anchor
+                    # can vet it (``../.ssh/id_rsa`` from ``~/project`` reads
+                    # the real key). Reject traversal outright.
+                    return None, _template_field_error(
+                        "prompt",
+                        f"prompt file URI must not contain '..': {stripped[:80]}",
+                        "path_traversal",
+                    )
+                if not os.path.isabs(prompt_path):
+                    prompt_path = str(Path.home() / prompt_path)
+                if is_sensitive_path(prompt_path):
+                    return None, _template_field_error(
+                        "prompt",
+                        f"prompt file URI points at a sensitive path: {stripped[:80]}",
+                        "sensitive_path",
+                    )
+            spec["prompt"] = prompt
+
+    tools, err = _str_list_or_none(
+        body.get("tools"), "tools", max_items=MAX_TEMPLATE_TOOLS, item_re=_TOOL_REF_RE
+    )
+    if err:
+        return None, err
+    if tools is not None:
+        # An explicit empty list is meaningful to kiro-cli (an agent with NO
+        # tools), so it is preserved rather than dropped.
+        spec["tools"] = tools
+
+    allowed, err = _str_list_or_none(
+        body.get("allowedTools"), "allowedTools", max_items=MAX_TEMPLATE_TOOLS, item_re=_TOOL_REF_RE
+    )
+    if err:
+        return None, err
+    if allowed:
+        # ``allowedTools`` is kiro-cli's own per-agent auto-approval field —
+        # the same knob every shipped agent spec and hand-authored
+        # ~/.kiro/agents file already sets. The dashboard caller is the
+        # machine owner (authenticated session, full config write access), so
+        # exposing the field here grants nothing the owner cannot already do
+        # by editing the JSON on disk; runtime guardrails still apply when the
+        # agent executes.
+        spec["allowedTools"] = allowed
+
+    mcp_servers, err = _validate_mcp_servers(body.get("mcpServers"))
+    if err:
+        return None, err
+    if mcp_servers:
+        spec["mcpServers"] = mcp_servers
+
+    resources, err = _str_list_or_none(
+        body.get("resources"), "resources", max_items=MAX_TEMPLATE_RESOURCES
+    )
+    if err:
+        return None, err
+    if resources:
+        # skill:// mappings must go through the ``skills`` catalog keys — the
+        # enumeration is the security boundary that keeps written skill paths
+        # inside the discovered skill trees (see enumerate_skill_catalog).
+        # file:// entries are additionally screened: a template pointing
+        # kiro-cli at ``~/.ssh`` or ``~/.aws`` would load those files into
+        # model context on every agent start. Two rules, both fail-closed:
+        #   1. the static prefix (everything before the first glob char) must
+        #      not be a sensitive path;
+        #   2. a GLOBBED resource rooted at or above ``$HOME`` is rejected
+        #      outright — ``file://~/**`` or ``file://~/.*/**`` can expand
+        #      into the credential dotfile directories regardless of what the
+        #      static prefix looks like.
+        home_raw = Path.home()
+        for r in resources:
+            if not r.startswith("file://"):
+                return None, _template_field_error(
+                    "resources",
+                    "resources entries must be file:// URIs; use skills for skill:// mappings",
+                    "field_invalid",
+                )
+            raw = r[len("file://") :]
+            if any(c in raw for c in "*?["):
+                # Wildcards are rejected outright in dialog-authored
+                # resources: a glob's expansion set is decided at CONSUMPTION
+                # time in the agent's filesystem, where symlinks planted
+                # after authoring (``~/projects/link -> ~``) can pull a
+                # sensitive file into an innocent-looking pattern. No static
+                # authoring-time check can close that, so the dialog keeps
+                # to literal paths; hand-authored JSON retains globs with the
+                # existing runtime protections.
+                return None, _template_field_error(
+                    "resources",
+                    f"resources entries must be literal paths (no wildcards): {r[:80]}",
+                    "glob_not_allowed",
+                )
+            expanded = os.path.expanduser(raw)
+            if ".." in PurePosixPath(expanded.replace("\\", "/")).parts:
+                # Same contract as the prompt URI: ``..`` resolves against
+                # the runtime working directory, which authoring-time checks
+                # cannot see. Literal traversal-free paths only.
+                return None, _template_field_error(
+                    "resources",
+                    f"resources entry must not contain '..': {r[:80]}",
+                    "path_traversal",
+                )
+            if not os.path.isabs(expanded):
+                # A relative resource resolves against whatever working
+                # directory the agent RUNS with — unknowable at authoring
+                # time, so checking it against the gateway CWD (below) is
+                # not enough: ``file://.aws/credentials`` looks harmless
+                # from the gateway but reads the real credential file the
+                # moment the template starts with ``$HOME`` as its working
+                # directory. The sensitive locations are home-relative by
+                # definition, so vet the relative form against that
+                # worst-case anchor too.
+                home_sim = str(home_raw / expanded) if expanded else str(home_raw)
+                if is_sensitive_path(home_sim):
+                    return None, _template_field_error(
+                        "resources",
+                        f"resources entry points at a sensitive path: {r[:80]}",
+                        "sensitive_path",
+                    )
+            if is_sensitive_path(expanded):
+                return None, _template_field_error(
+                    "resources",
+                    f"resources entry points at a sensitive path: {r[:80]}",
+                    "sensitive_path",
+                )
+        spec["resources"] = resources
+
+    denied, err = _str_list_or_none(
+        body.get("deniedCommands"), "deniedCommands", max_items=MAX_TEMPLATE_DENIED_COMMANDS
+    )
+    if err:
+        return None, err
+    if denied:
+        spec["toolsSettings"] = {"execute_bash": {"deniedCommands": denied}}
+
+    skills = body.get("skills")
+    if skills is not None:
+        if not isinstance(skills, list) or not all(isinstance(s, str) for s in skills):
+            return None, _template_field_error(
+                "skills", "skills must be a list of strings", "field_invalid"
+            )
+        if len(skills) > MAX_AGENT_SKILLS:
+            return None, _template_field_error(
+                "skills", f"at most {MAX_AGENT_SKILLS} skills per agent", "too_many_entries"
+            )
+
+    return spec, None
+
+
+async def api_agents_installed_create(request: web.Request) -> web.Response:
+    """POST /api/agents/installed — author a new user-owned agent template.
+
+    Validates the complete template, rejects duplicate or reserved names, maps
+    catalog skill keys to ``skill://`` resources through the enumerated catalog
+    (never by joining caller strings onto a path), and writes the new spec
+    atomically as ``~/.kiro/agents/{name}.json``. The file stem equals the spec
+    ``name``, so discovery classifies it as user-owned ("builtin") — package
+    and framework ownership rules are untouched.
+    """
+    # Late-bound on purpose (the file-wide pattern — see the identical imports
+    # in the PATCH/install handlers): resolving at call time is the seam tests
+    # use to monkeypatch ``kiro_crew.agent.kiro_agents_dir_path``; a module-
+    # scope binding would freeze the real path at import time.
+    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
+
+    if request.get("app"):
+        # A read-scoped app token allowlisted for this PATH must not gain the
+        # POST: template creation persists MCP commands and auto-approved
+        # tools — dashboard-user-only, like the computer-use keystone write.
+        _audit_capability("capability_agent_template_create", "denied", str(request.get("app")))
+        return web.json_response(
+            {"error": "dashboard user required", "code": "app_forbidden"}, status=403
+        )
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
+
+    state: DashboardState = request.app["state"]
+    loop = asyncio.get_running_loop()
+
+    # _build_template_spec touches the filesystem (Path.resolve() and the
+    # is_sensitive_path()/path_contains_sensitive() candidate-form expansion
+    # for every resources entry) — on stalled or network-backed storage those
+    # synchronous calls would block the gateway event loop and heartbeat, so
+    # the whole validation pass runs on the discovery pool.
+    spec, err = await loop.run_in_executor(
+        discovery_executor(), functools.partial(_build_template_spec, body)
+    )
+    if err is not None:
+        return err
+    assert spec is not None
+    name = spec["name"]
+
+    async with _get_config_lock():
+        # kiro_agents_dir_path() resolves through the filesystem (KIRO_HOME on
+        # a stalled mount would block Path.resolve()) — off-loop like every
+        # other filesystem touch in this handler.
+        target = await asyncio.to_thread(lambda: kiro_agents_dir_path() / f"{name}.json")
+
+        # Uniqueness is by agent identity, not just the target filename: a
+        # package file ``pkg--foo.json`` whose spec names "foo" claims the name
+        # even though ``foo.json`` does not exist. The scan globs and reads
+        # every spec — filesystem work a large or network-backed agents dir
+        # can stretch past the loop-stall watchdog, so it runs on the same
+        # discovery pool as /api/agents/installed, never on the event loop.
+        def _name_taken() -> bool:
+            if target.exists():
+                # ANY existing file under the target name is a conflict —
+                # even an empty one (a peer's in-flight write, an external
+                # writer's just-created file, or a crash remnant). Deleting
+                # or reusing it could destroy a concurrent writer's template;
+                # a rare crash remnant is the user's to remove, surfaced by
+                # the 409 message.
+                return True
+            for f in kiro_agents_dir_path().glob("*.json"):
+                try:
+                    # A symlink planted in the agents dir must not let this
+                    # scan read a protected file (mirrors list_agents):
+                    # resolve first, skip anything that escapes into a
+                    # sensitive location.
+                    if is_sensitive_path(str(f.resolve())):
+                        continue
+                    existing = json.loads(f.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    # ValueError covers both malformed JSON and a non-UTF-8
+                    # file (UnicodeDecodeError) — neither may 500 the create.
+                    continue
+                if isinstance(existing, dict) and (existing.get("name") == name or f.stem == name):
+                    return True
+            return False
+
+        if await loop.run_in_executor(discovery_executor(), _name_taken):
+            return web.json_response(
+                {
+                    "error": f"agent '{name}' already exists",
+                    "code": "name_exists",
+                    "field": "name",
+                },
+                status=409,
+            )
+
+        mapped: list[str] = []
+        skills = body.get("skills")
+        if skills:
+            # Same executor offload as the detail PATCH: the mapping enumerates
+            # the skill roots, which is filesystem work the event loop must not
+            # absorb. Nothing is written when any key is unknown.
+            mapped, unknown = await loop.run_in_executor(
+                discovery_executor(), apply_skill_mapping, spec, target, state, list(skills)
+            )
+            if unknown:
+                return web.json_response(
+                    {
+                        "error": "unknown skills",
+                        "code": "unknown_skills",
+                        "field": "skills",
+                        "skills": unknown[:20],
+                    },
+                    status=400,
+                )
+
+        # This handler persists a WHOLE agent config object, which makes it a
+        # whole-config writer under the governance contract (see
+        # sanitize_agent_config_governance): a ceiling-governed ref written
+        # into ``allowedTools`` here would auto-approve past the PreToolUse
+        # gate when the agent runs. Sanitize immediately before persisting,
+        # exactly like the browser-setup convergence writer. FAIL CLOSED: if
+        # the sanitizer itself errors we cannot know whether the spec carries
+        # a governed grant, so refuse the create rather than persist a config
+        # that would bypass the ceiling for the template's lifetime. (An
+        # ungoverned host is a clean no-op inside the sanitizer, not an
+        # exception, so this path only fires on real plumbing failures.)
+        try:
+            # Late-bound on purpose, matching the sibling whole-config writer
+            # above: call-time resolution is the seam the fail-closed tests
+            # use to monkeypatch the sanitizer.
+            from kiro_crew.platform.governance import sanitize_agent_config_governance
+
+            # Offloaded: the filter resolves the ceiling AND scans the profile
+            # directory per ref (ProfileStore._ensure_fresh fingerprints
+            # ~/.kiro/crew/profiles with iterdir+stat), synchronous filesystem
+            # work — running it inline would stall the aiohttp event loop for
+            # the duration, exactly like the whole-config writer above.
+            await asyncio.to_thread(sanitize_agent_config_governance, spec)
+        except Exception:  # noqa: BLE001 — unknown sanitizer state must not persist
+            logger.warning("governance sanitize failed during template create", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "governance check unavailable; template not created",
+                    "code": "governance_unavailable",
+                },
+                status=503,
+            )
+
+        if spec.get("allowedTools"):
+            # Every grant that SURVIVED governance sanitization is a
+            # persisted auto-approval: the named tool runs prompt-free in
+            # every session spawned from this template. The middleware SEL
+            # line only records the request path, so name each grant
+            # explicitly — the fact an incident responder needs (same
+            # rationale as _audit_capability for package installs).
+            _audit_capability(
+                "capability_agent_template_auto_approve",
+                "granted",
+                f"{spec['name']}:{','.join(spec['allowedTools'])}",
+            )
+
+        def _exclusive_write() -> None:
+            # Two properties, both required:
+            #   EXCLUSIVE — if anyone created ``{name}.json`` after the
+            #   ``_name_taken`` scan, publication must fail (409), never
+            #   silently overwrite or delete their file. Nothing that already
+            #   exists is ever unlinked.
+            #   ATOMIC — no observer may see a partial or empty
+            #   ``{name}.json``: the COMPLETE content is written to a
+            #   same-directory temp file first, then published in one step.
+            # Publication is ``os.link`` — atomic AND exclusive (fails with
+            # FileExistsError on any existing target), with no pre-claim, so
+            # a crash at any point leaves only an orphan temp file, never an
+            # empty/partial target. On filesystems without hardlink support
+            # (EPERM/ENOTSUP/EXDEV) fall back to an O_EXCL claim followed by
+            # ``os.replace`` of our own claim — same exclusivity, with the
+            # documented narrow crash window between claim and publish.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(target.parent), prefix=f".{name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(spec, indent=2) + "\n")
+                os.chmod(tmp_name, 0o600)
+                # No fallback: on the rare filesystem without hardlink
+                # support the OSError propagates as a clean 500 and NO
+                # target exists — strictly better than any claim-first
+                # scheme, whose crash window strands an empty target that
+                # wedges the name (GPT round-27).
+                os.link(tmp_name, target)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_name)
+
+        try:
+            await loop.run_in_executor(None, _exclusive_write)
+        except FileExistsError:
+            return web.json_response(
+                {
+                    "error": f"agent '{name}' already exists",
+                    "code": "name_exists",
+                    "field": "name",
+                },
+                status=409,
+            )
+        except OSError as exc:
+            logger.warning("failed to write agent template %s", target, exc_info=True)
+            return web.json_response(
+                {"error": f"failed to write agent file: {exc}", "code": "write_failed"}, status=500
+            )
+
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response(
+        {"ok": True, "name": name, "filename": f"{name}.json", "skills": mapped}, status=201
+    )
+
+
+async def api_agents_installed_update(request: web.Request) -> web.Response:
+    """PUT /api/agents/installed/{name} — full-replace a user-owned agent template.
+
+    Same validation as POST (create), but overwrites the existing file instead
+    of refusing duplicates. The URL name must match the body name. Only user-
+    owned templates (filename == ``{name}.json``) can be updated; package and
+    framework agents are rejected.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path  # noqa: F811
+
+    url_name = request.match_info["name"]
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
+
+    # The body name must match the URL name — no renaming via PUT.
+    body_name = body.get("name", "")
+    if body_name != url_name:
+        return web.json_response(
+            {"error": "body name must match URL name", "code": "name_mismatch", "field": "name"},
+            status=400,
+        )
+
+    state: DashboardState = request.app["state"]
+    loop = asyncio.get_running_loop()
+
+    spec, err = await loop.run_in_executor(
+        discovery_executor(), functools.partial(_build_template_spec, body)
+    )
+    if err is not None:
+        return err
+    assert spec is not None
+    name = spec["name"]
+
+    async with _get_config_lock():
+        target = await asyncio.to_thread(lambda: kiro_agents_dir_path() / f"{name}.json")
+
+        # Only allow update of user-owned templates (file stem == name).
+        if not target.exists():
+            return web.json_response(
+                {"error": f"agent '{name}' not found", "code": "not_found"}, status=404
+            )
+
+        # Verify it is user-owned, not a package or framework agent.
+        try:
+            json.loads(target.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return web.json_response(
+                {"error": "could not read existing template", "code": "read_failed"}, status=500
+            )
+        if target.name in ("kirocrew.json", "kirocrew-lite.json"):
+            return web.json_response(
+                {"error": "cannot modify framework agents", "code": "forbidden"}, status=403
+            )
+
+        mapped: list[str] = []
+        skills = body.get("skills")
+        if skills:
+            mapped, unknown = await loop.run_in_executor(
+                discovery_executor(), apply_skill_mapping, spec, target, state, list(skills)
+            )
+            if unknown:
+                return web.json_response(
+                    {
+                        "error": "unknown skills",
+                        "code": "unknown_skills",
+                        "field": "skills",
+                        "skills": unknown[:20],
+                    },
+                    status=400,
+                )
+
+        try:
+            from kiro_crew.platform.governance import sanitize_agent_config_governance
+
+            await asyncio.to_thread(sanitize_agent_config_governance, spec)
+        except Exception:  # noqa: BLE001
+            logger.warning("governance sanitize failed during template update", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "governance check unavailable; template not updated",
+                    "code": "governance_unavailable",
+                },
+                status=503,
+            )
+
+        if spec.get("allowedTools"):
+            _audit_capability(
+                "capability_agent_template_auto_approve",
+                "granted",
+                f"{spec['name']}:{','.join(spec['allowedTools'])}",
+            )
+
+        # Never persist KiroCrew bookkeeping into the kiro spec.
+        spec.pop("model_managed", None)
+        spec.pop("cc_model", None)
+        target.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response(
+        {"ok": True, "name": name, "filename": f"{name}.json", "skills": mapped}
+    )
+
+
 def _normalize_model_key(name: str) -> str:
     """Canonical key for de-duping CC model ids across spelling variants.
 
@@ -832,8 +1577,11 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
             # After "auto", never before it: "auto" is the configured default in
             # the general case and leads the list.
             merged.insert(
-                1 if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
-                else 0,
+                (
+                    1
+                    if merged and _normalize_model_key(merged[0].get("model_name", "")) == "auto"
+                    else 0
+                ),
                 {
                     "model_name": canonical_default,
                     "display_name": canonical_default,

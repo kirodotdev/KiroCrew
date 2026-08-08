@@ -54,6 +54,22 @@ system prompt, tools, MCP servers, and permissions.
 }
 ```
 
+### Creating a template from the dashboard
+
+Open **Agent Capabilities → Agent Templates** and click **Create template**.
+The authoring dialog covers the common agent model surface: name and
+description, model, system prompt, skill mappings (written as `skill://`
+resources through the same catalog the Skills editor uses), tools with
+per-tool auto-approve, inline command-based MCP server definitions, extra
+`file://` resources, and denied-command guardrails. URL-based
+(Streamable-HTTP) MCP servers and other advanced spec fields still require
+editing the JSON file directly. Saving validates the complete template,
+rejects duplicate or reserved names, and writes `~/.kiro/agents/{name}.json`
+atomically — the new
+template is immediately available in the list and in the Crew template
+selector. Framework-owned and package-installed templates keep their existing
+ownership protections.
+
 ## Managing Agents
 
 The dashboard Agents page shows all installed agents with their source
@@ -89,6 +105,8 @@ Resolution rules:
 | custom | none | none — the agent brings its own |
 | custom | mapped | only the mapped skills |
 
+The creation dialog accepts only literal `file://` paths (no wildcards);
+globbed resources remain a hand-authored JSON feature. Existing
 `file://` resources (steering globs) are never touched by the editor, and
 hand-authored `skill://` entries the editor cannot express — wildcards like
 `skill://~/.kiro/skills/*/SKILL.md`, or paths outside the known skill roots —

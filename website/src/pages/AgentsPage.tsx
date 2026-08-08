@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
+import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown, Plus, Pencil, Copy } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
 import { api } from '../api/client'
@@ -9,6 +9,7 @@ import Clickable from '../components/Clickable'
 import { SourceBadge, StatCard, PageHeader, EmptyState, Btn, Input } from '../components/ui'
 import ModelDropdownList from '../components/ModelDropdownList'
 import AgentSkillsEditor from '../components/AgentSkillsEditor'
+import AgentTemplateCreator from '../components/AgentTemplateCreator'
 import { LAYOUT } from '../components/layout'
 import InfoTip from '../components/InfoTip'
 import { useProvider } from '../providers'
@@ -136,6 +137,21 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
 
   const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null)
   const modelOptions = useAvailableModels()
+  const [creatorOpen, setCreatorOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<any>(null)
+  const [cloneMode, setCloneMode] = useState(false)
+  // A just-created template is selected as soon as its detail loads, so the
+  // authoring flow lands the user on the inspector view of what they made.
+  const onTemplateCreated = async (name: string) => {
+    setCreatorOpen(false)
+    setEditTarget(null)
+    setCloneMode(false)
+    refetchInstalled()
+    try {
+      const d = await api.agentDetail(name)
+      setSelectedAgent(d)
+    } catch { /* list refresh alone still shows the new row */ }
+  }
   const { open: modelDropOpen, setOpen: setModelDropOpen, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelOptions)
   // Roving-focus keyboard nav for the model dropdown (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onModelListKeyDown } = useListboxKeyboard({
@@ -195,9 +211,21 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
           <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm flex items-center justify-center py-10 gap-2 text-muted text-sm">
             <Hourglass className="lucide-inline animate-pulse" /> {i18nT('pages.agentsPage.loading_agents')}
           </div>
-        ) : installed.length > 0 && (
+        ) : installed.length === 0 ? (
+          <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm">
+            <EmptyState
+              icon={<Bot className="lucide-inline" />}
+              title={i18nT('pages.agentsPage.no_agent_templates_installed')}
+              subtitle={i18nT('pages.agentsPage.create_a_template_to_define_a_reusable_capabilit')}
+              action={<Btn primary onClick={() => { setEditTarget(null); setCloneMode(false); setCreatorOpen(true) }}><Plus className="lucide-inline" /> {i18nT('pages.agentsPage.create_template')}</Btn>}
+            />
+          </div>
+        ) : (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 animate-rise shadow-sm hover:border-border-strong hover:shadow-md transition-all overflow-hidden">
-            <div className="px-5 pt-5 pb-3"><h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={i18nT('pages.agentsPage.agent_templates_grouped_by_package_update_and_un')} /></h3></div>
+            <div className="px-5 pt-5 pb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-text-strong flex items-center gap-1.5">{i18nT('pages.agentsPage.installed_agents')} <InfoTip text={i18nT('pages.agentsPage.agent_templates_grouped_by_package_update_and_un')} /></h3>
+              <Btn onClick={() => { setEditTarget(null); setCloneMode(false); setCreatorOpen(true) }} className="text-[12px] px-2.5 py-1"><Plus className="lucide-inline" /> {i18nT('pages.agentsPage.create_template')}</Btn>
+            </div>
             <div className="flex" style={{ height: `${LAYOUT.AGENT_LIST_HEIGHT}px` }}>
               {/* Agent list — scrollable */}
               <div className="w-[280px] shrink-0 border-r border-border overflow-y-auto p-2">
@@ -291,6 +319,26 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       pass `&&` and then throw React error #31 as a JSX child —
                       the same whole-tab crash `modelLabel` guards on `model`. */}
                   {typeof selectedAgent.description === 'string' && selectedAgent.description && <div className="text-[13px] text-muted mb-3 leading-relaxed">{selectedAgent.description}</div>}
+                  {/* Edit / Clone buttons for user-owned templates */}
+                  {(() => {
+                    const entry = installed.find(a => a.name === selectedAgent.name)
+                    const isUserOwned = entry && entry.source !== 'package' && entry.source !== 'kirocrew'
+                    if (!isUserOwned) return null
+                    const toEditTarget = () => ({
+                      ...selectedAgent,
+                      deniedCommands: (selectedAgent.toolsSettings as any)?.execute_bash?.deniedCommands || [],
+                    })
+                    return (
+                      <div className="flex gap-1.5 mb-3">
+                        <Btn onClick={() => { setEditTarget(toEditTarget()); setCloneMode(false); setCreatorOpen(true) }} className="text-[12px] px-2">
+                          <Pencil className="lucide-inline" /> {i18nT('pages.agentsPage.edit_template')}
+                        </Btn>
+                        <Btn onClick={() => { setEditTarget(toEditTarget()); setCloneMode(true); setCreatorOpen(true) }} className="text-[12px] px-2">
+                          <Copy className="lucide-inline" /> {i18nT('pages.agentsPage.clone_template')}
+                        </Btn>
+                      </div>
+                    )
+                  })()}
                   {selectedAgent.skills === undefined ? (
                     /* The agent-detail fetch failed, so the real mapping is
                      * UNKNOWN. An empty-but-enabled editor here is destructive:
@@ -443,6 +491,16 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
             ))}</tbody></table>
         </div>
       </div>
+      <AgentTemplateCreator
+        open={creatorOpen}
+        onClose={() => { setCreatorOpen(false); setEditTarget(null); setCloneMode(false) }}
+        onCreated={onTemplateCreated}
+        modelOptions={modelOptions.map(m => m.name)}
+        existingNames={installed.map(a => a.name)}
+        mcpServerNames={Object.keys(mcpTools)}
+        editTarget={editTarget}
+        cloneMode={cloneMode}
+      />
     </>
   )
 }

@@ -7164,6 +7164,86 @@ def _check_env_credential_access(command: str) -> str | None:
     return None
 
 
+# ── MCP Environment Variable Credential Detection ──
+# Shared predicates used by the agent-template authoring handlers to reject
+# literal secrets pasted into MCP server env blocks.  Kept here so any future
+# security surface that needs the same vocabulary (e.g. policy enforcement,
+# audit scanning) can reuse them without importing handler internals.
+
+#: Env-key TOKENS that indicate a credential VALUE is being inlined into the
+#: template.  Matched against ``_``-split tokens of the UPPER-cased key (not
+#: substrings), so ``GITHUB_TOKEN`` matches but ``OAUTH_CLIENT_ID`` does not.
+MCP_ENV_SECRET_KEY_TOKENS: frozenset[str] = frozenset(
+    {
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PASSWD",
+        "APIKEY",
+        "CREDENTIAL",
+        "CREDENTIALS",
+        "AUTHORIZATION",
+        "AUTH",
+    }
+)
+
+#: Multi-token credential key suffixes (checked as adjacent token pairs), so
+#: ``AWS_ACCESS_KEY`` / ``GITHUB_API_KEY`` / ``TLS_PRIVATE_KEY`` match while a
+#: bare ``KEY`` token (``SORT_KEY``, ``PARTITION_KEY``) stays usable.
+MCP_ENV_SECRET_TOKEN_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {("API", "KEY"), ("ACCESS", "KEY"), ("PRIVATE", "KEY"), ("AUTH", "TOKEN")}
+)
+
+#: Values that are themselves credential-shaped, regardless of how benign the
+#: key looks.  Reuses hard credential markers: AWS key IDs, PEM/SSH key
+#: headers, Slack tokens, plus GitHub/GitLab PAT prefixes.
+MCP_ENV_SECRET_VALUE_RE: re.Pattern[str] = re.compile(
+    r"(?:"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}"  # AWS access key ID
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub token (PAT/OAuth/server/user/refresh)
+    r"|(?:Bearer|Basic)\s+[A-Za-z0-9+/=_.\-]{8,}"  # HTTP Authorization header value
+    r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub fine-grained PAT
+    r"|glpat-[A-Za-z0-9_-]{20,}"  # GitLab PAT
+    r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
+    r"|-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH)?\s*PRIVATE\s+KEY"  # PEM header
+    r"|eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}"  # JWT
+    r"|://[^/\s:@]+:[^/\s@]+@"  # URL userinfo with password (postgres://u:p@h)
+    r")"
+)
+
+#: Matches ``${VAR}`` or ``$VAR`` references — always allowed since they defer
+#: resolution to the server's process environment.
+ENV_VAR_REFERENCE_RE: re.Pattern[str] = re.compile(
+    r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$"
+)
+
+#: Trailing key tokens that mark the variable as credential METADATA, not the
+#: credential itself: ``AUTH_TOKEN_URL`` / ``OAUTH_TOKEN_ENDPOINT`` hold plain
+#: endpoint config, not a secret value.
+MCP_ENV_METADATA_SUFFIXES: frozenset[str] = frozenset(
+    {"URL", "URI", "ENDPOINT", "PATH", "FILE", "HOST", "NAME", "ID", "MODE", "TYPE", "HEADER"}
+)
+
+
+def env_key_is_credential_like(key: str) -> bool:
+    """Token-split match: ``GITHUB_TOKEN`` yes, ``OAUTH_CLIENT_ID`` no.
+
+    Splits on ``_``/``-`` and camelCase boundaries so ``DbPassword`` and
+    ``apiToken`` are caught without substring-matching into unrelated words.
+    A metadata suffix (``..._URL``, ``..._ENDPOINT``) exempts the key: it
+    names configuration ABOUT a credential, not the credential itself.
+    """
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).upper().replace("-", "_")
+    tokens = [t for t in normalized.split("_") if t]
+    if tokens and tokens[-1] in MCP_ENV_METADATA_SUFFIXES:
+        return False
+    if any(t in MCP_ENV_SECRET_KEY_TOKENS for t in tokens):
+        return True
+    return any(
+        (tokens[i], tokens[i + 1]) in MCP_ENV_SECRET_TOKEN_PAIRS for i in range(len(tokens) - 1)
+    )
+
+
 # ── Resource Limits (preexec_fn) ──
 # Applied to agent-influenced subprocess spawns to bound resource-exhaustion
 # attacks (fork bombs, FD exhaustion, runaway memory/CPU) so a compromised or
