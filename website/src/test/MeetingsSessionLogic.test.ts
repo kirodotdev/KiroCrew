@@ -10,6 +10,7 @@ import {
   ALLOWED_TRANSITIONS,
   canTransition,
   isDuplicateSegment,
+  metaPollInterval,
   newSegmentText,
   resolveEnabledAgents,
 } from '../apps/meetings/hooks/useMeetingSession'
@@ -525,5 +526,56 @@ describe('starting before the config loads does not persist an empty roster', ()
     const startCall = SessionSource.match(/const startMutation[\s\S]*?\n  \}\)/)
     expect(startCall, 'no startMutation found').not.toBeNull()
     expect(startCall![0]).not.toMatch(/enabledIds\.length/)
+  })
+})
+
+describe('the meeting is polled while a start is still initializing agents', () => {
+  // `POST /start` awaits one dispatch per agent before it answers, so it can take
+  // tens of seconds, while the server persists `active` up front. Without a poll in
+  // that window the UI held a stale `idle`: Start disabled, no Live badge, and no
+  // microphone — the mic is bound to `status` — so recording appeared not to start
+  // until the user reloaded by hand.
+
+  it('polls on a short cadence while the start is in flight', () => {
+    expect(metaPollInterval({ status: 'idle', startInFlight: true })).toBe(1000)
+    // `undefined` is the same situation: meta has not arrived, nothing says active.
+    expect(metaPollInterval({ status: undefined, startInFlight: true })).toBe(1000)
+  })
+
+  it('does not poll an idle meeting that nobody is starting', () => {
+    expect(metaPollInterval({ status: 'idle', startInFlight: false })).toBe(false)
+    expect(metaPollInterval({ status: 'ended', startInFlight: false })).toBe(false)
+  })
+
+  it('hands back to the configured cadence as soon as a status is known', () => {
+    // The start rule is checked last, so a landed poll ends the fast window even
+    // while the mutation is still pending — that is what makes it self-limiting.
+    expect(metaPollInterval({ status: 'active', startInFlight: true, activeMs: 5000 })).toBe(5000)
+    expect(metaPollInterval({ status: 'paused', startInFlight: true, idleMs: 30_000 })).toBe(30_000)
+    expect(metaPollInterval({ status: 'reviewing', startInFlight: true, idleMs: 30_000 })).toBe(30_000)
+  })
+
+  it('falls back to the shipped defaults when the config has not loaded', () => {
+    expect(metaPollInterval({ status: 'active', startInFlight: false })).toBe(5000)
+    expect(metaPollInterval({ status: 'reviewing', startInFlight: false })).toBe(30_000)
+  })
+
+  it('respects a configured cadence over the defaults', () => {
+    expect(metaPollInterval({ status: 'active', startInFlight: false, activeMs: 250 })).toBe(250)
+    expect(metaPollInterval({ status: 'paused', startInFlight: false, idleMs: 60_000 })).toBe(60_000)
+  })
+
+  it('opens the window before the request and closes it however the start ends', () => {
+    // Guards the wiring, not the rule: a window opened in `onSuccess` would miss the
+    // wait entirely, and one closed there would poll a failed start forever.
+    const startCall = SessionSource.match(/const startMutation[\s\S]*?\n  \}\)/)
+    expect(startCall, 'no startMutation found').not.toBeNull()
+    expect(startCall![0]).toContain('onMutate: () => setStartInFlight(true)')
+    expect(startCall![0]).toContain('onSettled: () => setStartInFlight(false)')
+  })
+
+  it('feeds the query from the shared rule rather than an inline copy', () => {
+    expect(SessionSource).toContain('refetchInterval: query =>')
+    expect(SessionSource).toContain('metaPollInterval({')
   })
 })
