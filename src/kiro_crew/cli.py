@@ -1169,6 +1169,7 @@ Examples:
     profile_show.add_argument("name", help="Profile file stem (without .json)")
 
     register_perf_parser(sub)
+    register_bench_parser(sub)
     register_desktop_parser(sub)
 
     kn_parser = sub.add_parser("knowledge", help="Knowledge Base maintenance")
@@ -2139,6 +2140,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         rc = perf_cmd(args)
         if rc:
             raise SystemExit(rc)
+    elif args.command == "bench":
+        rc = bench_cmd(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "desktop":
         rc = desktop_cmd(args)
         if rc:
@@ -2169,6 +2174,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
+from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
 from kiro_crew.cli_chat import _chat  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
