@@ -4015,6 +4015,13 @@ class TestDoctorEmbeddings:
     def _hermetic_config(self, monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
         _pin_default_config(monkeypatch)
+        # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses: name the
+        # missing bundled libs, or blame the operator's override directory. Which branch a
+        # test exercises is therefore part of its scenario, not an ambient property of the
+        # host — and the variable is easy to inherit, because the real loader sets it to its
+        # own bundled libs dir the first time embeddings load. Cleared per test; the tests
+        # that exercise the override branch set it themselves.
+        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
 
     @staticmethod
     def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True, missing_libs: dict | None = None, loader_setdefaults: str = ""):
@@ -4030,7 +4037,12 @@ class TestDoctorEmbeddings:
 
         def _load():
             if loader_setdefaults:
-                os.environ.setdefault("LLAMA_CPP_LIB_PATH", loader_setdefaults)
+                # Through monkeypatch, not a bare os.environ write: the real loader's
+                # setdefault is a process-wide mutation, and reproducing it literally leaked
+                # the variable into every later test in the same worker, flipping them onto
+                # the override branch depending on distribution order.
+                if "LLAMA_CPP_LIB_PATH" not in os.environ:
+                    monkeypatch.setenv("LLAMA_CPP_LIB_PATH", loader_setdefaults)
             return object if runtime_ok else None
 
         monkeypatch.setattr(doc, "_load_llama_class", _load)
