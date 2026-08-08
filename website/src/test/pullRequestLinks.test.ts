@@ -341,6 +341,17 @@ describe('revealed source persistence', () => {
     expect(restored['slot-b']).toEqual({ change: link(PR) })
   })
 
+  it('round-trips a revealed Jira issue (write and read share one probe)', () => {
+    // Regression: the write side accepted Jira via a dual host probe while the
+    // read side re-parsed with the GitLab-only probe, so a revealed Jira issue
+    // was persisted, then silently dropped on reload — the panel lost it.
+    const JIRA = 'https://acme.atlassian.net/browse/PROJ-123'
+    expect(commitRevealedSource('slot-a', 'issue', JIRA)).toBe(true)
+    const restored = loadRevealedSources()
+    expect(restored['slot-a'].issue).toEqual(parseSourceLinkUrl(JIRA, [], []))
+    expect(restored['slot-a'].issue?.provider).toBe('jira')
+  })
+
   it('writes ONE key per field so a sibling window cannot delete a reveal', () => {
     // A popped-out session shares this localStorage. A whole-map write publishes
     // this window's stale view of the slots it is NOT looking at, so the later

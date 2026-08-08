@@ -1667,6 +1667,7 @@ class _ChatSlot:
                     "/pull/" not in candidate
                     and "/merge_requests/" not in candidate
                     and "/issues/" not in candidate
+                    and "/browse/" not in candidate
                 ):
                     continue
                 # Every attempt is charged, whether it parses or not -- that is
@@ -1687,6 +1688,12 @@ class _ChatSlot:
                         # "change" for older payloads, so the frontend defaults
                         # rather than requires it.
                         "kind": ref.kind,
+                        # Jira chips label as PROJECT-NUMBER, so the project key
+                        # (carried in ``repo``) is identity, not decoration.
+                        # Sent only for Jira: GitHub/GitLab chips label by
+                        # number alone and their repo would be payload for
+                        # nothing on every slots push.
+                        **({"repo": ref.repo} if ref.provider == "jira" else {}),
                     }
         links = list(found.values())
         self._source_links_cache = (cache_key, links)

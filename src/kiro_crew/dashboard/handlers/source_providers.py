@@ -443,11 +443,16 @@ class SourceRef:
 
 
 _GITLAB_HOSTS_TTL_SECS = 30.0
-# Cached allowlist snapshot. Populated only by _load_gitlab_hosts() running in a
-# worker thread, so every reader on the event loop is a pure dict lookup.
+# Cached allowlist snapshots. Populated only by _load_provider_hosts() running
+# in a worker thread, so every reader on the event loop is a pure dict lookup.
+# GitLab and Jira allowlists come out of the SAME config read and share one
+# TTL, lock, and generation counter: they change together (one config file) and
+# consumers that memoize parse results (the per-slot sidebar source links) fold
+# a single generation into their cache key either way.
 _gitlab_hosts_snapshot: frozenset[str] = frozenset()
+_jira_hosts_snapshot: frozenset[str] = frozenset()
 _gitlab_hosts_loaded_at = 0.0
-# Bumped whenever the snapshot's CONTENT changes. Consumers that memoize a
+# Bumped whenever either snapshot's CONTENT changes. Consumers that memoize a
 # parse result (per-slot sidebar source links) fold this into their cache key so
 # a later allowlist load invalidates decisions made against the cold snapshot.
 _gitlab_hosts_generation = 0
@@ -466,17 +471,19 @@ def _gitlab_hosts_fresh() -> bool:
     )
 
 
-def _publish_gitlab_hosts(hosts: frozenset[str]) -> None:
-    """Install a freshly loaded snapshot, bumping the generation on real change."""
-    global _gitlab_hosts_snapshot, _gitlab_hosts_loaded_at, _gitlab_hosts_generation
-    if hosts != _gitlab_hosts_snapshot:
-        _gitlab_hosts_snapshot = hosts
+def _publish_provider_hosts(gitlab: frozenset[str], jira: frozenset[str]) -> None:
+    """Install freshly loaded snapshots, bumping the generation on real change."""
+    global _gitlab_hosts_snapshot, _jira_hosts_snapshot
+    global _gitlab_hosts_loaded_at, _gitlab_hosts_generation
+    if gitlab != _gitlab_hosts_snapshot or jira != _jira_hosts_snapshot:
+        _gitlab_hosts_snapshot = gitlab
+        _jira_hosts_snapshot = jira
         _gitlab_hosts_generation += 1
     _gitlab_hosts_loaded_at = time.monotonic()
 
 
-def _load_gitlab_hosts() -> frozenset[str]:
-    """Read the configured self-managed GitLab hosts. BLOCKING -- never on the loop.
+def _load_provider_hosts() -> tuple[frozenset[str], frozenset[str]]:
+    """Read the configured GitLab and Jira hosts. BLOCKING -- never on the loop.
 
     ``KiroCrewConfig.load()`` stats, reads, parses, and validates config files, so
     a slow or network-backed config directory would stall the sole event loop.
@@ -485,10 +492,11 @@ def _load_gitlab_hosts() -> frozenset[str]:
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return frozenset(KiroCrewConfig.load().dashboard.gitlab_hosts)
+        dashboard = KiroCrewConfig.load().dashboard
+        return frozenset(dashboard.gitlab_hosts), frozenset(dashboard.jira_hosts)
     except Exception:
-        logger.debug("self-hosted GitLab allowlist unavailable", exc_info=True)
-        return frozenset()
+        logger.debug("self-hosted provider allowlists unavailable", exc_info=True)
+        return frozenset(), frozenset()
 
 
 async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
@@ -511,9 +519,9 @@ async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
         # Another waiter may have refreshed while this one queued.
         if _gitlab_hosts_fresh():
             return _gitlab_hosts_snapshot
-        hosts = await asyncio.to_thread(_load_gitlab_hosts)
-        _publish_gitlab_hosts(hosts)
-        return hosts
+        gitlab, jira = await asyncio.to_thread(_load_provider_hosts)
+        _publish_provider_hosts(gitlab, jira)
+        return gitlab
 
 
 def _allowed_gitlab_hosts() -> frozenset[str]:
@@ -527,6 +535,16 @@ def _allowed_gitlab_hosts() -> frozenset[str]:
     recognized yet).
     """
     return _gitlab_hosts_snapshot
+
+
+def _allowed_jira_hosts() -> frozenset[str]:
+    """Return the cached self-hosted Jira hosts. Same discipline as GitLab.
+
+    Loaded by the same :func:`ensure_gitlab_hosts_loaded` refresh (one config
+    read covers both allowlists), so every entry point that awaits it before
+    parsing has this snapshot warm too. Fails closed while cold.
+    """
+    return _jira_hosts_snapshot
 
 
 # Path markers that identify a GitLab object, paired with the SourceRef kind
@@ -581,6 +599,46 @@ def _gitlab_ref(host: str, path: str) -> SourceRef:
     owner = project.rsplit("/", 1)[0] if "/" in project else ""
     return SourceRef(
         "gitlab", normalized, host, owner, repo, number, project=project, kind=kind
+    )
+
+
+# A Jira issue key: PROJECT-NUMBER where the project part starts with a letter,
+# is uppercase alphanumeric, and Jira caps it at 10 characters. Mirrors the
+# frontend's JIRA_KEY_RE in pullRequestLinks.ts -- the two parsers must agree so
+# a chip the backend emits always re-parses on the frontend for the reveal.
+_JIRA_KEY_RE = re.compile(r"[A-Z][A-Z0-9]{0,9}-\d+")
+
+
+def _jira_ref(host: str, path: str) -> SourceRef:
+    """Build a Jira ``SourceRef`` for an already-authorized host.
+
+    Jira issues live at ``/browse/KEY-123``, possibly behind a context path
+    (``/jira/browse/KEY-123`` on some Cloud tenants and Data Center installs).
+    The prefix is preserved in the normalized URL so a self-hosted chip opens
+    the real endpoint. The project key maps onto ``repo`` and the numeric tail
+    onto ``number`` -- the same shape the frontend derives, so the sidebar chip
+    label (``PROJ-123``) and the Issues panel identity agree end to end.
+    """
+    marker = "/browse/"
+    browse_idx = path.find(marker)
+    if browse_idx < 0:
+        raise ValueError(
+            "Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123."
+        )
+    # The key is the first segment after /browse/; deeper segments are Jira UI
+    # state, not identity. Uppercase before validating -- Jira treats keys
+    # case-insensitively and canonicalizing here keeps the dedup map in
+    # state.py from splitting one issue across case variants.
+    key = path[browse_idx + len(marker) :].split("/", 1)[0].upper()
+    if not _JIRA_KEY_RE.fullmatch(key):
+        raise ValueError(
+            "Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123."
+        )
+    project_key, number_text = key.rsplit("-", 1)
+    prefix = path[:browse_idx]
+    normalized = urlunparse(("https", host, f"{prefix}{marker}{key}", "", "", ""))
+    return SourceRef(
+        "jira", normalized, host, "", project_key, int(number_text), kind="issue"
     )
 
 
@@ -645,10 +703,21 @@ def parse_source_url(raw_url: str) -> SourceRef:
     if host and candidate in _allowed_gitlab_hosts():
         return _gitlab_ref(candidate, path)
 
+    # Jira: Atlassian Cloud (``*.atlassian.net``) is recognized automatically --
+    # the suffix is Atlassian-operated, so it identifies the product the way
+    # ``github.com`` does. Self-hosted Jira / Data Center requires an exact
+    # entry in ``dashboard.jira_hosts``, the same allowlist discipline as
+    # self-managed GitLab and checked AFTER it so a host an operator listed as
+    # GitLab is never reinterpreted as Jira.
+    is_cloud_jira = host.endswith(".atlassian.net") and len(host) > len(".atlassian.net")
+    if host and (is_cloud_jira or candidate in _allowed_jira_hosts()):
+        return _jira_ref(candidate, path)
+
     raise ValueError(
         "Only github.com pull requests and issues, gitlab.com merge requests and "
-        "issues, and merge requests or issues on a GitLab host listed in "
-        "dashboard.gitlab_hosts are supported."
+        "issues, merge requests or issues on a GitLab host listed in "
+        "dashboard.gitlab_hosts, and Jira issues on *.atlassian.net or a host "
+        "listed in dashboard.jira_hosts are supported."
     )
 
 
@@ -2445,6 +2514,11 @@ async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     ref = parse_source_url(raw_url)
     if ref.kind != "issue":
         raise ValueError("This URL points at a pull request or merge request, not an issue.")
+    # Jira has no local CLI integration: the chip and the Issues panel entry are
+    # link-outs only (the panel offers "Open in Jira"). Refuse here so a direct
+    # API call can never hand a Jira URL to the GitLab fetch path below.
+    if ref.provider == "jira":
+        raise ValueError("Jira issues open in the browser; there is no local fetch for them.")
     now = time.monotonic()
     async with _ISSUE_CACHE_LOCK:
         cached = _ISSUE_CACHE.get(ref.url)

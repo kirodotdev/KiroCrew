@@ -21,6 +21,7 @@ import {
 } from '../utils/pullRequestLinks'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
+import JiraLogo from './icons/JiraLogo'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import { pullRequestErrorDetails } from './PullRequestPanel'
@@ -322,7 +323,9 @@ export default function IssuePanel({
       forceRefreshRef.current = false
       return api.fetchIssueSource(selected!.url, force)
     },
-    enabled: !!selected,
+    // Jira issues have no backend fetcher — only GitHub/GitLab are supported.
+    // Skip the query entirely for Jira to avoid a permanent 400 error.
+    enabled: !!selected && selected.provider !== 'jira',
     // Manual refresh ONLY — an issue has no CI or merge state that changes
     // under the user, so a background poll would spend provider calls (and SEL
     // audit entries) for nothing.
@@ -380,8 +383,10 @@ export default function IssuePanel({
             >
               {item.provider === 'github'
                 ? <GithubLogo size={13} className="shrink-0" />
+                : item.provider === 'jira'
+                ? <JiraLogo size={13} className="shrink-0" />
                 : <GitlabLogo size={13} className="shrink-0" />}
-              <span>#{item.number}</span>
+              <span>{item.provider === 'jira' ? `${item.repo}-${item.number}` : `#${item.number}`}</span>
             </Btn>
           ))}
         </div>
@@ -423,6 +428,27 @@ export default function IssuePanel({
             >
               <RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}
             </Btn>
+          </div>
+        </div>
+      )}
+
+      {selected?.provider === 'jira' && !query.isLoading && !query.error && !source && (
+        <div className="flex-1 flex items-center justify-center px-6">
+          <div className="max-w-md flex flex-col items-center text-center">
+            <ExternalLink className="lucide-inline mb-2 text-muted" aria-hidden="true" />
+            <div className="text-[13px] font-medium text-text">{selected.repo}-{selected.number}</div>
+            <div className="text-[12px] text-muted mt-1">
+              {i18nT('components.issuePanel.jira_open_in_browser')}
+            </div>
+            <a
+              href={selected.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover no-underline"
+            >
+              <ExternalLink className="lucide-inline" aria-hidden="true" />
+              {i18nT('components.issuePanel.open_in_jira')}
+            </a>
           </div>
         </div>
       )}

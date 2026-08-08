@@ -135,6 +135,48 @@ class TestChatSlot:
         assert len([link for link in serialized if link["kind"] == "issue"]) == 3
         assert payload["source_links_total"] == 5
 
+    def test_jira_issue_links_scanned_from_user_messages(self):
+        """A Jira URL pasted by the USER becomes a sidebar chip.
+
+        This is the primary Jira flow: people paste the ticket they are working
+        from. The scan covers every durable role, and the serialized entry
+        carries the project key in ``repo`` because the chip labels itself
+        PROJ-123 -- the number alone is meaningless outside its project.
+        """
+        slot = _ChatSlot("s1")
+        slot.append("user", "Please look at https://acme.atlassian.net/browse/PROJ-123", ts="t1")
+
+        payload = slot.to_dict()
+        assert payload["source_links_total"] == 1
+        link = payload["source_links"][0]
+        assert link["provider"] == "jira"
+        assert link["kind"] == "issue"
+        assert link["repo"] == "PROJ"
+        assert link["number"] == 123
+        assert link["url"] == "https://acme.atlassian.net/browse/PROJ-123"
+
+    def test_jira_issue_links_reevaluated_when_jira_allowlist_loads(self, monkeypatch):
+        """Self-hosted Jira inherits the generation-keyed cache invalidation."""
+        from kiro_crew.dashboard.handlers import source_providers as sp
+
+        monkeypatch.setattr(sp, "_gitlab_hosts_snapshot", frozenset())
+        monkeypatch.setattr(sp, "_jira_hosts_snapshot", frozenset())
+        monkeypatch.setattr(sp, "_gitlab_hosts_loaded_at", 0.0)
+        monkeypatch.setattr(sp, "_gitlab_hosts_generation", 0)
+
+        slot = _ChatSlot("s1")
+        url = "https://jira.acme.internal/browse/CORE-5"
+        slot.append("assistant", f"Tracking {url}", ts="t1")
+        assert slot.to_dict()["source_links_total"] == 0
+
+        sp._publish_provider_hosts(frozenset(), frozenset({"jira.acme.internal"}))
+        refreshed = slot.to_dict()
+        assert refreshed["source_links_total"] == 1
+        assert refreshed["source_links"][0]["url"] == url
+
+        sp._publish_provider_hosts(frozenset(), frozenset())
+        assert slot.to_dict()["source_links_total"] == 0
+
     def test_pr_source_links_refresh_after_same_length_content_edit(self):
         slot = _ChatSlot("s1")
         url = "https://github.com/acme/widgets/pull/12"
@@ -167,13 +209,13 @@ class TestChatSlot:
         assert slot.to_dict()["source_links_total"] == 0
 
         # Allowlist arrives later; no message changed.
-        sp._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        sp._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
         refreshed = slot.to_dict()
         assert refreshed["source_links_total"] == 1
         assert refreshed["source_links"][0]["url"] == url
 
         # Revocation is likewise picked up without a message mutation.
-        sp._publish_gitlab_hosts(frozenset())
+        sp._publish_provider_hosts(frozenset(), frozenset())
         assert slot.to_dict()["source_links_total"] == 0
 
     def test_pr_source_links_ignore_streaming_numeric_prefixes(self):
@@ -488,7 +530,7 @@ class TestChatSlot:
         slot.append("assistant", f"Filed {url}", ts="t1")
         assert slot.to_dict()["source_links_total"] == 0
 
-        sp._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        sp._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
         refreshed = slot.to_dict()
         assert refreshed["source_links_total"] == 1
         assert refreshed["source_links"][0]["kind"] == "issue"
@@ -12071,7 +12113,7 @@ class TestSlotsGetWarmsGitLabAllowlist:
 
         async def fake_ensure() -> frozenset:
             order.append("ensure")
-            sp._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+            sp._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
             return frozenset({"gitlab.acme.internal"})
 
         monkeypatch.setattr(sp, "ensure_gitlab_hosts_loaded", fake_ensure)

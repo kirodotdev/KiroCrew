@@ -652,7 +652,7 @@ class TestPeriodicCheckStatusRefresh:
             calls["n"] += 1
             # Change the generation only on the periodic round, not the warm-up.
             if calls["n"] == 2:
-                source_providers._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+                source_providers._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
             return frozenset()
 
         class Request(dict):

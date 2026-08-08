@@ -32,6 +32,9 @@ import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
+import { parseSourceLinkUrl } from '../utils/pullRequestLinks'
+import { JiraHostsCtx } from '../lib/jiraHosts'
+import JiraLogo from './icons/JiraLogo'
 import DiffBlock from './DiffBlock'
 import MonacoCodeBlock from './MonacoCodeBlock'
 import { SmoothResize } from './SmoothResize'
@@ -382,7 +385,34 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   const claimed = href && override ? override({ href, children }) : null
   const target = useUnfurlHref(claimed ? null : href)
   const meta = useLinkMeta(target ?? undefined, target !== null)
+  // Jira issue URLs chip synchronously from the URL alone (icon + issue key) —
+  // no fetch, unlike the unfurl chip below. Jira instances sit behind auth, so
+  // an unfurl of one can never succeed; parsing the key out of the path is the
+  // only way these links ever get at-a-glance recognition. Self-hosted
+  // instances come through `JiraHostsCtx` from the operator allowlist.
+  const jiraHosts = useContext(JiraHostsCtx)
+  const jira = useMemo(() => {
+    if (!href || claimed) return null
+    const link = parseSourceLinkUrl(href, [], jiraHosts)
+    return link?.provider === 'jira' ? link : null
+  }, [href, claimed, jiraHosts])
   if (claimed) return <>{claimed}</>
+  if (jira) {
+    return (
+      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
+        <a
+          href={jira.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={href}
+          className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
+        >
+          <JiraLogo size={12} className="shrink-0" />
+          <span className="truncate max-w-[24ch]">{`${jira.repo}-${jira.number}`}</span>
+        </a>
+      </span>
+    )
+  }
   if (target && meta) return <LinkChip meta={meta} href={target}>{children}</LinkChip>
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }

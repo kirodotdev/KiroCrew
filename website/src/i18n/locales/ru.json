@@ -4951,7 +4951,9 @@
       "this_issue_is_locked": "Этот issue заблокирован",
       "unknown_author": "Автор неизвестен",
       "untitled": "Без названия",
-      "updated_time": "обновлена {{time}}"
+      "updated_time": "обновлена {{time}}",
+      "jira_open_in_browser": "Jira issue — open in browser to view details.",
+      "open_in_jira": "Open in Jira"
     },
     "jobForm": {
       "a_short_label_for_this_job": "Короткое название для этого задания",

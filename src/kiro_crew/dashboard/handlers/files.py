@@ -2482,7 +2482,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # PUT body. Drop them here instead of listing them in _allowed -- they
         # stay unwritable, but a round-tripped read-only field must not 400 an
         # unrelated toggle save.
-        read_only_ignored_keys = {"gitlab_hosts"}
+        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts"}
         body = {
             k: v
             for k, v in body.items()
@@ -2644,5 +2644,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # dashboard toggle. The client uses it only to decide which pasted
             # links become source tabs; the provider handler re-checks every URL.
             "gitlab_hosts": list(cfg.dashboard.gitlab_hosts),
+            # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
+            # auto-recognized; self-hosted instances need explicit allowlisting.
+            "jira_hosts": list(cfg.dashboard.jira_hosts),
         }
     )

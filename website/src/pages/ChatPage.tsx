@@ -108,6 +108,7 @@ import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import type { TurnStats } from './chat/AssistantMessage'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { JiraHostsCtx } from '../lib/jiraHosts'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import TypewriterText from '../components/TypewriterText'
 import { useChatNavigation } from '../hooks/useChatNavigation'
@@ -1816,20 +1817,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // on each tick. Instead the WS 'slots' push carries the allowlist generation
   // (see useWebSocket), which invalidates this query only when the allowlist
   // actually changes — an edit on disk still propagates, without the churn.
-  const { data: sourceHostCfg } = useQuery<{ gitlab_hosts?: string[] }>({
+  const { data: sourceHostCfg } = useQuery<{ gitlab_hosts?: string[]; jira_hosts?: string[] }>({
     queryKey: ['dashboardConfig'],
     queryFn: () => api.dashboardConfig(),
     staleTime: 30_000,
   })
   const sourceHosts = sourceHostCfg?.gitlab_hosts ?? []
-  // Read through a ref by callbacks that must stay identity-stable (they are
+  const jiraSourceHosts = sourceHostCfg?.jira_hosts ?? []
+  // Read through refs by callbacks that must stay identity-stable (they are
   // handed to the sidebar, which re-renders every session row).
   const sourceHostsRef = useRef(sourceHosts)
   sourceHostsRef.current = sourceHosts
+  const jiraSourceHostsRef = useRef(jiraSourceHosts)
+  jiraSourceHostsRef.current = jiraSourceHosts
   const indexedSourceLinks = sourceLinkIndex.current.update(
     activeSlot,
     messages,
     sourceHosts,
+    jiraSourceHosts,
   )
   // One scan, one dedup map, two panels: the extractor returns pull requests and
   // issues together (they share the per-role cap), and the two side-panel tabs
@@ -5031,7 +5036,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    *  empty if it fails), so every self-hosted chip parses to null in that window
    *  even though the backend scan accepted it. */
   const revealSourceLink = useCallback((slot: string, chip: { url: string; kind: SourceLinkKind }): boolean => {
-    const link = parseSourceLinkUrl(chip.url, sourceHostsRef.current)
+    const link = parseSourceLinkUrl(chip.url, sourceHostsRef.current, jiraSourceHostsRef.current)
     if (!link) return false
     const view = link.kind === 'issue' ? 'issues' : 'changes'
     // Durable BEFORE the state update, and one key at a time. Writing inside the
@@ -5160,6 +5165,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   return (
     <RowDisclosureProvider resetKey={activeSlot}>
     <TagPopoverProvider>
+    {/* Self-hosted Jira allowlist for every markdown anchor in the page --
+        message bodies, previews, and panels alike -- so a pasted Jira URL
+        chips identically wherever it renders. Cloud URLs need no provider. */}
+    <JiraHostsCtx.Provider value={jiraSourceHosts}>
     <div ref={chatContainerRef} className="flex flex-1 min-h-0 h-full overflow-hidden relative">
       <AnimatePresence>
         {isMobile && mobileSessions && (
@@ -6133,6 +6142,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         activitySlot
       )}
     </div>
+    </JiraHostsCtx.Provider>
     </TagPopoverProvider>
     </RowDisclosureProvider>
   )
