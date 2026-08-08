@@ -91,6 +91,12 @@ _DELIBERATELY_UNGUARDED = {
     # A privilege prefix, not an action. `sudo systemctl restart` is caught on
     # `systemctl`; `sudo` alone says nothing about whether state changes.
     "sudo": "privilege prefix; the wrapped command carries the action",
+    # The BSD-family equivalent of `sudo`, excluded for the identical reason:
+    # `doas systemctl restart` is caught on the inner `systemctl` token. The
+    # site in dashboard/state.py is the read-only-command classifier listing
+    # hand-off wrappers it must NOT treat as a `--help` usage probe -- a
+    # detector of `doas`, not a spawn of it.
+    "doas": "privilege prefix; the wrapped command carries the action",
 }
 
 
