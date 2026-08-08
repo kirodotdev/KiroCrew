@@ -954,30 +954,53 @@ def read_effective_model(source: object) -> str:
         for attr in ("_resolved_model_id", "_model"):
             for node in chain:
                 candidate = getattr(node, attr, "")
-                if isinstance(candidate, str) and candidate and candidate != "auto":
+                if (
+                    isinstance(candidate, str)
+                    and candidate
+                    and candidate.strip().lower() != "auto"
+                ):
                     return candidate
     except Exception:
         pass
     return ""
 
 
-def _resolve_model(model: str, model_source: object) -> str:
-    """Resolve the model to record, treating the ``"auto"`` sentinel as unresolved.
+def _source_requests_auto(source: object) -> bool:
+    """Whether the provider chain still reports Auto as its model request.
 
-    ``"auto"`` is not a model — it means "let the backend choose" — so recording
-    it would put a non-model value in the attribution dimension. Several
-    surfaces pass it verbatim (``agent.model`` defaults to ``"auto"``, and the
-    task runner forwards that value), so gating only on an empty string lets it
-    through. When the caller's value is unresolved we take the provider's
-    resolved id; if that is unavailable the field stays blank, which is what
-    ``test_late_backfill_skips_auto_sentinel`` requires ("the record stays blank
-    until a real model is known").
+    This is deliberately separate from :func:`read_effective_model`: ``auto``
+    is not a resolved model id, but it is useful attribution when a completed
+    turn has no more specific id from the backend. A blank request does not
+    prove Auto was selected, so it remains blank in the row store.
     """
-    if (model or "").strip().lower() not in ("", "auto"):
+    try:
+        return any(
+            isinstance(candidate := getattr(node, "_model", ""), str)
+            and candidate.strip().lower() == "auto"
+            for node in _wrapper_chain(source)
+        )
+    except Exception:
+        return False
+
+
+def _resolve_model(model: str, model_source: object) -> str:
+    """Resolve the model to record, retaining a known Auto selection.
+
+    A concrete resolved id remains the preferred accounting dimension. When a
+    completed Auto turn exposes no concrete id, ``"auto"`` still distinguishes
+    that deliberate backend choice from an unavailable model source. A blank
+    caller value with no Auto request remains blank because it carries no model
+    information at all.
+    """
+    requested = (model or "").strip().lower()
+    if requested not in ("", "auto"):
         return model
-    if model_source is None:
-        return "" if (model or "").strip().lower() == "auto" else model
-    return read_effective_model(model_source)
+    resolved = read_effective_model(model_source) if model_source is not None else ""
+    if resolved:
+        return resolved
+    if requested == "auto" or _source_requests_auto(model_source):
+        return "auto"
+    return ""
 
 
 def _coerce_int(value: Any) -> int:

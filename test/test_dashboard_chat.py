@@ -3676,10 +3676,12 @@ class TestTokenPersistenceBackfill:
         assert slot.model == "opus-4.8-1m"
 
     @pytest.mark.asyncio
-    async def test_late_backfill_skips_auto_sentinel(self, tmp_path, monkeypatch):
-        """The sentinel value 'auto' (CC's pre-init placeholder) must not be
-        persisted as the model -- the record stays blank until a real model
-        is known.
+    async def test_auto_sentinel_reaches_persistence_fallback(self, tmp_path, monkeypatch):
+        """An unresolved Auto request delegates to the recorder's fallback.
+
+        The slot remains blank because it has no concrete model id to persist,
+        while the client lets the usage recorder distinguish Auto from an
+        unavailable model source.
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 
@@ -3697,7 +3699,7 @@ class TestTokenPersistenceBackfill:
         captured: list[tuple] = []
 
         async def _fake_persist(k, m, e, provider="", **kwargs):
-            captured.append((k, m, provider))
+            captured.append((k, m, provider, kwargs["model_source"]))
 
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.persist_token_record_async", _fake_persist
@@ -3709,6 +3711,7 @@ class TestTokenPersistenceBackfill:
 
         assert len(captured) == 1
         assert captured[0][1] == ""
+        assert captured[0][3] is client
         assert slot.model == ""
 
     @pytest.mark.asyncio
