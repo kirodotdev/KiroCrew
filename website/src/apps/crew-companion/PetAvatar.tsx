@@ -147,11 +147,20 @@ export interface PetAvatarProps {
    * The live pet bumps it once per discrete reaction; static previews leave it at 0.
    */
   animEpoch?: number
+  /**
+   * Play a specific author-named "random" clip from the ACTIVE custom pack, instead
+   * of the state slot's art. This is the channel PetDex extras (wave / waiting / run)
+   * were missing: they were imported, written to disk under `random`, listed by
+   * `randomNames` — and nothing could render them, because this component resolved
+   * art by state slot only. Ignored for the built-in pack, whose idle life is the
+   * fidget pool. Cleared (undefined) means "render the state slot as always".
+   */
+  clipName?: string
   className?: string
 }
 
 export const PetAvatar: React.FC<PetAvatarProps> = ({
-  size, state = 'idle', mood, docked = false, eyeDx = 0, eyeDy = 0, trackCursor = false, flipX = false, anim, animEpoch = 0, className,
+  size, state = 'idle', mood, docked = false, eyeDx = 0, eyeDy = 0, trackCursor = false, flipX = false, anim, animEpoch = 0, clipName, className,
   accessory = 'none',
 }) => {
   /**
@@ -224,9 +233,16 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
       // Breathing phases skip the busy aliases: a pack with no `inhale` should show
       // its calm idle body, not the art it drew for "working".
       const a = detail.animations
-      const entry = BREATHING_SLOTS.has(slot)
-        ? (a[slot] || a.idle)
-        : (a[slot] || a.loading || a.thinking || a.working || a.idle)
+      /*
+       * A requested clip outranks the state slot — it IS the reason we are
+       * rendering. Falling back to idle when the clip is missing (a stale name
+       * after a pack edit) keeps the companion visible rather than blank.
+       */
+      const entry = clipName
+        ? (a[clipName] || a.idle)
+        : BREATHING_SLOTS.has(slot)
+          ? (a[slot] || a.idle)
+          : (a[slot] || a.loading || a.thinking || a.working || a.idle)
       if (!entry) return
 
       const content = typeof entry === 'string' ? entry : entry.content
@@ -250,7 +266,7 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
     })()
 
     return () => { alive = false }
-  }, [slot, rev])
+  }, [slot, clipName, rev])
 
   const isDefault = art.kind === 'default'
 
@@ -321,8 +337,19 @@ export const PetAvatar: React.FC<PetAvatarProps> = ({
                     posed={posed}
                   />
                 )}
-        {/* Props ride the same layered container, so they move with every motion. */}
-        <GhostAccessoryLayer id={accessory} pose={eyePose} flipX={flipX} />
+        {/*
+          Props ride the same layered container, so they move with every motion —
+          but ONLY on the built-in ghost. Their placement is derived from
+          GHOST_EYE_MAP (the built-in ghost's eye geometry), so on a custom pack a hat
+          or shades land by a face that is not the pack's own — floating in empty space
+          beside a capybara. The eye overlay is already `isDefault`-gated for the same
+          reason; the accessory layer must be too. A custom pack simply celebrates with
+          its hop and no prop, which is the honest degrade: we cannot know where an
+          arbitrary custom sprite wears a hat.
+        */}
+        {isDefault && (
+          <GhostAccessoryLayer id={accessory} pose={eyePose} flipX={flipX} />
+        )}
       </span>
     </span>
   )

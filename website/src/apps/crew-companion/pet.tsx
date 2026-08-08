@@ -314,10 +314,22 @@ function Companion() {
         if (!alive) return
         const anims = detail?.animations ?? {}
         const has = (k: string) => Object.prototype.hasOwnProperty.call(anims, k)
+        /*
+         * `extras` was hardcoded empty with a comment admitting there was "nothing
+         * to play them through yet" — so every PetDex pack's wave / waiting / run
+         * clips were imported, stored, listed, and never once shown. PetAvatar now
+         * has a clip channel (`clipName`), so the names the pack actually ships can
+         * finally enter the idle rotation. `randomNames` is the backend's
+         * authoritative list; the flat-map filter is only a guard against a stale
+         * name pointing at art that failed to read.
+         */
+        const randomNames: string[] = Array.isArray(detail?.randomNames)
+          ? (detail.randomNames as string[]).filter((n) => has(n))
+          : []
         setCustomBehaviors({
           walking: has('walking'),
           moods: (ALL_MOODS as readonly string[]).filter((m) => has(m)),
-          extras: [],
+          extras: randomNames,
         })
       }).catch(() => {})
     }
@@ -951,6 +963,32 @@ function Companion() {
     if (idleAnimTimer.current !== null) window.clearTimeout(idleAnimTimer.current)
   }, [])
 
+  /*
+   * The author-named random clip currently playing on a CUSTOM pack, if any.
+   *
+   * The custom-pack counterpart of `idleAnim`: `useRandomClips` picks a name from the
+   * pack's own extras (wave / waiting / run for a PetDex import), and this holds it
+   * while it plays. Duration is a fixed hold rather than the clip's own length,
+   * because a sprite strip loops forever — there is no "end" to wait for. Cleared
+   * back to the state slot afterwards.
+   */
+  const [activeClip, setActiveClip] = useState<string | undefined>(undefined)
+  const clipTimer = useRef<number | null>(null)
+  const CLIP_HOLD_MS = 3_000
+
+  const playExtraClip = useCallback((name: string) => {
+    if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
+    // Same epoch bump as every other one-off motion: repeating the SAME clip must
+    // remount and replay, not silently reuse the DOM node.
+    bumpReaction()
+    setActiveClip(name)
+    clipTimer.current = window.setTimeout(() => setActiveClip(undefined), CLIP_HOLD_MS)
+  }, [bumpReaction])
+
+  useEffect(() => () => {
+    if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
+  }, [])
+
   useIdleFidget({
     enabled: isDefaultPack && settled,
     getPos: () => pos,
@@ -966,7 +1004,7 @@ function Companion() {
     getPos: () => pos,
     walkPath,
     setMood,
-    playExtra: () => {},
+    playExtra: playExtraClip,
   })
 
   // Report the companion's and bubble's hitboxes to the main process; it polls the
@@ -1156,6 +1194,11 @@ function Companion() {
             docked={hideEdge !== null}
             anim={activeAnim}
             animEpoch={reactionEpoch}
+            /*
+             * A playing clip must never mask a real reaction: done/error outrank it.
+             * `petState` returning to idle is what lets the held clip show.
+             */
+            clipName={petState === 'idle' ? activeClip : undefined}
             trackCursor
             flipX={facingRight}
             accessory={celebrateProp ?? savedProp}

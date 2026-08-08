@@ -28,7 +28,7 @@ const FPS = 7 // PetDex loops ~6 frames / 1100ms ≈ 5.5fps; 7 reads a touch liv
  * Skipped on purpose: running-left, because the app mirrors art with flipX, so a
  * second directional loop would be redundant.
  */
-const STATE_MAP: Array<{ key: string; row: number; frames: number }> = [
+export const STATE_MAP: Array<{ key: string; row: number; frames: number }> = [
   { key: 'idle', row: 0, frames: 6 },     // idle
   { key: 'error', row: 5, frames: 8 },    // failed
   { key: 'done', row: 4, frames: 5 },     // jumping — celebratory hop
@@ -37,10 +37,21 @@ const STATE_MAP: Array<{ key: string; row: number; frames: number }> = [
 
 // PetDex rows → our open-ended Random "extras", played spontaneously. 'waiting'
 // used to be forced into the `offline` slot, which is no longer a slot at all.
-const RANDOM_MAP: Array<{ name: string; row: number; frames: number }> = [
+// With `review` here, every PetDex row is now consumed except running-left
+// (deliberately skipped: the app mirrors with flipX, so a second directional
+// loop is redundant).
+export const RANDOM_MAP: Array<{ name: string; row: number; frames: number }> = [
   { name: 'wave', row: 3, frames: 4 },    // waving
   { name: 'waiting', row: 6, frames: 6 }, // waiting (patient idle variant)
   { name: 'run', row: 7, frames: 6 },     // running (in-place)
+  /*
+   * PetDex publishes no authoritative frame count for the review row, so this
+   * slices at the sheet's maximum width. Over-counting is safe by construction:
+   * SpriteRenderer detects and skips empty trailing frames, so a 5-frame clip
+   * sliced as 8 plays as 5 — while UNDER-counting would silently truncate the
+   * animation with no signal anywhere.
+   */
+  { name: 'review', row: 8, frames: 8 },  // review (thoughtful look)
 ]
 
 /** Crop one grid row into a horizontal strip PNG data URI. */

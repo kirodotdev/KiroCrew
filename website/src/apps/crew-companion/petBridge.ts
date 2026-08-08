@@ -725,7 +725,11 @@ export const petBridge: PetBridge = {
   async gallerySavePack(data: PackInput) {
     const meta = data.meta ?? {}
     const id = String(meta.id ?? '')
-    if (!id) return { ok: false, error: 'That pack needs a name' }
+    // This guards the internal pack id, which the editor mints — it is NOT the
+    // human name, so "needs a name" was a lie that sent the user hunting for a field
+    // they had already filled. If it is ever empty the caller failed to mint one,
+    // which is a bug on our side, not missing user input; say so.
+    if (!id) return { ok: false, error: 'Could not save: the pack has no internal id' }
 
     const files: Record<string, string> = {}
     // Each category keeps its OWN manifest map. A map here names a slot -> its

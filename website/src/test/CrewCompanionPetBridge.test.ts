@@ -175,7 +175,7 @@ describe('gallerySavePack — category preservation', () => {
       meta: {},
       states: { idle: '<svg/>' },
     })
-    expect(result).toEqual({ ok: false, error: 'That pack needs a name' })
+    expect(result).toEqual({ ok: false, error: 'Could not save: the pack has no internal id' })
     expect(fn).not.toHaveBeenCalled()
   })
 })

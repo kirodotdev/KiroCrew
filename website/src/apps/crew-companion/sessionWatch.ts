@@ -135,6 +135,19 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
   const titles = new Map<string, string>()
   /** Slots that emitted an error message during the current turn. */
   const failedSlots = new Set<string>()
+  /**
+   * Slots the USER deliberately stopped mid-turn.
+   *
+   * The backend broadcasts `chat_done` for a stopped turn exactly as it does for a
+   * finished one — the frame is `{slot}` either way — so without this the companion
+   * celebrated an interruption as a success. The stop itself never arrives as a
+   * `chat_message` (the stop card is appended without a broadcast), but the `slots`
+   * frames this watcher already consumes carry `stopping: true` while the cancel is
+   * in flight; that is the signal recorded here. A stopped turn is neither a success
+   * nor a failure — the user chose to end it — so `finish()` drops it silently:
+   * no hop, no bubble, no error shake.
+   */
+  const stoppedSlots = new Set<string>()
 
   let socket: WebSocket | null = null
   let stopped = false
@@ -151,9 +164,15 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     const started = startedAt.get(slot)
     const wasAssumed = assumed.has(slot)
     const failed = failedSlots.has(slot)
+    const userStopped = stoppedSlots.has(slot)
     startedAt.delete(slot)
     assumed.delete(slot)
     failedSlots.delete(slot)
+    stoppedSlots.delete(slot)
+
+    // The user pressed Stop: this turn ended because they ended it. Celebrating it
+    // as done misreports the outcome, and shaking about it misreports it worse.
+    if (userStopped) return
 
     let decision: GateDecision = evaluateCompletion({
       slotKey: slot,
@@ -221,10 +240,20 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
         // running is an ASSUMED start: we joined mid-turn.
         const list = Array.isArray(data) ? data : (data.slots as unknown[]) ?? []
         for (const entry of list) {
-          const s = entry as { key?: unknown; running?: unknown; title?: unknown }
+          const s = entry as { key?: unknown; running?: unknown; title?: unknown; stopping?: unknown }
           if (typeof s.key !== 'string') continue
           if (typeof s.title === 'string') titles.set(s.key, s.title)
           if (s.running === true) markStart(s.key, true)
+          /*
+           * `stopping: true` is the only signal this socket gets that the user
+           * pressed Stop — the stop card itself is appended to the transcript
+           * without a `chat_message` broadcast, so it never arrives here. The flag
+           * is transient (the cancel is in flight), which is exactly why it is
+           * RECORDED rather than acted on: by the time `chat_done` lands the flag
+           * may already be false again, and `finish()` needs to know the turn's
+           * ending was chosen, not earned.
+           */
+          if (s.stopping === true) stoppedSlots.add(s.key)
         }
         break
       }
@@ -281,6 +310,31 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     }
   }
 
+  /**
+   * The socket dropped while turns were in flight — report each as a FAILURE.
+   *
+   * A gateway restart or a network drop means no `chat_done` will ever arrive for
+   * those slots, so without this they sat in `startedAt` forever: no notification (the
+   * user is never told the work died) AND a stale start time, so the NEXT turn on that
+   * slot measured its duration from the old start and could report a three-second turn
+   * as a long one.
+   *
+   * Reported as failed, not silently dropped, because that is what it is: the work
+   * stopped without finishing and the user did not ask for that. It goes through the
+   * same `finish(failed)` path as an error row — which also means it is never silenced
+   * by the session-notifications preference, matching the existing rule that bad news
+   * always gets through.
+   *
+   * A deliberate Stop is excluded: `finish()` returns early for a slot in
+   * `stoppedSlots`, so a stop that happens to be followed by a disconnect stays quiet.
+   */
+  const failInFlight = () => {
+    for (const slot of [...startedAt.keys()]) {
+      failedSlots.add(slot)
+      finish(slot)
+    }
+  }
+
   const open = () => {
     if (stopped) return
     let ws: WebSocket
@@ -294,7 +348,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     ws.onopen = () => { retryMs = RECONNECT_MIN_MS }
     ws.onmessage = (ev) => handle(String(ev.data))
     // Both paths reconnect: a gateway restart closes cleanly, a network drop errors.
-    ws.onclose = () => { socket = null; schedule() }
+    ws.onclose = () => { socket = null; failInFlight(); schedule() }
     ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
   }
 

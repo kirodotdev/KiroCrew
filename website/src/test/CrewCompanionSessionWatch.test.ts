@@ -58,6 +58,98 @@ function harness(): Harness {
 }
 
 describe('session completion → bubble', () => {
+  it('reports an in-flight turn as FAILED when the socket drops', () => {
+    /*
+     * A gateway restart or network drop means `chat_done` will never arrive for that
+     * turn. Silence would be wrong twice: the user is never told the work died, and the
+     * stale start time makes the NEXT turn on that slot measure its duration from the
+     * old start — reporting a three-second turn as a long one. The work stopped without
+     * finishing and nobody asked for that, so it is a failure.
+     */
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.setNow(1_000_000 + TURN_NOTIFY_MIN_MS + 1)
+    h.socket.onclose?.()
+    expect(h.done).toHaveLength(1)
+    expect(h.done[0].failed).toBe(true)
+    expect(h.done[0].slot).toBe('chat-1')
+    h.stop()
+  })
+
+  it('a crash is reported even with session alerts switched off', () => {
+    // Same exception the error path already makes: bad news is never silenced.
+    const h = harness()
+    h.setSilent(true)
+    h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.setNow(1_000_000 + TURN_NOTIFY_MIN_MS + 1)
+    h.socket.onclose?.()
+    expect(h.done).toHaveLength(1)
+    expect(h.done[0].failed).toBe(true)
+    h.stop()
+  })
+
+  it('a deliberate Stop followed by a disconnect stays quiet', () => {
+    // The stop guard must win over the crash handler — the user chose this ending.
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.setNow(1_000_000 + TURN_NOTIFY_MIN_MS + 1)
+    h.send('slots', { slots: [{ key: 'chat-1', running: true, stopping: true, title: 'Fix the parser' }] })
+    h.socket.onclose?.()
+    expect(h.done).toHaveLength(0)
+    h.stop()
+  })
+
+  it('does not report anything when the CALLER stops watching', () => {
+    // Unmounting the companion is not a crash. `stop()` detaches onclose first, which
+    // is what keeps the teardown silent.
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.setNow(1_000_000 + TURN_NOTIFY_MIN_MS + 1)
+    h.stop()
+    expect(h.done).toHaveLength(0)
+  })
+
+  it('stays quiet when the user pressed Stop mid-turn', () => {
+    /*
+     * The backend broadcasts `chat_done` for a stopped turn exactly as for a finished
+     * one — `{slot}` either way — so the watcher used to celebrate an interruption as
+     * a success. The only signal this socket gets is the transient `stopping: true` on
+     * a slots frame while the cancel is in flight; recording it is what lets finish()
+     * know this ending was chosen, not earned. Neither a hop nor an error shake is
+     * right for "I changed my mind", so the turn is dropped silently.
+     */
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.setNow(1_000_000 + TURN_NOTIFY_MIN_MS + 1)
+    // The user presses Stop: the cancel-in-flight flag rides a slots frame…
+    h.send('slots', { slots: [{ key: 'chat-1', running: true, stopping: true, title: 'Fix the parser' }] })
+    // …and the turn still terminates with an ordinary chat_done.
+    h.send('chat_done', { slot: 'chat-1' })
+    expect(h.done).toHaveLength(0)
+    h.stop()
+  })
+
+  it('forgets a stop once that turn is over — the next completion still notifies', () => {
+    // The stop must be consumed by the turn it ended, not poison the slot forever.
+    const h = harness()
+    h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.send('slots', { slots: [{ key: 'chat-1', running: true, stopping: true, title: 'Fix the parser' }] })
+    h.send('chat_done', { slot: 'chat-1' })
+    expect(h.done).toHaveLength(0)
+    // A fresh turn on the same slot, finished normally this time.
+    h.send('chat_status', { slot: 'chat-1', status: 'Thinking…' })
+    h.setNow(1_000_000 + 2 * (TURN_NOTIFY_MIN_MS + 1))
+    h.send('chat_done', { slot: 'chat-1' })
+    expect(h.done).toHaveLength(1)
+    h.stop()
+  })
+
   it('notifies when a watched turn ran long enough', () => {
     const h = harness()
     h.send('slots', { slots: [{ key: 'chat-1', running: false, title: 'Fix the parser' }] })

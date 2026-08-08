@@ -531,11 +531,14 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
 
       const packData = {
         meta: {
-          // A new authored pack needs a real id up front: gallerySavePack
-          // refuses an empty id before any request is made, so `''` meant
-          // "Make your own" could never actually create a pack. Mint one the
-          // same way sprite-pack creation does.
-          id: asNew ? crypto.randomUUID() : (existingPack?.id ?? ''),
+          // A pack needs a real id before any request: gallerySavePack refuses an
+          // empty one. Mint an id whenever there is no pack to overwrite — that is
+          // BOTH an explicit "save as new" (`asNew`) AND, crucially, a brand-new pack
+          // from "Make your own", where `existingPack` is undefined. An earlier fix
+          // minted only on `asNew`, but `triggerSave` sends a first-time save through
+          // `doSave(false)` (there is no existing pack to prompt an overwrite against),
+          // so new packs hit the `''` branch and every save failed with "needs a name".
+          id: asNew || !existingPack ? crypto.randomUUID() : existingPack.id,
           name: name.trim(),
           author: author.trim() || i18nT('apps.crewCompanion.editor.unknownAuthor'),
           description: description.trim(),
