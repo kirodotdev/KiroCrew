@@ -812,6 +812,343 @@ class TestWaveDigest:
         assert "Batch results" not in injected[0]
 
 
+# ── 4b. Hold deadline (straggler escape hatch, issue #2215) ──────────
+
+
+class TestDigestHoldDeadline:
+    """The chunk COUNT trigger cannot fire for a wave smaller than the chunk
+    size, so wave close is its only flush — every sibling's finished result is
+    withheld for the slowest member's remaining runtime, and for a member that
+    HANGS rather than fails, for the full 30-minute reap. The reaper's
+    hold-deadline sweep is the LATENCY trigger that releases them.
+    """
+
+    def _held_member(self, i: int, *, batch: str = "wv", total: int = 3) -> SubagentInfo:
+        info = SubagentInfo(
+            id=f"h{i}",
+            task=f"held task {i}",
+            parent_session_key="dashboard:main",
+            batch_id=batch,
+            batch_total=total,
+        )
+        info.done = True
+        return info
+
+    def _mgr(self, *, pending: bool = True) -> SubagentManager:
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._on_done = AsyncMock()
+        mgr.batch_members_pending = MagicMock(return_value=pending)
+        return mgr
+
+    def test_hold_within_deadline_is_not_flushed(self):
+        """A wave whose members finish close together must still deliver ONE
+        consolidated digest — the deadline is a latency cap, not a per-member
+        flush. Regression guard against re-introducing the chunk-size=1
+        behavior (which floods the parent with N turns at scale)."""
+        mgr = self._mgr()
+        now = time.time()
+        m = self._held_member(0)
+        m._digest_held_at = now - 5.0
+        mgr._agents["h0"] = m
+        with patch.object(mgr, "force_digest_flush") as forced:
+            mgr._sweep_digest_holds(now)
+        forced.assert_not_called()
+
+    def test_expired_hold_forces_flush(self):
+        """THE BUG (#2215): two members finished, the third is still running, so
+        neither chunk trigger can fire. Once the oldest hold ages past the
+        deadline the sweep forces the partial digest out instead of waiting for
+        the straggler (up to 30 min for a hang)."""
+        from kiro_crew.subagent import DIGEST_HOLD_SECS
+
+        mgr = self._mgr(pending=True)
+        now = time.time()
+        for i in (0, 1):
+            m = self._held_member(i)
+            m._digest_held_at = now - (DIGEST_HOLD_SECS + 10 - i)
+            mgr._agents[m.id] = m
+        with patch.object(mgr, "force_digest_flush") as forced:
+            mgr._sweep_digest_holds(now)
+        forced.assert_called_once()
+        batch_id, parent, total, age = forced.call_args.args
+        assert batch_id == "wv"
+        assert parent == "dashboard:main"
+        assert total == 3
+        # Aged from the OLDEST hold in the wave, not the newest — the deadline
+        # must describe the worst wait the parent actually suffered.
+        assert age >= DIGEST_HOLD_SECS + 10 - 1
+
+    def test_closing_wave_is_not_force_flushed(self):
+        """When no member is outstanding the real wave-close digest (counts +
+        release guidance) is already in flight; forcing a partial one here would
+        race it and could double-deliver the same members."""
+        from kiro_crew.subagent import DIGEST_HOLD_SECS
+
+        mgr = self._mgr(pending=False)
+        now = time.time()
+        m = self._held_member(0)
+        m._digest_held_at = now - (DIGEST_HOLD_SECS + 60)
+        mgr._agents["h0"] = m
+        with patch.object(mgr, "force_digest_flush") as forced:
+            mgr._sweep_digest_holds(now)
+        forced.assert_not_called()
+
+    def test_deadline_zero_disables_sweep(self):
+        """``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS=0`` is the documented opt-out
+        back to count-trigger-only behavior."""
+        mgr = self._mgr()
+        now = time.time()
+        m = self._held_member(0)
+        m._digest_held_at = now - 100_000.0
+        mgr._agents["h0"] = m
+        with patch("kiro_crew.subagent.DIGEST_HOLD_SECS", 0.0), \
+                patch.object(mgr, "force_digest_flush") as forced:
+            mgr._sweep_digest_holds(now)
+        forced.assert_not_called()
+
+    def test_unheld_members_never_trip_the_sweep(self):
+        """``_digest_held_at`` is the sweep's ONLY input: a delivered member
+        (hold cleared at flush) must not re-trigger a flush forever."""
+        from kiro_crew.subagent import DIGEST_HOLD_SECS
+
+        mgr = self._mgr()
+        now = time.time()
+        m = self._held_member(0)
+        m._digest_held = True  # restart-safety flag stays set after the flush…
+        m._digest_held_at = 0.0  # …but the hold clock was stopped
+        mgr._agents["h0"] = m
+        with patch.object(mgr, "force_digest_flush") as forced:
+            mgr._sweep_digest_holds(now + DIGEST_HOLD_SECS * 10)
+        forced.assert_not_called()
+
+    def test_force_digest_flush_builds_flush_only_record(self):
+        mgr = self._mgr()
+        announced: list[SubagentInfo] = []
+
+        async def _cap(info):
+            announced.append(info)
+
+        mgr._on_done = _cap
+        mgr.force_digest_flush("wv", "dashboard:main", 3, 200.0)
+        assert mgr._tasks  # scheduled
+        asyncio.get_event_loop().run_until_complete(
+            asyncio.gather(*mgr._tasks.values())
+        )
+        (rec,) = announced
+        assert rec._digest_flush_only is True
+        assert rec.batch_id == "wv" and rec.batch_total == 3
+        assert rec.done is True and rec.error == ""
+        assert "200s" in rec.task
+
+    @pytest.mark.asyncio
+    async def test_flush_only_settles_holds_only_after_on_done(self):
+        """Same restart-safety contract as ``_run``: a routing failure must
+        leave held members undelivered so orphan reconciliation can recover
+        them. The flush-only path has no run loop, so it enforces it itself."""
+        mgr = self._mgr()
+        info = SubagentInfo(id="flush", task="t", batch_id="wv")
+        info._digest_flush_only = True
+        info._digest_settle_ids = ["h0", "h1"]
+
+        marked: list[str] = []
+        mgr._on_done = AsyncMock(side_effect=RuntimeError("routing blew up"))
+        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+            await mgr._announce_digest_flush(info)
+        assert marked == []  # failure → nothing tombstoned
+        assert info._digest_settle_ids == ["h0", "h1"]
+
+        mgr._on_done = AsyncMock()
+        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+            await mgr._announce_digest_flush(info)
+        assert marked == ["h0", "h1"]
+
+    @pytest.mark.asyncio
+    async def test_straggler_wave_delivers_partial_digest_end_to_end(self):
+        """REPRO for #2215, end to end through the real sweep.
+
+        A 3-member wave: two members finish, the third keeps running. Neither
+        chunk trigger can fire — the COUNT trigger needs 10 pending completions
+        and the wave has not closed — so on main the parent receives NOTHING
+        until the straggler ends (up to the 30-minute reap if it hangs). After
+        the fix the reaper's hold-deadline sweep releases the two finished
+        results as a labelled partial digest."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gw_mgr, on_done = TestWaveDigest()._capture_on_done(orch)
+        gw_mgr.batch_members_pending = MagicMock(return_value=True)  # straggler alive
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text):
+            injected.append(text)
+
+        # Real manager for the sweep, wired to the gateway's own consumer.
+        real = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        real._on_done = on_done
+        real.batch_members_pending = MagicMock(return_value=True)
+
+        finished = []
+        for i in range(2):
+            m = SubagentInfo(
+                id=f"e{i}", task=f"task {i}",
+                parent_session_key="dashboard:main",
+                batch_id="e2e", batch_total=3,
+            )
+            m.done = True
+            m.result = f"result {i}"
+            m.result_path = f"/tmp/e{i}/result.txt"
+            finished.append(m)
+            real._agents[m.id] = m
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"), \
+                patch("kiro_crew.subagent.mark_delivered"):
+            for m in finished:
+                await on_done(m)
+                await asyncio.sleep(0)
+            # Held: this is the reported symptom — two complete results on disk,
+            # zero signal to the parent.
+            assert injected == []
+
+            # Advance past the hold deadline and run the sweep the reaper runs.
+            # getattr keeps the failure BEHAVIORAL on unfixed code (no injection)
+            # instead of an AttributeError.
+            hold = getattr(__import__(
+                "kiro_crew.subagent", fromlist=["DIGEST_HOLD_SECS"]
+            ), "DIGEST_HOLD_SECS", 120.0)
+            sweep = getattr(real, "_sweep_digest_holds", lambda _now: None)
+            sweep(time.time() + hold + 5)
+            await _settle(lambda: len(injected) >= 1)
+
+        assert len(injected) == 1, "straggler withheld both finished siblings"
+        digest = injected[0]
+        assert "/tmp/e0/result.txt" in digest and "/tmp/e1/result.txt" in digest
+        assert "2 of 3 delivered, 1 still running" in digest
+        assert "PARTIAL result set" in digest
+
+    @pytest.mark.asyncio
+    async def test_gateway_flush_only_releases_held_results(self):
+        """End of the chain: a flush-only record makes the gateway deliver the
+        held siblings' digest WITHOUT inventing an agent — no terminal WS
+        event, no done/ok counter bump, and the wave-close chunk still to come.
+        This is the assertion that fails on main (2 of 3 → zero injections)."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = TestWaveDigest()._capture_on_done(orch)
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text):
+            injected.append(text)
+
+        members = [
+            SubagentInfo(
+                id=f"s{i}", task=f"task {i}",
+                parent_session_key="dashboard:main",
+                batch_id="strag", batch_total=3,
+            )
+            for i in range(2)
+        ]
+        for i, m in enumerate(members):
+            m.done = True
+            m.result = f"result {i}"
+            m.result_path = f"/tmp/s{i}/result.txt"
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"):
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            for m in members:
+                await on_done(m)
+                await asyncio.sleep(0)
+            # Pre-fix behavior: nothing delivered — the count trigger (10) is
+            # unreachable and the wave has not closed.
+            assert injected == []
+            assert all(m._digest_held for m in members)
+            assert all(m._digest_held_at > 0 for m in members)
+
+            flush = SubagentInfo(
+                id="ff", task="(wave digest flush — results held 200s)",
+                parent_session_key="dashboard:main",
+                batch_id="strag", batch_total=3,
+            )
+            flush.done = True
+            flush._digest_flush_only = True
+            await on_done(flush)
+            await _settle(lambda: len(injected) >= 1)
+
+        assert len(injected) == 1
+        digest = injected[0]
+        assert digest.startswith("[Subagent batch completion event]")
+        # Both finished siblings' results are in the parent's context now.
+        assert "/tmp/s0/result.txt" in digest and "/tmp/s1/result.txt" in digest
+        # Honest labelling: a partial release, wave-close chunk still to come.
+        assert "Batch results 1/2" in digest
+        assert "2 of 3 delivered, 1 still running" in digest
+        assert "PARTIAL result set" in digest
+        assert "wave finished" not in digest
+        # The synthetic record invented no agent: no terminal WS event for it,
+        # and it was not counted as a wave member.
+        _done_ids = [
+            c.args[1].get("id")
+            for c in orch.dashboard_state.broadcast_ws.call_args_list
+            if c.args[0] == "subagent_status"
+        ]
+        assert "ff" not in _done_ids
+        assert "wave digest flush" not in digest
+        # Hold clocks stopped, so the sweep cannot force a duplicate flush.
+        assert all(m._digest_held_at == 0.0 for m in members)
+        # Tombstones settle on the flushing record, after routing.
+        assert sorted(flush._digest_settle_ids) == ["s0", "s1"]
+
+    @pytest.mark.asyncio
+    async def test_flush_only_noop_when_nothing_held(self):
+        """A sweep that races the wave-close flush must not emit a second,
+        empty digest."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.get_slot = MagicMock(return_value=None)
+        _mgr, on_done = TestWaveDigest()._capture_on_done(orch)
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text):
+            injected.append(text)
+
+        flush = SubagentInfo(
+            id="ff", task="(wave digest flush — results held 200s)",
+            parent_session_key="dashboard:main",
+            batch_id="gone", batch_total=3,
+        )
+        flush.done = True
+        flush._digest_flush_only = True
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat):
+            await on_done(flush)
+            await asyncio.sleep(0.05)
+        assert injected == []
+        # And no phantom "agent completed" notification for the synthetic record.
+        orch.dashboard_state.notify.assert_not_called()
+
+
 # ── 5. Retry endpoint gating ─────────────────────────────────────────
 
 

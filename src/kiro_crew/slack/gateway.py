@@ -192,6 +192,7 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.retry import open_dm_with_retry
 from kiro_crew.subagent import (
+    DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
     SubagentInfo,
     SubagentManager,
@@ -3842,7 +3843,16 @@ class GatewayOrchestrator:
                         await asyncio.sleep(2**attempt)
                 return None  # unreachable, but satisfies type checker
 
-            await _broadcast_subagent_status(info, "done")
+            # A synthetic flush-only record is NOT a wave member (see
+            # SubagentManager.force_digest_flush): it exists only to force the
+            # wave's pending digest chunk out when its hold deadline expired.
+            # Every per-member side effect below must be skipped for it — a
+            # terminal WS event, orchestration accounting or a done/ok counter
+            # bump would invent an agent that never ran.
+            _flush_only = getattr(info, "_digest_flush_only", False) is True
+
+            if not _flush_only:
+                await _broadcast_subagent_status(info, "done")
             # Three-way outcome: a user stop is neutral — neither a success nor
             # a failure. The record contract keeps ``error`` unset for stops, so
             # every consumer below must branch on ``user_stopped`` explicitly
@@ -3883,7 +3893,11 @@ class GatewayOrchestrator:
                         logger.info("Orchestration stopped, ignoring subagent result %s", info.id)
                         return
                     task_key = info.task[:80]
-                    if info.user_stopped:
+                    if _flush_only:
+                        # No task ran — nothing to record. Recording it as a
+                        # success would credit a stage round to a timer.
+                        pass
+                    elif info.user_stopped:
                         # User stop: neither success nor failure. Recording it
                         # as success would let orchestration/synthesis advance
                         # on work the user explicitly killed and permanently
@@ -3905,7 +3919,7 @@ class GatewayOrchestrator:
                         if self.subagent_mgr
                         else []
                     )
-                    if not pending:
+                    if not pending and not _flush_only:
                         # All agents done → one round completed
                         stage = tracker.current_stage
                         if tracker.record_round(stage):
@@ -3965,6 +3979,13 @@ class GatewayOrchestrator:
 
             parent_key = info.parent_session_key
 
+            if _flush_only:
+                # The synthetic record has no result of its own. Its title/body
+                # are only used by the "parent slot gone → notification only"
+                # fallback, so make them describe the WAVE, not a phantom agent.
+                title = "Wave results (partial)"
+                body = task_text
+
             # ── Batch accounting + wave digest (scale plumbing) ──
             # Every batch member is accounted here (the single completion
             # consumer for all terminal paths). Waves larger than the digest
@@ -3980,26 +4001,50 @@ class GatewayOrchestrator:
                 _batch_id = ""
             if not isinstance(_batch_total, int):
                 _batch_total = 0
+            if _flush_only and not _batch_id:
+                # A flush-only record without wave identity has nothing to
+                # release and MUST NOT fall through to the per-agent routing
+                # below — that would inject a completion turn for an agent that
+                # never ran.
+                return
             if _batch_id:
-                bp = self._batch_progress.setdefault(
-                    _batch_id,
-                    {
-                        "total": _batch_total,
-                        "done": 0,
-                        "ok": 0,
-                        "err": 0,
-                        "stopped": 0,
-                        "fail_lines": [],
-                        "ok_lines": [],
-                        "guard_msgs": [],
-                        "held_ok_ids": [],
-                        # Chunked delivery bookkeeping: "flushed" = members whose
-                        # results have already been delivered in a prior chunk;
-                        # "chunks" = digest chunks emitted so far.
-                        "flushed": 0,
-                        "chunks": 0,
-                    },
-                )
+                if _flush_only:
+                    # Nothing to release (wave already closed / already flushed
+                    # by a completion that raced this sweep) → no-op.
+                    _bp = self._batch_progress.get(_batch_id)
+                    if _bp is None or _bp["done"] <= _bp["flushed"]:
+                        return
+                    bp = _bp
+                    # A forced flush never closes the wave: the sweep only fires
+                    # while members are still outstanding, so the wave-close
+                    # digest (counts + release guidance) is still to come.
+                    _last = False
+                    _oc = ""
+                else:
+                    bp = self._batch_progress.setdefault(
+                        _batch_id,
+                        {
+                            "total": _batch_total,
+                            "done": 0,
+                            "ok": 0,
+                            "err": 0,
+                            "stopped": 0,
+                            "fail_lines": [],
+                            "ok_lines": [],
+                            "guard_msgs": [],
+                            "held_ok_ids": [],
+                            # Members whose delivery is currently held, so the
+                            # hold-deadline sweep's timestamps can be cleared
+                            # when their chunk finally fires.
+                            "held_infos": [],
+                            # Chunked delivery bookkeeping: "flushed" = members whose
+                            # results have already been delivered in a prior chunk;
+                            # "chunks" = digest chunks emitted so far.
+                            "flushed": 0,
+                            "chunks": 0,
+                        },
+                    )
+            if _batch_id and not _flush_only:
                 bp["done"] += 1
                 # Fold EVERY member's orchestration escalation into the wave
                 # digest — held members return before the announce is sent, so
@@ -4062,6 +4107,11 @@ class GatewayOrchestrator:
                             )
                     except Exception:
                         logger.debug("batch_finished broadcast failed", exc_info=True)
+            if _batch_id:
+                if _flush_only and bp["total"] <= 1:
+                    # Single-member wave: nothing is ever held, and falling
+                    # through would route the phantom per-agent announce.
+                    return
                 if bp["total"] > 1:
                     # ── Chunked wave delivery ── completed results feed the
                     # parent queue-style: every SUBAGENT_DIGEST_CHUNK_SIZE
@@ -4071,8 +4121,15 @@ class GatewayOrchestrator:
                     # incremental signal — one straggler no longer withholds
                     # every sibling's result for its entire runtime (Design
                     # Review CONCERN 1).
+                    #
+                    # The count trigger alone cannot deliver that incremental
+                    # signal for a wave smaller than the chunk size (issue
+                    # #2215): _pending can never reach it, so wave close is the
+                    # only flush. _flush_only is the LATENCY trigger the count
+                    # lacks — the reaper's hold-deadline sweep forces the
+                    # pending chunk out once results have been held too long.
                     _pending = bp["done"] - bp["flushed"]
-                    _flush = _last or _pending >= SUBAGENT_DIGEST_CHUNK_SIZE
+                    _flush = _last or _flush_only or _pending >= SUBAGENT_DIGEST_CHUNK_SIZE
                     if not _flush:
                         # Held for the next chunk — the terminal WS event,
                         # tracker accounting, and stats above already ran;
@@ -4086,6 +4143,12 @@ class GatewayOrchestrator:
                         # recovery digest; in normal operation they are marked
                         # delivered when their chunk flushes.
                         info._digest_held = True
+                        # Hold clock for the reaper's hold-deadline sweep. Kept
+                        # separate from _digest_held (the restart-safety flag the
+                        # run loop reads) so the sweep never mutates that
+                        # contract; cleared when this member's chunk fires.
+                        info._digest_held_at = time.time()
+                        bp.setdefault("held_infos", []).append(info)
                         if _oc == "completed":
                             bp["held_ok_ids"].append(info.id)
                         logger.info(
@@ -4103,6 +4166,12 @@ class GatewayOrchestrator:
                     # settles them only after _on_done (which includes the
                     # routing below) returns without raising.
                     info._digest_settle_ids = list(bp.get("held_ok_ids", []))
+                    # These members are no longer held: stop the hold clock so
+                    # the reaper's deadline sweep does not force a second flush
+                    # for results this chunk already carries.
+                    for _held in bp.get("held_infos", []):
+                        _held._digest_held_at = 0.0
+                    bp["held_infos"] = []
                     _failures = bp["fail_lines"]
                     _oks = bp["ok_lines"]
                     _digest_body = "\n".join(_failures + _oks)
@@ -4116,9 +4185,14 @@ class GatewayOrchestrator:
                     _chunk_k = bp["chunks"]
                     # Total chunks: full chunks + one final partial. Completion
                     # order fills chunks to exactly CHUNK_SIZE, so this is
-                    # ceil(total / chunk_size).
+                    # ceil(total / chunk_size) — but a NON-final chunk always
+                    # has at least the wave-close chunk still to come, so it can
+                    # never honestly label itself k/k. Without the +1 a
+                    # deadline-forced flush on a small wave would announce
+                    # "1/1 — 1 still running", telling the parent the wave is
+                    # fully delivered while a member is outstanding.
                     _chunk_j = max(
-                        _chunk_k,
+                        _chunk_k if _last else _chunk_k + 1,
                         -(-bp["total"] // SUBAGENT_DIGEST_CHUNK_SIZE),
                     )
                     _footer = (
@@ -4145,11 +4219,27 @@ class GatewayOrchestrator:
                         # spawns that would interleave with the batches still
                         # arriving from this run.
                         _remaining = max(0, bp["total"] - bp["done"])
+                        # A deadline-forced flush is a STRAGGLER release, not a
+                        # full chunk: say so, or the parent reads "still
+                        # running" as normal progress and keeps waiting rather
+                        # than deciding whether the remainder is worth waiting
+                        # for (issue #2215).
+                        _why = (
+                            f"The results below were finished and held for "
+                            f"{int(DIGEST_HOLD_SECS)}s+ while the remaining "
+                            f"agent(s) ran, so they are being delivered early "
+                            f"as a PARTIAL result set. Synthesize what you can "
+                            f"now; if a remaining agent never reports, work "
+                            f"with what you have or tell the user.\n"
+                            if _flush_only
+                            else ""
+                        )
                         announce = (
                             f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — "
                             f"{bp['done']} of {bp['total']} delivered, "
                             f"{_remaining} still running.\n"
+                            f"{_why}"
                             f"Process these results now, but do NOT spawn new "
                             f"sub-agents yet — more result batches from this "
                             f"run are still arriving, and spawning now will "
