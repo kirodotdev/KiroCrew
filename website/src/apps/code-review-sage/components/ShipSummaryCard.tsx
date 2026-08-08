@@ -36,23 +36,31 @@ export default function ShipSummaryCard({
   return (
     <div className="rounded-lg border border-border bg-bg-elevated overflow-hidden border-l-[3px] border-l-accent my-2">
       <div className="flex items-center gap-1.5 px-3.5 py-2 border-b border-border text-[12.5px]">
-        {selectable && !posted && (
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={onToggle}
-            aria-label={i18nT('apps.codeReviewSage.components.shipSummaryCard.select_the_ship_readiness_summary_to_post')}
-            className="mr-0.5 flex-shrink-0 accent-accent cursor-pointer"
-          />
-        )}
         <ShipWheel size={13} className="flex-shrink-0 text-accent" aria-hidden="true" />
         <span className="font-semibold text-accent">{i18nT('apps.codeReviewSage.components.shipSummaryCard.ship_readiness_summary')}</span>
         <span className="ml-auto text-[11px] text-muted">{i18nT('apps.codeReviewSage.components.shipSummaryCard.posted_as_a_top_level_comment')}</span>
       </div>
-      <div className="px-3.5 py-2.5 text-[12.5px] leading-[1.65] flex flex-col gap-1.5">
+      <div className="px-3.5 py-2.5 text-[12.5px] leading-[1.65]">
         <MarkdownRenderer content={body} />
-        {(posted || onPost) && (
-          <div className="pt-1.5">
+      </div>
+      {/* Same footer control group as FindingCard: selecting this comment and
+          drafting it are one decision, so the two controls sit together. */}
+      {(posted || onPost || (selectable && !posted)) && (
+        <div className="flex items-center gap-2 border-t border-border-strong bg-panel-strong px-3.5 py-2">
+          {selectable && !posted && (
+            <label className="flex items-center gap-2 text-[11.5px] text-muted cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selected}
+                onChange={onToggle}
+                aria-label={i18nT('apps.codeReviewSage.components.shipSummaryCard.select_the_ship_readiness_summary_to_post')}
+                className="flex-shrink-0 accent-accent cursor-pointer"
+              />
+              {i18nT('apps.codeReviewSage.components.findingCard.select_to_draft_together')}
+            </label>
+          )}
+          <span className="flex-1" />
+          <div>
             {posted ? (
               <span className="inline-flex items-center gap-1.5 text-[11.5px] text-ok">
                 <Check size={11} aria-hidden="true" /> {i18nT('apps.codeReviewSage.components.shipSummaryCard.posted_to_the_pull_request')}
@@ -78,8 +86,8 @@ export default function ShipSummaryCard({
               </button>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

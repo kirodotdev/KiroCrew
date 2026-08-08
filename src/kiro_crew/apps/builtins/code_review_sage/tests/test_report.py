@@ -282,19 +282,23 @@ class TestBuildRender(unittest.TestCase):
         self.assertIn("Long commands abort", h)        # chain still shown below
 
     def test_design_facets_split_newlines_and_legacy_prose(self):
-        # Newline-separated facets -> one entry per line.
+        # Newline-separated facets -> one entry per line, and labelled: only these
+        # may have a `Label:` prefix hoisted into its own column.
         self.assertEqual(
             RP._design_facets("Resolution: x\nTradeoffs: y\nAlternatives: z"),
-            ["Resolution: x", "Tradeoffs: y", "Alternatives: z"])
+            (["Resolution: x", "Tradeoffs: y", "Alternatives: z"], True))
         # A long single-paragraph (legacy) assessment is sentence-split so it
-        # doesn't render as one dense block.
+        # doesn't render as one dense block — and NOT labelled, because a colon
+        # inside prose is punctuation, not a facet label.
         legacy = ("The fix resolves the reported crash by adding a length guard "
                   "before the call. However it introduces a subtle race on the "
                   "shared counter that can drop events under load. A lock-free "
                   "counter would avoid the regression entirely.")
-        self.assertGreater(len(RP._design_facets(legacy)), 1)
+        lines, labeled = RP._design_facets(legacy)
+        self.assertGreater(len(lines), 1)
+        self.assertFalse(labeled)
         # A short single line is kept intact (no over-splitting).
-        self.assertEqual(RP._design_facets("Short note."), ["Short note."])
+        self.assertEqual(RP._design_facets("Short note."), (["Short note."], True))
 
     def test_html_design_facets_render_as_labeled_lines(self):
         rec = _rec("CR-FAC", risk="medium", blast="MEDIUM", yellow=1, title="fix")
@@ -313,7 +317,7 @@ class TestBuildRender(unittest.TestCase):
         # the test proves the wiring, not the redaction lib's specific patterns.
         with mock.patch("sage_lib.pipeline._redact",
                         lambda s: s.replace("XSECRETX", "[redacted]")):
-            facets = RP._design_facets("Tradeoffs: XSECRETX here")
+            facets, _labeled = RP._design_facets("Tradeoffs: XSECRETX here")
         joined = " ".join(facets)
         self.assertIn("[redacted]", joined)
         self.assertNotIn("XSECRETX", joined)

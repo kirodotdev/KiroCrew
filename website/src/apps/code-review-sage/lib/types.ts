@@ -126,6 +126,11 @@ export interface Finding {
   severity?: 'red' | 'yellow'
   file?: string
   line?: number | string
+  /** One-sentence conclusion, written by the reviewer (see
+   *  `review_driver.build_review_task`). Optional: reviews recorded before the
+   *  field existed have none, and the card falls back to leading with the
+   *  observation. */
+  headline?: string
   observation?: string
   consequence?: string
   suggestion?: string

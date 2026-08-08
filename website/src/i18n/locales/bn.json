@@ -439,12 +439,18 @@
           "this_review_failed": "এই রিভিউ ব্যর্থ হয়েছে"
         },
         "findingCard": {
+          "consequence": "পরিণতি",
+          "evidence": "প্রমাণ",
+          "observation": "পর্যবেক্ষণ",
           "post_finding": "এই পর্যবেক্ষণ pull request-এ দাও",
           "post_finding_on": "এই পর্যবেক্ষণ {{target}}-এ দাও",
           "post_this_comment": "এই মন্তব্য দাও",
           "posted_to_the_pull_request": "pull request-এ দেওয়া হয়েছে",
           "posting": "দেওয়া হচ্ছে…",
+          "select_to_draft_together": "ড্রাফ্টে যোগ করুন",
           "select_to_post": "দিতে {{label}} বেছে নাও",
+          "severity_must_fix": "অবশ্যই ঠিক করুন",
+          "severity_should_fix": "ঠিক করা উচিত",
           "suggestion": "প্রস্তাব",
           "this_finding": "এই পর্যবেক্ষণ"
         },

@@ -439,12 +439,18 @@
           "this_review_failed": "Dieses Review ist fehlgeschlagen"
         },
         "findingCard": {
+          "consequence": "Folge",
+          "evidence": "Belege",
+          "observation": "Beobachtung",
           "post_finding": "Diesen Befund am Pull-Request veröffentlichen",
           "post_finding_on": "Diesen Befund zu {{target}} veröffentlichen",
           "post_this_comment": "Diesen Kommentar veröffentlichen",
           "posted_to_the_pull_request": "Am Pull-Request veröffentlicht",
           "posting": "Wird veröffentlicht…",
+          "select_to_draft_together": "Zum Entwurf hinzufügen",
           "select_to_post": "{{label}} zum Veröffentlichen auswählen",
+          "severity_must_fix": "muss behoben werden",
+          "severity_should_fix": "sollte behoben werden",
           "suggestion": "Vorschlag",
           "this_finding": "diesen Befund"
         },

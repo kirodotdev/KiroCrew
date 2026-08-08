@@ -436,12 +436,18 @@
           "this_review_failed": "このレビューは失敗しました"
         },
         "findingCard": {
+          "consequence": "影響",
+          "evidence": "根拠",
+          "observation": "事象",
           "post_finding": "この指摘をプルリクエストに投稿する",
           "post_finding_on": "この指摘を {{target}} に投稿する",
           "post_this_comment": "このコメントを投稿する",
           "posted_to_the_pull_request": "プルリクエストに投稿済み",
           "posting": "投稿しています…",
+          "select_to_draft_together": "下書きに追加",
           "select_to_post": "投稿する {{label}} を選択",
+          "severity_must_fix": "要修正",
+          "severity_should_fix": "修正推奨",
           "suggestion": "提案",
           "this_finding": "この指摘"
         },

@@ -439,12 +439,18 @@
           "this_review_failed": "यह समीक्षा विफल रही"
         },
         "findingCard": {
+          "consequence": "परिणाम",
+          "evidence": "प्रमाण",
+          "observation": "अवलोकन",
           "post_finding": "यह निष्कर्ष pull request पर डालो",
           "post_finding_on": "यह निष्कर्ष {{target}} पर डालो",
           "post_this_comment": "यह टिप्पणी डालो",
           "posted_to_the_pull_request": "pull request पर डाल दिया",
           "posting": "डाल रहा हूँ…",
+          "select_to_draft_together": "ड्राफ़्ट में जोड़ें",
           "select_to_post": "डालने के लिए {{label}} चुनो",
+          "severity_must_fix": "अवश्य ठीक करें",
+          "severity_should_fix": "ठीक करना चाहिए",
           "suggestion": "सुझाव",
           "this_finding": "यह निष्कर्ष"
         },
