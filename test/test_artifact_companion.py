@@ -277,13 +277,20 @@ class TestPushArtifactUpdate:
         the send itself is stubbed here."""
         state = _make_state(tmp_path)
         state._ws_clients = [MagicMock()]
-        sent: list[str] = []
-        state._send_ws_all = lambda msg: sent.append(msg)  # type: ignore[method-assign]
+        sent: list[tuple[str, object, str]] = []
+        # New chokepoint signature (msg_type, data, msg): the payload is passed
+        # alongside the serialized envelope so per-app WS scope filtering can
+        # inspect it.
+        state._send_ws_all = (  # type: ignore[method-assign]
+            lambda msg_type, data, msg: sent.append((msg_type, data, msg))
+        )
 
         state.push_artifact_update("cr-queue", 3)
 
         assert len(sent) == 1
-        env = json.loads(sent[0])
+        assert sent[0][0] == "artifact_update"
+        assert sent[0][1] == {"slug": "cr-queue", "version": 3, "deleted": False}
+        env = json.loads(sent[0][2])
         assert env == {
             "type": "artifact_update",
             "data": {"slug": "cr-queue", "version": 3, "deleted": False},

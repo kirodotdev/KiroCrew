@@ -2624,3 +2624,25 @@ def test_app_window_entries_register_route_and_exclusion(tmp_path) -> None:
         assert "/app-windows/someapp/other.html" not in ta._APP_WINDOW_EXCLUDED_PATHS
     finally:
         ta._APP_WINDOW_EXCLUDED_PATHS = prior
+
+
+def test_app_token_path_allowed_implicit_ws():
+    """``/api/ws`` is the only implicitly allowed path.
+
+    It is connection infrastructure rather than a capability, and the implicit
+    grant is sound only because the WS layer filters events per app
+    (``ws_event_scope.py``). ``/api/status`` has NO such response-level filter
+    and discloses ``owner_id_hash``, host specs, cron/usage stats and the live
+    safety-override state, so it must be declared like any other capability.
+    Functional paths must still be declared, so the negative case is asserted
+    alongside.
+    """
+    from kiro_crew.dashboard.token_auth import app_token_path_allowed
+
+    assert app_token_path_allowed("some-app", "/api/ws") is True
+    assert app_token_path_allowed("some-app", "/api/status") is False
+    # Undeclared functional paths stay denied.
+    assert app_token_path_allowed("some-app", "/api/chat") is False
+    assert app_token_path_allowed("some-app", "/api/spawn") is False
+    # An empty app name must never be granted, even for implicit paths.
+    assert app_token_path_allowed("", "/api/ws") is False

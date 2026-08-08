@@ -22,10 +22,15 @@ def _make_state(jobs=None, history_messages=None, notifications=None):
     state = MagicMock()
     slots = {}
 
-    def get_or_create_slot(name=None, agent=""):
+    def get_or_create_slot(name=None, agent="", origin=""):
+        # ``origin`` is recorded, not just tolerated: the cron paths must
+        # declare SlotOrigin.CRON, and a fake that swallowed the kwarg
+        # would let that regress silently (a cron slot relabelled USER is
+        # readable by any app holding `slots:user`).
         if name not in slots:
             slot = MagicMock()
             slot.key = name
+            slot._origin = origin
             slot.linked_session_key = ""
             slot.messages = []
             slot.title = ""

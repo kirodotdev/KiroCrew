@@ -1204,6 +1204,34 @@ def _api_pattern_matches(pattern: str, path: str) -> bool:
     return path == pattern or path.startswith(pattern + "/")
 
 
+# Protocol-layer paths every app token implicitly needs — connection
+# infrastructure, not feature-level permissions. Requiring each app to declare
+# them in ``permissions.api`` adds no security value and produces silent 403
+# regressions whenever a new app forgets to list them.
+#
+# ``/api/ws`` is safe to allow implicitly ONLY because the WS layer now applies
+# per-app event scope filtering (``ws_event_scope.py``): a connected app token
+# receives just the events matching its ``permissions.events`` declarations, so
+# connecting no longer grants the full event stream. Contrast with functional
+# paths like /api/chat/* or /api/spawn/* — those grant real capabilities and
+# MUST stay explicitly declared.
+#
+# ``/api/status`` is deliberately NOT here. It has no response-level filter to
+# match what event scoping does for ``/api/ws``, and ``api_status`` returns far
+# more than liveness: ``owner_id_hash``, host specs (os/arch/cpu/memory), cron
+# and usage stats, and the live safety-override (``yolo_*``) state. The
+# connect/reconnect poll that needs it is the DASHBOARD SPA
+# (``useDashboardHealthProbe``), which runs on a dashboard-user token and never
+# reaches this list. An app that genuinely wants it declares it in
+# ``permissions.api`` — the shipped ``design_critique`` manifest does.
+_APP_TOKEN_IMPLICIT_ALLOW: frozenset[str] = frozenset({
+    # Connecting grants no events by itself: the socket records the caller's
+    # manifest declarations and every frame is filtered per socket, payload AND
+    # envelope, in ws_event_scope.py / DashboardState._serialize_for_client.
+    "/api/ws",
+})
+
+
 def app_token_path_allowed(app_name: str, path: str) -> bool:
     """Return True if an app token for *app_name* may access *path*.
 
@@ -1215,6 +1243,30 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
         # it does, do NOT silently grant — that would turn the gate into a
         # no-op allow. Return False; the caller's non-empty guard is primary.
         return False
+    if path in _APP_TOKEN_IMPLICIT_ALLOW:
+        # Audit implicit grants so every app-token path decision is in the trail.
+        try:
+            _sel_fn().log_api_access(
+                caller=app_name,
+                operation="app_scope_check",
+                outcome="granted_implicit",
+                source="token_auth",
+                resources=path,
+            )
+        except Exception as exc:
+            # Security-relevant audit path (CWE-269 implicit grant); a persistent
+            # SEL misconfiguration must be observable, so log rather than pass.
+            logger.debug(
+                # Message deliberately avoids the module-name prefix: Semgrep's
+                # logger-credential-disclosure heuristic fires on the substring
+                # alone. The logged values are an app name, a path, and an
+                # exception -- no secret material.
+                "SEL audit for implicit app-scope allow %s -> %s failed: %s",
+                app_name,
+                path,
+                exc,
+            )
+        return True
     if _app_owns_path(app_name, path):
         return True
     # Notification push (RFC local notification bus, Phase 2): every app may
@@ -1412,6 +1464,9 @@ def token_auth_middleware(
             # Expose identity so downstream handlers (and app-scope) see it.
             request["user"] = _uid
             request["app"] = _app
+            # POSITIVE dashboard-user signal for the WS scope gate: the WS
+            # layer must never infer trust from a falsy app claim (CWE-269).
+            request["is_dashboard_user"] = not _app
             # App tokens are confined to their declared scope even on internal
             # paths (e.g. /api/chat, /api/spawn are mixed_internal) — otherwise
             # an app token would reach them on loopback with NO app identity set
@@ -1478,6 +1533,9 @@ def token_auth_middleware(
                 # (same rationale as the loopback branch above).
                 request["user"] = _uid
                 request["app"] = _app
+                # POSITIVE dashboard-user signal for the WS scope gate (see
+                # the loopback branch above).
+                request["is_dashboard_user"] = not _app
                 _scope_deny = _enforce_app_scope(request, _app, path)
                 if _scope_deny is not None:
                     return _scope_deny
@@ -1713,6 +1771,8 @@ def token_auth_middleware(
         # Expose authenticated identity to handlers (deny-by-default)
         request["user"] = user_id
         request["app"] = app_name
+        # POSITIVE dashboard-user signal for the WS scope gate (see above).
+        request["is_dashboard_user"] = not app_name
 
         # App-token least-privilege gate (CWE-269): an app token is confined to
         # its own namespace + its manifest ``permissions.api`` allowlist. This

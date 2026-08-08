@@ -12,10 +12,15 @@ def _make_state(history_messages=None):
     state = MagicMock()
     slots = {}
 
-    def get_or_create_slot(name=None, agent=""):
+    def get_or_create_slot(name=None, agent="", origin=""):
+        # ``origin`` is recorded, not just tolerated: the cron paths must
+        # declare SlotOrigin.CRON, and a fake that swallowed the kwarg
+        # would let that regress silently (a cron slot relabelled USER is
+        # readable by any app holding `slots:user`).
         if name not in slots:
             slot = MagicMock()
             slot.key = name
+            slot._origin = origin
             slot.linked_session_key = ""
             slot.messages = []
             slot.title = ""
@@ -44,6 +49,22 @@ def _make_job(job_id="abc123", name="test-cron", last_result="Hello world"):
 
 
 class TestInjectCronResultToDashboard:
+    def test_slot_is_tagged_cron_not_user(self):
+        """A cron result is the job's output, not something the person typed.
+
+        The slot used to be created untagged and then labelled USER by
+        get_or_create_slot's default, which put private cron content inside the
+        ``slots:user`` WS scope -- so any app holding that scope received it.
+        """
+        from kiro_crew.dashboard.state import SlotOrigin
+
+        state = _make_state()
+        job = _make_job()
+        inject_cron_result_to_dashboard(state, job, "result")
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        assert slot._origin == SlotOrigin.CRON
+        assert slot._origin != SlotOrigin.USER
+
     def test_sets_linked_session_key(self):
         state = _make_state()
         job = _make_job()

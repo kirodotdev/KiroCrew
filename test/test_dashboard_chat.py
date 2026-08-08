@@ -1137,7 +1137,10 @@ class TestSlotLifecycle:
             resp = await client.post("/api/chat/slots/s1/approve", json={"action": "approved"})
             assert (await resp.json())["ok"] is True
             state.broadcast_ws.assert_any_call(
-                "approval_resolved", {"id": "req-abc", "approved": True}
+                "approval_resolved",
+                # ``slot`` keys the frame for the slot-scoped WS gate: without it
+                # an app token never receives its OWN approval resolution.
+                {"id": "req-abc", "approved": True, "slot": "s1"},
             )
 
     @pytest.mark.asyncio
@@ -1157,7 +1160,10 @@ class TestSlotLifecycle:
             )
             assert (await resp.json())["ok"] is True
             state.broadcast_ws.assert_any_call(
-                "approval_resolved", {"id": "req-xyz", "approved": True}
+                "approval_resolved",
+                # ``slot`` keys the frame for the slot-scoped WS gate: without it
+                # an app token never receives its OWN approval resolution.
+                {"id": "req-xyz", "approved": True, "slot": "s1"},
             )
 
     @pytest.mark.asyncio
@@ -1177,7 +1183,10 @@ class TestSlotLifecycle:
             )
             assert (await resp.json())["ok"] is True
             state.broadcast_ws.assert_any_call(
-                "approval_resolved", {"id": "req-rej", "approved": False}
+                "approval_resolved",
+                # ``slot`` keys the frame for the slot-scoped WS gate: without it
+                # an app token never receives its OWN approval resolution.
+                {"id": "req-rej", "approved": False, "slot": "s1"},
             )
 
 

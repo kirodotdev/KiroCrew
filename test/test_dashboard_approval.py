@@ -568,7 +568,10 @@ class TestResolveApprovalSlotFallback:
         assert fut.done()
         assert fut.result() == "approved"
         state.broadcast_ws.assert_called_with(
-            "approval_resolved", {"id": "req-42", "approved": True}
+            "approval_resolved",
+            # ``slot`` keys the frame for the slot-scoped WS gate — it must name
+            # the slot that actually owned the resolved future.
+            {"id": "req-42", "approved": True, "slot": "chat-1-test"},
         )
         state.push_slots_update.assert_called_once()
 

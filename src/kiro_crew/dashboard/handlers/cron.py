@@ -18,7 +18,7 @@ from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
 )
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -544,7 +544,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             if state.conversation_log else []
         )
         if history:
-            slot = state.get_or_create_slot(name=slot_name, agent="")
+            slot = state.get_or_create_slot(
+                name=slot_name, agent="", origin=SlotOrigin.CRON
+            )
             if not slot.linked_session_key:
                 slot.linked_session_key = session_key
                 hydrate_slot_from_history(slot, history)
@@ -556,7 +558,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             )
             if not notif:
                 return web.json_response({"error": "job not found"}, status=404)
-            slot = state.get_or_create_slot(name=slot_name, agent="")
+            slot = state.get_or_create_slot(
+                name=slot_name, agent="", origin=SlotOrigin.CRON
+            )
             body = notif.get("body", "")
             if body:
                 body, _ = redact_exfiltration_urls(body)

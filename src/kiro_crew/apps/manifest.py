@@ -358,6 +358,21 @@ class BackendConfig:
         )
 
 
+def _granted_list(value: Any) -> list[str]:
+    """The entries of a list-valued GRANT, or nothing if it is not a list.
+
+    A JSON scalar must NOT be coerced. `[str(x) for x in value]` over a STRING
+    iterates its characters, so `"exposeToApps": "*"` would yield `["*"]` -- the
+    wildcard -- and any string containing `*` or `/` produces that token too:
+    `"api": "/api/chat"` gives the prefix `"/"`, which `app_token_path_allowed`
+    matches against every path. A malformed grant has to deny, the same direction
+    the boolean grants below fail in.
+    """
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value if v]
+
+
 @dataclass
 class Permissions:
     """Declared permissions for an app."""
@@ -373,6 +388,10 @@ class Permissions:
     #: Declared rather than implicit so "which apps can start an agent" is
     #: auditable from the manifest instead of from an app's import graph.
     spawn: bool = False
+    # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
+    # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
+    # this app's slots and subagents. Empty list = no cross-app visibility.
+    exposeToApps: list[str] = field(default_factory=list)  # noqa: N815
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -392,6 +411,8 @@ class Permissions:
             d["cron"] = True
         if self.spawn:
             d["spawn"] = True
+        if self.exposeToApps:
+            d["exposeToApps"] = self.exposeToApps
         return d
 
     @classmethod
@@ -408,14 +429,15 @@ class Permissions:
         # restriction ON. Same defect class, mirrored fix — the safe default
         # follows what the field grants or withholds, not the field's type.
         return cls(
-            api=[str(p) for p in data.get("api", []) if p],
-            events=[str(e) for e in data.get("events", []) if e],
-            mcpTools=[str(t) for t in data.get("mcpTools", []) if t],  # noqa: N815
+            api=_granted_list(data.get("api")),
+            events=_granted_list(data.get("events")),
+            mcpTools=_granted_list(data.get("mcpTools")),  # noqa: N815
             storage=data.get("storage") is True,
             network=data.get("network") is True,
             memory=str(data.get("memory", "")),
             cron=data.get("cron") is True,
             spawn=data.get("spawn") is True,
+            exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 
 

@@ -798,6 +798,32 @@ export default [
     },
   },
 
+  // Developer diagnostics for the APP AUTHOR, printed to the browser console when
+  // an app subscribes to a WS event its manifest has not declared a scope for.
+  // Translating them would be actively wrong, not merely wasteful: each one quotes
+  // the scope identifier the author must paste into `permissions.events`
+  // (`"slots:user"`, `"notification:system"`, `"<scope>:all"`), and those are
+  // compared BY VALUE against the manifest — localised advice would name a scope
+  // the gateway does not recognise.
+  //
+  // `console.*` is already callee-exempt, so the three call sites are covered; the
+  // strings are flagged because they are composed in `checkSubscribeAllowed`, one
+  // pure predicate that centralises the diagnosis for all three. Inlining the prose
+  // into the calls to earn the callee exemption would duplicate its branch logic
+  // three times — a worse module for a lint technicality.
+  //
+  // Scoped to this one file for the same reason as the two above: the module is the
+  // SDK's protocol surface (event tables, hooks, provider) and holds no other prose.
+  // The pieces that DO render copy — `ChatEmbed`, `ChatPanel`, `ChatMessageList` —
+  // are separate files and stay covered. Copy added here later belongs in the
+  // catalog, not under this exemption; keep this module protocol-and-diagnostics.
+  {
+    files: ['src/app-sdk/index.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // PROTOCOL VALUES ONLY: the server's own action names, provider merge-state enums,
   // and the literals a user must TYPE to arm an irreversible action. Every string in
   // that module is compared by value against something outside the dashboard, so

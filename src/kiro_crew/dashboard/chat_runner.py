@@ -4664,7 +4664,12 @@ async def _run_chat(
                         slot._dirty = True
                         state.broadcast_ws(
                             "approval_resolved",
-                            {"id": str(event.request_id), "approved": _approved},
+                            {
+                                "id": str(event.request_id),
+                                "approved": _approved,
+                                # Keys the frame for the slot-scoped WS gate.
+                                "slot": slot.key,
+                            },
                         )
                         state.push_slots_update()
                     # Clean up the Slack prompt: remove the registry entry and

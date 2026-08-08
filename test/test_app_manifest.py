@@ -975,3 +975,64 @@ class TestRequiresDesktopApp:
         from kiro_crew.apps.manifest import PlatformConfig
 
         assert PlatformConfig().supports_platform("win32") is False
+
+
+class TestScalarGrantDoesNotBecomeAWildcard:
+    """A list-valued grant given a JSON SCALAR must deny, not be coerced.
+
+    `[str(x) for x in value]` over a STRING iterates its characters, so a manifest
+    that wrote a bare string where a list belongs was handed the tokens those
+    characters spell -- including the wildcards each of these fields honours:
+
+      exposeToApps  `"*"`         -> ["*"] -> every sibling app may observe my slots
+      events        `"*"`         -> ["*"] -> the whole WS scope vocabulary
+      api           `"/api/chat"` -> ["/", "a", ...] and `app_token_path_allowed`
+                                     matches the prefix "/" against every path
+      mcpTools      `"*"`         -> ["*"]
+
+    Same defect class as `bool("false")` on the boolean grants above, and the same
+    direction of fix: an unexpected value withholds the grant.
+    """
+
+    def test_scalar_star_never_yields_the_wildcard(self):
+        from kiro_crew.apps.manifest import Permissions
+
+        for field in ("exposeToApps", "events", "api", "mcpTools"):
+            perms = Permissions.from_dict({field: "*"})
+            assert getattr(perms, field) == [], (
+                f"{field}: a scalar must not be exploded into a wildcard"
+            )
+
+    def test_scalar_path_never_yields_a_match_everything_prefix(self):
+        from kiro_crew.apps.manifest import Permissions
+
+        assert Permissions.from_dict({"api": "/api/chat"}).api == []
+
+    def test_other_scalar_shapes_also_deny(self):
+        from kiro_crew.apps.manifest import Permissions
+
+        for value in (True, 1, {"a": "b"}, None):
+            assert Permissions.from_dict({"exposeToApps": value}).exposeToApps == []
+
+    def test_a_real_list_still_works(self):
+        from kiro_crew.apps.manifest import Permissions
+
+        perms = Permissions.from_dict(
+            {
+                "exposeToApps": ["mochi", "", "workflows"],
+                "events": ["slots:own", "notification"],
+                "api": ["/api/chat", "/api/ws"],
+                "mcpTools": ["cron_add"],
+            }
+        )
+        # Falsy entries are still dropped; everything else is preserved verbatim.
+        assert perms.exposeToApps == ["mochi", "workflows"]
+        assert perms.events == ["slots:own", "notification"]
+        assert perms.api == ["/api/chat", "/api/ws"]
+        assert perms.mcpTools == ["cron_add"]
+
+    def test_the_wildcard_still_works_when_declared_as_a_list(self):
+        from kiro_crew.apps.manifest import Permissions
+
+        assert Permissions.from_dict({"exposeToApps": ["*"]}).exposeToApps == ["*"]
+        assert Permissions.from_dict({"events": ["*"]}).events == ["*"]

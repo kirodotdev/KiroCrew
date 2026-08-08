@@ -82,19 +82,199 @@ export function useAppApi(): AppApi {
 }
 
 /** Subscribe to a real-time WebSocket event. Unsubscribes on unmount. */
+// ---------------------------------------------------------------------------
+// WebSocket event scope map — MIRRORS kiro_crew/dashboard/ws_event_scope.py.
+// The gateway is authoritative; this table exists only so the SDK can tell an
+// app author accurately whether a subscription will be delivered. Keep the
+// three sets in sync with the Python tables (a completeness test on the Python
+// side fails the build when a new event is unclassified there).
+// ---------------------------------------------------------------------------
+
+/** Tier 0 — always delivered to every connected client. */
+const WS_TIER0_EVENTS = new Set(['dashboard', 'refresh', 'update_progress'])
+
+/**
+ * Slot-scoped events — they carry a `slot` field. An app token receives these
+ * for slots it OWNS with no declaration at all; broader visibility (user
+ * slots, another app's slots, all slots) needs a `slots:*` / `subagent:*`
+ * scope.
+ */
+const WS_SLOT_SCOPED_EVENTS = new Set([
+  // Chat content
+  'chat_chunk', 'chat_thinking', 'chat_status', 'chat_message', 'chat_done',
+  'chat_segment', 'chat_append', 'chat_message_update', 'chat_variant_switch',
+  'chat.side_result', 'heartbeat', 'context_usage',
+  // Tool / queue
+  'tool_call', 'tool_result',
+  'queue_push', 'queue_cancel', 'queue_edit', 'queue_pop', 'queue_reorder',
+  'steer_push',
+  // Slot metadata / lifecycle
+  'slot_title', 'slot_clear', 'slot_agent_switch', 'todo_update',
+  'activity_event',
+  // Voice
+  'voice_chunk', 'voice_complete', 'voice_error',
+  // Approvals and question cards
+  'approval', 'approval_resolved', 'question_card',
+  // Subagent lifecycle
+  'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_snapshot', 'subagent_status', 'subagent_queued',
+  'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
+  'subagent_injection_failed',
+  // Slack-gateway driven, slot-scoped
+  'autonudge_state', 'batch_finished', 'spawn_batch_started',
+  // Workflows / misc
+  'workflow_result_injected', 'refine',
+])
+
+/**
+ * Subagent lifecycle events — the subset of slot-scoped events that
+ * `subagent:*` scopes widen. Mirrors `_SUBAGENT_EVENTS` in the Python gate.
+ */
+const WS_SUBAGENT_EVENTS = new Set([
+  'subagent_spawn', 'subagent_done', 'subagent_tool', 'subagent_chunk',
+  'subagent_snapshot', 'subagent_status', 'subagent_queued',
+  'subagent_stalled', 'subagent_retrying', 'subagent_recovering',
+  'subagent_injection_failed',
+])
+
+/** Global events — no `slot` field; each needs an explicit scope declaration. */
+const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
+  notification: 'notification',
+  notification_ack: 'notification',
+  notification_unack: 'notification',
+  notification_channel_settings: 'notification',
+  sessions_restarting: 'sessions',
+  yolo_expired: 'yolo',
+  artifact_update: 'artifacts',
+  'skills.pending_changed': 'skills',
+  // Declared by its own literal name (already the correct per-event shape).
+  workflow_run_event: 'workflow_run_event',
+  log: 'log',
+  browser_event: 'browser',
+  // NOTE: `slots` is deliberately absent — the list re-push is always
+  // delivered and filtered per app in the payload on the server
+  // (state.py::_serialize_for_client), so it needs no declaration.
+}
+
+/** Result of the SDK subscription pre-check. */
+type SubscribeCheckResult =
+  | { level: 'ok' }
+  | { level: 'own-only'; hint: string }
+  /** A known event whose required scope is NOT declared — will not arrive. */
+  | { level: 'denied'; hint: string }
+  /** Not in the gate's tables at all — most likely a typo, possibly custom. */
+  | { level: 'unknown'; hint: string }
+
+/**
+ * Predict whether the gateway will deliver `event` given the app's declared
+ * `permissions.events`. Advisory only — the gateway decides.
+ */
+export function checkSubscribeAllowed(event: string, allowed: string[]): SubscribeCheckResult {
+  if (WS_TIER0_EVENTS.has(event)) return { level: 'ok' }
+  if (allowed.includes('*')) return { level: 'ok' }
+
+  // Slot-scoped: own slots are always visible, so only hint when the author
+  // likely wants wider visibility.
+  if (WS_SLOT_SCOPED_EVENTS.has(event)) {
+    // Match the scope FAMILY to the event family. `subagent:*` is an
+    // independent dimension in the gate (`_subagent_visible`), so declaring
+    // `subagent:user` widens subagent events only — it does not widen chat.
+    // Treating them interchangeably would predict `ok` for a chat
+    // subscription that the gateway delivers for own slots only, which is the
+    // exact silent-loss trap this check exists to prevent.
+    const isSubagentEvent = WS_SUBAGENT_EVENTS.has(event)
+    const hasWideningScope = allowed.some((a) =>
+      isSubagentEvent ? a.startsWith('subagent') || a.startsWith('slots:') : a.startsWith('slots:'),
+    )
+    if (hasWideningScope) return { level: 'ok' }
+    return {
+      level: 'own-only',
+      hint:
+        `Event "${event}" is slot-scoped: you will receive it for slots your app OWNS. ` +
+        `To see other slots, add a scope to permissions.events — ` +
+        (isSubagentEvent
+          ? `e.g. "subagent:user", "subagent:all", or a "slots:*" scope.`
+          : `e.g. "slots:user" or "slots:all" ("subagent:*" widens subagent events only).`),
+    }
+  }
+
+  // The slots list re-push needs no declaration (payload-filtered server-side).
+  if (event === 'slots') return { level: 'ok' }
+
+  const requiredScope = WS_GLOBAL_EVENT_TO_SCOPE[event]
+  if (requiredScope) {
+    // A `<scope>:*` variant also satisfies the base scope. For notifications
+    // the gateway picks between `notification` (own-app) and
+    // `notification:system` (gateway-internal) from the payload's source_app,
+    // which is not knowable at subscribe time — so any variant counts as ok
+    // here and the runtime gate makes the per-event decision.
+    const satisfied = allowed.some(
+      (a) => a === requiredScope || a.startsWith(`${requiredScope}:`),
+    )
+    if (satisfied) return { level: 'ok' }
+    return {
+      level: 'denied',
+      hint:
+        `Event "${event}" requires permissions.events to include "${requiredScope}"` +
+        (requiredScope === 'notification'
+          ? `, "notification:system" for gateway-internal pushes (cron, send_message), ` +
+            `or "notification:all" for every source.`
+          : ` (or "${requiredScope}:all" for the broader variant).`),
+    }
+  }
+
+  return {
+    level: 'unknown',
+    hint:
+      `Event "${event}" is not recognized by the gateway's scope gate. If it is a ` +
+      `custom event your app handles, ignore this warning; otherwise check for ` +
+      `typos or update the SDK.`,
+  }
+}
+
+/** app+event pairs already reported as own-slot-only, to keep the console useful. */
+const ownOnlyLogged = new Set<string>()
+
 export function useAppEvents(event: string, callback: (data: unknown) => void): void {
   const { subscribe, info } = useCtx()
   const cbRef = useRef(callback)
   cbRef.current = callback
+  const appName = info.name
+  const allowedEvents = info.permissions.events
 
   useEffect(() => {
-    if (!info.permissions.events.includes(event) && !info.permissions.events.includes('*')) {
+    const check = checkSubscribeAllowed(event, allowedEvents)
+    if (check.level === 'own-only') {
+      // Own-slot-only is the DEFAULT, correctly-working configuration, so this
+      // is informational. Log once per app+event for the process lifetime:
+      // remounts would otherwise repeat a call-to-action hint about a setup
+      // that is not broken, drowning out real signal.
+      const seenKey = `${appName}::${event}`
+      if (!ownOnlyLogged.has(seenKey)) {
+        ownOnlyLogged.add(seenKey)
+        // eslint-disable-next-line no-console -- intentional permission diagnostic
+        console.info(
+          `[app-sdk] App "${appName}" subscribing to "${event}" (own-slot only). ${check.hint}`,
+        )
+      }
+    } else if (check.level === 'denied') {
       // eslint-disable-next-line no-console -- intentional permission diagnostic
-      console.warn(`[app-sdk] App "${info.name}" not permitted to subscribe to event "${event}"`)
-      return
+      console.warn(
+        `[app-sdk] App "${appName}" subscribed to "${event}" but the manifest denies it. ` +
+          check.hint,
+      )
+    } else if (check.level === 'unknown') {
+      // Separate prefix from the denied case: asserting denial for a custom
+      // event and then retracting it in the hint leaves the author unable to
+      // tell whether anything is actually wrong.
+      // eslint-disable-next-line no-console -- intentional permission diagnostic
+      console.warn(`[app-sdk] App "${appName}" subscribed to "${event}": ` + check.hint)
     }
+    // Always register: the gateway is authoritative and silently drops what
+    // this app may not receive. Not returning early means a manifest fix takes
+    // effect on the next event without needing a component re-render.
     return subscribe(event, (data: unknown) => cbRef.current(data))
-  }, [event, subscribe, info])
+  }, [event, subscribe, appName, allowedEvents])
 }
 
 /** Reactive theme from the host. */

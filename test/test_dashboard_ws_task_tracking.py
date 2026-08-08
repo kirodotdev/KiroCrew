@@ -40,6 +40,13 @@ class _FakeWS:
         self.closed = False
         self.sent: list[str] = []
         self._gate = asyncio.Event()  # held closed so the send task stays pending
+        # These tests target the task-tracking guarantee, not the per-app
+        # scope filter — flag as a dashboard user so _ws_client_allowed
+        # returns True unconditionally.
+        self._flags: dict = {"_is_dashboard_user": True}
+
+    def get(self, key: str, default=None):
+        return self._flags.get(key, default)
 
     async def send_str(self, msg: str) -> None:
         await self._gate.wait()  # stay pending until released
@@ -53,7 +60,7 @@ async def test_send_ws_all_retains_task(tmp_path) -> None:
     state._ws_clients.append(ws)
 
     assert len(state._background_tasks) == 0
-    state._send_ws_all('{"type": "ping"}')
+    state._send_ws_all("ping", {}, '{"type": "ping"}')
 
     # The in-flight send task must be retained (strong ref) while pending.
     assert len(state._background_tasks) == 1, (
@@ -92,6 +99,14 @@ class _RaisingWS:
         self.closed = False
         self._gate = asyncio.Event()
 
+        # These tests target the task-tracking guarantee, not the per-app
+        # scope filter — flag as a dashboard user so _ws_client_allowed
+        # returns True unconditionally.
+        self._flags: dict = {"_is_dashboard_user": True}
+
+    def get(self, key: str, default=None):
+        return self._flags.get(key, default)
+
     async def send_str(self, msg: str) -> None:
         await self._gate.wait()
         raise ConnectionResetError("client disconnected")
@@ -105,7 +120,7 @@ async def test_failed_send_still_self_cleans(tmp_path) -> None:
     state = _make_state(tmp_path)
     ws = _RaisingWS()
     state._ws_clients.append(ws)
-    state._send_ws_all('{"type": "ping"}')
+    state._send_ws_all("ping", {}, '{"type": "ping"}')
     assert len(state._background_tasks) == 1  # retained while pending
 
     ws._gate.set()
