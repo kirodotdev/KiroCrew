@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import json
 import logging
 import secrets
@@ -82,7 +83,16 @@ def _json_dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _random_wechat_uin() -> str:
+@functools.lru_cache(maxsize=1)
+def _wechat_uin() -> str:
+    """One random UIN per process, generated on first use and then reused.
+
+    iLink binds a bot session to the ``X-WECHAT-UIN`` it saw at authorization.
+    Generating a fresh value per request made the first ``getupdates``
+    long-poll after a QR login return ``-14`` (:data:`SESSION_EXPIRED_ERRCODE`),
+    which parked the poll loop for 10 minutes and made the channel look like it
+    had never connected.
+    """
     value = struct.unpack(">I", secrets.token_bytes(4))[0]
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
 
@@ -96,7 +106,7 @@ def _headers(token: Optional[str], body: str) -> Dict[str, str]:
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "Content-Length": str(len(body.encode("utf-8"))),
-        "X-WECHAT-UIN": _random_wechat_uin(),
+        "X-WECHAT-UIN": _wechat_uin(),
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }

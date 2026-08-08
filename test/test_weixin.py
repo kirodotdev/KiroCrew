@@ -65,6 +65,19 @@ def test_headers_carry_required_ilink_fields():
     assert h["X-WECHAT-UIN"]
 
 
+def test_headers_reuse_one_uin_across_requests():
+    """iLink binds the bot session to the UIN seen at authorization.
+
+    Re-rolling ``X-WECHAT-UIN`` per request made the first ``getupdates``
+    long-poll after a QR login come back ``-14`` (session expired), so every
+    request in a process must present the same UIN.
+    """
+    first = _headers("abc123", "{}")["X-WECHAT-UIN"]
+    assert all(_headers("abc123", "{}")["X-WECHAT-UIN"] == first for _ in range(5))
+    # Independent of token/body, since it identifies the client, not the call.
+    assert _headers(None, '{"k":1}')["X-WECHAT-UIN"] == first
+
+
 def test_headers_omit_authorization_without_credential():
     assert "Authorization" not in _headers(None, "{}")
 
