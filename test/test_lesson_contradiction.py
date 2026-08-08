@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,7 +16,12 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
 )
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import (
+    _LESSON_NEGATIVE_SEP,
+    VectorMemoryStore,
+    _lesson_slug,
+    _split_stored,
+)
 
 
 class _FakeBgSession:
@@ -412,6 +419,44 @@ class TestApiLessonsCreateForwardsNegative:
         assert records[0].negative == self._NEGATIVE
 
 
+class TestApiLessonsDeleteOffloadsRemove:
+    """remove() must not run on the event loop.
+
+    It now takes the store's shared lock, which a worker thread can hold across file
+    I/O for a concurrent save_or_enrich -- so calling it inline would let one lessons
+    write stall every task on the loop. There was no coverage of this route at all
+    before, so the offload would otherwise have shipped untested.
+    """
+
+    @pytest.mark.asyncio
+    async def test_remove_runs_off_the_event_loop(self):
+        from kiro_crew.dashboard.handlers import cron
+
+        loop_thread = threading.get_ident()
+        seen: dict[str, int] = {}
+
+        class _RecordingStore:
+            def remove(self, rule_sub):  # noqa: ANN001 - test double
+                seen["remove"] = threading.get_ident()
+                return True
+
+        state = MagicMock()
+        state.lessons = _RecordingStore()
+        request = MagicMock()
+        request.app = {"state": state}
+        request.headers = {"X-Session-Key": "dashboard:ui"}
+        request.json = AsyncMock(return_value={"rule": "pin the port"})
+
+        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
+             patch.object(cron, "_is_restricted_session", return_value=False), \
+             patch.object(cron, "_sel"):
+            resp = await cron.api_lessons_delete(request)
+
+        assert resp.status == 200
+        assert "remove" in seen, "the JSONL remove path was never reached"
+        assert seen["remove"] != loop_thread, "remove must run off the event loop"
+
+
 class TestWriteLessonRejectionPreflight:
     """write_lesson must not delete a superseded lesson for a value it will reject.
 
@@ -472,5 +517,418 @@ class TestWriteLessonRejectionPreflight:
             stored = [json.loads(r["value_json"]) for r in store.get_lessons()]
             assert len(stored) == 1
             assert "— NOT: Do not rely on the auto-picked port" in stored[0]
+        finally:
+            store.close()
+
+
+class TestSplitStored:
+    """Direct truth table for the separator matcher. Four review rounds each found one
+    more instance of this class, because the separator is stored IN-BAND and unescaped:
+    `A — NOT: B` is either rule `A` with clause `B`, or a bare rule containing the
+    separator. The row's key (md5 of the rule at write time) is what settles it, so
+    these cases are pinned in BOTH directions."""
+
+    SEP = _LESSON_NEGATIVE_SEP
+
+    def _key(self, rule):
+        return f"lesson.{_lesson_slug(rule)}"
+
+    def test_bare_rule_same_case(self):
+        assert _split_stored("Pin the port", "pin the port", self._key("Pin the port")) == (
+            "Pin the port", False
+        )
+
+    def test_bare_rule_case_variant(self):
+        assert _split_stored("PIN THE PORT", "pin the port", self._key("PIN THE PORT")) == (
+            "PIN THE PORT", False
+        )
+
+    def test_rule_with_clause(self):
+        rule = "Pin the port"
+        stored = f"{rule}{self.SEP}Do not autopick"
+        assert _split_stored(stored, "pin the port", self._key(rule)) == (rule, True)
+
+    def test_rule_with_clause_case_variant(self):
+        rule = "PIN THE PORT"
+        stored = f"{rule}{self.SEP}Do not autopick"
+        assert _split_stored(stored, "pin the port", self._key(rule)) == (rule, True)
+
+    def test_rule_containing_the_separator_bare(self):
+        rule = f"Write 'A{self.SEP}B' verbatim"
+        assert _split_stored(rule, rule.casefold(), self._key(rule)) == (rule, False)
+
+    def test_rule_containing_the_separator_with_a_clause(self):
+        """Round 8: split(SEP, 1) truncated at the rule's OWN separator, so the row never
+        matched and the clause update was dropped."""
+        rule = f"Write 'A{self.SEP}B' verbatim"
+        stored = f"{rule}{self.SEP}Do not paraphrase"
+        assert _split_stored(stored, rule.casefold(), self._key(rule)) == (rule, True)
+
+    def test_a_bare_separator_bearing_rule_is_not_treated_as_an_enriched_row(self):
+        """Round 9, the INVERSE of round 8. Stored `A — NOT: B` is a bare rule whose text
+        contains the separator. Submitting rule `A` must NOT match it -- doing so
+        recomposed `A — NOT: <new>` and OVERWROTE an unrelated lesson. The key is what
+        distinguishes this from the round-8 case above: md5 of the whole value, not of
+        the prefix."""
+        stored = f"A{self.SEP}B"
+        assert _split_stored(stored, "a", self._key(stored)) == (None, False)
+
+    def test_the_prefix_matches_only_when_the_key_confirms_it(self):
+        """Same text, same submitted rule, different stored key -> opposite answers. This
+        is the whole disambiguation in one pair of assertions."""
+        stored = f"A{self.SEP}B"
+        assert _split_stored(stored, "a", self._key("A")) == ("A", True)
+        assert _split_stored(stored, "a", self._key(stored)) == (None, False)
+
+    def test_a_row_keyed_another_way_declines_rather_than_overwrites(self):
+        """Import rows are keyed on sha256 and legacy migrations set their own keys. The
+        prefix cannot be confirmed, so the ambiguous branch declines: a missed
+        enrichment, never an overwrite."""
+        stored = f"Pin the port{self.SEP}Do not autopick"
+        assert _split_stored(stored, "pin the port", "lesson.aabbccddeeff0011") == (None, False)
+
+    def test_casefold_changing_length_is_not_sliced_by_normalised_length(self):
+        """casefold() maps 'ß' to 'ss', so the normalised rule is LONGER than the stored
+        one. Matching by prefix length would cut mid-string."""
+        rule = "Nutze die Straße"
+        assert len(rule.casefold()) > len(rule)
+        stored = f"{rule}{self.SEP}Nicht die Gasse"
+        assert _split_stored(stored, rule.casefold(), self._key(rule)) == (rule, True)
+
+    def test_an_unrelated_rule_does_not_match(self):
+        stored = f"Other rule{self.SEP}clause"
+        assert _split_stored(stored, "pin the port", self._key("Other rule")) == (None, False)
+
+    def test_a_clause_containing_the_separator_is_not_mistaken_for_the_rule(self):
+        rule = "Pin the port"
+        stored = f"{rule}{self.SEP}Not 'X{self.SEP}Y'"
+        assert _split_stored(stored, "pin the port", self._key(rule)) == (rule, True)
+
+
+class TestWriteLessonAttachesNegativeToStoredRule:
+    """Re-submitting a stored rule with a NOT-clause must store the clause.
+
+    The key is md5(rule), so a re-submit lands on the same row and set_semantic
+    upserts it. What blocked that was the substring dedup returning False first --
+    and it ALWAYS fired, because the stored value is either the bare rule or
+    "<rule> - NOT: <clause>" and both contain the rule.
+    """
+
+    @staticmethod
+    def _store(tmp_path):
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda t: [0.1] * 384
+        return store
+
+    @staticmethod
+    def _values(store):
+        return [str(json.loads(row["value_json"])) for row in store.get_lessons()]
+
+    def test_attaches_a_clause_to_a_stored_rule(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            assert store.write_lesson("Pin the port", "tool") is True
+            # Before the fix this returned False and stored nothing.
+            assert store.write_lesson("Pin the port", "tool", "Do not autopick") is True
+
+            values = self._values(store)
+            assert len(values) == 1, f"must upsert the same row, got {values}"
+            assert "Do not autopick" in values[0]
+        finally:
+            store.close()
+
+    def test_replaces_an_existing_clause(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            store.write_lesson("Pin the port", "tool", "Old reason")
+            assert store.write_lesson("Pin the port", "tool", "New reason") is True
+
+            values = self._values(store)
+            assert len(values) == 1
+            assert "New reason" in values[0]
+            assert "Old reason" not in values[0]
+        finally:
+            store.close()
+
+    def test_a_bare_resubmit_never_strips_a_stored_clause(self, tmp_path):
+        """Falling through unconditionally would upsert the bare rule and delete the
+        clause. This is the regression that guards that."""
+        store = self._store(tmp_path)
+        try:
+            store.write_lesson("Pin the port", "tool", "Do not autopick")
+            assert store.write_lesson("Pin the port", "tool") is False
+
+            values = self._values(store)
+            assert len(values) == 1
+            assert "Do not autopick" in values[0], "the stored clause was stripped"
+        finally:
+            store.close()
+
+    def test_identical_resubmit_is_a_noop(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            store.write_lesson("Pin the port", "tool", "Do not autopick")
+            assert store.write_lesson("Pin the port", "tool", "Do not autopick") is False
+            assert len(self._values(store)) == 1
+        finally:
+            store.close()
+
+    def test_a_case_variant_resubmit_attaches_its_clause(self, tmp_path):
+        """The key is md5(rule) and md5 is case-SENSITIVE, so matching on key equality
+        missed a case-only refinement: it computed a different key, fell into the
+        substring dedup, and lost the clause exactly as before the fix."""
+        store = self._store(tmp_path)
+        try:
+            assert store.write_lesson("Pin the port", "tool") is True
+            assert store.write_lesson("pin the port", "tool", "Do not autopick") is True
+
+            values = self._values(store)
+            assert len(values) == 1, f"a case variant must not insert a second row: {values}"
+            assert "Do not autopick" in values[0]
+            assert values[0].startswith("Pin the port"), "must keep the stored spelling"
+        finally:
+            store.close()
+
+    def test_a_unicode_case_variant_resubmit_attaches_its_clause(self, tmp_path):
+        """casefold, not lower: lower() leaves the sharp s alone."""
+        store = self._store(tmp_path)
+        try:
+            assert store.write_lesson("Stra\u00dfe", "tool") is True
+            assert store.write_lesson("STRASSE", "tool", "Do not misspell") is True
+
+            values = self._values(store)
+            assert len(values) == 1, f"expected one row, got {values}"
+            assert "Do not misspell" in values[0]
+            # Load-bearing: without the normalized match this passes for the WRONG
+            # reason -- semantic dedup deletes the old row and inserts the submitted
+            # casing, so the count and the clause both still look right. Only the
+            # preserved spelling distinguishes an enrich from a delete-and-reinsert.
+            assert values[0].startswith("Stra\u00dfe"), f"stored spelling lost: {values[0]}"
+        finally:
+            store.close()
+
+    def test_a_rule_containing_the_separator_still_matches(self, tmp_path):
+        """The base is derived by splitting on the separator, so a rule that CONTAINS
+        it would be truncated and the exact match would miss. Key equality is checked
+        first precisely so this case never reaches the split."""
+        store = self._store(tmp_path)
+        try:
+            rule = "Write 'A \u2014 NOT: B' verbatim"
+            assert store.write_lesson(rule, "tool") is True
+            assert store.write_lesson(rule, "tool", "Do not paraphrase") is True
+
+            values = self._values(store)
+            assert len(values) == 1, f"expected one row, got {values}"
+            assert values[0].endswith("Do not paraphrase")
+            assert values[0].startswith(rule), "the rule text was truncated"
+        finally:
+            store.close()
+
+    def test_an_object_valued_lesson_row_is_skipped_not_stringified(self, tmp_path):
+        """set_semantic accepts any object, so an import or legacy migration can leave a
+        non-string under a lesson.* key. str() would render a Python repr and every text
+        comparison in the dedup scan would match against that repr instead of lesson
+        text. Values with no lesson shape at all stay skipped -- only the import's
+        documented {"rule": ...} shape is read (see the imported-lesson test below)."""
+        store = self._store(tmp_path)
+        try:
+            # A list, and a dict carrying no string rule: neither is lesson text.
+            assert store.set_semantic("lesson.listrow", ["Pin the port"], 1.0, "migration") is None
+            assert store.set_semantic("lesson.norule", {"category": "x"}, 1.0, "migration") is None
+            # Must not raise, and must not let either repr interfere with a real write.
+            assert store.write_lesson("Pin the port", "tool", "Do not autopick") is True
+
+            texts = [
+                v for v in (json.loads(r["value_json"]) for r in store.get_lessons())
+                if isinstance(v, str)
+            ]
+            assert any("Do not autopick" in t for t in texts), f"clause not stored: {texts}"
+        finally:
+            store.close()
+
+    def test_an_imported_lesson_dict_is_enriched_not_duplicated(self, tmp_path):
+        """The onboarding import stores lessons as {"rule", "category", "negative"} under
+        a sha256-derived key, while write_lesson keys on md5 -- so key equality can never
+        match an imported lesson and normalised text is the only route to it. Skipping
+        the dict meant a re-submit inserted a DUPLICATE rule instead of attaching the
+        clause, which is issue #2157's complaint reached by another road."""
+        store = self._store(tmp_path)
+        try:
+            rule = "Pin the dashboard port"
+            assert store.set_semantic(
+                "lesson.aabbccddeeff0011",
+                {"rule": rule, "category": "preference", "negative": None},
+                1.0,
+                "import",
+            ) is None
+            assert store.write_lesson(rule, "tool", "Do not autopick") is True
+
+            rows = store.get_lessons()
+            assert len(rows) == 1, f"the imported lesson was duplicated: {rows}"
+            stored = json.loads(rows[0]["value_json"])
+            assert isinstance(stored, str), "the row should normalise to lesson text"
+            assert stored == f"{rule}{_LESSON_NEGATIVE_SEP}Do not autopick"
+        finally:
+            store.close()
+
+    def test_a_clause_on_an_imported_lesson_survives_a_bare_resubmit(self, tmp_path):
+        """The import's schema has its own `negative` field. Once it is populated, a bare
+        re-submit must not drop it -- same guarantee as for a native string row."""
+        store = self._store(tmp_path)
+        try:
+            rule = "Pin the dashboard port"
+            assert store.set_semantic(
+                "lesson.aabbccddeeff0011",
+                {"rule": rule, "category": "preference", "negative": "Do not autopick"},
+                1.0,
+                "import",
+            ) is None
+            assert store.write_lesson(rule, "tool") is False
+
+            stored = [json.loads(r["value_json"]) for r in store.get_lessons()]
+            assert len(stored) == 1
+            # Pin the SHAPE too. The keep branch returns without writing, so the row
+            # must still be the untouched import dict. Asserting only "the clause is
+            # somewhere in str(row)" passes even when the dict's negative was never
+            # read, because the recomposed text then equals the bare rule and the
+            # write is skipped for an unrelated reason.
+            assert isinstance(stored[0], dict), f"the import row was rewritten: {stored}"
+            assert stored[0]["negative"] == "Do not autopick", f"clause lost: {stored}"
+        finally:
+            store.close()
+
+    def test_resubmitting_an_imported_lessons_own_clause_is_a_no_op(self, tmp_path):
+        """Re-sending the clause an imported lesson ALREADY carries must change nothing
+        and report False. This is what makes reading the dict's own `negative` field
+        load-bearing: without it the row reads as a bare rule, the recomposed text
+        looks new, and an idempotent call rewrites the row and returns True."""
+        store = self._store(tmp_path)
+        try:
+            rule = "Pin the dashboard port"
+            assert store.set_semantic(
+                "lesson.aabbccddeeff0011",
+                {"rule": rule, "category": "preference", "negative": "Do not autopick"},
+                1.0,
+                "import",
+            ) is None
+            assert store.write_lesson(rule, "tool", "Do not autopick") is False
+
+            stored = [json.loads(r["value_json"]) for r in store.get_lessons()]
+            assert len(stored) == 1
+            assert isinstance(stored[0], dict), f"an idempotent call rewrote it: {stored}"
+        finally:
+            store.close()
+
+    def test_an_unrelated_superset_cannot_discard_the_enrichment(self, tmp_path):
+        """The generic dedup rules can refuse on an UNRELATED row -- a superset whose
+        text contains our rule. get_lessons() orders by md5 key, so whether that row
+        is scanned before ours is effectively random; resolving the exact match in its
+        own pass first is what makes the outcome independent of row order."""
+        store = self._store(tmp_path)
+        try:
+            # Store the exact rule AND a superset that contains it. The superset is
+            # written first so it exists as a competing row.
+            assert store.write_lesson("Pin the port in every environment", "tool") is True
+            assert store.set_semantic(
+                f"lesson.{hashlib.md5(b'Pin the port', usedforsecurity=False).hexdigest()[:12]}",
+                "Pin the port",
+                1.0,
+                "user_explicit",
+            ) is None
+
+            assert store.write_lesson("Pin the port", "tool", "Do not autopick") is True
+
+            values = self._values(store)
+            enriched = [v for v in values if "Do not autopick" in v]
+            assert enriched, f"the superset row discarded the enrichment: {values}"
+            assert enriched[0].startswith("Pin the port")
+        finally:
+            store.close()
+
+    def test_a_whitespace_only_clause_never_overwrites_a_stored_one(self, tmp_path):
+        """`--negative "   "` is truthy, so it composed "<rule> - NOT:    " and replaced
+        a real stored clause with blanks -- silent loss of saved guidance."""
+        store = self._store(tmp_path)
+        try:
+            store.write_lesson("Pin the port", "tool", "Do not autopick")
+            assert store.write_lesson("Pin the port", "tool", "   ") is False
+
+            values = self._values(store)
+            assert len(values) == 1
+            assert "Do not autopick" in values[0], f"clause overwritten by blanks: {values}"
+        finally:
+            store.close()
+
+    def test_a_whitespace_only_clause_is_not_stored_on_insert(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            assert store.write_lesson("Pin the port", "tool", "  \t ") is True
+            values = self._values(store)
+            assert values == ["Pin the port"], f"blanks were persisted: {values}"
+        finally:
+            store.close()
+
+    def test_a_case_variant_of_a_rule_containing_the_separator_is_enriched(self, tmp_path):
+        """Previously disclosed as a deferred residual: the split truncated a rule that
+        itself contains the separator, so a case-variant re-submit missed. The whole
+        stored value is now compared before the split."""
+        store = self._store(tmp_path)
+        try:
+            rule = "Write 'A \u2014 NOT: B' verbatim"
+            assert store.write_lesson(rule, "tool") is True
+            assert store.write_lesson(rule.upper(), "tool", "Do not paraphrase") is True
+
+            values = self._values(store)
+            assert len(values) == 1, f"a second row was inserted: {values}"
+            assert values[0].endswith("Do not paraphrase")
+            assert values[0].startswith(rule), "the stored spelling was not kept"
+        finally:
+            store.close()
+
+    def test_a_bare_separator_bearing_rule_is_never_overwritten(self, tmp_path):
+        """End-to-end round-9 case, and the inverse of the test above. A lesson whose own
+        text contains the separator must not be mistaken for `A` carrying clause `B`:
+        that recomposed `A — NOT: <new>` and destroyed an unrelated lesson."""
+        store = self._store(tmp_path)
+        try:
+            bare = f"A{_LESSON_NEGATIVE_SEP}B"
+            assert store.write_lesson(bare, "tool") is True
+            store.write_lesson("A", "tool", "Do not use A")
+
+            values = self._values(store)
+            assert any(v == bare for v in values), f"the bare rule was overwritten: {values}"
+        finally:
+            store.close()
+
+    def test_a_clause_on_a_separator_bearing_rule_can_be_updated(self, tmp_path):
+        """End-to-end round-8 case. The helper being correct does not prove write_lesson
+        threads it through, so this drives the real store: a rule that contains the
+        separator, already carrying a clause, re-submitted in a different case with a
+        NEW clause. Previously the split truncated the rule, the row never matched, and
+        the generic dedup discarded the replacement."""
+        store = self._store(tmp_path)
+        try:
+            rule = f"Write 'A{_LESSON_NEGATIVE_SEP}B' verbatim"
+            assert store.write_lesson(rule, "tool", "Do not paraphrase") is True
+            assert store.write_lesson(rule.upper(), "tool", "Do not translate") is True
+
+            values = self._values(store)
+            assert len(values) == 1, f"a duplicate row was inserted: {values}"
+            assert values[0].endswith("Do not translate"), f"clause not updated: {values}"
+            assert values[0].startswith(rule), "the stored spelling was not kept"
+        finally:
+            store.close()
+
+    def test_a_genuinely_different_rule_is_still_deduped(self, tmp_path):
+        """The same-key shortcut must not weaken the substring dedup for a DIFFERENT
+        rule that an existing lesson already covers."""
+        store = self._store(tmp_path)
+        try:
+            assert store.write_lesson("Pin the port in every environment", "tool") is True
+            # Different rule => different md5 => the shortcut does not apply, and the
+            # substring dedup should still refuse it.
+            assert store.write_lesson("Pin the port", "tool", "Do not autopick") is False
+            assert len(self._values(store)) == 1
         finally:
             store.close()

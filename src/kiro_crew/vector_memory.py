@@ -11,6 +11,7 @@ time-decay retrieval via FAISS (falls back to FTS5 without embeddings).
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 import logging
@@ -239,6 +240,56 @@ _MIGRATIONS: list[tuple[int, str, "Callable[[sqlite3.Connection], None] | None"]
 ]
 
 _MAX_BACKFILLS_PER_CALL = 5  # cap lazy embedding backfills to bound latency
+
+# Joins a lesson's rule to its NOT-clause in the single stored value. Extracted
+# from the f-string that composes it because write_lesson now also has to READ it
+# back, to tell "<rule>" apart from "<rule><sep><negative>" when deciding whether
+# a bare re-submit would strip a clause that is already stored.
+_LESSON_NEGATIVE_SEP = " — NOT: "
+
+
+def _lesson_slug(rule: str) -> str:
+    """The key slug write_lesson derives for *rule*. Single source of truth."""
+    return hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
+def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple[str | None, bool]:
+    """Split a stored lesson value against a normalized rule.
+
+    Returns ``(base, stored_clause)``: the stored spelling of the rule, and whether
+    a NOT-clause follows it. ``(None, False)`` means this row is not that rule.
+
+    The separator is stored IN-BAND and unescaped, so the value alone is ambiguous:
+    ``A — NOT: B`` is either rule ``A`` with clause ``B``, or a bare rule whose text
+    happens to contain the separator. No amount of text parsing settles that -- both
+    readings are valid, and picking either one by itself loses data in the other case
+    (silently dropping a clause update one way, OVERWRITING an unrelated rule the
+    other).
+
+    The row itself carries the answer: the key is ``md5(rule)`` taken at write time,
+    in the rule's stored casing. So a candidate prefix is the rule only when it
+    hashes to this row's key. That is exact rather than heuristic, and it is why
+    every separator boundary can be tried safely.
+
+    Rows keyed some other way -- the onboarding import uses sha256, and legacy
+    migrations set their own keys -- match only on the whole value. For those a
+    case-variant re-submit onto an EXISTING clause will not enrich. That is a missed
+    enrichment, never an overwrite: the ambiguous branch always declines.
+    """
+    stripped = existing_val.strip()
+    if stripped.casefold() == rule_norm:
+        return stripped, False  # the whole value is the rule; no clause
+    slug = existing_key.split(".", 1)[-1]
+    idx = stripped.find(_LESSON_NEGATIVE_SEP)
+    while idx != -1:
+        prefix = stripped[:idx].strip()
+        # Compare whole prefixes, never a slice at len(rule_norm): casefold() can
+        # CHANGE length ("Straße" -> "strasse", 6 -> 7), so a length-based slice cuts
+        # in the wrong place for exactly the case-variant inputs this serves.
+        if prefix.casefold() == rule_norm and _lesson_slug(prefix) == slug:
+            return prefix, True  # the key confirms prefix IS the rule
+        idx = stripped.find(_LESSON_NEGATIVE_SEP, idx + 1)
+    return None, False
 
 
 # ── Helpers ──
@@ -1810,9 +1861,14 @@ class VectorMemoryStore:
         this write is detected and the vector is left NULL for the backfill
         instead of being committed into the wrong space.
         """
-        import hashlib
-
         rule_lower = rule.lower()
+        # casefold, not lower: lower() leaves 'ß' alone, so a stored "Straße" and a
+        # submitted "STRASSE" would compare unequal and be stored twice.
+        rule_norm = rule.strip().casefold()
+        # A whitespace-only clause is no clause. `--negative "   "` is truthy, so
+        # without this it composed "<rule> — NOT:    " and REPLACED a real stored
+        # clause with blanks -- silent loss of the guidance the user had saved.
+        negative = (negative or "").strip() or None
         rule_words = self._lesson_keywords(rule_lower)
         # Same reasoning as write_episodic: carry the space generation to the write
         # so a swap landing between the embed and the lock cannot commit a vector
@@ -1841,9 +1897,9 @@ class VectorMemoryStore:
         # then set_semantic refused the replacement, and the route still returned
         # HTTP 200 with no lesson stored. Validating here makes the whole call a
         # no-op when the replacement cannot land.
-        slug = hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
+        slug = _lesson_slug(rule)
         key = f"lesson.{slug}"
-        value = rule if not negative else f"{rule} — NOT: {negative}"
+        value = rule if not negative else f"{rule}{_LESSON_NEGATIVE_SEP}{negative}"
         confidence = 1.0 if source == "user_explicit" else 0.9
         preflight = self.validate_semantic(key, value, confidence, source)
         if preflight is not None:
@@ -1868,8 +1924,103 @@ class VectorMemoryStore:
                         )
                     self.db.commit()
 
-        for existing in self.get_lessons():
-            existing_val = str(json.loads(existing["value_json"]))
+        # TWO PASSES, and the order is load-bearing.
+        #
+        # Pass 1 resolves THIS lesson. Pass 2 runs the generic dedup rules, and those
+        # can `return False` on an UNRELATED row -- a superset whose text contains our
+        # rule. get_lessons() orders by md5 key, so whether such a row is scanned
+        # before ours is effectively random, and doing both in one loop made the
+        # outcome depend on that order: an unrelated superset seen first discarded an
+        # enrichment we had already selected, and the clause was dropped on HTTP 200.
+        # Resolving the exact match first makes the result order-independent, and
+        # pass 2 is skipped entirely once pass 1 claims the write.
+        lesson_rows = self.get_lessons()
+
+        def _as_text(row: dict) -> str | None:
+            """The row's value as lesson TEXT, or None when it is not text.
+
+            set_semantic accepts any object, so an import or a legacy migration can
+            leave a dict or list under a lesson.* key. str() would render a Python
+            repr, and every text comparison here -- the separator split, the
+            substring dedup, the keyword overlap -- would then match against that
+            repr.
+
+            One dict shape is NOT junk: the onboarding import stores lessons as
+            ``{"rule": ..., "category": ..., "negative": ...}`` via
+            set_semantic_if_absent. Its key is sha256(rule)[:16] while this method
+            keys on md5(rule)[:12], so the key-equality fast path can never match an
+            imported lesson -- normalised text is the ONLY route to it. Skipping the
+            shape therefore meant a re-submit could not enrich an imported lesson and
+            inserted a DUPLICATE rule instead, which is issue #2157's own complaint
+            reached by another road. Normalising it to the store's native text form
+            lets every comparison below work on it unchanged.
+            """
+            decoded = json.loads(row["value_json"])
+            if isinstance(decoded, str):
+                return decoded
+            if isinstance(decoded, dict):
+                rule_field = decoded.get("rule")
+                if isinstance(rule_field, str) and rule_field.strip():
+                    clause = decoded.get("negative")
+                    if isinstance(clause, str) and clause.strip():
+                        return (
+                            f"{rule_field.strip()}{_LESSON_NEGATIVE_SEP}{clause.strip()}"
+                        )
+                    return rule_field.strip()
+            return None
+
+        matched = False
+        for existing in lesson_rows:
+            existing_val = _as_text(existing)
+            if existing_val is None:
+                continue
+
+            # Key equality FIRST. md5(rule) identifies THIS lesson exactly, whatever
+            # the stored value contains. Only when the key differs (a case variant,
+            # since md5 is case-sensitive) do we fall back to comparing normalized
+            # text, which also keeps this store consistent with LessonStore.
+            if existing["key"] == key:
+                base: str | None = rule.strip()
+                stored_clause = existing_val != base
+            else:
+                base, stored_clause = _split_stored(existing_val, rule_norm, existing["key"])
+            if base is None:
+                continue
+
+            if not negative and stored_clause:
+                # A BARE re-submit of a rule that already carries a clause. Writing
+                # the bare value would delete the stored negative, so keep what is
+                # there. This is also what the call did before the fix, so no caller
+                # sees a change here.
+                logger.info(
+                    "Keeping the stored NOT-clause on %r; re-submit carried none",
+                    existing["key"],
+                )
+                _flush_backfills()
+                return False
+            # Recompose from the STORED base so a case-variant re-submit attaches its
+            # clause without silently re-casing the rule -- again matching
+            # LessonStore, which keeps the stored spelling.
+            target = base if not negative else f"{base}{_LESSON_NEGATIVE_SEP}{negative}"
+            if target == existing_val:
+                _flush_backfills()
+                return False  # byte-identical row already stored
+            # The preflight above validated the value built from the SUBMITTED rule;
+            # this one differs, so validate what is actually written.
+            if self.validate_semantic(existing["key"], target, confidence, source):
+                _flush_backfills()
+                return False
+            # Write back under the EXISTING key -- a case-variant would otherwise
+            # insert a second row for the same lesson under a different md5. The
+            # shared tail below does the write.
+            key, value = existing["key"], target
+            matched = True
+            break
+
+        for existing in [] if matched else lesson_rows:
+            existing_val = _as_text(existing)
+            if existing_val is None:
+                continue
             existing_lower = existing_val.lower()
 
             # Substring dedup

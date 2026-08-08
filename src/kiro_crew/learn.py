@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import stat
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+
+from kiro_crew.atomic_write import atomic_write
 
 try:
     from kiro_crew.config.loader import config_dir as _config_dir
@@ -36,6 +39,25 @@ _DEFAULT_DIR = Path.home() / ".kiro" / "crew"
 _LESSONS_FILE = "lessons.jsonl"
 _MAX_LESSONS_IN_CONTEXT = 50
 _MAX_LESSONS_TOTAL = 200  # prune oldest when exceeded
+
+# One lock PER FILE, shared by every LessonStore instance addressing it. A
+# per-instance lock serializes nothing when two instances point at the same file --
+# and they do: DashboardState.lessons and context.get_lessons_for() construct
+# separate instances over the same global store. Without this, the atomic
+# enrich-or-insert below is atomic only against itself, so a dashboard refinement
+# racing a consolidation write could still lose a clause.
+#
+# Still in-process only. threading.Lock does not span processes, so the CLI and the
+# gateway remain last-writer-wins against each other; the per-write temp name below
+# is what keeps that case from corrupting the file rather than merely losing an edit.
+_PATH_LOCKS: dict[Path, threading.Lock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    """Return the process-wide lock for *path*, creating it on first use."""
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(path, threading.Lock())
 
 
 # ── Types ──
@@ -97,42 +119,150 @@ class LessonStore:
         else:
             self._dir = _DEFAULT_DIR
         self._path = self._dir / _LESSONS_FILE
-        self._lock = threading.Lock()
+        self._lock = _lock_for(self._path)
         # mtime-based cache: (mtime, lessons)
         self._cache: tuple[float, list[Lesson]] | None = None
 
-    def save(self, lesson: Lesson) -> None:
-        """Append a lesson, skipping near-duplicates and pruning if over limit."""
-        with self._lock:
-            existing = self.load_all()
-            new_lower = lesson.rule.lower().strip()
-            for ex in existing:
-                if ex.rule.lower().strip() == new_lower:
-                    logger.debug("Skipping duplicate lesson: %s", lesson.rule)
-                    return
-            existing.append(lesson)
-            if len(existing) > _MAX_LESSONS_TOTAL:
-                existing = existing[-_MAX_LESSONS_TOTAL:]
-            self._dir.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                "".join(json.dumps(asdict(le)) + "\n" for le in existing),
-                encoding="utf-8",
-            )
-            self._cache = None  # invalidate
-        logger.info("Saved lesson: %s", lesson.rule)
+    def _write_all(self, lessons: list[Lesson]) -> None:
+        """Replace the file atomically. The caller MUST hold ``self._lock``.
 
-    def remove(self, rule_substring: str) -> bool:
-        """Remove lessons whose rule contains *rule_substring*. Returns True if any removed."""
-        lessons = self.load_all()
-        lower = rule_substring.lower()
-        kept = [le for le in lessons if lower not in le.rule.lower()]
-        if len(kept) == len(lessons):
-            return False
-        self._dir.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            "".join(json.dumps(asdict(le)) + "\n" for le in kept), encoding="utf-8"
+        tmp + ``os.replace`` rather than ``write_text`` for two reasons. A reader
+        can observe this file without the lock (``load_all`` takes none), and
+        ``atomic_write`` renames a unique temp file over the target, so a reader sees
+        either the whole old file or the whole new one -- never a half-written one.
+        That is what makes the unlocked read in ``load_all`` safe, so no lock has to
+        be added there, and a crash mid-write can no longer truncate the store.
+
+        Uses the repo's ``atomic_write`` rather than a hand-rolled temp + rename.
+        Hand-rolling it re-introduced three problems the shared helper already
+        solves: a temp name that two writers could collide on (it uses
+        ``tempfile.mkstemp``), a bare ``os.replace`` that raises ``PermissionError``
+        when Windows Search or AV holds a handle (it uses ``replace_with_retry``),
+        and a replacement inode carrying umask permissions instead of the store's
+        (it applies ``mode`` via ``fchmod_safe``).
+
+        The mode is read off the existing file so a restrictive store stays
+        restrictive -- ``write_text`` used to preserve it implicitly by reusing the
+        inode, and swapping the inode silently dropped it. A store being created for
+        the first time gets ``0o600``: lesson text is personal content, and nothing
+        else needs to read it.
+
+        ``newline=""`` keeps the bytes exact. The default would apply
+        universal-newline translation on write, and this file is read, edited and
+        written back on every save.
+        """
+        try:
+            mode = stat.S_IMODE(self._path.stat().st_mode)
+        except OSError:
+            mode = 0o600
+        atomic_write(
+            self._path,
+            "".join(json.dumps(asdict(le)) + "\n" for le in lessons),
+            mode=mode,
+            newline="",
         )
         self._cache = None  # invalidate
+
+    def save(self, lesson: Lesson) -> None:
+        """Insert *lesson*, skipping a rule that is already stored.
+
+        Deliberately does NOT enrich. Most callers here are automatic --
+        consolidation, task-runner extraction, onboarding import -- and an
+        automatic writer must not replace a NOT-clause a human authored. Only an
+        explicit refinement (the /api/lessons route, ``kirocrew learn add``)
+        should attach a clause, and those call :meth:`save_or_enrich`.
+
+        Kept returning ``None`` so every existing caller is unaffected.
+        """
+        self._insert_or_enrich(lesson, enrich=False)
+
+    def save_or_enrich(self, lesson: Lesson) -> str:
+        """Insert *lesson*, or attach its NOT-clause to the record holding the same
+        rule, in ONE lock acquisition. Returns ``inserted``/``enriched``/``unchanged``.
+
+        For EXPLICIT refinement only -- see :meth:`save` for why automatic writers
+        must not reach this.
+
+        Re-submitting a rule to attach a NOT-clause used to store nothing: the
+        duplicate check matched on the rule alone and returned before looking at
+        ``negative``, so the clause was dropped behind an HTTP 200.
+        """
+        return self._insert_or_enrich(lesson, enrich=True)
+
+    def _insert_or_enrich(self, lesson: Lesson, *, enrich: bool) -> str:
+        """Shared body for :meth:`save` and :meth:`save_or_enrich`.
+
+        The single lock acquisition is the load-bearing part. Doing enrich and
+        insert as two separate locked calls let a concurrent writer insert the
+        same rule in the gap, so the second call saw a duplicate and skipped --
+        dropping the clause exactly as before, just less often. The whole
+        read-decide-write sequence runs inside the lock, so there is no gap.
+
+        Matching is ``casefold()``, not ``lower()``. ``lower()`` leaves ``ß``
+        alone, so a stored "Straße" and a submitted "STRASSE" compared unequal and
+        a second copy of the same lesson was persisted under a different casing.
+        This makes ``save()`` skip a case-variant duplicate it used to append,
+        which is the same direction it was already trying to go.
+
+        A re-submit carrying NO clause never strips one that is already stored --
+        it reports ``unchanged``, matching the vector store for the same case.
+        """
+        with self._lock:
+            # A whitespace-only clause is no clause. Same defect as the vector store's:
+            # `--negative "   "` is truthy, so it would replace a real stored clause
+            # with blanks. Normalised here too, because both stores are reached
+            # directly by the CLI, the route, consolidation and the task runner.
+            wanted_negative = (lesson.negative or "").strip() or None
+            # load_all() is called under the lock deliberately: it takes no lock of
+            # its own, so this is not a re-entrant acquisition on a non-reentrant
+            # Lock. Do NOT call save() from in here for the same reason.
+            existing = self.load_all()
+            wanted = lesson.rule.casefold().strip()
+            updated: list[Lesson] = []
+            matched = False
+            outcome = "inserted"
+            for le in existing:
+                if not matched and le.rule.casefold().strip() == wanted:
+                    matched = True
+                    if not enrich or wanted_negative is None or le.negative == wanted_negative:
+                        outcome = "unchanged"
+                        updated.append(le)
+                    else:
+                        outcome = "enriched"
+                        # Build a REPLACEMENT record rather than mutating in place:
+                        # load_all() hands back the cached objects, so an in-place
+                        # edit followed by a failed write would leave the cache
+                        # advertising a clause that was never persisted -- and that
+                        # cache feeds context injection.
+                        updated.append(replace(le, negative=wanted_negative))
+                    continue
+                updated.append(le)
+            if outcome == "unchanged":
+                return outcome  # nothing to write; leave the file untouched
+            if not matched:
+                # Insert the normalised clause too, so a whitespace-only one is stored
+                # as absent rather than as blanks.
+                updated.append(replace(lesson, negative=wanted_negative))
+                if len(updated) > _MAX_LESSONS_TOTAL:
+                    updated = updated[-_MAX_LESSONS_TOTAL:]
+            self._write_all(updated)
+        logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
+        return outcome
+
+    def remove(self, rule_substring: str) -> bool:
+        """Remove lessons whose rule contains *rule_substring*. Returns True if any removed.
+
+        Holds the lock. It previously did an unlocked read-modify-write, so a
+        concurrent ``save`` could be lost outright -- and without that lock the
+        atomicity :meth:`save_or_enrich` claims would not actually hold.
+        """
+        with self._lock:
+            lessons = self.load_all()
+            lower = rule_substring.lower()
+            kept = [le for le in lessons if lower not in le.rule.lower()]
+            if len(kept) == len(lessons):
+                return False
+            self._write_all(kept)
         return True
 
     def load_all(self) -> list[Lesson]:

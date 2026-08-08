@@ -866,11 +866,14 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             negative=negative,
             ts=datetime.now(timezone.utc).isoformat(),
         )
-        if scope == "workspace":
-            ws = cleaned.get("workspace")
-            _get_lessons(state, ws).save(lesson)
-        else:
-            state.lessons.save(lesson)
+        store = _get_lessons(state, cleaned.get("workspace")) if scope == "workspace" else (
+            state.lessons
+        )
+        # save_or_enrich, not save: a re-submit of a stored rule carrying a new
+        # NOT-clause has to attach it rather than be skipped as a duplicate.
+        # Off the loop because it reads the file and rewrites it whole -- the
+        # same reason dashboard/ws.py offloads load_all.
+        await asyncio.to_thread(store.save_or_enrich, lesson)
     state.push_refresh("lessons")
     return web.json_response({"ok": True})
 
@@ -906,11 +909,14 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     if vs_lessons:
         ok = await asyncio.to_thread(vs.delete_lesson, rule_sub)
     else:
-        if scope == "workspace":
-            ws = body.get("workspace")
-            ok = _get_lessons(state, ws).remove(rule_sub)
-        else:
-            ok = state.lessons.remove(rule_sub)
+        store = _get_lessons(state, body.get("workspace")) if scope == "workspace" else (
+            state.lessons
+        )
+        # Off the loop. remove() now takes the store's shared lock, which a worker
+        # thread can be holding across file I/O for a concurrent save_or_enrich --
+        # so calling it inline would let one lessons write stall every task on the
+        # event loop. Same reason api_lessons_create offloads its write.
+        ok = await asyncio.to_thread(store.remove, rule_sub)
     if ok:
         state.push_refresh("lessons")
     return web.json_response({"ok": ok})

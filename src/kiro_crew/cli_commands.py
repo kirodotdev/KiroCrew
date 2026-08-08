@@ -1331,7 +1331,11 @@ def _learn(args: argparse.Namespace) -> None:
                     category=category,
                     negative=negative,
                 )
-                jsonl_store.save(lesson)
+                # save_or_enrich, not save: `learn add --negative` is explicit user
+                # intent, so a re-submitted rule should get the clause attached
+                # rather than be skipped as a duplicate. save() keeps the skip
+                # semantics for automatic writers.
+                jsonl_store.save_or_enrich(lesson)
                 neg = f" ({lesson.negative})" if lesson.negative else ""
                 print(f"Saved: {lesson.rule}{neg} [{lesson.category}]")
 
