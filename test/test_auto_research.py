@@ -435,6 +435,289 @@ class TestStatusEnum:
         assert {s.value for s in CampaignStatus} == expected
 
 
+# --- Watchdog stall verdict ---
+class TestStalledCampaignVerdict:
+    """_stalled_campaign_verdict: not every idle deadline is a failure.
+
+    A worker that ends its run deliberately (writing worker_done.json before
+    autonudge_stop) or has a verified finding on disk finished — it didn't
+    stall. Only genuine silence (no verified finding, no done marker, or no
+    findings at all) may be stamped FAILED. Loop absence is deliberately NOT a
+    signal: the nudge fire path also removes loops for unreachable sessions.
+    """
+
+    CID = "a1b2c3d4"
+
+    def _write_finding(self, tmp_path: Path, cycle: int, finding: dict) -> Path:
+        d = tmp_path / "research" / self.CID / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"cycle_{cycle:03d}.json"
+        p.write_text(json.dumps(finding))
+        return p
+
+    def _write_done(self, tmp_path: Path, content: str = '{"reason": "goal met"}') -> Path:
+        d = tmp_path / "research" / self.CID
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "worker_done.json"
+        p.write_text(content)
+        return p
+
+    def test_verified_finding_completes(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        f = self._write_finding(
+            _isolate, 3, {"summary": "done", "verification": {"passed": True}}
+        )
+        status, message = _stalled_campaign_verdict(self.CID, [f])
+        assert status == CampaignStatus.COMPLETE
+        assert message is None
+
+    def test_done_marker_with_findings_is_deliberate_stop(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        # verification null — exactly what a self-stopped worker leaves behind.
+        f = self._write_finding(
+            _isolate, 9, {"summary": "final synthesis", "verification": None}
+        )
+        self._write_done(_isolate)
+        status, message = _stalled_campaign_verdict(self.CID, [f])
+        assert status == CampaignStatus.STOPPED
+        assert "preserved" in (message or "")
+
+    def test_no_marker_and_unverified_is_a_real_stall(self, _isolate: Path):
+        """The exact case GPT review flagged: a worker session deleted mid-run
+        (loop removed by error cleanup, no marker written) must stay FAILED."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        f = self._write_finding(_isolate, 2, {"summary": "partial"})
+        status, message = _stalled_campaign_verdict(self.CID, [f])
+        assert status == CampaignStatus.FAILED
+        assert "stalled" in (message or "")
+
+    def test_no_findings_fails_even_with_marker(self, _isolate: Path):
+        """A worker that produced nothing did not 'finish' — the marker alone
+        must not launder a dead campaign into STOPPED."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        self._write_done(_isolate)
+        status, _ = _stalled_campaign_verdict(self.CID, [])
+        assert status == CampaignStatus.FAILED
+
+    def test_verified_wins_over_marker(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        f = self._write_finding(
+            _isolate, 5, {"summary": "done", "verification": {"passed": True}}
+        )
+        self._write_done(_isolate)
+        status, _ = _stalled_campaign_verdict(self.CID, [f])
+        assert status == CampaignStatus.COMPLETE
+
+    def test_verification_failed_flag_does_not_complete(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        f = self._write_finding(
+            _isolate, 4, {"summary": "not there yet", "verification": {"passed": False}}
+        )
+        status, _ = _stalled_campaign_verdict(self.CID, [f])
+        assert status == CampaignStatus.FAILED
+
+    def test_malformed_or_non_object_marker_is_ignored(self, _isolate: Path):
+        """worker_done.json is LLM-written: malformed JSON, non-object JSON,
+        or a marker without a non-empty string reason must read as absent
+        (conservative FAILED), never raise into the watchdog or launder a
+        stall into STOPPED."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        f = self._write_finding(_isolate, 2, {"summary": "partial"})
+        for payload in (
+            "{not json",
+            "[]",
+            '"done"',
+            "42",
+            "null",
+            "{}",  # no reason at all
+            '{"reason": 123}',  # non-string reason
+            '{"reason": "  "}',  # blank reason
+        ):
+            self._write_done(_isolate, payload)
+            status, _ = _stalled_campaign_verdict(self.CID, [f])
+            assert status == CampaignStatus.FAILED
+
+    def test_unreadable_finding_falls_back_to_failed(self, _isolate: Path):
+        """_read_finding_file returns {} on parse error — verdict must not crash
+        and must stay conservative."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        d = _isolate / "research" / self.CID / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "cycle_001.json"
+        p.write_text("{not json")
+        status, _ = _stalled_campaign_verdict(self.CID, [p])
+        assert status == CampaignStatus.FAILED
+
+    def test_non_object_json_finding_does_not_crash_verdict(self, _isolate: Path):
+        """LLM-written finding containing VALID but non-object JSON (`[]`, a
+        bare string) must be treated like an unreadable finding, not raise out
+        of the watchdog and leave the campaign RUNNING forever. With no
+        readable finding on disk, even a valid done marker must NOT produce
+        STOPPED — its "findings are preserved" promise would be false."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _read_finding_file,
+            _stalled_campaign_verdict,
+        )
+
+        d = _isolate / "research" / self.CID / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        self._write_done(_isolate)
+        for payload in ("[]", '"just a string"', "42", "null"):
+            p = d / "cycle_001.json"
+            p.write_text(payload)
+            assert _read_finding_file(p) == {}
+            # marker + a worthless finding file: conservative FAILED — the
+            # shape error must neither crash this path nor masquerade as a
+            # deliberate stop with preserved findings.
+            status, _ = _stalled_campaign_verdict(self.CID, [p])
+            assert status == CampaignStatus.FAILED
+
+    def test_marker_with_malformed_only_finding_fails(self, _isolate: Path):
+        """Valid marker + sole UNPARSEABLE cycle file → FAILED, not STOPPED:
+        no readable finding exists, so 'findings are preserved' would lie."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        d = _isolate / "research" / self.CID / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "cycle_001.json"
+        p.write_text("{not json")
+        self._write_done(_isolate)
+        status, _ = _stalled_campaign_verdict(self.CID, [p])
+        assert status == CampaignStatus.FAILED
+
+    def test_marker_symlink_is_not_trusted(self, _isolate: Path):
+        """A LINK at the marker path is rejected by the reader outright — a
+        marker symlinked to an unbounded source (e.g. /dev/zero) must never
+        become an uncapped read inside the gateway."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _read_worker_done,
+            _stalled_campaign_verdict,
+        )
+
+        campaign_dir = _isolate / "research" / self.CID
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        # Even a link to a perfectly VALID marker elsewhere is refused: the
+        # guard is on the node type, not the content behind it.
+        target = _isolate / "elsewhere.json"
+        target.write_text('{"reason": "goal met"}')
+        link = campaign_dir / "worker_done.json"
+        link.symlink_to(target)
+        assert _read_worker_done(self.CID) is None
+        f = self._write_finding(
+            _isolate, 1, {"summary": "real", "verification": None}
+        )
+        status, _ = _stalled_campaign_verdict(self.CID, [f])
+        assert status == CampaignStatus.FAILED
+
+    def test_oversized_marker_is_ignored(self, _isolate: Path):
+        """A marker larger than the read cap is treated as absent — bounded
+        read, never truncated-and-parsed into a valid-looking payload."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _WORKER_DONE_MAX_BYTES,
+            _read_worker_done,
+        )
+
+        big_reason = "x" * (_WORKER_DONE_MAX_BYTES + 1)
+        self._write_done(_isolate, content=json.dumps({"reason": big_reason}))
+        assert _read_worker_done(self.CID) is None
+        # At-cap marker still reads fine (boundary check).
+        pad = _WORKER_DONE_MAX_BYTES - len(json.dumps({"reason": ""}))
+        self._write_done(_isolate, content=json.dumps({"reason": "y" * pad}))
+        assert _read_worker_done(self.CID) is not None
+
+    def test_relaunch_clears_stale_marker(self, _isolate: Path):
+        """_launch_loop clears worker_done.json (via _clear_worker_done_marker)
+        so a resumed run's genuine stall is not misclassified as STOPPED by the
+        previous run's marker."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _clear_worker_done_marker,
+            _read_worker_done,
+        )
+
+        self._write_done(_isolate)
+        assert _read_worker_done(self.CID) is not None
+        _clear_worker_done_marker(self.CID)
+        assert _read_worker_done(self.CID) is None
+        # Idempotent on a missing marker.
+        _clear_worker_done_marker(self.CID)
+
+    def test_clear_marker_tolerates_rogue_directory(self, _isolate: Path):
+        """The campaign dir is LLM-writable: a DIRECTORY named worker_done.json
+        must be removed, not raise IsADirectoryError out of _launch_loop."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _clear_worker_done_marker,
+            _read_worker_done,
+        )
+
+        d = _isolate / "research" / self.CID / "worker_done.json"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "junk.txt").write_text("x")
+        _clear_worker_done_marker(self.CID)
+        assert not d.exists()
+        # Directory marker also reads as absent (OSError path in the reader).
+        d.mkdir(parents=True, exist_ok=True)
+        assert _read_worker_done(self.CID) is None
+
+    def test_clear_marker_symlink_removes_link_not_target(self, _isolate: Path):
+        """A symlink at the marker path is unlinked — its target's contents
+        must never be recursively deleted."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _clear_worker_done_marker
+
+        campaign_dir = _isolate / "research" / self.CID
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        target = _isolate / "precious"
+        target.mkdir()
+        (target / "keep.txt").write_text("keep me")
+        link = campaign_dir / "worker_done.json"
+        link.symlink_to(target)
+        _clear_worker_done_marker(self.CID)
+        assert not link.exists()
+        assert (target / "keep.txt").exists()
+
+    def test_non_utf8_finding_or_marker_reads_as_absent(self, _isolate: Path):
+        """Non-UTF-8 bytes in either LLM-written file must not raise
+        UnicodeDecodeError out of the watchdog — both readers fall back to
+        their conservative defaults and the verdict stays FAILED."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _read_finding_file,
+            _read_worker_done,
+            _stalled_campaign_verdict,
+        )
+
+        d = _isolate / "research" / self.CID / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "cycle_001.json"
+        p.write_bytes(b"\xff\xfe invalid utf8 \x80")
+        assert _read_finding_file(p) == {}
+        (_isolate / "research" / self.CID / "worker_done.json").write_bytes(b"\x80\x81")
+        assert _read_worker_done(self.CID) is None
+        status, _ = _stalled_campaign_verdict(self.CID, [p])
+        assert status == CampaignStatus.FAILED
+
+    def test_settle_transitions_running_campaign(self, _isolate: Path):
+        """End-to-end: the verdict statuses are all legal RUNNING→X transitions
+        and stamp completed_at (the watchdog applies them via
+        update_campaign_status)."""
+        for verdict in (CampaignStatus.COMPLETE, CampaignStatus.STOPPED, CampaignStatus.FAILED):
+            c = create_campaign(
+                {"question": "A sufficiently long research question here", "sources": ["web"]}
+            )
+            update_campaign_status(c["id"], CampaignStatus.RUNNING)
+            r = update_campaign_status(c["id"], verdict, error_message=None)
+            assert r["status"] == verdict
+            camp = get_campaign(c["id"])
+            assert camp["status"] == verdict
+            assert camp["completed_at"] is not None
+
+
 # --- Redaction ---
 class TestRedaction:
     def test_redact_finding_with_security_module(self):

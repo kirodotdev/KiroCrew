@@ -10,6 +10,7 @@ import math
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -31,6 +32,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.knowledge.llm_pool import LLMPool
+from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
 
 try:
     from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
@@ -564,11 +566,21 @@ def _list_cycle_files(campaign_id: str) -> list[Path]:
 
 
 def _read_finding_file(path: Path) -> dict:
-    """Read + redact a single cycle finding file; {} on parse/IO error."""
+    """Read + redact a single cycle finding file; {} on parse/IO/shape error.
+
+    The file is LLM-written, so valid-but-wrong-shape JSON (`[]`, a bare
+    string) is as reachable as malformed JSON. `_redact_finding` requires a
+    dict (`.items()`), so a non-object payload must be rejected here — letting
+    it raise would abort the watchdog iteration mid-cycle (e.g. the stall
+    verdict would never settle the campaign, leaving it RUNNING forever).
+    """
     try:
-        return _redact_finding(json.loads(path.read_text()))
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return _redact_finding(data)
 
 
 # --- CRUD ---
@@ -805,6 +817,129 @@ async def _suspend_research_loops_while_disabled(state: Any) -> None:
             slot._trust = False
 
 
+_WORKER_DONE_FILENAME = "worker_done.json"
+# The marker is LLM-written: bound how much of it the gateway will ever read.
+# A legitimate marker is one short JSON object, so 64 KiB is already generous.
+_WORKER_DONE_MAX_BYTES = 64 * 1024
+
+
+def _read_worker_done(campaign_id: str) -> dict | None:
+    """Read the worker's explicit end-of-run marker, or None.
+
+    The worker writes ``worker_done.json`` in its campaign dir immediately
+    before ending its run via ``autonudge_stop`` (instructed in the brief).
+    This is the DURABLE deliberate-stop signal: unlike the mere absence of the
+    autonudge loop — which also happens when a deleted/closed worker session
+    makes the nudge fire path retire the loop (``_fire_dashboard_nudge``:
+    session unreachable → ``remove()``) — the marker file can only exist
+    because the worker chose to finish. Malformed content, a non-object
+    payload, or a missing/non-string/empty ``reason`` is treated as absent
+    (fail toward FAILED, the conservative verdict) — the brief instructs the
+    worker to write ``{"reason": "<one line>"}``, so anything else is not a
+    deliberate completion signal.
+
+    The path is LLM-writable, so the read itself is guarded: links (POSIX
+    symlink or Windows junction) and non-regular files are rejected outright —
+    a marker symlinked to ``/dev/zero`` must not become an unbounded read on
+    the gateway — and at most ``_WORKER_DONE_MAX_BYTES`` are ever read; an
+    over-cap file is treated as absent, never truncated-and-parsed.
+    """
+    d = _safe_campaign_dir(campaign_id)
+    if d is None:
+        return None
+    marker = d / _WORKER_DONE_FILENAME
+    try:
+        if is_link_or_junction(marker):
+            return None
+        st = marker.stat()
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _WORKER_DONE_MAX_BYTES:
+            return None
+        # Cap at open time too (the file can grow between stat and read):
+        # read one byte past the cap so an over-cap file is detected and
+        # rejected rather than silently truncated into valid-looking JSON.
+        with open(marker, "rb") as fh:
+            raw = fh.read(_WORKER_DONE_MAX_BYTES + 1)
+        if len(raw) > _WORKER_DONE_MAX_BYTES:
+            return None
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    reason = data.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return data
+
+
+def _clear_worker_done_marker(campaign_id: str) -> None:
+    """Remove a stale ``worker_done.json`` so a fresh run cannot inherit it.
+
+    The campaign dir is LLM-writable, so tolerate a rogue DIRECTORY at the
+    marker path too: ``unlink()`` would raise ``IsADirectoryError`` mid-resume
+    (status already RUNNING, worker never launched, HTTP 500). ``rmtree`` only
+    for a REAL directory — any link (POSIX symlink or Windows junction, per
+    ``platform_compat.is_link_or_junction``; a junction reports ``is_dir()``
+    True and ``is_symlink()`` False) is removed as a link so a link into a
+    foreign tree can never recursively delete its target's contents.
+    """
+    d = _safe_campaign_dir(campaign_id)
+    if d is None:
+        return
+    marker = d / _WORKER_DONE_FILENAME
+    if is_link_or_junction(marker):
+        unlink_link_or_junction(marker)
+    elif marker.is_dir():
+        shutil.rmtree(marker, ignore_errors=True)
+    else:
+        marker.unlink(missing_ok=True)
+
+
+def _stalled_campaign_verdict(
+    campaign_id: str, cycle_files: list[Path]
+) -> tuple[CampaignStatus, str | None]:
+    """Classify an idle-deadline expiry — not every silence is a failure.
+
+    The watchdog only marks COMPLETE when a NEW cycle file arrives carrying
+    ``verification.passed=true`` (or the cycle cap is hit). A worker that ends
+    its run deliberately via ``autonudge_stop`` — goal met, nothing more to
+    write — produces no further findings, so the campaign used to sit silent
+    until the unresponsive deadline and get stamped FAILED ("research stalled")
+    despite a finished report on disk. Distinguish the cases from durable
+    evidence:
+
+    - Latest finding has ``verification.passed=true`` → COMPLETE. Also heals a
+      completed campaign whose status was later reset to RUNNING (resume paths
+      allow terminal→RUNNING): with no new files the count never advances, so
+      the count>prev COMPLETE branch can never re-fire.
+    - Worker wrote the explicit ``worker_done.json`` marker (its instructed
+      last act before ``autonudge_stop``) and the latest finding is READABLE
+      (parses to a JSON object) → the worker ended the run on purpose →
+      STOPPED. Same terminal affordances as a user Stop (fork / export /
+      add-to-knowledge), no red failure banner. A marker alongside only
+      unreadable findings is NOT a deliberate finish — STOPPED's "findings
+      are preserved" promise would be false — so it falls through to FAILED.
+      Mere ABSENCE of the autonudge loop is deliberately NOT used as the
+      signal: the nudge fire path also removes loops for unreachable
+      (deleted/closed) worker sessions, which is a failure, not a finish.
+    - Otherwise → FAILED (genuine stall), unchanged.
+    """
+    if cycle_files:
+        latest = _read_finding_file(cycle_files[-1])
+        verified = latest.get("verification")
+        if isinstance(verified, dict) and verified.get("passed") is True:
+            return CampaignStatus.COMPLETE, None
+        if latest and _read_worker_done(campaign_id) is not None:
+            return (
+                CampaignStatus.STOPPED,
+                "Worker ended the research loop — findings are preserved.",
+            )
+    return (
+        CampaignStatus.FAILED,
+        "No activity — research stalled. Resume to continue.",
+    )
+
+
 async def _watchdog_loop(app: web.Application | None = None) -> None:
     state = app.get("state") if app is not None else None
     last_counts: dict[str, int] = {}
@@ -925,15 +1060,22 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                         # take minutes) — alive, not unresponsive. Refresh liveness.
                         last_ts[cid] = time.time()
                     elif time.time() - last_ts[cid] > _unresponsive_deadline(row["idle_secs"]):
-                        update_campaign_status(
-                            cid,
-                            CampaignStatus.FAILED,
-                            error_message="No activity — research stalled. Resume to continue.",
+                        # Deadline expired — but classify before condemning: a
+                        # worker that deliberately ended its run (worker_done
+                        # marker; verified finding on disk) finished, it didn't
+                        # stall. See _stalled_campaign_verdict. Off the event
+                        # loop: it reads LLM-written files (finding + marker)
+                        # whose size is unbounded, and this watchdog shares the
+                        # gateway's single loop with every request and the
+                        # heartbeat (no-blocking-call-on-event-loop).
+                        status, message = await asyncio.to_thread(
+                            _stalled_campaign_verdict, cid, cycle_files
                         )
+                        update_campaign_status(cid, status, error_message=message)
                         await _stop_loop(cid, remove=True)  # tear down so Resume re-arms cleanly
                         last_counts.pop(cid, None)
                         last_ts.pop(cid, None)
-                        _emit_sse({"type": "failed", "campaign_id": cid})
+                        _emit_sse({"type": status.value, "campaign_id": cid})
         except asyncio.CancelledError:
             break
         except Exception:
@@ -967,6 +1109,16 @@ async def _launch_loop(request: web.Request, cid: str) -> None:
     Best-effort: if autonudge or dashboard state is unavailable, the status
     change still stands but no worker is launched (logged for visibility).
     """
+    # A fresh run must not inherit the previous run's deliberate-stop marker:
+    # a stale worker_done.json would make the stall verdict classify a genuine
+    # stall of THIS run as STOPPED. Every start/resume passes through here, and
+    # this runs FIRST — before the autonudge/state availability early-returns —
+    # because a resume whose worker never launches is precisely the run that
+    # must NOT be settled as STOPPED by the old marker. Off the event loop:
+    # the marker path is LLM-writable, so the cleanup may rmtree an
+    # arbitrarily large rogue directory, and _launch_loop runs on the
+    # gateway's single loop (no-blocking-call-on-event-loop).
+    await asyncio.to_thread(_clear_worker_done_marker, cid)
     state = request.app.get("state")
     svc = _autonudge_instance()
     if state is None or svc is None:
@@ -1128,6 +1280,12 @@ def _write_brief(cid: str, row: Any) -> None:
         "Each cycle, also read `guidance.txt` in this dir if present and follow any "
         "directive there (e.g. a FINALIZE MODE instruction to stop exploring and "
         "synthesize your final answer).",
+        "",
+        "**Ending the run:** if you decide the research is finished (goal met or no "
+        "productive work remains), FIRST write `worker_done.json` in this dir as "
+        '`{"reason": "<one line>"}` — this is the durable signal that you ended the '
+        "run on purpose (without it, your silence is recorded as a stall/failure) — "
+        "and only THEN call `autonudge_stop`.",
         "",
         "Adapt direction each cycle from prior findings; pursue the highest-value open "
         "lead toward the question.",
