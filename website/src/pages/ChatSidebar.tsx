@@ -3714,14 +3714,29 @@ function ChatSidebar({
                   }
                   return ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
                 })
+                // One definition of "search active" for every site below: results
+                // are present AND the query is still at/above the search threshold.
+                // The compound check matters on the clear-X frame: historyFilter
+                // empties synchronously but useDebouncedSessionSearch nulls its
+                // result in a passive effect (one render later), so a bare
+                // `historySearchResults` test would treat that stale frame as an
+                // active search and paint date segment headers over a
+                // relevance-ordered list.
+                const searchActive = historyFilter.trim().length >= SEARCH_MIN_CHARS && !!historySearchResults
                 // Hide date segments when the user has an active search — results are
                 // Segments only make sense when the list is date-ordered. For name/created
                 // sorts (or active search, which is relevance-ranked) they'd interleave.
-                const showSegments = !(historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults)
+                const showSegments = !searchActive
                   && (sortKey === 'date-desc' || sortKey === 'date-asc')
-                // Skip the sort only when the backend already returns date-desc order, i.e.
-                // no active search (search results are relevance-ranked, not date-ranked).
-                const sortedHistory = (sortKey === 'date-desc' && !historySearchResults) ? filteredHistory : [...filteredHistory].sort((a, b) => compareBySort(a, b, sortKey))
+                // Active search: keep the backend's relevance ranking (title-boosted;
+                // see search_sessions in history.py). Re-sorting search results by the
+                // sidebar sort key buried an exact title match under fresher sessions
+                // that merely mention the query in their content — and defeated
+                // groupHistoryByFolder's documented order-preserving contract. The
+                // command palette's Sessions tab already preserves backend order.
+                // No search: skip the sort only when the backend already returns
+                // date-desc order.
+                const sortedHistory = (searchActive || sortKey === 'date-desc') ? filteredHistory : [...filteredHistory].sort((a, b) => compareBySort(a, b, sortKey))
                 let prevSeg = ''
                 // Derive agent color the same way renderSessionRow does so history rows
                 // match the session-row visual language (agent name tinted by source).
@@ -3794,7 +3809,7 @@ function ChatSidebar({
                 // Folder-grouped view: during an active content search, regroup the
                 // relevance-ranked results under collapsible folder headers (+ Unfiled)
                 // by the folder each session was filed in, instead of date segments.
-                if (historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults) {
+                if (searchActive) {
                   return groupHistoryByFolder(sortedHistory, folders).map(({ key: gid, folder, rows }) => {
                     const collapsed = collapsedHistoryGroups.has(gid)
                     const groupName = folder ? folder.name : i18nT('pages.chatSidebar.unfiled')
