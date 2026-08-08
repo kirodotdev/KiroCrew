@@ -4265,6 +4265,8 @@
       "close": "关闭",
       "no_scope": "无{{scope}}",
       "pinned": "已置顶",
+      "retry": "重试",
+      "something_went_wrong": "出错了",
       "providers": {
         "actionsProvider": {
           "actions": "操作",

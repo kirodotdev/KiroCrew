@@ -4265,6 +4265,8 @@
       "close": "閉じる",
       "no_scope": "{{scope}}なし",
       "pinned": "ピン留め済み",
+      "retry": "再試行",
+      "something_went_wrong": "問題が発生しました",
       "providers": {
         "actionsProvider": {
           "actions": "アクション",

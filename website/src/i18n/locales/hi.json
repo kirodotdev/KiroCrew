@@ -4336,6 +4336,8 @@
       "close": "बंद करें",
       "no_scope": "कोई {{scope}} नहीं",
       "pinned": "पिन किए गए",
+      "retry": "पुनः प्रयास करें",
+      "something_went_wrong": "कुछ गलत हो गया",
       "providers": {
         "actionsProvider": {
           "actions": "कार्रवाइयाँ",

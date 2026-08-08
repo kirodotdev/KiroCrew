@@ -4407,6 +4407,8 @@
       "close": "Fermer",
       "no_scope": "Aucun {{scope}}",
       "pinned": "Épinglés",
+      "retry": "Réessayer",
+      "something_went_wrong": "Un problème est survenu",
       "providers": {
         "actionsProvider": {
           "actions": "Actions",

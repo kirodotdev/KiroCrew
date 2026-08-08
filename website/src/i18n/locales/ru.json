@@ -4478,6 +4478,8 @@
       "close": "Закрыть",
       "no_scope": "Нет {{scope}}",
       "pinned": "Закреплённые",
+      "retry": "Повторить",
+      "something_went_wrong": "Что-то пошло не так",
       "providers": {
         "actionsProvider": {
           "actions": "Действия",

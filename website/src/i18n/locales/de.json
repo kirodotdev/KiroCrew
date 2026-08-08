@@ -4336,6 +4336,8 @@
       "close": "Schließen",
       "no_scope": "Keine {{scope}}",
       "pinned": "Angepinnt",
+      "retry": "Wiederholen",
+      "something_went_wrong": "Etwas ist schiefgelaufen",
       "providers": {
         "actionsProvider": {
           "actions": "Aktionen",
