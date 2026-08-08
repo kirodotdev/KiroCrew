@@ -31,10 +31,10 @@ const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = requi
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { createLivenessMonitor } = require("./gateway-liveness");
-const { chooseRecoveryStrategy } = require("./gateway-recovery");
+const { chooseRecoveryStrategy, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
-const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
+const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { initCrewCompanion, shutdownCrewCompanion } = require("./crew-companion/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
@@ -201,6 +201,25 @@ let gatewayProcess = null;
 // fix on a dropped tunnel is to re-probe and reconnect once it heals, not to
 // force-stop the port or spawn a (nonexistent, in remote mode) local backend.
 let weSpawnedGateway = false;
+// True only on the reuse path when the port-holder was POSITIVELY identified as
+// a local same-family Kiro Crew process (same-family /api/health + a "kirocrew"
+// or "service" LISTEN owner). Distinguishes "we adopted a local gateway" from
+// "we connected to a tunnel / external gateway" for recovery: an adopted local
+// gateway that dies will never come back on its own, so recovery must wait
+// BOUNDED and then respawn — never the indefinite tunnel-heal wait, which
+// leaves the shell dead until the user manually relaunches.
+// KNOWN RESIDUAL (Windows): classifyPortOwner cannot positively identify
+// owners there (no lsof/ps), so this flag never sets and an adopted draining
+// gateway still falls into the indefinite "reconnect" wait — deliberately
+// conservative until the Windows-native owner probe lands.
+let reusedLocalGateway = false;
+// True when the adopted holder was specifically SERVICE-classified (PPID = init:
+// a real launchd/systemd unit — or an orphan, which reparents to init and is
+// indistinguishable at classify time). If that gateway later releases the port,
+// a real service manager may be about to respawn it, so recovery must offer a
+// bounded rebind grace before spawning locally — spawning immediately races the
+// manager for the bind and one side dies with EADDRINUSE.
+let reusedServiceGateway = false;
 // Post-handoff backend liveness monitor (primary window only). Detects a wedged
 // gateway — alive TCP socket, frozen event loop — that the spawn 'exit' watcher
 // can't, since the process never exits. See gateway-liveness.js.
@@ -278,6 +297,28 @@ function fetchHealthInfo(healthUrl = `${BACKEND_URL}${HEALTH_IDENTITY_PATH}`) {
   });
 }
 
+// Is the answering gateway actually SERVING, or draining after /api/shutdown?
+// /api/status and /api/health both stay 200 through a graceful drain, so they
+// cannot make this call — /api/ready flips to 503 with `shutting_down: true`
+// the moment shutdown_event is set (see handlers/core.py api_ready). Resolves
+// to a classifyGatewayReadiness verdict; never rejects (probe failures map to
+// "unknown", which adopts — fail-open like every other ambiguity in the guard).
+function fetchGatewayReadiness(readyUrl = `${BACKEND_URL}${READY_PATH}`) {
+  return new Promise((resolve) => {
+    const req = http.get(readyUrl, { timeout: 2000 }, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch { /* non-JSON body — classify on status alone */ }
+        resolve(classifyGatewayReadiness(res.statusCode, payload));
+      });
+    });
+    req.on("error", () => resolve("unknown"));
+    req.on("timeout", () => { req.destroy(); resolve("unknown"); });
+  });
+}
+
 // Ask the OTHER channel app to quit through its normal lifecycle (its
 // before-quit stops its own gateway). Never kill the gateway out from under
 // its shell — the shell's exit watcher would treat that as a crash.
@@ -308,6 +349,41 @@ function probeGatewayPortOwner(port) {
   });
 }
 
+// Is `pid` still running? Signal 0 probes without delivering: ESRCH means dead,
+// EPERM means alive but not ours (still holding its locks) — treat as alive.
+function _pidAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return !!(e && e.code === "EPERM"); }
+}
+
+// Best-effort capture of the pids LISTENing on our port, for the incumbent-exit
+// wait below. Must be called while the port is still bound — after it clears,
+// lsof can no longer name the draining process. Empty on probe failure or
+// Windows (no lsof): the exit wait then degrades to a no-op, same as today.
+async function snapshotPortPids(port) {
+  try { return await _lsofListenPids(port); } catch { return []; }
+}
+
+// A draining gateway releases its LISTEN socket EARLY but holds the exclusive
+// gateway.lock flock until the process exits (turn drain + session flush run
+// after the socket closes). Spawning on "port is free" alone races that lock:
+// the replacement is refused and exits, then the incumbent exits — no gateway.
+// Wait (bounded) for the captured incumbent pids to die before spawning; the
+// kernel releases the flock atomically on exit. On timeout, spawn anyway and
+// let the child's own honest lock-refusal error surface through the existing
+// gatewayStartFailure watcher — better than silently hanging here forever.
+async function waitForIncumbentExit(pids, label) {
+  const verdict = await waitForProcessExit({
+    pids,
+    isAlive: _pidAlive,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  });
+  if (verdict === "timeout") {
+    glog(`${label}: incumbent gateway process still alive after the exit grace (port already free) — spawning anyway; a lock refusal will surface via the start-failure watcher`);
+  }
+  return verdict;
+}
+
 // Budget: the other app's graceful gateway stop runs up to 15s
 // (POST /api/shutdown -> SIGTERM -> SIGKILL) after the quit event lands,
 // so the wait must comfortably exceed it.
@@ -335,7 +411,7 @@ async function waitForPortFree(maxWaitMs = 30000) {
   }
 }
 
-async function resolveGatewayConflict() {
+async function resolveGatewayConflict(rebindDepth = 0) {
   const health = await fetchHealthInfo();
   // A remote host configured for THIS port means the user deliberately pointed
   // this app at a gateway on another machine, so the local holder is a tunnel
@@ -347,9 +423,82 @@ async function resolveGatewayConflict() {
   const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);
   const decision = decideGatewayAction(app.getVersion(), health, { localOwner });
   if (decision.action === "reuse") {
+    // Adopt-or-wait: the /api/status probe that got us here stays 200 while the
+    // backend DRAINS after POST /api/shutdown, so "answering" is not "serving".
+    // Adopting a draining gateway strands the shell: seconds later the process
+    // exits and nothing ever answers this port again (a relaunch arriving
+    // seconds into a graceful stop reads "reusing existing gateway" and then
+    // goes dark). Only a positive shutting-down verdict refuses; every ambiguity
+    // (legacy gateway, probe failure) keeps the historical adopt behavior.
+    // A configured remote host is exempt: its port-holder is a tunnel by
+    // construction, so "wait for the port to clear, then spawn fresh" can never
+    // apply — adopting and letting the reconnect path wait out the remote
+    // restart is the only correct move there.
+    let adoptedDraining = false;
+    const readiness = remoteHost ? "unknown" : await fetchGatewayReadiness();
+    if (readiness === "shutting-down") {
+      glog(`gateway on :${PORT} answers but /api/ready reports shutting-down — refusing to adopt a draining gateway`);
+      sendStatus("Waiting for the previous gateway to exit…");
+      // Capture the draining process NOW, while it still owns the LISTEN
+      // socket — needed below to wait out its gateway.lock after the port clears.
+      const drainingPids = await snapshotPortPids(PORT);
+      if (await waitForPortFree()) {
+        if (localOwner === "service") {
+          // A SERVICE-classified holder that released its port may be mid-restart
+          // (kirocrew restart bounces the launchd/systemd unit): the manager is
+          // about to respawn it, and spawning now races that rebind — one side
+          // exits with EADDRINUSE. But orphans (reparented to init) classify as
+          // service too and have no manager to respawn them, so don't exempt —
+          // grace-wait: adopt a rebind, spawn only if the port stays free.
+          sendStatus("Waiting for the gateway to restart…");
+          const verdict = await waitForServiceRebind({
+            isPortBound: async () => (await probeGatewayPortOwner(PORT)) !== "none",
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+          });
+          if (verdict === "rebound") {
+            // Whatever re-bound the port has NOT been validated: it could be a
+            // foreign process, a different-family gateway, or another draining
+            // gateway. Do not assert "reuse" — re-run the full decision table
+            // (identity + readiness) against the new holder. Depth-capped: one
+            // re-entry per boot; a second rebind-into-drain falls through to
+            // the adopt-anyway path rather than looping.
+            if (rebindDepth < 1) {
+              glog(`service rebind: :${PORT} re-bound within the grace window — re-validating the new holder`);
+              return resolveGatewayConflict(rebindDepth + 1);
+            }
+            glog(`service rebind: :${PORT} re-bound again at depth ${rebindDepth} — treating as adopt-anyway to avoid a validation loop`);
+          } else {
+            glog(`service rebind: :${PORT} stayed free past the grace window (no manager respawned it) — spawning fresh`);
+          }
+        }
+        if (localOwner !== "service" || (await probeGatewayPortOwner(PORT)) === "none") {
+          // Port free ≠ lock free: wait for the draining process itself to
+          // exit so the replacement is not refused by the singleton lock.
+          await waitForIncumbentExit(drainingPids, "drain");
+          glog(`drain complete: :${PORT} released — spawning a fresh gateway`);
+          return "spawn";
+        }
+      }
+      // The drain is stuck holding the socket past the graceful-stop budget.
+      // Spawning now would only hit EADDRINUSE, and evicting is not ours to do
+      // (we did not spawn this gateway). Adopt as before — loudly — and let the
+      // liveness recovery below handle its eventual death with a bounded wait.
+      glog(`drain wait timed out — :${PORT} still held; adopting anyway (recovery will respawn if it dies)`);
+      adoptedDraining = true;
+    }
     glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
     weSpawnedGateway = false; // reuse path — recovery must not kill/respawn a gateway we don't own
-    sendStatus("Gateway already running ✓");
+    // A same-family gateway held by a local Kiro Crew process is OURS in spirit
+    // even though we didn't spawn it: if it dies, no tunnel will resurrect it,
+    // so recovery may respawn after a bounded wait. Anything less positively
+    // identified (tunnel, no visible owner, probe failure) keeps the
+    // never-respawn external classification.
+    reusedLocalGateway = decision.reason === "same-family"
+      && (localOwner === "kirocrew" || localOwner === "service");
+    reusedServiceGateway = reusedLocalGateway && localOwner === "service";
+    // A gateway we adopted mid-drain is not a success to celebrate: recovery
+    // may immediately retract it. Keep the status neutral for that case.
+    sendStatus(adoptedDraining ? "Connecting to the existing gateway…" : "Gateway already running ✓");
     return "reuse";
   }
   const other = FAMILY_META[decision.otherFamily];
@@ -624,6 +773,8 @@ function spawnGateway(resolve) {
         });
         gatewayProcess = child;
         weSpawnedGateway = true; // we own this child — recovery may kill+respawn it
+        reusedLocalGateway = false; // ownership transitioned: no longer on an adopted gateway
+        reusedServiceGateway = false; // ditto — stale service classification must not outlive the adoption
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
         if (typeof childOut === "number") { try { fs.closeSync(childOut); } catch { /* ignore */ } }
 
@@ -1582,11 +1733,11 @@ function fadeLoadingScreen(wc, timeoutMs = 8000) {
  *
  * @param {Electron.BaseWindow} parentWin
  * @param {{title:string, message:string, logTail:string, logPath:string,
- *          portConflict:boolean, port:number}} opts
+ *          portConflict:boolean, port:number, noRetry?:boolean}} opts
  * @returns {Promise<'retry'|'force-retry'|'reveal'|'quit'>}
  */
 function showGatewayErrorDialog(parentWin, opts) {
-  const { title, message, logTail, logPath, portConflict } = opts;
+  const { title, message, logTail, logPath, portConflict, noRetry = false } = opts;
   return new Promise((resolve) => {
     const dark = nativeTheme.shouldUseDarkColors;
     const hasParent = parentWin && !parentWin.isDestroyed();
@@ -1603,9 +1754,11 @@ function showGatewayErrorDialog(parentWin, opts) {
     const esc = (s) => String(s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     // The primary action depends on whether the port is held: a plain retry
-    // can't clear a port conflict, so offer force-stop instead.
-    const primaryAction = portConflict ? "force-retry" : "retry";
-    const primaryLabel = portConflict ? "Force-stop &amp; Retry" : "Retry";
+    // can't clear a port conflict, so offer force-stop instead. A TERMINAL
+    // caller (one that quits on every action) passes noRetry — showing a
+    // "Retry" button it would ignore contradicts the dialog's own message.
+    const primaryAction = noRetry ? "quit" : (portConflict ? "force-retry" : "retry");
+    const primaryLabel = noRetry ? "Quit" : (portConflict ? "Force-stop &amp; Retry" : "Retry");
     const fg = dark ? "#e2e8f0" : "#1e293b";
     const muted = dark ? "#94a3b8" : "#64748b";
     const html = `<!DOCTYPE html><html><head><style>
@@ -1633,7 +1786,7 @@ function showGatewayErrorDialog(parentWin, opts) {
       <div class="row">
         <button class="ok" onclick="act('${primaryAction}')">${primaryLabel}</button>
         <button class="cancel" onclick="act('reveal')">Reveal Log</button>
-        <button class="cancel" onclick="act('quit')">Quit</button>
+        ${noRetry ? "" : `<button class="cancel" onclick="act('quit')">Quit</button>`}
       </div>
       <script>
         function act(a){ document.title = 'mc-action:' + a; window.close(); }
@@ -1762,10 +1915,20 @@ async function recoverWedgedGateway(win) {
   // fell through to showUnrecoverableGatewayError, which QUIT the app on any
   // button (that was the "crash on Retry"). Instead: leave the tunnel alone and
   // re-probe until it heals, then reconnect.
-  if (chooseRecoveryStrategy({ weSpawnedGateway }) === "reconnect") {
+  const strategy = chooseRecoveryStrategy({ weSpawnedGateway, reusedLocalGateway });
+  if (strategy === "reconnect") {
     glog("liveness: backend unresponsive on a gateway we did not spawn (remote tunnel / external gateway) — waiting for it to recover instead of killing the port");
     if (!win || win.isDestroyed() || isQuitting) return;
     return reconnectExternalGateway(win);
+  }
+  // An ADOPTED local same-family gateway (reuse path, but the holder was a
+  // local Kiro Crew process) gets neither the kill (we don't own it) nor the
+  // indefinite tunnel wait (nothing external will bring it back): bounded
+  // wait, then respawn once the port clears on its own.
+  if (strategy === "reconnect-bounded") {
+    glog("liveness: backend unresponsive on an adopted local Kiro Crew gateway — bounded wait, then respawn");
+    if (!win || win.isDestroyed() || isQuitting) return;
+    return reconnectOrRespawnAdoptedGateway(win);
   }
   glog("liveness: backend unresponsive — force-killing wedged gateway and restarting");
   // Capture the frozen stack from OUTSIDE the wedged process BEFORE the kill.
@@ -1834,25 +1997,136 @@ async function reconnectExternalGateway(win) {
   return showLoadingThenConnect(win, BACKEND_URL);
 }
 
+// How long recovery waits for an ADOPTED local gateway to answer again before
+// concluding it is gone for good. A local gateway's plausible comebacks (a
+// long GC pause, a graceful drain we adopted mid-flight finishing + something
+// relaunching it) resolve well inside this; a tunnel-style multi-minute outage
+// cannot happen to a process on this machine.
+const ADOPTED_RECOVERY_WAIT_MS = 30_000;
+
 /**
- * Terminal state: a wedged gateway is holding the port and cannot be killed
- * (uninterruptible kernel sleep — e.g. a blocking close() on a dead socket).
- * No respawn can succeed until the OS reaps it, which only a restart guarantees.
- * Tell the user plainly instead of looping a doomed retry.
+ * Recover an ADOPTED local same-family gateway (reuse path, port held by a
+ * local Kiro Crew process we did not spawn). We must not kill the holder — but
+ * unlike a tunnel, a dead local gateway will never come back on its own, so the
+ * indefinite reconnectExternalGateway loop is exactly the observed failure:
+ * adopt a draining gateway, classify its death as "remote tunnel", and wait
+ * forever for a comeback a local process cannot make. Instead: re-probe for
+ * a bounded interval; if the backend answers, reconnect; otherwise wait for
+ * the port to clear (the dying process releasing its socket) and spawn our
+ * own backend.
+ * If the port never clears, the holder is alive-but-unresponsive and not ours
+ * to kill — surface the honest restart-required dialog instead of spinning.
  */
-async function showUnrecoverableGatewayError(win, port) {
+async function reconnectOrRespawnAdoptedGateway(win) {
+  const wc = win.webContents;
+  try { wc.loadFile(path.join(__dirname, "loading.html")); } catch { /* window may be mid-teardown */ }
+  if (!win || win.isDestroyed() || isQuitting) return;
+  win.show();
+  sendStatus("Gateway stopped responding — waiting for it to recover…");
+  const deadline = Date.now() + ADOPTED_RECOVERY_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (!win || win.isDestroyed() || isQuitting) return;
+    let healthy = false;
+    try { await checkBackend(HEALTH_URL); healthy = true; } catch { /* still down */ }
+    if (healthy) {
+      glog("liveness: adopted local gateway answering again — reconnecting");
+      gatewayStartFailure = null;
+      return showLoadingThenConnect(win, BACKEND_URL);
+    }
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  if (!win || win.isDestroyed() || isQuitting) return;
+  glog(`liveness: adopted local gateway did not recover within ${ADOPTED_RECOVERY_WAIT_MS}ms — waiting for :${PORT} to clear, then spawning our own backend`);
+  sendStatus("Waiting for the previous gateway to exit…");
+  // Capture the incumbent NOW, while it may still own the LISTEN socket —
+  // needed below to wait out its gateway.lock after the port clears.
+  const incumbentPids = await snapshotPortPids(PORT);
+  if (!(await waitForPortFree())) {
+    glog(`liveness: :${PORT} still held by a process we did not spawn — surfacing port-held instead of waiting forever`);
+    // No stop was attempted on this path (the holder is not ours to evict), so
+    // the "wedged, restart your computer" copy would be false — use the honest
+    // port-held variant: quit the holder and relaunch.
+    return showUnrecoverableGatewayError(win, PORT, "held");
+  }
+  if (!win || win.isDestroyed() || isQuitting) return;
+  if (reusedServiceGateway) {
+    // The dead gateway was SERVICE-classified: a real launchd/systemd unit is
+    // (or may be) about to respawn it, and spawning immediately races that
+    // rebind for the port. Orphans classify as service too but nothing rebinds
+    // them — so grace-wait: reconnect to a rebind, spawn only on a quiet port.
+    glog(`liveness: adopted gateway was service-managed — waiting a bounded grace for its manager to respawn it before spawning our own`);
+    sendStatus("Waiting for the gateway to restart…");
+    const verdict = await waitForServiceRebind({
+      isPortBound: async () => (await probeGatewayPortOwner(PORT)) !== "none",
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    if (win.isDestroyed() || isQuitting) return;
+    if (verdict === "rebound") {
+      // Validate the new holder through the SAME identity table the boot path
+      // uses — owner probe + /api/health family check + readiness — not a
+      // weaker ad-hoc test: a cross-family gateway that rebinds here must hit
+      // the same takeover guard as at boot, not get silently reconnected to.
+      const owner = await probeGatewayPortOwner(PORT);
+      const health = await fetchHealthInfo();
+      const decision = decideGatewayAction(app.getVersion(), health, { localOwner: owner });
+      const readiness = await fetchGatewayReadiness();
+      if (decision.action === "reuse" && readiness !== "shutting-down") {
+        glog(`liveness: service manager re-bound :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
+        reusedLocalGateway = decision.reason === "same-family" && (owner === "kirocrew" || owner === "service");
+        reusedServiceGateway = reusedLocalGateway && owner === "service";
+        gatewayStartFailure = null;
+        return showLoadingThenConnect(win, BACKEND_URL);
+      }
+      glog(`liveness: :${PORT} was re-bound by an unusable holder (owner=${owner}, action=${decision.action}, readiness=${readiness}) — cannot reconnect or spawn over it`);
+      return showUnrecoverableGatewayError(win, PORT, "held");
+    }
+    glog(`liveness: :${PORT} stayed free past the rebind grace — no manager respawned it; spawning our own backend`);
+  }
+  // Port free ≠ lock free: the incumbent may still be flushing sessions while
+  // holding gateway.lock. Wait for the process itself before spawning.
+  await waitForIncumbentExit(incumbentPids, "liveness");
+  sendStatus("Starting a fresh gateway…");
+  gatewayStartFailure = null;
+  await startGateway(); // spawn a fresh child (port is confirmed free)
+  if (win.isDestroyed() || isQuitting) return;
+  return showLoadingThenConnect(win, BACKEND_URL);
+}
+
+/**
+ * Terminal state, two variants:
+ *  - "wedged" (default): a force-stop was actually attempted and the holder
+ *    survived it (uninterruptible kernel sleep). Only a machine restart clears
+ *    it, and the copy says so.
+ *  - "held": port ${port} is occupied by a process this app will not evict
+ *    (an unresponsive previous gateway, a foreign process, or a cross-family
+ *    gateway that grabbed the port). No stop was attempted — telling the user
+ *    to reboot would be false and needlessly heavy; quitting the holder and
+ *    relaunching suffices.
+ */
+async function showUnrecoverableGatewayError(win, port, variant = "wedged") {
   if (!win || win.isDestroyed()) return;
   let logTail = "";
   try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); } catch { /* no log yet */ }
+  const wedged = variant === "wedged";
   const action = await showGatewayErrorDialog(win, {
-    title: `Kiro Crew — backend stuck on port ${port}`,
-    message: `The Kiro Crew backend is wedged and cannot be stopped — it is in an `
-      + `uninterruptible state and is still holding port ${port}, so it can't be `
-      + `force-stopped or restarted in place. Restart your computer to clear it. `
-      + `(This is a known backend hang; see the launch log below for the cause.)`,
+    title: wedged
+      ? `Kiro Crew — backend stuck on port ${port}`
+      : `Kiro Crew — port ${port} is in use`,
+    message: wedged
+      ? `The Kiro Crew backend is wedged and cannot be stopped — it is in an `
+        + `uninterruptible state and is still holding port ${port}, so it can't be `
+        + `force-stopped or restarted in place. Restart your computer to clear it. `
+        + `(This is a known backend hang; see the launch log below for the cause.)`
+      : `Another process is holding port ${port}, so Kiro Crew can't reconnect to `
+        + `it or start its own backend there. Quit the process using port ${port} `
+        + `(the launch log below names it — look for the "port-owner:" line), `
+        + `then reopen this app.`,
     logTail,
     logPath: gatewayLogPath(),
-    portConflict: false, // hide "Force-stop & Retry" — it cannot work here
+    portConflict: false,
+    // This caller is TERMINAL — it quits on every action — so never render a
+    // "Retry" primary it would ignore: the truthful primary here is Quit.
+    noRetry: true,
     port,
   });
   if (win.isDestroyed()) return;

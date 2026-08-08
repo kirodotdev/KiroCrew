@@ -35,6 +35,46 @@ const { channelForVersion } = require("./auto-update");
 // "unidentified" and silently disable the takeover path (caught in review).
 const HEALTH_IDENTITY_PATH = "/api/health";
 
+// The endpoint that distinguishes a SERVING gateway from one that is merely
+// alive. /api/status and /api/health both keep answering 200 while the backend
+// DRAINS after POST /api/shutdown, so a boot probe against either happily
+// adopts a gateway that is seconds from exiting ("reusing existing gateway" →
+// the gateway dies → the shell waits on a port nothing will ever answer
+// again). /api/ready flips to 503 the moment shutdown_event is set, and its
+// payload carries `shutting_down: true` for loopback callers.
+const READY_PATH = "/api/ready";
+
+/**
+ * Classify a gateway's `GET /api/ready` answer for the boot-time
+ * adopt-or-wait decision.
+ *
+ * Fail-open by design: only a POSITIVE shutting-down signal refuses adoption.
+ * Everything ambiguous (legacy gateway without the endpoint, unparseable body,
+ * transport error mapped to a null status) preserves the historical reuse
+ * behavior, mirroring decideGatewayAction's every-ambiguity-reuses contract.
+ *
+ * @param {number|null|undefined} statusCode  HTTP status, or null/undefined
+ *        when the probe itself failed (error/timeout)
+ * @param {{ready?:boolean, shutting_down?:boolean}|null} payload
+ *        parsed response JSON, or null when unparseable
+ * @returns {"ready"|"shutting-down"|"starting"|"unknown"}
+ *   "ready"         — 200: serving, safe to adopt.
+ *   "shutting-down" — 503 with the shutdown marker: the gateway is draining
+ *                     after /api/shutdown and will exit; adopting it strands
+ *                     the shell on a dying port. Do NOT adopt.
+ *   "starting"      — 503 without the marker: booting (session restore etc.);
+ *                     adopting is fine, the splash already waits for ready.
+ *   "unknown"       — anything else (404 legacy, proxy error, failed probe):
+ *                     keep the historical adopt behavior.
+ */
+function classifyGatewayReadiness(statusCode, payload) {
+  if (statusCode === 200) return "ready";
+  if (statusCode === 503) {
+    return payload && payload.shutting_down === true ? "shutting-down" : "starting";
+  }
+  return "unknown";
+}
+
 // Identity families. stable + insider are ONE app (the production install)
 // on two update lanes; nightly is a separate side-by-side install. Both
 // share the bundle id, so the app NAME is the takeover-targeting handle.
@@ -103,4 +143,11 @@ function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown" 
   return { action: "takeover-prompt", otherFamily: remote, otherVersion: remoteHealth.version };
 }
 
-module.exports = { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH };
+module.exports = {
+  identityFamily,
+  decideGatewayAction,
+  classifyGatewayReadiness,
+  FAMILY_META,
+  HEALTH_IDENTITY_PATH,
+  READY_PATH,
+};

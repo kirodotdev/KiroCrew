@@ -13,7 +13,10 @@ npx electron .
 
 The app will:
 
-1. Reuse an existing gateway if one is already reachable
+1. Reuse an existing gateway if one is already reachable and actually serving
+   (`/api/ready` 200) — a gateway draining after `/api/shutdown` still answers
+   `/api/status`, so it is never adopted; the app waits for the port to clear
+   and spawns fresh instead
 2. Launch `kirocrew gateway` when needed
 3. Show a loading screen while the backend boots
 4. Load the dashboard
