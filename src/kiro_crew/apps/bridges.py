@@ -37,6 +37,7 @@ from kiro_crew.apps.manager import (
     list_apps,
 )
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.python_runtime import is_bare_python, resolve_app_python
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -479,6 +480,26 @@ def _apply_agent_mcp_policy(
 
 #: The host CLI name a builtin app may declare as its MCP ``command``.
 _HOST_CLI_COMMAND = "kirocrew"
+
+
+def _pin_app_python_command(app_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a stdio server's bare ``python``/``python3`` to the app's own venv.
+
+    The same app's backend already refuses to spawn on a bare name, and for the
+    same two reasons: ``PATH`` need not hold an interpreter under that name at
+    all, and where it does, a system interpreter older than the app's venv dies
+    on the app's own imports. Either way the server never starts, and a stdio MCP
+    server that never starts is indistinguishable from an app that provides no
+    tools — nothing is logged on this path.
+
+    The match is literal, like the host-CLI pin beside it: an absolute path, a
+    versioned name, and any non-Python binary are the author's explicit choice
+    and are written as declared.
+    """
+    if not is_bare_python(cfg.get("command")):
+        return cfg
+    cfg["command"] = resolve_app_python(app_dir(app_name))
+    return cfg
 
 
 def _pin_host_cli_command(app_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -1818,6 +1839,10 @@ def _register_mcp_servers(
             if isinstance(cfg, dict):
                 cfg = _pin_host_cli_command(app_name, cfg)
             is_http = isinstance(cfg, dict) and bool(cfg.get("url"))
+            if isinstance(cfg, dict) and not is_http:
+                # stdio only: an HTTP server is reached over its url and has no
+                # command to resolve.
+                cfg = _pin_app_python_command(app_name, cfg)
             if is_http and not resolved_port:
                 # No live backend → registering the manifest's dead default-port URL would
                 # break every kiro session. Skip it AND scrub any stale entry so a prior

@@ -29,6 +29,7 @@ from kiro_crew.apps.execution import (
     shipped_builtin_module_path,
 )
 from kiro_crew.apps.manager import app_dir, get_app_manifest, list_apps
+from kiro_crew.apps.python_runtime import resolve_app_python
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -869,13 +870,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     elif backend_type == "asgi" or (
         not backend_type and _is_asgi_entry(entry)
     ):
-        venv_python = str(root / ".venv" / "bin" / "python3")
-        # Fall back to the gateway's own interpreter (sys.executable) rather than a bare
-        # "python3": a bare name relies on PATH, which isn't guaranteed (e.g. some
-        # build environments ship only a versioned interpreter, so execvp("python3") raises
-        # FileNotFoundError and the backend dies immediately). Matches the module-style
-        # branch above.
-        python_bin = venv_python if (root / ".venv" / "bin" / "python3").is_file() else sys.executable
+        python_bin = resolve_app_python(root)
         # Derive the module path for uvicorn (e.g. backend.app:app)
         rel = entry.relative_to(root)
         parts = list(rel.parts)
@@ -895,10 +890,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
 
     # --- Plain Python backend (default) ---
     else:
-        venv_python = str(root / ".venv" / "bin" / "python3")
-        # See the ASGI branch: prefer the venv python, else the gateway's own interpreter
-        # (sys.executable) — a bare "python3" relies on PATH and isn't always present.
-        python_bin = venv_python if (root / ".venv" / "bin" / "python3").is_file() else sys.executable
+        python_bin = resolve_app_python(root)
         cmd = [python_bin, entry_str]
         cwd = str(root)
 
