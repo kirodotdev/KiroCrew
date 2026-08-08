@@ -4872,7 +4872,9 @@
       "this_issue_is_locked": "Este issue está bloqueado",
       "unknown_author": "Autor desconocido",
       "untitled": "Sin título",
-      "updated_time": "actualizada {{time}}"
+      "updated_time": "actualizada {{time}}",
+      "jira_open_in_browser": "Jira issue — open in browser to view details.",
+      "open_in_jira": "Open in Jira"
     },
     "jobForm": {
       "a_short_label_for_this_job": "Una etiqueta corta para este trabajo",

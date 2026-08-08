@@ -4793,7 +4793,9 @@
       "this_issue_is_locked": "এই issue তালাবন্ধ",
       "unknown_author": "অজানা লেখক",
       "untitled": "শিরোনামহীন",
-      "updated_time": "{{time}} আপডেট হয়েছে"
+      "updated_time": "{{time}} আপডেট হয়েছে",
+      "jira_open_in_browser": "Jira issue — open in browser to view details.",
+      "open_in_jira": "Open in Jira"
     },
     "jobForm": {
       "a_short_label_for_this_job": "এই জবের জন্য একটি সংক্ষিপ্ত লেবেল",

@@ -2213,6 +2213,18 @@ class DashboardConfig:
             "reach that host, including hosts only resolvable on your network.",
         ),
     )
+    jira_hosts: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Self-Hosted Jira Hosts",
+            "Exact hostnames (optionally host:port) of self-managed Jira or "
+            "Jira Data Center instances whose issue URLs the Issues panel may "
+            "recognize. Atlassian Cloud instances (*.atlassian.net) are always "
+            "accepted without listing. Empty = Cloud-only (deny-by-default): a "
+            "Jira issue URL is only recognized if its host matches an entry "
+            "here. Suffixes and wildcards are not matched.",
+        ),
+    )
 
 
 @dataclass
@@ -3771,6 +3783,38 @@ def _coerce_gitlab_hosts(raw: object) -> list[str]:
     return out
 
 
+def _coerce_jira_hosts(raw: object) -> list[str]:
+    """Coerce the self-hosted Jira allowlist — identical rules to GitLab hosts."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        host = entry.strip().lower()
+        if not host or len(host) > 255:
+            continue
+        name, sep, port_text = host.rpartition(":")
+        if not sep:
+            name, port_text = host, ""
+        name = name.rstrip(".")
+        if not name or not _GITLAB_HOST_NAME_RE.fullmatch(name):
+            continue
+        if sep:
+            if not (port_text.isascii() and port_text.isdigit()):
+                continue
+            port = int(port_text)
+            if not 0 < port < 65536:
+                continue
+            host = name if port == 443 else f"{name}:{port}"
+        else:
+            host = name
+        if host in out:
+            continue
+        out.append(host)
+    return out
+
+
 def _coerce_int(raw: object, default: int) -> int:
     """Return ``int(raw)`` or *default* if *raw* isn't a clean base-10 integer.
 
@@ -5002,6 +5046,7 @@ class KiroCrewConfig:
                     dashboard_data.get("tips_explore_ratio", 0.2), 0.2, lo=0.0, hi=1.0
                 ),
                 gitlab_hosts=_coerce_gitlab_hosts(dashboard_data.get("gitlab_hosts")),
+                jira_hosts=_coerce_jira_hosts(dashboard_data.get("jira_hosts")),
             ),
             tunnel=TunnelConfig(
                 enabled=bool(tunnel_data.get("enabled", False)),

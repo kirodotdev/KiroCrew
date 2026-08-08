@@ -1249,7 +1249,9 @@
       "reaction_laugh": "Laugh",
       "reaction_minus1": "Thumbs down",
       "reaction_plus1": "Thumbs up",
-      "reaction_rocket": "Rocket"
+      "reaction_rocket": "Rocket",
+      "jira_open_in_browser": "Jira issue — open in browser to view details.",
+      "open_in_jira": "Open in Jira"
     },
     "jobForm": {
       "add": "Add",

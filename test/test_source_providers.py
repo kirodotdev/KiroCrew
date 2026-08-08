@@ -1718,7 +1718,7 @@ async def test_status_endpoint_warms_allowlist_before_parsing_self_hosted_urls(
     monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 0.0)
 
     async def fake_ensure() -> frozenset:
-        source._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        source._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
         return frozenset({"gitlab.acme.internal"})
 
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", fake_ensure)
@@ -3134,11 +3134,11 @@ async def test_gitlab_allowlist_never_reads_config_on_the_event_loop(monkeypatch
     in a worker thread; the sync accessor every URL parse uses is cache-only."""
     calls: list[str] = []
 
-    def fake_load() -> frozenset[str]:
+    def fake_load() -> tuple[frozenset[str], frozenset[str]]:
         calls.append("load")
-        return frozenset({"gitlab.acme.internal"})
+        return frozenset({"gitlab.acme.internal"}), frozenset()
 
-    monkeypatch.setattr(source, "_load_gitlab_hosts", fake_load)
+    monkeypatch.setattr(source, "_load_provider_hosts", fake_load)
     monkeypatch.setattr(source, "_gitlab_hosts_snapshot", frozenset())
     monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 0.0)
     to_thread_calls: list[object] = []
@@ -3437,20 +3437,20 @@ async def test_concurrent_allowlist_refresh_cannot_restore_a_revoked_host(monkey
     release = source.asyncio.Event()
     loads = {"n": 0}
 
-    def slow_stale_load() -> frozenset[str]:
+    def slow_stale_load() -> tuple[frozenset[str], frozenset[str]]:
         loads["n"] += 1
         # asyncio.Event is not thread-safe: this runs in a worker thread, so the
         # set() must be marshalled back onto the loop.
         loop.call_soon_threadsafe(started.set)
         # Block inside the worker thread so a second waiter queues on the lock.
         source.asyncio.run_coroutine_threadsafe(_noop(), loop).result(timeout=5)
-        return frozenset({"gitlab.acme.internal"})
+        return frozenset({"gitlab.acme.internal"}), frozenset()
 
     async def _noop() -> None:
         await release.wait()
 
     loop = source.asyncio.get_running_loop()
-    monkeypatch.setattr(source, "_load_gitlab_hosts", slow_stale_load)
+    monkeypatch.setattr(source, "_load_provider_hosts", slow_stale_load)
     monkeypatch.setattr(source, "_gitlab_hosts_snapshot", frozenset())
     monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 0.0)
     monkeypatch.setattr(source, "_gitlab_hosts_lock", source.asyncio.Lock())
@@ -3475,14 +3475,14 @@ async def test_allowlist_generation_bumps_only_on_content_change(monkeypatch) ->
     monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 0.0)
     monkeypatch.setattr(source, "_gitlab_hosts_generation", 0)
 
-    source._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+    source._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
     first = source.gitlab_hosts_generation()
     assert first == 1
 
-    source._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+    source._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
     assert source.gitlab_hosts_generation() == first
 
-    source._publish_gitlab_hosts(frozenset())
+    source._publish_provider_hosts(frozenset(), frozenset())
     assert source.gitlab_hosts_generation() == first + 1
 
 
@@ -5243,6 +5243,91 @@ def test_self_hosted_gitlab_issue_rejected_when_allowlist_empty(monkeypatch) -> 
         source.parse_source_url("https://gitlab.acme.internal/team/api/-/issues/7")
 
 
+def test_parse_jira_cloud_issue_url() -> None:
+    """Atlassian Cloud (*.atlassian.net) is auto-recognized without allowlisting."""
+    ref = source.parse_source_url("https://acme.atlassian.net/browse/PROJ-123")
+    assert ref.provider == "jira"
+    assert ref.repo == "PROJ"
+    assert ref.number == 123
+    assert ref.kind == "issue"
+    assert ref.url == "https://acme.atlassian.net/browse/PROJ-123"
+
+
+def test_parse_jira_issue_key_is_canonicalized_uppercase() -> None:
+    """Jira treats keys case-insensitively; one case means one dedup-map entry."""
+    ref = source.parse_source_url("https://acme.atlassian.net/browse/proj-9")
+    assert ref.repo == "PROJ"
+    assert ref.url == "https://acme.atlassian.net/browse/PROJ-9"
+
+
+def test_parse_jira_issue_drops_query_and_deeper_segments() -> None:
+    ref = source.parse_source_url(
+        "https://acme.atlassian.net/browse/OPS-77/comments?focusedCommentId=1"
+    )
+    assert ref.url == "https://acme.atlassian.net/browse/OPS-77"
+    assert ref.repo == "OPS"
+    assert ref.number == 77
+
+
+def test_parse_jira_issue_preserves_context_path_prefix(monkeypatch) -> None:
+    """Data Center installs serve Jira behind a context path; the chip must
+    link to the real endpoint, not the host root."""
+    monkeypatch.setattr(source, "_jira_hosts_snapshot", frozenset({"jira.acme.internal"}))
+    ref = source.parse_source_url("https://jira.acme.internal/jira/browse/CORE-5")
+    assert ref.url == "https://jira.acme.internal/jira/browse/CORE-5"
+    assert ref.provider == "jira"
+
+
+def test_self_hosted_jira_rejected_when_allowlist_empty(monkeypatch) -> None:
+    """Same fail-closed discipline as self-managed GitLab."""
+    monkeypatch.setattr(source, "_jira_hosts_snapshot", frozenset())
+    with pytest.raises(ValueError, match="dashboard.jira_hosts"):
+        source.parse_source_url("https://jira.acme.internal/browse/PROJ-1")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # The bare suffix is not a tenant; only real subdomains are Cloud Jira.
+        "https://atlassian.net/browse/PROJ-1",
+        "https://acme.atlassian.net.evil.example/browse/PROJ-1",
+        "http://acme.atlassian.net/browse/PROJ-1",
+        "https://user@acme.atlassian.net/browse/PROJ-1",
+        # Keys must be PROJECT-NUMBER: a bare number, a digit-led project part,
+        # an overlong project part, and a missing number all fail.
+        "https://acme.atlassian.net/browse/123",
+        "https://acme.atlassian.net/browse/1PROJ-1",
+        "https://acme.atlassian.net/browse/ABCDEFGHIJK-1",
+        "https://acme.atlassian.net/browse/PROJ-",
+        "https://acme.atlassian.net/browse/",
+        "https://acme.atlassian.net/PROJ-1",
+    ],
+)
+def test_parse_source_url_rejects_untrusted_jira_shapes(url: str) -> None:
+    with pytest.raises(ValueError):
+        source.parse_source_url(url)
+
+
+def test_jira_ref_never_passes_the_change_gate() -> None:
+    """Every provider-CLI entry point gates on _require_change_ref; a Jira ref
+    (always kind='issue') must be refused there so it can never reach gh/glab."""
+    ref = source.parse_source_url("https://acme.atlassian.net/browse/PROJ-123")
+    with pytest.raises(ValueError, match="issue"):
+        source._require_change_ref(ref)
+
+
+@pytest.mark.asyncio
+async def test_fetch_issue_refuses_jira(monkeypatch) -> None:
+    """Jira chips are link-outs: fetch_issue must refuse before any CLI runs."""
+
+    async def no_hosts() -> frozenset[str]:
+        return frozenset()
+
+    monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", no_hosts)
+    with pytest.raises(ValueError, match="Jira"):
+        await source.fetch_issue("https://acme.atlassian.net/browse/PROJ-123")
+
+
 def test_self_hosted_gitlab_issue_accepted_when_allowlisted(monkeypatch) -> None:
     monkeypatch.setattr(
         source, "_allowed_gitlab_hosts", lambda: frozenset({"gitlab.acme.internal"})
@@ -6579,7 +6664,7 @@ async def test_issue_endpoint_warms_allowlist_before_parsing_self_hosted_urls(
     monkeypatch.setattr(source, "_gitlab_hosts_loaded_at", 0.0)
 
     async def fake_ensure() -> frozenset:
-        source._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+        source._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
         return frozenset({"gitlab.acme.internal"})
 
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", fake_ensure)
