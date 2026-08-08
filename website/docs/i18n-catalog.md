@@ -75,6 +75,35 @@ like "`fr` is unsupported, so it falls back" silently inverts the moment French
 ships. Use a language the project has no plans for for negative cases, and derive
 positive cases from `SUPPORTED_CODES` so a new language is covered automatically.
 
+## The product name is an interpolation variable
+
+Catalog values never hardcode the displayed product name. They interpolate
+`{{productName}}`, which `initI18n()` supplies to i18next as
+`interpolation.defaultVariables` with the stock value `Kiro Crew`, so the stock
+build renders exactly what a literal would. The indirection exists for
+downstream editions: overriding one variable rebrands every catalog string,
+instead of forking 13 locale files through every upstream sync (see
+[extension-seams](extension-seams.md)).
+
+Authoring rules that follow:
+
+- **New copy naming the product writes `{{productName}}`, not the literal.**
+  A translation must carry the same placeholder — `catalogParity.test.ts`
+  placeholder parity fails the catalog that drops it.
+- **The `apps.<id>.manifest.*` keys are the deliberate exception.** They must
+  stay byte-identical to the Python-side `app.json` prose (`[manifest-sync]`
+  is a hard zero), so they keep the literal English name.
+- **A call-time variable of the same name wins** over the default, per
+  i18next's merge order — useful when a string names a *different* crew.
+- German compounds hyphenate through the placeholder
+  (`{{productName}}-Katalog`), matching how the literal compound was written.
+
+`setProductName()` (exported beside `initI18n`) is the edition override. It
+must run before `initI18n()`; the edition composition root is imported first
+in `main.tsx`, so that ordering holds by construction. A late call throws in
+dev rather than half-applying; in production it returns silently rather
+than crash the shell.
+
 ## Counts: never concatenate a plural suffix
 
 **Never append a plural marker outside the translate call.** This is a bug:

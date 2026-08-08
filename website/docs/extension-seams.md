@@ -296,6 +296,29 @@ mounts `App`; registering after mount does not appear until an unrelated
 re-render. Builtin routes are the one relaxed case, because they resolve lazily on
 navigation.
 
+## Product name: exported setter, not a registry
+
+The i18n catalogs interpolate `{{productName}}` instead of hardcoding the
+displayed product name (authoring rules:
+[i18n-catalog](i18n-catalog.md#the-product-name-is-an-interpolation-variable)).
+`initI18n()` feeds the variable to i18next as `interpolation.defaultVariables`,
+defaulting to `Kiro Crew`, so the stock build renders unchanged text.
+
+An edition rebrands by calling `setProductName('…')` (exported from
+`src/i18n`) in its composition root. The root is imported before `main.tsx`
+calls `initI18n()`, so the ordering holds by construction; a call after init
+throws in dev rather than half-applying (in production it returns silently
+rather than crash the shell). Like the API transport above, this is
+a single exported function rather than a registry: the core consumes the value
+itself, there is nothing to enumerate, and a whole-catalog transform hook would
+hand an edition the power to break any string for what is a one-variable
+substitution.
+
+Scope: catalog strings only. The `apps.<id>.manifest.*` keys mirror the
+Python-side `app.json` prose byte-for-byte and keep the literal name; the
+shell logo and welcome mark are the theme-branding seam's job; the chat bot
+display name stays `dashboard.bot_name`.
+
 ## API methods: exported transport, not a registry
 
 There is no registrar for edition API methods. The core never *consumes* them:
