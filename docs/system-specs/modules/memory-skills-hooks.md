@@ -64,10 +64,10 @@ window (`range(181)`) and picks a rendering per day by age.
 
 The assembled string is capped when injected. `MemoryStore.get_context()`
 declares `history_cap=25_000` as its own signature default, but the live caller
-is `ContextBuilder.build_session_context()`, which always passes
+is `ContextBuilder.build_session_context()`, which passes
 `caps.memory_history` (26,400 chars at the reference window, scaled per model
-window, see Context Builder below), so 25,000 only applies to a direct
-programmatic call. Timestamps use local timezone.
+window, see Context Builder below) whenever the `memory` group is in scope, so
+25,000 only applies to a direct programmatic call. Timestamps use local timezone.
 
 `read_recent_history` runs on every message turn (context build) and otherwise
 stats + reads up to 181 daily files synchronously. The assembled string is
@@ -1132,6 +1132,7 @@ Assembles all sources into prompts:
 - Runtime identity is turn-aware rather than key-only. Channel and dashboard dispatchers pass trusted `runtime_source` metadata to `build_message()`. New sessions use it for `[RUNTIME]`; follow-up turns refresh `[RUNTIME]` outside the one-time session context. This is required because a stable `dashboard:*` session can be resumed from Discord and `messaging.dm_scope="unified"` intentionally removes the originating channel from the session key. When trusted metadata is absent, namespaced keys (`discord:*`, `telegram:*`, `wecom:*`, `weixin:*`, `webex:*`, `teams:*`, `slack:*`) are recognized directly; bare unknown keys keep the legacy Slack fallback.
 - Thread history is injected only at session start (via `build_session_context`). Within the same ACP session, kiro-cli manages conversation history natively — duplicate injection wastes context window and accelerates compaction.
 - `_CRITICAL_RULES` injected for ALL agents (including custom) at session start — ensures diff rendering and OPTIONS buttons work universally
+- Switchable context groups (see below) let a spawning parent drop whole sections for one sub-agent.
 - Cap: `_CONTEXT_BUDGET_BASE` = 165,000 chars (~55k tokens). Which ceiling applies depends on `skills.lazy_load`: OFF (the default) uses `caps.base` as one flat shared pool; ON uses `caps.max_context`, the SUM of the independent per-section caps (190,575 chars at the reference window), so skills/steering can never eat into memory/lessons space. Note the per-section caps are computed and passed to every section either way; `lazy_load` changes the *global* ceiling and the skills block's shape (full dump vs usage-ranked top-K), not whether sections have caps.
 
 #### Per-section caps (reference window)
@@ -1175,6 +1176,27 @@ The `_CONTEXT_BUDGET_BASE` (165k) and its derived per-section caps above are the
 - **Fail-safe fallbacks (`resolve_model_window(model)`):** delegates to the central `model_registry.model_window(model)` authority (kiro-list cache > registry > supplementary id map > `[1m]` heuristic > `None`). `""`/`None`/`"auto"` and any genuinely-unknown id resolve to `None` ⇒ the 1M reference — so ONLY a model with a confidently-known smaller window scales the budget down; an unknown/auto window never silently shrinks the default deployment (`provider=acp` + `model="auto"` runs a 1M model). The central authority returns `None` (not a silent 200K) for unknown ids, so this fail-safe is now the authority's own contract rather than a special case here. **A context window is a property of the model, not the serving provider** — so `resolve_model_window` takes NO provider arg and `model_window` is provider-independent.
 - **Floor:** `_MIN_CONTEXT_BUDGET_BASE` (20% of base ≈ the 200K tier) clamps a pathologically small/misreported window so caps can't collapse to ~0. Known limitation: below 200K every window collapses to this same floored base (forward-compat only — the registry's smallest real window is 200K), and the **fixed preamble** (`_CRITICAL_RULES` + identity/workspace/date, ~3k chars) does NOT scale, so on a small window it consumes a larger *fixed* fraction than the linear model implies. Linear scaling is intentional per the design (window-share parity); a reserve-fixed-overhead curve is a possible future refinement.
 - **Callers:** dashboard (`chat_runner`), Slack (`handler`), and subagents (`subagent`) all resolve the window from the live session client via `window_for_provider_client(client)` — which prefers the provider's public `context_window_tokens()` accessor (0 until a turn completes; at `is_new` it falls through) and otherwise derives from the resolved model id via `resolve_model_window`. Background/cron paths that don't resolve a model pass `None` (reference). See `context.py` `_resolve_caps` / `resolve_model_window` / `window_for_provider_client` and the central `model_registry.model_window()` / `has_known_window()`.
+
+### Switchable context groups (sub-agents)
+
+A spawning parent decides which of three groups its sub-agent inherits, via `include_memory` / `include_lessons` / `include_project` on `spawn_run` and `spawn_sub_agents`. All default to `true`, so a caller that passes nothing produces byte-identical context: `build_session_context(context_groups=None)` — what every non-sub-agent caller passes — and an all-on `frozenset` are equivalent by construction.
+
+| Group | Sections | Switchable |
+|---|---|---|
+| conduct | `_CRITICAL_RULES`, `[CURRENT DATE]`, agent identity + `[RUNTIME]`, UI language, `[WORKSPACE IDENTITY]`, skills index | no |
+| `memory` | preferences, projects, `## Recent History`, `[Semantic Memory]`, `[Episodic Memory]`, `## Recent Session Context` | yes |
+| `lessons` | `[Learned corrections]` (global + workspace), `[USER PROFILE]` | yes |
+| `project` | `[DOCUMENTATION]` pointer, steering resources (CC backend only), `[PROJECT]` directory line | yes |
+
+The steering row carries a backend caveat: the steering block is injected only on the Claude Code backend (`is_cc`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC only — an ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
+
+conduct is not switchable because every member is an output contract or a capability pointer: a sub-agent without the skills index cannot discover what it can do, and one without `_CRITICAL_RULES` cannot format what it reports back.
+
+Omitting a group **skips its sections** rather than capping them to zero — `MemoryStore.get_context()`'s `_cap(text, 0)` returns a `…[truncated]` marker, not an empty string, so a zero cap emits headers with no content behind them.
+
+A sub-agent that had a group withheld is told so by name (`[CONTEXT SCOPE]`, built by `_build_context_scope_section`), so it reports the gap instead of inventing what it cannot see. That is what makes an aggressive opt-out recoverable: a wrong `false` surfaces as a question rather than a fabrication.
+
+The flags resolve once at spawn and live on `SubagentInfo`. Every path that re-materializes a run from stored fields carries them — the stagger queue entry and `POST /api/spawn/{id}/retry` — so a queued or retried run sees the scope its caller chose. `spawn_continue` does not accept the flags but **inherits** them (`_inherited_context_groups`): a continuation rebuilds session context, because `get_or_create` returns `is_new=True` even when it restores the session via `session/load` (`resumed` is a separate flag and gates only thread history), so an un-inherited continuation would silently regain a withheld group. The live record wins; the run's persisted `context_groups` is the fallback, and a run predating the field records no scope at all — distinguishable from "all withheld" and defaulting to all-on. `GET /api/spawn` reports `context_withheld` only when something was withheld, and `_run_inner` logs the resolved set with the resulting context length.
 
 ### Session Resume (`resumed=True`)
 

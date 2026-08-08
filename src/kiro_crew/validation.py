@@ -923,6 +923,14 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # Switchable context groups the sub-agent inherits. Explicit
+        # ``default=True`` rather than the implicit ``None``: the semantic
+        # default is "on", and without it an explicit JSON ``null`` cleans to
+        # ``None``, which a consumer coercing with ``bool()`` would read as a
+        # withheld group — the opposite of what the caller asked for.
+        FieldSpec("include_memory", bool, default=True),
+        FieldSpec("include_lessons", bool, default=True),
+        FieldSpec("include_project", bool, default=True),
     ],
 )
 
@@ -960,6 +968,10 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         # enforced in handler (no item_schema support in FieldSpec).
         FieldSpec("agents", list, required=True, item_type=dict),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # Context groups, as on spawn_run: batch-wide, all default True.
+        FieldSpec("include_memory", bool, default=True),
+        FieldSpec("include_lessons", bool, default=True),
+        FieldSpec("include_project", bool, default=True),
     ],
 )
 

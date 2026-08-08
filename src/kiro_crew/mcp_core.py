@@ -245,6 +245,39 @@ def _list_tools() -> list[dict[str, Any]]:
         if _max_sub > 0
         else ""
     )
+    # Context-scope switches, shared by spawn_run and spawn_sub_agents so the
+    # rule cannot drift between them. The model reads these descriptions at
+    # call time, which is why the rule lives here and not only in the prompt.
+    _context_group_props = {
+        "include_memory": {
+            "type": "boolean",
+            "description": (
+                "Default true. Set false when the task is FULLY specified by the text "
+                "you wrote — read these files, run this command, validate this finding, "
+                "summarize this log. This is the normal case for parallel fan-out. If "
+                "the sub-agent needs one fact from your memory, put that fact in the "
+                "task text instead of turning this back on. Keep true when the task is "
+                "open-ended about the user's own work or history."
+            ),
+        },
+        "include_lessons": {
+            "type": "boolean",
+            "description": (
+                "Default true. Set false ONLY when the sub-agent purely reads and "
+                "reports (search, summarize, analyze, review). Keep true whenever it "
+                "writes code, edits files, runs git, or pushes — the user's learned "
+                "corrections live here and a sub-agent without them repeats mistakes "
+                "the user already corrected."
+            ),
+        },
+        "include_project": {
+            "type": "boolean",
+            "description": (
+                "Default true. Set false when the work is outside the active project "
+                "tree: web research, a different repo, pure reasoning."
+            ),
+        },
+    }
     return [
         {
             "name": "spawn_run",
@@ -315,6 +348,7 @@ def _list_tools() -> list[dict[str, Any]]:
                             "a long-lived delegation workstream."
                         ),
                     },
+                    **_context_group_props,
                 },
             },
         },
@@ -331,7 +365,8 @@ def _list_tools() -> list[dict[str, Any]]:
                 "failures: conversation_busy (run in flight — use spawn_steer), "
                 "conversation_gone (files expired — re-spawn with a summary), "
                 "resume_failed (session could not be restored; never executes "
-                "context-free)."
+                "context-free). Context scope is inherited from the run being "
+                "continued, so the include_* flags are not accepted here."
             ),
             "inputSchema": {
                 "type": "object",
@@ -590,6 +625,7 @@ def _list_tools() -> list[dict[str, Any]]:
                             "Must be under a configured subagent_cwd_allowed_roots entry."
                         ),
                     },
+                    **_context_group_props,
                 },
                 "required": ["agents"],
             },
@@ -3467,6 +3503,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         cwd = args.get("cwd") or ""
         model = args.get("model") or ""
         keep = bool(args.get("keep"))
+        # Context scope: absent ⇒ true, so a parent that passes nothing gets the
+        # same context a normal session would.
+        inc_memory = args.get("include_memory", True) is not False
+        inc_lessons = args.get("include_lessons", True) is not False
+        inc_project = args.get("include_project", True) is not False
         if agents_list and len(agents_list) != len(task_list):
             return f"Error: agents length ({len(agents_list)}) must match tasks length ({len(task_list)})"
 
@@ -3504,6 +3545,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 body["model"] = model
             if keep:
                 body["keep"] = True
+            if not inc_memory:
+                body["include_memory"] = False
+            if not inc_lessons:
+                body["include_lessons"] = False
+            if not inc_project:
+                body["include_project"] = False
             if approval_mode:
                 body["approval_mode"] = approval_mode
             d = _post("/api/spawn", body)
@@ -3684,6 +3731,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if not agents_input or not isinstance(agents_input, list):
             return "Error: 'agents' array is required"
         cwd = args.get("cwd") or ""
+        # Context scope: batch-wide, absent ⇒ true (same rule as spawn_run).
+        sa_groups = {
+            k: False
+            for k in ("include_memory", "include_lessons", "include_project")
+            if args.get(k, True) is False
+        }
         parent_session = _resolve_session_key()
 
         def _redact_sa(text: str) -> str:
@@ -3717,6 +3770,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "task": prompt,
                 "agent": sa_agent,
                 "parent_session": parent_session,
+                **sa_groups,
             }
             if cwd:
                 sa_body["cwd"] = cwd
@@ -3885,7 +3939,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     if tool:
                         parts.append(tool)
                     progress = f" ({', '.join(parts)})"
-                lines.append(f"{a['id']}  [{status}]{err}{progress}  {_redact(a['task'])[:60]}")
+                _withheld = a.get("context_withheld") or []
+                scope = f"  ctx-withheld: {','.join(_withheld)}" if _withheld else ""
+                lines.append(
+                    f"{a['id']}  [{status}]{err}{progress}{scope}  {_redact(a['task'])[:60]}"
+                )
         # Always append available agents (fresh read from disk)
         try:
             names = [

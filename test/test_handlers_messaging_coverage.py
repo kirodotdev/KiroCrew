@@ -115,6 +115,9 @@ def _info(**kw: Any) -> Any:
         "approval_mode": "",
         "silent": False,
         "_raw_task": "",
+        "include_memory": True,
+        "include_lessons": True,
+        "include_project": True,
     }
     base.update(kw)
     return SimpleNamespace(**base)
@@ -666,6 +669,23 @@ class TestApiSpawnRetry:
         mgr.spawn.return_value = _info()
         _run(mod.api_spawn_retry, self._req(mgr))
         assert mgr.spawn.call_args.args[0] == "shown"
+
+    def test_retry_reuses_the_failed_run_context_scope(self) -> None:
+        """A retry must be the same experiment — not a wider-context rerun."""
+        mgr = _mgr()
+        mgr.get.return_value = _info(
+            done=True,
+            outcome="failed",
+            _raw_task="t",
+            include_memory=False,
+            include_project=False,
+        )
+        mgr.spawn.return_value = _info(id="new")
+        _run(mod.api_spawn_retry, self._req(mgr))
+        kwargs = mgr.spawn.call_args.kwargs
+        assert kwargs["include_memory"] is False
+        assert kwargs["include_lessons"] is True
+        assert kwargs["include_project"] is False
 
 
 class TestApiSpawnDelete:

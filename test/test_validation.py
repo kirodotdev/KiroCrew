@@ -258,6 +258,31 @@ class TestValidateToolArgs:
         with pytest.raises(ValidationError, match=">="):
             validate_tool_args({"task": "x", "max_turns": -1}, SPAWN_RUN_SCHEMA)
 
+    def test_spawn_run_context_groups_accepted(self):
+        result = validate_tool_args(
+            {
+                "task": "x",
+                "include_memory": False,
+                "include_lessons": True,
+                "include_project": False,
+            },
+            SPAWN_RUN_SCHEMA,
+        )
+        assert result["include_memory"] is False
+        assert result["include_lessons"] is True
+        assert result["include_project"] is False
+
+    def test_spawn_run_context_groups_omitted(self):
+        """Absent flags must not materialize as False — omitted means all groups on."""
+        result = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
+        assert result.get("include_memory") is not False
+        assert result.get("include_lessons") is not False
+        assert result.get("include_project") is not False
+
+    def test_spawn_run_context_group_non_bool_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_tool_args({"task": "x", "include_memory": "no"}, SPAWN_RUN_SCHEMA)
+
     def test_learn_add_valid(self):
         result = validate_tool_args(
             {"rule": "use dark mode", "category": "preference"},

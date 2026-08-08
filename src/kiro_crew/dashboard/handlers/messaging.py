@@ -100,6 +100,9 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "max_turns": body.get("max_turns", 0),
                 "cwd": body.get("cwd", ""),
                 "model": body.get("model", ""),
+                "include_memory": body.get("include_memory", True),
+                "include_lessons": body.get("include_lessons", True),
+                "include_project": body.get("include_project", True),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -155,6 +158,9 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_id=batch_id,
         batch_total=batch_total,
         keep=keep,
+        include_memory=cleaned.get("include_memory", True) is not False,
+        include_lessons=cleaned.get("include_lessons", True) is not False,
+        include_project=cleaned.get("include_project", True) is not False,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -543,6 +549,19 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             entry["turns"] = info.turns
             entry["last_tool"] = _redact(info.last_tool)
             entry["elapsed"] = round(time.time() - info.started)
+        # Present only when a group was actually withheld, so the default
+        # (everything on) payload is unchanged.
+        withheld = [
+            group
+            for group, on in (
+                ("memory", info.include_memory),
+                ("lessons", info.include_lessons),
+                ("project", info.include_project),
+            )
+            if not on
+        ]
+        if withheld:
+            entry["context_withheld"] = withheld
         agents.append(entry)
     return web.json_response({"agents": agents})
 
@@ -586,6 +605,11 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         model=old.model or None,
         approval_mode=old.approval_mode or None,
         silent=old.silent,
+        # A retry must see the SAME context scope as the run it replaces —
+        # otherwise the retried agent is a different experiment.
+        include_memory=old.include_memory,
+        include_lessons=old.include_lessons,
+        include_project=old.include_project,
     )
     if not info:
         return web.json_response(

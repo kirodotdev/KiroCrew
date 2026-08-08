@@ -684,6 +684,59 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
     return _RUNTIME_DISPLAY.get(source, source)
 
 
+# ── Switchable context groups ──
+#
+# A spawning parent decides which of these groups its sub-agent inherits (the
+# ``include_memory`` / ``include_lessons`` / ``include_project`` flags on
+# spawn_run). ``None`` means every group and is what every other caller passes,
+# so the dashboard / Slack / cron / eval paths are unaffected.
+#
+# The unlisted fourth group is conduct — critical rules, date, agent identity,
+# runtime, UI language, workspace identity, skills index. It is not switchable:
+# every member is an output contract or a capability pointer, so a sub-agent
+# without it cannot discover what it can do or format what it reports back.
+CONTEXT_GROUP_MEMORY = "memory"
+CONTEXT_GROUP_LESSONS = "lessons"
+CONTEXT_GROUP_PROJECT = "project"
+SWITCHABLE_CONTEXT_GROUPS = (
+    CONTEXT_GROUP_MEMORY,
+    CONTEXT_GROUP_LESSONS,
+    CONTEXT_GROUP_PROJECT,
+)
+
+_GROUP_DESCRIPTIONS = {
+    CONTEXT_GROUP_MEMORY: "memory (user preferences, projects, prior sessions)",
+    CONTEXT_GROUP_LESSONS: "lessons (learned corrections, user profile)",
+    CONTEXT_GROUP_PROJECT: "project (docs pointer, steering files, project directory)",
+}
+
+
+def _group_included(groups: frozenset[str] | None, group: str) -> bool:
+    """True when *group* is in scope; ``None`` ⇒ every group."""
+    return groups is None or group in groups
+
+
+def _build_context_scope_section(groups: frozenset[str] | None) -> str:
+    """Name the groups a parent withheld, or ``""`` when nothing was withheld.
+
+    A sub-agent that silently lacks a group guesses at what it cannot see —
+    inventing user preferences is the specific failure. Naming the gap converts
+    that into an honest "not provided", which is what makes an aggressive
+    opt-out cheap to recover from.
+    """
+    if groups is None:
+        return ""
+    missing = [g for g in SWITCHABLE_CONTEXT_GROUPS if g not in groups]
+    if not missing:
+        return ""
+    return (
+        "[CONTEXT SCOPE] Your parent withheld: "
+        + "; ".join(_GROUP_DESCRIPTIONS[g] for g in missing)
+        + ".\nIf the task needs any of it, say it was not provided and ask the "
+        "parent — do not guess.\n[End of context scope]\n\n"
+    )
+
+
 def _build_docs_section() -> str:
     """Build a lightweight docs pointer for session context.
 
@@ -1554,6 +1607,7 @@ class ContextBuilder:
         runtime_source: str | None = None,
         exclude_last_n: int = 0,
         model_window: int | None = None,
+        context_groups: frozenset[str] | None = None,
     ) -> str:
         """Build context for a new session (memory + skills + history).
 
@@ -1585,6 +1639,15 @@ class ContextBuilder:
         duplicate what kiro already loaded; the CC backend (claude-agent-acp)
         does NOT read agent ``resources`` and still needs the explicit load.
         Everything else stays at CC/ACP parity.
+
+        *context_groups* selects which switchable groups are injected (see
+        ``SWITCHABLE_CONTEXT_GROUPS``). ``None`` — every caller except a
+        sub-agent whose parent opted a group out — injects all of them, so the
+        output is unchanged. Omitting a group skips its sections entirely rather
+        than capping them to zero: a zero cap yields a truncation marker, not an
+        empty string. A sub-agent that had a group withheld is told so by name
+        (``_build_context_scope_section``) so it reports the gap instead of
+        guessing.
 
         For custom agents (non-kirocrew), skills and workspace identity
         are skipped — the agent loads its own via kiro-cli. Memory,
@@ -1678,9 +1741,14 @@ class ContextBuilder:
         # never picked a language explicitly.
         parts.append(_build_ui_language_section(_cfg))
 
-        profile_ctx = _build_user_profile_section(_cfg)
-        if profile_ctx:
-            parts.append(profile_ctx)
+        # Name any group the parent withheld, before the sections themselves, so
+        # the sub-agent reads the scope as framing rather than discovering a gap.
+        parts.append(_build_context_scope_section(context_groups))
+
+        if _group_included(context_groups, CONTEXT_GROUP_LESSONS):
+            profile_ctx = _build_user_profile_section(_cfg)
+            if profile_ctx:
+                parts.append(profile_ctx)
 
         # Workspace identity — kirocrew-only (custom agents don't use workspaces)
         if not is_custom:
@@ -1703,7 +1771,7 @@ class ContextBuilder:
             )
 
         # Documentation pointer — kirocrew-only, lightweight reference
-        if not is_custom:
+        if not is_custom and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
             docs_ctx = _build_docs_section()
             if docs_ctx:
                 parts.append(docs_ctx)
@@ -1723,7 +1791,7 @@ class ContextBuilder:
         # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
         # the explicit load. Injecting on the ACP/kiro backend would duplicate
         # what kiro-cli already loaded.
-        if not is_custom and is_cc:
+        if not is_custom and is_cc and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
             steering_ctx = _load_steering_resources()
             if steering_ctx:
                 if lazy_skills and len(steering_ctx) > caps.steering:
@@ -1813,7 +1881,7 @@ class ContextBuilder:
         # Temporary sessions skip all memory reads.
         mem_key = memory_store or workspace
         memory = self.get_memory_for(mem_key)
-        if not blocks_reads:
+        if not blocks_reads and _group_included(context_groups, CONTEXT_GROUP_MEMORY):
             memory_ctx = memory.get_context(
                 prefs_cap=caps.prefs,
                 projects_cap=caps.projects,
@@ -1859,7 +1927,7 @@ class ContextBuilder:
         # Lessons: merge global + workspace-scoped — inject for ALL agents
         # (skipped for temporary sessions)
         lessons_ctx = ""
-        if not blocks_reads:
+        if not blocks_reads and _group_included(context_groups, CONTEXT_GROUP_LESSONS):
             # One query, not two: get_lessons_context() already returns "" when the
             # store holds no lessons, so a separate get_lessons() existence probe
             # would be a duplicate SELECT * over the same rows (embedding blobs
@@ -1908,7 +1976,12 @@ class ContextBuilder:
                 parts.append(lessons_ctx)
 
         # Provenance-tagged entries from recent sessions (skipped for temporary)
-        if session_key and self.conversation_log and not blocks_reads:
+        if (
+            session_key
+            and self.conversation_log
+            and not blocks_reads
+            and _group_included(context_groups, CONTEXT_GROUP_MEMORY)
+        ):
             provenance = self.conversation_log.recent_with_provenance(
                 session_key, exclude_last_n=exclude_last_n
             )
@@ -1971,6 +2044,7 @@ class ContextBuilder:
         user_text_range: tuple[int, int] | None = None,
         user_span_out: list[int] | None = None,
         needs_reinjection: bool = False,
+        context_groups: frozenset[str] | None = None,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -2054,6 +2128,7 @@ class ContextBuilder:
                 runtime_source=runtime_source,
                 exclude_last_n=exclude_last_n,
                 model_window=model_window,
+                context_groups=context_groups,
             )
             if session_ctx:
                 # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -2250,6 +2325,8 @@ class ContextBuilder:
             logger.info("🔍 Minimal context — episodic memory skipped")
         elif blocks_reads:
             logger.info("🔍 Temporary session — episodic memory skipped")
+        elif not _group_included(context_groups, CONTEXT_GROUP_MEMORY):
+            logger.info("🔍 Memory group withheld by parent — episodic memory skipped")
         elif is_new_session:
             memory = self.get_memory_for(memory_store or workspace)
             if memory.vector_store:
@@ -2274,7 +2351,7 @@ class ContextBuilder:
 
         # Project context — inject on every message so the LLM always knows
         # the active project, even when set/changed after session start.
-        if project:
+        if project and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
             parts.append(
                 f"[PROJECT] Active project directory: {project}\n"
                 "This is the codebase you are working in for this session. "

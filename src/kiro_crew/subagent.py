@@ -31,7 +31,13 @@ if TYPE_CHECKING:
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX
-from kiro_crew.context import ContextBuilder, window_for_provider_client
+from kiro_crew.context import (
+    CONTEXT_GROUP_LESSONS,
+    CONTEXT_GROUP_MEMORY,
+    CONTEXT_GROUP_PROJECT,
+    ContextBuilder,
+    window_for_provider_client,
+)
 from kiro_crew.context_management import (
     COMPLETION_KEEP_DEFAULT_CHARS,
     apply_completion_keep,
@@ -940,6 +946,16 @@ class SubagentInfo:
     # SessionManager.mark_continuable, and skips session-file deletion at
     # teardown so the conversation can be resumed by a later run.
     keep: bool = False
+    # Which switchable context groups this sub-agent inherits from the injected
+    # session context. All True ⇒ byte-identical to a non-sub-agent session. A
+    # parent opts one out when it can name why this task cannot need it; the
+    # sub-agent is told by name what was withheld so it reports the gap instead
+    # of guessing. Resolved once at spawn and carried through the queue and
+    # retry paths, so a drained or retried run sees the same scope as the run
+    # its caller asked for.
+    include_memory: bool = True
+    include_lessons: bool = True
+    include_project: bool = True
     # Session key override for continuation runs: a spawn_continue run reuses
     # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
     # finds the persisted sid and arms session/load. Empty ⇒ the default
@@ -1030,6 +1046,29 @@ AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
 
 # Event callback: (event_type, info, extra_data) -> None
 SubagentEventCallback = Callable[[str, "SubagentInfo", dict], Awaitable[None]]
+
+
+def _context_groups_of(info: "SubagentInfo") -> frozenset[str]:
+    """The switchable context groups this run KEEPS.
+
+    One source of truth for the run's scope, shared by the ``build_message``
+    call that applies it and the ``state.json`` record a continuation reads it
+    back from, so the two cannot drift.
+    """
+    return frozenset(
+        group
+        for group, on in (
+            (CONTEXT_GROUP_MEMORY, info.include_memory),
+            (CONTEXT_GROUP_LESSONS, info.include_lessons),
+            (CONTEXT_GROUP_PROJECT, info.include_project),
+        )
+        if on
+    )
+
+
+def _context_groups_field(info: "SubagentInfo") -> str:
+    """``state.json`` encoding of the run's scope: comma-joined, sorted."""
+    return ",".join(sorted(_context_groups_of(info)))
 
 
 class ToolApprovalCallback(Protocol):
@@ -2445,6 +2484,9 @@ class SubagentManager:
         keep: bool = False,
         conversation_key: str = "",
         app: str = "",
+        include_memory: bool = True,
+        include_lessons: bool = True,
+        include_project: bool = True,
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
@@ -2709,6 +2751,9 @@ class SubagentManager:
                     "keep": keep,
                     "conversation_key": conversation_key,
                     "app": app,
+                    "include_memory": include_memory,
+                    "include_lessons": include_lessons,
+                    "include_project": include_project,
                     "_agent_prevalidated": _agent_prevalidated,
                     "_preassigned_id": agent_id,
                 }
@@ -2740,6 +2785,9 @@ class SubagentManager:
                 queued=True,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
+                include_memory=include_memory,
+                include_lessons=include_lessons,
+                include_project=include_project,
             )
             return info
 
@@ -2781,6 +2829,9 @@ class SubagentManager:
             batch_total=max(0, int(batch_total)),
             keep=keep,
             conversation_key=conversation_key,
+            include_memory=include_memory,
+            include_lessons=include_lessons,
+            include_project=include_project,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         self._agents[agent_id] = info
@@ -3162,6 +3213,7 @@ class SubagentManager:
         # the SessionManager continuable cache, and the TTL registry entry.
         # The conversation TTL sweep / spawn_release owns deletion from here.
         self._promote_conversation(conv_id, conv_key)
+        inc_memory, inc_lessons, inc_project = self._inherited_context_groups(conv_id)
         return self.spawn(
             task,
             parent_session_key=parent_session_key,
@@ -3170,6 +3222,37 @@ class SubagentManager:
             max_turns=max_turns,
             keep=True,
             conversation_key=conv_key,
+            include_memory=inc_memory,
+            include_lessons=inc_lessons,
+            include_project=inc_project,
+        )
+
+    def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
+        """Recover the context scope of the run being continued.
+
+        A continuation DOES rebuild session context: ``get_or_create`` reports
+        ``is_new=True`` even when it restores the session via ``session/load``
+        (``resumed`` is the separate flag, and it gates only thread history), so
+        ``build_message`` runs the full session-context path for the follow-up
+        turn. Without inheriting the scope here, a run the parent deliberately
+        spawned without memory would silently regain it on continuation.
+
+        Prefers the live record; falls back to the scope persisted in the run's
+        ``state.json``. A run that predates the field records no scope at all,
+        which is distinguishable from "every group withheld" (an empty string)
+        and defaults to all-on.
+        """
+        live = self._agents.get(conv_id)
+        if live is not None:
+            return live.include_memory, live.include_lessons, live.include_project
+        raw = (read_state(conv_id) or {}).get("context_groups")
+        if raw is None:
+            return True, True, True
+        groups = {g for g in str(raw).split(",") if g}
+        return (
+            CONTEXT_GROUP_MEMORY in groups,
+            CONTEXT_GROUP_LESSONS in groups,
+            CONTEXT_GROUP_PROJECT in groups,
         )
 
     async def steer_run(self, agent_id: str, message: str) -> tuple[bool, str]:
@@ -3401,6 +3484,7 @@ class SubagentManager:
                 agent=info.agent,
                 parent_session=info.parent_session_key,
                 max_turns=info.max_turns,
+                context_groups=_context_groups_field(info),
             )
         except Exception:
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
@@ -4227,6 +4311,9 @@ class SubagentManager:
         # subagent can be pinned to a smaller model). Resolved from the live
         # client; None ⇒ 1M reference.
         _sub_window = window_for_provider_client(client)
+        # Context scope this run was spawned with. Passed even when every group
+        # is on, so build_message applies one code path for sub-agents.
+        _groups = _context_groups_of(info)
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             self._ctx_builder.build_message,
@@ -4235,6 +4322,15 @@ class SubagentManager:
             session_key,
             provider_type="claude_code" if is_cc else "acp",
             model_window=_sub_window,
+            context_groups=_groups,
+        )
+        # The one place the resolved scope and its cost are both known — without
+        # this, "the sub-agent didn't know X" is undebuggable after the fact.
+        logger.info(
+            "Subagent %s context: groups=%s, %d chars",
+            info.id,
+            ",".join(sorted(_groups)) or "conduct-only",
+            len(full_message),
         )
 
         result_text = ""
