@@ -36,6 +36,7 @@ const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("./instance-guard");
 const { initMochi, shutdownMochi } = require("./mochi/index");
+const { borrowSessionToken } = require("./mochi-session-token");
 const { initCrewCompanion, shutdownCrewCompanion } = require("./crew-companion/index");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { createBrowserViewManager, isUntrustedContents } = require("./browser-view");
@@ -744,6 +745,25 @@ async function fetchLocalToken(backendUrl = BACKEND_URL) {
   });
 }
 
+/**
+ * Resolve a gateway credential for Mochi's poller, trying the same paths (in
+ * the same order) the main window itself would: the local secret first
+ * (same machine, unchanged), then an explicitly configured SSH remote host
+ * for this port (unchanged), then — new — the session the main window has
+ * ALREADY established. That third path only runs when the first two come
+ * back empty, so an ordinary same-machine or SSH-remote install never
+ * reaches it at all. See mochi-session-token.js for why it exists and why it
+ * cannot weaken auth: it only ever hands back a credential a genuine prior
+ * authentication already produced.
+ */
+async function fetchMochiGatewayAuth(backendUrl = BACKEND_URL) {
+  const localValue = await fetchLocalToken(backendUrl);
+  if (localValue) return { value: localValue, viaCookie: false };
+  const { token: remoteValue } = await fetchRemoteToken(new URL(backendUrl).port);
+  if (remoteValue) return { value: remoteValue, viaCookie: false };
+  const borrowed = await borrowSessionToken({ electronSession: session.defaultSession, backendUrl });
+  return borrowed ? { value: borrowed, viaCookie: true } : { value: "" };
+}
 
 function checkBackend(healthUrl = HEALTH_URL) {
   return new Promise((resolve, reject) => {
@@ -2733,7 +2753,7 @@ app.whenReady().then(async () => {
   // be answering before we ask it whether Mochi is on, and the pet page is
   // loaded from the gateway origin. Best-effort -- a failure here must never
   // block the dashboard, so everything is inside a catch that only logs.
-  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+  initMochi({ backendUrl: BACKEND_URL, fetchGatewayAuth: fetchMochiGatewayAuth, glog });
   // Same shape and the same best-effort contract: the companion's windows follow
   // the app's enabled state, and a failure here must never block the dashboard.
   try {
