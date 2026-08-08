@@ -10,6 +10,7 @@ Tests use a tmp_path fake $HOME so the real filesystem is never touched.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -372,6 +373,67 @@ class TestListAgentsDedup:
         a = next((x for x in agents if x.name == "myagent"), None)
         assert a is not None
         assert a.package == "MyPkg"
+
+    def test_local_twin_of_same_package_does_not_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 'local-' twin of the same package dedupes silently (no WARNING).
+
+        Package managers publish a locally-built package as BOTH
+        ``{package}-{name}.json`` and ``local-{package}-{name}.json``. Since the
+        ``local-`` prefix is stripped from the package name, the twins collide on
+        the same (name, package) — an expected layout, not an anomaly. This
+        previously logged a self-contradictory "from packages 'X' and 'X'"
+        WARNING per agent per scan.
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "MyPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        (agents_dir / "local-MyPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.agent_discovery"):
+            agents = list_agents(agents_dir=agents_dir)
+        dupes = [a for a in agents if a.name == "myagent"]
+        assert len(dupes) == 1
+        # First-seen wins, and which twin enumerates first is platform-
+        # dependent (WindowsPath sorts case-insensitively, so "local-..."
+        # can precede "MyPkg-..."). The fix deliberately leaves selection
+        # untouched — assert only that exactly one twin survives.
+        assert dupes[0].filename in ("MyPkg-myagent.json", "local-MyPkg-myagent.json")
+        assert not [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ], "same-package local twin must not produce a WARNING"
+        # The twin is still visible at debug for diagnosis.
+        assert any("same-package twin" in r.getMessage() for r in caplog.records)
+
+    def test_cross_package_duplicate_still_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A genuine name collision between two DIFFERENT packages still warns."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "AaaPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        (agents_dir / "BbbPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent_discovery"):
+            agents = list_agents(agents_dir=agents_dir)
+        dupes = [a for a in agents if a.name == "myagent"]
+        assert len(dupes) == 1
+        assert dupes[0].package == "AaaPkg"  # first-seen wins
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Duplicate agent name" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "AaaPkg" in warnings[0].getMessage()
+        assert "BbbPkg" in warnings[0].getMessage()
 
 
 class TestListAgentsCache:

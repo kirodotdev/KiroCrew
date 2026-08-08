@@ -281,7 +281,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       </div>
     )}
     {!isStreaming && showFooter && (
-      <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300">
+      <div className="flex items-center gap-1 mt-0.5 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 [@media(hover:none)]:opacity-100">
         {/* No `font-mono`: a formatted date is prose, and Tailwind's `font-mono`
             pins `var(--mono)` — a token the Font Family setting never writes, so
             it overrode the user's choice and put JetBrains Mono (no CJK

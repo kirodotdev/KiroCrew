@@ -4,7 +4,15 @@
 
 The side conversation module adds an ephemeral Q&A thread to a parent chat
 slot. Users invoke it via the `/side` command or the "Side" tab in the
-Activity panel. The side runs against the same parent slot identity but
+Activity panel. The `/side` command is intercepted client-side regardless of
+the parent turn's state: while a turn is running, the composer's steer path
+checks `isInterceptedSlashCommand` before steering, so the command opens the
+side chat instead of being injected into the running turn as literal text.
+Paste tokens are expanded before the command is delegated, and a rejected
+command (side turn already in flight, question over the byte limit) is
+merged back into the originating slot's composer or persisted draft so the
+question is never silently lost.
+The side runs against the same parent slot identity but
 spawns its own isolated LLM session, reads parent context as a frozen
 snapshot, and never persists messages to JSONL or memory stores.
 
@@ -182,8 +190,9 @@ Backend invariants are covered by `test/test_side.py`:
 Frontend invariants are covered in KiroCrewWebsite under `src/test/`:
 `SideChat.close.test.tsx`, `SideChat.multiturn.test.tsx`,
 `SideChat.refresh.test.tsx`, `SideChat.thinking.test.tsx`,
-`SideSlashCommand.test.tsx`, and the `sseSideResult` block in
-`chatSlice.test.ts`.
+`SideSlashCommand.test.tsx`, `SideSlashCommand.steer.test.tsx` (command
+interception wins over mid-turn steer routing), and the `sseSideResult`
+block in `chatSlice.test.ts`.
 
 Structural greps enforce compile-time invariants:
 

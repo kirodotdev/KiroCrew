@@ -851,7 +851,22 @@ class TestStatusOutput:
         text = beacon.format_status(
             beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
         )
-        assert beacon.DISABLE_ENV in text
+        expected_optout = f"""  To opt out, choose one:
+
+    1. Kiro Crew CLI (recommended)
+       kirocrew telemetry disable
+
+    2. Environment variable (choose your shell)
+       macOS / Linux
+         export {beacon.DISABLE_ENV}=1
+       Windows PowerShell
+         $env:{beacon.DISABLE_ENV} = '1'
+       Windows Command Prompt
+         set {beacon.DISABLE_ENV}=1
+
+    3. Configuration file
+       Set telemetry.beacon_enabled to false"""
+        assert text.endswith(expected_optout)
         for claim in ("prompts", "credentials", "hostname", "IP address"):
             assert claim in text
 

@@ -8,15 +8,24 @@ import { useRowDisclosure } from './rowDisclosure'
  * The synthetic-continuation prefixes the gateway prepends when it recovers a
  * turn that ended early. Kept in sync with the constants in
  * `src/kiro_crew/dashboard/state.py` (REFUSAL_RECOVERY_PREFIX,
- * STALE_RECOVERY_PREFIX, TOOL_STALL_RECOVERY_PREFIX,
- * POSTTOKEN_RECOVERY_PREFIX, EMPTY_RESPONSE_RECOVERY_PREFIX).
+ * STALE_RECOVERY_PREFIX, TOOL_STALL_RECOVERY_PREFIX, CONN_RECOVERY_PREFIX,
+ * BUSY_RECOVERY_PREFIX, POSTTOKEN_RECOVERY_PREFIX,
+ * EMPTY_RESPONSE_RECOVERY_PREFIX).
  *
  * Detection is by content prefix rather than a meta flag on purpose: the rows
  * are appended with a plain CSS-class meta ("msg msg-inject"), and matching the
  * text means history-restored rows written by any gateway version render as a
  * card too.
  */
-export type RecoveryKind = 'refusal' | 'stalled' | 'tool_stall' | 'posttoken' | 'empty' | 'manual'
+export type RecoveryKind =
+  | 'refusal'
+  | 'stalled'
+  | 'tool_stall'
+  | 'connection'
+  | 'busy'
+  | 'posttoken'
+  | 'empty'
+  | 'manual'
 
 /**
  * WIRE VALUES, never rendered — do not translate. These are matched with
@@ -30,6 +39,8 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['refusal', '[Tool refusal — automatic recovery]'],
   ['stalled', '[Stalled turn — automatic recovery]'],
   ['tool_stall', '[Tool stall — automatic recovery]'],
+  ['connection', '[Connection lost — automatic recovery]'],
+  ['busy', '[Session busy — automatic recovery]'],
   ['posttoken', '[Interrupted turn — automatic recovery]'],
   ['empty', '[Empty response — automatic recovery]'],
   // The only USER-initiated entry in this family. Kept here because the row is
@@ -89,11 +100,26 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       body,
     }
   }
-  if (kind === 'posttoken') {
+  if (kind === 'connection' || kind === 'posttoken') {
     return {
       kind,
       title: i18nT('pages.chat.recoveryCard.turn_interrupted'),
       detail: i18nT('pages.chat.recoveryCard.backend_error_continuing'),
+      chip: '',
+      body,
+    }
+  }
+  if (kind === 'busy') {
+    // Same event as `connection` (a turn cut short by a reset) and the same routine
+    // severity, but NOT the same cause: nothing errored or dropped, the backend
+    // session was occupied. `detail` is documented as the cause plus the attempt and
+    // every sibling names one, so it names this one too rather than reusing the
+    // cause-neutral phrasing — distinguishing busy from connection is why this kind
+    // exists, and the collapsed card is where that distinction has to land.
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.turn_interrupted'),
+      detail: i18nT('pages.chat.recoveryCard.session_busy_continuing'),
       chip: '',
       body,
     }
@@ -162,7 +188,12 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
   // backend error or an empty generation is infrastructure noise the gateway
   // handles on its own — a neutral retry glyph, so a routine hiccup does not
   // read as urgently as a deny-pattern block.
-  const routine = kind === 'posttoken' || kind === 'empty' || kind === 'manual'
+  const routine =
+    kind === 'connection' ||
+    kind === 'busy' ||
+    kind === 'posttoken' ||
+    kind === 'empty' ||
+    kind === 'manual'
   const Icon = routine ? RotateCcw : TriangleAlert
 
   return (

@@ -17,7 +17,7 @@ import { isSafePath } from '../../utils/safePath'
 import { fileReadUrl } from '../../utils/fileReadUrl'
 import McpAppFrame from '../../components/McpAppFrame'
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields } from '../../i18n/format'
+import { fmtDateFields, fmtDuration as fmtDurationParts } from '../../i18n/format'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -53,7 +53,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon.
-  const { effectiveId, isDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, hasEntry } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, hasEntry, isShell } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -116,6 +116,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           auto: !!e.auto,
           ts: e.ts || 0,
           hasEntry: true,
+          // Older ACP update frames may omit is_shell; execute is the stable
+          // tool-kind value used by the transport and keeps those frames live.
+          isShell: e.is_shell === true || e.kind === 'execute' || e.text.startsWith('Running:'),
         }
       }
     }
@@ -141,8 +144,15 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       // Treat the message as having an entry when persisted I/O is available,
       // so the empty-state copy only shows for truly bare historical messages.
       hasEntry: !!(metaInput || metaOutput),
+      isShell: false,
     }
   }, shallowEqual)
+
+  // The tool log is authoritative here: its output/rejection/turn-running
+  // state survives the ACP initial-call → update handoff, while the parent
+  // `running` prop is not present on every historical/live rendering path.
+  const isDone = logIsDone
+  const turnRunning = !isDone
 
   // Check if this specific tool has a pending (unresolved) permission matching its tool_call_id.
   // Only match when tool_call_id is present on both sides — prevents batched approvals from
@@ -158,6 +168,39 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     }
     return false
   })
+
+  // Shell commands do not expose a reliable total, so their live indicator is
+  // deliberately indeterminate. The existing tool output remains the source
+  // of truth; this status only makes an in-flight command visible while its
+  // details panel is collapsed after approval.
+  const showShellActivity = isShell && turnRunning && !hasPendingPerm
+  const [activityNow, setActivityNow] = useState(() => Date.now())
+  const activityStartRef = useRef(Date.now())
+  const wasPendingRef = useRef(hasPendingPerm)
+
+  useEffect(() => {
+    if (hasPendingPerm) {
+      wasPendingRef.current = true
+      return
+    }
+    if (wasPendingRef.current) {
+      activityStartRef.current = Date.now()
+      wasPendingRef.current = false
+      setActivityNow(Date.now())
+    }
+  }, [hasPendingPerm])
+
+  useEffect(() => {
+    if (!showShellActivity) return
+    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [showShellActivity])
+
+  const elapsedSeconds = Math.max(0, Math.floor((activityNow - activityStartRef.current) / 1000))
+  const elapsedLabel = fmtDurationParts(
+    [[Math.floor(elapsedSeconds / 60), 'minute'], [elapsedSeconds % 60, 'second']],
+    { dropZero: true },
+  )
 
   // Inline expansion state.
   //
@@ -439,6 +482,15 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         </button>
       )}
       </div>
+
+      {showShellActivity && (
+        <div className="ml-3 mt-1 text-[12px] text-muted">
+          <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
+          <span aria-hidden="true" className="tabular-nums font-mono">
+            {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
+          </span>
+        </div>
+      )}
 
       <AnimatePresence initial={false}>
         {effectivelyExpanded && (

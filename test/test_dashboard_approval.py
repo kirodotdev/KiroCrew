@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
+from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.state import (
     REFUSAL_RECOVERY_PREFIX,
@@ -60,6 +62,83 @@ def _make_hook_store() -> MagicMock:
     hs = MagicMock()
     hs.fire = AsyncMock(return_value=[])
     return hs
+
+
+def _blocking_hook_store(reason: str, hook_name: str = "policy-hook") -> MagicMock:
+    """Hook store whose PreToolUse fire blocks (exit 2) with *reason* on stderr."""
+    hs = _make_hook_store()
+    hs.fire = AsyncMock(
+        return_value=[
+            MagicMock(exit_code=2, stderr=reason, stdout="", hook_name=hook_name)
+        ]
+    )
+    return hs
+
+
+async def _drive_hook_blocked_turn(
+    state, client, slot, *, approve_prompt: bool = False, title: str = "fs_write"
+) -> None:
+    """Run one turn whose only tool call is blocked by a PreToolUse script hook.
+
+    Only the first stream yields a permission request, so the automatic recovery
+    continuation completes instead of blocking again. ``approve_prompt`` answers
+    the interactive permission future, which is the only way to reach the hook
+    fire that happens after the user approves.
+    """
+    client.context_usage_pct = MagicMock(return_value=0.0)
+    client._client = client
+    client.last_prompt_stats = None
+    calls = {"n": 0}
+
+    def _stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _async_iter([_permission_event(title=title), _complete_event()])
+        return _async_iter([_complete_event()])
+
+    client.stream = MagicMock(side_effect=_stream)
+
+    approver = None
+    if approve_prompt:
+
+        async def _answer() -> None:
+            for _ in range(600):
+                fut = slot._approval_futures.get("req-1")
+                if fut is not None:
+                    if not fut.done():
+                        fut.set_result("approved")
+                    return
+                await asyncio.sleep(0.01)
+
+        approver = asyncio.get_event_loop().create_task(_answer())
+
+    with _patch_stats():
+        await _run_chat(state, slot, "hello")
+        if slot.task:
+            await slot.task
+
+    if approver is not None:
+        await _drain(approver)
+
+
+def _assert_block_reason_recovered(slot, client, reason: str) -> None:
+    """Assert the call was rejected and *reason* reached a recovery continuation.
+
+    Selected by content, not position: a turn can also enqueue the
+    empty-response nudge, so the last inject is not reliably the recovery one.
+    """
+    client.reject_tool.assert_called_once()
+    recoveries = [
+        message.get("content", "")
+        for message in slot.messages
+        if message.get("role") == "inject"
+        and message.get("content", "").startswith(REFUSAL_RECOVERY_PREFIX)
+    ]
+    assert recoveries, (
+        "Script-hook block must trigger refusal-recovery; injects were "
+        f"{[m.get('content', '')[:40] for m in slot.messages if m.get('role') == 'inject']}"
+    )
+    assert any(reason.lower() in recovery.lower() for recovery in recoveries)
 
 
 def _make_state(
@@ -1013,3 +1092,136 @@ class TestInteractiveDenyDoesNotTriggerRecovery:
         recovery = injects[-1]["content"]
         assert recovery.startswith(REFUSAL_RECOVERY_PREFIX)
         assert "security policy" in recovery.lower()
+
+
+class TestPreToolUseHookBlockRecovery:
+    """A PreToolUse script-hook block feeds its reason into refusal recovery.
+
+    Four permission paths can fire PreToolUse hooks and they are not
+    interchangeable: the gating path latches ``_pre_tool_hooks_fired``, so the
+    trust and interactive paths only fire hooks themselves when no context
+    builder ran first. Each path therefore needs its own fixture.
+    """
+
+    @pytest.mark.asyncio
+    async def test_declarative_auto_approve_block_enqueues_recovery(self, tmp_path):
+        """A declarative auto-approve verdict still routes a block to recovery."""
+        reason = "Read the whole SKILL.md - this was a truncated slice"
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(ToolHookResult.auto_approve()),
+            hook_store=_blocking_hook_store(reason, hook_name="skill-truncation"),
+        )
+        slot = _make_slot()
+
+        await _drive_hook_blocked_turn(state, client, slot)
+
+        _assert_block_reason_recovered(slot, client, reason)
+
+    @pytest.mark.asyncio
+    async def test_gated_path_block_enqueues_recovery(self, tmp_path):
+        """A block raised while gating a normal tool call routes to recovery."""
+        reason = "Gating hook refused this command"
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(),
+            hook_store=_blocking_hook_store(reason),
+        )
+        slot = _make_slot()
+
+        await _drive_hook_blocked_turn(state, client, slot)
+
+        _assert_block_reason_recovered(slot, client, reason)
+
+    @pytest.mark.asyncio
+    async def test_trusted_path_block_enqueues_recovery(self, tmp_path):
+        """Trust mode fires the hook itself and must route its block to recovery."""
+        reason = "Trusted calls still respect policy"
+        state, client = _make_state(tmp_path, hook_store=_blocking_hook_store(reason))
+        slot = _make_slot(trust=True)
+
+        await _drive_hook_blocked_turn(state, client, slot)
+
+        _assert_block_reason_recovered(slot, client, reason)
+
+    @pytest.mark.asyncio
+    async def test_interactive_approved_block_enqueues_recovery(self, tmp_path):
+        """A block landing after the user approves must route to recovery."""
+        reason = "Approved by the user but refused by policy"
+        state, client = _make_state(tmp_path, hook_store=_blocking_hook_store(reason))
+        slot = _make_slot()
+
+        await _drive_hook_blocked_turn(state, client, slot, approve_prompt=True)
+
+        _assert_block_reason_recovered(slot, client, reason)
+
+    def test_every_hook_deny_path_routes_through_the_shared_helper(self) -> None:
+        """A fifth permission path must not be able to deny without recording the reason.
+
+        The four cases above each cover one existing path behaviourally. This one is
+        structural, and it is why the helper exists: rejecting, showing the blocked row
+        and auditing WITHOUT appending the hook's reason is precisely the defect this
+        change fixes -- the model stalls with no idea what it did wrong, while every
+        other assertion still passes. One helper makes that omission unrepresentable.
+        """
+        source = Path(chat_runner.__file__).read_text(encoding="utf-8")
+        deny_branches = source.count("if _pre_tool_hooks_should_block(pre_hook_results):")
+        helper_calls = source.count("await _reject_hook_blocked(")
+
+        assert deny_branches >= 4, "expected at least the four known PreToolUse deny paths"
+        assert helper_calls == deny_branches, (
+            f"{deny_branches} hook-deny branch(es) but {helper_calls} helper call(s) -- "
+            "a deny path that inlines reject/row/audit can silently drop the reason"
+        )
+        # The audit lives in the helper and nowhere else, so an inlined deny path
+        # cannot reappear without this failing.
+        assert source.count('outcome="hook_blocked"') == 1, (
+            "hook_blocked is audited in more than one place -- a deny path was inlined "
+            "again instead of routed through the helper"
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocked_row_and_audit_redact_the_model_authored_title(
+        self, tmp_path
+    ) -> None:
+        """A credential the model put in the tool title must not reach either surface.
+
+        ``event.title`` prefers the model's own ``description`` field
+        (``_select_tool_title``), so it is LLM-controlled display text. The sibling
+        reject path redacts it before both the transcript row and the audit
+        (``_safe_reject_title``); this path published it verbatim, and the row is both
+        broadcast to the dashboard and persisted to the ConversationLog.
+        """
+        # Assembled at runtime, never written as one literal: the redactor only
+        # fires on credential-SHAPED input (a plain sentinel passes through
+        # untouched, so this test would prove nothing), but a real key shape
+        # sitting in the source trips the source-text scanners --
+        # `scripts/scrub-lint.sh` and Semgrep's
+        # `detected-aws-access-key-id-value`. Splitting satisfies both, and
+        # matches the existing sentinels in code_review_sage's tests.
+        secret = "AKIA" + "1234567890ABCDEF"
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(),
+            hook_store=_blocking_hook_store("Gating hook refused this command"),
+        )
+        slot = _make_slot()
+
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_hook_blocked_turn(
+                state, client, slot, title=f"Deploy with {secret} now"
+            )
+
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any(secret in row for row in rows), rows
+        assert any("[REDACTED: credential]" in row and "hook blocked" in row for row in rows), rows
+
+        blocked = [
+            call.kwargs
+            for call in audit.log_tool_invocation.call_args_list
+            if call.kwargs.get("outcome") == "hook_blocked"
+        ]
+        assert blocked, "expected a hook_blocked audit record"
+        assert all(secret not in c.get("tool_name", "") for c in blocked), blocked

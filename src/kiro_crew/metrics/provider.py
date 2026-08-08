@@ -328,9 +328,12 @@ def _build_otlp_reader(cfg: object) -> Optional["_ReaderT"]:
     in the separate ``kirocrew[otlp]`` package extra (install with
     ``pip install "kirocrew[otlp]"``), not the hard dependency set. If a host
     opts in without installing it, we log a warning and degrade to local-only
-    rather than crashing telemetry init. The exporter only ever sees redacted, low-cardinality data points (the MetricsRecorder
-    facade sanitises attributes before they reach any reader), so opting in
-    cannot leak prompts, content, tokens, paths, user ids, or secrets.
+    rather than crashing telemetry init. The exporter sees only what the
+    MetricsRecorder facade lets through: attributes are sanitised before they
+    reach any reader, and call sites are required to pass low-cardinality
+    constants rather than prompts, content, tokens, paths or user ids. That
+    sanitisation is defence in depth over that requirement, not a substitute
+    for it, so egress is only as safe as the call sites feeding it.
     """
     endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
     if not endpoint:

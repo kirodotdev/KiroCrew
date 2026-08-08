@@ -80,10 +80,11 @@ second `PeriodicExportingMetricReader` alongside the local JSONL sink
 `pip install "kirocrew[otlp]"`. If the endpoint is set but the package extra is
 not installed, telemetry
 degrades to local-only with a warning instead of crashing. The OTLP exporter
-only ever sees the same redacted, low-cardinality data points as the local sink
-(the `MetricsRecorder` facade sanitises attributes before they reach ANY
-reader), so opting in cannot leak prompts, content, tokens, paths, user ids, or
-secrets.
+sees the same data points as the local sink: the `MetricsRecorder` facade
+sanitises attributes before they reach ANY reader, and call sites are required
+to pass low-cardinality constants rather than prompts, content, tokens, paths or
+user ids. That sanitisation is defence in depth over the requirement, not a
+substitute for it, so egress is only as safe as the call sites feeding it.
 
 **Bounded local retention (rec #14, explicit opt-in):** both destructive caps
 default to `0`, so upgrading cannot delete existing telemetry history. Operators
@@ -118,13 +119,19 @@ can opt in independently to age and/or size bounds:
   dates, symlinks, and the lock sidecar are excluded. It is fully best-effort —
   a rotation/prune failure is logged and swallowed, never breaking export.
 
-**Never recorded:** prompts, message/tool content, token counts, filesystem
-paths, user ids, and secrets. `telemetry.otlp_endpoint` is schema-sensitive so
-credential-bearing collector URLs are masked by config API/UI consumers as well
-as omitted from logs. Enforced structurally at the `MetricsRecorder`
-facade via the `schema.py` guardrails (see below) — call sites emit only
-low-cardinality enum-like attribute values, and any string that looks like a
-credential/PII is redacted to `"[REDACTED]"` before it reaches an instrument.
+**Must never be recorded:** prompts, message/tool content, token counts,
+filesystem paths, user ids, and secrets. `telemetry.otlp_endpoint` is
+schema-sensitive so credential-bearing collector URLs are masked by config
+API/UI consumers as well as omitted from logs.
+
+That is a contract on call sites — they emit only low-cardinality enum-like
+attribute values — backed at the `MetricsRecorder` facade by the `schema.py`
+guardrails (see below), which redact a string matching a known credential shape,
+or clearing the entropy backstop, to `"[REDACTED]"` before it reaches an
+instrument. Namespace validation is exhaustive; attribute redaction is defence
+in depth with a bounded reach (`schema.py` documents where the entropy backstop
+can and cannot fire), so it narrows the blast radius of a call site that breaks
+the contract rather than making one impossible.
 
 Tests: `test/metrics/test_local_exporter.py` (retention: direct age cap,
 oldest-first size cap, live-writer protection, live-shard rotation, non-blocking
@@ -921,8 +928,11 @@ always matches and the suppression would never fire (a real bug caught by
 `TestDefaultHomeDetection`).
 
 `kirocrew telemetry status | disable | enable` — `status` prints the exact
-payload and never materializes an id (`install_id(create=False)`); `disable`
-persists to `config.json` so the choice survives a new shell.
+payload and never materializes an id (`install_id(create=False)`). Its numbered,
+choose-one opt-out list leads with `kirocrew telemetry disable` because that choice
+persists to `config.json` and survives a new shell. Each method is a separate visual
+block: the environment override groups separately labelled macOS/Linux, PowerShell,
+and Command Prompt syntax, followed by the equivalent config key.
 
 `beacon.is_env_opted_out()` is the public probe for "the env var pins this off".
 It exists so the dashboard can distinguish *off because the stored flag is false*

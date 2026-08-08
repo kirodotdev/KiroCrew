@@ -22,6 +22,7 @@ from chat_test_helpers import (
 )
 
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
     _MAX_SOURCE_LINKS_PER_SLOT,
@@ -29,6 +30,31 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
 )
 from kiro_crew.history import ConversationLog
+
+
+def test_tool_call_ws_payload_preserves_shell_capability_signal():
+    """The dashboard receives an explicit shell signal for indeterminate UX.
+
+    Keep this contract at the backend boundary so a future percentage-based
+    progress mode can extend the payload without making the frontend infer
+    tool type from a display title.
+    """
+    event = MagicMock(
+        title="bash",
+        tool_kind="execute",
+        tool_call_id="tc-shell",
+        tool_purpose="Run a command",
+        tool_input="echo hello",
+        is_shell=True,
+    )
+
+    payload = _tool_call_ws_payload(event)
+
+    assert payload["tool"] == "bash"
+    assert payload["kind"] == "execute"
+    assert payload["is_shell"] is True
+    assert payload["tool_call_id"] == "tc-shell"
+
 
 # ── Slot unit tests ──
 
@@ -10637,11 +10663,17 @@ class TestAcpProcessDiedRecovery:
 
     @pytest.mark.asyncio
     async def test_partial_assistant_text_redacted(self, tmp_path: Path) -> None:
-        """Pipe death mid-stream → partial output redacted before display."""
+        """Pipe death mid-stream preserves redacted output and queues a continuation."""
         from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.dashboard.chat_utils import (
+            _CONN_RECOVER_MSG,
+            SYNTHETIC_RECOVERY_KIND,
+            RecoveryPayload,
+        )
         from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._titled = True
 
         async def _stream_then_die(msg):
             yield LLMEvent(
@@ -10652,12 +10684,152 @@ class TestAcpProcessDiedRecovery:
         client.stream = _stream_then_die
         client.stream_command = _stream_then_die
 
-        await _run_chat(state, slot, "test message")
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            await _run_chat(state, slot, "test message")
 
         assistant_msgs = [m for m in slot.messages if m.get("role") == "assistant"]
         assert assistant_msgs, "Expected at least one assistant message with redacted content"
         for m in assistant_msgs:
             assert "AKIA1234567890ABCDEF" not in m.get("content", "")
+        assert slot._queue == [
+            {
+                "id": slot._queue[0]["id"],
+                "content": _CONN_RECOVER_MSG,
+                "kind": SYNTHETIC_RECOVERY_KIND,
+                # A continuation, not the user's request: the turn had emitted, so
+                # this text is the runner's and must not mirror as user speech.
+                "payload": RecoveryPayload.CONTINUATION,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_prompt_busy_requeue_does_not_claim_a_lost_connection(
+        self, tmp_path: Path
+    ) -> None:
+        """A busy-session reset must requeue the busy continuation, not the connection one.
+
+        Both causes reset the session and requeue a continuation, and the queued
+        marker is what the transcript renders -- so borrowing the connection
+        marker here reports a dropped connection to a user whose status card
+        says the session was busy.
+        """
+        from kiro_crew.dashboard.chat_runner import PromptBusyExhaustedError
+        from kiro_crew.dashboard.chat_utils import (
+            _BUSY_RECOVER_MSG,
+            SYNTHETIC_RECOVERY_KIND,
+            RecoveryPayload,
+        )
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._titled = True
+
+        async def _stream_then_busy(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial output")
+            raise PromptBusyExhaustedError("busy")
+
+        client.stream = _stream_then_busy
+        client.stream_command = _stream_then_busy
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            await _run_chat(state, slot, "test message")
+
+        assert slot._queue == [
+            {
+                "id": slot._queue[0]["id"],
+                "content": _BUSY_RECOVER_MSG,
+                "kind": SYNTHETIC_RECOVERY_KIND,
+                # A continuation, not the user's request: the turn had emitted, so
+                # this text is the runner's and must not mirror as user speech.
+                "payload": RecoveryPayload.CONTINUATION,
+            }
+        ]
+        # The status card and the queued marker describe the same event to two
+        # audiences; they disagreed until the continuation became cause-aware.
+        errors = [m.get("content", "") for m in slot.messages if m.get("role") == "error"]
+        assert any("Session busy" in text for text in errors)
+        assert not any("Connection lost" in text for text in errors)
+
+    @pytest.mark.asyncio
+    async def test_a_second_failure_before_output_keeps_the_text_machine_authored(
+        self, tmp_path: Path
+    ) -> None:
+        """A recovery turn that dies again before emitting must stay machine-authored.
+
+        The requeue replays ``message`` unchanged when nothing was emitted -- but on a
+        second consecutive failure that message is the runner's own continuation from
+        the previous recovery, not the user's request. Tagging it ORIGINAL makes the
+        next dequeue mirror internal orchestration to a linked thread as user speech.
+        """
+        from kiro_crew.acp.client import AcpProcessDied
+        from kiro_crew.dashboard.chat_utils import (
+            _CONN_RECOVER_MSG,
+            SYNTHETIC_RECOVERY_KIND,
+            RecoveryPayload,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._titled = True
+        self._make_stream_raise(client, AcpProcessDied("pipe broken"))
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            await _run_chat(state, slot, _CONN_RECOVER_MSG, _synthetic_payload=True)
+
+        assert slot._queue == [
+            {
+                "id": slot._queue[0]["id"],
+                "content": _CONN_RECOVER_MSG,
+                "kind": SYNTHETIC_RECOVERY_KIND,
+                "payload": RecoveryPayload.CONTINUATION,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_recovery_turns_reply_still_reaches_the_linked_thread(
+        self, tmp_path: Path
+    ) -> None:
+        """Withholding the user echo must not also withhold the assistant reply.
+
+        A Slack-linked turn that emits output and then loses its connection recovers as
+        a synthetic continuation. Skipping the whole mirror SETUP for that turn leaves
+        no thread to reply into, so the continuation's answer is never delivered and the
+        question asked on Slack stays unanswered.
+        """
+        from kiro_crew.dashboard.chat_utils import _CONN_RECOVER_MSG
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._titled = True
+        state.sessions.get_slack_link = MagicMock(return_value=("ts-1", "C123"))
+        state.slack_client = AsyncMock()
+        state.slack_client.start_stream = AsyncMock(return_value="")
+
+        async def _stream_text(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the finished answer")
+
+        client.stream = _stream_text
+        client.stream_command = _stream_text
+
+        await _run_chat(state, slot, _CONN_RECOVER_MSG, _synthetic_payload=True)
+
+        posted = [str(c.args) for c in state.slack_client.post_message.await_args_list]
+        assert any("the finished answer" in a for a in posted), (
+            f"recovery reply never delivered to the linked thread; posted={posted}"
+        )
+        # The user echo stays withheld: that text is the runner's, not the user's.
+        assert not any("\U0001f4ac" in a for a in posted), f"echoed runner text: {posted}"
 
     @pytest.mark.asyncio
     async def test_session_reset_propagated(self, tmp_path: Path) -> None:

@@ -1067,16 +1067,17 @@ The Agents page context window section shows per-session info:
 ### Tool-Refusal Recovery
 
 When `_run_chat` refuses a tool call for a **recoverable, system-side** reason —
-a host-gate policy deny (`hooks.on_tool_call` → `TOOL_DENY`) or the read-only
-bash safety gate (`is_read_only_bash` / `unsafe_bash_reason`) — kiro-cli ends
-the turn early by emitting the attribution-free marker `Tool uses were
-interrupted, waiting for the next user prompt`. Historically the refusal reason
-reached only the dashboard pill and the SEL audit log, never the model, so the
-agent stalled and the user had to manually prompt it to continue (and the model,
-lacking any cause in its context, often misattributed the stop to the user).
+a host-gate policy deny (`hooks.on_tool_call` → `TOOL_DENY`), the read-only
+bash safety gate (`is_read_only_bash` / `unsafe_bash_reason`), or a PreToolUse
+script hook block (`exit 2` → `BLOCKED:<hook>:<stderr>`) — kiro-cli ends the
+turn early by emitting the attribution-free marker `Tool uses were interrupted,
+waiting for the next user prompt`. Without recovery, the reason reaches only the
+dashboard pill and SEL audit log, so the model cannot adapt.
 
-`_run_chat` now records each recoverable refusal as a redacted `(title, reason)`
-tuple in a per-turn `_refusal_reasons` list. When the turn ends — and the user
+`_run_chat` records each recoverable refusal as a redacted `(title, reason)`
+tuple in a per-turn `_refusal_reasons` list. PreToolUse block reasons use the
+first non-empty hook STDERR value and fall back to a generic policy-hook reason
+for deny-by-default malformed results. When the turn ends — and the user
 did **not** stop it (`slot._stopping` is false) and no session reset is already
 re-queuing — it builds a continuation via `context.build_refusal_recovery_prompt`,
 prepends `REFUSAL_RECOVERY_PREFIX`, and `queue_insert(0, …)`s it. The existing
@@ -1088,9 +1089,32 @@ as user input (`_is_recovery` guard).
 
 By design there is **no retry cap**: the model decides when to stop, and the
 user's Stop button remains the hard breaker (a stop clears the queue and aborts
-the chain). Scope is the two reason-bearing gates above; pre-tool-use hook
-`BLOCKED:` results are not yet wired for recovery (consistent treatment across
-all three hook branches is a follow-up).
+the chain). All four permission paths that can process PreToolUse script hooks
+(declarative auto-approve, normal gating, trusted/YOLO, and interactive approval)
+route `BLOCKED:` reasons through the same recovery funnel.
+
+### Reset-and-Requeue Recovery
+
+A reset-and-requeue path must not replay a turn that already emitted assistant
+output or dispatched a tool. `chat_utils.build_recovery_requeue()` returns the
+original request only before any output; otherwise it returns a continuation that
+tells the model to resume from restored conversation state without repeating
+completed work.
+
+That decision does not depend on why the session was reset, but the continuation
+does. The helper takes a required `ResetCause` — `CONNECTION_LOST` or
+`SESSION_BUSY` — and returns the continuation for that cause, because the marker
+it carries is what the transcript renders: a session that was merely busy must
+not be reported to the user as a lost connection. The enum has no default, so a
+reset site added later cannot inherit another cause's label by omission.
+
+Every automatic requeue retains `kind="synthetic_recovery"`. Queue consumers use
+that structural provenance—not message text—to prevent merging with user input,
+continue draining while user turns are held, preserve the pending session-reset
+notice, and render the dequeued row as an `inject`. This keeps a user who happens
+to type the same marker ordinary user input. Each continuation starts with its own
+marker (`CONN_RECOVERY_PREFIX`, `BUSY_RECOVERY_PREFIX`), is folded by the frontend
+`RecoveryCard`, and is not mirrored to a linked messaging surface as user speech.
 
 ### Design
 

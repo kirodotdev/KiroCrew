@@ -6977,6 +6977,7 @@
         "recovered_continuing": "已恢复 · 继续中",
         "resuming_the_interrupted_turn": "正在从中断处继续",
         "safety_policy_continuing": "安全策略 · 正在自动继续",
+        "session_busy_continuing": "会话繁忙 · 正在自动继续",
         "tool_call_blocked": "工具调用被阻止",
         "tool_stopped_responding": "工具停止响应",
         "turn_interrupted": "轮次被中断",

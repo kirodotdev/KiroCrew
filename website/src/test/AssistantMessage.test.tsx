@@ -241,6 +241,27 @@ describe('AssistantMessage', () => {
 
 })
 
+describe('action footer on touch devices', () => {
+  // The footer is opacity-0 until group-hover, and a touch pointer never
+  // hovers — without the hover:none override the actions (copy, speak,
+  // regenerate, fork) are permanently invisible on phones. happy-dom does not
+  // evaluate media queries, so pin the utility class itself.
+  const footer = () => screen.getByTitle('Copy').closest('div') as HTMLElement
+
+  it('reveals the footer where the pointer cannot hover', () => {
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
+    expect(footer().className).toContain('[@media(hover:none)]:opacity-100')
+  })
+
+  it('keeps the footer hover-revealed for hover-capable pointers', () => {
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
+    const cls = footer().className
+    expect(cls).toContain('opacity-0')
+    expect(cls).toContain('group-hover/msg:opacity-100')
+    expect(cls).toContain('group-focus-within/msg:opacity-100')
+  })
+})
+
 describe('parseOptions', () => {
   it('parses [OPTIONS: a|b|c] multi syntax', () => {
     const { options, multi, isPlan } = parseOptions('Pick one [OPTIONS: Alpha|Beta|Gamma]')

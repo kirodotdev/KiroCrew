@@ -1808,6 +1808,33 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   .mobile-sessions-overlay .sidebar-resize-handle { display: none !important; }
 }
 
+/* Composer text must reach WebKit's 16px standard focus size on touch devices.
+   When a field takes focus WebKit scales the viewport by
+   clampTo(16 / fontSize, minimumScale, maximumScale), so anything computing
+   below 16px zooms. The 16 is the hardcoded webViewStandardFontSize:
+   https://github.com/WebKit/WebKit/blob/f010ba868212b2113ca0727ce46f06273cb5fd0a/Source/WebKit/UIProcess/API/ios/WKWebViewIOS.mm#L1752
+   The textarea and paste mirror share this hook to keep their font metrics
+   aligned; pointer: coarse leaves desktop typography unchanged.
+
+   The placeholder stays at the desktop size because the zoom scale is computed
+   from the FIELD's font-size, not this pseudo-element's — so holding the hint
+   at 0.875rem costs no zoom protection and keeps it on one line. At 16px the
+   hint wraps, and an empty composer cannot grow to show the second line: a
+   placeholder contributes nothing to scrollHeight, so applyHeight pins the box
+   at INPUT_MIN_H and the wrapped line is clipped.
+
+   The field selector repeats the attribute to reach specificity (0,2,0). Tailwind's
+   `.text-sm` on the same element is (0,1,0), so a single `[data-composer-typo]`
+   would only TIE and win on source order — leaving the fix inert on device, with
+   no test able to see it, if the utilities are ever emitted after this file. The
+   repeat is used instead of qualifying by element because the hook is on the
+   composer's <textarea> and on the paste mirror's <div>, and the mirror's font
+   metrics must track the field's. */
+@media (pointer: coarse) {
+  [data-composer-typo][data-composer-typo] { font-size: 16px; }
+  [data-composer-typo]::placeholder { font-size: 0.875rem; }
+}
+
 /* ── Diff panel header: theme-conditional bg/border to match Monaco vs/vs-dark ── */
 .diff-panel-header {
   background-color: #ffffff;

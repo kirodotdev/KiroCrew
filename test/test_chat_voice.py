@@ -372,6 +372,7 @@ class TestVoiceVoices:
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
         app = web.Application()
@@ -430,6 +431,7 @@ class TestVoiceVoices:
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
         app = web.Application()
@@ -464,6 +466,7 @@ class TestVoiceVoices:
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
         app = web.Application()
@@ -473,3 +476,61 @@ class TestVoiceVoices:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/api/voice/voices")
             assert resp.status == 504
+
+    @pytest.mark.asyncio
+    async def test_voices_aws_not_found(self, tmp_path, monkeypatch):
+        """aws CLI absent from PATH → 200 with empty list, no subprocess spawn."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
+
+        monkeypatch.setattr("shutil.which", lambda cmd: None)
+        spawn = AsyncMock()
+        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+        from kiro_crew.dashboard.chat_voice import api_voice_voices
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"voices": []}
+        spawn.assert_not_called()
+        # The empty result must NOT be cached — the list should recover
+        # as soon as `aws` becomes resolvable.
+        from kiro_crew.dashboard import chat_voice
+        assert chat_voice._voices_cache is None
+
+    @pytest.mark.asyncio
+    async def test_voices_exec_file_not_found(self, tmp_path, monkeypatch):
+        """which() succeeds but the exec itself raises FileNotFoundError
+        (binary removed in between, or a script with a missing interpreter)
+        → same graceful empty-list degrade, no 500."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
+
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
+
+        async def mock_exec(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory", "aws")
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+
+        from kiro_crew.dashboard.chat_voice import api_voice_voices
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"voices": []}
