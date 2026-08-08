@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
+from datetime import date
 from pathlib import Path
 from typing import Any, TypedDict, cast
+from urllib.parse import urlsplit
 
 
 class SmokeFixture(TypedDict):
@@ -16,8 +18,16 @@ class SmokeFixture(TypedDict):
     args: dict[str, Any]
 
 
-class Provider(TypedDict):
-    """One official MCP provider exposed to the Connections experience."""
+class L0Expectations(TypedDict):
+    """OAuth discovery properties asserted by the account-free L0 probe."""
+
+    authorization_server_origin: str
+    dcr: bool
+    pkce: bool
+
+
+class _RequiredProviderFields(TypedDict):
+    """Fields every registry entry must declare."""
 
     name: str
     slug: str
@@ -28,8 +38,39 @@ class Provider(TypedDict):
     docs_url: str
     gotcha_copy: str
     smoke_fixture: SmokeFixture
+    l0_expectations: L0Expectations
     launch_gate_passed: bool
     vendor_approval_pending: bool
+    # When ``revoke_page_url`` was last checked against the provider, and how.
+    # A revoke link is a safety promise -- a stale one sends a user who wants
+    # their grant gone to a 404 or to a page the grant does not appear on -- so
+    # the check is dated in-tree and a test fails the build once it ages out.
+    # The note records the strength of that check, because a logged-out HTTP
+    # audit cannot see which surface actually lists the grant.
+    revoke_verified_on: str
+    revoke_verified_note: str
+
+
+class Provider(_RequiredProviderFields, total=False):
+    """One official MCP provider exposed to the Connections experience.
+
+    ``client_id`` is present only for providers that require a pre-registered
+    OAuth client instead of Dynamic Client Registration (``l0_expectations.dcr``
+    false).  It is a PUBLIC identifier forwarded to the runtime as the remote
+    entry's ``clientId``; the corresponding secret is never stored here.
+    GitHub is the one such provider today and its value is deliberately UNSET
+    pending the Kiro app registration, which is why the field is optional
+    rather than required — an entry without it simply carries no clientId.
+
+    ``revoke_manual_path`` is the in-app navigation to the same page as
+    ``revoke_page_url``, for a provider whose settings link is a single-page app
+    that re-routes after sign-in and can land the user somewhere else. A URL
+    cannot be made reliable against that from our side, so the card states the
+    path too and the user always has a way through.
+    """
+
+    client_id: str
+    revoke_manual_path: str
 
 
 class RegistryValidationError(ValueError):
@@ -38,6 +79,11 @@ class RegistryValidationError(ValueError):
 
 _REGISTRY_PATH = Path(__file__).with_name("registry.json")
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# How long a revoke-link verification stays trustworthy. Providers move these
+# settings pages between redesigns, so a visible card carries a re-check
+# deadline rather than a one-time claim.
+REVOKE_VERIFICATION_MAX_AGE_DAYS = 180
 _PROVIDER_FIELDS = {
     "name",
     "slug",
@@ -48,10 +94,18 @@ _PROVIDER_FIELDS = {
     "docs_url",
     "gotcha_copy",
     "smoke_fixture",
+    "l0_expectations",
     "launch_gate_passed",
     "vendor_approval_pending",
+    "revoke_verified_on",
+    "revoke_verified_note",
 }
 _SMOKE_FIXTURE_FIELDS = {"tool", "args"}
+_L0_EXPECTATION_FIELDS = {"authorization_server_origin", "dcr", "pkce"}
+# Optional because only non-DCR providers need a pre-registered OAuth client.
+# See Provider.client_id: GitHub is the sole intended consumer and stays unset
+# until the Kiro app is registered, so absence must remain a valid entry shape.
+_OPTIONAL_PROVIDER_FIELDS = {"client_id", "revoke_manual_path"}
 
 
 def _validation_error(index: int, message: str) -> RegistryValidationError:
@@ -64,16 +118,37 @@ def _validate_provider(raw: object, index: int) -> Provider:
 
     fields = set(raw)
     missing = _PROVIDER_FIELDS - fields
-    extra = fields - _PROVIDER_FIELDS
+    extra = fields - _PROVIDER_FIELDS - _OPTIONAL_PROVIDER_FIELDS
     if missing:
         raise _validation_error(index, f"missing fields: {', '.join(sorted(missing))}")
     if extra:
         raise _validation_error(index, f"unknown fields: {', '.join(sorted(extra))}")
 
+    for optional in ("client_id", "revoke_manual_path"):
+        if optional in raw:
+            value = raw[optional]
+            if not isinstance(value, str) or not value.strip():
+                raise _validation_error(
+                    index, f"{optional} must be a non-empty string when present"
+                )
+
     for field in ("name", "slug", "mcp_url", "revoke_page_url", "docs_url", "gotcha_copy"):
         value = raw[field]
         if not isinstance(value, str) or not value.strip():
             raise _validation_error(index, f"{field} must be a non-empty string")
+
+    if not isinstance(raw["revoke_verified_note"], str) or not raw["revoke_verified_note"].strip():
+        raise _validation_error(index, "revoke_verified_note must be a non-empty string")
+
+    verified_on = raw["revoke_verified_on"]
+    if not isinstance(verified_on, str) or not _ISO_DATE_PATTERN.fullmatch(verified_on):
+        raise _validation_error(index, "revoke_verified_on must be a YYYY-MM-DD date")
+    try:
+        # Shape alone would accept 2026-02-31; the staleness test compares this
+        # to a real date, so reject anything that is not one.
+        date.fromisoformat(verified_on)
+    except ValueError as error:
+        raise _validation_error(index, "revoke_verified_on must be a YYYY-MM-DD date") from error
 
     slug = cast(str, raw["slug"])
     if not _SLUG_PATTERN.fullmatch(slug):
@@ -102,6 +177,40 @@ def _validate_provider(raw: object, index: int) -> Provider:
         raise _validation_error(index, "smoke_fixture.tool must be a non-empty string")
     if not isinstance(fixture["args"], dict):
         raise _validation_error(index, "smoke_fixture.args must be an object")
+
+    expectations = raw["l0_expectations"]
+    if not isinstance(expectations, dict) or set(expectations) != _L0_EXPECTATION_FIELDS:
+        raise _validation_error(
+            index,
+            "l0_expectations must contain exactly authorization_server_origin, dcr, and pkce",
+        )
+    for field in ("dcr", "pkce"):
+        if not isinstance(expectations[field], bool):
+            raise _validation_error(index, f"l0_expectations.{field} must be a boolean")
+    authorization_origin = expectations["authorization_server_origin"]
+    if not isinstance(authorization_origin, str):
+        raise _validation_error(
+            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+        )
+    try:
+        authorization_parts = urlsplit(authorization_origin)
+        authorization_parts.port
+    except ValueError as error:
+        raise _validation_error(
+            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+        ) from error
+    if (
+        authorization_parts.scheme != "https"
+        or authorization_parts.hostname is None
+        or authorization_parts.username is not None
+        or authorization_parts.password is not None
+        or authorization_parts.path not in ("", "/")
+        or authorization_parts.query
+        or authorization_parts.fragment
+    ):
+        raise _validation_error(
+            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+        )
 
     for field in ("launch_gate_passed", "vendor_approval_pending"):
         if not isinstance(raw[field], bool):
@@ -153,6 +262,12 @@ def _copy_provider(provider: Provider) -> Provider:
     """Keep callers from mutating the process-wide validated registry."""
 
     return cast(Provider, deepcopy(provider))
+
+
+def get_all_registry_providers() -> list[Provider]:
+    """Return every registry entry, including launch-gated and vendor-blocked entries."""
+
+    return [_copy_provider(provider) for provider in _PROVIDERS]
 
 
 def get_all_providers() -> list[Provider]:
