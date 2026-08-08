@@ -797,11 +797,47 @@ def _shell_is_posix_strict(shell: str) -> bool:
     return result
 
 
-def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None = None) -> dict:
+def run_command_sandboxed(
+    command: str,
+    timeout: int = 300,
+    job_id: str | None = None,
+    sandbox_mode: str = "cc",
+    extra_hidden_dirs: tuple[str, ...] = (),
+    cwd: str | None = None,
+) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
-    Returns: {"status": "ok"|"error"|"cancelled", "output": "...", "exit_code": N}
+    Returns: ``{"status": "ok"|"error"|"cancelled", "output": "...", "exit_code": N,
+    "error_kind": <str|None>}``.
+
+    ``error_kind`` is the MACHINE-READABLE failure taxonomy — ``None`` when the
+    command ran to completion (any exit code), else one of ``"no_shell"``,
+    ``"sandbox_unavailable"``, ``"timeout"``, ``"cancelled"``, ``"exec_error"``.
+    Callers that branch on WHY a command could not run (e.g. the autonudge exit
+    gate's fail-open-on-structural-inability policy) MUST key off this field,
+    never off the human-readable ``output`` text: the output is rewordable
+    documentation and, worse, can contain attacker-influenced command stdout,
+    so substring-matching it lets a command spoof a structural failure.
+
+    ``sandbox_mode`` selects the wrap_argv profile: ``"cc"`` (default — the
+    cron-command profile, which leaves ``~/.ssh`` reachable for git/scp jobs)
+    or ``"strict"`` (additionally hides ``~/.ssh``; used by callers whose
+    commands have no legitimate SSH need, like exit gates).
+    ``extra_hidden_dirs`` forwards to ``wrap_argv`` — additional absolute
+    directory trees to deny beyond the profile's set.
+    ``cwd`` anchors the command's working directory (forwarded to ``Popen``);
+    ``None`` inherits the daemon's cwd (pre-existing behavior). Callers whose
+    commands plausibly use relative paths (the autonudge exit gate) should
+    anchor; an unreadable/absent dir makes ``Popen`` raise, surfacing as
+    ``exec_error`` rather than silently running somewhere unintended.
     """
+    if sandbox_mode not in ("cc", "strict"):
+        return {
+            "status": "error",
+            "output": f"❌ Unknown sandbox_mode {sandbox_mode!r}",
+            "exit_code": -1,
+            "error_kind": "exec_error",
+        }
     shell = _resolve_command_shell()
     if shell is None:
         return {
@@ -815,10 +851,11 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
                 "this platform, or run the gateway under POSIX."
             ),
             "exit_code": -1,
+            "error_kind": "no_shell",
         }
     argv = [shell, "-c", command]
-    # mode="cc" (not "standard"): the command string is fully model-supplied via
-    # cron_add and executes outside the kiro-cli ACP permission/hook flow, so this
+    # Default mode="cc" (not "standard"): the command string is fully model-supplied
+    # (cron_add) and executes outside the kiro-cli ACP permission/hook flow, so this
     # is a low-trust exec path. "cc" hides the credential dirs/files (.aws, .kube,
     # .netrc, .git-credentials, .npmrc, .pypirc, .kirocrew/.env) and scrubs the
     # agent-denied env keys, while deliberately leaving ~/.ssh reachable so a
@@ -835,13 +872,15 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
     # instead of a job it could mark failed, so the remedy never reached the user.
     sandbox_cleanup: str | None = None
     try:
-        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        sandboxed_argv, sandbox_cleanup = wrap_argv(
+            argv, mode=sandbox_mode, extra_hidden_dirs=extra_hidden_dirs
+        )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
         proc = subprocess.Popen(
             sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=clean_env, start_new_session=True,
-            preexec_fn=resource_limit_preexec(),
+            preexec_fn=resource_limit_preexec(), cwd=cwd,
         )
         if job_id:
             _register_proc(job_id, proc)
@@ -852,12 +891,22 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             except subprocess.TimeoutExpired:
                 _kill_proc_group(proc)
                 proc.communicate()
-                return {"status": "error", "output": f"❌ Command timed out after {timeout}s", "exit_code": -1}
+                return {
+                    "status": "error",
+                    "output": f"❌ Command timed out after {timeout}s",
+                    "exit_code": -1,
+                    "error_kind": "timeout",
+                }
         finally:
             if job_id:
                 cancelled = _unregister_proc(job_id, proc)
         if cancelled:
-            return {"status": "cancelled", "output": "Cancelled by user", "exit_code": proc.returncode}
+            return {
+                "status": "cancelled",
+                "output": "Cancelled by user",
+                "exit_code": proc.returncode,
+                "error_kind": "cancelled",
+            }
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:
@@ -868,15 +917,24 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             "status": "ok" if proc.returncode == 0 else "error",
             "output": output,
             "exit_code": proc.returncode,
+            # None: the command RAN to completion — a nonzero exit is the
+            # command's own verdict, not an execution failure.
+            "error_kind": None,
         }
     except SandboxUnavailableError as exc:
         return {
             "status": "error",
             "output": f"{_SANDBOX_UNAVAILABLE_PREFIX}{exc}",
             "exit_code": -1,
+            "error_kind": "sandbox_unavailable",
         }
     except Exception as exc:
-        return {"status": "error", "output": f"❌ Command failed: {exc}", "exit_code": -1}
+        return {
+            "status": "error",
+            "output": f"❌ Command failed: {exc}",
+            "exit_code": -1,
+            "error_kind": "exec_error",
+        }
     finally:
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)

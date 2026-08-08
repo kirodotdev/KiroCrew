@@ -525,7 +525,7 @@ def test_run_command_uses_cc_sandbox(monkeypatch):
 
     captured = {}
 
-    def fake_wrap_argv(argv, mode="standard"):
+    def fake_wrap_argv(argv, mode="standard", extra_hidden_dirs=()):
         captured["mode"] = mode
         return argv, None
 
