@@ -9,7 +9,7 @@ Four parts, in the order you will need them:
 
 1. [Run 24/7 on a remote host](#1-run-247-on-a-remote-host): host setup and install
 2. [Reach it from a laptop or phone](#2-reach-it-from-a-laptop-or-phone): SSH
-   tunnels, HTTPS tunnels, session lifetimes
+   tunnels, HTTPS tunnels, session lifetimes, installing as an app
 3. [Keep it alive as a service](#3-keep-it-alive-as-a-service): systemd /
    launchd, plus the awkward-host recipe
 4. [Troubleshooting](#4-troubleshooting)
@@ -422,6 +422,66 @@ Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`), so they
 survive a gateway restart. On a gateway old enough to predate the feature,
 `GET /api/auth/me` returns 404; the frontend logs once and falls back to the
 20-hour URL-mint behaviour.
+
+### Install as an app (PWA)
+
+The dashboard ships a web app manifest
+([`website/public/manifest.json`](../../website/public/manifest.json)) and
+registers a service worker, so a phone can install it to the home screen and
+launch it without browser chrome. Nothing needs enabling.
+
+**HTTPS is what the service worker needs** — the install itself is looser.
+Service workers only register in a secure context, so over a plain
+`http://<host>:5476` from another device on the LAN you get the manifest but no
+service worker. On **iOS Safari** that still installs and still launches
+standalone; you only lose the offline shell described below. On **Android
+Chrome** the promoted install flow expects a secure origin, so use HTTPS there
+rather than relying on whatever manual shortcut path the current version offers.
+Any option in [Named HTTPS tunnel (phone)](#named-https-tunnel-phone) provides a
+secure context, and loopback counts as one too, which is why it works untunnelled
+on the gateway host itself.
+
+**On iOS Safari**, open the dashboard, tap Share → *Add to Home Screen*, then
+launch from the new icon. The manifest's `"display": "standalone"` is what drops
+Safari's address bar.
+
+**The service worker provides a limited offline shell.**
+[`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
+`/index.html`. For the paths below the worker declines to intercept, handing them
+straight to the network; every other same-origin `GET` **is** intercepted,
+network-first, but only the shell is ever cached:
+
+| Path | Why the worker declines it |
+|---|---|
+| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
+| `/assets/` | Vite content-hashed bundles — HTTP immutable caching already covers them |
+| `/vendor/`, `/fonts/`, `/sprites/` | Stable filenames, nothing to bust |
+| `/logo.png`, `/static/` | Gateway-served brand assets; caching them strands a broken image across a gateway restart |
+
+So offline you get the shell and its reconnecting state — and only while the
+browser's own HTTP cache still holds the hashed `/assets/` bundles, which the
+worker never caches. After a build that changes those hashes, the cached shell
+references bundle URLs nothing has downloaded yet. Sessions, history, and
+notifications are never served from disk.
+
+**Two current limits**, documented here so they read as boundaries rather than
+bugs:
+
+- **Notifications need the app open.** The dashboard raises them through the
+  foreground `Notification` constructor
+  ([`website/src/hooks/useNativeNotification.ts`](../../website/src/hooks/useNativeNotification.ts))
+  and there is no Web Push subscription, so nothing arrives while the installed
+  app is closed or backgrounded. On iOS that constructor is unavailable inside an
+  installed PWA at all — notifications there require
+  `ServiceWorkerRegistration.showNotification()`. Tracked in
+  [issue #2267](https://github.com/kirodotdev/KiroCrew/issues/2267); the Android
+  symptom is [issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828).
+- **Not edge-to-edge.** The shell sets neither `viewport-fit=cover` nor any
+  `env(safe-area-inset-*)` padding, so on a notched device the installed app
+  renders inside the safe area rather than filling the screen.
+
+Installing changes nothing about authentication: the app carries the same cookies
+the browser holds, on the same clocks as [Session duration](#session-duration).
 
 ### Persistent SSH tunnel on macOS (LaunchAgent)
 
