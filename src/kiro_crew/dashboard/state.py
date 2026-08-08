@@ -3285,6 +3285,24 @@ class DashboardState:
         except Exception:
             pass
         self._slots[name] = slot
+        # Publish the updated key set to SessionManager and the surface
+        # registry NOW, not just on the HTTP slot endpoints. Slots born here
+        # programmatically (auto-research campaign workers, cron/workflow
+        # inject, task runner, spec builder) never pass through those
+        # endpoints, so ``_active_dashboard_slots`` stayed stale and the idle
+        # sweep's orphan branch reaped their live sessions as "slot gone" —
+        # killing the companion subagent runtime (and any subagent mid-prompt
+        # on it) along the way. Guarded: tests build this state without a
+        # SessionManager, and a sync failure must never break slot creation.
+        if self.sessions:
+            try:
+                from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
+
+                _sync_dashboard_slots(self)
+            except Exception:
+                logger.warning(
+                    "get_or_create_slot: active-slot sync failed for %s", name, exc_info=True
+                )
         self.push_slots_update()
         return slot
 
