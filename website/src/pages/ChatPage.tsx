@@ -3137,7 +3137,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const planActionMutationRef = useRef(planActionMutation)
   planActionMutationRef.current = planActionMutation
 
-  const send = useCallback(async (optionText?: string, targetSlot?: string) => {
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean) => {
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -3451,9 +3451,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const metaPayload = Object.keys(meta).length ? meta : undefined
     // Skip optimistic user bubble when the slot is busy (shared rule:
     // chatSlice.selectComposerBusy) — the backend sends a "queued" role
-    // message instead, avoiding a duplicate.
+    // message instead, avoiding a duplicate. A steer-flagged send is the
+    // exception: it bypasses the queue and starts a turn, so no queued card is
+    // coming and skipping the bubble would leave the message invisible until
+    // the turn's first refresh.
     const _busy = selectComposerBusy(store.getState(), slot ?? null)
-    if (!_busy || forceNew) {
+    if (!_busy || forceNew || steerNow) {
       dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
     }
     window.dispatchEvent(new Event('voice-stop'))
@@ -3529,7 +3532,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
     try {
-      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload)
+      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload, steerNow)
       clearTimeout(timeout)
       const body = await r.json().catch(() => ({}))
       if (!body.queued && !body.ok) {
@@ -4550,6 +4553,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // ChatInput) so text and attachments clear atomically.
   const steer = useCallback(() => {
     if (!activeSlot) return
+    // Nothing to inject into: the composer is busy purely because background
+    // sub-agents are still running for this slot (spawn_run is fire-and-forget,
+    // so the parent turn already ended). The intent is the same — act on this
+    // text now, don't park it — so start a real turn through the normal send
+    // path, which carries `ws=1` and so streams, and flag it to skip the
+    // server-side hold that keeps a user message behind running sub-agents.
+    // Delegating here, BEFORE the composer is read and cleared below, leaves
+    // send() owning the draft, attachment and optimistic-bubble bookkeeping.
+    // A multi-stage autopilot plan also reads busy-but-not-running. There the
+    // server keeps `_in_stage_execution` set for the WHOLE plan, so the flag
+    // finds no live session to inject into and the message queues — the right
+    // answer between stages, and unconditional across the plan rather than a
+    // race with the gaps.
+    if (!slotRunning) { void send(undefined, undefined, true); return }
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
     if (!raw && !files.length) return
@@ -4575,7 +4592,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setInput(''); setPendingFiles([]); setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, steerMutation, saveDrafts, dispatch])
+  }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch])
 
   const handleCancelQueued = useCallback((queueId: string) => {
     if (!activeSlot) return
@@ -5729,7 +5746,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               value={input}
               onChange={setInput}
               onSend={() => send()}
-              canSteer={slotRunning}
+              canSteer={composerBusy}
               onSteer={steer}
               onFollowUpSend={(text?: string) => send(text)}
               disabled={
