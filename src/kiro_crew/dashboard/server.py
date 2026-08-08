@@ -2588,6 +2588,7 @@ async def start_dashboard(
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
     app.router.add_get("/api/sessions/search", handlers.api_sessions_search)
     app.router.add_post("/api/sessions/summarize", handlers.api_sessions_summarize)
+    app.router.add_get("/api/sessions/{key}/export", handlers.api_session_export)
     app.router.add_get("/api/sessions/{key}", handlers.api_session_detail)
     app.router.add_delete("/api/sessions/{key}", handlers.api_session_delete)
     app.router.add_get("/api/logs", handlers.api_logs)

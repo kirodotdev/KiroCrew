@@ -1530,3 +1530,68 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
         lambda: redact(raw)
     )
     return web.Response(text=redacted, content_type="application/x-ndjson")
+
+
+async def api_session_export(request: web.Request) -> web.Response:
+    """GET /api/sessions/{key}/export — export session messages as Markdown."""
+    state: DashboardState = request.app["state"]
+    key = request.match_info["key"]
+    fmt = request.query.get("format", "markdown")
+
+    if fmt != "markdown":
+        return web.json_response(
+            {"error": f"unsupported format: {fmt}"}, status=400
+        )
+
+    if not state.conversation_log:
+        return web.json_response({"error": "no conversation log"}, status=400)
+
+    messages = state.conversation_log.read_messages(key)
+    if not messages:
+        return web.json_response({"error": "session not found or empty"}, status=404)
+
+    # Try to get session title from metadata
+    title = "Session Export"
+    try:
+        metadata = state.conversation_log.get_metadata(key)
+        if metadata and metadata.get("title"):
+            title = metadata["title"]
+    except Exception:
+        pass
+
+    # Format as Markdown
+    lines: list[str] = [f"# {title}\n"]
+
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        ts = msg.get("ts", "")
+
+        if role == "user":
+            header = "**You:**"
+        elif role == "assistant":
+            header = "**Assistant:**"
+        elif role == "system":
+            header = "**System:**"
+        elif role == "tool":
+            header = "**Tool:**"
+        else:
+            header = f"**{role.capitalize()}:**"
+
+        lines.append(f"## {header}")
+        if ts:
+            lines.append(f"*{ts}*\n")
+        else:
+            lines.append("")
+        lines.append(f"{content}\n")
+        lines.append("---\n")
+
+    md_content = "\n".join(lines)
+
+    return web.Response(
+        text=md_content,
+        content_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="session-{key}.md"',
+        },
+    )
