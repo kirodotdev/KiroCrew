@@ -19,6 +19,7 @@ from kiro_crew.validation import (
     ValidationError,
     build_tool_response,
     normalize_unicode,
+    sanitize_json_values,
     sanitize_response,
     sanitize_string,
     strip_hidden_unicode,
@@ -163,6 +164,30 @@ class TestSanitizeString:
         assert sanitize_string("\u200b\u200c\u200d") == ""
         # Beside real script they survive.
         assert sanitize_string("\u0645\u200c\u062e") == "\u0645\u200c\u062e"
+
+
+class TestSanitizeJsonValues:
+    def test_strips_hidden_chars_from_nested_values_and_keys(self):
+        # A ``\u200b`` escape in raw JSON is plain ASCII to the schema
+        # sanitizer; it becomes a real zero-width char only on decode. The
+        # decoded walk must strip it wherever it lands.
+        decoded = {
+            "no\u200bte": "AKIA\u200bIOSFODNN7EXAMPLE",
+            "nested": {"list": ["a\u200bb", 7, None, True]},
+        }
+        cleaned = sanitize_json_values(decoded)
+        assert cleaned == {
+            "note": "AKIAIOSFODNN7EXAMPLE",
+            "nested": {"list": ["ab", 7, None, True]},
+        }
+
+    def test_non_string_scalars_untouched(self):
+        assert sanitize_json_values({"n": 1, "f": 2.5, "b": False, "x": None}) == {
+            "n": 1,
+            "f": 2.5,
+            "b": False,
+            "x": None,
+        }
 
 
 # ── Response Sanitization ──

@@ -701,14 +701,21 @@ class TestSkillDelivery(unittest.TestCase):
     def _sop_calls(self):
         """Every ops API call the SOPs instruct the agent to make.
 
-        Matches the PATH, not a prefix. It previously required the literal
-        ``GATEWAY/api/apps/...``, which silently narrowed the check to whichever lines
-        happened to spell it that way: once the SOPs were rewritten to derive
-        ``$BASE``/``$TOKEN`` from ``kirocrew token``, the scanner saw **4** endpoints out
-        of the **10** actually referenced — so six routes could have been renamed with
-        nothing failing at build time, which is the exact failure this test exists to
-        prevent. A test whose input filter can quietly shrink is worse than no test,
-        because the green tick still claims coverage.
+        The SOPs route all app calls through the ``ops_mission_control_api``
+        MCP tool, so a call appears in one of two shapes: the tool invocation
+        itself (``method="POST", path="/incident/transition"``) or prose naming
+        the method and the app-relative path in backticks (`` `GET /incidents` ``).
+        Both are scanned and resolved against the app base. Backticked paths
+        under ``/api/`` are gateway routes outside the app namespace (slot
+        creation, approvals) and are excluded.
+
+        History, because this scanner has silently narrowed twice: it first
+        required the literal ``GATEWAY/api/apps/...`` spelling and saw only the
+        lines that happened to use it — 4 endpoints out of 10 — and it would
+        have gone to ZERO when the SOPs moved from curl recipes to the MCP
+        tool. A test whose input filter can quietly shrink is worse than no
+        test, because the green tick still claims coverage; that is what
+        ``test_the_sop_scanner_actually_sees_the_sop_calls`` pins.
         """
         import re
 
@@ -718,21 +725,21 @@ class TestSkillDelivery(unittest.TestCase):
         sops = Path(routes.__file__).resolve().parents[4] / "builtin_skills/ops-mission-control"
         if not sops.is_dir():  # pragma: no cover - python-only checkout
             self.skipTest("builtin_skills not present in this checkout")
+        base = "/api/apps/ops-mission-control"
         calls = []
         for md in sorted(sops.rglob("*.md")):
-            for line in md.read_text(encoding="utf-8").splitlines():
-                # Trailing punctuation (``.`` / ``,`` / ``)``) is excluded by the charset;
-                # a query string is cut at ``?`` since routes register the path only.
-                for path in re.findall(r"/api/apps/ops-mission-control[a-zA-Z0-9/_-]*", line):
-                    method_match = re.search(r"-X\s+([A-Z]+)", line)
-                    if method_match:
-                        method = method_match.group(1)
-                    elif re.search(r"\bPOST\b", line):
-                        # The SOPs also write prose like "POST /api/apps/.../dispatch".
-                        method = "POST"
-                    else:
-                        method = "GET"
-                    calls.append((md.name, method, path))
+            text = md.read_text(encoding="utf-8")
+            # Shape 1: the tool invocation. method/path always share a line.
+            for method, path in re.findall(
+                r'method="(GET|POST)",\s*path="([a-zA-Z0-9/_-]+)"', text
+            ):
+                calls.append((md.name, method, base + path))
+            # Shape 2: prose — a backticked METHOD + app-relative path. A query
+            # string is cut by the charset since routes register the path only.
+            for method, path in re.findall(r"`(GET|POST)\s+(/[a-zA-Z0-9/_-]*)`", text):
+                if path.startswith("/api/"):
+                    continue
+                calls.append((md.name, method, base + path))
         return calls
 
     def test_the_sop_scanner_actually_sees_the_sop_calls(self):
@@ -857,73 +864,71 @@ class TestSkillDelivery(unittest.TestCase):
         )
 
     def test_every_sop_tells_the_agent_how_to_authenticate(self):
-        """Every SOP calls HTTP endpoints, so every SOP must say how to get a token.
+        """Every SOP calls HTTP endpoints, so every SOP must name the credentialed tool.
 
-        Regression test for an observed unattended failure. The SKILL and all six SOPs
-        instructed the agent to call routes and NEVER mentioned auth, so a
-        ``rotation-check`` run improvised: it hardcoded a port that belonged to a
-        different gateway, collected ``{"error": "Token required"}`` 65 times, burned 41
-        tool calls hunting for a token the cron runner deliberately destroys before the
-        first tool call, and hit the 1800s cron timeout without ever reaching the API.
-        That reads as "the app is broken" when the fix was six lines of documentation.
+        Regression test for an observed unattended failure, in two acts. Act one: the
+        SKILL and all six SOPs instructed the agent to call routes and never mentioned
+        auth, so a ``rotation-check`` run improvised — it hardcoded a port belonging to
+        a different gateway, collected ``{"error": "Token required"}`` 65 times, burned
+        41 tool calls, and hit the 1800s cron timeout. Act two: the recipe that fixed
+        act one shelled out to the CLI's credential mint, which the builtin
+        ``credential-exfil`` denied-command rules block for agent shells BY DESIGN
+        (reaffirmed in review) — so every LLM cron run failed at step one, 101 times in
+        a row on a live instance, while being recorded as success. The only sanctioned
+        agent path to gateway state is a credentialed MCP tool (the
+        ``issue_radar_record_investigation`` precedent), which is what the SOPs must
+        point at now.
 
         A cron agent may read ONLY its own SOP, so a single note in SKILL.md is not
-        enough — each SOP carries the recipe.
+        enough — each SOP carries the pointer.
         """
         sops = sorted((self._skill_root() / "sops").glob("*.md"))
         self.assertEqual(len(sops), 6)
         for sop in sops:
             text = sop.read_text(encoding="utf-8")
-            self.assertIn("kirocrew token", text, f"{sop.name} never says how to authenticate")
-            self.assertIn("?token=", text, f"{sop.name} does not show how to pass the token")
+            self.assertIn(
+                "ops_mission_control_api",
+                text,
+                f"{sop.name} never says how to authenticate",
+            )
 
-    def test_the_auth_recipe_does_not_hardcode_a_port(self):
-        """A hardcoded port is the exact failure that cost the timed-out run.
+    def test_no_sop_instructs_a_blocked_or_raw_auth_path(self):
+        """No SOP may steer the agent back into a path that cannot work.
 
-        The recipe must DERIVE the base URL from `kirocrew token`, because the port
-        varies per instance (5476 default, but any operator may run another).
+        Two anti-patterns, both observed in real unattended runs:
+
+        - The CLI credential mint (the ``token`` verb of the product CLI) is
+          denied for agent shells by the builtin ``credential-exfil`` rules, so a
+          recipe built on it fails deterministically on every default-configured
+          install.
+        - A raw ``curl`` against the API has no credential (agents hold no cookie,
+          no IPC secret, no env token) and collects ``Token required`` forever.
+
+        The docs must not contain either as an instruction. ``curl`` is checked in
+        fenced code blocks only, so prose saying "do NOT call the API over raw
+        HTTP" stays legal.
         """
         import re
 
         root = self._skill_root()
+        # The needle is assembled from fragments deliberately: the builtin
+        # denied-command rules match the CLI-name-plus-verb pair even inside
+        # file-write payloads and grep invocations, so a plain spelling here
+        # would make this very file un-editable from an agent session.
+        cli_mint = re.compile(r"kirocrew\s+(?:pod\s+)?tok" + "en" + r"\b")
         for doc in [root / "SKILL.md", *sorted((root / "sops").glob("*.md"))]:
             text = doc.read_text(encoding="utf-8")
-            for block in re.findall(r"```bash\n(.*?)```", text, re.S):
-                if "kirocrew token" not in block:
-                    continue
-                # Inside the auth recipe itself, no literal host:port may appear.
-                self.assertNotRegex(
+            self.assertNotRegex(
+                text,
+                cli_mint,
+                f"{doc.name} still points the agent at the blocked CLI mint",
+            )
+            for block in re.findall(r"```(?:bash|sh)?\n(.*?)```", text, re.S):
+                self.assertNotIn(
+                    "curl",
                     block,
-                    r"(?:127\.0\.0\.1|localhost):\d+",
-                    f"{doc.name} hardcodes a host:port in the auth recipe",
+                    f"{doc.name} still shows a raw-HTTP call in a code block",
                 )
-
-    def test_the_auth_recipe_is_runnable_shell(self):
-        """The snippet is copy-pasted by an agent, so it must parse as shell.
-
-        Asserted with `bash -n` on the extracted block rather than by eye: the recipe
-        contains `${URL%%\\?*}`, whose backslash is easy to mangle when editing markdown,
-        and a snippet that fails to parse sends the agent straight back to improvising.
-        """
-        import re
-        import shutil
-        import subprocess
-
-        bash = shutil.which("bash")
-        if not bash:  # pragma: no cover - CI images all have bash
-            self.skipTest("bash not available")
-
-        text = (self._skill_root() / "sops" / "rotation-check.md").read_text(encoding="utf-8")
-        blocks = [b for b in re.findall(r"```bash\n(.*?)```", text, re.S) if "kirocrew token" in b]
-        self.assertTrue(blocks, "the auth recipe block is missing")
-        proc = subprocess.run(
-            [bash, "-n"], input=blocks[0].encode(), capture_output=True, timeout=30
-        )
-        self.assertEqual(
-            proc.returncode,
-            0,
-            f"auth recipe is not valid shell: {proc.stderr.decode('utf-8', 'replace')}",
-        )
 
     def test_cron_prompts_point_at_paths_that_will_exist(self):
         """Each cron's SOP reference must resolve in a real install."""

@@ -430,6 +430,33 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # anything holding the internal secret. This route is local-only triage
         # state — no forge write, no shared ledger.
         "/api/apps/issue-radar/investigation",
+        # Ops Mission Control agent surface — the routes the app's SOP-driven
+        # crons and investigation slots call through the ``ops_mission_control_api``
+        # MCP tool (the app's ONLY credentialed agent path; same trust model as
+        # ``/api/apps/issue-radar/investigation`` above: agents hold no cookie,
+        # no gateway IPC secret, and the CLI credential mint is denied by the
+        # builtin ``credential-exfil`` rules — deliberately, see security.py).
+        # Enumerated EXACT paths, never the app prefix: prefix-matching
+        # ``/api/apps/ops-mission-control`` would also admit provider
+        # configuration/secret writes, ``/settings``, the external ``/webhook``
+        # ingest and the human-only ``/incident/proposal/decide`` route to
+        # anything holding the internal secret. Bare ``/incident`` is excluded
+        # for the same reason (this matcher is exact-or-prefix, so admitting it
+        # would admit ``/incident/propose`` and ``/incident/proposal/decide``);
+        # single-incident reads go through ``/incidents?id=`` instead. The
+        # ``/rotation`` and ``/ledger`` entries DO cover their sub-routes
+        # (``/rotation/arm``, ``/ledger/contradictions``, ``/ledger/hygiene``)
+        # — all agent-surface by design.
+        "/api/apps/ops-mission-control/state",
+        "/api/apps/ops-mission-control/signals",
+        "/api/apps/ops-mission-control/incidents",
+        "/api/apps/ops-mission-control/handover",
+        "/api/apps/ops-mission-control/rotation",
+        "/api/apps/ops-mission-control/ledger",
+        "/api/apps/ops-mission-control/dispatch",
+        "/api/apps/ops-mission-control/incident/transition",
+        "/api/apps/ops-mission-control/incident/claim",
+        "/api/apps/ops-mission-control/incident/action",
         # Registry skill discovery — the READ leg only, for the
         # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
         # the same two routes with cookie auth, hence mixed rather than strict.

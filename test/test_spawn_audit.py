@@ -165,13 +165,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # every mocked-git test passed.
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::_git",
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::setUp",
-        # Syntax-checks the auth recipe the SOPs hand to an agent, via `bash -n` on the
-        # extracted code block. Fixed argv, no shell, input piped on stdin and never
-        # executed. The snippet contains `${URL%%\?*}`, whose backslash is easy to
-        # mangle when editing markdown, and a recipe that will not parse sends the cron
-        # agent back to improvising — which is the failure this whole test exists for.
-        "apps/builtins/ops_mission_control/tests/test_config_routes.py"
-        "::test_the_auth_recipe_is_runnable_shell",
         # Diagnostics support-bundle version probe: fixed argv
         # ``["kiro-cli", "--version"]`` with a 5s timeout, no shell, no cwd, and
         # no agent-influenced args — it only stamps the collected kiro-cli

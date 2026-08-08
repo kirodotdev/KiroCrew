@@ -393,6 +393,10 @@ the `tools/list` payload in `mcp_core.py`):
 - **Workflows and hooks:** `workflow_author`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **Diagnostics:** `resource_status`, `issue_radar_record_investigation`
+- **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
+  process holds the gateway's internal secret and forwards only a frozen
+  (method, path) allowlist of Ops Mission Control routes; the agent never
+  sees a credential (same shape as `issue_radar_record_investigation`)
 
 External servers a user may install (a Playwright proxy under the canonical
 `playwright-mcp` alias, a Slack server, anything else) are ordinary user-added

@@ -13,20 +13,18 @@ anything on when their rotation starts.
 
 ## Authenticate first
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"; TOKEN="${URL#*token=}"
-```
-
-Reuse `$BASE`/`$TOKEN` for every call below and pass `?token=$TOKEN`. Never hardcode a
-port and never hunt for a token elsewhere — see SKILL.md § Calling the API for why.
+Every app API call goes through the `ops_mission_control_api` MCP tool — it
+carries the gateway's own credential and always reaches this instance. Never
+call the API over raw HTTP and never hunt for a credential — see SKILL.md
+§ Calling the API for why. Paths below are relative to the app base, exactly
+as the tool takes them.
 
 ## Steps
 
-0. **Stop immediately if the app is not set up.** `GET
-   /api/apps/ops-mission-control/state`; if no entry in `providers` has
-   `configured: true`, produce NO output and stop. There is nothing to arm, and this
-   job runs every 5 minutes — on a fresh install it must cost nothing at all.
+0. **Stop immediately if the app is not set up.** `GET /state`; if no entry in
+   `providers` has `configured: true`, produce NO output and stop. There is
+   nothing to arm, and this job runs every 5 minutes — on a fresh install it
+   must cost nothing at all.
 
    This job ships enabled because it is the only thing that resumes the `on_shift`
    tier: `dispatch` and `reconcile` both ship paused, and the tier is armed here. Ship
@@ -39,7 +37,7 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
    runtime", which was true of no code, and an operator who trusted it had no reason to
    look for the missing check.)
 
-1. `POST /api/apps/ops-mission-control/rotation/arm` — this does the arming. The route
+1. `POST /rotation/arm` — this does the arming. The route
    resolves the shift, computes the tier map, and pauses or resumes the app's crons to
    match. Returns `changed` (the crons it actually moved, `[]` when the live state was
    already correct) and `tiers`.
@@ -57,7 +55,7 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
 3. Notify only on a genuine transition (shift started or ended), once. A
    five-minute poll that announced its own findings would post 288 times a day.
 
-`GET /api/apps/ops-mission-control/rotation` remains available for reading `on_shift`,
+`GET /rotation` remains available for reading `on_shift`,
 `who`, `until`, `unknown`, `tiers`, `tier_crons` and `armed_crons` when you need to
 explain a transition to the operator. It changes nothing.
 
