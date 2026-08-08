@@ -921,6 +921,76 @@ def test_build_env_excludes_credentials(monkeypatch):
     assert mod._build_env(with_credentials=True)["PATH"] == mod._TRUSTED_PATH
 
 
+def test_is_safe_env_key_matches_documented_spelling_on_windows():
+    """A mixed-case allowlist entry must still match what ``os.environ`` yields.
+
+    The allowlists write ``SystemRoot`` (Microsoft's documented spelling) while
+    CPython's ``os.environ`` upper-cases every key on Windows. Folding is what
+    keeps the two ends agreeing; without it the filter drops exactly the
+    variables it was extended to carry.
+    """
+    assert "SystemRoot" in mod._WINDOWS_SAFE_ENV_KEYS
+    if platform_compat.IS_WINDOWS:
+        # The spelling os.environ actually yields.
+        assert mod._is_safe_env_key("SYSTEMROOT")
+        # And the documented spelling, so either end may be written.
+        assert mod._is_safe_env_key("SystemRoot")
+    assert not mod._is_safe_env_key("SLACK_BOT_TOKEN")
+
+
+def test_is_safe_env_key_stays_exact_on_posix():
+    """Folding is Windows-only — POSIX names are case-SENSITIVE.
+
+    ``PATH`` and ``Path`` are genuinely different variables there, so a
+    case-insensitive match would let a lookalike through.
+    """
+    assert mod._is_safe_env_key("PATH")
+    if not platform_compat.IS_WINDOWS:
+        assert not mod._is_safe_env_key("Path")
+        # The Windows set must not leak into POSIX matching at all.
+        assert not mod._is_safe_env_key("SystemRoot")
+
+
+def test_windows_safe_env_keys_carry_no_credentials():
+    """The Windows additions are platform paths, never secret-bearing vars."""
+    for key in mod._WINDOWS_SAFE_ENV_KEYS:
+        for marker in ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "APIKEY"):
+            assert marker not in key.upper(), f"{key!r} looks credential-bearing"
+
+
+def test_safe_env_keys_platform_composition():
+    """The POSIX set always applies; the Windows set only on Windows."""
+    posix = set(mod._POSIX_SAFE_ENV_KEYS)
+    windows = set(mod._WINDOWS_SAFE_ENV_KEYS)
+    active = set(mod._SAFE_ENV_KEYS)
+
+    assert not (posix & windows), "the two sets must stay disjoint"
+    assert posix <= active
+    if platform_compat.IS_WINDOWS:
+        assert windows <= active
+    else:
+        assert not (windows & active)
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_WINDOWS, reason="Windows-only env semantics"
+)
+def test_build_env_carries_systemroot_on_windows(monkeypatch):
+    """SYSTEMROOT must reach every build/fetch child.
+
+    Winsock locates its socket catalog through it, so a child without it cannot
+    resolve names at all — libcurl reports that as ``getaddrinfo() thread failed
+    to start`` and the Pull step fails before it reaches the network.
+    """
+    monkeypatch.setenv("SYSTEMROOT", r"C:\WINDOWS")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-secret")
+
+    for env in (mod._build_env(), mod._build_env(with_credentials=True), mod._pod_env()):
+        assert env["SYSTEMROOT"] == r"C:\WINDOWS"
+        # Widening the allowlist must not have widened it to credentials.
+        assert "SLACK_BOT_TOKEN" not in env
+
+
 def test_read_pin_strict_rejects_symlinked_env(tmp_path):
     """A symlinked pin file must raise, never be read (Codex R24 #2)."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod

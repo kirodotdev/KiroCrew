@@ -123,7 +123,7 @@ def _resolve_primary_checkout(path: str) -> str:
     git = _trusted_bin("git")
     if git is None:
         return path
-    env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    env = {k: v for k, v in os.environ.items() if _is_safe_env_key(k)}
     env["PATH"] = _TRUSTED_PATH
     try:
         out = subprocess.run(
@@ -2059,10 +2059,63 @@ def _load_cfg():
 # worktree-controlled code (pip/npm builds, pod CLI). The gateway's full
 # environment carries credentials (Slack/cloud tokens) that build scripts
 # must never be able to read.
-_SAFE_ENV_KEYS = (
+_POSIX_SAFE_ENV_KEYS = (
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR",
     "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
 )
+
+# Windows counterparts of the POSIX set above, written in the spelling Microsoft
+# documents. Matching is case-folded on Windows (see :func:`_is_safe_env_key`),
+# so these do not have to be upper-cased to survive ``os.environ``.
+#
+# SystemRoot is load-bearing, not cosmetic: Winsock locates its socket catalog
+# through it, so a child without it cannot resolve names at all. libcurl's
+# threaded resolver reports that as ``getaddrinfo() thread failed to start``,
+# which is what a credential-bearing ``git fetch`` fails with here. The rest
+# keep git and the node/pip toolchains functional: git reads its global config
+# through USERPROFILE, npm and pip need APPDATA/LOCALAPPDATA plus a writable
+# TEMP, PATHEXT is required to resolve ``.exe``/``.cmd`` at all, and
+# NUMBER_OF_PROCESSORS sizes build parallelism.
+#
+# This is platform parity, not a wider boundary: USERPROFILE/APPDATA are the
+# Windows equivalents of the POSIX HOME already allowlisted above, and every
+# name here is a platform path rather than a secret. No credential-bearing
+# variable is added, so build steps still cannot read Slack/cloud tokens.
+_WINDOWS_SAFE_ENV_KEYS = (
+    "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "APPDATA", "LOCALAPPDATA", "ProgramData",
+    "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+    "TEMP", "TMP", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+)
+
+_SAFE_ENV_KEYS = _POSIX_SAFE_ENV_KEYS + (
+    _WINDOWS_SAFE_ENV_KEYS if platform_compat.IS_WINDOWS else ()
+)
+_SAFE_ENV_KEYS_FOLDED = frozenset(name.upper() for name in _SAFE_ENV_KEYS)
+
+
+def _is_safe_env_key(key: str) -> bool:
+    """Whether *key* is allowlisted, honoring Windows' case-insensitive env.
+
+    On Windows, environment names are case-INSENSITIVE and CPython's
+    ``os.environ`` upper-cases every key, so ``os.environ.items()`` yields
+    ``SYSTEMROOT`` — never the ``SystemRoot`` spelling Microsoft documents and
+    that these allowlists write. A literal membership test therefore drops
+    exactly the variables the allowlist was extended to carry, and the failure
+    is silent at the boundary and only surfaces in the child as an unrelated
+    error: without ``SystemRoot`` a spawned ``git`` cannot initialize Winsock,
+    so a fetch dies with ``getaddrinfo() thread failed to start``.
+
+    Folding on Windows only, rather than upper-casing the lists, keeps POSIX
+    exact: ``PATH`` and ``Path`` are genuinely different variables there, and a
+    case-insensitive match would let a lookalike through. Mirrors
+    ``apps.registry._is_safe_env_key`` and
+    ``kiro_prerequisite._allowlisted_env``.
+    """
+    if platform_compat.IS_WINDOWS:
+        return key.upper() in _SAFE_ENV_KEYS_FOLDED
+    return key in _SAFE_ENV_KEYS
 
 
 def _build_env(*, with_credentials: bool = False) -> dict:
@@ -2103,7 +2156,7 @@ def _build_env(*, with_credentials: bool = False) -> dict:
     never coexists with credentials. Both mechanisms must keep holding; do not
     remove one on the assumption that the other covers it.
     """
-    out = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    out = {k: v for k, v in os.environ.items() if _is_safe_env_key(k)}
     out["PATH"] = _TRUSTED_PATH if with_credentials else _build_path()
     out.update(_GIT_ENV_NEUTRALIZERS)
     if with_credentials and _GIT_TRUSTED_HELPERS:
