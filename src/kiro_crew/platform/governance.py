@@ -1036,6 +1036,45 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # theme_install).
     "capabilities.telemetry": ScopeSpec(CAPABILITY, capability_default=True),
+    # Auto-deriving the dashboard's OWN tailnet origin (``dashboard/tailnet.py``,
+    # RFC §4). When ``dashboard.tailscale.enabled`` is on, the gateway shells out
+    # to the local ``tailscale`` daemon at startup and, on success, puts the
+    # resulting MagicDNS name into the CSRF origin allowlist and the
+    # DNS-rebinding ``Host`` barrier. A managed fleet frequently may not do
+    # either half: some hosts must not invoke the tailnet CLI at all, and — the
+    # sharper case — an origin set that only a fleet-controlled ``dashboard.url``
+    # is allowed to widen must not be widenable by a name the app derived for
+    # itself. The operator-facing switch is reachable from ``config.json``, the
+    # ``config.local.json`` overlay and the CLI, so exactly like
+    # ``capabilities.telemetry`` it is a control the running app (and its agent)
+    # can lift; this row is the one it cannot, because it is read from the
+    # trust-root ``security_policy.json``, which sits in
+    # ``security._SENSITIVE_HOME_DIRS`` — the agent can neither read nor rewrite
+    # its own ceiling.
+    #
+    # Default True: policy-absence must keep TODAY's behaviour byte-for-byte.
+    # The feature is already off by default in config, so a default of False
+    # would mean a fleet policy that governs some OTHER ``capabilities.*`` row
+    # silently forbids tailnet derivation it never mentioned — a behaviour change
+    # for an unrelated policy, which is the failure ``capability_default`` exists
+    # to avoid (Validation rule 8). An enterprise that wants it off says so.
+    # Consulted at THREE chokepoints, because any one alone is a half-control:
+    #   * ``tailnet.resolve_tailnet_host`` — returns "" so no origin is derived
+    #     and the daemon is not even consulted (the action itself);
+    #   * the dashboard config PATCH allowlist — refuses an ENABLING write with
+    #     403, so a pinned host cannot be left storing ``enabled: true`` behind a
+    #     control that does nothing;
+    #   * ``kirocrew config set dashboard.tailscale.enabled true`` — exits 1
+    #     without writing, for the same reason on a headless host.
+    # Writing ``false`` stays allowed at both write chokepoints (tightest-wins).
+    # POLICY LAYER ONLY: ``tailnet.is_governance_pinned_off`` requires
+    # ``layer == "policy"``, so a Level-2 profile pinning this row does NOT
+    # suppress the derivation — the probe runs once at gateway startup, is
+    # process-wide and carries no session, so a per-surface profile is not the
+    # question it answers.
+    # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
+    # telemetry).
+    "capabilities.tailnet_origin": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

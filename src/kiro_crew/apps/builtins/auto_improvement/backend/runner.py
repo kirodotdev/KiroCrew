@@ -117,10 +117,11 @@ def _credentials_are_unconfined() -> str:
 
     Empty string means "confined, safe to run". The app's subprocess path forces
     ``sandboxed_spawn_argv(mode="strict")`` + ``strip_credential_env``; the provider path
-    inherits the gateway's ``sandbox`` setting instead, which DEFAULTS TO ``"off"``. Only
-    ``"auto"`` re-enables Kiro Crew's OS-level sandbox (namespace on Linux, sandbox-exec on
-    macOS) — the layer that hides ``~/.aws``/``~/.gnupg``/``gh`` credential stores from the
-    agent's auto-approved shell.
+    inherits the gateway's ``sandbox`` setting instead. Only ``"cc"`` and ``"strict"``
+    profiles hide credential stores (``~/.aws``, ``~/.ssh``, ``~/.config/gh``, ``~/.kube``);
+    the default ``"auto"``/``"standard"`` intentionally exposes ``.aws/.ssh`` for
+    interactive workflow use — safe for human-driven chat, but NOT for unattended
+    repository-controlled execution where a crafted instruction could read credentials.
 
     FAIL CLOSED on an unreadable config: a state we cannot verify is treated as unconfined,
     because the alternative is running an agent over repository-controlled text with the
@@ -129,10 +130,8 @@ def _credentials_are_unconfined() -> str:
     The operator can ACKNOWLEDGE the residual risk with ``acceptUnsandboxedAgentRisk``
     (default OFF, compared with ``is True`` so only the explicit boolean opts in) — the same
     one-time-consent shape as the watcher's ``watcherAcceptEgressRisk`` (D-118). That escape
-    hatch exists because ``sandbox`` defaults to ``"off"`` on every install (isolation is
-    deferred to kiro-cli's own agent sandbox, which this app cannot inspect), so a hard
-    refusal would silently take the loop offline for everyone rather than telling the operator
-    what to decide. Raised by the GPT review.
+    hatch exists so a hard refusal doesn't silently take the loop offline rather than
+    telling the operator what to decide. Raised by the GPT review.
     """
     if _unsandboxed_agent_accepted():
         return ""
@@ -142,8 +141,19 @@ def _credentials_are_unconfined() -> str:
         mode = str(getattr(KiroCrewConfig.load(), "sandbox", "") or "").strip().lower()
     except Exception as exc:  # noqa: BLE001 — an unverifiable sandbox is an unconfined one
         return f"the gateway sandbox setting could not be read ({type(exc).__name__})"
-    if mode != "auto":
-        return f"the gateway sandbox is {mode or 'unset'!r}, not 'auto'"
+    # The provider path runs repository-controlled text through an agent with
+    # auto-approved shell, so it requires a sandbox level that HIDES credential
+    # stores (~/.aws, ~/.ssh, ~/.config/gh, ~/.kube). Only 'cc' and 'strict'
+    # do this; 'auto'/'standard' intentionally EXPOSE .aws/.ssh for interactive
+    # workflow use — safe for human-driven chat, but not for unattended
+    # repo-controlled execution.
+    _CREDENTIAL_HIDING_MODES = {"cc", "strict"}
+    if mode not in _CREDENTIAL_HIDING_MODES:
+        return (
+            f"the gateway sandbox is {mode or 'unset'!r} — the auto-improvement "
+            f"provider path requires 'cc' or 'strict' (credential-hiding profiles) "
+            f"or the explicit acceptUnsandboxedAgentRisk opt-in"
+        )
     return ""
 
 

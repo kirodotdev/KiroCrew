@@ -32,6 +32,19 @@ from kiro_crew.service.common import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_sudo_user(monkeypatch):
+    """Keep ``User=`` resolution deterministic across hosts.
+
+    ``_current_user()`` prefers ``SUDO_USER`` (so ``sudo … service install``
+    targets the human, not root). A CI runner that happened to set ``SUDO_USER``
+    would otherwise override the ``USER=tester`` these tests set. Clear it once
+    for every test in this module; tests that exercise the SUDO_USER path set it
+    explicitly themselves.
+    """
+    monkeypatch.delenv("SUDO_USER", raising=False)
+
+
 class TestPlatformDetection:
     def test_linux_with_systemctl_returns_systemd(self):
         with patch("kiro_crew.service.common.sys") as mock_sys, patch(
@@ -213,6 +226,9 @@ class TestLinuxUnitRendering:
         from kiro_crew.service import linux as svc_linux
 
         monkeypatch.setenv("USER", "tester")
+        # Pin a non-root euid so the privilege prefix is deterministically
+        # `sudo` regardless of the CI runner's uid (root CI would drop it).
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
 
         # Capture every subprocess.run call. All return success.
         ok = MagicMock(returncode=0, stdout="", stderr="")
@@ -255,6 +271,7 @@ class TestLinuxUnitRendering:
         from kiro_crew.service import linux as svc_linux
 
         monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
         install_failed = MagicMock(
             returncode=1, stdout="", stderr="sudo: a password is required"
         )
@@ -299,6 +316,279 @@ class TestLinuxUnitRendering:
         with patch("kiro_crew.service.linux.subprocess.run") as run:
             svc_linux.uninstall()
         run.assert_not_called()
+
+
+class TestLinuxPrivilegeResolution:
+    """Root fast-path and the missing-sudo error, so a minimal CentOS /
+    container image (root, no sudo) neither shells out to a nonexistent sudo
+    nor lets a raw FileNotFoundError escape controller.install_service."""
+
+    def test_privilege_prefix_is_empty_as_root(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 0, raising=False)
+        assert svc_linux._privilege_prefix() == []
+
+    def test_privilege_prefix_is_sudo_when_not_root(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        assert svc_linux._privilege_prefix() == ["sudo"]
+
+    def test_require_privilege_ok_as_root_without_sudo(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(svc_linux.shutil, "which", lambda _n: None)
+        # Root needs no sudo — must not raise.
+        svc_linux._require_privilege()
+
+    def test_require_privilege_raises_when_not_root_and_no_sudo(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        # The guard is Linux-scoped (systemd module); pin the platform so the
+        # test asserts the raising branch on any host it runs on.
+        monkeypatch.setattr(svc_linux.sys, "platform", "linux")
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(svc_linux.shutil, "which", lambda _n: None)
+        with pytest.raises(svc_linux.ServiceInstallError) as exc:
+            svc_linux._require_privilege()
+        assert "sudo" in str(exc.value).lower()
+
+    def test_require_privilege_is_noop_off_linux(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        # On a non-Linux host (macOS/Windows) the systemd path is never the real
+        # dispatch target, and cross-platform unit tests call these functions
+        # with a mocked subprocess layer, so the guard must not raise there.
+        monkeypatch.setattr(svc_linux.sys, "platform", "darwin")
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(svc_linux.shutil, "which", lambda _n: None)
+        svc_linux._require_privilege()  # must not raise
+
+    def test_install_refuses_to_run_agent_as_root(self, monkeypatch):
+        """A bare-root install (root login, or sudo with no SUDO_USER) must NOT
+        produce a User=root unit — the gateway runs untrusted tools and the
+        module invariant is that it runs as a normal user."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "root")
+        monkeypatch.delenv("SUDO_USER", raising=False)
+        monkeypatch.delenv("LOGNAME", raising=False)
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 0, raising=False)
+        with pytest.raises(svc_linux.ServiceInstallError) as exc:
+            svc_linux.install()
+        assert "root" in str(exc.value).lower()
+
+    def test_current_user_prefers_sudo_user_over_root(self, monkeypatch):
+        """`sudo kirocrew service install` must target the human behind sudo,
+        not the root sudo elevated to — so the unit gets User=<human>."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "root")
+        monkeypatch.setenv("SUDO_USER", "alice")
+        assert svc_linux._current_user() == "alice"
+
+    def test_unit_home_matches_the_resolved_user_not_process_home(self, monkeypatch):
+        """Under `sudo -H` the process HOME is /root but User= is the sudo human.
+        HOME=/WorkingDirectory= in the unit must follow the resolved USER (from
+        that user's passwd home), never the process's /root — otherwise the
+        non-root service cannot enter its working dir and fails to start."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "root")
+        monkeypatch.setenv("SUDO_USER", "alice")
+        # Simulate `sudo -H`: process home is /root.
+        monkeypatch.setattr(svc_linux.Path, "home", classmethod(lambda cls: Path("/root")))
+        # alice's passwd home.
+        monkeypatch.setattr(svc_linux, "_home_for_user", lambda u: "/home/alice" if u == "alice" else "/root")
+        gid = MagicMock(returncode=0, stdout="alice\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which", return_value="/usr/local/bin/kirocrew"
+        ), patch("kiro_crew.service.linux.subprocess.run", return_value=gid):
+            unit = svc_linux.render_unit()
+        assert "User=alice" in unit
+        assert "WorkingDirectory=/home/alice" in unit
+        assert 'Environment="HOME=/home/alice"' in unit
+        assert "/root" not in unit
+
+    def test_install_raises_clean_error_when_sudo_missing(self, monkeypatch):
+        """The reported bug: on a root-only/minimal host without sudo, install
+        used to crash with an uncaught FileNotFoundError. It must raise the
+        friendly ServiceInstallError instead."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setattr(svc_linux.sys, "platform", "linux")
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.delenv("SUDO_USER", raising=False)
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(svc_linux.shutil, "which", lambda _n: None)
+        with pytest.raises(svc_linux.ServiceInstallError):
+            svc_linux.install()
+
+    def test_sudo_run_survives_missing_sudo_binary(self, monkeypatch):
+        """restart()/stop() are best-effort and reachable from the update path;
+        a missing sudo must degrade to a failed result, never a raised
+        FileNotFoundError."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+
+        def _boom(*_a, **_k):
+            raise FileNotFoundError("sudo")
+
+        monkeypatch.setattr(svc_linux.subprocess, "run", _boom)
+        res = svc_linux._sudo_run("systemctl", "restart", "kirocrew.service")
+        assert res.returncode == 127
+        # restart() surfaces the failure as False rather than crashing.
+        assert svc_linux.restart() is False
+
+
+class TestLinuxEnvironmentFile:
+    """The operator-editable overrides file — the honest fix to 'I set
+    KIROCREW_PORT on the service and it did not change the port'."""
+
+    def test_unit_references_the_env_file(self, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ):
+            unit = svc_linux.render_unit()
+        assert f"EnvironmentFile=-{svc_linux.ENV_FILE_PATH}\n" in unit
+        # The overrides file is read after (and thus overrides) the baked
+        # Environment= snapshot; both must sit inside [Service].
+        service = unit.index("[Service]")
+        install = unit.index("[Install]")
+        assert service < unit.index("EnvironmentFile=") < install
+
+    def test_seed_env_file_creates_when_absent(self, tmp_path, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        env_file = tmp_path / "kirocrew" / "kirocrew.env"
+        monkeypatch.setattr(svc_linux, "ENV_DIR", env_file.parent)
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_file)
+
+        written: dict[str, str] = {}
+
+        def _fake_install(contents, dest, mode="0644"):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(contents)
+            written["contents"] = contents
+
+        # _seed_env_file probes existence via `_sudo_run("test", "-e", path)`;
+        # answer it from the real tmp file so the create-if-absent logic runs.
+        def _fake_sudo(*args, **_k):
+            if args and args[0] == "test":
+                rc = 0 if Path(args[-1]).exists() else 1
+                return MagicMock(returncode=rc, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(svc_linux, "_install_file_via_sudo", _fake_install)
+        monkeypatch.setattr(svc_linux, "_sudo_run", _fake_sudo)
+
+        svc_linux._seed_env_file()
+        assert env_file.exists()
+        # Seed is inert until an operator opts in: the port line is commented.
+        assert "#KIROCREW_PORT=" in written["contents"]
+
+    def test_seed_env_file_never_clobbers_operator_edits(self, tmp_path, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        env_file = tmp_path / "kirocrew" / "kirocrew.env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text("KIROCREW_PORT=5477\n")
+        monkeypatch.setattr(svc_linux, "ENV_DIR", env_file.parent)
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_file)
+
+        def _fake_sudo(*args, **_k):
+            if args and args[0] == "test":
+                rc = 0 if Path(args[-1]).exists() else 1
+                return MagicMock(returncode=rc, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        called = MagicMock()
+        monkeypatch.setattr(svc_linux, "_install_file_via_sudo", called)
+        monkeypatch.setattr(svc_linux, "_sudo_run", _fake_sudo)
+        svc_linux._seed_env_file()
+        # An existing file is left exactly as the operator wrote it.
+        called.assert_not_called()
+        assert env_file.read_text() == "KIROCREW_PORT=5477\n"
+
+    def test_seed_env_file_is_non_fatal_when_probe_denied(self, tmp_path, monkeypatch):
+        """A pre-existing root-only /etc/kirocrew must not abort install: the
+        existence probe goes through privileged `test -e`, and any error still
+        degrades to a warning instead of propagating."""
+        from kiro_crew.service import linux as svc_linux
+
+        env_file = tmp_path / "kirocrew" / "kirocrew.env"
+        monkeypatch.setattr(svc_linux, "ENV_DIR", env_file.parent)
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_file)
+
+        # Even if the privileged probe itself raised, _seed_env_file swallows it.
+        def _boom(*_a, **_k):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(svc_linux, "_sudo_run", _boom)
+        monkeypatch.setattr(svc_linux, "_install_file_via_sudo", MagicMock())
+        svc_linux._seed_env_file()  # must not raise
+
+    def test_uninstall_preserves_an_operator_edited_env_file(self, tmp_path, monkeypatch):
+        """Uninstall must delete ONLY our untouched seed — an operator-authored
+        or -edited overrides file (including one pre-provisioned before install)
+        is their config, not ours to remove."""
+        from kiro_crew.service import linux as svc_linux
+
+        unit = tmp_path / "kirocrew.service"
+        unit.write_text("[Unit]\n")
+        env_file = tmp_path / "kirocrew" / "kirocrew.env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text("KIROCREW_PORT=5477\n")  # operator content, not our seed
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", unit)
+        monkeypatch.setattr(svc_linux, "ENV_DIR", env_file.parent)
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_file)
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+
+        removed: list[str] = []
+
+        def _fake_sudo(*args, **_k):
+            if args and args[0] == "rm":
+                removed.append(args[-1])
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(svc_linux, "_sudo_run", _fake_sudo)
+        monkeypatch.setattr(svc_linux, "_systemctl", lambda *a, **k: MagicMock(returncode=0))
+        svc_linux.uninstall()
+        # The unit is removed; the operator's env file is NOT.
+        assert str(unit) in removed
+        assert str(env_file) not in removed
+
+    def test_uninstall_removes_our_untouched_seed(self, tmp_path, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        unit = tmp_path / "kirocrew.service"
+        unit.write_text("[Unit]\n")
+        env_file = tmp_path / "kirocrew" / "kirocrew.env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text(svc_linux._ENV_FILE_TEMPLATE)  # our exact untouched seed
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", unit)
+        monkeypatch.setattr(svc_linux, "ENV_DIR", env_file.parent)
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_file)
+        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+
+        removed: list[str] = []
+
+        def _fake_sudo(*args, **_k):
+            if args and args[0] in ("rm", "rmdir"):
+                removed.append(args[-1])
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(svc_linux, "_sudo_run", _fake_sudo)
+        monkeypatch.setattr(svc_linux, "_systemctl", lambda *a, **k: MagicMock(returncode=0))
+        svc_linux.uninstall()
+        assert str(env_file) in removed
 
 
 class TestMacOSPlistRendering:
@@ -684,6 +974,23 @@ class TestControllerDispatch:
             rc = controller.uninstall_service()
         assert rc == 0
         mock_un.assert_called_once()
+
+    def test_uninstall_systemd_handles_service_install_error(self, capsys):
+        """uninstall() needs root to remove the root-owned unit, so it can raise
+        ServiceInstallError on a non-root host without sudo. The controller must
+        catch it and return non-zero, not let a traceback escape."""
+        from kiro_crew.service import controller
+        from kiro_crew.service import linux as svc_linux
+
+        with patch(
+            "kiro_crew.service.controller.current_platform",
+            return_value=Platform.SYSTEMD,
+        ), patch.object(
+            svc_linux, "uninstall", side_effect=svc_linux.ServiceInstallError("needs sudo")
+        ):
+            rc = controller.uninstall_service()
+        assert rc == 1
+        assert "needs sudo" in capsys.readouterr().err
 
     def test_uninstall_routes_to_macos(self):
         from kiro_crew.service import controller

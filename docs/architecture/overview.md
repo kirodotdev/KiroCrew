@@ -430,10 +430,11 @@ Outer to inner:
    default-ON and user-configurable from Settings → Security; the governance
    `commands` scope is the force-pin a user cannot opt out of. Sensitive-path
    blocking (`~/.aws`, `~/.ssh`, the trust-root files) runs here too.
-4. **OS sandbox** (`sandbox.py`). `agent.sandbox` defaults to `off`, deferring to
-   kiro-cli's own internal agent sandbox; `auto` re-enables Kiro Crew's layer
-   (user namespaces on Linux, `sandbox-exec`/Seatbelt on macOS). The two are
-   mutually exclusive on macOS because nested Seatbelt profiles fail with EPERM.
+4. **OS sandbox** (`sandbox.py`). `agent.sandbox` defaults to `auto`, engaging
+   OS-level isolation (user namespaces on Linux, `sandbox-exec`/Seatbelt on
+   macOS). On macOS, when kiro-cli's own internal sandbox is enabled, Kiro Crew
+   delegates to it instead (the two are mutually exclusive because nested
+   Seatbelt profiles fail with EPERM). Set to `off` to skip Kiro Crew's sandbox.
 5. **Output redaction.** Credential shapes (AWS access key IDs, presigned-URL
    credential parameters, and more) are scrubbed before text reaches a user or
    an egress tool.

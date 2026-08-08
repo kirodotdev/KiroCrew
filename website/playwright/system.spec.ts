@@ -1,36 +1,49 @@
 import { test, expect } from '@playwright/test'
 
+// The System page is a task manager with three planes. These assertions
+// deliberately target only chrome that renders with NO data — the tab rail,
+// column headers, the Group-by control, the resource rail — because the offline
+// stub backend reports no live sessions. Asserting on a row would make the suite
+// depend on the stub having spawned something, which it never does.
 test.describe('System Page E2E Tests', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate directly to system page (System metrics moved under the
-    // Developer page's System tab: /system → /developer?tab=system).
+    // System metrics live under the Developer page's System tab.
     await page.goto('/developer?tab=system', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(500)
   })
 
-  test('navigates to System page and displays system metrics', async ({ page }) => {
-    // Should see memory heading and CPU metrics. `exact` is required: the name
-    // option matches a substring by default, and this page also carries the
-    // "Session & Task Memory" card, so a loose 'Memory' resolves to 2 headings.
-    await expect(
-      page.getByRole('heading', { name: 'Memory', exact: true })
-    ).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText('CPUs')).toBeVisible({ timeout: 5000 })
+  test('offers the three System planes as a tab rail', async ({ page }) => {
+    const rail = page.getByRole('tablist', { name: /System planes/i })
+    await expect(rail).toBeVisible({ timeout: 10000 })
+    for (const name of ['Sessions', 'Performance', 'Services']) {
+      await expect(rail.getByRole('tab', { name, exact: true })).toBeVisible({ timeout: 5000 })
+    }
+    // Exactly one plane is current — a rail reporting two selected tabs would
+    // mean the underline and the panel disagree about where the user is.
+    await expect(rail.getByRole('tab', { selected: true })).toHaveCount(1)
   })
 
-  test('displays the per-session memory card', async ({ page }) => {
-    // Renders unconditionally (it owns an empty state), so this holds even
-    // when the offline stub backend reports no live sessions.
-    await expect(
-      page.getByRole('heading', { name: 'Session & Task Memory' })
-    ).toBeVisible({ timeout: 10000 })
+  test('lands on the Sessions plane with its table and Group-by control', async ({ page }) => {
     await expect(
       page.getByRole('columnheader', { name: 'Session / Task' })
-    ).toBeVisible({ timeout: 5000 })
+    ).toBeVisible({ timeout: 10000 })
+    // Every resource is a COLUMN here rather than a view mode, so the two that
+    // the mockup puts on first paint must both be present at once.
+    await expect(page.getByRole('columnheader', { name: 'Memory' })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('columnheader', { name: 'CPU' })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('Group by')).toBeVisible({ timeout: 5000 })
   })
 
-  test('displays platform information', async ({ page }) => {
-    // Should see platform details - use first specific match
-    await expect(page.getByText('Python').first()).toBeVisible({ timeout: 5000 })
+  test('shows machine and platform detail on the Performance plane', async ({ page }) => {
+    await page.getByRole('tab', { name: 'Performance', exact: true }).click()
+    // The machine-identity strip is where the static facts moved when the flat
+    // card grid was replaced; Python is one of them.
+    await expect(page.getByText('Python').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('navigation', { name: /Resources/i })).toBeVisible({ timeout: 5000 })
+  })
+
+  test('shows the gateway process on the Services plane', async ({ page }) => {
+    await page.getByRole('tab', { name: 'Services', exact: true }).click()
+    await expect(page.getByText('PID').first()).toBeVisible({ timeout: 10000 })
   })
 })

@@ -32,6 +32,11 @@ import re
 import subprocess
 from typing import Any
 
+from kiro_crew.platform.governance_profiles import (
+    GOVERNANCE_ERROR_REASON,
+    governance_permits,
+    vet_and_audit,
+)
 from kiro_crew.sandbox import scrub_env
 
 logger = logging.getLogger(__name__)
@@ -212,6 +217,100 @@ def tailnet_origin() -> str | None:
     return f"https://{name}" if name else None
 
 
+def is_governance_pinned_off(*, audit_tool: str = "") -> bool:
+    """Return whether an enterprise ceiling pins ``capabilities.tailnet_origin`` off.
+
+    A close mirror of ``beacon.is_governance_pinned_off``, deliberately: the two
+    answer the same shape of question about the same archetype, and a second,
+    subtly-different probe is how two chokepoints on one scope come to disagree.
+    The differences from beacon are only the scope name and the audit tool names.
+
+    Pass ``audit_tool`` (a tool name) from an ENFORCEMENT call site so the
+    decision routes through the audited ``vet_and_audit`` seam, which writes a
+    ``governance_decision`` SEL record for the grant or the denial.
+    :func:`resolve_tailnet_host` and both write chokepoints do this, so a
+    suppressed derivation and a refused write each leave a forensic record.
+
+    It is deliberately NOT the default. This probe is also a pure READ from
+    ``GET /api/tailnet/status``, which the dashboard's tailnet card refetches;
+    auditing there would append HMAC-chained SEL rows on mere inspection, at a
+    multiple of the one decision per boot that actually governs anything — audit
+    the decision that *does* something, not the question.
+
+    The Level-1 POLICY answer, resolved through the standard chokepoint helper so
+    this decision comes from the same evaluator as every other governed surface.
+    Public because the dashboard card must distinguish "off because the operator
+    left the switch off" (flippable) from "off because an administrator pinned it"
+    (not flippable, and a config write would be refused).
+
+    FAIL-CLOSED on an evaluation error, for the same asymmetry beacon documents.
+    The two dispositions look symmetric and are not:
+
+    * The wrong-DENY costs the operator a convenience: ``tailscale serve`` keeps
+      failing the Origin check exactly as it does today with the feature off, and
+      an explicit ``dashboard.url`` still works. Nothing is lost that was not
+      already the status quo.
+    * The wrong-PERMIT **widens the CSRF origin allowlist and the DNS-rebinding
+      ``Host`` barrier on a fleet that forbade it** — it grows the set of origins
+      the gateway will accept authenticated, state-changing requests from. That is
+      a security boundary, not a feature, which puts this with
+      ``capabilities.publish`` / ``theme_install`` / ``telemetry``
+      (``fail_closed=True``) rather than with the advisory probes.
+
+    ``fail_closed=True`` also makes ``governance_permits`` audit the degrade as a
+    critical SEL event, so an operator can see that a ceiling stopped being
+    evaluable — precisely the condition under which a silent degrade-to-permit
+    would be indefensible.
+
+    Two failure sources are distinguished, because conflating them produces a
+    different bug in each direction:
+
+    * A **degrade** (identified by the ``GOVERNANCE_ERROR_REASON`` prefix, not by
+      ``rule == "default"`` alone — ``_PERMIT_NOT_GOVERNED`` carries that rule
+      too) means no level decided, i.e. the ceiling is unevaluable. Treated as
+      pinned, per the fail-closed rationale above.
+    * A **profile-layer deny** means the evaluator answered, but from Level 2.
+      NOT treated as a pin: ``resolve_active_scope`` returns a synthetic deny-all
+      profile (``_deny_all_unloaded:…``) when the profile store is unprimed and
+      another thread holds its non-blocking reload lock, so on a host with **no
+      policy at all** that transient race would otherwise make the startup
+      warning, the 403 and the CLI refusal all blame an administrator who does not
+      exist. It arrives as an ordinary ``Decision``, so no ``except`` can catch it
+      — which is why this keys on ``layer``, not on ``permitted`` alone. Level-2
+      profiles are also per-surface and narrow-only, while this probe runs once at
+      gateway startup and carries no session, so a profile denial is not the
+      question being asked either way.
+    """
+    try:
+        if audit_tool:
+            # The audited seam: evaluate + write the governance_decision SEL row
+            # from ONE code path, so this scope's three chokepoints cannot drift
+            # apart in audit shape.
+            decision = vet_and_audit(
+                "capabilities.tailnet_origin",
+                "",
+                session_key="",
+                tool_name=audit_tool,
+                log_warning=False,
+                fail_closed=True,
+            )
+        else:
+            decision = governance_permits(
+                "capabilities.tailnet_origin", "", log_warning=False, fail_closed=True
+            )
+    except Exception:
+        # governance_permits swallows its own errors, so reaching here means the
+        # import or the call itself failed — the ceiling is unevaluable, which is
+        # the same condition as a degrade. Fail closed for the same reason.
+        logger.debug("tailnet governance probe failed; treating as pinned", exc_info=True)
+        return True
+    if getattr(decision, "permitted", True):
+        return False
+    if str(getattr(decision, "reason", "")).startswith(GOVERNANCE_ERROR_REASON):
+        return True
+    return getattr(decision, "layer", "") == "policy"
+
+
 async def resolve_tailnet_host(enabled: bool) -> str:
     """Async entry point for the startup path: the name, or ``""``.
 
@@ -226,6 +325,26 @@ async def resolve_tailnet_host(enabled: bool) -> str:
     module free of a config import (and the import cycle that would invite).
     """
     if not enabled:
+        return ""
+    # Chokepoint (a) — THE ACTION. A ceiling pinning ``capabilities.tailnet_origin``
+    # off stops the derivation itself, ahead of the daemon call: nothing is spawned
+    # and no origin is contributed, so the pin closes both halves an administrator
+    # objects to (running the tailnet CLI, and widening the origin allowlist).
+    # Probed in a thread because resolving the ceiling reads the trust-root policy
+    # file and the active profile from disk — the same reason the daemon call
+    # below is offloaded, and this runs on the startup event loop.
+    if await asyncio.to_thread(is_governance_pinned_off, audit_tool="tailnet_origin_resolve"):
+        # Deliberately a DIFFERENT warning from the enabled-but-unresolved one
+        # below, because the remedy is different and pointing the operator at
+        # `tailscale status` would be a wild goose chase: nothing is wrong with
+        # their daemon, and no restart or boot-race retry will change the outcome.
+        logger.warning(
+            "dashboard.tailscale.enabled is on, but capabilities.tailnet_origin is "
+            "pinned OFF by your administrator's security policy, so no tailnet "
+            "origin was derived and the Tailscale daemon was not consulted. This "
+            "setting cannot re-enable it — ask your administrator, or reach the "
+            "dashboard through an explicitly configured dashboard.url."
+        )
         return ""
     name: str | None = await asyncio.to_thread(self_dns_name)
     if not name:

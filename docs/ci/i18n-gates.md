@@ -16,7 +16,7 @@ cd website && npm run i18n:check
 | CI job | Step | What it runs |
 |---|---|---|
 | `frontend-lint` | Check i18n extraction, key references and plurals | `npm run i18n:check` (the runner below) |
-| `frontend-test` | Unit tests | `npx vitest run --coverage`, which includes the diff-scoped `localeFormatting.test.ts` gates |
+| `frontend-test` | Unit tests | `npx vitest run --coverage`, which includes the diff-scoped `localeFormatting.test.ts` gates and the catalog duplicate-key guard `duplicateKeys.test.ts` (see below) |
 | `e2e` | i18n render-time gate | `npm run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
 
 The render gate lives in the `e2e` job to reuse the Chromium install that job
@@ -273,3 +273,29 @@ the whole point of the dynamic ledger is that those sites are the ones it cannot
 verify. The only residual cover is the render gate's `[vs-base]` under `en-XA`, and
 only for surfaces its harness actually mounts. Closing it needs a base-ref-anchored
 per-file dynamic-site diff, the same shape as `[vs-base]`.
+
+## Catalog duplicate keys (`duplicateKeys.test.ts`)
+
+Runs in `frontend-test`, outside the `i18n:check` runner above, because it is a
+plain vitest assertion over the catalog files rather than a diff-scoped gate.
+
+It fails on any key defined **twice inside one object** in any
+`src/i18n/locales/*.json`. Every catalog on disk is covered, so adding a language
+needs no edit.
+
+Why it exists: `ja.json` once carried eleven such keys in
+`components.kiroPrerequisiteGate`. `JSON.parse` keeps the LAST occurrence, so the
+earlier value was dead weight no reader ever saw — and the file could not be
+safely round-tripped, because any tool that reserialised it silently DROPPED the
+shadowed translations. That is exactly how they were eventually removed: as an
+incidental side effect of an unrelated feature PR, with eleven Japanese strings
+changing value inside a diff nobody was reviewing for translation content.
+
+Two properties make it work, and both are asserted directly in the same file:
+
+- It scans **raw text**, not `JSON.parse` output. Parsing collapses duplicates
+  before any reviver runs, so a parse-based check passes on a broken catalog.
+- It compares keys by their **decoded** value, because `"n\u0061me"` and
+  `"name"` are the same key per ECMA-404. A byte-wise comparison would call them
+  distinct and wave a real duplicate through.
+

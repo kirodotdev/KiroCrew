@@ -3085,6 +3085,22 @@ class TestKnowledgeAutoIngest:
         cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": bad}})
         assert cfg.knowledge.auto_ingest_chunk_budget == 150
 
+    def test_folder_chunk_budget_default(self) -> None:
+        assert _load_from_dict({}).knowledge.folder_ingest_chunk_budget == 300
+
+    def test_folder_chunk_budget_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"folder_ingest_chunk_budget": 40}})
+        assert cfg.knowledge.folder_ingest_chunk_budget == 40
+
+    def test_folder_chunk_budget_zero_is_allowed(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"folder_ingest_chunk_budget": 0}})
+        assert cfg.knowledge.folder_ingest_chunk_budget == 0
+
+    @pytest.mark.parametrize("bad", [-5, "many", True, None, 1.5])
+    def test_folder_chunk_budget_rejects_junk(self, bad: object) -> None:
+        cfg = _load_from_dict({"knowledge": {"folder_ingest_chunk_budget": bad}})
+        assert cfg.knowledge.folder_ingest_chunk_budget == 300
+
     def test_dedup_cadence_default(self) -> None:
         assert _load_from_dict({}).knowledge.dedup_every_n_sweeps == 12
 
@@ -3105,6 +3121,7 @@ class TestKnowledgeAutoIngest:
                     "knowledge.auto_register_project_docs",
                     "knowledge.auto_ingest_artifacts",
                     "knowledge.auto_ingest_chunk_budget",
+                    "knowledge.folder_ingest_chunk_budget",
                     "knowledge.dedup_every_n_sweeps"):
             assert key in _EDITABLE_CONFIG, key
 

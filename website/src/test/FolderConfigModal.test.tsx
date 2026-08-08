@@ -129,18 +129,13 @@ describe('FolderConfigModal', () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ color: '#ef4444' }))
   })
 
-  it('folder preview toggles open/closed on click without touching the draft', () => {
-    const { onSubmit } = open()
-    const preview = screen.getByTestId('folder-config-preview')
-    expect(preview).toHaveAttribute('aria-pressed', 'false')
-    fireEvent.click(preview)
-    expect(preview).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(preview)
-    expect(preview).toHaveAttribute('aria-pressed', 'false')
-    // Pure visual toy: toggling must not mark anything touched.
-    fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Toy' } })
-    fireEvent.click(screen.getByTestId('folder-config-submit'))
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ touched: ['name'] }))
+  it('has no icon preview — a folder carries no icon, only a palette color', () => {
+    open()
+    // The emoji/icon system was removed; the palette swatch row is the only
+    // identity affordance, so a glyph preview would advertise a control that
+    // does not exist.
+    expect(screen.queryByTestId('folder-config-preview')).toBeNull()
+    expect(screen.getByTestId('folder-config-color-reset')).toBeTruthy()
   })
 
 

@@ -142,11 +142,28 @@ class TestSNSEncryption:
 # ── SEC-E9AC8770: engine.py deploy bucket logging ──
 
 class TestEngineDeployBucketLogging:
-    """The CLI deploy path must enable S3 server access logging."""
+    """SUPERSEDED -- the control this asserted never took effect.
 
-    def test_create_private_bucket_enables_logging(self):
+    The original assertion was a whole-file grep for ``put-bucket-logging``, and
+    the call it found sat in ``create_private_bucket``, which has no production
+    callers -- ``deploy()`` inlined its own hardening. So the control was never
+    exercised, and the grep passed regardless.
+
+    Enabling it on the live path then proved unsafe: these buckets are
+    ``BucketOwnerEnforced``, so a log destination requires a bucket-policy grant
+    to ``logging.s3.amazonaws.com``, and ``put_oac_bucket_policy`` writes a
+    complete policy after hardening and would overwrite one added during it.
+    Access logging is therefore deliberately absent until that policy work is
+    done; see TestDeployBucketDurability in test_cse_2026_08_07_fixes.py, which
+    pins the omission so it is not silently "restored" without the grant.
+    """
+
+    def test_hardening_lives_in_one_place(self):
+        """What the original test should have checked: a single seam, so a control
+        cannot be added to a copy that nothing calls."""
         src = (Path(__file__).resolve().parent.parent
                / "src" / "kiro_crew" / "deploy" / "engine.py")
         text = src.read_text(encoding="utf-8")
-        assert "put-bucket-logging" in text, \
-            "create_private_bucket must call put-bucket-logging"
+        assert text.count("_harden_bucket(") >= 3, (
+            "bucket hardening must go through one helper used by both paths"
+        )

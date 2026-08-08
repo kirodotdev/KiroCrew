@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } fr
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
-import { modelListRefetchInterval } from '../providers/modelListHealth'
+import { useModelsDegraded } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
@@ -21,6 +21,7 @@ import {
   selectTurnInterrupted,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
+  selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
   mcpAppKey,
@@ -65,6 +66,7 @@ import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
 import AgentDropdownList, { ManageAgentsFooter } from '../components/AgentDropdownList'
@@ -81,6 +83,7 @@ import ChatInput from '../components/ChatInput'
 import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
+import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
@@ -161,6 +164,8 @@ import { shouldMountSidePanel, isSidePanelHidden } from './chat/sidePanelMount'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch } from './chat/SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/WorkflowCompletionCard'
+import SubagentCompletionCard from './chat/SubagentCompletionCard'
+import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
@@ -866,34 +871,35 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [showHistorySuggestions])
-  // Browse mode is per-session (keyed by slot), not page-global: enabling it in
-  // one session must not bleed into another. ChatPage never remounts on slot
-  // switch, so a single boolean would leak across every session. Kept in-memory
-  // only (resets on reload).
-  const [browseModeBySlot, setBrowseModeBySlot] = useState<Record<string, boolean>>({})
-  const browseMode = activeSlot ? (browseModeBySlot[activeSlot] ?? false) : false
-  const toggleBrowseMode = () => {
-    const slot = activeSlotRef.current
-    if (!slot) return
-    setBrowseModeBySlot(prev => ({ ...prev, [slot]: !(prev[slot] ?? false) }))
-  }
-  // Broadcast the active slot's browse-mode ("Let the agent use the browser") so the Browser
-  // panel's live mirror can show "Let the agent act" only while it's OFF.
-  // (browseModeRef, kept in sync with browseMode below, is reused by the
-  // browse-frame effect to replay state to a late-mounting panel.)
+  // Native-act consent is per-session (keyed by slot), not page-global: granting
+  // it in one session must not bleed into another. ChatPage never remounts on
+  // slot switch, so a single boolean would leak across every session. Kept
+  // in-memory only (resets on reload).
+  //
+  // This gates the DESKTOP native path only: whether the agent may drive the
+  // user's real embedded browser (browser-control.js `canAgentControl`). Reading
+  // and operating a Playwright browser is default-on once Browser Mode is enabled
+  // in Settings; this extra gesture exists because the native path acts on the
+  // user's actual logged-in browser and must not be auto-granted.
+  const [agentActBySlot, setAgentActBySlot] = useState<Record<string, boolean>>({})
+  const agentActEnabled = activeSlot ? (agentActBySlot[activeSlot] ?? false) : false
+  // Broadcast the active slot's native-act consent so the Browser panel's live
+  // mirror shows "Let the agent act" only while it is OFF. (agentActRef, kept in
+  // sync below, is reused by the browse-frame effect to replay state to a
+  // late-mounting panel.)
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseMode } }))
-  }, [browseMode])
-  // The Browser panel's "Let the agent act" button requests turning browse mode
-  // ON for the active slot (idempotent — never toggles it back off).
+    window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: agentActEnabled } }))
+  }, [agentActEnabled])
+  // The Browser panel's "Let the agent act" button requests granting native-act
+  // consent for the active slot (idempotent — never revokes it).
   useEffect(() => {
     const onEnable = (e: Event) => {
       // Prefer the slot carried by the panel (the browsing session whose page is
       // shown); fall back to the active slot only if none was supplied. This
-      // keeps the [BROWSE] grant attributed to the correct session.
+      // keeps the consent attributed to the correct session.
       const slot = (e as CustomEvent<{ slot?: string }>).detail?.slot || activeSlotRef.current
       if (!slot) return
-      setBrowseModeBySlot(prev => (prev[slot] ? prev : { ...prev, [slot]: true }))
+      setAgentActBySlot(prev => (prev[slot] ? prev : { ...prev, [slot]: true }))
     }
     window.addEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
     return () => window.removeEventListener(PREVIEW_ENABLE_BROWSE_EVENT, onEnable)
@@ -925,14 +931,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch])
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(installedAgents)
   const filteredAgents = filteredAgentsByName
-  const { data: availableModels = [{ name: 'auto', description: 'Default' }] } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => {
-      const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name !== 'auto')]
-    },
-    refetchInterval: modelListRefetchInterval,
-  })
+  const availableModels = useAvailableModels()
   const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(availableModels)
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
@@ -1057,8 +1056,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const inputRef = useRef(input)
   inputRef.current = input
-  const browseModeRef = useRef(browseMode)
-  browseModeRef.current = browseMode
+  const agentActRef = useRef(agentActEnabled)
+  agentActRef.current = agentActEnabled
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
  // forensic attribution. Set on widget pre-fill, consumed
@@ -2117,6 +2116,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     search.close()
   }, [tabsCtl, dispatch, search.close])
 
+  // Open the Subagents panel from a completion card. A per-agent event
+  // deep-links to the agent it reports on, so the panel lands on that
+  // transcript rather than whatever was last selected; a wave digest names no
+  // single agent and just opens the tab.
+  const handleSubagentPanelOpen = useCallback((parsed: ParsedSubagentCompletion) => {
+    if (parsed.kind === 'single') dispatch(selectSubagent(parsed.agentId))
+    dispatch(openActivityToTab('subagents'))
+  }, [dispatch])
+
   // Open an artifact as a side-panel tab — the artifact twin of
   // handleFileOpen, and the single entry point every in-chat artifact
   // affordance routes through (the Artifacts tab's rows and `/artifacts/<slug>`
@@ -3070,7 +3078,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // intact so the user bubble can render them as clickable chips.
     const activePastes = pasteBlocksRef.current
     let llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
-    const browsing = browseModeRef.current
     // Prepend knowledge context if pending
     let knowledgeBlock: import('./chat/useKnowledgeFetch').KnowledgeBlock | null = null
     if (knowledgeFetchRef.current.pendingKnowledge) {
@@ -3292,7 +3299,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10_000)
     try {
-      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload, browsing)
+      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload)
       clearTimeout(timeout)
       const body = await r.json().catch(() => ({}))
       if (!body.queued && !body.ok) {
@@ -3662,8 +3669,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         dispatch(openActivityPanel())
         tabsCtlRef.current.openView('browser')
         // A freshly-mounted panel starts with browseOn=false; replay the current
-        // browse-mode so the live mirror shows the right interaction state.
-        window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: browseModeRef.current } }))
+        // native-act consent so the live mirror shows the right interaction state.
+        window.dispatchEvent(new CustomEvent(BROWSE_MODE_EVENT, { detail: { on: agentActRef.current } }))
       }
       browseFrameOpenedRef.current = { key, ts: now }
     }
@@ -3779,9 +3786,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // render pass every time the query settled, for a value that is a pure function
   // of the query result.
   const resolvedModel = _slotResolvedModel || ''
+  // The model to DISPLAY for this slot. A slot can stay pinned to a model the
+  // account can no longer run (a plan downgrade leaves the pin behind): the
+  // backend withholds it at spawn and runs the session on its own default, so
+  // showing the pin would name a model no turn will use. The degraded flag is
+  // the authority on whether the list can be trusted — a cached list served
+  // while /api/models fails is stale, not authoritative — and is subscribed to
+  // rather than read, because it can flip without the list changing.
+  const _modelsDegraded = useModelsDegraded(provider.id)
+  const shownModel = displayModel(
+    currentSlot?.model || resolvedModel || '',
+    availableModels,
+    _modelsDegraded,
+  )
   // True when the pin row would be a no-op: the agent already stores exactly
   // the model the composer is showing. 'auto' is the inherit spelling, never a
-  // stored pin, so it never counts as pinned.
+  // stored pin, so it never counts as pinned. Reads the slot's REAL model, not
+  // `shownModel` — this pairs with the write below, and a display fallback must
+  // never decide what gets persisted.
   const _modelPinActive = currentSlot?.model || resolvedModel || ''
   const _modelPinPinned =
     !!_modelPinCfg?.model && _modelPinCfg.model === _modelPinActive && _modelPinActive !== 'auto'
@@ -4561,6 +4583,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // An injected workflow completion event renders as a compact status card
     // (with the full result folded away) instead of a wall of raw JSON.
     if (isWorkflowCompletionMessage(m)) return <WorkflowCompletionCard key={key} message={m} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} disclosureKey={key} />
+    // An injected sub-agent completion event is machine-facing prompt text (the
+    // spawn-discipline instructions are addressed to the model). It renders as a
+    // compact outcome row with the payload folded away, not as a chat bubble.
+    if (isSubagentCompletionMessage(m)) return <SubagentCompletionCard key={key} message={m} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} disclosureKey={key} onOpenPanel={handleSubagentPanelOpen} />
     const isUser = m.role === 'user'
     const isStreaming = m.role === 'streaming'
     const isInject = m.role === 'inject'
@@ -4637,7 +4663,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -5465,7 +5491,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               agentName={currentSlot?.agent || 'default'}
               agentSource={installedAgents.find(a => a.name === (currentSlot?.agent || 'default'))?.source}
-              modelName={currentSlot?.model || resolvedModel || 'auto'}
+              modelName={shownModel}
               onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect) => { setModelBtnRect(rect); setModelDropdown(!modelDropdown) }}
               onProjectClick={(rect) => {
@@ -5474,10 +5500,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
-              contextWindowTokens={contextTokens?.window || provider.getContextWindow(currentSlot?.model || resolvedModel || 'auto')}
+              contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
               isRunning={composerBusy}
-              continuable={continuable}
+              /* Composed with `interrupted`, matching the ErrorCard gate above.
+                 Availability alone would put a filled primary button on the
+                 composer of every idle chat that holds a conversation — an
+                 accent-filled control reads as "this is your next move", so on
+                 a slot that finished cleanly it advertises pending work that
+                 does not exist and the only thing distinguishing it from Send
+                 is a hover tooltip. `interrupted` is not merely the wording
+                 now: it is the reason the control exists at all. When nothing
+                 proves an interruption the composer falls back to the ordinary
+                 Send button, disabled while empty, like every other chat.
+
+                 The cost is a turn that died leaving no evidence — a hard kill
+                 after a mid-turn assistant segment already flushed, which is
+                 the one shape `_is_interrupted` cannot see. That slot loses its
+                 one-click nudge; typing anything still resumes it. Closing that
+                 hole needs a persisted turn-in-flight marker (backend), not a
+                 louder button here. */
+              continuable={continuable && interrupted}
               continueIsRecovery={interrupted}
               onContinue={handleContinue}
               continuing={continuing}
@@ -5507,13 +5550,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               approvalMode={displayMode}
               providerId={provider.id}
               reasoningEffort={effectiveEffort}
-              onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
+              onReasoningEffortClick={provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) ? (rect) => { setReasoningEffortBtnRect(rect); setReasoningEffortDropdown(!reasoningEffortDropdown) } : undefined}
               onAutoNudgeClick={setAutoNudgeOpen}
               autoNudgeLoop={autoNudgeLoop}
               autoNudgeOpen={autoNudgeOpen}
               onAutoNudgeChange={setAutoNudgeLoop}
-              browseMode={browseMode}
-              onBrowseToggle={toggleBrowseMode}
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               cleanMode={currentSlot?.clean_mode}
@@ -5600,12 +5641,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 inputRef={modelInputRef}
                 onListKeyDown={onModelListKeyDown}
                 models={filteredModels}
-                activeModel={currentSlot?.model || resolvedModel || 'auto'}
+                activeModel={shownModel}
                 onSelectModel={name => switchModel(name)}
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
-                hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel))}
+                hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
                 defaultEffort={defaultEffort}
@@ -5614,12 +5655,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   navigate(`/settings?tab=chat&highlight=${SETTINGS_DEFAULT_MODEL_ID}`)
                 }}
                 agentName={_modelPinAgent}
+                pinModelName={_modelPinActive || 'auto'}
+                pinModelUnavailable={pinIsWithheld(_modelPinActive, shownModel)}
                 pinnedToAgent={_modelPinPinned}
                 onPinToAgent={() => {
                   setModelDropdown(false)
                   pinModelToAgentMut.mutate({
                     agent: _modelPinAgent,
-                    model: currentSlot?.model || resolvedModel || '',
+                    // The slot's REAL model, never the display fallback: a
+                    // stale/degraded list must not be able to persist 'auto'
+                    // over a pin the account actually has.
+                    model: _modelPinActive === 'auto' ? '' : _modelPinActive,
                   })
                 }}
               />,
@@ -5633,7 +5679,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
             {/* Reasoning effort dropdown portal */}
-            {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(currentSlot?.model || resolvedModel) && createPortal(
+            {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
                 <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={defaultEffort} onClose={() => setReasoningEffortDropdown(false)} />
               </div>,

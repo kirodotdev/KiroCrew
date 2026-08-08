@@ -9,10 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import kiro_crew.env as env_mod
 from kiro_crew.env import (
     _node_version_manager_bins,
     activate_mise,
     augmented_path,
+    ensure_node,
     resolve_krb5_ccname,
 )
 
@@ -145,6 +147,39 @@ class TestNodeVersionManagerBins:
         bin_dir.mkdir(parents=True)
         result = _node_version_manager_bins(str(tmp_path))
         assert result == [str(bin_dir)]
+
+
+class TestEnsureNode:
+    def test_returns_resolved_node_without_bootstrap(self, monkeypatch) -> None:
+        # When node already resolves, ensure_node returns it and never shells the
+        # bootstrap script.
+        monkeypatch.setattr(env_mod, "find_node_tool", lambda name, base=None: "/usr/bin/node")
+        called = {"ran": False}
+
+        def _boom(*a, **k):
+            called["ran"] = True
+            raise AssertionError("bootstrap must not run when node is present")
+
+        monkeypatch.setattr(env_mod.subprocess, "run", _boom)
+        assert ensure_node() == "/usr/bin/node"
+        assert called["ran"] is False
+
+    def test_no_script_returns_none(self, monkeypatch) -> None:
+        # No node and no bundled ensure-node.sh (wheel install): graceful None.
+        monkeypatch.setattr(env_mod, "find_node_tool", lambda name, base=None: None)
+        monkeypatch.setattr(env_mod, "_ensure_node_script", lambda: None)
+        assert ensure_node() is None
+
+    def test_runs_bootstrap_then_reresolves(self, monkeypatch, tmp_path) -> None:
+        # No node initially; a resolvable ensure-node.sh runs, then node resolves.
+        script = tmp_path / "ensure-node.sh"
+        script.write_text("#!/bin/bash\n")
+        monkeypatch.setattr(env_mod, "_ensure_node_script", lambda: script)
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", False)
+        calls = iter([None, "/opt/node/bin/node"])
+        monkeypatch.setattr(env_mod, "find_node_tool", lambda name, base=None: next(calls))
+        monkeypatch.setattr(env_mod.subprocess, "run", lambda *a, **k: None)
+        assert ensure_node() == "/opt/node/bin/node"
 
 
 class TestResolveKrb5Ccname:

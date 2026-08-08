@@ -567,6 +567,135 @@ class TestApiKirocrewConfig:
             assert saved["agent"]["subagent_auto_max"] == 32
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            {"max_subagents": 8},
+            {"subagent_max_turns": 50},
+            {"subagent_auto_max": 32},
+        ],
+    )
+    async def test_put_flags_restart_required_for_startup_read_keys(
+        self, settings, tmp_path, monkeypatch
+    ):
+        # These are read once when SubagentManager is constructed at gateway
+        # start, so changing them does nothing to what the running gateway
+        # enforces. The response must say so instead of a bare success the user
+        # cannot tell apart from a change that took effect. Each parametrized
+        # value differs from the persisted one below, so each is a real change.
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        (tmp_path / "config.json").write_text('{"agent": {"subagent_auto_max": 16}}')
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put("/api/config/kirocrew", json={"agent": settings})
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is True
+
+    @pytest.mark.asyncio
+    async def test_put_no_restart_when_startup_key_resent_unchanged(self, tmp_path, monkeypatch):
+        # The dashboard sends all four settings on every save and enables Save
+        # whenever ANY one is dirty, so a conductor-only save re-sends the three
+        # startup-read keys at their existing values. That changed nothing the
+        # gateway enforces, so it must NOT ask the user to restart.
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._regen_conductor", lambda: None, raising=False
+        )
+        (tmp_path / "config.json").write_text(
+            '{"agent": {"max_subagents": 8, "subagent_max_turns": 50, '
+            '"subagent_auto_max": 32, "conductor_skill": false}}'
+        )
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put(
+                "/api/config/kirocrew",
+                json={
+                    "agent": {
+                        "max_subagents": 8,
+                        "subagent_max_turns": 50,
+                        "subagent_auto_max": 32,
+                        "conductor_skill": True,
+                    }
+                },
+            )
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_put_restart_required_when_one_startup_key_actually_changes(
+        self, tmp_path, monkeypatch
+    ):
+        # Same all-four payload, but max_subagents genuinely differs -> the hint
+        # must fire even though the other two are unchanged re-sends.
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        (tmp_path / "config.json").write_text(
+            '{"agent": {"max_subagents": 8, "subagent_max_turns": 50, '
+            '"subagent_auto_max": 32}}'
+        )
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put(
+                "/api/config/kirocrew",
+                json={
+                    "agent": {
+                        "max_subagents": 12,
+                        "subagent_max_turns": 50,
+                        "subagent_auto_max": 32,
+                    }
+                },
+            )
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is True
+
+    @pytest.mark.asyncio
+    async def test_put_flags_restart_when_startup_key_set_for_the_first_time(
+        self, tmp_path, monkeypatch
+    ):
+        # Absent-then-set must count as a change, not as an unchanged re-send.
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        (tmp_path / "config.json").write_text('{"agent": {}}')
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_max_turns": 40}})
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is True
+
+    @pytest.mark.asyncio
+    async def test_put_does_not_flag_restart_for_live_keys(self, tmp_path, monkeypatch):
+        # conductor_skill is applied inline by the handler (the skill file is
+        # regenerated in-request), so it takes effect immediately and must NOT
+        # raise the restart hint — otherwise the hint becomes noise users learn
+        # to ignore.
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._regen_conductor", lambda: None, raising=False
+        )
+        (tmp_path / "config.json").write_text('{"agent": {}}')
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"conductor_skill": True}})
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_put_restart_required_tracks_only_applied_keys(self, tmp_path, monkeypatch):
+        # A mixed request reports restart_required once any startup-read key is
+        # applied — the flag describes the request, not each field.
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._regen_conductor", lambda: None, raising=False
+        )
+        (tmp_path / "config.json").write_text('{"agent": {}}')
+        async with TestClient(TestServer(self._make_app(tmp_path))) as c:
+            resp = await c.put(
+                "/api/config/kirocrew",
+                json={"agent": {"conductor_skill": True, "subagent_max_turns": 40}},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is True
+
+    @pytest.mark.asyncio
     async def test_put_rejects_subagent_auto_max_above_ceiling(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())

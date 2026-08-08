@@ -104,6 +104,26 @@ def _config_cmd(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+            # Same shape for the tailnet origin derivation, and placed here for the
+            # same reason: BEFORE the local/base split, so `--local` (whose overlay
+            # takes precedence over the base file) cannot become the one way to
+            # store `true` on a pinned host. Only the enable direction is refused
+            # (tightest-wins), matching the PATCH 403 and the startup gate.
+            if key == "dashboard.tailscale.enabled" and parsed is True:
+                from kiro_crew.dashboard import tailnet
+
+                if tailnet.is_governance_pinned_off(audit_tool="config_set_cli_tailnet"):
+                    print(
+                        "❌ Tailnet dashboard access is pinned OFF by your "
+                        "administrator's security policy "
+                        "(capabilities.tailnet_origin).",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "   Not writing config — the setting would have no effect.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             if use_local:
                 top_key = key.split(".")[0]
                 _known_sections = {f.name for f in dataclasses.fields(KiroCrewConfig)}

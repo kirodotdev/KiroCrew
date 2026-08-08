@@ -23,14 +23,19 @@ configured active namespace(s).
 from __future__ import annotations
 
 import argparse
+import collections
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 _APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,6 +43,8 @@ if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/learning.py` (run as sc
     sys.path.insert(0, _APP_ROOT)
 
 from sage_lib import store  # noqa: E402
+
+from kiro_crew import platform_compat  # noqa: E402
 
 # Learning is mined ONLY from human-validated, ground-truth signals.
 ADMISSIBLE_SOURCES = {"fix_introduce", "human_comment", "design_outcome", "import"}
@@ -83,6 +90,66 @@ def common_file(root: Path | None = None, namespace: str | None = None) -> Path:
 def candidate_file(root: Path | None = None, namespace: str | None = None) -> Path:
     """Append-only staging for new learnings, awaiting AI consolidation."""
     return _namespace_dir(namespace, root) / "learned-patterns.candidate.md"
+
+
+# One lock per (root, namespace) candidate file. `stage_learning` and the selective
+# `clear_candidate` both read-modify-write it, and an atomic write does not make the
+# whole sequence atomic: concurrent stagers would each read the same "before" text
+# and the last write would drop the other's learning.
+_CANDIDATE_LOCKS: dict[str, threading.Lock] = {}
+_CANDIDATE_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _candidate_lock(root: Path | None, namespace: str | None):
+    """Serialize a candidate read-modify-write against threads AND processes.
+
+    A `threading.Lock` alone is not enough: reviews run as separate PROCESSES, and
+    two of them staging a learning for the same namespace would each read the same
+    "before" text and the last atomic write would drop the other's entry. The
+    in-process lock still earns its place -- it is cheap and covers the gateway's own
+    threads -- but the advisory file lock is what makes the sequence exclusive across
+    the workers that actually produce learnings.
+    """
+    key = str(candidate_file(root, namespace))
+    with _CANDIDATE_LOCKS_GUARD:
+        lock = _CANDIDATE_LOCKS.get(key)
+        if lock is None:
+            lock = _CANDIDATE_LOCKS[key] = threading.Lock()
+    ns_dir = _namespace_dir(namespace, root)
+    ns_dir.mkdir(parents=True, exist_ok=True)
+    # A dedicated lock file, never the catalog itself: locking the file being
+    # atomically REPLACED would hold a lock on an inode the rename discards.
+    lock_path = ns_dir / "candidate.md.lock"
+    with lock:
+        # `open(path, "w")` would be destructive here: it follows symlinks AND
+        # truncates, so a worker that plants this name as a link to any file this
+        # user can write erases that file just by us taking the lock. O_NOFOLLOW
+        # refuses the link outright, no O_TRUNC because a lock's contents are
+        # irrelevant, and the fstat rejects anything that is not a lone regular
+        # file -- a hardlink to a sensitive inode passes O_NOFOLLOW but not
+        # `st_nlink == 1`.
+        #
+        # Windows has no O_NOFOLLOW, and naming it unconditionally raised
+        # AttributeError there -- taking the lock at all, so staging and
+        # consolidation failed outright rather than degrading. Where the flag is
+        # missing an lstat before the open carries the refusal: that is a weaker
+        # TOCTOU story than the atomic flag, which is why the flag is still
+        # preferred wherever the platform has it, and why the fstat below runs on
+        # every platform as the check that cannot be raced.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow and lock_path.is_symlink():
+            raise OSError(f"refusing to lock {lock_path}: symlink")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise OSError(
+                    f"refusing to lock {lock_path}: not a lone regular file")
+            with platform_compat.file_lock(fd, exclusive=True):
+                yield
+        finally:
+            os.close(fd)
 
 
 def _consolidations_log(root: Path | None = None) -> Path:
@@ -286,11 +353,20 @@ def stage_learning(pattern: dict, source: str, root: Path | None = None,
     ns_dir.mkdir(parents=True, exist_ok=True)
     p = _normalize_pattern(pattern)
     cf = candidate_file(root, namespace)
-    if cf.exists() and cf.read_text(encoding="utf-8").strip():
-        body = cf.read_text(encoding="utf-8").rstrip() + "\n\n" + render_pattern(p) + "\n"
-    else:
-        body = _CANDIDATE_HEADER + render_pattern(p) + "\n"
-    _atomic_write(cf, body)
+    # Read and write under one lock: see _candidate_lock.
+    with _candidate_lock(root, namespace):
+        # ONE guarded read, not two `read_text` calls. The candidate file sits in a
+        # directory review workers can reach, so a prompt-injected worker can replace
+        # it with a symlink to `~/.aws/credentials`; the no-link reader refuses that
+        # instead of dereferencing it into the catalog. Reading once also removes the
+        # window where the file changes between the emptiness test and the append.
+        existing = (store.read_text_nolink(cf, ns_dir) or "") if cf.exists() else ""
+        if existing.strip():
+            body = (existing.rstrip() + "\n\n"
+                    + render_pattern(p) + "\n")
+        else:
+            body = _CANDIDATE_HEADER + render_pattern(p) + "\n"
+        _atomic_write(cf, body)
     return {"ok": True, "path": str(cf), "source": source,
             "namespace": namespace or DEFAULT_NAMESPACE,
             "staged": len(parse_patterns(body))}
@@ -300,19 +376,79 @@ def list_candidate(root: Path | None = None, namespace: str | None = None) -> li
     cf = candidate_file(root, namespace)
     if not cf.exists():
         return []
-    return parse_patterns(cf.read_text(encoding="utf-8"))
+    # The dashboard renders what this returns, so an unguarded read would make a
+    # planted symlink an egress path, not just a corrupted catalog.
+    return parse_patterns(
+        store.read_text_nolink(cf, _namespace_dir(namespace, root)) or "")
 
 
 def candidate_count(root: Path | None = None, namespace: str | None = None) -> int:
     return len(list_candidate(root, namespace))
 
 
-def clear_candidate(root: Path | None = None, namespace: str | None = None) -> bool:
+def clear_candidate(root: Path | None = None, namespace: str | None = None,
+                    only_ids: Sequence[str] | None = None) -> bool:
+    """Clear staged candidates.
+
+    With ``only_ids``, keep every entry the snapshot did not account for instead of
+    deleting the file. Consolidation needs this: the merge worker reads the
+    candidates at dispatch and the apply lands minutes later, so a review that
+    stages a learning in between would have its entry deleted by a blanket unlink
+    even though the merge never saw it. Clearing exactly what was consolidated
+    leaves the newer staging intact, which is cheaper and less disruptive than
+    serialising every review behind the merge.
+
+    ``only_ids`` is a MULTISET, not a set: pass one element per snapshotted entry.
+    Ids are a content hash of title|scope, and staging appends without deduping, so
+    duplicates are expected and the count is what distinguishes "the two entries
+    the merge saw" from "a third staged behind its back".
+
+    With ``only_ids=None`` the whole file goes, which is what an explicit
+    "discard the staged learnings" action means.
+    """
     cf = candidate_file(root, namespace)
-    if cf.exists():
-        cf.unlink()
-        return True
-    return False
+    if not cf.exists():
+        return False
+    # Both branches run under the lock. The full unlink used to sit outside it,
+    # so a `stage_learning` append could complete between the exists() check and
+    # the unlink and be deleted without ever being read — the same read-modify-
+    # write race the selective branch takes the lock for.
+    with _candidate_lock(root, namespace):
+        if not cf.exists():          # a concurrent clear got there first
+            return False
+        if only_ids is None:
+            cf.unlink()
+            return True
+        # Remove at most as many entries per id as the snapshot held, oldest
+        # first. Ids are a content hash of title|scope (`pattern_id`) and
+        # `add_candidate` appends without deduping, so the SAME id can legitimately
+        # appear more than once — a later review re-learning the same lesson for the
+        # same scope produces a second entry. A set-membership filter deleted every
+        # occurrence, including one staged after the snapshot that the merge never
+        # saw, which is the loss this whole `only_ids` path exists to prevent.
+        # Entries are appended, so consuming the budget in file order keeps the
+        # newest duplicate.
+        budget: collections.Counter[str] = collections.Counter(
+            str(i) for i in only_ids)
+        kept = []
+        # Same guard as the staging read: a worker can swap this catalog for a
+        # symlink, and re-serializing the target would publish it to the
+        # dashboard-readable candidate file.
+        for p in parse_patterns(
+                store.read_text_nolink(cf, _namespace_dir(namespace, root)) or ""):
+            # An entry with no id has no budget entry, so it is kept — the safe
+            # direction when the snapshot cannot account for it.
+            pid = str(p.get("id") or "")
+            if budget.get(pid, 0) > 0:
+                budget[pid] -= 1
+                continue
+            kept.append(p)
+        if not kept:
+            cf.unlink()
+            return True
+        _atomic_write(cf, _CANDIDATE_HEADER
+                      + "\n".join(render_pattern(p) for p in kept) + "\n")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -330,23 +466,96 @@ def _record_consolidation(consolidated: int, namespace: str | None = None,
         fh.write(json.dumps(entry) + "\n")
 
 
+# Optional Kiro Crew redaction, mirroring pipeline.py: present in the runtime,
+# absent when the app is driven standalone outside it.
+try:
+    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+except ImportError:  # pragma: no cover - standalone fallback
+    redact_credentials = redact_exfiltration_urls = None  # type: ignore
+
+
+def _redact(text: str) -> str:
+    """Scrub credentials + exfiltration URLs from worker-authored text."""
+    if redact_exfiltration_urls is None or redact_credentials is None:
+        return text
+    return redact_credentials(redact_exfiltration_urls(text)[0])[0]
+
+
 def consolidate_apply(merged_md: str, root: Path | None = None,
-                      namespace: str | None = None) -> dict:
+                      namespace: str | None = None,
+                      candidate_ids: Sequence[str] | None = None) -> dict:
     """Atomically replace learned-patterns.md with the AI-merged content, then
     clear the candidate. Refuses to write empty content (never wipes the ruleset
-    on a bad merge)."""
+    on a bad merge).
+
+    The content is redacted here rather than at the caller because THIS is the
+    persistence chokepoint. ``merged_md`` is written by the merge worker, which
+    has shell and file tools, so it is LLM-influenced text that has read the
+    reviewed diffs; a credential picked up there would otherwise land in
+    learned-patterns.md, which is rendered in the dashboard AND injected into
+    every later review prompt. The caller already hardens the read PATH
+    (O_NOFOLLOW, inode validation, size cap) — that protects against reading the
+    wrong file, not against the content of the right one.
+    """
     if not merged_md or not merged_md.strip():
         return {"ok": False, "error": "merged content is empty; refusing to overwrite learned-patterns.md"}
+    if not parse_patterns(merged_md):
+        # Non-empty prose is not a ruleset. Writing it would replace every pattern
+        # with commentary and clear the candidate file in the same call, so the
+        # staged learnings would be gone with nothing to show for them.
+        return {"ok": False,
+                "error": "merged content has no recognizable patterns; "
+                         "refusing to overwrite learned-patterns.md"}
+    merged_md = _redact(merged_md)
     store.ensure_layout(root)
     staged = candidate_count(root, namespace)
+    # Which candidates this merge is entitled to clear. The caller passes the set
+    # it snapshotted BEFORE dispatching the worker; without one, snapshot now,
+    # which still protects anything staged after this instant.
+    if candidate_ids is None:
+        candidate_ids = [p["id"] for p in list_candidate(root, namespace)]
     body = merged_md if merged_md.endswith("\n") else merged_md + "\n"
+    # The guards above check the merged text's shape, not that it kept every rule, so
+    # keep the pre-merge ruleset: a merge that parses and still loses lessons is
+    # recoverable from this copy and from nowhere else.
+    backup = _snapshot_before_apply(root, namespace)
     _atomic_write(common_file(root, namespace), body)
-    cleared = clear_candidate(root, namespace)
+    cleared = clear_candidate(root, namespace, only_ids=candidate_ids)
     _record_consolidation(staged, namespace, root)
-    return {"ok": True, "path": str(common_file(root, namespace)),
-            "namespace": namespace or DEFAULT_NAMESPACE,
-            "consolidated_from_candidate": staged, "candidate_cleared": cleared,
-            "patterns_now": len(list_patterns(root=root, namespace=namespace))}
+    result = {"ok": True, "path": str(common_file(root, namespace)),
+              "namespace": namespace or DEFAULT_NAMESPACE,
+              "consolidated_from_candidate": staged, "candidate_cleared": cleared,
+              "patterns_now": len(list_patterns(root=root, namespace=namespace))}
+    if backup is not None:
+        result["backup"] = str(backup)
+    return result
+
+
+def _snapshot_before_apply(root: Path | None, namespace: str | None) -> Path | None:
+    """Copy the current learned-patterns.md next to itself and return the copy's path.
+
+    Read through the no-link guard, like every other read of this file, so a planted
+    symlink cannot make the snapshot step read somewhere else. Returns None when there is
+    nothing to preserve (first consolidation) or when the copy itself fails -- a failed
+    backup must not block the merge, it only means this one apply has no undo, and the
+    caller can see that from the absent ``backup`` key.
+    """
+    live = common_file(root, namespace)
+    try:
+        current = store.read_text_nolink(live, _namespace_dir(namespace, root)) or ""
+    except (OSError, ValueError):
+        return None
+    # A seeded-but-empty catalog holds no rules, so there is nothing a merge could lose.
+    # Snapshot exactly when rules exist, so the backup's presence means "there was a
+    # ruleset here" rather than "the file existed".
+    if not parse_patterns(current):
+        return None
+    dest = live.with_name(live.name + ".pre-consolidation")
+    try:
+        _atomic_write(dest, current if current.endswith("\n") else current + "\n")
+    except OSError:
+        return None
+    return dest
 
 
 # ---------------------------------------------------------------------------

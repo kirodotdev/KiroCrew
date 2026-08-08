@@ -36,7 +36,6 @@ platform where the transport is newest, and would do it while CI stayed green.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 import sys
@@ -269,32 +268,35 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
 
 
 def _windows_collect_ignore() -> list[str]:
-    """Extract ``collect_ignore`` from conftest's SOURCE, not its runtime state.
+    """Read the Windows exclusion list from its DATA FILE, not conftest's runtime state.
 
     Importing conftest and reading the attribute looks equivalent and is not:
     the list is assigned inside ``if platform_compat.IS_WINDOWS:``, so on the
     Linux matrix -- the only place this guard runs -- the attribute does not
     exist at all and ``getattr(..., [])`` silently yields an empty set. Every
     membership assertion against it then passes vacuously, which is precisely
-    the class of false pass this guard exists to prevent. Reading the literal
-    out of the source is platform-independent.
+    the class of false pass this guard exists to prevent. Reading the file is
+    platform-independent.
+
+    The names used to be string literals inside conftest and were extracted by
+    parsing its AST. They now live in ``windows-collect-ignore.txt`` because a
+    second reader needs them: naming a file explicitly on the pytest command
+    line bypasses ``collect_ignore``, so the CI reduced-scope selector
+    (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.
+    Reading that file keeps this guard pointed at the real source of truth --
+    an AST walk over conftest now finds no literals and would go blind.
     """
-    tree = ast.parse(Path(__file__).with_name("conftest.py").read_text(encoding="utf-8"))
-    found: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(
-            isinstance(t, ast.Name) and t.id == "collect_ignore" for t in node.targets
-        ):
-            continue
-        if isinstance(node.value, (ast.List, ast.Tuple)):
-            found += [
-                el.value for el in node.value.elts
-                if isinstance(el, ast.Constant) and isinstance(el.value, str)
-            ]
+    listfile = Path(__file__).with_name("windows-collect-ignore.txt")
+    found = [
+        name
+        for name in (
+            ln.split("#", 1)[0].strip()
+            for ln in listfile.read_text(encoding="utf-8").splitlines()
+        )
+        if name
+    ]
     assert found, (
-        "could not find any collect_ignore string literals in conftest.py — this "
+        f"could not read any excluded filenames from {listfile.name} — this "
         "guard has gone blind and would pass no matter what was excluded"
     )
     return found

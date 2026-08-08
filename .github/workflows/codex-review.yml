@@ -166,7 +166,7 @@ jobs:
           cfn-lint, Semgrep, CodeQL, Dependency Audit, 12 pytest shards
           (Linux 3.10/3.12 + Windows), an offline Playwright e2e suite with
           strict on-loop-persist assertions, and a FAIL-CLOSED Coverage Gate
-          (backend 70% / frontend 60%).
+          (backend 80% / frontend 60%).
 
           NEVER report anything those tools own: style, formatting, naming,
           import order, typing, lint warnings, dead code, duplication,

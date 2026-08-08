@@ -65,6 +65,7 @@ import os
 import socket as _socket
 import stat
 import sys
+from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, cast
 
@@ -146,6 +147,23 @@ _SINGLETON_LOCK_SUFFIX = ".lock"
 _pipe_factory_installed = False
 
 
+class _SecurityAttributes(ctypes.Structure):
+    """Win32 ``SECURITY_ATTRIBUTES``, carrying the owner-only pipe DACL.
+
+    Module scope is load-bearing: ``ctypes.POINTER(T)`` memoises T in a
+    module-level ctypes dict that is never evicted, so declaring this inside the
+    factory below would pin a fresh type object per call. That factory runs once
+    per pipe INSTANCE -- i.e. per accepted MCP client connection -- so a local
+    declaration grows gatewayd without bound.
+    """
+
+    _fields_ = [
+        ("nLength", wintypes.DWORD),
+        ("lpSecurityDescriptor", ctypes.c_void_p),
+        ("bInheritHandle", wintypes.BOOL),
+    ]
+
+
 # --- Address resolution ------------------------------------------------------
 
 
@@ -215,17 +233,8 @@ def _owner_only_security_attributes() -> Iterator[Any]:
     ``CreateNamedPipeW`` call, which is why this is a context manager rather
     than a plain factory.
     """
-    from ctypes import wintypes
-
     advapi32 = _ct.WinDLL("advapi32", use_last_error=True)
     kernel32 = _ct.WinDLL("kernel32", use_last_error=True)
-
-    class SECURITY_ATTRIBUTES(ctypes.Structure):  # noqa: N801 - Win32 struct name
-        _fields_ = [
-            ("nLength", wintypes.DWORD),
-            ("lpSecurityDescriptor", ctypes.c_void_p),
-            ("bInheritHandle", wintypes.BOOL),
-        ]
 
     advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
         wintypes.LPCWSTR,
@@ -248,8 +257,8 @@ def _owner_only_security_attributes() -> Iterator[Any]:
             f"{_ct.get_last_error()}"
         )
     try:
-        sa = SECURITY_ATTRIBUTES()
-        sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+        sa = _SecurityAttributes()
+        sa.nLength = ctypes.sizeof(_SecurityAttributes)
         sa.lpSecurityDescriptor = psd
         sa.bInheritHandle = False
         yield sa
@@ -268,8 +277,6 @@ def _create_server_pipe(address: str, first: bool) -> int:
     differs only in passing a real security descriptor and flipping the read
     mode before the handle is ever returned.
     """
-    from ctypes import wintypes
-
     kernel32 = _ct.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateNamedPipeW.argtypes = [
         wintypes.LPCWSTR,
@@ -303,7 +310,18 @@ def _create_server_pipe(address: str, first: bool) -> int:
 
     # Flip to byte read mode before the handle is handed to the proactor, so no
     # read can ever observe message framing.
-    _winapi.SetNamedPipeHandleState(handle, _PIPE_READMODE_BYTE_AND_WAIT, None, None)
+    #
+    # The handle has no Python owner yet -- the caller is what wraps it in a
+    # PipeHandle -- so a raise here would orphan a kernel pipe instance that
+    # nothing can reclaim: PipeServer.close() only walks ``_free_instances``,
+    # which this handle has not entered. Close it on the way out. BaseException,
+    # not OSError, so a KeyboardInterrupt landing in this window cannot orphan it
+    # either.
+    try:
+        _winapi.SetNamedPipeHandleState(handle, _PIPE_READMODE_BYTE_AND_WAIT, None, None)
+    except BaseException:
+        _winapi.CloseHandle(handle)
+        raise
     return int(handle)
 
 

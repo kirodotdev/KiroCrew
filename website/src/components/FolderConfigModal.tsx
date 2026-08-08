@@ -5,7 +5,6 @@ import { Input, Btn } from './ui'
 import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
-import FolderGlyph from './FolderGlyph'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { resolveFolderProjectDir } from '../utils/folderAgent'
 import { ChatFolder } from '../types'
@@ -81,8 +80,6 @@ export default function FolderConfigModal({
 }: Props) {
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
   const [pickerOpen, setPickerOpen] = useState(false)
-  // Open/closed state of the live folder preview — pure visual, never saved.
-  const [previewOpen, setPreviewOpen] = useState(false)
   // The backend rejects a free-typed project_dir (not absolute / not an existing
   // directory / sensitive path) with a 400. Submit used to be fire-and-forget,
   // so a rejection closed the modal and threw the whole draft away with no
@@ -251,39 +248,23 @@ export default function FolderConfigModal({
             </span>
           </div>
 
-          {/* Preview + name. Centre-aligned so the glyph's optical centre
-           *  lines up with the input's. */}
-          <div className="flex items-center gap-3">
-            {/* Live preview: renders the actual sidebar FolderGlyph with the
-             *  draft color, and clicking toggles the open/closed state so the
-             *  user can try both while picking. Presentational toy plus
-             *  preview — no draft state rides on the open flag. */}
-            <button
-              type="button"
-              data-testid="folder-config-preview"
-              title={i18nT('components.folderConfigModal.folder_preview')}
-              aria-label={i18nT('components.folderConfigModal.folder_preview')}
-              aria-pressed={previewOpen}
-              onClick={() => setPreviewOpen(o => !o)}
-              className="shrink-0 w-14 h-14 grid place-items-center rounded-[10px] bg-bg-elevated border border-border cursor-pointer transition-colors hover:border-accent"
-            >
-              <FolderGlyph color={draft.color || undefined} size={34} open={previewOpen} className="shrink-0 text-muted" />
-            </button>
-            <label htmlFor="folder-config-name-input" className="flex-1 min-w-0 flex flex-col gap-1.5">
-              <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.name')}</span>
-              <Input
-                ref={nameRef}
-                id="folder-config-name-input"
-                className="w-full"
-                data-testid="folder-config-name"
-                placeholder={i18nT('components.folderConfigModal.name_placeholder')}
-                value={draft.name}
-                onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-                {...ime.composition}
-                onKeyDown={e => { if (e.key === 'Enter' && !ime.isComposing(e)) { e.preventDefault(); submit() } }}
-              />
-            </label>
-          </div>
+          {/* Name. The folder's identity mark is a palette color, applied to
+           *  the swatch row below — there is no per-folder icon to preview,
+           *  so the name input owns the full width. */}
+          <label htmlFor="folder-config-name-input" className="flex flex-col gap-1.5">
+            <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.name')}</span>
+            <Input
+              ref={nameRef}
+              id="folder-config-name-input"
+              className="w-full"
+              data-testid="folder-config-name"
+              placeholder={i18nT('components.folderConfigModal.name_placeholder')}
+              value={draft.name}
+              onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+              {...ime.composition}
+              onKeyDown={e => { if (e.key === 'Enter' && !ime.isComposing(e)) { e.preventDefault(); submit() } }}
+            />
+          </label>
 
           {/* Color — always visible, compact. Leading "no color" swatch
            *  doubles as the remove affordance, so there is no separate reset

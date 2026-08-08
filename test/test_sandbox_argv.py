@@ -47,11 +47,24 @@ def clean_backend(monkeypatch):
     they assert on. Point the settings path at a non-existent file so delegation
     is off by default; the dedicated delegation tests set
     ``_KIRO_INTERNAL_SETTINGS_PATH`` explicitly and are unaffected.
+
+    Clears ``KIROCREW_SANDBOX_ACTIVE`` to prevent the "already inside sandbox"
+    passthrough from short-circuiting tests on hosts (like Cloud Desktops) where
+    the gateway process itself runs sandboxed. Tests that exercise the
+    passthrough set the env var explicitly.
     """
+    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(
         "kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
+    # Reset one-shot warning flags
+    if hasattr(sandbox_mod.wrap_argv, "_warned"):
+        delattr(sandbox_mod.wrap_argv, "_warned")
+    if hasattr(sandbox_mod._warn_mode_off_unconfined, "_warned_set"):
+        delattr(sandbox_mod._warn_mode_off_unconfined, "_warned_set")
+    if hasattr(sandbox_mod._warn_mode_off_unconfined, "_info_logged"):
+        delattr(sandbox_mod._warn_mode_off_unconfined, "_info_logged")
     reset_backend()
     yield
     reset_backend()

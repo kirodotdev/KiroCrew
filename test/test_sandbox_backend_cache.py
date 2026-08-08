@@ -46,7 +46,11 @@ def clean_backend(monkeypatch):
     preempts the mocked ``detect_backend`` so the fail-closed ``RuntimeError``
     these tests assert on never raises. Point the settings path at a
     non-existent file so delegation is off by default.
+
+    Clears ``KIROCREW_SANDBOX_ACTIVE`` to prevent the "already inside sandbox"
+    passthrough from short-circuiting tests on sandboxed hosts.
     """
+    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(
         sb, "_KIRO_INTERNAL_SETTINGS_PATH", "/nonexistent/kirocrew-test/amazon-internal.json"
     )

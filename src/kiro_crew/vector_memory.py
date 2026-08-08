@@ -1810,6 +1810,23 @@ class VectorMemoryStore:
         # inside the dedup scan below, so a swap can land between entries.
         pending_backfills: list[tuple[bytes, str, int]] = []
 
+        # PREFLIGHT the final value BEFORE the dedup scan below, which DELETES
+        # superseded rows. The value was only validated by set_semantic at the very
+        # end, so a value this store refuses (e.g. an injection-pattern ``negative``)
+        # cost the caller its existing lesson: the dedup scan deleted the old row,
+        # then set_semantic refused the replacement, and the route still returned
+        # HTTP 200 with no lesson stored. Validating here makes the whole call a
+        # no-op when the replacement cannot land.
+        slug = hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
+        key = f"lesson.{slug}"
+        value = rule if not negative else f"{rule} — NOT: {negative}"
+        confidence = 1.0 if source == "user_explicit" else 0.9
+        preflight = self.validate_semantic(key, value, confidence, source)
+        if preflight is not None:
+            code, message = preflight
+            logger.info("Lesson rejected before dedup (%s): %s", code, message)
+            return False
+
         def _flush_backfills() -> None:
             if pending_backfills:
                 with self._db_lock:
@@ -1903,10 +1920,6 @@ class VectorMemoryStore:
 
         _flush_backfills()
 
-        slug = hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
-        key = f"lesson.{slug}"
-        value = rule if not negative else f"{rule} — NOT: {negative}"
-        confidence = 1.0 if source == "user_explicit" else 0.9
         err = self.set_semantic(key, value, confidence, source)
         if err is None and rule_emb:
             emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)

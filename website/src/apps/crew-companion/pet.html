@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crew Companion</title>
+    <!--
+      The overlay window is TRANSPARENT and covers a whole display, so every
+      default background has to be cleared explicitly: Electron's transparency
+      only shows through where nothing paints. A stylesheet that sets `body {
+      background: ... }` is enough to turn the whole screen into an opaque
+      rectangle, which is why nothing external is loaded here.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent !important;
+        overflow: hidden;
+        /* The window is click-through except over the companion itself, which
+           re-enables pointer events on its own element. */
+        pointer-events: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      #companion-root {
+        width: 100%;
+        height: 100%;
+      }
+
+      /*
+        The companion sits bottom-right by default, clear of the macOS Dock. The
+        layer fills the display (it IS the display) and stays click-through; only
+        the companion and its bubble opt back in to pointer events, and the
+        Electron side is told separately via the preload bridge — CSS alone cannot
+        make a click-through window accept input.
+      */
+      /*
+        A positioning context, not a layout. The companion is placed from its saved
+        coordinates so it stays where the user dragged it, and the panel and bubble
+        are positioned relative to it.
+      */
+      .cc-pet-layer {
+        position: absolute;
+        inset: 0;
+      }
+
+
+      /*
+        The panel sits beside the companion inside this same overlay, per the v1.0
+        spec — not in a second window, because two OS windows cannot be kept
+        reliably in step and the panel has to stay next to a companion that moves.
+
+        It accepts pointer events (it is a real UI); the rest of the display stays
+        click-through, and the Electron side is told separately.
+      */
+
+      /* The menu and the exercise are real UI, so they accept input; the rest of
+         the display stays click-through. */
+      .cc-menu-host,
+      .cc-breathe-host {
+        pointer-events: auto;
+      }
+
+      /*
+       * The context menu's dismissal backdrop: a transparent, full-viewport catcher
+       * rendered UNDER the menu while it is open.
+       *
+       * The window's html and body are `pointer-events: none` so the desktop shows
+       * through, which means a click on an empty region hits no element and fires no
+       * DOM event — the menu's "click outside closes me" listener could never see it.
+       * This backdrop opts back in to pointer events so an outside click lands on a
+       * real element and dismisses the menu. It paints nothing (transparent) and only
+       * exists while the menu is open.
+       */
+      .cc-menu-backdrop {
+        pointer-events: auto;
+      }
+
+      .cc-panel-slot {
+        pointer-events: auto;
+        align-self: flex-end;
+        margin-bottom: 6px;
+      }
+
+      .cc-pet-art {
+        width: 76px;
+        height: 76px;
+        display: block;
+      }
+
+      .cc-pet {
+        pointer-events: auto;
+        cursor: pointer;
+        line-height: 0;
+        /* Lifts the companion off whatever is behind it without a hard edge. */
+        filter: drop-shadow(0 3px 7px rgba(0, 0, 0, 0.28));
+        /*
+         * DELIBERATELY no animation here.
+         *
+         * This element carries the inline transform React computes: the mirror
+         * (scaleX(-1)) when the companion faces the other way, and the dock offset plus
+         * 25 degree lean when it is parked against a screen edge.
+         *
+         * A CSS animation OVERRIDES inline styles for whatever property it animates, so
+         * the `infinite` bob that used to live here silently replaced that entire
+         * transform every frame — the mirror and the dock were computed correctly and
+         * never had a chance to show. The idle bob belongs to usePlayfulMotion, which
+         * drives .cc-pet-art (the inner wrapper), so nothing fights over one property.
+         */
+      }
+
+      /*
+       * The bubble host: re-enable input on the ONE element that carries a bubble.
+       *
+       * The class name must match what pet.tsx actually renders. It did not: the rule
+       * here was `.cc-pet-bubble` while the component renders `cc-bubble-host`, so the
+       * host inherited `pointer-events: none` from the body and every click and hover
+       * passed straight THROUGH the bubble. That failed in the most misleading way
+       * available — the OS-level hitbox was correct and the window did accept the
+       * click, the ✕ was in the DOM, and React's dismiss handler worked in tests; the
+       * one thing missing was the element's ability to receive the event at all. So
+       * the bubble simply could not be closed, and nothing anywhere reported an error.
+       *
+       * `.cc-pet` above is the same mechanism and its name always matched, which is
+       * why the companion itself was always clickable while its bubble was not.
+       *
+       * Visual styling deliberately NOT restored here: the old rule also carried
+       * max-width, padding, radius, background, shadow and an entry animation, all of
+       * which `bubble.css` now owns for `.cc-bubble` / `.cc-bubble-wrap`. Reinstating
+       * them under the corrected name would put two stylesheets in competition over
+       * one element — the same fight the `.cc-pet` comment above documents. The host
+       * is a positioning shell; it needs exactly this one property.
+       */
+      .cc-bubble-host {
+        pointer-events: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="companion-root"></div>
+    <script type="module" src="./pet.tsx"></script>
+  </body>
+</html>

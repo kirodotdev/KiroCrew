@@ -474,8 +474,14 @@ async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
-    jobs = state.crons.list_jobs(include_disabled=True)
-    job = next((j for j in jobs if j.id == job_id), None)
+    # Freshness-guaranteed lookup: this endpoint is handed a job id minted by
+    # ANOTHER process (`kirocrew cron add`, the MCP cron_add tool), which writes
+    # crons.json directly. The cache-only `list_jobs()` would not see that job
+    # until the timer tick refreshes the in-memory snapshot (≤_TIMER_POLL_SECS),
+    # so triggering a just-created job 404'd for up to that long. Same rationale
+    # as the GET handler below; the read runs in a worker thread, so the loop is
+    # not blocked.
+    job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
     # Reject if a run is already in flight. Overwriting _running_tasks[job_id]
@@ -483,7 +489,9 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # tracked/cancelled/joined) and allow overlapping duplicate runs. The
     # check-and-set below is atomic: there is no await between the guard and the
     # assignment, so the single-threaded event loop cannot interleave a second
-    # request into this critical section.
+    # request into this critical section. (The lookup above awaits, so two
+    # concurrent requests can both reach the guard — but only one can pass it,
+    # because the guard and the assignment are not separated by an await.)
     if job_id in state.crons._running_tasks or state.crons.is_running(job_id):
         return web.json_response({"error": "job is already running"}, status=409)
     task = asyncio.create_task(state.crons.run_job(job_id))  # type: ignore[arg-type]
@@ -792,6 +800,11 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "rule is required"}, status=400)
     category = cleaned.get("category", "knowledge")
     scope = cleaned.get("scope", "global")
+    # LEARN_ADD_SCHEMA accepts and validates ``negative``, but both write paths
+    # below discarded it -- write_lesson got a literal None and the JSONL Lesson
+    # omitted the kwarg -- so every NOT-clause sent to this route, from the
+    # learn_add MCP tool, the dashboard, or the CLI, was silently lost.
+    negative = cleaned.get("negative") or None
     # Write to vector store if available, else JSONL
     vs = _get_memory(state).vector_store
     if vs:
@@ -813,31 +826,46 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # for a lesson that was actually saved (and re-saved on every retry).
         # Writing first, then sweeping in the background, keeps the slow LLM call
         # off the request path.
-        await asyncio.to_thread(
+        wrote = await asyncio.to_thread(
             vs.write_lesson,
             rule,
             category,
-            None,
+            negative,
             "user_explicit",
             rule_emb,
             rule_emb_generation,
         )
-        candidates = await asyncio.to_thread(
-            vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
-        )
-        if candidates:
-            # Fire-and-forget via this module's _background_tasks
-            # pattern. The sweep only supersedes OTHER (older) lessons, never
-            # the one just written (self-match scores ~1.0, above the 0.85
-            # candidate ceiling), so deferring it is safe. No retry/queue: a
-            # missed sweep self-heals on the next learn_add touching the topic.
-            task = asyncio.create_task(
-                _resolve_and_supersede(state, sk, rule, candidates, vs)
+        # Sweep ONLY when the lesson actually landed. write_lesson returns False
+        # for a value its preflight refuses (reachable now that ``negative`` is
+        # forwarded here at all -- this call site passed a literal None before) and
+        # for a dedup refusal. The return value used to be discarded, so a refused
+        # write still ran the sweep below, and _resolve_and_supersede would
+        # delete_semantic an older contradicted lesson whose "replacement" was never
+        # stored -- destroying a lesson on a request that persisted nothing, under
+        # HTTP 200. Superseding on the authority of a write that did not happen is
+        # wrong for BOTH False cases, so gate on the result rather than the cause.
+        if wrote:
+            candidates = await asyncio.to_thread(
+                vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
             )
-            state._background_tasks.add(task)
-            task.add_done_callback(state._background_tasks.discard)
+            if candidates:
+                # Fire-and-forget via this module's _background_tasks
+                # pattern. The sweep only supersedes OTHER (older) lessons, never
+                # the one just written (self-match scores ~1.0, above the 0.85
+                # candidate ceiling), so deferring it is safe. No retry/queue: a
+                # missed sweep self-heals on the next learn_add touching the topic.
+                task = asyncio.create_task(
+                    _resolve_and_supersede(state, sk, rule, candidates, vs)
+                )
+                state._background_tasks.add(task)
+                task.add_done_callback(state._background_tasks.discard)
     else:
-        lesson = Lesson(rule=rule, category=category, ts=datetime.now(timezone.utc).isoformat())
+        lesson = Lesson(
+            rule=rule,
+            category=category,
+            negative=negative,
+            ts=datetime.now(timezone.utc).isoformat(),
+        )
         if scope == "workspace":
             ws = cleaned.get("workspace")
             _get_lessons(state, ws).save(lesson)

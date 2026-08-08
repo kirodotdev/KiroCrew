@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Terminal } from '@xterm/xterm'
-import { Folder, File as FileIcon, CornerDownLeft } from 'lucide-react'
+import { Folder, File as FileIcon, CornerDownLeft, ChevronRight, Minus } from 'lucide-react'
 import {
-  extractToken, commandStart, commandWord, shouldComplete, foldersOnly, atWordEnd,
-  isPlainWord, isSafeName, commonPrefix, extendsWord, buildInsertion, acceptSuffix,
-  unescapeWord,
+  extractToken, commandStart, commandWord, completionMode, foldersOnly, atWordEnd,
+  isPlainWord, isSafeName, isCommandToken, commonPrefix, extendsWord, buildInsertion,
+  acceptSuffix, commandSuffix, commandArgv, unescapeWord,
 } from '../utils/terminalCompletion'
+import type { CompletionMode } from '../utils/terminalCompletion'
 import { sendRawToTerminalSession } from '../utils/terminalRegistry'
 
 import { i18nT } from '../i18n/t'
@@ -30,6 +31,14 @@ interface Entry {
   at?: number
   /** The synthetic "use the directory as typed" row — not a real dir entry. */
   here?: true
+  /** Command tier only: which kind of thing this is. Absent for path entries,
+   *  which is how a command listing is told apart from a path one without a new
+   *  top-level response field. */
+  kind?: 'sub' | 'flag'
+  /** Command tier only: the tool's own one-line help for this entry. */
+  desc?: string
+  /** Command tier only: accept without typing a trailing separator. */
+  nospace?: boolean
 }
 
 /**
@@ -61,13 +70,22 @@ interface Suggestions {
   /** The same word as the terminal shows it, escapes intact — what an insertion
    *  is measured against, since that is the text a DEL would erase. */
   raw: string
-  /** Absolute directory the entries came from — shown in the description bar. */
+  /** Absolute directory the entries came from — shown in the description bar.
+   *  Empty for a command listing, which resolved nothing on the filesystem. */
   dir: string
   truncated: boolean
   /** Column where the completed token starts, for anchoring the menu. */
   col: number
   /** Cursor row within the viewport, for anchoring the menu. */
   row: number
+  /** Which tier produced these entries. Drives the glyphs, the caption, and —
+   *  load-bearing — whether an accepted name gets the `./` path guard. */
+  mode: CompletionMode
+  /** The command context these entries were computed for. Part of the staleness
+   *  identity: the token alone does NOT identify a command-tier suggestion, since
+   *  `gh pr c` and `git c` share the token `c`. Without this, editing the command
+   *  word while a menu is open lets Enter insert the OTHER tool's subcommand. */
+  argv: string[]
 }
 
 /** A debounced listing request: the query's inputs plus where to anchor its menu. */
@@ -77,11 +95,15 @@ interface Request {
   col: number
   row: number
   foldersOnly: boolean
+  mode: CompletionMode
+  /** Command context (`["gh", "pr"]`), sent only in command mode. */
+  argv: string[]
 }
 
 function sameRequest(a: Request, b: Request): boolean {
   return a.token === b.token && a.raw === b.raw && a.col === b.col
-    && a.row === b.row && a.foldersOnly === b.foldersOnly
+    && a.row === b.row && a.foldersOnly === b.foldersOnly && a.mode === b.mode
+    && a.argv.length === b.argv.length && a.argv.every((w, i) => w === b.argv[i])
 }
 
 /** The listing route's response, validated field by field before use. */
@@ -176,7 +198,7 @@ export default function TerminalCompletion({ term, sessionId, active }: {
    * while the buffer still satisfies the conditions that opened it.
    */
   const readWord = useCallback((): {
-    token: string; raw: string; start: number; command: string
+    token: string; raw: string; start: number; command: string; argv: string[]
   } | null => {
     const buf = term.buffer.active
     // vim/less/htop draw on the alternate buffer, where the cursor sweeps over
@@ -215,7 +237,13 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     if (!isPlainWord(line, commandStart(line, start, marker), start, raw)) return null
     // The request carries the decoded name (`my dir/`), the insertion logic the
     // on-screen form (`my\ dir/`).
-    return { token: unescapeWord(raw), raw, start, command: commandWord(line, start, marker) }
+    return {
+      token: unescapeWord(raw),
+      raw,
+      start,
+      command: commandWord(line, start, marker),
+      argv: commandArgv(line, start, marker),
+    }
   }, [term])
 
   /* ── The listing query ── */
@@ -224,11 +252,16 @@ export default function TerminalCompletion({ term, sessionId, active }: {
   // its fetch with it, which is what keeps a slow listing from answering for a
   // word that is no longer on screen.
   const { data, isError } = useQuery({
-    queryKey: ['terminal-completions', sessionId, req?.token ?? '', req?.foldersOnly ?? false],
+    queryKey: [
+      'terminal-completions', sessionId, req?.mode ?? 'none',
+      req?.token ?? '', req?.foldersOnly ?? false, (req?.argv ?? []).join('\u0000'),
+    ],
     enabled: active && req != null,
     // A directory listing is only true for the instant it was read, and this one
     // is re-read per keystroke: a remembered answer would offer names that may
     // already be gone, so nothing is ever served from cache and nothing is kept.
+    // (The command tier is cached SERVER-side instead, keyed on the tool's own
+    // identity — a subcommand set is a property of the binary, not of the moment.)
     staleTime: 0,
     gcTime: 0,
     retry: false,
@@ -242,6 +275,9 @@ export default function TerminalCompletion({ term, sessionId, active }: {
           session_id: sessionId,
           token: req.token,
           folders_only: req.foldersOnly,
+          // Present ONLY in command mode. Its presence is what selects the tier
+          // server-side, so the path tier's request shape is unchanged.
+          ...(req.mode === 'command' ? { argv: req.argv } : {}),
         }),
         signal,
       })
@@ -269,6 +305,26 @@ export default function TerminalCompletion({ term, sessionId, active }: {
       // control character is dropped at the door: it can never be offered,
       // highlighted, or dragged into Tab's common prefix.
       .filter((e: Entry) => typeof e?.name === 'string' && isSafeName(e.name))
+      // Rebuilt field by field rather than spread: `desc` is rendered and `kind`
+      // drives the glyph, so neither may arrive as an arbitrary JSON type.
+      .map((e: Entry): Entry => ({
+        name: e.name,
+        dir: Boolean(e.dir),
+        at: typeof e.at === 'number' ? e.at : undefined,
+        kind: e.kind === 'sub' || e.kind === 'flag' ? e.kind : undefined,
+        desc: typeof e.desc === 'string' ? e.desc : undefined,
+        nospace: e.nospace === true ? true : undefined,
+      }))
+      // The tier the CLIENT asked for decides how an accepted value is typed
+      // (escaped-and-`./`-guarded vs verbatim), so an entry that does not belong
+      // to that tier is DROPPED rather than reinterpreted as the other kind. A
+      // command entry must additionally be a protocol-shaped token, since the
+      // command tier types its values without escaping them.
+      .filter((e: Entry) => (
+        req.mode === 'command'
+          ? e.kind != null && isCommandToken(e.name, e.kind === 'flag')
+          : e.kind == null
+      ))
     if (listed.length === 0) { close(); return }
     // A word that ends in `/` already names a complete directory, so the user may
     // well be done — the first row confirms THAT directory instead of forcing a
@@ -278,7 +334,9 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     // `ls`/`du`/`chmod` the directory is itself a valid argument. (kiro-cli
     // synthesises the same row, labelled "Enter the current directory", but only
     // for `cd`-style commands — that leaves `ls foo/` with no way out.)
-    const entries: Entry[] = req.token.endsWith('/')
+    // Path tier only: a subcommand list has no "the word so far is already the
+    // answer" case, and a `/`-terminated word never reaches the command tier.
+    const entries: Entry[] = req.mode === 'path' && req.token.endsWith('/')
       ? [{ name: '', dir: true, here: true }, ...listed]
       : listed
     setSug({
@@ -290,6 +348,8 @@ export default function TerminalCompletion({ term, sessionId, active }: {
       truncated: Boolean(data.truncated),
       col: req.col,
       row: req.row,
+      mode: req.mode,
+      argv: req.argv,
     })
     setSelected(0)
   }, [data, isError, req, close])
@@ -299,7 +359,8 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     if (!active) { close(); setReq(null); return }
     const run = () => {
       const word = readWord()
-      if (!word || !shouldComplete(word.token, word.command)) {
+      const mode = word ? completionMode(word.token, word.command) : 'none'
+      if (!word || mode === 'none') {
         close()
         setReq(null)
         dismissed.current = null
@@ -313,6 +374,8 @@ export default function TerminalCompletion({ term, sessionId, active }: {
         col: word.start,
         row: term.buffer.active.cursorY,
         foldersOnly: foldersOnly(word.command),
+        mode,
+        argv: mode === 'command' ? word.argv : [],
       }
       // Identity is preserved for an unchanged request so a bare cursor movement
       // does not churn the query key (or reset the highlighted row).
@@ -356,13 +419,23 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     // Defence in depth: the listing is already filtered, so reaching this with a
     // control character would mean a second ingestion path appeared.
     if (!isSafeName(entry.name)) return
-    const { erase, text } = buildInsertion(sug.raw, entry.name, acceptSuffix(entry.dir))
-    if (!entry.dir) {
+    const isPath = sug.mode === 'path'
+    const suffix = isPath
+      ? acceptSuffix(entry.dir)
+      : commandSuffix(Boolean(entry.nospace))
+    // `isPath` false disables the `./` guard: a flag named `--force` must be typed
+    // as `--force`, whereas a FILE named `--force` must be typed as `./--force`.
+    const { erase, text } = buildInsertion(sug.raw, entry.name, suffix, isPath)
+    if (isPath && !entry.dir) {
       // A file completion ends the word — `acceptSuffix` appended a space, so the
       // next word is empty, and for a path command an empty word means "list the
       // cwd". Left alone the menu re-opens instantly for the NEXT argument, which
       // reads as the completion having failed. Suppress that empty word; typing
       // anything (or deleting back into the name) revives it.
+      //
+      // Not applied in command mode: there, re-opening on the empty next word is
+      // the POINT — accepting `pr` should immediately offer `create`/`view`, which
+      // is how a user walks down a subcommand tree without typing.
       dismissed.current = ''
     }
     sendRawToTerminalSession(sessionId, '\x7f'.repeat(erase) + text)
@@ -397,7 +470,17 @@ export default function TerminalCompletion({ term, sessionId, active }: {
      * the menu closes and the key goes to the shell untouched (Enter submits
      * exactly the visible line, Tab runs the shell's own completion).
      */
-    const stale = (s: Suggestions) => readWord()?.token !== s.token
+    const stale = (s: Suggestions) => {
+      const word = readWord()
+      if (!word || word.token !== s.token) return true
+      // The token alone is not the identity of a command-tier suggestion: `gh pr c`
+      // and `git c` share the token `c`, so a token-only check would let a menu
+      // computed for one tool be accepted into the other's command line. Compare
+      // the command context too, and only for the tier that has one.
+      if (s.mode !== 'command') return false
+      return word.argv.length !== s.argv.length
+        || word.argv.some((w, i) => w !== s.argv[i])
+    }
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       // An IME candidate is committed with a keydown the browser marks as
@@ -440,7 +523,9 @@ export default function TerminalCompletion({ term, sessionId, active }: {
           if (extendsWord(common, s.prefix)) {
             // Escaped (and `./`-guarded) through the same choke point as an
             // outright acceptance — a partial prefix is filesystem-derived too.
-            const { erase, text } = buildInsertion(s.raw, common)
+            // The guard is skipped in command mode for the same reason acceptance
+            // skips it: `--` shared by every flag is a flag prefix, not a path.
+            const { erase, text } = buildInsertion(s.raw, common, '', s.mode === 'path')
             close()
             sendRawToTerminalSession(sessionId, '\x7f'.repeat(erase) + text)
           } else {
@@ -517,7 +602,12 @@ export default function TerminalCompletion({ term, sessionId, active }: {
   /* ── Bottom bar: what the highlighted row means ── */
   const caption = useMemo(() => {
     if (!sug) return ''
-    if (sug.entries[selected]?.here) return i18nT('components.terminalCompletion.use_this_folder')
+    const entry = sug.entries[selected]
+    if (entry?.here) return i18nT('components.terminalCompletion.use_this_folder')
+    // A command row's own help text is the most useful thing to show — it answers
+    // "what does this subcommand do", which is the question that otherwise sends
+    // the user off to `--help`. Path rows keep showing the resolved directory.
+    if (sug.mode === 'command') return entry?.desc ?? ''
     // One whole key per rendered caption: appending a translated " (truncated)"
     // fragment to the path would leave translators a bare parenthetical with no
     // sentence to place it in.
@@ -527,12 +617,16 @@ export default function TerminalCompletion({ term, sessionId, active }: {
   }, [sug, selected])
 
   if (!sug) return null
+  const isCommand = sug.mode === 'command'
   return (
     <div
       ref={menuRef}
       data-testid="terminal-completion"
+      data-mode={sug.mode}
       role="listbox"
-      aria-label={i18nT('components.terminalCompletion.path_completions')}
+      aria-label={isCommand
+        ? i18nT('components.terminalCompletion.command_completions')
+        : i18nT('components.terminalCompletion.path_completions')}
       className="absolute z-30 flex flex-col overflow-hidden rounded-md border border-border bg-bg-elevated shadow-lg"
       style={{
         left: pos?.left ?? 0,
@@ -558,20 +652,38 @@ export default function TerminalCompletion({ term, sessionId, active }: {
           >
             {e.here
               ? <CornerDownLeft className="h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
-              : e.dir
-                ? <Folder className="h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
-                : <FileIcon className="h-3 w-3 shrink-0 text-muted" aria-hidden="true" />}
-            <span className={`truncate ${e.here ? 'text-muted' : ''}`}>
+              : e.kind === 'flag'
+                ? <Minus className="h-3 w-3 shrink-0 text-muted" aria-hidden="true" />
+                : e.kind === 'sub'
+                  ? <ChevronRight className="h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
+                  : e.dir
+                    ? <Folder className="h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
+                    : <FileIcon className="h-3 w-3 shrink-0 text-muted" aria-hidden="true" />}
+            <span className={`shrink-0 truncate ${e.here ? 'text-muted' : ''}`}>
               {e.here ? './' : <Matched name={e.name} at={e.at} len={sug.prefix.length} />}
-              {e.dir && !e.here ? '/' : ''}
+              {e.dir && !e.here && !e.kind ? '/' : ''}
             </span>
+            {/* The tool's own summary, inline. It is the flexible part of the row
+                (`min-w-0 flex-1`) so a long description truncates instead of
+                pushing the name it describes out of view. */}
+            {e.desc
+              ? (
+                <span className="min-w-0 flex-1 truncate pl-2 text-[11px] text-muted">
+                  {e.desc}
+                </span>
+              )
+              : null}
           </div>
         ))}
       </div>
-      {/* Description bar: what the highlighted row will do. */}
-      <div className="border-t border-border px-2 py-1 text-[10.5px] text-muted">
-        <span className="block truncate font-mono" title={caption}>{caption}</span>
-      </div>
+      {/* Description bar: what the highlighted row will do. Dropped entirely for a
+          command listing whose protocol supplies no help text (git's does not),
+          rather than left as an empty strip below the rows. */}
+      {caption || !isCommand ? (
+        <div className="border-t border-border px-2 py-1 text-[10.5px] text-muted">
+          <span className="block truncate font-mono" title={caption}>{caption}</span>
+        </div>
+      ) : null}
     </div>
   )
 }

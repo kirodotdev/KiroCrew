@@ -91,11 +91,13 @@ credential directories by bind-mount (Linux user + mount namespaces) or file-rea
 denial (macOS Seatbelt), and scrubbing credential-bearing environment variables
 on the way in. The parent gateway process is unaffected.
 
-**`agent.sandbox` defaults to `"off"`, and the only other selectable value is
-`"auto"`** (`config/loader.py`, `AgentConfig.sandbox`, `enum=["auto", "off"]`;
+**`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
+(namespace on Linux, sandbox-exec on macOS).** The only alternative value is
+`"off"` (`config/loader.py`, `AgentConfig.sandbox`, `enum=["auto", "off"]`;
 the same two-value enum gates the dashboard config editor in
-`dashboard/handlers/core.py`). `"off"` is not "no isolation": it defers isolation
-to `kiro-cli`'s own internal agent sandbox, which cannot nest inside Kiro Crew's
+`dashboard/handlers/core.py`). `"off"` skips Kiro Crew's own sandbox but still
+delegates to `kiro-cli`'s internal agent sandbox on macOS when it is enabled,
+which cannot nest inside Kiro Crew's
 Seatbelt wrap (the macOS kernel returns EPERM even under an allow-all outer
 profile), so exactly one layer can own isolation per spawn. Setting `"auto"`
 re-enables Kiro Crew's own sandbox.

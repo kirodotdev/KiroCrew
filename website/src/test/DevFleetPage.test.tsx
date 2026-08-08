@@ -49,6 +49,68 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('No worktrees found')).toBeInTheDocument())
   })
 
+  it('main row warns when the primary checkout is parked on a non-base branch', async () => {
+    // Regression: the primary checkout was left on a merged PR's feature
+    // branch. The row's name is hardcoded to the base branch, so without the
+    // badge the fleet claimed "main" while showing that branch's merged PR
+    // pill — contradictory, and the truth only surfaced when Pull+Build
+    // refused to sync.
+    const data = {
+      base_branch: 'main',
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 117, branch: 'fix/old-merged-pr', pr: { number: 1742, state: 'MERGED', url: 'https://github.com/org/repo/pull/1742', isDraft: false } },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('Parked on fix/old-merged-pr')).toBeInTheDocument())
+    // The tooltip explains the consequence (Pull+Build refuses to sync).
+    expect(screen.getByText('Parked on fix/old-merged-pr')).toHaveAttribute('title', expect.stringContaining('fix/old-merged-pr'))
+  })
+
+  it('main row keeps the plain label when the primary checkout is on the base branch', async () => {
+    const data = {
+      base_branch: 'main',
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, branch: 'main' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText(/main/).length).toBeGreaterThan(0))
+    expect(screen.queryByText(/^Parked on /)).toBeNull()
+  })
+
+  it('main row does not false-flag when the payload lacks base_branch', async () => {
+    // An older backend that omits base_branch must not trigger the warning —
+    // comparing against a hardcoded 'main' would false-flag repos whose base
+    // branch has a different name.
+    const data = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0, branch: 'trunk' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(data), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText(/main/).length).toBeGreaterThan(0))
+    expect(screen.queryByText('Parked on trunk')).toBeNull()
+  })
+
   it('shows error state on network failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.reject(new Error('Network error')))
     renderPage()
@@ -673,6 +735,84 @@ describe('DevFleetPage', () => {
     // Upward placement anchors via `bottom`, not `top`.
     expect(menu.style.bottom).not.toBe('')
     expect(menu.style.top).toBe('')
+  })
+
+  /* ─── Pull+Build confirm popover: portal + flip ─── */
+  // The confirm popover used to be position:absolute inside the row, so the
+  // Worktrees Card's `.card-glow { overflow: hidden }` clipped it. It is now
+  // portaled to <body> with fixed positioning, like the row-actions menu.
+  async function openPullBuildConfirm() {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    fireEvent.click(trigger)
+    return { trigger, pop: await screen.findByRole('dialog') }
+  }
+
+  it('renders the Pull+Build confirm popover in a portal on document.body (escapes Card overflow)', async () => {
+    const { pop } = await openPullBuildConfirm()
+    // Portaled: a direct child of <body>, not nested inside the row Card whose
+    // overflow:hidden previously cut the popover off mid-render.
+    expect(pop.parentElement).toBe(document.body)
+    expect(pop.getAttribute('aria-label')).toBe('Pull + Build main')
+    expect(within(pop).getByText('Pulls main and rebuilds (~6 min). Does NOT restart.')).toBeInTheDocument()
+  })
+
+  it('Start inside the portaled confirm popover still fires the sync request', async () => {
+    const { pop } = await openPullBuildConfirm()
+    // The outside-click guard must exclude the portaled popover itself, or the
+    // mousedown preceding this click would close it before the click lands.
+    fireEvent.click(within(pop).getByText('Start'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      const urls = calls.map((c) => (typeof c[0] === 'string' ? c[0] : (c[0] as Request).url))
+      expect(urls.some((u) => u.includes('/sync'))).toBe(true)
+    })
+  })
+
+  it('outside-click and Escape close the portaled confirm popover', async () => {
+    const { trigger } = await openPullBuildConfirm()
+    fireEvent.mouseDown(document.body)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(trigger)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('confirm popover opens downward when there is room below', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: 100, bottom: 120, left: 400, right: 440, width: 40, height: 20, x: 400, y: 100, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const pop = await screen.findByRole('dialog') as HTMLElement
+    expect(pop.getAttribute('data-placement')).toBe('down')
+    expect(pop.style.position).toBe('fixed')
+    expect(pop.style.top).not.toBe('')
+    expect(pop.style.bottom).toBe('')
+  })
+
+  it('confirm popover flips upward when near the viewport bottom', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    // A row a few px above the bottom edge is exactly the case in the bug
+    // report: no room below, so the popover must flip up instead of being cut.
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: window.innerHeight - 8, bottom: window.innerHeight - 4, left: 400, right: 440, width: 40, height: 20, x: 400, y: window.innerHeight - 8, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const pop = await screen.findByRole('dialog') as HTMLElement
+    expect(pop.getAttribute('data-placement')).toBe('up')
+    expect(pop.style.bottom).not.toBe('')
+    expect(pop.style.top).toBe('')
   })
 
   /* ─── Provision progress: expandable log panel + failure persistence ─── */

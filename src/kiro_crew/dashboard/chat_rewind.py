@@ -29,6 +29,7 @@ from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
+    slot_history_key,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
@@ -145,7 +146,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 if disk_older > 0 and state.conversation_log is not None:
                     try:
                         chained = state.conversation_log.read_messages_chained(
-                            effective_session_key(slot)
+                            slot_history_key(slot)
                         )
                     except Exception:
                         logger.debug("rewind: chained scan for ts failed", exc_info=True)

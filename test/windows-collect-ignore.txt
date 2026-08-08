@@ -1,0 +1,48 @@
+# Test files NOT collected on Windows -- one bare filename per line, relative
+# to this directory. Blank lines and #-comments are ignored.
+#
+# These suites exercise POSIX-only-by-design features (OS-level sandbox, process
+# groups / PGID semantics, PTY, AF_UNIX sockets, 0o600 mode bits -- see
+# docs/guides/windows-install.md's per-feature table). They are skipped at
+# COLLECTION time rather than marked test-by-test because several fail at import
+# or fixture time on win32, which a skip marker cannot prevent.
+#
+# TWO readers, which is why this is a file and not a literal list:
+#
+#   1. test/conftest.py builds `collect_ignore` from it. That covers the normal
+#      invocation, where pytest recurses into this directory.
+#   2. scripts/ci-surface-tests.py filters it out of the reduced target list it
+#      emits on Windows. That is NOT redundant: naming a file explicitly on the
+#      pytest command line bypasses BOTH `collect_ignore` and the
+#      `pytest_ignore_collect` hook, so a caller that passes explicit paths --
+#      as the reduced frontend-only scope does -- would collect these files and
+#      fail. The exclusion has to be applied by whoever builds that list.
+#
+# Adding a file here excludes it from both paths. Removing one re-enables it on
+# Windows; residual per-test gaps belong in windows-expected-failures.txt.
+
+test_harness.py                    # spawns real gateways; PGID + socketpair plumbing
+test_sandbox_argv.py               # OS sandbox is POSIX-only
+test_sandbox_cc_mode.py            # OS sandbox is POSIX-only
+test_pid_lifecycle.py              # process-group semantics
+test_pid_sweep_helpers.py          # process-group semantics
+test_process_tree_kill.py          # killpg/getpgid semantics
+test_source_providers.py           # providers require the POSIX sandbox
+
+# Feature-parity gaps observed on the first Windows runs -- each is a
+# POSIX-shaped feature or test suite tracked as a Windows follow-up:
+test_terminal_handler.py           # PTY web terminal is POSIX-only
+test_acp_client.py                 # asserts os.killpg/SIGKILL process control
+test_stop_kill_cancel.py           # killpg/getuid kill-path semantics
+test_app_backend_stale_reap.py     # getpgid/killpg reaping semantics
+test_env.py                        # krb5 ccache resolver is Linux-only (getuid paths)
+test_outbox_notify_broadcast.py    # hardcoded /tmp outbox paths
+test_outbox_binary.py              # hardcoded /tmp outbox paths
+test_deploy_web_handlers.py        # deploy staging is POSIX-shaped (/tmp, uid)
+test_snapshot.py                   # replace-while-open (WinError 32) semantics
+test_theme_install.py              # POSIX readable/mode gate rejects NTFS modes
+test_webapp_preview.py             # preview routes 404 on Windows backends
+test_file_raw.py                   # 0o600/0o644 mode-bit assertions
+test_file_download.py              # 0o600/0o644 mode-bit assertions
+test_dashboard_file_io.py          # 0o600/0o644 mode-bit assertions
+test_dev_fleet_app.py              # POSIX app-runner assumptions

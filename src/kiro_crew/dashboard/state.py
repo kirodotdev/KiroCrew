@@ -25,7 +25,11 @@ from aiohttp import web
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import (
+    OPTIONS_RE_LINE,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+)
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
@@ -45,6 +49,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
+from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -485,7 +490,15 @@ _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 CRON_NOTIFY_PREFIX = "[Cron notification from "
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
-SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
+# Both sub-agent markers, for the checks that must treat either shape as a system
+# injection. Pass this straight to ``str.startswith`` (it accepts a tuple) instead
+# of listing the prefixes per call site: the batch marker is a SIBLING of the
+# per-agent one rather than an extension of it, so a per-prefix check written
+# against one silently misses the other, and a third shape would miss both.
+SUBAGENT_COMPLETION_PREFIXES = (
+    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+)
 # One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
 # each result has been processed in its own turn (see gateway._subagent_done arm
 # + chat_runner drain/idle branch). Its visible reply is the consolidated,
@@ -825,6 +838,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "channel_origin",
         "folder_id",
         "_folder_changed",
         "_folder_suggested",
@@ -867,7 +881,6 @@ class _ChatSlot:
         "_pending_rewrite",
         "_file_changes",
         "linked_session_key",
-        "_browse_mode",
         "_side",
         "_acp_client",
         "_steer_segment_cut",
@@ -1113,7 +1126,14 @@ class _ChatSlot:
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
-        self._browse_mode: bool = False  # per-turn: True when user explicitly enables browser
+        # True only when this slot was created to DISPLAY a conversation that
+        # already lives in a channel transcript (the reconciler surfacing a
+        # thread, a restore, a History resume). It is what separates such a tab
+        # from a dashboard slot that merely happens to be NAMED like one --
+        # a filename-shaped name is not provenance, and inferring it from the
+        # name would let `POST /api/chat/slots` with a colliding `slack_<ts>`
+        # name write a fresh conversation into an existing thread's transcript.
+        self.channel_origin: bool = False
         self._side: SideState | None = None
         # Live inner AcpClient for the in-flight turn, published by _run_chat at
         # turn start and cleared in its finally. Lets a concurrent request (the
@@ -2197,6 +2217,15 @@ class DashboardState:
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
+            # Which release lane these bytes came from: "nightly", "insider" or
+            # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
+            # dashboard to parse `version` itself, because the rule is not
+            # obvious (the same release is stamped as SemVer for desktop and
+            # PEP 440 for wheels, and neither PEP 440 prerelease spelling
+            # contains a `-`) and a frontend mirror of it would drift silently.
+            # The dashboard uses this to give prerelease users an obvious way to
+            # report a bug; see release_channel.py for the full rule.
+            "release_channel": _release_channel_of_build(),
             # True when the gateway has wired up a live Slack client (Socket Mode
             # connected). None in pure-dashboard mode or when Slack is disabled.
             "slack_connected": self.slack_client is not None,
@@ -2812,6 +2841,38 @@ class DashboardState:
         """Look up a slot by name without creating it. Returns None if absent."""
         return self._slots.get(name)
 
+    def spend_slot_by_session(self) -> dict[str, str]:
+        """Map each live slot's SESSION key to the SLOT key its spend is filed under.
+
+        Per-turn usage is persisted under ``slot.key``
+        (``chat_runner.persist_token_record_async``), while a session is addressed
+        by :func:`effective_session_key`. For an ordinary dashboard slot those are
+        the same string modulo the ``dashboard:`` prefix, so a prefix rule is
+        enough. For a slot bound to a channel or cron conversation they are
+        UNRELATED: the turns run under ``linked_session_key`` while the spend rows
+        still carry the dashboard slot key, so a consumer joining spend by session
+        key finds nothing and renders "unknown" for a session that did spend.
+
+        This is the reverse index that closes that gap. It lives here because
+        DashboardState owns the slots and the identity rule; a consumer rebuilding
+        it would be a second owner of the rule, which is how the two sides drifted
+        apart in the first place.
+        """
+        # Local import: chat_utils imports FROM state at module level, so a
+        # top-level import here is a cycle. state.py already defers
+        # `dashboard_slot_key` the same way.
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        out: dict[str, str] = {}
+        for slot in list(self._slots.values()):
+            try:
+                session_key = effective_session_key(slot)
+            except Exception:  # pragma: no cover - defensive; a slot mid-teardown
+                continue
+            if session_key:
+                out[session_key] = slot.key
+        return out
+
     def native_subagent_snapshots(
         self,
         terminal_limit: int = NATIVE_SUBAGENT_TERMINAL_KEEP,
@@ -2988,6 +3049,7 @@ class DashboardState:
         ephemeral: bool | None = None,
         app: str = "",
         linked_session_key: str = "",
+        channel_origin: bool = False,
     ) -> _ChatSlot:
         """Return existing slot or create a new one.
 
@@ -3055,6 +3117,11 @@ class DashboardState:
         # write their namespaced origin id through the legacy channel field;
         # those are projected separately via ``links`` and must never make the
         # destructive Slack actions appear.
+        if channel_origin:
+            # Additive: never cleared, because get_or_create_slot also returns
+            # EXISTING slots and a later plain call must not downgrade a tab
+            # that a channel path already claimed.
+            slot.channel_origin = True
         if linked_session_key:
             slot.linked_session_key = linked_session_key
         elif self.sessions:
@@ -3066,12 +3133,14 @@ class DashboardState:
             # dashboard-only session whose replies never reach the thread.
             #
             # Only ever adopts a key the session map actually holds, so a slot
-            # whose name merely looks channel-shaped stays unbound.
-            from kiro_crew.messaging.link import is_channel_session_key
-
+            # whose name merely looks channel-shaped stays unbound. Validated the
+            # same way ``surface_channel_session`` validates its own argument:
+            # only a real channel key may become a binding, so a malformed map
+            # answer leaves the slot unbound (a supported state) rather than
+            # routing the user's replies to a session no channel reads.
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
-                if resolved:
+                if isinstance(resolved, str) and is_channel_session_key(resolved):
                     slot.linked_session_key = resolved
         try:
             if self.sessions:

@@ -560,7 +560,7 @@ class AgentConfig:
     streaming: bool = True
     model: str = "auto"            # resolved from agent config
     provider: str = "acp"          # fixed to "acp" (kiro-cli) — the only provider
-    sandbox: str = "off"           # default "off" (defer to kiro-cli's internal agent sandbox); "auto" (namespace on Linux, seatbelt on macOS), "strict", or "off"
+    sandbox: str = "auto"          # default "auto" (namespace on Linux, seatbelt on macOS; delegates to kiro-cli's internal sandbox on macOS when enabled); "off" skips Kiro Crew's sandbox
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     enforce_denied_commands: str = "all"  # "all" or "kirocrew"
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
@@ -594,6 +594,7 @@ class KnowledgeConfig:
     auto_add_documents: bool = True                     # agent adds documents it reads (aggregate "Auto-added" source); legacy spelling auto_ingest_doc_links accepted
     auto_register_project_docs: bool = True             # register each worked-in project's documents as a folder source (document filter only)
     auto_ingest_chunk_budget: int = 150                 # chunks per sweep for auto-registered sources; 0 = unbounded
+    folder_ingest_chunk_budget: int = 300               # chunks per sweep for hand-added folder sources; per-source chunk_budget overrides; 0 = unbounded
     dedup_every_n_sweeps: int = 12                      # full dedup pass cadence; 0 disables
     auto_ingest_artifacts: bool = True                  # on by default; ingest local artifacts into the KB (aggregate "Artifacts" source)
     auto_ingest_artifact_kinds: list[str] = ["markdown", "text", "html", "json"]  # reader-extractable kinds (widget/svg excluded)

@@ -100,7 +100,11 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import (
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+    DashboardState,
+)
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.discord.gateway import maybe_start_discord
@@ -3377,10 +3381,10 @@ class GatewayOrchestrator:
         if conv_log is None:
             return
         # Lazy import avoids a circular dependency (dashboard.chat_utils → gateway).
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.chat_utils import slot_history_key
 
         try:
-            await asyncio.to_thread(conv_log.set_title, effective_session_key(slot), slot.title)
+            await asyncio.to_thread(conv_log.set_title, slot_history_key(slot), slot.title)
         except Exception:
             logger.warning(
                 "Heartbeat: failed to persist slot title for %s", slot.key, exc_info=True
@@ -3919,7 +3923,7 @@ class GatewayOrchestrator:
             title, _ = redact_credentials(title)
 
             announce = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}`"
                 f"{f' ({info.agent})' if info.agent else ''}"
                 f" {status} {emoji}\n"
@@ -4094,7 +4098,7 @@ class GatewayOrchestrator:
                     if _last:
                         # Final chunk: release the spawn-discipline gate.
                         announce = (
-                            f"[Subagent batch completion event]\n"
+                            f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — wave finished: "
                             f"{bp['ok']} ✅ · {bp['err']} ❌ · "
                             f"{bp['stopped']} ⏹ of {bp['total']} agents. "
@@ -4111,7 +4115,7 @@ class GatewayOrchestrator:
                         # arriving from this run.
                         _remaining = max(0, bp["total"] - bp["done"])
                         announce = (
-                            f"[Subagent batch completion event]\n"
+                            f"{SUBAGENT_BATCH_COMPLETION_PREFIX}\n"
                             f"Batch results {_chunk_k}/{_chunk_j} — "
                             f"{bp['done']} of {bp['total']} delivered, "
                             f"{_remaining} still running.\n"
@@ -4718,7 +4722,7 @@ class GatewayOrchestrator:
                     error_text, _ = redact_credentials(error_text)
                     slot.append(
                         "assistant",
-                        f"[Subagent completion event]\n"
+                        f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
                         f"Error: {error_text}\n"
@@ -5399,13 +5403,51 @@ class GatewayOrchestrator:
             # layout. Teaching it the wheel path (which needs the installer, not a
             # git reset) is a separate change from making the CHECK honest.
             if update_required(_running_version):
+                # A mandatory floor is handled by layout, because "apply" means
+                # different things per install shape:
+                #   * git checkout (self_updatable) -> git fetch + reset applies.
+                #   * wheel/cli.sh (not self_updatable, but carries an installer
+                #     `update_command`) -> cannot self-apply unattended; warn and
+                #     light the dashboard badge so the operator runs `kirocrew
+                #     update`. Before this branch existed the path `return`ed
+                #     silently, leaving the host below the floor with no signal.
+                #   * externally managed (dmg/appimage/docker: not self_updatable
+                #     AND no `update_command`) -> its own updater owns this; the
+                #     backend must not drive a git reset on a non-git tree nor
+                #     show an inapplicable CLI-update badge. Log and return.
+                if _update_info.get("self_updatable"):
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s — "
+                        "applying a mandatory update (overrides auto_update)",
+                        _running_version,
+                        min_version(),
+                    )
+                    await self._auto_apply_update()
+                    return
+                if _update_info.get("update_command"):
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s, "
+                        "but this install (%s) updates by re-running the installer — "
+                        "run `kirocrew update`",
+                        _running_version,
+                        min_version(),
+                        _update_info.get("install_kind") or "unknown",
+                    )
+                    # Light the badge: the SSE snapshot reads
+                    # `_update_info["available"]`, which the check may have left
+                    # False (a pre-release remote reads as not-newer) even though
+                    # the floor makes this update mandatory.
+                    _update_info["available"] = True
+                    if self.dashboard_state:
+                        self.dashboard_state.push_refresh("update_available")
+                    return
                 logger.warning(
-                    "Version compliance: running %s is below the policy minimum %s — "
-                    "applying a mandatory update (overrides auto_update)",
+                    "Version compliance: running %s is below the policy minimum %s, but this "
+                    "install (%s) is updated by its own updater — not applying from the backend",
                     _running_version,
                     min_version(),
+                    _update_info.get("install_kind") or "unknown",
                 )
-                await self._auto_apply_update()
                 return
 
             if _update_info.get("available"):

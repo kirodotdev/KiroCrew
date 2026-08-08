@@ -494,6 +494,47 @@ def test_create_server_pipe_raises_on_a_name_the_os_rejects() -> None:
         transport._create_server_pipe("not-a-pipe-name", first=True)
 
 
+@pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows pipe creation")
+def test_create_server_pipe_closes_the_handle_when_the_read_mode_flip_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raise between create and hand-off must not orphan a kernel handle.
+
+    The handle has no Python owner until the caller wraps it in a PipeHandle, and
+    ``PipeServer.close()`` only walks ``_free_instances``, which it has not
+    entered yet. So nothing would ever reclaim it: the named-pipe instance would
+    leak once per failed accept for the life of the gateway.
+    """
+    import _winapi
+
+    real_close = _winapi.CloseHandle
+    closed: list[int] = []
+    address = transport.resolve_address(tmp_path / "gateway.sock")
+
+    def _boom(*_args: object) -> None:
+        raise OSError("read-mode flip failed")
+
+    def _spy_close(handle: int) -> None:
+        closed.append(int(handle))
+        real_close(handle)
+
+    with monkeypatch.context() as m:
+        m.setattr(transport._winapi, "SetNamedPipeHandleState", _boom)
+        m.setattr(transport._winapi, "CloseHandle", _spy_close)
+        with pytest.raises(OSError, match="read-mode flip"):
+            transport._create_server_pipe(address, first=True)
+
+    assert len(closed) == 1, "the orphaned pipe handle was not closed"
+    # Proof the instance is really gone: FILE_FLAG_FIRST_PIPE_INSTANCE refuses a
+    # second first-instance while any handle to the name is still open, so this
+    # only succeeds if the failed attempt released it.
+    handle = transport._create_server_pipe(address, first=True)
+    try:
+        assert handle
+    finally:
+        real_close(handle)
+
+
 @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows path separators")
 def test_windows_address_is_separator_insensitive(tmp_path: Path) -> None:
     """The stub and gatewayd receive --socket as text and may disagree on the

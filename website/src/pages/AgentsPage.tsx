@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { Star, StarOff, Brain, Plug, X, Pin, Package, Lock, Hourglass, Bot, ChevronDown } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useAppSelector } from '../store'
@@ -14,6 +13,7 @@ import { LAYOUT } from '../components/layout'
 import InfoTip from '../components/InfoTip'
 import { useProvider } from '../providers'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { formatCost } from '../utils/formatCost'
 
@@ -135,15 +135,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const defaultAgent = defaultAgentData ?? ''
 
   const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null)
-  const { data: modelOptionsData } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => {
-      const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(x => x.name && x.name !== 'auto')]
-    },
-    refetchInterval: modelListRefetchInterval,
-  })
-  const modelOptions = modelOptionsData ?? []
+  const modelOptions = useAvailableModels()
   const { open: modelDropOpen, setOpen: setModelDropOpen, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelOptions)
   // Roving-focus keyboard nav for the model dropdown (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onModelListKeyDown } = useListboxKeyboard({

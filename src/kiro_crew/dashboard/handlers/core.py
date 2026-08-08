@@ -869,6 +869,14 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
 
     - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
     - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
+
+    The pip fallback deliberately targets a SYSTEM python with ``--user`` (never
+    the gateway's own venv, which is replaced on every upgrade). ``--user`` lands
+    in ``~/.local/bin``, which :func:`kiro_crew.transcribe._find_whisper` probes
+    via its ``_WHISPER_SEARCH_PATHS`` (and via ``shutil.which`` when that dir is
+    on PATH). It also constrains the resolve so pip can never drop into a source
+    build — see the ``BINARY_ONLY`` comment in the script for why an incompatible
+    wheel otherwise reports itself as a compiler error.
     """
     prelude = _stt_install_path_prelude()
     if provider == "mlx":
@@ -929,8 +937,41 @@ if [ -z "$PY" ]; then
 fi
 echo "Using: $PY ($($PY --version))"
 
+# openai-whisper itself is a pure-Python sdist, but its dependency tree is not:
+# numpy / numba / llvmlite / torch / triton / tiktoken all ship COMPILED wheels.
+# When pip finds no wheel matching the host it silently falls back to the source
+# tarball and starts a compile — which is why a wheel-compatibility problem
+# surfaces as a toolchain error ("GCC >= 9.3", "metadata-generation-failed")
+# that names numpy and looks unrelated to the missing wheel. Amazon Linux 2 ships
+# glibc 2.26, so pip accepts at most manylinux_2_17, while current numpy publishes
+# manylinux_2_28 only — the default resolve therefore fetches numpy-2.5.1.tar.gz
+# and dies on the system GCC (7.3 on AL2).
+#
+# --only-binary removes sdists from the candidate set for exactly these packages,
+# so the resolver BACKTRACKS to the newest version that does have a compatible
+# wheel instead of compiling (verified on glibc 2.26: numpy 2.5.1 -> 2.2.6
+# manylinux_2_17, exit 0). Deliberately NO pinned version ceiling: a hardcoded cap
+# would rot as hosts and wheel tags move, while letting pip choose the newest
+# wheel-compatible release stays correct on both old and current hosts.
+BINARY_ONLY="numpy,numba,llvmlite,torch,triton,tiktoken,regex"
+
+# torch's default Linux wheels are the CUDA builds, so a plain resolve drags ~2.5 GB
+# of nvidia-* packages onto a machine that has no GPU to use them. --extra-index-url
+# would not help: it only ADDS a source, and pip still prefers the higher-versioned
+# default build. So the CPU wheel gets its own step from the CPU-only index, and the
+# whisper resolve below then sees torch already satisfied and leaves it alone.
+# Non-fatal: if the CPU index is unreachable, fall through and let whisper resolve
+# torch itself rather than failing an install that would otherwise succeed.
+if [ "$(uname -s)" = "Linux" ] && ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "No NVIDIA GPU detected, installing CPU-only torch..."
+    "$PY" -m pip install -q --user --only-binary=torch \
+        --index-url https://download.pytorch.org/whl/cpu torch 2>&1 \
+        || echo "CPU-only torch unavailable; letting openai-whisper resolve torch"
+fi
+
 echo "Installing openai-whisper..."
-"$PY" -m pip install -q --user openai-whisper || { echo "ERROR: pip install openai-whisper failed"; exit 1; }
+"$PY" -m pip install -q --user --only-binary="$BINARY_ONLY" openai-whisper 2>&1 \
+    || { echo "ERROR: pip install openai-whisper failed"; exit 1; }
 
 echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
@@ -1071,6 +1112,38 @@ async def api_security_posture(_request: web.Request) -> web.Response:
 # caller raising it arbitrarily (e.g. {"subagent_auto_max": 9999}) to bypass
 # the concurrency limit.
 
+# Agent settings whose ENFORCED effect is fixed at gateway startup.
+# ``SubagentManager`` is constructed with ``max_subagents`` and
+# ``subagent_max_turns`` and never re-reads the config afterwards;
+# ``max_concurrent`` is stored once with no setter, and ``subagent_auto_max``
+# only reaches that enforced value as the ``hard_cap`` inside
+# ``compute_max_subagents``, which the same construction calls.
+#
+# Precisely: persisting one of these does NOT change what the running gateway
+# ENFORCES. It is not inert, though — the advisory cap advertised to the model
+# re-resolves from config on each read, so after a write the reported cap can
+# move while the enforced one stays put. That divergence is pre-existing and
+# deliberate (overflow queues, so the advertised number is guidance rather than
+# a limit); this constant describes only the enforced side, which is what the
+# restart is for.
+#
+# ``dynamic-subagent-sizing.md`` states the contract this mirrors: "The cap is
+# computed once per gateway start. Restart to recompute." The ``restart_required``
+# response field is the existing convention for exactly this case — the channel
+# config handlers already return it for settings read at boot, and the frontend
+# API client already types it.
+#
+# ``conductor_skill`` is deliberately absent: it is applied inline by this
+# handler (the skill file is regenerated/removed in-request), so it takes effect
+# immediately and must not raise the restart hint.
+_STARTUP_READ_AGENT_KEYS = frozenset(
+    {
+        "max_subagents",
+        "subagent_max_turns",
+        "subagent_auto_max",
+    }
+)
+
 
 async def api_kirocrew_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/kirocrew — read or update KiroCrew config."""
@@ -1109,6 +1182,13 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         if not isinstance(data.get("agent"), dict):
             data["agent"] = {}
         agent = data["agent"]
+        # Snapshot the persisted values BEFORE any mutation. The dashboard sends
+        # all four settings on every save and enables Save whenever any one is
+        # dirty, so "was applied" is not "was changed" -- keying the restart hint
+        # off the raw applied list would flag a restart for a conductor-only save.
+        # Same truthfulness guard as handlers/messaging.py (see its no-op-save
+        # comments) so the flag stays trustworthy enough to act on.
+        before = dict(agent)
         # subagent_max_turns keeps the generic 1..N validation; max_subagents is
         # special — 0 is the "auto-size" sentinel and its upper bound is the
         # configured hard cap (dynamic-subagent-sizing.md §5.5/§6).
@@ -1209,7 +1289,13 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                         p.unlink()
                 except Exception:
                     logger.exception("Failed to clean up conductor skill")
-        return web.json_response({"ok": True})
+        # A startup-read key that was merely re-sent with its existing value did
+        # not change the enforced cap, so it must not raise the hint.
+        restart_required = any(
+            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key)
+            for key in applied
+        )
+        return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()
     return web.json_response(_masked_config_dict(cfg))
@@ -1361,6 +1447,16 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Nothing about this key is sensitive to read back, so the masked GET
     # already surfaces it for the toggle's initial state.
     "telemetry.beacon_enabled": {"type": "bool"},
+    # Tailnet-derived dashboard origin (RFC §4). Only the boolean enable is
+    # editable: there is no companion key here for a hand-written tailnet name,
+    # because the name is *derived from the local daemon and validated against the
+    # tailnet's own MagicDNS suffix* — accepting one from an API caller would hand
+    # the CSRF origin allowlist an attacker-chosen value, which is the whole thing
+    # ``tailnet._valid_magicdns_name`` exists to prevent. Enabling takes effect on
+    # the next gateway start (the origin set is built once during startup), and an
+    # enterprise ceiling can refuse the enabling write outright — see the
+    # ``capabilities.tailnet_origin`` gate below.
+    "dashboard.tailscale.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY
@@ -1382,6 +1478,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_register_project_docs": {"type": "bool"},
     "knowledge.auto_ingest_artifacts": {"type": "bool"},
     "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
@@ -1424,6 +1521,29 @@ def _beacon_governance_pinned_off() -> bool:
     decision behind it.
     """
     return beacon.is_governance_pinned_off(audit_tool="config_patch_dashboard")
+
+
+def _tailnet_governance_pinned_off() -> bool:
+    """Return whether a ceiling pins ``capabilities.tailnet_origin`` off (blocking).
+
+    The tailnet twin of :func:`_beacon_governance_pinned_off`, and delegating for
+    the same reason: ``tailnet.is_governance_pinned_off`` is the one resolution, so
+    the PATCH gate, the startup derivation gate and the CLI gate cannot disagree
+    about whether a host is pinned.
+
+    Runs in a worker thread (see the call site): the resolution reads the
+    trust-root policy file and the active profile from disk.
+
+    ``audit_tool``: this is an ENFORCEMENT decision (it refuses the write with a
+    403), so it routes through the audited seam and lands a
+    ``governance_decision`` SEL record. The name is distinct per call site so the
+    trail says which control refused; the route additionally logs its own
+    ``config.patch`` denial via ``_log_sel``, which records the API call while
+    this records the governance decision behind it.
+    """
+    from kiro_crew.dashboard import tailnet  # noqa: F811 - local: keeps the import edge lazy
+
+    return tailnet.is_governance_pinned_off(audit_tool="config_patch_dashboard_tailnet")
 
 
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
@@ -1526,6 +1646,23 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if pinned:
             return _deny(
                 "telemetry is disabled by your administrator's security policy",
+                f"{path_key}={value}",
+                403,
+            )
+
+    # Same rule, same direction, for the tailnet origin derivation. `false` stays
+    # writable under a ceiling that already forbids it, for the same reason as
+    # above: the ceiling is a floor, a narrower local choice composes with it, and
+    # refusing the write would strand the user if the policy were later lifted.
+    # The 403 exists so a pinned host cannot store `true` behind a control that
+    # does nothing — `resolve_tailnet_host` already refuses to derive, so without
+    # this the config file and the card would both claim "on" while no origin is
+    # ever added.
+    if path_key == "dashboard.tailscale.enabled" and value is True:
+        pinned = await asyncio.to_thread(_tailnet_governance_pinned_off)
+        if pinned:
+            return _deny(
+                "tailnet access is disabled by your administrator's security policy",
                 f"{path_key}={value}",
                 403,
             )

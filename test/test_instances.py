@@ -16,7 +16,9 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import socket
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -942,6 +944,166 @@ class TestSshTunnelArgvCompression:
         reg.add(name="CD2", ssh_host="cd-2-alias", instance_id="cd-2")
         assert (await mgr_on.connect("cd-2")).state == TunnelState.CONNECTED
         assert captured["compression"] is True
+
+
+requires_ssh = pytest.mark.skipif(shutil.which("ssh") is None, reason="ssh not available")
+
+
+def _ssh_effective_config(tmp_path, config_text: str, ssh_args: list[str], host: str) -> dict:
+    """Return ssh's OWN resolved settings (``ssh -G``) for *ssh_args* under a config.
+
+    Asks the real ssh binary how it would interpret the production command line,
+    rather than asserting on option strings: the point at issue is precedence
+    between the command line and ``~/.ssh/config``, which only ssh can answer.
+
+    *ssh_args* is everything between the ``ssh`` binary and the host, flags
+    included. Passing the whole thing rather than only the ``-o`` pairs matters:
+    some settings resolve differently depending on flags like ``-N``.
+    """
+    cfg = tmp_path / "ssh_config"
+    cfg.write_text(config_text.format(host=host, sock=str(tmp_path / "cm-%r@%h:%p")), "utf-8")
+    out = subprocess.run(
+        ["ssh", "-G", "-F", str(cfg), *ssh_args, host],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert out.returncode == 0, f"ssh -G failed: {out.stderr}"
+    # Repeated keys are accumulated, not overwritten: ssh prints one
+    # ``identityfile`` line per candidate, and how many appear varies by
+    # release and by whether the config named one.
+    resolved: dict[str, str] = {}
+    for line in out.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        key, value = key.strip().lower(), value.strip()
+        resolved[key] = f"{resolved[key]}\n{value}" if key in resolved else value
+    return resolved
+
+
+def _ssh_args(argv: list[str]) -> list[str]:
+    """Everything between the ``ssh`` binary and the trailing host."""
+    return argv[1:-1]
+
+
+class TestSshTunnelMultiplexing:
+    """The supervised-child contract must survive a user's ssh_config.
+
+    Multiplexing moves the local forward off the child the gateway supervises:
+    ssh hands it to an existing shared connection and exits 0. That recreates
+    the fork-and-exit shape ``-N`` without ``-f`` exists to avoid, so a tunnel
+    that is genuinely serving reports ``ssh exited with code 0`` and is torn
+    down.
+    """
+
+    _HOST = "kc-test-multiplex-host"
+
+    #: A user config that enables multiplexing for the instance host.
+    _ADVERSARIAL_CONFIG = """\
+Host {host}
+  HostName 127.0.0.1
+  User probeuser
+  ControlMaster auto  # wokeignore:rule=master
+  ControlPath {sock}
+  ControlPersist 10m
+"""
+
+    def test_tunnel_argv_pins_multiplexing_off(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+
+        argv = _build_ssh_tunnel_argv("host-a", 7779, 7879)
+        assert "ControlPath=none" in argv
+        assert "ControlMaster=no" in argv  # wokeignore:rule=master
+        # Options, so they precede the -L forward and the positional host.
+        assert argv.index("ControlPath=none") < argv.index("-L")
+        assert argv.index("ControlMaster=no") < argv.index("-L")  # wokeignore:rule=master
+        assert argv[-1] == "host-a"
+
+    @requires_ssh
+    def test_user_ssh_config_cannot_re_enable_multiplexing(self, tmp_path):
+        """Ask the real ssh how it resolves the production argv, twice.
+
+        The pinned run must end up sharing nothing. The unpinned run over the
+        SAME config is the control: it shows ssh honouring the user's settings,
+        so the assertions above test the pins rather than restating ssh's
+        defaults.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+
+        args = _ssh_args(_build_ssh_tunnel_argv(self._HOST, 7779, 7879))
+        pinned = _ssh_effective_config(tmp_path, self._ADVERSARIAL_CONFIG, args, self._HOST)
+        assert pinned.get("controlpath") in (None, "none")
+        assert pinned.get("controlmaster") in ("no", "false")  # wokeignore:rule=master
+
+        bare = ["-N", "-L", "127.0.0.1:7779:127.0.0.1:7879"]
+        unpinned = _ssh_effective_config(tmp_path, self._ADVERSARIAL_CONFIG, bare, self._HOST)
+        assert unpinned.get("controlpath") not in (None, "none")
+        assert unpinned.get("controlmaster") == "auto"  # wokeignore:rule=master
+
+    @requires_ssh
+    def test_pins_do_not_override_a_user_ignoreunknown(self, tmp_path):
+        """A pinned `-o` must not displace a directive the user also sets.
+
+        ssh takes the FIRST value obtained for a directive and reads the command
+        line before ``~/.ssh/config``, so pinning a single-valued directive here
+        silently discards the user's own. ``IgnoreUnknown`` is the one that
+        bites: it is how a cross-platform config carries an option this ssh does
+        not recognise, and losing it turns a working config into ``Bad
+        configuration option`` -- every tunnel then fails where it used to
+        connect. Multiplexing is safe to pin because a supervised tunnel must
+        never share a connection; that reasoning does not generalise.
+
+        The keyword is invented so no OpenSSH release knows it, which keeps the
+        result independent of platform and version.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+
+        cfg = tmp_path / "ssh_config"
+        cfg.write_text(
+            "IgnoreUnknown UserPrivateOption\n"
+            "UserPrivateOption yes\n"
+            "\n"
+            f"Host {self._HOST}\n"
+            "  HostName 127.0.0.1\n",
+            "utf-8",
+        )
+        args = _ssh_args(_build_ssh_tunnel_argv(self._HOST, 7779, 7879))
+        out = subprocess.run(
+            ["ssh", "-G", "-F", str(cfg), *args, self._HOST],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert out.returncode == 0, f"production argv broke a working config: {out.stderr}"
+        assert "bad configuration option" not in out.stderr.lower()
+
+    @requires_ssh
+    def test_per_host_ssh_config_is_still_inherited(self, tmp_path):
+        """Only process ownership is overridden; connection coordinates are not.
+
+        The registry carries no inline `-i`/`-p`/`-J` fields and relies on the
+        ssh-config alias path for identity, port, and bastion reachability, so
+        pinning must not turn the argv into a general ssh_config override.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
+
+        config = (
+            self._ADVERSARIAL_CONFIG
+            + "  Port 2222\n"
+            + "  IdentityFile ~/.ssh/some-key.pem\n"
+            + "  ProxyCommand /bin/true %h %p\n"
+        )
+        args = _ssh_args(_build_ssh_tunnel_argv(self._HOST, 7779, 7879))
+        resolved = _ssh_effective_config(tmp_path, config, args, self._HOST)
+
+        assert resolved.get("hostname") == "127.0.0.1"
+        assert resolved.get("user") == "probeuser"
+        assert resolved.get("port") == "2222"
+        assert "some-key.pem" in resolved.get("identityfile", "")
+        assert resolved.get("proxycommand", "").startswith("/bin/true")
+        # The argv's own pins are still in force alongside the inherited values.
+        assert resolved.get("batchmode") == "yes"
+        assert resolved.get("exitonforwardfailure") == "yes"
+        assert resolved.get("addressfamily") == "inet"
 
 
 class TestSshTunnelManager:

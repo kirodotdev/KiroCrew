@@ -32,6 +32,8 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
     is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
 )
 from kiro_crew.slack.handler import is_tracked_channel
 from kiro_crew.validation import (
@@ -678,6 +680,11 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True})
     except Exception as e:
+        # A Slack SDK / network exception can carry file paths, host and URL
+        # fragments, or credentials embedded in a URL. Sanitize before it
+        # reaches the client or the audit record (see api_slack_pins).
+        safe_error, _ = redact_credentials(str(e))
+        safe_error, _ = redact_exfiltration_urls(safe_error)
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -685,9 +692,9 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
             tool_kind="slack",
             outcome="error",
             downstream_service="slack",
-            error=str(e),
+            error=safe_error,
         )
-        return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"error": safe_error}, status=500)
 
 
 async def api_upload(request: web.Request) -> web.Response:

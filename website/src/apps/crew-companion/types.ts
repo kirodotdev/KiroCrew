@@ -31,6 +31,15 @@ export interface RemindersPayload {
   /** Desktop app UI language. Kept for parity; this page formats in the dashboard's
    *  own language, so it is not used for display. */
   language: string
+  /**
+   * Whether the desktop overlay is currently on screen. The overlay pings
+   * `/presence` roughly every 30s and the backend treats it as present for 90s
+   * after; `true` means it pinged inside that window. This is the difference
+   * between the companion RUNNING and merely being ENABLED — the in-process
+   * backend answers this read either way, so a closed overlay is a definite
+   * `false` rather than a failed request.
+   */
+  present: boolean
 }
 
 /** Patch accepted by POST /reminders/config. */
@@ -71,3 +80,24 @@ export interface MemoryRow {
   icon: LucideIcon
   text: string
 }
+
+/** Avatar states and moods, as the companion's own art packs name them. */
+// ── Pet State Machine ──────────────────────────────────────────────────────
+
+/**
+ * The pack-authoring vocabulary: the states and moods a pack MAY provide art for.
+ *
+ * Distinct from the narrower union in `PetAvatar`, which is what the companion
+ * actually displays. The repo keeps both on purpose — a pack can ship art for a mood
+ * the current build never enters, and dropping it here would silently discard that
+ * art on save.
+ */
+export type PetState =
+  | 'idle'
+  | 'thinking'
+  | 'working'
+  | 'walking'
+  | 'error'
+  | 'offline'
+
+export type PetMood = 'neutral' | 'happy' | 'sleepy' | 'curious' | 'busy' | 'scared'

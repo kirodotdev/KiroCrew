@@ -21,7 +21,8 @@ Four parts, in the order you will need them:
 ### Host requirements
 
 - **OS**: any modern Linux distribution (Ubuntu 22.04+, Debian 12+, Fedora,
-  Amazon Linux 2023). macOS works too, with launchd instead of systemd.
+  CentOS Stream / RHEL 8+, CentOS 7, Amazon Linux 2 / 2023). macOS works too,
+  with launchd instead of systemd.
 - **Python**: 3.10 or newer (`setup.cfg` sets `python_requires = >=3.10`).
 - **Node.js**: needed to build the dashboard bundle. `website/package.json`
   declares `"node": "20 || >=22"`; `kirocrew doctor` warns below Node 16.
@@ -39,14 +40,26 @@ Four parts, in the order you will need them:
 ### Install the basics
 
 ```bash
-# Debian / Ubuntu
+# Debian / Ubuntu (python3-venv is a separate package here)
 sudo apt-get update && sudo apt-get install -y git tmux python3 python3-pip python3-venv
 
-# Fedora / Amazon Linux 2023
-sudo dnf install -y git tmux python3 python3-pip
+# Fedora / CentOS Stream / RHEL 8+ / Amazon Linux 2023 (python3 may be 3.9;
+# python3.11 gives the 3.10+ the backend needs)
+sudo dnf install -y git tmux python3.11 python3.11-pip
+
+# CentOS 7 / RHEL 7 (yum; base repos ship only Python 3.6, which is too old —
+# install a newer interpreter yourself first, e.g. mise; see below)
+sudo yum install -y git tmux
+curl https://mise.run | sh && mise use -g python@3.12
 ```
 
-Install Node.js from your distro, [nodejs.org](https://nodejs.org/), or a
+The `curl … | sh` installer performs this distro Python bootstrap for you. On
+CentOS 7 and older Ubuntu, where no base-repo package supplies Python 3.10+, it
+uses an already-installed [mise](https://mise.jdx.dev/) if you have one and
+otherwise stops with instructions — the signed installer does not pipe an
+unsigned script into a shell, so install mise yourself first
+(`curl https://mise.run | sh`) if you want that path. Install Node.js from your
+distro, [nodejs.org](https://nodejs.org/), or a
 version manager such as [nvm](https://github.com/nvm-sh/nvm). `tmux` is handy
 for a first smoke test before you install the service.
 
@@ -315,14 +328,29 @@ service installer such as `cloudflared service install`).
 > used it — but every tunnel above runs on *this* host and connects to the gateway
 > from loopback, so the address it pins to is the tunnel process, not your phone.
 > One pin is then satisfied by anyone who reaches the dashboard through that same
-> tunnel, for the life of the session (up to 20 hours; `kirocrew token` defaults
-> straight to `20h`). For the same reason the audit trail records the caller as
-> `127.0.0.1` rather than a client address. Security Posture → Dashboard token
-> auth reports which of the two states you are actually in.
+> tunnel, for the life of the session — up to 20 hours per access cookie, and
+> indefinitely if the browser keeps rotating its refresh cookie. For the same
+> reason the audit trail records the caller as `127.0.0.1` rather than a client
+> address. Security Posture → Dashboard token auth reports which of the two states
+> you are actually in.
 >
-> So the real controls for a tunnelled dashboard are the provider's own auth layer
+> So the real control for a tunnelled dashboard is the provider's own auth layer
 > (Cloudflare Access, or `tailscale serve`, which keeps the service inside your
-> tailnet instead of publishing it) plus short session lifetimes — not the pin.
+> tailnet instead of publishing it) — not the pin, and **not** short session
+> lifetimes either. Refresh cookies deliberately trade the 20-hour ceiling for a
+> 30-day sliding window (see [Session duration](#session-duration)), so a
+> tunnelled browser that keeps rotating stays authenticated for as long as it
+> keeps being used.
+>
+> **`kirocrew logout` does not end that.** It revokes access sessions, but it does
+> not revoke refresh chains, so a browser still holding a valid refresh cookie can
+> obtain a fresh access cookie afterwards. Restarting the gateway does not end them
+> either: a refresh cookie is self-contained and signed with the persistent
+> `token_signing.key`. Only the dashboard's own sign-out
+> (`POST /api/auth/logout`) revokes a chain, and only the chain belonging to the
+> browser that calls it. **To cut off remote access, revoke at the provider's auth
+> layer or tear the tunnel down.** This is a known gap rather than intended
+> behaviour, so check the current release notes before relying on it.
 > Note also that config-write and secret-reveal endpoints refuse tunnelled requests:
 > `is_direct_local_request()` treats any request carrying `Forwarded` /
 > `X-Forwarded-*` / `X-Real-IP` as remote, and every standard tunnel and reverse
@@ -332,30 +360,68 @@ service installer such as `cloudflared service install`).
 
 1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
 2. The bot DMs you `https://<tunnel-url>/?token=...`.
-3. Tap it. The link exchanges the token for a session cookie.
+3. Tap it. The link exchanges the token for an access cookie **and** a 30-day
+   refresh cookie, so this is not a daily ritual — see
+   [Session duration](#session-duration).
 
 `kirocrew token` does the same thing from a shell on the gateway host.
 
 ### Session duration
 
-Two independent clocks, both signed into the token payload
-(`dashboard/token_auth.py`):
+Three clocks. The first two are signed into the access token payload
+(`dashboard/token_auth.py`), the third into the refresh cookie
+(`dashboard/refresh_tokens.py`):
 
 | Clock | Value | What it governs |
 |---|---|---|
 | Link click window (`exp`) | 5 minutes (`LINK_WINDOW_SECS = 300`) | The presigned URL must be **opened** within this window |
-| Session TTL (`session_exp`) | 1 hour by default, 20 hours maximum (`MAX_SESSION_TTL_SECS = 20 * 3600`) | How long the cookie the link mints stays valid |
+| Access session TTL (`session_exp`) | 1 hour by default, 20 hours maximum (`MAX_SESSION_TTL_SECS = 20 * 3600`) | How long the access cookie the link mints stays valid |
+| Refresh TTL | 30 days (`MAX_REFRESH_TTL_SECS = 30 * 86400`) | How long the dashboard can silently mint a new access cookie without a new link |
 
-The session TTL is the one you feel. The chat-command default is 1 hour
-(`ttl = 3600` in `slack/events.py` and `slack/handler.py`); pass a duration to
-raise it (`/kirocrew dashboard 6h`, `/kirocrew dashboard 20h`). `parse_duration`
-accepts `<N>h` or `<N>m` and clamps to the 20-hour ceiling, so asking for more
-silently gets you 20 hours rather than an error. `kirocrew token` defaults
-straight to `20h`.
+**You re-run `/kirocrew dashboard` or `kirocrew token` roughly once per 30 _idle_
+days — not every 20 hours.** Opening the link sets two cookies, not one: the
+access cookie plus an `mc_refresh_<port>` refresh cookie (HttpOnly,
+path-restricted to `/api/auth`). The dashboard schedules a
+`POST /api/auth/refresh` one hour before the access cookie expires (`LEAD_MS` in
+`website/src/hooks/useRefreshScheduler.ts`), which rotates **both** cookies. If
+the tab is hidden when that timer fires, the refresh defers until it is visible
+again. If the access cookie has already expired by the time you open the
+dashboard, `GET /api/auth/me` is denied (403 with `X-Auth-Required: true`) and the
+frontend refreshes once and retries before any login UI appears — so a phone left
+closed overnight still opens straight into a working session.
 
-When the session expires, generate a new link. The 5-minute click window is not
-the session length: it only means a link left sitting in a DM overnight is dead
-and you need a fresh one.
+Each rotation mints a fresh refresh cookie with a **new** 30-day window, carrying
+the same `chain_id` forward, and validation never consults the chain's original
+creation time. The 30 days is therefore a **sliding idle window, not a hard
+expiry**: open the dashboard at least once a month and you need never mint
+another link.
+
+The access-session numbers still govern the initial mint. The chat-command
+default is 1 hour (`ttl = 3600` in `slack/events.py` and `slack/handler.py`);
+pass a duration to raise it (`/kirocrew dashboard 6h`,
+`/kirocrew dashboard 20h`). `parse_duration` accepts `<N>h` or `<N>m` and clamps
+to the 20-hour ceiling, so asking for more silently gets you 20 hours rather than
+an error. `kirocrew token` defaults straight to `20h`. The 5-minute click window
+is not the session length: it only means a link left sitting in a DM overnight is
+dead and you need a fresh one.
+
+**When you do need a fresh link.** Three things end a refresh chain:
+
+- **30 days idle** — nothing opened the dashboard inside the window.
+- **Signing out in the dashboard** (`POST /api/auth/logout`) — revokes that
+  browser's chain and denylists its access cookie. `kirocrew logout` is **not**
+  equivalent: it ends access sessions globally but leaves refresh chains live, so
+  a browser still holding one mints a fresh access cookie on its next refresh.
+- **Reuse detection** — a consumed refresh token replayed outside a 60-second
+  same-IP grace window (`REFRESH_GRACE_SECS`) auto-revokes the entire chain
+  (RFC 6819 §5.2.2.3). The frontend reports `refresh_chain_revoked` and stops
+  scheduling refreshes; the mint screen appears once the remaining access session
+  runs out.
+
+Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`), so they
+survive a gateway restart. On a gateway old enough to predate the feature,
+`GET /api/auth/me` returns 404; the frontend logs once and falls back to the
+20-hour URL-mint behaviour.
 
 ### Persistent SSH tunnel on macOS (LaunchAgent)
 
@@ -609,10 +675,10 @@ servers and tool calls fail with ENOENT.
 | `systemctl --user` says `Failed to get D-Bus connection` | `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | Gateway will not bind the port | Something else already owns it, usually a tmux gateway. `tmux kill-session -t kirocrew`, then `ss -ltnp \| grep 5476` |
 | SSH tunnel connection refused | Confirm the gateway is running and listening: `ss -ltnp \| grep 5476` on the remote host |
-| Dashboard loads over the tunnel but the live view flaps online/offline | The TLS-terminating proxy must forward `X-Forwarded-Proto: https`; without it the auth cookie is set without `Secure` and mobile browsers withhold it from the `wss://` upgrade |
+| Dashboard loads over the tunnel but the live view flaps online/offline | The TLS-terminating proxy must forward `X-Forwarded-Proto: https`; without it the auth cookie is set without `Secure` and mobile browsers withhold it from the `wss://` upgrade. Refresh itself keeps working (the refresh cookie is `SameSite=Lax`, so it still rides ordinary HTTPS requests), but both cookies then lack `Secure` and could be sent over plain HTTP — fix the header rather than living with it |
 | Chat link still points at `localhost` | Set `dashboard.url` in `config.json` and restart the gateway |
 | Link opens to "token expired" | The presigned URL must be opened within 5 minutes. Request a fresh link |
-| Session drops sooner than you expect | The default is 1 hour. Ask for longer: `/kirocrew dashboard 6h`, up to 20h |
+| Session drops sooner than you expect | You should be refreshed silently for 30 sliding days. If you are re-minting every ~20 hours instead, the refresh cookie is not reaching `/api/auth/refresh` — confirm the browser is sending an `mc_refresh_<port>` cookie whose port suffix matches the port the gateway resolved for the request, and check the browser console for `[refresh]` warnings. Raising the initial mint (`/kirocrew dashboard 20h`) only widens the access cookie; it does not repair a broken refresh |
 | Phone cannot reach the tunnel URL | Verify the tunnel process is running and connected on the gateway host |
 | Settings will not save over the tunnel | By design. Config-write and secret-reveal endpoints require a direct-local request, and forwarding headers mark a tunnelled request as remote. Change these over an SSH session on the host |
 | "Embeddings not ready" in the dashboard | The ~610MB model downloads in the background over HTTPS on gateway start. `kirocrew doctor` probes the resolved URL; set `KIROCREW_EMBED_MODEL_URL` for a mirror. Memory falls back to keyword search until it lands, and the agent keeps working |
@@ -622,4 +688,5 @@ servers and tool calls fail with ENOENT.
 - [install.md](install.md): all build and install methods
 - [docker.md](docker.md): container deployment, including `KIROCREW_BIND`
 - [slack-setup.md](slack-setup.md): chat app creation and configuration
+- [../system-specs/features/dashboard-token-auth.md](../system-specs/features/dashboard-token-auth.md): the full access + refresh cookie design
 - [../architecture/security-deep-dive.md](../architecture/security-deep-dive.md): token auth, origin checks, the local-request gate

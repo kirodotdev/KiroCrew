@@ -522,6 +522,20 @@ Telegram turn is booked as dashboard spend (observable in the row store as a
 the transport that created the session and is therefore the only field that
 distinguishes them.
 
+**A conversation's `title` is attached by the endpoint, from two sources in
+order.** `cost_breakdown` names nothing — slot keys are all the row store holds.
+`handlers/telemetry._with_conversation_titles` resolves the live slot's
+`display_title` first, so a rename shows before it has been flushed; a session
+with no live slot falls back to the `title` on its transcript's metadata line,
+read through `ConversationLog.get_metadata` off the event loop and keyed by
+`slot_transcript_key(slot)`, which is what folds a channel-born slot onto the
+channel's own transcript. Only an explicit metadata title counts: `list_sessions`
+would answer with the first user message and then with the session key, which
+turns a ranking label into prompt text and leaves no way to tell a named
+conversation from an unnamed one. A row with neither source reports an absent
+title rather than its key. Both sources pass the same two scanners on the way
+out, so where a title came from cannot change what leaves the endpoint.
+
 **The growth slope is fitted per segment, never across the window.** Occupancy
 is a sawtooth: a compaction drops it back toward empty, and 7 of the 8
 top-spending conversations measured carry one to four such drops. A secant from
@@ -545,7 +559,10 @@ Tests: `test/test_usage.py` (`TestReadContextTokens`,
 (channel attribution incl. the bare dashboard slot form, no-truncation,
 prior-window deltas, band bucketing, post-compaction slope, growth
 withholding, non-finite rejection) and `test/metrics/test_telemetry_titles.py`
-(title redaction + cache purity), plus the `context-trace` endpoint.
+(title redaction + cache purity, and the closed-conversation fallback: the
+canonical transcript key, live-wins-over-persisted, one read per shared
+transcript, and no title where the metadata line names none), plus the
+`context-trace` endpoint.
 
 ## Circular-import rule
 

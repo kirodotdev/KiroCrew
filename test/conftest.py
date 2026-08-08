@@ -76,32 +76,17 @@ requires_symlinks = pytest.mark.skipif(
 from kiro_crew import platform_compat  # noqa: E402
 
 if platform_compat.IS_WINDOWS:
-    collect_ignore = [
-        "test_harness.py",  # spawns real gateways; PGID + socketpair plumbing
-        "test_sandbox_argv.py",  # OS sandbox is POSIX-only
-        "test_sandbox_cc_mode.py",  # OS sandbox is POSIX-only
-        "test_pid_lifecycle.py",  # process-group semantics
-        "test_pid_sweep_helpers.py",  # process-group semantics
-        "test_process_tree_kill.py",  # killpg/getpgid semantics
-        "test_source_providers.py",  # providers require the POSIX sandbox
-        # Feature-parity gaps observed on the first Windows runs -- each is a
-        # POSIX-shaped feature or test suite tracked as a Windows follow-up:
-        "test_terminal_handler.py",  # PTY web terminal is POSIX-only
-        "test_acp_client.py",  # asserts os.killpg/SIGKILL process control
-        "test_stop_kill_cancel.py",  # killpg/getuid kill-path semantics
-        "test_app_backend_stale_reap.py",  # getpgid/killpg reaping semantics
-        "test_env.py",  # krb5 ccache resolver is Linux-only (getuid paths)
-        "test_outbox_notify_broadcast.py",  # hardcoded /tmp outbox paths
-        "test_outbox_binary.py",  # hardcoded /tmp outbox paths
-        "test_deploy_web_handlers.py",  # deploy staging is POSIX-shaped (/tmp, uid)
-        "test_snapshot.py",  # replace-while-open (WinError 32) semantics
-        "test_theme_install.py",  # POSIX readable/mode gate rejects NTFS modes
-        "test_webapp_preview.py",  # preview routes 404 on Windows backends
-        "test_file_raw.py",  # 0o600/0o644 mode-bit assertions
-        "test_file_download.py",  # 0o600/0o644 mode-bit assertions
-        "test_dashboard_file_io.py",  # 0o600/0o644 mode-bit assertions
-        "test_dev_fleet_app.py",  # POSIX app-runner assumptions
-    ]
+    # Read from windows-collect-ignore.txt rather than an inline list: the CI
+    # reduced-scope selector (scripts/ci-surface-tests.py) has to apply the same
+    # exclusion, because naming a file explicitly on the pytest command line
+    # bypasses collect_ignore. One file, two readers, no drift.
+    _ignore_listfile = os.path.join(os.path.dirname(__file__), "windows-collect-ignore.txt")
+    with open(_ignore_listfile, encoding="utf-8") as _fh:
+        collect_ignore = [
+            name
+            for name in (ln.split("#", 1)[0].strip() for ln in _fh)
+            if name
+        ]
 
 
 def make_escaping_link(inside: pathlib.Path, outside: pathlib.Path) -> str:

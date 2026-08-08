@@ -16,7 +16,10 @@ Design note: a literal ``ssh -fN`` would make ssh fork into the background and
 the foreground process exit immediately, which would leave the gateway unable to
 supervise or kill the real forwarder. A gateway-supervised child must stay in the
 foreground, so we use ``-N`` (no remote command) *without* ``-f``, mirroring how
-``TunnelManager`` supervises its own child. ``ExitOnForwardFailure=yes`` ensures
+``TunnelManager`` supervises its own child. Connection multiplexing is pinned
+off in the argv (``ControlPath=none``) for the same reason: it lets a user's
+``~/.ssh/config`` recreate that fork-and-exit shape from outside this module.
+``ExitOnForwardFailure=yes`` ensures
 ssh exits if the local forward can't be bound, so a failed connect is detected
 rather than hanging. The SSM transport gets the equivalent detection from the
 generic ready-poll (:meth:`_Tunnel._wait_until_ready`) plus a post-hoc ownership
@@ -230,6 +233,19 @@ def _build_ssh_tunnel_argv(
         "ServerAliveCountMax=3",
         "-o",
         "AddressFamily=inet",  # force IPv4 loopback (dodge ::1 fallback)
+        # The forward must stay owned by the child this manager supervises.
+        # Multiplexing takes it away from the user's ssh_config: ssh hands the
+        # forward to an existing shared connection and exits 0, leaving it alive
+        # under a process the gateway never spawned, so a tunnel that is in fact
+        # serving is reported as dead.
+        #
+        # Routing and identity (`User`, `IdentityFile`, `Port`,
+        # `ProxyJump`/`ProxyCommand`) are deliberately still inherited -- the
+        # registry carries no inline equivalents. See §9 of the instances spec.
+        "-o",
+        "ControlPath=none",  # no socket to share -- this is what disables it
+        "-o",
+        "ControlMaster=no",  # policy; ControlPath alone suffices  # wokeignore:rule=master
         "-L",
         forward,
         ssh_host,

@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import socket
+import stat
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -186,6 +187,23 @@ _MAX_IMPORT_MEMBERS = 50_000
 _MAX_IMPORT_UNCOMPRESSED = 2 * 1024 ** 3  # 2 GiB
 
 
+def _is_link_entry(info: zipfile.ZipInfo) -> bool:
+    """True when a zip member declares itself a symlink or hardlink.
+
+    CPython's ``ZipFile.extract`` does NOT honor S_IFLNK -- it writes the link
+    target as ordinary file content -- so a link member cannot currently redirect
+    a later write outside the extraction root. This guard exists because that is a
+    property of the extraction backend rather than of the archive: swapping in
+    ``shutil.unpack_archive``, an external ``unzip``, or a future stdlib that
+    honors the mode bit would silently turn a link member into a real symlink and
+    make the escape reachable (CWE-22 via CWE-59). Rejecting these members keeps
+    the guarantee at the archive boundary, where it does not depend on which
+    extractor runs. Legitimate archives carry none: the export side skips symlinks.
+    """
+    mode = info.external_attr >> 16
+    return bool(mode) and stat.S_ISLNK(mode)
+
+
 def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
     """Validate a zip file for import.
 
@@ -211,6 +229,12 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                     f"Rejected: uncompressed size {total_uncompressed} exceeds cap "
                     f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
                 ), {}
+
+            # Link members can redirect a later write outside the extraction root
+            # even when every name passes the traversal check above.
+            for info in infos:
+                if _is_link_entry(info):
+                    return False, f"Rejected link entry: {info.filename}", {}
 
             # Find manifest
             manifest_entries = [n for n in names if n.endswith("MANIFEST.json")]
@@ -260,6 +284,8 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
             for info in infos:
                 parts = PurePosixPath(info.filename).parts
                 if ".." in parts or info.filename.startswith("/"):
+                    continue
+                if _is_link_entry(info):
                     continue
                 zf.extract(info, work)
 

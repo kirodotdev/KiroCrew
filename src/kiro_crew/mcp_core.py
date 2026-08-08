@@ -3986,6 +3986,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {_gov_mem}"
         scope = args.get("scope", "global")
         payload: dict[str, str] = {"rule": rule, "category": category, "scope": scope}
+        # The tool schema advertises ``negative`` -- and the ``rule`` description
+        # explicitly tells the model to prefer it over inlining a "-- NOT: ..."
+        # clause -- but this payload never forwarded it, so the clause was dropped
+        # client-side before /api/lessons could see it. The route validates the
+        # field via LEARN_ADD_SCHEMA and passes it through to write_lesson.
+        negative = args.get("negative", "")
+        if negative:
+            payload["negative"] = negative
         if scope == "workspace":
             ws = args.get("workspace", "")
             if not ws:

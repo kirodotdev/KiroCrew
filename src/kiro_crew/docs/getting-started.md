@@ -87,6 +87,11 @@ config to `~/.kiro/agents/kirocrew.json`, registers the browser MCP proxy,
 prompts for Slack credentials, and offers to set up the
 `http://kirocrew.localhost:5476` custom domain.
 
+To actually browse, turn on **Browser Mode** in Settings → Browser. Enabling it
+downloads and sets up Playwright (`@playwright/mcp` plus the selected engine's
+browser binary, bootstrapping Node if needed); browsing is then default-on
+whenever Browser Mode stays enabled.
+
 Use `kirocrew setup --agent-only` to reinstall just the agent config and skip
 the credential prompts.
 

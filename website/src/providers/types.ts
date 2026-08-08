@@ -109,6 +109,20 @@ export interface ModelInfo {
   description: string
   contextWindow?: number
   supportsExtendedContext?: boolean
+  /**
+   * Relative credit cost of a turn on this model, with Auto as the 1.0
+   * baseline — kiro's `rate_multiplier` from `chat --list-models`, passed
+   * straight through by `GET /api/models`.
+   *
+   * Deliberately OPTIONAL and never defaulted: a missing value means "the
+   * backend did not tell us", which happens on a cold start (the auto-only
+   * fallback list) and for rows served from the 24h localStorage cache written
+   * before this field existed. Substituting 1.0 there would state a price we
+   * were not told — and kiro does re-price (Luna moved 0.6x -> 0.1x in
+   * 2026-07), so a guess can be wrong by 6x. Consumers render nothing when it
+   * is absent.
+   */
+  rateMultiplier?: number
 }
 
 export interface PermissionMode {

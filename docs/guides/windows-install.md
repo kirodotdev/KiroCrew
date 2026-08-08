@@ -179,6 +179,49 @@ entering the critical section unserialized, since proceeding lock-less is the
 exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
 
+## Win32 struct layouts live at module scope
+
+Every `ctypes.Structure` subclass the Win32 helpers need is declared **once at
+module scope** — `_ProcessEntry32`, `_ProcessMemoryCounters`, `_MemoryStatusEx`,
+`_SidAndAttributes` and `_TokenUser` in `platform_compat`, plus
+`_SecurityAttributes` in `mcp_gateway/transport.py` and `_VMStatistics64` in
+`subagent.py`. Declaring one inside the function that uses it is a **memory
+leak**, not a style question: `ctypes.POINTER(T)` memoises `T -> POINTER(T)` in a
+module-level dict inside ctypes that is never evicted, so a locally-declared
+Structure pins a brand-new pair of type objects on every call. The affected
+helpers are all polled — the dashboard's system-metrics endpoint, the RSS-recycle
+watchdog, the process-tree walk behind `kill_process_tree`, and the MCP pipe's
+per-connection peer check — so the gateway grew unboundedly on Windows alone
+(measured at ~8 KiB per `proc_rss_bytes` call, ~15 MiB per 2,000 calls, never
+reclaimed). POSIX is unaffected because those branches read `/proc`, `sysctl` or
+`resource` instead of calling Win32.
+
+Taking `ctypes.POINTER()` is what pins the type, so a struct that is only ever
+instantiated (never pointed at) does not leak — but the distinction is too subtle
+to rely on, and `test_platform_compat.py::TestWin32StructsAreModuleScoped`
+enforces the blanket rule by parsing each helper's source. That check runs on the
+POSIX fleet too, where the Windows branches never execute.
+
+## The RSS-recycle ceiling measures real trees on Windows
+
+`session.watchdog_rss_max_mb` (opt-in, `0`/disabled by default) recycles a
+non-busy session whose process tree exceeds the ceiling. Its measurement is
+`/proc`-based, so `get_session_rss_mb` measured every tree as 0 MiB on Windows:
+the ceiling an operator had configured could never be reached and no session was
+ever recycled — a silent no-op rather than a visible failure. It now delegates
+there to `platform_compat.proc_rss_tree_mb_for_pid`.
+
+That helper, **not** a Toolhelp parent->child walk, is the only safe route.
+`th32ParentProcessID` is never cleared when a parent exits and Windows recycles
+PIDs aggressively, so a raw walk can attach an unrelated subtree to a recycled
+PID — which for this watchdog means recycling a *healthy* session. The helper
+validates every parent->child edge against exact creation/exit times across two
+snapshots, and treats an unreadable tree as `None` → 0 MiB so the ceiling never
+fires on a guess. The cost is one enumeration per candidate instead of the single
+shared `/proc` scan the POSIX sweep does per tick; `_build_child_map` therefore
+deliberately has no Windows branch. macOS still has no ctypes-only per-pid RSS
+path and keeps returning 0.
+
 ## Directory links on Windows
 
 `os.symlink` needs `SeCreateSymbolicLinkPrivilege`, which an ordinary

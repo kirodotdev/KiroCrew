@@ -124,10 +124,15 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_issue_source,
     api_pull_request_auto_merge,
     api_pull_request_checks,
+    api_pull_request_comment,
+    api_pull_request_pending_review,
     api_pull_request_ready,
+    api_pull_request_reply,
     api_pull_request_resolve,
     api_pull_request_source,
     api_pull_request_status,
+    api_pull_request_submit_review,
+    api_pull_request_unresolve,
     register_status_delta_sink,
     unregister_status_delta_sink,
 )
@@ -302,11 +307,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no
         # dashboard cookie and no gateway IPC secret, so a strict-internal entry
-        # denied every real caller with 403 before the handler's own bearer check
-        # ever ran — the webhook token layer was unreachable. It now lives in
-        # token_auth._BYPASS_EXACT alongside /api/messaging/teams: a
-        # self-authenticating external webhook whose handler
-        # (api_hooks_agent -> _verify_hook_token) is the sole auth gate.
+        # denies every real caller with 403 before the handler's own bearer check
+        # can run, leaving the webhook token layer unreachable. It lives in
+        # token_auth._BYPASS_EXACT_METHODS, scoped to POST, alongside the
+        # /api/messaging/teams precedent: a self-authenticating external webhook
+        # whose handler (api_hooks_agent -> _verify_hook_token) is the sole auth
+        # gate. The POST scope matters — PUT/DELETE on that same literal path
+        # match the {hook_id} wildcard of the dashboard-authed CRUD routes.
         "/api/outbox/notify",
         "/api/notifications/agent",  # MCP-only (send_notification tool); no browser caller
         "/api/slack/upload-file",
@@ -2280,8 +2287,17 @@ async def start_dashboard(
     app.router.add_post("/api/source/pull-request/checks", api_pull_request_checks)
     app.router.add_post("/api/source/pull-request/status", api_pull_request_status)
     app.router.add_post("/api/source/pull-request/resolve", api_pull_request_resolve)
+    app.router.add_post("/api/source/pull-request/unresolve", api_pull_request_unresolve)
+    app.router.add_post("/api/source/pull-request/reply", api_pull_request_reply)
+    app.router.add_post("/api/source/pull-request/comment", api_pull_request_comment)
     app.router.add_post("/api/source/pull-request/auto-merge", api_pull_request_auto_merge)
     app.router.add_post("/api/source/pull-request/ready", api_pull_request_ready)
+    app.router.add_post(
+        "/api/source/pull-request/pending-review", api_pull_request_pending_review
+    )
+    app.router.add_post(
+        "/api/source/pull-request/submit-review", api_pull_request_submit_review
+    )
     app.router.add_post("/api/source/issue", api_issue_source)
     app.router.add_get("/api/chat/slots", chat.api_chat_slots)
     app.router.add_post("/api/chat/slots", chat.api_chat_slot_create)
@@ -2572,6 +2588,7 @@ async def start_dashboard(
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
     app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
+    app.router.add_get("/api/tailnet/status", handlers.api_tailnet_status)
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
     app.router.add_get("/api/sessions/search", handlers.api_sessions_search)
@@ -2950,6 +2967,16 @@ async def start_dashboard(
             "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
             _tailnet_host,
         )
+    # Stashed on the app, not left a local, because GET /api/tailnet/status must
+    # report the value the running origin set was actually built from rather than
+    # re-probe the daemon (see handlers/tailnet.py). ``tailnet_resolved_at`` is
+    # stamped unconditionally — it timestamps the resolution ATTEMPT, so an
+    # "unresolved" card can say when we last looked; ``0`` means the derivation
+    # never ran (feature off, or pinned). Both start-up paths set both keys: only
+    # one of them serves this route today, but an earlier round of this feature
+    # already shipped a bug from touching one startup site and not the other.
+    app["tailnet_host"] = _tailnet_host
+    app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
     app["allowed_origins"] = build_allowed_origins(
         port, local_only, configured_host, tailnet_host=_tailnet_host
     )
@@ -3473,14 +3500,22 @@ async def start_api_server(
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
+    _tailnet_host = await tailnet.resolve_tailnet_host(
+        KiroCrewConfig.load().dashboard.tailscale.enabled
+    )
     app["allowed_origins"] = build_allowed_origins(
         port,
         local_only,
         configured_host,
-        tailnet_host=await tailnet.resolve_tailnet_host(
-            KiroCrewConfig.load().dashboard.tailscale.enabled
-        ),
+        tailnet_host=_tailnet_host,
     )
+    # Stashed for the same reason as in start_dashboard, and set here too even
+    # though /api/tailnet/status is registered on the dashboard app: leaving one of
+    # the two startup paths without the keys is exactly the class of bug an earlier
+    # round of this feature already shipped, and a handler moved into the MCP
+    # surface later would silently read "" as "nothing was trusted".
+    app["tailnet_host"] = _tailnet_host
+    app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
     app["local_only"] = local_only
 
     # Per-session internal secret for machine-to-machine (mcp-core, cron) auth.

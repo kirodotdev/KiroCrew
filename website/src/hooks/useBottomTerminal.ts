@@ -71,6 +71,18 @@ const listeners = new Set<() => void>()
 
 function emit() { for (const cb of listeners) cb() }
 
+/* Cross-window sync: the terminal-popout window and the main dashboard share
+ * this persisted store (one tab list, whichever window currently hosts the
+ * panel). `storage` fires only in OTHER windows — never the writer — so
+ * re-loading here can't loop; state is adopted without re-persisting. */
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY) return
+    state = loadPersisted()
+    emit()
+  })
+}
+
 function set(next: BottomTerminalState) {
   if (next === state) return
   state = next

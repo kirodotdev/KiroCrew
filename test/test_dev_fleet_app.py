@@ -3371,11 +3371,69 @@ async def test_fleet_includes_gateway_service_active(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_service_active_non_linux(monkeypatch):
-    """On non-linux, _gateway_service_active returns False without spawning."""
+async def test_gateway_service_active_no_manager(monkeypatch):
+    """A platform with neither systemd nor launchd -> False, and NO spawn.
+
+    Was previously asserted with ``platform="darwin"``; darwin is now a
+    SUPPORTED backend, so the "no manager at all" case has to be expressed with
+    a platform that really has none -- mirroring
+    ``test_live_user_unit_status_no_manager``. Asserting darwin here made the
+    verdict depend on whether the *host* happened to have the agent loaded,
+    because neither ``shutil`` nor ``_run_cmd`` was faked.
+    """
     monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None)
     monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
-    monkeypatch.setattr(mod.sys, "platform", "darwin")
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="win32"))
+    run = AsyncMock(return_value=(0, "", ""))
+    monkeypatch.setattr(mod, "_run_cmd", run)
+    assert await mod._gateway_service_active() is False
+    # The "without spawning" half of the original intent, now actually verified:
+    # backend() returns None for win32, so nothing may be probed.
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_service_active_darwin_live_agent(monkeypatch):
+    """macOS with a loaded agent reporting a live pid -> True.
+
+    The darwin-True path had no *direct* assertion: the only ``is True`` case in
+    this area runs under ``platform="linux"``. It was covered indirectly via
+    ``test_restart_gateway_darwin_requests_graceful_stop``.
+    """
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None)
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        return 0, "  pid = 4242\n", ""
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    assert await mod._gateway_service_active() is True
+    assert calls and calls[0][:2] == ["launchctl", "print"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_service_active_darwin_loaded_without_pid(monkeypatch):
+    """macOS agent loaded but not running (no pid line) -> False.
+
+    ``LaunchdBackend.active`` treats only a live pid as active, mirroring
+    ``systemctl is-active``; a zero exit from ``launchctl print`` alone is not
+    enough.
+    """
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None)
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(
+        mod, "_run_cmd", AsyncMock(return_value=(0, "  state = waiting\n", ""))
+    )
     assert await mod._gateway_service_active() is False
 
 

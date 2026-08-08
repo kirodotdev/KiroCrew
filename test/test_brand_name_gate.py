@@ -11,6 +11,7 @@ reach without a repository.
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import subprocess
 import sys
@@ -179,30 +180,81 @@ class TestUrlBoundary:
         # at these sizes. The bound sits between them with headroom for a noisy
         # runner, so real regressions are still caught.
         #
-        # Each size is measured as the MIN of N repetitions (the first call also
-        # warms up caches). min() is the standard noise-robust estimator: scheduler
-        # preemptions and GC pauses only ever ADD time, so the minimum converges on
-        # the true cost while a genuinely quadratic _hits still blows past the
-        # bound. The base size is large enough that one fixed pause is a small
-        # fraction of it -- min-of-3 at a ~50ms/20k-match base was not, and flaked
-        # on Windows CI when a single pause skewed the ratio of two small timings
-        # past 3.0 (base 47ms / doubled 141ms == 3.0x on a linear scan).
-        _REPS = 5
+        # This mirrors the script's own ``--test`` growth check (and reuses its
+        # budgets, so tuning one tunes both) because it failed the same way and for
+        # the same reason: dividing two measured durations puts the whole burden on
+        # the timer, and the wall-clock form this test used to carry was the single
+        # largest source of Backend Tests (Windows) flakes.
+        #
+        # * WRONG CLOCK. ``time.monotonic()`` is ``GetTickCount64()`` on Windows, a
+        #   ~15.625ms tick. A ~50ms scan is only ~3 ticks wide, so quantisation
+        #   ALONE moved the ratio ~25%.
+        # * WALL CLOCK AT ALL. xdist workers oversubscribe the runner's cores, so
+        #   the timed region gets descheduled -- and the LONGER scan absorbs more
+        #   preemption than the shorter one, which inflates the ratio
+        #   systematically rather than symmetrically. Taking min() of several
+        #   wall-clock samples does NOT fix that: it is exactly what this test did,
+        #   and it still reported 3.7x against a 3.5x bound on a linear scan.
+        #   Measuring the two sizes in separate loops made it worse again, because
+        #   the two halves of the ratio then came from different conditions.
+        #
+        # So measure CPU time, which does not advance while the thread is off-CPU;
+        # pair each baseline with its own doubled sample; keep the best RATIO
+        # rather than the best time; and refuse to judge a baseline too small to
+        # divide. That is what lets the bound come back DOWN to the script's 3.0x
+        # from the 3.5x the noise had forced: measured under 2x CPU
+        # oversubscription, a linear scan stays at most 2.02x while a deliberately
+        # quadratic one never drops below 3.88x.
+        def ratio_of(base: int) -> tuple[float, float, int, int]:
+            """Best (least noisy) doubled/base CPU-time ratio over several attempts."""
+            best = math.inf
+            best_base = 0.0
+            found = (0, 0)
 
-        def best_of(count: int) -> tuple[float, int]:
-            line = "!KiroCrew" * count
-            times: list[float] = []
-            found = 0
-            for _ in range(_REPS):
-                began = time.monotonic()
-                found = len(_hits(line, path="big.md"))
-                times.append(time.monotonic() - began)
-            return min(times), found
+            def once(count: int) -> tuple[float, int]:
+                line = "!KiroCrew" * count
+                began = time.process_time()
+                hits = len(_hits(line, path="big.md"))
+                return time.process_time() - began, hits
 
-        base, base_found = best_of(50_000)
-        doubled, doubled_found = best_of(100_000)
-        assert (base_found, doubled_found) == (50_000, 100_000)
-        assert doubled / base < 3.5, f"doubling the input cost {doubled / base:.1f}x, want ~2x"
+            for _ in range(gate._PERF_ATTEMPTS):
+                base_time, base_hits = once(base)
+                doubled_time, doubled_hits = once(base * 2)
+                found = (base_hits, doubled_hits)
+                if base_time <= 0.0:
+                    continue
+                candidate = doubled_time / base_time
+                if candidate < best:
+                    best, best_base = candidate, base_time
+            return (0.0 if best is math.inf else best), best_base, found[0], found[1]
+
+        # Grow the workload until the baseline is big enough to divide. A regressed
+        # scan clears the floor at the first size, so only the fast case ever pays
+        # for a larger one.
+        base_count = 0
+        ratio = base_time = 0.0
+        base_found = doubled_found = 0
+        for base_count in gate._PERF_BASE_SIZES:
+            ratio, base_time, base_found, doubled_found = ratio_of(base_count)
+            if base_time >= gate._PERF_MIN_BASE_SECS:
+                break
+
+        # Match counts are a correctness assertion, not a timing one -- they hold
+        # whatever the clock did, so they are checked before the floor bails out.
+        assert (base_found, doubled_found) == (base_count, base_count * 2)
+        if base_time < gate._PERF_MIN_BASE_SECS:
+            pytest.skip(
+                f"baseline {base_time * 1000:.1f}ms at {base_count} brands is still below "
+                f"the {gate._PERF_MIN_BASE_SECS * 1000:.0f}ms measurement floor; a ratio "
+                "here would be noise divided by noise. Quadratic growth at this size "
+                "costs orders of magnitude more than the floor, so this cannot be hiding "
+                "a regression."
+            )
+        assert ratio < 3.0, (
+            f"doubling the input cost {ratio:.1f}x CPU time (best of {gate._PERF_ATTEMPTS}, "
+            f"baseline {base_time:.3f}s at {base_count} brands); linear is ~2x, so a "
+            "per-match scan of the line has come back"
+        )
 
     def test_many_backticks_stay_linear(self) -> None:
         line = "`x`" * 30_000 + " KiroCrew"
@@ -572,6 +624,32 @@ class TestDiffScopedRun:
         )
         assert result.returncode == 0, result.stdout
         assert "self-test passed" in result.stdout
+
+    def test_self_test_actually_judges_the_growth_ratio(self, tmp_path) -> None:
+        """The repeated-brands check must reach a verdict, not skip itself.
+
+        Its baseline used to be a fixed 20k brands, which costs fast hardware
+        ~19-21ms against a 20ms measurement floor. Landing under the floor made
+        the check print `ok ... ratio not judged` and test nothing, so on a fast
+        machine the quadratic guard was a coin-flip no-op. The workload now grows
+        until the baseline is measurable, so a real ratio is always reported.
+        """
+        root = self._repo(tmp_path)
+        self._commit(root, "doc.md", "clean\n", "base")
+        result = subprocess.run(
+            [sys.executable, os.path.join(root, "scripts", "check_brand_name.py"), "--test"],
+            cwd=root,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert result.returncode == 0, result.stdout
+        verdict = [ln for ln in result.stdout.splitlines() if "repeated-brands" in ln]
+        assert len(verdict) == 1, f"expected one repeated-brands line, got {verdict!r}"
+        assert "ratio not judged" not in verdict[0], (
+            f"the quadratic guard skipped its own measurement: {verdict[0]!r}"
+        )
+        assert "doubling cost" in verdict[0], verdict[0]
 
 
 class TestExplicitPathFailsClosed:

@@ -658,6 +658,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [coverage-combine, frontend-test, backend-test, changes]
+    # Single source of truth for the floors -- referenced by the check steps,
+    # their names, and the summary table so the three can never drift apart.
+    #
+    # RATCHET POLICY: keep each floor a little under what `main` actually
+    # measures, so the gate blocks a real coverage regression without going red
+    # on ordinary noise. Raise a floor only after main has held the higher
+    # number for a while, and never above the LOWEST recent main measurement.
+    #
+    #   Backend  measured ~81.9% on main (2026-08-07) -> floor 80%
+    #   Frontend measured 60.46-61.74% on main (2026-08-07) -> floor 60%
+    #     (frontend sits ~0.5pp above its floor: it cannot be ratcheted until
+    #      website/src gains real test coverage)
+    #
+    # How backend got here, so the next person can judge the headroom:
+    #   78.69%  starting point
+    #   80.15%  #2090 stopped measuring test files CI never executes (the
+    #           BACKEND_DESELECTS set) -- an accounting fix, not new tests
+    #   81.50%  #2103 added unit coverage for 7 pure-logic-ish modules
+    #   81.94%  #2115 added 11 dashboard/Slack/app-platform modules
+    # 80% therefore leaves ~1.9pp of headroom, wider than the ~1.4pp the 77%
+    # floor had. Deliberately conservative: the last wave converted at a third
+    # the rate of the one before it (1,883 tests for +0.44pp vs 1,040 for
+    # +1.35pp), because the remaining uncovered lines sit behind I/O a unit test
+    # cannot reach. Do not assume the next raise is as cheap.
+    env:
+      BACKEND_MIN: 80
+      FRONTEND_MIN: 60
     # Always run so the required check emits a real verdict. Without
     # `if: always()`, a failing OR skipped dependency would SKIP this job, and
     # GitHub treats a skipped required check as SATISFIED -- silently defeating
@@ -723,14 +750,14 @@ jobs:
           name: coverage-frontend
           path: frontend-cov
 
-      - name: Check backend coverage (min 70%)
+      - name: Check backend coverage (min ${{ env.BACKEND_MIN }}%)
         if: needs.coverage-combine.result == 'success'
         run: |
           F=backend-cov/coverage.xml
           test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
           # Compare the raw line-rate against the threshold; round only for
-          # display (a round-then-compare would let 69.95%..69.99% pass 70%).
-          python3 - "$F" 70 Backend <<'PY'
+          # display (a round-then-compare would let 79.95%..79.99% pass 80%).
+          python3 - "$F" "$BACKEND_MIN" Backend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
@@ -740,12 +767,12 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Check frontend coverage (min 60%)
+      - name: Check frontend coverage (min ${{ env.FRONTEND_MIN }}%)
         if: needs.changes.outputs.only_backend != 'true'
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
-          python3 - "$F" 60 Frontend <<'PY'
+          python3 - "$F" "$FRONTEND_MIN" Frontend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
@@ -764,12 +791,12 @@ jobs:
           BF=backend-cov/coverage.xml
           if [ -f "$BF" ]; then
             B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$BF').getroot().attrib['line-rate'])*100:.2f}\")")
-            echo "| Backend | ${B}% | 70% |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Backend | ${B}% | ${BACKEND_MIN}% |" >> "$GITHUB_STEP_SUMMARY"
           fi
           FF=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           if [ -n "$FF" ]; then
             FR=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$FF').getroot().attrib['line-rate'])*100:.2f}\")")
-            echo "| Frontend | ${FR}% | 60% |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Frontend | ${FR}% | ${FRONTEND_MIN}% |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   frontend-lint:

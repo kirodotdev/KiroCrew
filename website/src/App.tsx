@@ -27,7 +27,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Lightbulb, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, ExternalLink, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -44,6 +44,7 @@ import { CSS } from '@dnd-kit/utilities'
 import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
+import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
 import AppIcon from './components/AppIcon'
@@ -74,8 +75,9 @@ import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
-import BottomTerminalPanel from './components/BottomTerminalPanel'
+import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
 import { toggleBottomTerminal, useBottomTerminalOpen } from './hooks/useBottomTerminal'
+import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import AppsPage from './pages/AppsPage'
 import AppPage from './pages/AppPage'
@@ -97,6 +99,7 @@ import ShortcutsModal from './components/ShortcutsModal'
 import CommandPalette from './components/CommandPalette'
 import Modal from './components/Modal'
 import ReportProblemModal from './components/ReportProblemModal'
+import FeedbackPill from './components/FeedbackPill'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
@@ -880,6 +883,10 @@ export default function App() {
   // so there is no hidden-until-fetch-resolves flash.
   const terminalEnabled = terminalConfig?.enabled !== false
   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
+  // True while the terminal panel lives in its own popped-out window: the
+  // docked panel is suppressed here and the sidebar toggle focuses that
+  // window instead of opening an (empty-handed) panel.
+  const terminalPoppedOut = useTerminalPoppedOut()
   // Only the `open` flag, not the whole store — the panel's height changes on
   // every mousemove during a grip-drag, and a primitive snapshot lets
   // useSyncExternalStore's Object.is check skip those re-renders of App.
@@ -1046,6 +1053,27 @@ export default function App() {
   // (the native dashboard); a non-null id means a remote instance's embedded
   // dashboard is shown instead, so the Local pane is hidden (not unmounted).
   const activeInstanceId = useAppSelector(s => s.instances.activeId)
+  // Whether the shell's one-shot entrance animation has already played.
+  //
+  // The local pane is HIDDEN, not unmounted, while a remote instance tab is
+  // active (`display:none` below) so its state and websocket survive the
+  // switch. But a CSS *animation* restarts when an element goes from
+  // `display:none` back to displayed — unlike a transition, and unlike
+  // framer-motion's JS-driven animations. Left unguarded, `animate-rise`
+  // therefore replays its 350ms opacity-0 -> 1 + 8px lift over the WHOLE
+  // dashboard every time the user returns to the Local tab, which reads as the
+  // entire UI (side panel included) flashing in again.
+  const [shellEntered, setShellEntered] = useState(false)
+  // Backstop for the latch below. `animationend` does NOT fire when a running
+  // animation is INTERRUPTED — the browser fires `animationcancel`, which React
+  // 18 has no synthetic handler for. Hiding the pane inside the entrance's
+  // 350ms window would therefore leave the class applied and replay it once on
+  // the next return. A timer comfortably past the duration closes that without
+  // a ref + native listener, and cannot cut the entrance short.
+  useEffect(() => {
+    const t = window.setTimeout(() => setShellEntered(true), 600)
+    return () => window.clearTimeout(t)
+  }, [])
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
@@ -1602,6 +1630,7 @@ export default function App() {
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
+        <Route path="/popout/terminal" element={<ErrorBoundary><TerminalPopoutFrame /></ErrorBoundary>} />
         {/* Belt-and-braces: any stray in-window navigation re-pins to the
             frame this window loaded as (isPopout is sticky, so the dashboard
             branch is unreachable — without this the wildcard would bounce a
@@ -1632,7 +1661,15 @@ export default function App() {
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid animate-rise overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      // Retire the entrance animation once it has played, so re-showing this
+      // pane cannot replay it. Guarded on BOTH the keyframe name and the event
+      // target: `animationend` bubbles, and descendants (banners, cards) use
+      // `animate-rise` too, so an unguarded handler would retire the shell's
+      // entrance from an unrelated child's animation.
+      onAnimationEnd={e => {
+        if (e.target === e.currentTarget && e.animationName === 'rise') setShellEntered(true)
+      }}
       style={{
         gridTemplateAreas: isMobile ? '"topbar" "content"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
@@ -1855,16 +1892,15 @@ export default function App() {
               <w.component />
             </ErrorBoundary>
           ))}
-          {/* Request a Feature — its own bordered pill (28px tall, 12px radius),
-              separated from the readout capsule (item 2.3). */}
+          {/* Feedback — "Request a Feature" plus, on a prerelease build, a
+              channel chip that opens the same Report a Problem flow. Its own
+              bordered pill (28px tall, 12px radius), separated from the readout
+              capsule (item 2.3). */}
           {!isMobile && (
-            <button
-              className="flex items-center gap-1.5 h-7 px-2.5 rounded-xl bg-card text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap shrink-0"
-              onClick={requestFeature}
-              title={i18nT('app.request_a_feature')}
-            >
-              <Lightbulb size={13} /> {i18nT('app.request_a_feature_2')}
-            </button>
+            <FeedbackPill
+              onRequestFeature={requestFeature}
+              onReportProblem={() => setReportProblemOpen(true)}
+            />
           )}
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,
@@ -2275,11 +2311,14 @@ export default function App() {
                      "active" tracks the panel's open flag rather than the route.
                      Without it the row only lit on hover, leaving no indication
                      the panel below was open once the pointer moved away. */
-                  active={bottomTerminalOpen}
-                  pressed={bottomTerminalOpen}
+                  active={bottomTerminalOpen || terminalPoppedOut}
+                  pressed={bottomTerminalOpen || terminalPoppedOut}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
-                  onClickOverride={() => toggleBottomTerminal()}
+                  /* While popped out: focus only (a refused programmatic
+                     focus is a harmless no-op). Explicit re-dock lives in the
+                     TerminalDetachedBar below -- never a timing heuristic. */
+                  onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal() }}
                 />
               )}
               <div>{renderNavRow(cap)}</div>
@@ -2443,7 +2482,7 @@ export default function App() {
         {/* App-wide docked terminal panel — spans every route, below <main>.
             Toggled from the sidebar Terminal icon; hosts app-wide
             shells. Distinct from the chat-scoped activity-bar terminal tabs. */}
-        {terminalEnabled && <BottomTerminalPanel />}
+        {terminalEnabled && (terminalPoppedOut ? <TerminalDetachedBar /> : <BottomTerminalPanel />)}
 
         {/* Self-managed floating panels: lifecycle-driven (hidden → small → chip),
             not motion.* children, so they live outside AnimatePresence. The browse

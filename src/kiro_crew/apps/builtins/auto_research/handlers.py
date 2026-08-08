@@ -28,7 +28,7 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.autonudge import get_instance as _autonudge_instance
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import (
-    effective_session_key,
+    slot_history_key,
 )
 from kiro_crew.knowledge.llm_pool import LLMPool
 
@@ -1014,7 +1014,7 @@ async def _launch_loop(request: web.Request, cid: str) -> None:
     if getattr(state, "conversation_log", None) is not None:
         try:
             await asyncio.to_thread(
-                state.conversation_log.set_title, effective_session_key(slot), slot.title
+                state.conversation_log.set_title, slot_history_key(slot), slot.title
             )
         except Exception:
             logger.warning("auto_research: failed to persist slot title for %s", cid, exc_info=True)

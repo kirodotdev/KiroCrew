@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'rea
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import Clickable from '../components/Clickable'
 import { AnimatePresence, motion } from 'framer-motion'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, Check, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow } from 'lucide-react'
 import { api } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageHeader, Card, CardTitle, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton, Input } from '../components/ui'
@@ -23,7 +23,7 @@ import { useSortableTable } from '../hooks/useSortableTable'
 import SortableHeader from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
 import { sanitizeLlmOutput } from '../utils/sanitize'
-import { SCHEDULE_PRESETS, type CronPrefill } from '../utils/schedulePresets'
+import { SCHEDULE_PRESETS, type CronPrefill, type SchedulePreset } from '../utils/schedulePresets'
 import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
@@ -31,9 +31,11 @@ import CronJobMoveMenu from '../components/CronJobMoveMenu'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../components/ui/dropdown-menu'
+import ScheduleTemplateGallery from '../components/ScheduleTemplateGallery'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateTimeNumeric } from '../i18n/format'
+import { formatCadence } from '../utils/scheduleCadence'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
 /**
@@ -187,7 +189,14 @@ export default function SchedulePage() {
   const [selected, setSelected] = useState<CronJob | null>(null)
   const [creating, setCreating] = useState(false)
   const [prefill, setPrefill] = useState<CronPrefill | null>(null)
+  // Whether the seeded preset performs repo/issue writes (shows a notice in the create panel).
+  const [prefillWrites, setPrefillWrites] = useState(false)
+  // Bumped on every preset pick so re-selecting the same preset remounts the
+  // create panel (the panel is keyed on this; without it, edits from a prior
+  // pick of the same preset would leak into the "fresh" form).
+  const [prefillNonce, setPrefillNonce] = useState(0)
   const [jobsView, setJobsView] = useState<'list' | 'calendar' | 'executions'>('list')
+  const [galleryOpen, setGalleryOpen] = useState(false)
   const [renderTz, setRenderTz] = useState<string>(() => {
     try {
       const stored = localStorage.getItem(RENDER_TZ_STORAGE_KEY)
@@ -420,7 +429,7 @@ export default function SchedulePage() {
   // Open the create panel blank (from "Create your first job" / "Add Job").
   const openBlankCreate = useCallback(() => { setSelected(null); setPrefill(null); setCreating(true) }, [])
   // Open the create panel seeded from a pre-canned schedule card.
-  const openPreset = useCallback((p: CronPrefill) => { setSelected(null); setPrefill(p); setCreating(true) }, [])
+  const openPreset = useCallback((p: SchedulePreset) => { setSelected(null); setPrefill(p.prefill); setPrefillWrites(!!p.writes); setPrefillNonce(n => n + 1); setCreating(true) }, [])
 
   // When the templates empty state is showing, use an 8px bottom pad (matching
   // the left-nav panel's m-2 edge) so the card row's bottom lines up with the
@@ -468,20 +477,35 @@ export default function SchedulePage() {
               </div>
 
               {/* Pre-canned schedules pinned to the bottom: click to open the
-                  create flow pre-filled. */}
+                  create flow pre-filled. Only FEATURED presets surface here so
+                  the empty state stays compact as the full catalog grows — the
+                  rest live in the "Browse all templates" gallery. */}
               <div className="w-full shrink-0 pt-6">
-                <div className="text-left text-[12px] font-medium uppercase tracking-[.04em] text-muted mb-3">{i18nT('pages.schedulePage.start_from_a_pre_made_schedule')}</div>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div className="text-left text-[12px] font-medium uppercase tracking-[.04em] text-muted">{i18nT('pages.schedulePage.start_from_a_pre_made_schedule')}</div>
+                  <Btn onClick={() => setGalleryOpen(true)}>
+                    <span className="flex items-center gap-1.5"><LayoutGrid size={14} aria-hidden="true" /> {i18nT('pages.schedulePage.browse_all_templates')}</span>
+                  </Btn>
+                </div>
                 <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4">
-                  {SCHEDULE_PRESETS.map(p => (
+                  {SCHEDULE_PRESETS.filter(p => p.featured).map(p => (
                     <Clickable
                       key={p.id}
-                      onClick={() => openPreset(p.prefill)}
+                      onClick={() => openPreset(p)}
                       className="group flex flex-col items-start gap-2 text-left px-5 py-5 rounded-[20px] bg-card border border-border hover:border-accent/50 hover:bg-bg-hover transition-colors focus-ring cursor-pointer"
                     >
                       <span className="text-accent shrink-0">{p.icon}</span>
                       <span className="text-[15px] font-semibold text-text-strong leading-snug">{p.title}</span>
                       <span className="text-[13px] leading-[18px] text-muted">{p.description}</span>
-                      <span className="text-[12px] text-muted/80 font-medium mt-auto">{p.cadence}</span>
+                      <span className="flex items-center gap-2 mt-auto">
+                        <span className="text-[12px] text-muted/80 font-medium">{formatCadence(p.prefill)}</span>
+                        {p.writes && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warn-fg bg-warn-subtle rounded-full px-2 py-0.5" title={i18nT('pages.schedulePage.writes_badge_tooltip')}>
+                            <GitPullRequestArrow size={11} aria-hidden="true" />
+                            {i18nT('pages.schedulePage.writes_to_your_repos')}
+                          </span>
+                        )}
+                      </span>
                     </Clickable>
                   ))}
                 </div>
@@ -506,6 +530,9 @@ export default function SchedulePage() {
                   </span>
                 </Btn>
                 )}
+                <Btn onClick={() => setGalleryOpen(true)} title={i18nT('pages.schedulePage.browse_schedule_templates')}>
+                  <span className="flex items-center gap-1.5"><LayoutGrid size={14} aria-hidden="true" /> {i18nT('pages.schedulePage.templates')}</span>
+                </Btn>
                 <SendBtn onClick={openBlankCreate}>
                   <span className="flex items-center gap-1.5">
                     <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -703,9 +730,10 @@ export default function SchedulePage() {
             className="shrink-0 overflow-hidden h-full"
           >
             <JobDetailPanel
-              key={selected?.id || prefill?.name || 'new'}
+              key={selected?.id || (prefill ? `preset#${prefillNonce}` : 'new')}
               job={selected || undefined}
               prefill={!selected ? prefill || undefined : undefined}
+              prefillWrites={!selected && !!prefill && prefillWrites}
               agents={agents}
               defaultAgent={defaultAgent}
               onClose={() => { setSelected(null); setCreating(false); setPrefill(null) }}
@@ -751,6 +779,12 @@ export default function SchedulePage() {
           </div>
         </Clickable>
       )}
+
+      <ScheduleTemplateGallery
+        open={galleryOpen}
+        onClose={() => setGalleryOpen(false)}
+        onPick={p => { setGalleryOpen(false); openPreset(p) }}
+      />
 
       {batchConfirm && (
         <Clickable
@@ -823,8 +857,8 @@ export default function SchedulePage() {
 // flex row and reflow content off-screen (mirrors DetailPanel's reserveWidth).
 const JOB_LIST_MIN = 360
 
-function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }: {
-  job?: CronJob; prefill?: CronPrefill; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
+function JobDetailPanel({ job, prefill, prefillWrites, agents, defaultAgent, onClose, onSaved }: {
+  job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; onClose: () => void; onSaved: () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -902,6 +936,12 @@ function JobDetailPanel({ job, prefill, agents, defaultAgent, onClose, onSaved }
           <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
+            {prefillWrites && (
+              <div className="flex items-start gap-2 px-3 py-2 mb-3 rounded-lg bg-warn-subtle text-[12.5px] text-warn-fg" role="note">
+                <GitPullRequestArrow size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
+                <span>{i18nT('pages.schedulePage.writes_notice')}</span>
+              </div>
+            )}
             <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
             {panelError && <div className="text-danger text-[13px]">{panelError}</div>}
             {job?.script && (job.last_result || job.last_error) && (

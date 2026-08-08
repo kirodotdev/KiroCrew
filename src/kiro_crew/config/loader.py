@@ -829,14 +829,17 @@ class AgentConfig:
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
     )
     sandbox: str = field(
-        default="off",
+        default="auto",
         metadata=_meta(
             "Sandbox",
-            "Sandbox mode for ACP provider. Default 'off' defers isolation to "
-            "kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' "
-            "to re-enable Kiro Crew's OS-level sandbox (namespace on Linux, "
-            "sandbox-exec on macOS). The two layers are mutually exclusive on "
-            "macOS (nested seatbelt causes EPERM).",
+            "Sandbox mode for ACP provider. Default 'auto' engages OS-level "
+            "isolation (namespace on Linux, sandbox-exec on macOS) and "
+            "automatically defers to kiro-cli's internal sandbox on macOS when "
+            "it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). "
+            "Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation "
+            "to kiro-cli's internal sandbox still fires on macOS if it is "
+            "enabled, and a SECURITY warning is logged when neither layer is "
+            "active.",
             enum=["auto", "off"],
         ),
     )
@@ -1584,8 +1587,21 @@ class KnowledgeConfig:
             "actually bounds the cost of auto-registration -- file filters bound "
             "pollution, not spend. Newest documents land first and the rest "
             "trickle in on later sweeps, so a new project never arrives as a "
-            "burst. 0 removes the bound. Folders you add by hand are never "
-            "budgeted: you asked for the whole folder.",
+            "burst. 0 removes the bound.",
+        ),
+    )
+    folder_ingest_chunk_budget: int = field(
+        default=300,
+        metadata=_meta(
+            "Folder Ingest Chunk Budget",
+            "Chunks a folder you add by hand may ingest per watcher sweep. Adding "
+            "a source-code repository discovers thousands of files, and each "
+            "chunk costs an LLM extraction call on a pool of billed sessions, so "
+            "an unpaced first scan can spend a large amount unattended. Nothing "
+            "is skipped: newest files land first and the rest continue on later "
+            "sweeps. Higher than the auto-ingest budget because you asked for the "
+            "folder explicitly. 0 removes the bound; a per-source chunk_budget "
+            "property overrides it for one folder.",
         ),
     )
     dedup_every_n_sweeps: int = field(
@@ -1937,6 +1953,19 @@ class DashboardConfig:
             "model outputs, so each linked site sees a request from your IP "
             "address. When false the /api/link-meta endpoint fetches nothing and "
             "returns 403.",
+        ),
+    )
+    usage_text_scrape_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Spend Credits To Read The Credit Meter",
+            "Let the credit pill fall back to a `kiro-cli /usage` chat turn when "
+            "the free usage API returns no plan. That fallback is a REAL billed "
+            "LLM turn on whichever model the lite agent resolves, and it repeats "
+            "on every refresh interval for as long as any dashboard tab is open, "
+            "so it is off by default: a meter that reports spending must not "
+            "itself spend. While it is off the pill shows whatever the free API "
+            "returned and hides when the API has nothing to show.",
         ),
     )
     tail_fork_enabled: bool = field(
@@ -4546,7 +4575,7 @@ class KiroCrewConfig:
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
                 default_agent=agent_data.get("default_agent", ""),
-                sandbox=agent_data.get("sandbox", "off"),
+                sandbox=agent_data.get("sandbox", "auto"),
                 sandbox_allow_no_isolation=bool(
                     agent_data.get("sandbox_allow_no_isolation", False)
                 ),
@@ -4746,6 +4775,8 @@ class KiroCrewConfig:
                     knowledge_data.get("auto_register_project_docs", True)),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
                     knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
+                folder_ingest_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("folder_ingest_chunk_budget", 300), 300),
                 dedup_every_n_sweeps=_safe_nonnegative_int(
                     knowledge_data.get("dedup_every_n_sweeps", 12), 12),
                 doc_ingest_hosts=[
@@ -4908,6 +4939,9 @@ class KiroCrewConfig:
                 widget_density=dashboard_data.get("widget_density", "more"),
                 verbosity=dashboard_data.get("verbosity", "default"),
                 link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
+                usage_text_scrape_enabled=_safe_bool(
+                    dashboard_data.get("usage_text_scrape_enabled"), False
+                ),
                 tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),

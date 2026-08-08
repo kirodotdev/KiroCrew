@@ -6,19 +6,27 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
-    "id": "browser.chrome-extension-mode",
-    "label": "Chrome Extension Mode",
-    "description": "Attach to your running Chrome with all existing logins and sessions. Recommended for macOS.",
+    "id": "browser.attach-to-my-running-browser",
+    "label": "Attach to my running browser",
+    "description": "Use my running Chromium browser (Chrome, Edge, Brave, Arc, Opera) with its existing logins and sessions. Recommended for macOS.",
     "tab": "browser",
     "type": "toggle",
     "occurrence": 1
   },
   {
-    "id": "browser.connection-token",
-    "label": "Connection Token",
+    "id": "browser.connection-token-optional",
+    "label": "Connection Token (optional)",
     "description": "Paste PLAYWRIGHT_MCP_EXTENSION_TOKEN value from the extension popup",
     "tab": "browser",
     "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "browser.enable-browser-mode",
+    "label": "Enable Browser Mode",
+    "description": "Let the agent read and operate web pages: click, type, and navigate, not just read. Enabling this downloads the browser tools.",
+    "tab": "browser",
+    "type": "toggle",
     "occurrence": 1
   },
   {

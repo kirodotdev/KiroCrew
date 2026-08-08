@@ -1,0 +1,240 @@
+/*
+ * The companion's speech bubble.
+ *
+ * Extracted from the desktop app's `BubbleOverlay` inside PetWidget, where it lived
+ * as a local component. The rules it renders come from `notificationPolicy`: how long
+ * the bubble stays, whether it shows a depleting countdown, and whether it offers a
+ * call to action.
+ *
+ * Kept as its own stylesheet rather than inline strings because the i18n gate reads
+ * CSS held in TypeScript as untranslated prose.
+ */
+
+@keyframes ccBubbleCountdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+@keyframes ccBubbleIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ccBubbleOut {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-8px); }
+}
+
+.cc-bubble-wrap {
+  /* Holds the bubble box and its arrow together, and carries the entry/exit
+     animation so the two move as one. No overflow clip here, so the arrow — which
+     sits half a step below the box — is never cut off. */
+  position: relative;
+  width: fit-content;
+  animation: ccBubbleIn 0.3s ease-out;
+}
+
+.cc-bubble-wrap.cc-bubble-out {
+  animation: ccBubbleOut 0.3s ease-in forwards;
+}
+
+.cc-bubble {
+  /* 240px cap, from BUBBLE_W. Narrower than the panel on purpose: a bubble is a
+     glance, and a wide one beside the companion reads as a dialog. */
+  max-width: 240px;
+  width: fit-content;
+  box-sizing: border-box;
+  /* 10px 14px / radius 14 / 13px-1.5 type: the source app's measurements, matched
+     rather than approximated — 9/12 and radius 13 read subtly tighter side by side. */
+  /* Bottom padding is deeper than the top: the countdown bar is pinned inside
+     the card's bottom edge, and this is the room it sits in. A bubble with no
+     countdown just carries the slightly deeper base. */
+  padding: 10px 14px 13px;
+  border: none;
+  border-radius: 14px;
+  /* The ✕ is a sibling of the text, not an overlay on it. */
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--card, #fdfaf3);
+  color: var(--card-fg, #2b2b2b);
+  font: 13px/1.5 var(--cc-panel-font);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 4px 16px var(--shadow, rgba(0, 0, 0, 0.22));
+  position: relative;
+  overflow: hidden;
+}
+
+/*
+ * No arrow.
+ *
+ * There used to be a small triangle under the bubble pointing at the companion. It
+ * is gone by design decision, not by accident: the bubble already sits directly
+ * above the companion, so the pointer added a second, fussier shape to read without
+ * telling the user anything the position did not.
+ *
+ * Worth knowing if anyone reinstates it: the selector was once declared TWICE — a
+ * rotated square and a border-drawn triangle — and CSS merged them per-property
+ * instead of picking one, leaving a stray white rectangle hanging under the bubble.
+ * Same failure shape as a duplicate key in an object literal: no error, just the
+ * wrong hybrid. If it comes back, it gets exactly one declaration.
+ */
+
+.cc-bubble-arrow-out {
+  animation: ccBubbleOut 0.22s ease-in forwards;
+}
+
+/*
+ * The dismiss affordance appears on hover only.
+ *
+ * An always-visible ✕ reads as a task waiting to be cleared, which is the opposite
+ * of what an ambient companion should feel like. A bubble that never times out
+ * (a reminder, or blocked work) shows none at all — it is resolved through its CTA
+ * or by being dealt with, not by being tidied away.
+ */
+.cc-bubble-x {
+  /* A flex child, not an absolutely-positioned overlay: it reserves its own space
+     so a narrow bubble's text is pushed aside rather than covered. */
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: -1px;
+  /* Hidden until the pointer is on the bubble: an always-visible ✕ on an ambient
+     companion reads as clutter, and the bubble body is clickable to dismiss anyway.
+
+     No keyboard path is being given up here. This component renders only in the pet
+     overlay, whose window is created with `setFocusable(false)`, so that window never
+     takes keyboard focus and nothing in it was ever tab-reachable — an always-visible
+     ✕ was a visible affordance, not an accessible one. The `:focus-visible` rule below
+     is kept for the day this renders somewhere focusable; it cannot fire in the
+     overlay. */
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  /* The bubble's own text colour at low opacity, brightening on hover — a fixed
+     grey neither matches the bubble nor acknowledges the pointer. */
+  color: var(--card-fg, #2b2b2b);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* Takes the remaining width so the ✕ never sits on the words. */
+.cc-bubble-text {
+  flex: 1;
+  min-width: 0;
+  /* A session title can carry a URL or a token. Without this the box's own
+     overflow:hidden clips it at the 240px cap instead of wrapping it. */
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The kicker: a small upper-case label above the body.
+ *
+ * Its whole job is to be subordinate — read as context, not as the message. Hence
+ * 10px/800 with letter-spacing and reduced opacity, and a heavier body beneath it so
+ * the two do not compete.
+ */
+.cc-bubble-kicker {
+  font: 800 10px/1.3 var(--cc-panel-font);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  margin-bottom: 2px;
+}
+
+.cc-bubble-body {
+  font: 600 13px/1.4 var(--cc-panel-font);
+}
+
+/* Brighten on bubble hover so the pointer path still gets its acknowledgement. */
+.cc-bubble-wrap:hover .cc-bubble-x {
+  opacity: 0.8;
+}
+
+.cc-bubble-x:hover {
+  opacity: 1;
+}
+
+/* Keyboard path: a visible ring only for keyboard focus (not mouse clicks). */
+.cc-bubble-x:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--card-fg, #2b2b2b);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Right-aligned under the bubble, as in the source. */
+.cc-bubble-cta-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.cc-bubble-cta {
+  /* Inverted from the bubble itself — the bubble's text colour as the fill, the
+     bubble's background as the label. Brand purple here competed with the
+     companion's own accent and read as a different product's button. */
+  background: var(--card-fg, #2b2b2b);
+  color: var(--card, #fdfaf3);
+  border: none;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: 700 11px/1 var(--cc-panel-font);
+  cursor: pointer;
+}
+
+/*
+ * The depleting bar: how long is left before the bubble goes.
+ *
+ * Only for bubbles that DO time out. Showing one on a bubble that waits for the user
+ * would promise it is about to leave, and it is not.
+ */
+.cc-bubble-countdown {
+  /* Pinned to the bubble's own bottom edge, INSIDE the card.
+  
+     It used to be a block element below the box, and there it was invisible: these
+     colours are mixed from `--card-fg`, the bubble's dark ink, which only reads
+     against the bubble's light surface. Below the box there is no surface — just the
+     transparent overlay over the user's desktop — so a dark bar at 18%/55% over a
+     dark desktop showed as nothing.
+  
+     Inset from both sides so the 14px corner radius never clips it, which is the
+     reason it was moved out of the card in the first place. */
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 5px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card-fg, #2b2b2b) 18%, transparent);
+  overflow: hidden;
+  transform-origin: left center;
+}
+
+.cc-bubble-countdown::after {
+  content: '';
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--card-fg, #2b2b2b) 55%, transparent);
+  transform-origin: left center;
+  animation: inherit;
+}
+
+/* Hovering holds both the dismissal and the bar, so reading it cannot lose it. */
+.cc-bubble-wrap:hover .cc-bubble-countdown {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-bubble-wrap,
+  .cc-bubble-wrap.cc-bubble-out { animation: none; }
+  .cc-bubble-countdown { animation: none; opacity: 0.3; }
+}
