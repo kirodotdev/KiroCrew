@@ -30,38 +30,43 @@ proposes; the human applies the fix. That boundary is deliberate.
 
 ## Calling the API (read this before your first request)
 
-Every endpoint below needs a token, and there is exactly one right way to get it.
-Run this first, once, and reuse `$BASE` and `$TOKEN` for the whole run:
+Every call goes through the **`ops_mission_control_api` MCP tool** — it carries
+the gateway's own credential, always reaches *this* instance, and exposes
+exactly the endpoint surface these SOPs use. Pass paths relative to the app
+base (`/state`, not the full `/api/apps/...` URL):
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"          # scheme://host:port of THIS instance
-TOKEN="${URL#*token=}"
-curl -s "$BASE/api/apps/ops-mission-control/state?token=$TOKEN"
+```
+ops_mission_control_api(method="GET",  path="/state")
+ops_mission_control_api(method="GET",  path="/incidents", query="id=INV-42")
+ops_mission_control_api(method="POST", path="/incident/transition",
+                        body_json='{"incident_id": "INV-42", "to": "resolved"}')
 ```
 
 Three rules, each of which cost a real unattended run:
 
-- **Do NOT hardcode a port.** `kirocrew token` prints the URL of *this* instance.
-  A hardcoded `127.0.0.1:5476` reaches a different gateway (or none) and returns
-  `{"error": "Token required"}` — a failure that repeats silently, against an instance
-  that was listening on a different port the whole time.
-- **Do NOT try to derive, mint, or hunt for a token any other way.** No cookie jar,
-  no config file, no environment variable. The cron runner deliberately destroys its
-  internal secret before your first tool call, so there is nothing to find.
-- **Pass `?token=` on the URL.** It is one request with no state to carry.
-
-If `kirocrew token` fails, stop and report that. Do not start guessing: a
-rotation-check run that improvised burned **41 tool calls** and hit the 1800s cron
-timeout without ever reaching the API, which reads as "the app is broken" when the
-only thing missing was these six lines.
+- **Do NOT call the API over raw HTTP** — no `curl`, no `web_fetch`, no
+  interpreter one-liner. An agent session holds no credential: no cookie jar,
+  no config file, no environment variable, and the CLI's credential mint is
+  denied for agent shells by the builtin security policy. Every raw request
+  returns `{"error": "Token required"}` — a failure that repeats silently,
+  possibly against a port that was never this instance's in the first place.
+- **Do NOT try to derive, mint, or hunt for a credential any other way.** The
+  cron runner deliberately destroys its internal secret before your first tool
+  call, so there is nothing to find.
+- **If the tool is missing from your tool list, load it** (search your tools
+  for `ops_mission_control_api`). If it returns an error, stop and report
+  that. Do not start guessing: a rotation-check run that improvised burned
+  **41 tool calls** and hit the 1800s cron timeout without ever reaching the
+  API, which reads as "the app is broken" when the only thing missing was one
+  tool call.
 
 ## Investigation flow
 
 ### 1. Read the incident
 
-`GET /api/apps/ops-mission-control/incident?id=INV-N` gives you the signal, its
-fingerprint, the operating mode, and any ledger entries already matched.
+`GET /incidents` with `query="id=INV-N"` gives you the incident — the signal,
+its fingerprint, the operating mode, and any ledger entries already matched —
+as the single element of `incidents`.
 
 ### 2. Check the ledger FIRST
 
@@ -70,8 +75,8 @@ with `trust: verified` and `confidence: high` is the fast path — the fix is
 already known, and your job is to confirm it still applies rather than to
 rediscover it from scratch.
 
-Read `GET /api/apps/ops-mission-control/ledger` for the full set when the
-fingerprint match comes up empty but the failure feels familiar.
+Read `GET /ledger` for the full set when the fingerprint match comes up empty
+but the failure feels familiar.
 
 ### 3. Gather evidence
 
@@ -98,10 +103,9 @@ firing before diagnosing at length.
 ### 5. Document — this is the step that compounds
 
 Write the investigation log and, if you learned something reusable, add a ledger
-entry:
+entry — `POST /ledger` with:
 
 ```
-POST /api/apps/ops-mission-control/ledger
 {"pattern": "<what breaks, described so a stranger recognizes it>",
  "fix": "<what resolved it, concretely>",
  "fingerprints": ["<this signal's fingerprint>"],
@@ -146,9 +150,9 @@ The channel is the dashboard. It stays useful only if it stays quiet.
 ## Shift handover
 
 When a rotation changes hands — or the operator asks "what do I need to know?" — do
-NOT summarize the board yourself. `GET /api/apps/ops-mission-control/handover` returns
-a digest with a pre-rendered `text` field: what is waiting on a person, what stopped
-without recording anything, what keeps recurring (ranked by how often it has actually
+NOT summarize the board yourself. `GET /handover` returns a digest with a
+pre-rendered `text` field: what is waiting on a person, what stopped without
+recording anything, what keeps recurring (ranked by how often it has actually
 matched), and which sources are NOT configured. Post that text; see
 `sops/handover.md`. Rewriting it drifts from what the dashboard shows for the same
 shift, and the ordering of its headline is deliberate.

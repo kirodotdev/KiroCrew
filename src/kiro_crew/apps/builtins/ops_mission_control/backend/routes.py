@@ -420,12 +420,19 @@ MAX_INCIDENTS_RESPONSE = 200
 
 async def _handle_incidents(request: web.Request) -> web.StreamResponse:
     status_filter = request.query.get("status", "").strip()
+    # ``id`` narrows to one incident. It exists for the agent surface: the
+    # single-incident ``GET /incident`` route cannot be admitted to
+    # internal-secret callers without prefix-admitting the human-only
+    # ``/incident/proposal/decide`` (see ``_MIXED_INTERNAL_API_PATHS`` in
+    # dashboard/server.py), so SOP-driven agents read one incident here.
+    id_filter = request.query.get("id", "").strip()
     # Off-loop: full index parse on a polled endpoint.
     index = await asyncio.to_thread(store.read_index)
     matching = [
         inc
         for inc in sorted(index.values(), key=lambda i: i.claimed_at, reverse=True)
-        if not status_filter or inc.status == status_filter
+        if (not status_filter or inc.status == status_filter)
+        and (not id_filter or inc.incident_id == id_filter)
     ]
     items = [inc.to_dict() for inc in matching[:MAX_INCIDENTS_RESPONSE]]
     payload: dict[str, Any] = {"incidents": items}

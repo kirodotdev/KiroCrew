@@ -257,6 +257,46 @@ class TestIncidentsPayloadIsBounded(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["incidents"]), 1)
         self.assertNotIn("truncated", payload)
 
+    async def test_id_filter_narrows_to_one_incident(self):
+        """``?id=`` exists for the agent surface (see dashboard/server.py).
+
+        The single-incident ``GET /incident`` route cannot be admitted to
+        internal-secret callers without prefix-admitting the human-only
+        proposal-decision route, so SOP-driven agents read one incident here.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import models, store
+
+        first = store.claim(
+            models.Signal.create(
+                source="cloudwatch", native_id="alarm/one", title="t", resource="r"
+            ),
+            operating_mode=models.MODE_OBSERVE,
+        )
+        assert first is not None
+        second = store.claim(
+            models.Signal.create(
+                source="cloudwatch", native_id="alarm/two", title="t", resource="r"
+            ),
+            operating_mode=models.MODE_OBSERVE,
+        )
+        assert second is not None
+
+        request = mock.MagicMock(spec=web.Request)
+        request.query = {"id": first.incident_id}
+        response = await routes._handle_incidents(request)
+        payload = json.loads(getattr(response, "text", "{}") or "{}")
+        self.assertEqual(
+            [inc["incident_id"] for inc in payload["incidents"]],
+            [first.incident_id],
+        )
+
+        # An unknown id returns an empty list, not an error — absence is a
+        # legitimate answer the SOPs handle.
+        request.query = {"id": "INV-does-not-exist"}
+        response = await routes._handle_incidents(request)
+        payload = json.loads(getattr(response, "text", "{}") or "{}")
+        self.assertEqual(payload["incidents"], [])
+
 
 class TestSignalsSplitsParkedFromFiring(unittest.IsolatedAsyncioTestCase):
     """`/signals` must expose provider-side suppression as its OWN bucket.
