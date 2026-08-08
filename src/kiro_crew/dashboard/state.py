@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import tempfile
 import threading
 import time
@@ -291,6 +292,170 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
 # a sink, smuggling a real-file write past the unsafe-shell check.
 _DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
 
+# A trailing `--help` is only meaningful for a program that treats it as
+# "print usage and exit". These programs instead treat their operands as code
+# or a target to act on, so `--help` lands as a positional argument and the
+# real work still happens: `sh evil.sh --help` runs evil.sh with $1=--help.
+# The classifier cannot know which behaviour a given program has, so the
+# executors are named explicitly and the shape of the command is constrained
+# below.
+_HELP_PROBE_DENIED_PROGRAMS: frozenset[str] = frozenset(
+    (
+        # Shell builtins that run their operand in the current shell. These are
+        # not programs on PATH, so the PATH-name requirement below does not
+        # reach them on its own: `source payload --help` reads `payload` from
+        # the workspace and executes it, with `--help` landing as $1.
+        "source",
+        ".",
+        "exec",
+        "eval",
+        "command",
+        "builtin",
+        "trap",
+        # Shells and interpreters — operands are code.
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "csh",
+        "tcsh",
+        "ash",
+        "busybox",
+        "python",
+        "python2",
+        "python3",
+        "perl",
+        "ruby",
+        "node",
+        "deno",
+        "bun",
+        "php",
+        "lua",
+        "tclsh",
+        "osascript",
+        "pwsh",
+        "powershell",
+        "cmd",
+        # Wrappers that hand off to another program.
+        "env",
+        "sudo",
+        "doas",
+        "nohup",
+        "setsid",
+        "nice",
+        "ionice",
+        "time",
+        "timeout",
+        "xargs",
+        "watch",
+        "script",
+        "stdbuf",
+        "unbuffer",
+        "ssh",
+        "scp",
+        "rsync",
+        "docker",
+        "podman",
+        "kubectl",
+        "make",
+        "cmake",
+        # Network tools — operands establish a connection.
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "curl",
+        "wget",
+        "telnet",
+        "ftp",
+    )
+)
+
+# Only the unambiguous spellings. `-v` and `-V` are excluded on purpose: for
+# many programs they mean verbose, not version, so `rm victim -v` would read as
+# a probe and delete the operand. `java -version` and `python --version` do not
+# need to be here — they are explicit `_READ_ONLY_BASH_PREFIXES` entries.
+_HELP_FLAGS: frozenset[str] = frozenset(("--help", "--version", "-h"))
+
+# The long spellings, which are the only ones accepted alongside a subcommand.
+# `-h` is short enough to collide with a real option (`head -h`, `ln -h`), and
+# in a three-token segment there is no way to tell which it is.
+_HELP_FLAGS_WITH_SUBCOMMAND: frozenset[str] = frozenset(("--help", "--version"))
+
+# A subcommand between the program and the flag, e.g. `git log --help`. Bare
+# words only: no path separator, no dot, no leading dash. This is what keeps
+# `sh /tmp/evil.sh --help` (path) and `rm -rf ./proj --help` (option) out,
+# while `docker compose --help` and `git rev-parse --help` stay in.
+_HELP_PROBE_SUBCOMMAND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+# A program named by path — `./payload`, `/tmp/x`, `../build/tool` — is not
+# something this classifier can vouch for. The denied-program table only knows
+# the executors it lists, so an unlisted binary that ignores `--help` and runs
+# its side effect anyway would pass. A PATH name at least has to resolve to
+# something installed; an arbitrary file dropped in the workspace does not.
+_HELP_PROBE_PATH_RE = re.compile(r"[/\\]")
+
+
+def _is_help_probe(segment: str) -> bool:
+    """True only when *segment* is a genuine usage/version probe.
+
+    Accepts ``<program> --help`` and ``<program> <subcommand> --help``. The
+    check is deliberately shaped as "only vouch for what is recognisably a
+    probe" rather than "reject the executors we know about": the denied-program
+    table cannot enumerate an arbitrary binary, so anything it does not
+    recognise must fail on the shape instead.
+
+    Rejected, each for its own reason:
+
+    * a flag other than ``--help`` / ``--version`` / ``-h``, so ``rm victim -v``
+      is an operand plus verbose, not a probe;
+    * ``-h`` alongside a subcommand, where it cannot be told from a real option;
+    * a program named by path (``./payload``, ``/tmp/x``), which the table has
+      no knowledge of and which may ignore ``--help`` entirely;
+    * a known code executor or hand-off wrapper (``sh``, ``python``, ``sudo``);
+    * a ``VAR=value`` prefix, which assigns into the command's environment;
+    * anything but a bare word between program and flag, which keeps file paths
+      and options out;
+    * unbalanced quotes, where argv cannot be established at all.
+
+    A rejected segment falls through to the read-only allowlist and, failing
+    that, to the human approval prompt — nothing is newly blocked.
+
+    The old rule was ``segment.endswith("--help")``, which auto-approved any
+    command at all once the token was appended.
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        # Unbalanced quotes: cannot establish the argv, so do not vouch for it.
+        return False
+    if len(tokens) < 2 or len(tokens) > 3:
+        return False
+    flag = tokens[-1]
+    if flag not in _HELP_FLAGS:
+        return False
+    program_token = tokens[0]
+    # A `VAR=value cmd --help` prefix assigns into the command's environment;
+    # shlex keeps it as one token, and it is not a usage probe.
+    if "=" in program_token:
+        return False
+    # A path-named program is unknown to the denied-program table, so its
+    # behaviour on `--help` cannot be assumed. Require a PATH name.
+    if _HELP_PROBE_PATH_RE.search(program_token):
+        return False
+    if not program_token or program_token in _HELP_PROBE_DENIED_PROGRAMS:
+        return False
+    if len(tokens) == 3:
+        # `-h` is ambiguous next to an operand, so a subcommand form has to use
+        # the long spelling.
+        if flag not in _HELP_FLAGS_WITH_SUBCOMMAND:
+            return False
+        if not _HELP_PROBE_SUBCOMMAND_RE.match(tokens[1]):
+            return False
+    return True
+
 
 def _classify_bash(cmd: str) -> str:
     """Single source of truth for read-only bash classification.
@@ -317,8 +482,7 @@ def _classify_bash(cmd: str) -> str:
             return "unsafe shell pattern"
         first = pipe_parts[0].strip().lower()
         if not (
-            first.endswith("--help")
-            or first.endswith("--version")
+            _is_help_probe(first)
             or any(first == p or first.startswith(p + " ") for p in _READ_ONLY_BASH_PREFIXES)
         ):
             base = first.split()[0] if first.split() else first

