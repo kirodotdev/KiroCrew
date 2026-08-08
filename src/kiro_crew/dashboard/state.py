@@ -869,6 +869,8 @@ class _ChatSlot:
         "_tool_stall_retries",
         "_transient_5xx_retries",
         "_posttoken_retry_used",
+        "_prestream_exhausted_cycles",
+        "_poisoned_reset_used",
         "_empty_response_retries",
         "_batch_rejected",
         "_compaction_fail_streak",
@@ -1060,6 +1062,21 @@ class _ChatSlot:
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
         # completed turn alongside _transient_5xx_retries.
         self._posttoken_retry_used: bool = False
+        # Poisoned-conversation escalation (cross-cycle). A cycle that EXHAUSTS
+        # the transient-5xx ladder with ZERO output counts one pre-stream
+        # exhaustion; consecutive exhausted cycles indicate the backend is
+        # deterministically rejecting this session's persisted conversation
+        # (not a momentary blip — a fresh session on the same gateway works).
+        # At the threshold, chat_runner discards the native conversation
+        # (clearing the poisoned resume sid, keeping the session-map entry)
+        # and re-queues once. Streak broken only by a LANDED turn or a
+        # non-matching terminal error.
+        self._prestream_exhausted_cycles: int = 0
+        # One-shot guard for that discard+retry: consumed when a discard is
+        # enqueued, re-armed only by a LANDED turn — so a genuine prolonged
+        # outage gets at most one fresh-conversation attempt, never a
+        # discard loop.
+        self._poisoned_reset_used: bool = False
         self._empty_response_retries: int = 0
         self._batch_rejected: bool = False
         # Per-turn compaction-status failure tracking (Mesh compaction-spam
