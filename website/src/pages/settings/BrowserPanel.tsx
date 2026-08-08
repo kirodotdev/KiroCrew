@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ExternalLink, Check, Loader2, Info } from 'lucide-react'
+import { ExternalLink, Check, Loader2, Info, AlertTriangle } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { api } from '../../api/client'
@@ -15,7 +15,17 @@ type BrowserConfig = {
   token: boolean
   installed: boolean
 }
-type InstallResult = { ok: boolean; step: string; detail: string; engine: string }
+type InstallResult = {
+  ok: boolean
+  step: string
+  detail: string
+  engine: string
+  // Present on an attempted-and-failed browser download: a copy-pasteable manual
+  // fallback command, and a sanitized one-line cause (allowlisted error label,
+  // never raw stderr).
+  manual_command?: string
+  reason?: string
+}
 type SaveResult = {
   ok: boolean
   mcp_status?: string
@@ -189,9 +199,42 @@ export function BrowserPanel() {
             failure. Shown whenever the server returned a detail to convey.
           */}
           {install && install.detail && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, color: 'var(--muted)' }}>
-              <Info size={13} className="lucide-inline" style={{ marginTop: 2 }} />
-              <span style={{ fontSize: 12 }}>{install.detail}</span>
+            // A not-yet-usable failure (ok:false) is visually differentiated from
+            // the benign "downloads on first use" note (ok:true): a warning icon +
+            // full-strength text, versus the muted info row — so an operator
+            // scanning the panel can tell "act" from "fine, later" without reading
+            // the whole paragraph. Still calm (no red), still never a raw stderr dump.
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8, color: install.ok ? 'var(--muted)' : 'var(--text)' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                {install.ok
+                  ? <Info size={13} className="lucide-inline" style={{ marginTop: 2, color: 'var(--muted)' }} />
+                  : <AlertTriangle size={13} className="lucide-inline" style={{ marginTop: 2, color: 'var(--danger)' }} />}
+                <span style={{ fontSize: 12 }}>{install.detail}</span>
+              </div>
+              {/*
+                Attempted-and-failed download: render the manual fallback command as
+                a selectable <code> block so the user has a concrete next step. It
+                WRAPS (break-all) rather than clipping, so the whole command is
+                visible without a hidden horizontal scroll. The command is a
+                server-provided constant (public-registry-pinned), never user input.
+              */}
+              {install.manual_command && (
+                <code
+                  style={{
+                    fontSize: 11,
+                    padding: '4px 8px',
+                    borderRadius: 4,
+                    background: 'var(--bg-hover)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text)',
+                    userSelect: 'all',
+                    wordBreak: 'break-all',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {install.manual_command}
+                </code>
+              )}
             </div>
           )}
           {/*

@@ -1078,15 +1078,31 @@ def run_proxy(args: list[str]) -> None:
         cmd = ["node", playwright_cmd] + args
     elif _is_npx_launcher(playwright_cmd):
         # npx fetches the package on first use. ``--yes`` suppresses the install
-        # prompt (an npx flag, so it precedes the package spec). Pin @latest so the
-        # launched version matches what setup primed. The PUBLIC-registry pin rides
+        # prompt (an npx flag, so it precedes the package spec). Launch the EXACT
+        # version the enable-time prime recorded, falling back to ``@latest`` when
+        # none is pinned: a pinned version resolves from the warm cache with no
+        # registry round-trip (so an offline launch works) and can't drift past the
+        # browser revision provisioned at enable time. The PUBLIC-registry pin rides
         # ONLY on ``npm_config_registry`` in the child env — not an argv flag: npx
         # option support varies by version and any flag after the package spec is
         # forwarded to @playwright/mcp instead, whereas the env var is honored by
         # npm/npx on every version and OS. This is what stops a private/stale-token
         # default ``.npmrc`` from 401-ing this public package.
-        cmd = [playwright_cmd, "--yes", "@playwright/mcp@latest"] + args
+        # circular import: browser.setup imports PUBLIC_NPM_REGISTRY / _is_npx_launcher
+        # / _resolve_playwright_cmd from THIS module at its top level, so importing it
+        # at module scope here would be a cycle. Deferred to call time (this runs once
+        # per proxy spawn, not hot) — same reason config.paths is imported lazily above.
+        from kiro_crew.browser.setup import get_pinned_playwright_version
+
+        pinned = get_pinned_playwright_version()
+        spec = f"@playwright/mcp@{pinned}" if pinned else "@playwright/mcp@latest"
+        cmd = [playwright_cmd, "--yes", spec] + args
         spawn_env["npm_config_registry"] = PUBLIC_NPM_REGISTRY
+        # prefer-offline: when the pinned version is already in the npx cache, launch
+        # it WITHOUT a registry round-trip (so an offline host still starts); npx only
+        # reaches the network when the version is genuinely absent. npm config, so it
+        # rides the env var cross-platform like the registry pin above.
+        spawn_env["npm_config_prefer_offline"] = "true"
     else:
         cmd = [playwright_cmd] + args
 

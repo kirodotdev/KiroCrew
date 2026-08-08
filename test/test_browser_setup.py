@@ -220,11 +220,12 @@ class TestEnsurePlaywrightInstalled:
         assert result["ok"] is True
         assert result["step"] == "browser-deferred"
 
-    def test_failed_browser_install_is_calm_not_raw(self, monkeypatch):
+    def test_failed_browser_install_surfaces_cause_and_manual_command(self, monkeypatch):
         # The browser install exits NONZERO (offline, unwritable/full cache). Since
-        # a headless browse then finds no executable, this is honestly ok=False
-        # (NOT a misleading "usable"), but the detail is a CALM advisory — the raw
-        # npm/stderr goes only to the log, never to the operator.
+        # a headless browse then finds no executable, this is honestly ok=False. The
+        # operator gets: (1) the ACTUAL cause (the error CODE is surfaced, not just
+        # "it failed"), (2) a copy-pasteable manual command, and (3) sanitization —
+        # credentials and local paths in stderr are scrubbed, never shown.
         monkeypatch.setattr(setup_mod, "ensure_node", lambda: "/usr/bin/node")
         monkeypatch.setattr(setup_mod, "_resolve_playwright_cmd", lambda *a: "/usr/bin/npx")
         monkeypatch.setattr(setup_mod, "_is_npx_launcher", lambda cmd: True)
@@ -238,23 +239,50 @@ class TestEnsurePlaywrightInstalled:
 
         class _Proc:
             returncode = 1
-            stderr = "npm error code E401 Unable to authenticate"
+            # Stderr carrying a credential + local path alongside the E401 code. The
+            # allowlist maps E401 to a fixed label; the raw text is NEVER echoed, so
+            # the token/path/private-registry URL cannot leak regardless of line.
+            stderr = (
+                "npm verbose cwd /home/alice/proj\n"
+                "npm error _authToken=npm_SECRETTOKEN1234567890abcd\n"
+                "npm error https://user:pass@corp.jfrog.io/npm\n"
+                "npm error code E401 Unable to authenticate; token may be invalid"
+            )
             stdout = ""
 
         monkeypatch.setattr(setup_mod.subprocess, "run", lambda argv, **k: _Proc())
         result = ensure_playwright_installed("chromium")
         assert result["ok"] is False
         assert result["step"] == "browser"
-        # The raw npm/stderr must not leak into the user-facing detail.
-        assert "E401" not in result["detail"] and "npm error" not in result["detail"]
-        # It reads as calm guidance, not a raw failure.
-        assert "browser mode is on" in result["detail"].lower()
-        assert "retry" in result["detail"].lower()
+        # (1) The actual cause is surfaced — the E401 code the operator must act on,
+        #     via the fixed allowlist label (not echoed stderr).
+        assert "E401" in result["detail"]
+        assert result["reason"] and "E401" in result["reason"]
+        # (2) The manual fallback command is offered as a structured field, with the
+        #     public-registry pin; the prose points at it. Assert the EXACT expected
+        #     command by equality — not a hostname/URL substring check, whose
+        #     `host in string` shape CodeQL flags as incomplete-URL-sanitization.
+        expected_cmd = (
+            "npm install -g @playwright/mcp@latest --registry=https://registry.npmjs.org/"
+        )
+        assert setup_mod.MANUAL_INSTALL_CMD == expected_cmd  # exact command pinned
+        assert result["manual_command"] == expected_cmd
+        # Cross-platform --registry= FLAG (not a POSIX-only VAR= env prefix), and no
+        # floating `playwright install` that could drift from the launcher's core.
+        assert "npm_config_registry=" not in expected_cmd
+        assert "playwright install" not in expected_cmd
+        assert "command below" in result["detail"]
+        # (3) NOTHING from raw stderr leaks: no token, no creds-URL, no local path.
+        #     (Checks are absence-of-secret, not URL validation — the raw stderr is
+        #     never echoed, so none of these fixture strings can appear.)
+        for surfaced in (result["detail"], result["reason"]):
+            assert "npm_SECRETTOKEN1234567890abcd" not in surfaced
+            assert "user:pass@corp" not in surfaced  # the private-registry creds URL
+            assert "/home/alice" not in surfaced
 
-    def test_degraded_paths_never_dump_raw_errors(self, monkeypatch):
-        # Guarantee: no reachable install outcome hands the user a raw error dump.
-        # Sweep the degraded paths and assert each detail is calm guidance that
-        # reassures Browser Mode is on, never a raw "npm error"/stderr tail.
+    def test_degraded_paths_never_dump_raw_secrets(self, monkeypatch):
+        # No reachable install outcome dumps a raw secret/stacktrace. The no-Node /
+        # no-launcher paths carry calm guidance; none leaks a credential or path.
         for setup_state in ("no_node", "no_launcher"):
             if setup_state == "no_node":
                 monkeypatch.setattr(setup_mod, "ensure_node", lambda: None)
@@ -263,7 +291,7 @@ class TestEnsurePlaywrightInstalled:
                 monkeypatch.setattr(setup_mod, "_resolve_playwright_cmd", lambda *a: None)
             result = ensure_playwright_installed("chromium")
             detail = result["detail"].lower()
-            assert "npm error" not in detail and "traceback" not in detail
+            assert "traceback" not in detail and "_authtoken" not in detail
             assert "browser mode is on" in detail
 
 
@@ -384,6 +412,66 @@ class TestResolvePlaywrightCoreCli:
         # temp dirs), so a byte compare is falsely brittle across platforms.
         assert resolved is not None, "core cli.js must resolve despite the exports map"
         assert os.path.samefile(resolved, str(core / "cli.js"))
+
+
+class TestPinnedPlaywrightVersion:
+    """The runtime proxy launches the version the prime recorded (not @latest), so
+    launches are offline-deterministic and cannot drift past the provisioned
+    browser revision."""
+
+    def test_record_then_read_round_trips(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        nm = tmp_path / "cache" / "_npx" / "h1" / "node_modules"
+        (nm / "@playwright" / "mcp").mkdir(parents=True)
+        (nm / "@playwright" / "mcp" / "package.json").write_text(
+            json.dumps({"name": "@playwright/mcp", "version": "0.0.78"})
+        )
+        monkeypatch.setattr(setup_mod, "_npx_cache_playwright_roots", lambda env: [str(nm)])
+        setup_mod._record_primed_playwright_version({"PATH": "/usr/bin"})
+        assert setup_mod.get_pinned_playwright_version() == "0.0.78"
+
+    def test_absent_pin_reads_none(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        assert setup_mod.get_pinned_playwright_version() is None
+
+    def test_tampered_version_is_rejected(self, monkeypatch, tmp_path: Path):
+        # A non-semver / injected value must never reach an npx argv — degrade to
+        # None (→ @latest) rather than launch attacker-controlled content.
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(setup_mod, "_npx_cache_playwright_roots", lambda env: [])
+        (tmp_path / "playwright-mcp-version").write_text("latest; rm -rf /")
+        assert setup_mod.get_pinned_playwright_version() is None
+
+    def test_valid_but_uncached_version_is_rejected(self, monkeypatch, tmp_path: Path):
+        # The flag file is agent-writable, so a prompt-injected shell could write a
+        # valid-FORMAT but nonexistent semver (99.99.99). Launching it would fail to
+        # fetch and break browsing persistently — a DoS. The on-disk-presence gate
+        # rejects it (no cache holds that version) and falls back to @latest, so the
+        # feature keeps working. The agent cannot fabricate a real cache dir.
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        nm = tmp_path / "cache" / "_npx" / "h1" / "node_modules"
+        (nm / "@playwright" / "mcp").mkdir(parents=True)
+        (nm / "@playwright" / "mcp" / "package.json").write_text(
+            json.dumps({"name": "@playwright/mcp", "version": "0.0.78"})  # real cache = 0.0.78
+        )
+        monkeypatch.setattr(setup_mod, "_npx_cache_playwright_roots", lambda env: [str(nm)])
+        (tmp_path / "playwright-mcp-version").write_text("99.99.99")  # attacker-written
+        assert setup_mod.get_pinned_playwright_version() is None
+
+    def test_non_object_cached_package_json_does_not_crash(self, monkeypatch, tmp_path: Path):
+        # A cached package.json can be valid JSON that is NOT an object ([], "x", 12);
+        # ``.get`` on it raises AttributeError, which OSError/ValueError would not
+        # catch — crashing proxy startup. The type guard must degrade to None, not raise.
+        monkeypatch.setattr(setup_mod, "config_dir", lambda: tmp_path)
+        nm = tmp_path / "cache" / "_npx" / "h1" / "node_modules"
+        (nm / "@playwright" / "mcp").mkdir(parents=True)
+        (nm / "@playwright" / "mcp" / "package.json").write_text("[]")  # valid JSON, not a dict
+        monkeypatch.setattr(setup_mod, "_npx_cache_playwright_roots", lambda env: [str(nm)])
+        (tmp_path / "playwright-mcp-version").write_text("0.0.78")
+        # Must return None (no match), never raise.
+        assert setup_mod.get_pinned_playwright_version() is None
+        # The recorder walks the same untrusted package.json; it must not raise either.
+        setup_mod._record_primed_playwright_version({"PATH": "/usr/bin"})
 
 
 # ── TestBrowserModePersistence ───────────────────────────────────────────────
