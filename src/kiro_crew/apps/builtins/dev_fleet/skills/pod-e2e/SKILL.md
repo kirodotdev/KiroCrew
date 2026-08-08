@@ -301,6 +301,5 @@ The only QA output that belongs in the tree is the **committed** media under
 extra frames, scratch notes, the `.pr-body.md` you fed to `gh pr create` -- stays
 outside (write it under a `mktemp -d`). Before ending the session,
 `git status --porcelain` must be empty: a dirty tree fail-closes Dev Fleet's
-"Prune merged" (`merged_dirty`) so the merged worktree can't be reaped. See the
-kirocrew-worktree-dev skill, "Rule 9 -- Leave the worktree clean (so prune can
-reap it)."
+"Prune merged" (`merged_dirty`) so the merged worktree can't be reaped — leave
+the worktree clean so prune can reap it.
