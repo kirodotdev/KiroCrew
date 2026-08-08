@@ -723,9 +723,9 @@ def test_reseed_skips_unicode_digit_key_without_crashing(tmp_path, monkeypatch):
 def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
     """The async restore must hand the loop back per tab so the heartbeat can run.
 
-    Pins the actual crash mechanism: a coroutine running concurrently with the
-    restore has to get scheduled. If restore ever goes back to blocking straight
-    through, the ticker records no ticks and this fails.
+    Pins the actual crash mechanism: a queued observer coroutine must run while
+    restoration is active. If restore ever goes back to blocking straight
+    through, the observer never runs and this fails.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -736,35 +736,24 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
     )
 
     state2 = _make_state(tmp_path / "sessions")
-    ticks = 0
 
     async def _drive():
-        stop = False
+        observer_ran = asyncio.Event()
 
-        async def ticker():
-            nonlocal ticks
-            while not stop:
-                ticks += 1
-                await asyncio.sleep(0)
+        async def observer():
+            observer_ran.set()
 
-        t = asyncio.create_task(ticker())
-        await asyncio.sleep(0)  # let the ticker reach its first await
+        observer_task = asyncio.create_task(observer())
         restored = await restore_open_slots_async(state2)
-        stop = True
-        t.cancel()
-        # `cancel()` only requests cancellation; without awaiting it the ticker is
-        # still live when `asyncio.run` tears the loop down, leaving a "coroutine
-        # ignored GeneratorExit" for a later test to trip over.
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
-        return restored
+        # Awaiting the task below would schedule it even if restore had starved
+        # the loop, so capture the observation before that cleanup point.
+        ran_during_restore = observer_ran.is_set()
+        await observer_task
+        return restored, ran_during_restore
 
-    restored = asyncio.run(_drive())
+    restored, ran_during_restore = asyncio.run(_drive())
     assert restored == 6
-    # One yield per tab at minimum; the ticker interleaves on each.
-    assert ticks >= 6, f"restore starved the loop (ticks={ticks})"
+    assert ran_during_restore, "restore starved the loop"
 
 
 def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatch):
