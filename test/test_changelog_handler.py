@@ -8,7 +8,9 @@ was removed), and CHANGELOG.md was never bundled into the package, so
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -83,3 +85,61 @@ async def test_api_changelog_empty_when_no_source(tmp_path, monkeypatch):
 
     assert resp.status == 200
     assert json.loads(resp.body)["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_api_releases_returns_per_version_entries(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [0.1.2] — 2026-07-30\n\nFirst release.\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+    monkeypatch.setattr(updates, "_changelog_cache", None)
+    monkeypatch.setattr(updates, "_local_version", "0.1.2")
+
+    resp = await updates.api_releases(_request())
+    body = json.loads(resp.body)
+
+    assert resp.status == 200
+    assert body["current_version"] == "0.1.2"
+    assert body["stale"] is False
+    assert [r["version"] for r in body["releases"]] == ["0.1.2"]
+    assert body["releases"][0]["date"] == "2026-07-30"
+    assert "First release." in body["releases"][0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_api_releases_does_not_freeze_the_event_loop(monkeypatch):
+    """The read and parse must be offloaded, not run on the gateway's loop.
+
+    The gateway runs every session on one loop, so a synchronous read plus a
+    parse that is linear in the changelog's size stalls every other task for as
+    long as it takes. A ticker measures that directly: with the work in a
+    thread it keeps counting; on the loop it cannot run at all.
+    """
+    def slow_read() -> str:
+        time.sleep(0.3)
+        return "## [0.1.2] — 2026-07-30\n\nnotes\n"
+
+    monkeypatch.setattr(updates, "_read_changelog", slow_read)
+    monkeypatch.setattr(updates, "_local_version", "0.1.2")
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    try:
+        resp = await updates.api_releases(_request())
+    finally:
+        task.cancel()
+
+    assert resp.status == 200
+    # ~30 ticks fit in 0.3s; a frozen loop yields 0. The floor is deliberately
+    # far below the expectation so a loaded runner cannot fail it.
+    assert ticks >= 3, f"event loop was starved during the parse (ticks={ticks})"

@@ -1750,6 +1750,7 @@ export const api = {
   // Update
   checkUpdate: () => fetch('/api/update/check').then(j),
   changelog: () => fetch('/api/changelog').then(j),
+  releases: () => fetch('/api/releases').then(j),
   applyUpdate: () => post('/api/update').then(j),
   setAutoUpdate: (enabled: boolean) => post('/api/update/auto', { enabled }).then(j),
   cancelUpdate: () => post('/api/update/cancel').then(j),

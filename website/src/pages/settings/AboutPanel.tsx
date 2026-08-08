@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Package, X, Download, Copy } from 'lucide-react'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Package, X, Download, Copy } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
@@ -11,7 +12,6 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
 import { api, ApiError } from '../../api/client'
-import { sanitize } from '../../api/helpers'
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
@@ -469,25 +469,6 @@ export function AboutPanel() {
   const [applyError, setApplyError] = useState('')
   const [restarting, setRestarting] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState(true)
-  // Full changelog viewer (collapsible), in Settings > About. Shared across
-  // desktop + web.
-  // Full changelog is open by default — it is primary content on this page
-  // (bounded to a scroll box below).
-  const [showFull, setShowFull] = useState(true)
-  // Fetch via useQuery: dedups concurrent requests, caches, and gives proper
-  // loading/error states (avoids the empty-content infinite-spinner and the
-  // mount-vs-toggle double fetch). `enabled: showFull` loads it on mount.
-  const {
-    data: fullChangelog,
-    isLoading: changelogLoading,
-    isError: fullChangelogError,
-  } = useQuery({
-    queryKey: ['full-changelog'],
-    queryFn: () => api.changelog().then(d => (d as { content?: string })?.content ?? ''),
-    enabled: showFull,
-  })
-  // Memoize the DOMPurify pass so it doesn't re-run on every render.
-  const safeChangelog = useMemo(() => (fullChangelog ? sanitize(fullChangelog) : ''), [fullChangelog])
   const { data: mcCfg } = useQuery({ queryKey: ['mc-config-autoupdate'], queryFn: () => api.kirocrewConfig() })
   useEffect(() => {
     const v = (mcCfg as any)?.auto_update
@@ -849,32 +830,19 @@ export function AboutPanel() {
           </div>
         )}
 
-        {/* Full changelog — collapsible. Shared across desktop + web. */}
+        {/* The full changelog used to be inlined here, open by default. It grows
+            without bound while this card's job -- stating the identity of this
+            install -- is bounded to one screen forever, so the archive moved to
+            its own Releases panel and this is the link to it. See
+            pages/settings/ReleasesPanel.tsx. */}
         <div className="mt-3 pt-3 border-t border-border">
-          <button
-            type="button"
-            aria-expanded={showFull}
-            className="text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none px-0"
-            onClick={() => setShowFull(v => !v)}
+          <Link
+            to="?tab=releases"
+            className="text-[13px] text-accent hover:underline inline-flex items-center gap-1.5"
           >
-            {showFull ? i18nT('pages.settings.aboutPanel.hide_full_changelog') : i18nT('pages.settings.aboutPanel.view_full_changelog')}
-          </button>
-          {showFull && (
-            <div className="mt-2 p-3 bg-bg rounded-lg border border-border max-h-[360px] overflow-y-auto text-[13px] text-text">
-              {changelogLoading ? (
-                <span className="text-muted flex items-center gap-1.5"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.loading_changelog')}</span>
-              ) : fullChangelogError ? (
-                <span className="text-danger flex items-center gap-1.5"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_load_the_changelog')}</span>
-              ) : fullChangelog ? (
-                // DOMPurify-sanitize the fetched changelog source before rendering:
-                // MarkdownRenderer uses rehype-raw (raw HTML passes through), so strip
-                // any HTML/script the /api/changelog response could carry (defense-in-depth).
-                <MarkdownRenderer content={safeChangelog} />
-              ) : (
-                <span className="text-muted">{i18nT('pages.settings.aboutPanel.no_changelog_available')}</span>
-              )}
-            </div>
-          )}
+            <History size={13} className="lucide-inline" aria-hidden="true" />
+            {i18nT('pages.settings.aboutPanel.view_all_releases')}
+          </Link>
         </div>
       </Card>
 

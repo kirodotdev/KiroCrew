@@ -9145,20 +9145,17 @@
         "copy_command": "コマンドをコピー",
         "couldn_t_check_for_updates": "更新を確認できませんでした",
         "couldn_t_check_for_updates_2": "更新を確認できませんでした。",
-        "couldn_t_load_the_changelog": "変更ログを読み込めませんでした。",
         "download_failed": "ダウンロード失敗",
         "download_install": "ダウンロードしてインストール",
         "download_the_latest_version": "最新版をダウンロード",
         "downloaded_and_verified_the_app_restarts_to_fini": "ダウンロードおよび検証完了。アプリは再起動してインストールを完了するか、後で終了するとインストールされます。",
         "downloading": "ダウンロード中…",
-        "hide_full_changelog": "▾ 完全な変更ログを非表示",
         "insider": "Insider",
         "install_failed": "更新をインストールできませんでした",
         "installing_quiet_note": "インストール中 — Kiro Crew は 1 ～ 2 分間沈黙してから自動的に再起動します。",
         "is_available": "が利用可能です。",
         "loading_changelog": "変更ログを読み込み中…",
         "manual_install_fallback": "更新がうまくいかない場合は、{{link}} をして、このコピーの上に再インストールできます。設定、チャット、ファイルは保持されます。",
-        "no_changelog_available": "利用可能な変更ログはありません。",
         "not_checked_yet": "まだ確認していません",
         "notify_when_an_update_is_available": "更新が利用可能になったら通知",
         "open_source_under_the_apache_2_0_license": "Apache 2.0 ライセンス下のオープンソース",
@@ -9199,7 +9196,7 @@
         "updating_gateway_restarting": "更新中 — ゲートウェイを再起動中…",
         "updating_restarts_the_gateway_active_sessions_wi": "更新はゲートウェイを再起動します — アクティブなセッションは一時的に切断されます。",
         "v": "v",
-        "view_full_changelog": "▸ 完全な変更ログを表示",
+        "view_all_releases": "すべてのリリースを表示",
         "view_this_commit_on_github": "GitHub でこのコミットを表示",
         "what_s_new": "新着情報",
         "you_are_on_the_latest_version": "最新版を使用しています。",
@@ -9703,6 +9700,22 @@
         "no_matches_for_query": "「{{query}}」に一致するものはありません。",
         "show": "表示",
         "unavailable": "利用不可"
+      },
+      "releases": {
+        "badge_in_progress": "進行中",
+        "detail_no_date": "日付不明",
+        "detail_on_prerelease": "プレリリース {{version}} を使用しています",
+        "detail_unreleased": "未リリース",
+        "empty_in_progress": "このバージョンのリリースノートはまだ書かれていません。",
+        "empty_released": "このバージョンはリリースノートなしで公開されました。",
+        "list_label": "バージョン",
+        "load_failed": "リリースノートを読み込めませんでした。",
+        "loading": "リリースを読み込み中…",
+        "row_current_no_notes": "お使いのバージョン · リリースノートなし",
+        "row_no_notes": "リリースノートなし",
+        "stale_note": "このリストはお使いのビルド（{{version}}）から取得されているため、新しいエントリが含まれていない可能性があります。",
+        "unavailable": "このビルドではリリースノートを利用できません。",
+        "view_commits": "GitHub でコミットを表示"
       },
       "reportProblemCard": {
         "blurb": "問題が発生していますか？診断レポートをお送りください。ログはまず秘密情報がスクラブされます。",
@@ -10731,6 +10744,10 @@
       "overview": {
         "description": "システムの状態、アクティビティ、使用状況とメモリを一目で確認",
         "label": "概要"
+      },
+      "releases": {
+        "description": "各バージョンのリリースノート",
+        "label": "リリース"
       },
       "security": {
         "description": "セキュリティ体制、防御レイヤー、認定、データ分類",

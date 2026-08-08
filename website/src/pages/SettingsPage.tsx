@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Bell, Code, Fingerprint, Globe, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer } from 'lucide-react'
+import { Bell, Code, Fingerprint, Globe, History, Import, Info, Keyboard, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -18,6 +18,7 @@ import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { AboutPanel } from './settings/AboutPanel'
+import ReleasesPanel from './settings/ReleasesPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
@@ -58,7 +59,15 @@ function buildTabs() {
     { key: 'privacy', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
     { key: 'security', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description') },
     { key: 'developer', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
-    { key: 'about', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, dividerBefore: true, description: i18nT('settings.tabs.about.description') },
+    // The trailing divider fences off the entries that are not settings at all.
+    // About was its only occupant; the release archive is the same kind of thing
+    // (a document about the product, not a preference), so it joins the fence
+    // rather than opening a second exception. The divider flag rides the FIRST
+    // entry after it -- `SidePanelLayout` renders one separator per flagged row,
+    // so leaving it on About too would draw two lines and strand this row
+    // outside the fence. About stays last, where every platform puts it.
+    { key: 'releases', label: i18nT('settings.tabs.releases.label'), icon: <History size={16} />, dividerBefore: true, description: i18nT('settings.tabs.releases.description') },
+    { key: 'about', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, description: i18nT('settings.tabs.about.description') },
   ]
 }
 
@@ -121,6 +130,7 @@ export default function SettingsPage() {
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <SecurityPanel />}
         {tab === 'developer' && <DeveloperPanel />}
+        {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}
       </>}
     </SidePanelLayout>

@@ -19,6 +19,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.beacon import distribution
+from kiro_crew.changelog import Release, build_release_list
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -749,6 +750,40 @@ def _read_changelog() -> str:
 async def api_changelog(request: web.Request) -> web.Response:
     """GET /api/changelog — read full CHANGELOG.md from project or bundle."""
     return web.json_response({"content": _read_changelog()})
+
+
+async def api_releases(request: web.Request) -> web.Response:
+    """GET /api/releases — CHANGELOG.md as per-version entries for the archive.
+
+    The list is the changelog's sections plus the release the running build
+    belongs to; :mod:`kiro_crew.changelog` owns that rule and the reasoning.
+
+    ``stale`` is the caveat the page has to state out loud: the changelog is
+    read from this install (project tree or the copy bundled into the wheel),
+    never from the network, so a prerelease build shows the archive as it stood
+    when its release branch was cut. A section added to ``main`` afterwards is
+    invisible here, which is a real gap for an insider build that can be weeks
+    old -- it is reported rather than hidden.
+
+    The read and the parse are offloaded: ``_read_changelog`` stats the file on
+    every call and re-reads it whenever it changed, and the parse is linear in
+    the file's size. Both are small today (~10 KB), but the changelog only ever
+    grows, and this handler is the one place that adds parsing on top of the
+    read -- so it runs in a thread rather than betting the gateway's whole loop
+    on the file staying small.
+    """
+
+    def _read_and_parse() -> list[Release]:
+        return build_release_list(_read_changelog(), _local_version)
+
+    releases = await asyncio.to_thread(_read_and_parse)
+    return web.json_response(
+        {
+            "current_version": _local_version,
+            "releases": [r._asdict() for r in releases],
+            "stale": any(r.in_progress for r in releases),
+        }
+    )
 
 
 async def _build_frontend(proj: str, state: DashboardState) -> None:
