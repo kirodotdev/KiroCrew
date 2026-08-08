@@ -35,6 +35,7 @@ from kiro_crew.slack.handler import (
     _hydrate_conv_flags,
     _hydrate_thread_overrides,
     _is_slack_restricted,
+    _resume_if_paused,
     _should_auto_approve_spawn,
     _thread_agents,
     get_dashboard_state,
@@ -193,6 +194,12 @@ async def handle_message_transport(
     if not await channel_inbound_permitted("slack"):
         logger.info("slack inbound (transport) dropped: denied by channels governance policy")
         return
+
+    # Resume AFTER the gate, never during owner resolution. Lifting the pause is a
+    # persisted side effect, so doing it earlier would let a message governance
+    # goes on to DENY leave the channel connected — a silent deny with a live link.
+    if linked_session_key:
+        await _resume_if_paused(sessions, linked_session_key, reply_ts)
 
     # ── Re-hydrate durable thread state FIRST (mirrors native ordering) ──
     # The per-thread agent/project overrides AND the durable incognito/temporary

@@ -5010,22 +5010,12 @@
       "copy_url_of": "Copier l’URL de {{name}}"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "Dissocier cette session de {{label}} ?\n\nLes messages envoyés là-bas n'arriveront plus ici et les réponses n'y seront plus transmises. Tu peux la rattacher avec !sessions depuis ce canal.",
-      "confirm_stop_mirroring": "Arrêter la mise en miroir de cette session vers {{label}} ?\n\nLes réponses n'y seront plus transmises. Tu pourras la relier plus tard depuis le sélecteur de canaux configurés.",
-      "connected": "Connecté : {{label}}",
-      "link_failed": "Impossible de lier le canal : {{reason}}",
-      "mirror": "Miroir",
-      "mirror_stopped": "Mise en miroir vers {{label}} arrêtée",
-      "offline": "Hors ligne",
-      "origin": "Origine",
-      "post_reminder": "Publier un rappel dans {{label}}",
-      "release": "Dissocier de {{label}}",
-      "released": "Dissociée de {{label}}",
-      "reminder_failed": "Impossible de publier le rappel : {{reason}}",
-      "reminder_sent": "Rappel publié dans {{label}}",
-      "stop_failed": "Impossible d'arrêter la mise en miroir : {{reason}}",
-      "stop_mirroring": "Arrêter la mise en miroir vers {{label}}",
-      "two_way": "Bidirectionnel",
+      "unknown_error": "erreur inconnue",
+      "confirm_takeover": "{{label}} est déjà connecté à une autre session.\n\nLe connecter ici déconnectera celle-ci. Continuer ?",
+      "connect_failed": "Connexion à {{label}} impossible : {{reason}}",
+      "connect_to": "Se connecter à {{label}}",
+      "disconnect_failed": "Déconnexion de {{label}} impossible : {{reason}}",
+      "disconnect_from": "Se déconnecter de {{label}}",
       "unavailable": "Cette destination est indisponible."
     },
     "logEntry": {
@@ -5763,11 +5753,6 @@
     "skillPickerMenu": {
       "loading_skills": "Chargement des compétences…",
       "no_matching_skills": "Aucune compétence correspondante"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Publier un rappel dans Slack",
-      "send_to_slack": "Envoyer vers Slack",
-      "unlink_from_slack": "Dissocier de Slack"
     },
     "slashCommandMenu": {
       "desc_agent": "Changer ou gérer l’agent actif",
@@ -7460,6 +7445,7 @@
       "collapse_hidden_folders": "Réduire les dossiers masqués",
       "column_filter": "Filtre de colonne",
       "column_name_optional": "Nom de la colonne (optionnel)",
+      "connected_to": "Connecté à {{label}}",
       "create": "Créer…",
       "creating": "Création…",
       "custom": "Personnalisé",
@@ -7524,7 +7510,6 @@
       "match_mode": "Mode de correspondance",
       "merged": "Fusionné",
       "min": "min",
-      "mirroring_to": "Mise en miroir vers {{label}}",
       "model_list": "Liste des modèles",
       "more": "Plus",
       "more_create_options": "Plus d'options de création",

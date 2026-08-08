@@ -57,6 +57,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -282,6 +283,13 @@ class DiscordDispatcher:
         # the turn: a resumed dashboard session is not this conversation's own
         # session, and several steps below must not treat it as one.
         resumed_key = self._session_resume.resumed_session(channel_id)
+        if resumed_key is not None:
+            # A reply is the user talking to this session, so it lifts a mute the
+            # dashboard set — otherwise the message lands here and the answer is
+            # swallowed by the outbound gate, which reads as a dead channel. Runs
+            # after this dispatcher's inbound governance gate, and persists
+            # off-loop.
+            await self._session_resume.resume_if_muted(channel_id, resumed_key)
         session_key = resumed_key or self._session_key(user_id, thread_id)
         if self.sessions.is_busy(session_key):
             if resumed_key is not None:
@@ -953,11 +961,30 @@ class DiscordDispatcher:
             )
             return
         key = self._session_key(user_id, thread_id)
-        self.sessions.set_mirror_link(key, ChannelLink("discord", channel_id=channel_id))
+        try:
+            # Offloaded: a worker may hold `_mutate_lock` across a whole `_save`, and
+            # waiting on that from the event loop stalls every other gateway task.
+            await asyncio.to_thread(
+                self.sessions.set_mirror_link,
+                key,
+                ChannelLink("discord", channel_id=channel_id),
+            )
+        except ConversationOwnershipConflict:
+            # The resumed-session check above covers the common case; this catches
+            # an outbound dashboard mirror holding the same conversation, which it
+            # cannot see. Same instruction either way.
+            logger.info("discord link refused: conversation already held")
+            await self.client.send_message(
+                channel_id,
+                "⚠️ Another session is already linked here. Send `!unlink` first.",
+            )
+            return
         # Drop any pre-unification row so a stale binding cannot outlive the
         # rebind (reads prefer the channel key, but a leftover row would still
         # answer a clear).
-        self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
+        await asyncio.to_thread(
+            self.sessions.clear_mirror_link, legacy_dashboard_mirror_key(key)
+        )
         await self.client.send_message(
             channel_id,
             "✅ Linked. Replies from the dashboard for this conversation will "
@@ -976,7 +1003,8 @@ class DiscordDispatcher:
             )
             return
         key = self._session_key(user_id, thread_id)
-        reply, swept = release_conversation_location(
+        reply, swept = await asyncio.to_thread(
+            release_conversation_location,
             self.sessions,
             key=key,
             location=ChannelLink("discord", channel_id=channel_id),

@@ -4931,22 +4931,12 @@
       "copy_url_of": "URL von {{name}} kopieren"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "Diese Sitzung von {{label}} lösen?\n\nDort gesendete Nachrichten kommen nicht mehr hier an, und Antworten werden nicht mehr dorthin geliefert. Du kannst sie mit !sessions aus diesem Kanal erneut verbinden.",
-      "confirm_stop_mirroring": "Spiegelung dieser Sitzung nach {{label}} beenden?\n\nAntworten werden dort nicht mehr geliefert. Du kannst die Sitzung später über die Auswahl konfigurierter Kanäle erneut verbinden.",
-      "connected": "Verbunden: {{label}}",
-      "link_failed": "Kanal konnte nicht verknüpft werden: {{reason}}",
-      "mirror": "Spiegeln",
-      "mirror_stopped": "Spiegelung nach {{label}} beendet",
-      "offline": "Offline",
-      "origin": "Ursprung",
-      "post_reminder": "Erinnerung in {{label}} posten",
-      "release": "{{label}} lösen",
-      "released": "Von {{label}} gelöst",
-      "reminder_failed": "Erinnerung konnte nicht gepostet werden: {{reason}}",
-      "reminder_sent": "Erinnerung in {{label}} gepostet",
-      "stop_failed": "Spiegelung konnte nicht beendet werden: {{reason}}",
-      "stop_mirroring": "Spiegelung nach {{label}} beenden",
-      "two_way": "Bidirektional",
+      "unknown_error": "unbekannter Fehler",
+      "confirm_takeover": "{{label}} ist bereits mit einer anderen Sitzung verbunden.\n\nWenn du es hier verbindest, wird jene Verbindung getrennt. Fortfahren?",
+      "connect_failed": "Verbindung mit {{label}} fehlgeschlagen: {{reason}}",
+      "connect_to": "Mit {{label}} verbinden",
+      "disconnect_failed": "Trennen von {{label}} fehlgeschlagen: {{reason}}",
+      "disconnect_from": "Von {{label}} trennen",
       "unavailable": "Dieses Ziel ist nicht verfügbar."
     },
     "logEntry": {
@@ -5678,11 +5668,6 @@
     "skillPickerMenu": {
       "loading_skills": "Skills werden geladen…",
       "no_matching_skills": "Keine passenden Skills"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Erinnerung in Slack posten",
-      "send_to_slack": "An Slack senden",
-      "unlink_from_slack": "Verknüpfung mit Slack aufheben"
     },
     "slashCommandMenu": {
       "desc_agent": "Aktiven Agenten wechseln oder verwalten",
@@ -7360,6 +7345,7 @@
       "collapse_hidden_folders": "Ausgeblendete Ordner einklappen",
       "column_filter": "Spaltenfilter",
       "column_name_optional": "Spaltenname (optional)",
+      "connected_to": "Verbunden mit {{label}}",
       "create": "Erstellen…",
       "creating": "Wird erstellt…",
       "custom": "Benutzerdefiniert",
@@ -7423,7 +7409,6 @@
       "match_mode": "Abgleichmodus",
       "merged": "Zusammengeführt",
       "min": "Min.",
-      "mirroring_to": "Spiegelung nach {{label}}",
       "model_list": "Modellliste",
       "more": "Mehr",
       "more_create_options": "Weitere Erstellungsoptionen",

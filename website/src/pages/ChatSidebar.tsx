@@ -2125,19 +2125,37 @@ function ChatSidebar({
                   </span>
                 )
               })()}
-              {/* Live mirroring, per channel. The origin glyph above is derived
+              {/* Live delivery, per channel. The origin glyph above is derived
                *  from the slot KEY (channelOrigin.ts) and already says where the
-               *  conversation STARTED, so this renders only `out` links — a real
-               *  mirror target — and never double-badges an origin. It replaces a
-               *  `linked_to_slack` Link glyph that fired for ANY channel, because
-               *  every non-Slack transport writes its id into slack_channel_id. */}
+               *  conversation STARTED, so `origin` is excluded here to avoid
+               *  double-badging. Everything else IS a delivery target: `both` is a
+               *  two-way resume binding, strictly MORE connected than a one-way
+               *  `out` mirror, and filtering on `out` alone left the session with
+               *  messages flowing both ways looking unlinked. A disconnected link
+               *  is excluded too — it keeps its direction, so without the `paused`
+               *  check the sidebar kept promising "Mirroring to Slack" for a
+               *  session whose own menu one row away reads "Send to Slack".
+               *  It replaces a `linked_to_slack` Link glyph that fired for ANY
+               *  channel, because every non-Slack transport writes its id into
+               *  slack_channel_id. */}
               {(s.links ?? [])
-                .filter(link => link.direction === 'out')
+                .filter(link => link.direction !== 'origin' && !link.paused)
                 .map((link, index) => (
                   <span
                     key={`${link.channel}:${link.direction}:${index}`}
                     className="inline-flex text-[10px]"
-                    title={i18nT('pages.chatSidebar.mirroring_to', { label: link.label })}
+                    // BOTH `title` and `aria-label`, same string. `role="img"` is
+                    // required for the label to be announced — `aria-label` on a
+                    // generic (roleless) span is not reliably read out. The `title`
+                    // is not redundant chrome: the ORIGIN glyph rendered directly
+                    // above carries one, and for a session that started in Slack and
+                    // also delivers to Slack both glyphs are the same brand mark, so
+                    // dropping it here left a sighted user hovering two identical
+                    // marks and getting text from only one. The wording matches the
+                    // menu ("connected"), not the old internal "mirroring".
+                    role="img"
+                    title={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
+                    aria-label={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
                   >
                     <ChannelBrandIcon channel={link.channel} size={10} />
                   </span>

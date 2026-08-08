@@ -903,6 +903,42 @@ def _get_default_agent() -> str:
     return _cached_default_agent
 
 
+async def _resume_if_paused(sessions: object, owner: str, reply_ts: str) -> None:
+    """A reply in a paused thread resumes the session that owns it.
+
+    Pause retains the thread binding, both coordinate fields and the reverse
+    index, so there is nothing to re-bind here -- lifting the flag is the whole
+    resume. That is exactly what separates pause from unlink: after an unlink the
+    index is gone and this reply would mint a new session instead.
+
+    Deliberately no history re-seed. The user is reading this thread right now,
+    so re-posting the conversation into it would be noise; explicit dashboard
+    Reconnect is the path that re-seeds.
+
+    MUST be called only AFTER the inbound governance gate has permitted the
+    message. Resuming is a persisted side effect, so doing it during owner
+    resolution would let a message that governance goes on to DENY leave the
+    channel connected -- the deny would be silent and the link would be live.
+
+    The read is an in-memory lookup and stays inline; the WRITE is offloaded with
+    ``asyncio.to_thread`` because ``set_slack_paused`` calls ``_save``, which
+    serialises the whole session map -- on slow storage that would stall the
+    gateway's event loop on a path that runs for every reply. Guarded on the read
+    so that write happens once, on the resume transition, and never on a reply to
+    a live thread.
+    """
+    try:
+        if sessions.is_slack_paused(owner) is True:  # type: ignore[attr-defined]
+            await asyncio.to_thread(
+                sessions.set_slack_paused,  # type: ignore[attr-defined]
+                owner,
+                False,
+            )
+            logger.info("▶️ Slack thread %s resumed by reply — was paused", reply_ts)
+    except Exception:
+        logger.debug("could not resume paused slack link for %s", owner, exc_info=True)
+
+
 def _hydrate_thread_overrides(session_key: str, conversation_log: ConversationLog | None) -> None:
     """Populate in-memory caches from conversation log metadata if not already set."""
     if session_key in _hydrated_sessions:
@@ -2602,6 +2638,21 @@ async def handle_message(
     # intercepts, review-mode drafts, main LLM path) can forward it.
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
 
+    # ── A reply in a disconnected thread reconnects it ──
+    # BEFORE the linked-thread intercept, which returns for a dashboard-linked
+    # thread and so never reached the resume that used to sit further down: the
+    # reply was routed into the dashboard slot while Slack stayed muted, so the
+    # answer never came back and the thread looked dead. Still after the governance
+    # gate above — resuming is a persisted side effect and must not happen for a
+    # message governance goes on to deny.
+    #
+    # Keyed on the thread index, not on a key change: a Slack-BORN session resolves
+    # to its own canonical key and can be muted just the same, so gating this on a
+    # reroute would leave those threads muted forever.
+    _linked_owner = sessions.get_session_for_thread(reply_ts)
+    if _linked_owner:
+        await _resume_if_paused(sessions, _linked_owner, reply_ts)
+
     # ── Linked thread intercept: route to dashboard slot if linked ──
     if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
         return
@@ -2988,6 +3039,9 @@ async def handle_message(
             linked_session_key,
         )
         session_key = linked_session_key
+    # The resume already happened above, before the linked-thread intercept — a
+    # dashboard-linked reply returns through that intercept and would never have
+    # reached a resume placed here.
 
     client: LLMProvider | None = None
     try:

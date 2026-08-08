@@ -527,13 +527,66 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   only clear that reaches a binding stranded under a key spelling the
   conversation no longer derives (a rotated DM generation, a pre-unification
   `dashboard:` row).
+- `POST /api/chat/slots/{name}/slack-pause` — mute a linked thread without
+  releasing it (auth posture matches `slack-link`). Sets a `slack_paused`
+  presence flag on the session-map entry; both coordinate fields and the
+  `_thread_to_session` row survive, so inbound routing is unchanged and a reply
+  in the thread resumes the SAME session. Only outbound turn mirroring stops.
+  `409` when the session has no link. Idempotent, reporting `was_paused`.
+  Resume by replying in the thread, or by re-issuing `slack-link`, which detects
+  the paused link and re-seeds the existing thread. This is what the dashboard's
+  single Slack row calls to DISCONNECT — the UI never surfaces the word "pause",
+  and never calls `slack-unlink`, whose release semantics would fork a new session
+  on the next reply.
+- `SessionManager.set_slack_paused(key, paused)` / `is_slack_paused(key)` — the
+  accessors behind it. Both cover the bare and `dashboard:`-prefixed spellings of
+  a key, because a turn copies a link from one onto the other. `clear_slack_link`
+  pops the flag so a pause cannot outlive the link it describes.
 - `POST /api/chat/slots/{name}/mirror-link` | `mirror-unlink` — dashboard-side
   endpoints (auth posture matches `slack-link`: under the `/api/chat`
   `mixed_internal_paths` prefix, never the strict `internal_paths` set).
   New links use `{channel_type, target_id}` and resolve the opaque configured
   target server-side; the legacy `{conversation_id, thread_id?}` body remains
   accepted for compatibility. A successful new link posts an anchor plus the
-  last five redacted messages before persisting the mirror.
+  catch-up history before persisting the mirror, and sets `accepts_inbound` so a
+  reply in that conversation resumes THIS session. It refuses a conversation
+  another session already holds with `409 conversation_occupied` +
+  `requires_confirm` until the body carries `confirm: true`; the check runs before
+  any side effect, and a confirmed takeover clears the previous binding by
+  location and posts a line into the conversation.
+  An EMPTY body (or one carrying only `channel_type`) on a session that already
+  has that binding is the RECONNECT: muted, it catches the conversation up and
+  then rebinds (the rebind is what lifts the mute, so a governance denial
+  mid-delivery leaves the link untouched); already connected, it is a silent
+  no-op. It used to post a reminder line for the deleted "Post reminder in X" row.
+- `POST /api/chat/slots/{name}/mirror-pause` — the channel-neutral twin of
+  `slack-pause`, and what the dashboard's single row calls to DISCONNECT any
+  non-Slack channel. Takes `channel_type`, because a session can hold several
+  bindings and an unnamed mute would silence an arbitrary sibling. Sets `paused`
+  on that binding; the binding, its coordinates and its inbound marker all
+  survive, so the conversation still resolves to this session. `409` when the
+  session holds no such binding. Idempotent, reporting `was_paused`. Nothing is
+  posted into the conversation.
+- `SessionManager.set_mirror_paused(key, paused, channel_type="")` /
+  `is_mirror_paused(key, channel_type="")` — per binding. Unnamed,
+  `is_mirror_paused` means EVERY binding is muted, never any, so one muted channel
+  cannot silence a connected sibling. `set_mirror_paused` REFUSES to create a
+  binding or an entry: a mute that outlived what it describes would silently mute
+  a future rebind. Both clear paths (`clear_mirror_link` and the by-value
+  `clear_mirror_links_at`) and `set_mirror_link` itself drop it.
+- `SessionManager.get_mirror_links(key)` — every binding, which is what outbound
+  delivery and the wire projection need. `get_mirror_link(key, channel_type="")`
+  stays single-valued for the many callers that already know which channel they
+  mean; unnamed it returns the sole binding or None, never an arbitrary sibling.
+- `chat_utils.mirror_is_paused(state, key, channel_type="")` gates exactly two
+  sends — the assistant reply and the user echo in `chat_runner`, each resolved
+  per binding by `_resolve_mirror_targets`. The scope is genuinely narrower than
+  Slack's: no cron result, sub-agent completion, requested file or auto-nudge tick
+  reads a mirror binding (those address a channel explicitly), and there is no
+  approval-delivery leg to a non-Slack link anywhere in the tree, so gating cannot
+  reroute a delivery to the owner's DM or destroy a monitor loop. The compaction
+  notice's non-Slack leg reads the session's ORIGIN conversation, not a binding,
+  and is correctly ungated.
 - `GET /api/chat/channel-targets` — owner-authenticated union of Slack
   destinations and every registered transport's configured targets. The
   dashboard session menu renders this list with per-channel brand icons.

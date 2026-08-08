@@ -167,6 +167,147 @@ the correct reading.
 `is_dm=False` is passed deliberately: trust for a linked slot is a dashboard-side
 mode and is not wired through this path, so only Approve and Reject are offered.
 
+## Pausing (and picking back up)
+
+The dashboard never says "pause", and it says nothing per-channel either. EVERY
+channel is ONE menu row whose LABEL IS THE ACTION — `Connect to X` when it is not
+connected, `Disconnect from X` when it is — and clicking it toggles. Two states,
+for Slack and Discord and every future transport alike, rendered from one flat
+row list with no per-channel branches in `LinkedSurfacesSection.tsx`.
+
+What that deleted, rather than relabelled: the `Connected: X` status line, the
+role badge (`Origin` / `Mirror` / `Two-way`), the `Offline` badge, the reminder
+item, both destructive verbs (`Release X` / `Stop mirroring to X`) and their
+confirms — and the nineteen i18n keys they carried, replaced by one interpolating
+`connect_to` / `disconnect_from` pair. No tooltip explains that the binding is
+retained or that replying resumes it; those are treated as givens. The row is a
+plain menu item, NOT a `menuitemcheckbox`: an action label and an `aria-checked`
+state contradict each other, and the verb already tells the user where they are.
+
+An `origin` link gets no row at all. A session's BIRTH conversation is not a
+binding the dashboard can toggle, and `channelOrigin.ts` already marks it on the
+sidebar from the slot key.
+
+A session can be connected to several channels at once, so there is one row PER
+binding, each with its own state and its own channel-scoped calls: muting Telegram
+leaves Discord connected. A channel already bound is not offered a second time —
+one binding per channel type. The single exception to "no confirm" is taking a
+conversation another session holds: that disconnects the other session, so it asks
+first (see "One session per conversation" below).
+
+Disconnect maps to `slack-pause` / `mirror-pause`, NEVER to either unlink, because
+the retained binding is what makes the row reversible: a muted channel and one
+that was never connected render identically, and the click that connects either
+one resumes the muted binding rather than minting a second. Both unlink endpoints
+survive with no menu caller; the one behaviour they still uniquely offer is
+releasing a conversation so a later reply starts a FRESH session.
+
+Two release affordances DO remain outside the menu, and they are the same idea in
+two places: the in-channel `!unlink` command, and `InboundLinkChip`'s Release
+button (its own docstring calls itself "the dashboard-side equivalent of the
+channel's `!unlink`"). Both exist because a non-Slack conversation hosts exactly
+one session and `set_mirror_link` has no occupancy check, so severing is the only
+way to hand a conversation to a different session. Evicting on connect would make
+both redundant — see issue #1887.
+
+Unlink is a release; pause is a mute. `POST /api/chat/slots/{slot}/slack-pause`
+sets a `slack_paused` presence flag on the session-map entry and changes nothing
+else: `slack_thread_ts`, `slack_channel_id` and the `_thread_to_session` row all
+stay. That asymmetry is the whole design.
+
+- **Inbound is untouched.** `_resolve_thread_owner` still resolves the thread to
+  its owning session, and the unclaimed-thread guard still sees the thread as
+  claimed, so a reply lands in the original conversation instead of forking a new
+  `slack:<ts>` session. A reply is also the resume signal: `_resume_if_paused`
+  lifts the flag on the way through, on both the transport and the native path.
+- **Outbound consults the flag.** `chat_utils.slack_mirror_is_paused` gates turn
+  mirroring — the user-message echo (which is what also silences the tool stream,
+  the assistant reply and the stream teardown, since they all key off it), the
+  compaction notice, the auth-error mirror, and the linked approval prompt.
+- **Deliveries that merely address the thread are NOT gated** — a cron result, a
+  subagent completion, a requested file, an auto-nudge tick. Those fall back to
+  the owner's DM on an empty link, and the nudge path deletes the loop outright,
+  so reading paused as no-link there would reroute messages the user asked for
+  and destroy a live monitor.
+
+`_slack_linked` deliberately stays `true` while paused: `get_linked_slot` evicts
+its `_slack_to_slot` entry when that boolean is false, so expressing pause by
+clearing it would make the slot self-purge and a resumed turn would never render
+in the open tab. Pause touches no slot state at all — the session map is the
+single source of truth, which is why there is no fourth slot field.
+
+Reconnecting re-issues `slack-link`. Its already-linked branch detects the paused
+link, lifts the flag, re-binds through `link_slack`, and re-seeds the existing
+thread with history. That re-seed is the deliberate exception to the "only seed a
+NEW thread" rule, because the thread has a gap in it precisely because mirroring
+was off. Reply-to-resume does not re-seed: the user is reading the thread already.
+
+A Slack-BORN session is what made this reachable. Its self-link used to be
+suppressed from the serialized `links` array entirely, so the dashboard saw no
+Slack link, fell through to the target picker, and offered "Send to Slack" for a
+conversation already in Slack — with nowhere to hang the control. The link is
+now emitted with `direction: "origin"`, which keeps it out of every mirror-shaped
+affordance while making it addressable. `slack_linked` stays `false` for those
+sessions so the frontend does not also synthesize its phantom mirror row.
+
+### The channel-neutral half
+
+A session can hold SEVERAL non-Slack bindings — one per channel type, stored as
+`mirrors: {channel_type: binding}` with `accepts_inbound` and `paused` living ON
+each binding. One per type is the product rule as well as a storage convenience:
+a conversation hosts one session, so a session holding two of the same channel
+could not be addressed unambiguously either. A legacy single-`mirror` row (plus
+its entry-level flags) is folded into that shape by one normalizer — read-compat,
+never migrating on read, because a read path that writes turns every listing into
+a disk mutation. Writing is the migration point and retires the legacy keys.
+
+`mirror_paused` is the non-Slack twin of the Slack mute, and the differences are
+all in Slack's favour being unnecessary rather than the reverse:
+
+- **Storage** refuses to create a binding or an entry, so a mute can never
+  outlive what it describes; both clear paths and a rebind drop it.
+- **Egress** resolves EVERY binding (`_resolve_mirror_targets`), governs each
+  through the same ladder, mute-checks each on its own, and splits at each
+  transport's own length limit. One channel denied, unregistered, unable to send
+  proactively, or failing mid-send does not cost the others their message. The
+  unnamed `is_mirror_paused` therefore means "every binding is muted", never
+  "any" — that reading is what stops one muted channel silencing a sibling.
+- **There is no approval leg and no auto-nudge hazard here.** The loop's deletion
+  path reads the dedicated Slack fields only (`get_channel`) and `binding_key_for`
+  never emits a mirror key, so a `mirror` entry is invisible to it; and a
+  tree-wide sweep finds no approval delivery to a non-Slack link at all. A
+  disconnected channel really does go quiet.
+- **Reconnect** re-issues `mirror-link` naming the channel, shares one
+  `_deliver_catch_up` helper with link creation, and re-asserts `accepts_inbound`.
+
+### One session per conversation
+
+Inbound is where Slack and the rest differ structurally. Slack routes a thread
+reply through its single-valued `_thread_to_session` index, so a thread has
+exactly one owner. A non-Slack conversation has no threads to scope bindings to —
+a Discord DM cannot hold them at all — and `find_mirror_sessions` returns a LIST,
+with the inbound resolver refusing to pick: two inbound bindings on one
+conversation route a message to NOBODY (`session_resume.py` logs
+`ambiguous inbound bindings; routing denied`).
+
+So the dashboard's connect enforces the occupancy rule that makes inbound safe.
+It sets `accepts_inbound` — without which a reply resolves no owner and falls
+through to the conversation's own session key, the defect where connecting a
+session and then replying in Discord landed in a brand-new tab — and it refuses a
+conversation another session holds with `409 conversation_occupied` until the
+caller passes `confirm`. The check runs BEFORE any side effect, so an unconfirmed
+attempt announces nothing, evicts nothing and binds nothing. A confirmed one
+clears the previous binding by location and posts a line into the conversation,
+because whoever is reading there needs to know which session they are talking to.
+
+That rule is per CONVERSATION, not per account: two sessions may each hold a
+different Discord conversation. It generalises unchanged when the app is added to
+a channel, since a channel is just another conversation id — and Discord threads,
+which exist in channels but not DMs, would let a conversation host several
+bindings. Neither is built: the transport has no create-thread call, and
+`discord/transport.py` refuses inbound from any thread outside its configured
+allowlist.
+
 ## Unlinking
 
 `POST /api/chat/slots/{slot}/slack-unlink` is the symmetric counterpart. It

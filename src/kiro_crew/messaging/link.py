@@ -415,8 +415,14 @@ def release_conversation_location(
     Returns ``(reply_text, swept_keys)``. A non-empty sweep is the caller's
     cue to refresh any dashboard projection of the cleared bindings.
     """
-    cleared = int(sessions.clear_mirror_link(key))
-    cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
+    # Scoped to the location's OWN channel: this helper means "nothing mirrors
+    # into THIS conversation", so an unnamed clear would also drop a binding the
+    # same session holds on a different channel — a Discord `!unlink` erasing a
+    # Telegram mirror nobody mentioned.
+    cleared = int(sessions.clear_mirror_link(key, location.channel_type))
+    cleared += int(
+        sessions.clear_mirror_link(legacy_dashboard_mirror_key(key), location.channel_type)
+    )
     swept = sessions.clear_mirror_links_at(location)
     if swept:
         logger.info(

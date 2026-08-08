@@ -1,0 +1,3 @@
+Discord DM is already connected to another session.
+
+Connecting it here will disconnect that one. Continue?

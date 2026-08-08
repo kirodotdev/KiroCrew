@@ -14,6 +14,7 @@ from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
@@ -143,6 +144,51 @@ class DiscordSessionResume:
                 channel_id,
             )
         return None
+
+    async def resume_if_muted(self, channel_id: str, key: str) -> bool:
+        """A reply in a MUTED conversation resumes it, exactly as a Slack reply does.
+
+        Disconnect retains the binding and its inbound marker, so a reply here
+        still resolves to *key*. Without this, that reply reached the session and
+        the answer was swallowed by the outbound gate: the conversation looked dead
+        while silently consuming input, and the dashboard answered someone who was
+        typing in Discord. Slack has always lifted its pause on a thread reply
+        (``slack.handler._resume_if_paused``); this is the same rule for channels,
+        so a user who learns one is not wrong about the other.
+
+        Deliberately no history re-seed: the user is reading this conversation
+        right now, so replaying it here would be noise. Explicit dashboard
+        Connect is the path that catches up.
+
+        MUST be called only AFTER the inbound governance gate has permitted the
+        message — resuming persists, so doing it earlier would leave a denied
+        channel connected.
+
+        The read is an in-memory lookup and stays inline; the WRITE is offloaded
+        with ``asyncio.to_thread`` because ``set_mirror_paused`` calls ``_save``,
+        which serialises the whole session map — on slow storage that would stall
+        the event loop on a path that runs for every reply. Guarded on the READ so
+        the write happens once, on the mute→live transition, and never on a reply
+        to a live binding. ``is True`` because a stubbed SessionManager returns a
+        truthy Mock, which would otherwise "resume" a binding never muted.
+        """
+        channel_type = self.link_for(channel_id).channel_type
+        try:
+            if self.sessions.is_mirror_paused(key, channel_type) is True:
+                await asyncio.to_thread(
+                    self.sessions.set_mirror_paused, key, False, channel_type
+                )
+                logger.info(
+                    "▶️ %s conversation %s resumed by reply — was muted",
+                    channel_type,
+                    channel_id,
+                )
+                return True
+        except Exception:
+            logger.debug(
+                "could not resume muted %s binding for %s", channel_type, key, exc_info=True
+            )
+        return False
 
     def leave_resumed_session(self, channel_id: str) -> str | None:
         key = self.resumed_session(channel_id)
@@ -338,8 +384,21 @@ class DiscordSessionResume:
         such lock -- either can bind this session, or this conversation, during
         the awaited header edit. Without the re-check those newer bindings are
         silently overwritten and the conflict rules below are bypassed.
+
+        The first lookup names ``target.channel_type``. Unnamed,
+        ``get_mirror_link`` returns ``None`` when a session holds SEVERAL
+        bindings -- it refuses to pick an arbitrary sibling -- so a session bound
+        to Discord A *and* Telegram sailed through this check and had its Discord
+        A binding silently replaced by a pick in Discord B (one binding per
+        channel type per session).
+
+        Naming the channel also drops a block that multi-bind made wrong: holding
+        Telegram no longer prevents attaching Discord, because a session binding
+        several channels at once is the feature. What is still refused is moving
+        this session's DISCORD binding to a different Discord conversation behind
+        the user's back -- they unlink the old one first.
         """
-        existing = self.sessions.get_mirror_link(key)
+        existing = self.sessions.get_mirror_link(key, target.channel_type)
         if existing is not None and existing != target:
             return (
                 f"🧵 This session is already active on "
@@ -450,6 +509,22 @@ class DiscordSessionResume:
                     accepts_inbound=True,
                 )
                 self._push_slots()
+            except ConversationOwnershipConflict:
+                # `_binding_conflict` above already checked, but it and the dashboard
+                # connect endpoint check under different locks, so this precheck can
+                # lose the race. The atomic claim inside `set_mirror_link` is what
+                # catches it. It is an ordinary conflict, not a fault: say so in the
+                # same words as the precheck instead of the generic failure text,
+                # which would send the user off to retry a command that is working.
+                logger.debug("discord resume: lost the claim race for this conversation")
+                await client.edit_message(
+                    interaction.channel_id,
+                    interaction.message_id,
+                    "🧵 Another session just connected here. "
+                    "Run `!unlink`, then `!sessions` to resume this one.",
+                    components=[],
+                )
+                return
             except Exception:
                 logger.exception("discord resume: failed to persist binding")
                 await client.edit_message(

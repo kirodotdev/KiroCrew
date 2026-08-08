@@ -1310,22 +1310,12 @@
       "waiting": "Waiting"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "Release this session from {{label}}?\n\nMessages sent there will stop arriving here, and replies will stop being delivered there. You can re-attach with !sessions from that channel.",
-      "confirm_stop_mirroring": "Stop mirroring this session to {{label}}?\n\nReplies will no longer be delivered there. You can re-link it later from the configured-channel picker.",
-      "connected": "Connected: {{label}}",
-      "mirror": "Mirror",
-      "mirror_stopped": "Stopped mirroring to {{label}}",
-      "offline": "Offline",
-      "origin": "Origin",
-      "post_reminder": "Post reminder in {{label}}",
-      "release": "Release {{label}}",
-      "released": "Released from {{label}}",
-      "link_failed": "Could not link channel: {{reason}}",
-      "reminder_failed": "Could not post reminder: {{reason}}",
-      "reminder_sent": "Reminder posted in {{label}}",
-      "stop_failed": "Could not stop mirroring: {{reason}}",
-      "stop_mirroring": "Stop mirroring to {{label}}",
-      "two_way": "Two-way",
+      "unknown_error": "unknown error",
+      "confirm_takeover": "{{label}} is already connected to another session.\n\nConnecting it here will remove that connection. Continue?",
+      "connect_failed": "Could not connect to {{label}}: {{reason}}",
+      "connect_to": "Connect to {{label}}",
+      "disconnect_failed": "Could not disconnect from {{label}}: {{reason}}",
+      "disconnect_from": "Disconnect from {{label}}",
       "unavailable": "This destination is unavailable."
     },
     "linkPreview": {
@@ -2466,6 +2456,7 @@
       "worktree_creation_returned_no_path": "Worktree creation returned no path"
     },
     "chatSidebar": {
+      "connected_to": "Connected to {{label}}",
       "default_agent": "Default agent: {{name}}",
       "delete_folder_confirm": "Delete \"{{name}}\"? Sessions will be ungrouped.",
       "filter_tags": "Filter tags: {{name}}",
@@ -2494,7 +2485,6 @@
       "last_30_days": "Last 30 Days",
       "last_7_days": "Last 7 Days",
       "dashboard_source": "Dashboard",
-      "mirroring_to": "Mirroring to {{label}}",
       "two_way_with_channel": "This session is two-way with {{channel}}: replies are delivered there, and messages sent there arrive here.",
       "two_way_with_direct_message": "This session is two-way with a direct message: replies are delivered there, and messages sent there arrive here.",
       "session_source": "Session",

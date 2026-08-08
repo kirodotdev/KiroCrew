@@ -165,6 +165,7 @@ class TestChannelNeutralSlotLinks:
                 "target": "…767244",
                 "direction": "origin",
                 "live": True,
+                "paused": False,
             }
         ]
 
@@ -187,6 +188,7 @@ class TestChannelNeutralSlotLinks:
                 "target": "…767244",
                 "direction": "out",
                 "live": True,
+                "paused": False,
             }
         ]
 

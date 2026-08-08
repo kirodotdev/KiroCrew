@@ -85,6 +85,9 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     effective_session_key,
     is_system_injection,
+    mirror_is_paused,
+    slack_mirror_is_paused,
+    slack_turn_egress_denied,
     slot_history_key,
 )
 from kiro_crew.dashboard.handlers import (
@@ -1560,12 +1563,111 @@ def _resolve_channel_target(state: Any, session_key: str, link: Any) -> Any:
     return link, transport
 
 
-def _resolve_mirror_target(state: Any, session_key: str) -> Any:
-    """Resolve a session's outbound mirror through the shared send ladder."""
+def _resolve_mirror_target(state: Any, session_key: str, channel_type: str = "") -> Any:
+    """Resolve ONE of a session's outbound bindings through the shared send ladder.
+
+    Named channel, or the session's only binding when unnamed — ``get_mirror_link``
+    returns None rather than an arbitrary sibling when several exist, so a caller
+    that assumes one binding can never deliver to the wrong channel.
+    """
     return _resolve_channel_target(
         state,
         session_key,
-        state.sessions.get_mirror_link(session_key),
+        state.sessions.get_mirror_link(session_key, channel_type)
+        if channel_type
+        else state.sessions.get_mirror_link(session_key),
+    )
+
+
+async def _resolve_mirror_targets(state: Any, session_key: str) -> list[Any]:
+    """Every deliverable binding a session holds, muted ones excluded.
+
+    The plural form is what turn mirroring needs now that a session can mirror to
+    several channels at once. Each binding is governed on its own through the
+    same ladder — one channel being denied, unregistered or unable to send
+    proactively must not stop the others — and each is mute-checked on its own,
+    because muting Discord may not silence a Telegram sibling.
+
+    Each resolution is offloaded with ``asyncio.to_thread``: the governance ladder
+    reads profile files from disk (``iterdir``/``stat``), and this runs once PER
+    BINDING on every mirrored turn, so doing it inline would multiply a slow-disk
+    stall across the gateway's tasks and its watchdog. Same treatment the singular
+    resolver already gets at its ``chat_mirror`` call site.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return []
+    try:
+        links = sessions.get_mirror_links(session_key)
+    except AttributeError:
+        # Older/stubbed SessionManagers (and much of the test suite) expose only
+        # the singular accessor; degrade to it rather than dropping delivery.
+        single = sessions.get_mirror_link(session_key)
+        links = [single] if single is not None else []
+    targets: list[Any] = []
+    for link in links:
+        resolved = await _resolve_one_target(state, session_key, link)
+        if resolved is not None:
+            targets.append(resolved)
+    return targets
+
+
+async def _resolve_one_target(
+    state: Any, session_key: str, link: Any, *, require_unmuted: bool = True
+) -> Any:
+    """Still-bound check, mute check, and governance ladder for ONE binding.
+
+    Extracted so a send site can ask the questions AGAIN rather than reusing the
+    answers from the top of the turn. All three have to be re-asked, and the first
+    is the one that is easy to miss: an in-channel `!unlink` REMOVES the binding
+    rather than muting it, and a session with no binding is not paused, so a mute
+    check alone reads a cleared link as live and the remaining parts of a reply go
+    to a conversation this session no longer owns — possibly one another session
+    has since claimed.
+
+    So the current binding must still BE this location. Compared by value, like the
+    occupancy scan: a rebind to a different conversation is as disqualifying as a
+    clear, because `link` was captured before the rebind and is now the wrong
+    address. Anything other than an equal binding stops the delivery — this is an
+    egress gate, so an unreadable answer counts as changed.
+
+    ``require_unmuted=False`` is for the connect/reconnect catch-up, which is the
+    operation that LIFTS the mute: at the moment it runs the binding is still marked
+    paused, so asking the mute there refuses the very delivery the reconnect exists
+    to perform. It still re-asks the binding and the policy, which are the two that
+    can turn against it mid-replay.
+
+    Asked TWICE, either side of the governance await. That await is file I/O — the
+    policy load reads profile directories — so it is exactly where a disconnect has
+    time to land, and answering with the authorization that was true before it would
+    send the next chunk into a conversation the user has already detached from. The
+    first check is not redundant: it avoids paying for a policy read on a binding
+    that is already gone.
+    """
+    if not _still_bound(state, session_key, link, require_unmuted):
+        return None
+    resolved = await asyncio.to_thread(
+        _resolve_channel_target, state, session_key, link
+    )
+    if resolved is None:
+        return None
+    # The window is the await above, so this is the answer that decides the send.
+    if not _still_bound(state, session_key, link, require_unmuted):
+        return None
+    return resolved
+
+
+def _still_bound(state: Any, session_key: str, link: Any, require_unmuted: bool) -> bool:
+    """Is *link* STILL this session's live binding for its channel?
+
+    Both halves of the cheap, in-memory question `_resolve_one_target` asks on either
+    side of its governance await.
+    """
+    current = state.sessions.get_mirror_link(session_key, link.channel_type)
+    if current != link:
+        return False
+    return not (
+        require_unmuted and mirror_is_paused(state, session_key, link.channel_type)
     )
 
 
@@ -1605,6 +1707,17 @@ async def _deliver_auth_error_to_slack(
     slack_client = getattr(state, "slack_client", None)
     if slack_client is None:
         return
+    # A paused thread is muted for turn output, and an auth failure IS turn
+    # output. The dashboard renders the same error, which is where a user who
+    # paused the thread is working.
+    if slack_mirror_is_paused(state, session_key):
+        return
+    # Policy half of the same question, re-asked per send: a link made while
+    # Slack was allowed must stop posting once the policy denies it.
+    # Offloaded: the check walks the governance profiles and writes a SEL
+    # record, both filesystem I/O, and this runs on every Slack-linked turn.
+    if await asyncio.to_thread(slack_turn_egress_denied, state, session_key):
+        return
     thread_ts = getattr(slot, "_slack_thread_ts", "")
     channel_id = getattr(slot, "_slack_channel", "")
     if (not thread_ts or not channel_id) and sessions is not None:
@@ -1634,29 +1747,63 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     """
     if not assistant_text:
         return
-    target = _resolve_mirror_target(state, session_key)
-    if target is None:
+    # Every connected binding gets the reply; muted ones are filtered inside the
+    # resolver, per binding, so muting Discord leaves a Telegram sibling live.
+    # Gated at the SEND, not in routing — chat_mirror resolves the same targets to
+    # deliver a reconnect's catch-up.
+    targets = await _resolve_mirror_targets(state, session_key)
+    if not targets:
         return
-    link, transport = target
     # Redact through the canonical egress shim so a loaded companion's extra
     # credential/token regexes apply (not just the OSS baseline).
     text = redact_via_context(assistant_text)
-    # Split on the channel's max message length so a long reply mirrors in full
-    # rather than being hard-truncated by the transport (Telegram caps at 4096),
-    # matching the Slack leg's split_message chunking.
-    parts = chunk_text(text, transport.capabilities.max_message_chars)
-    try:
-        for part in parts:
-            await transport.send_message(link.channel_id, part, thread_id=link.thread_id)
-        logger.info(
-            "cross-surface: mirrored reply to %s:%s (%d chars, %d part(s))",
-            link.channel_type,
-            link.channel_id,
-            len(text),
-            len(parts),
-        )
-    except Exception:
-        logger.debug("Failed to mirror reply to %s", link.channel_type, exc_info=True)
+    for link, transport in targets:
+        # Split on the channel's max message length so a long reply mirrors in
+        # full rather than being hard-truncated by the transport (Telegram caps
+        # at 4096), matching the Slack leg's split_message chunking. Per channel:
+        # limits differ, so one shared split would cut for the strictest.
+        parts = chunk_text(text, transport.capabilities.max_message_chars)
+        try:
+            sent = 0
+            send_link, send_transport = link, transport
+            for part in parts:
+                # Before EVERY part, including the first. A multipart reply is a
+                # SEQUENCE of egress actions spanning however long the transport
+                # takes, so the decision that authorized part 1 does not authorize
+                # part 7 — and the FIRST part is not safe either: targets are
+                # resolved for all bindings up front, so a slow send on an earlier
+                # channel leaves this one's authorization stale before it is ever
+                # used. Skipping index 0 only saved a policy read the resolver had
+                # just done, and that saving was the hole. Chunk sizes stay as
+                # computed — the recheck governs permission, and a re-resolve of
+                # the same binding yields the same channel.
+                governed = await _resolve_one_target(state, session_key, link)
+                if governed is None:
+                    logger.info(
+                        "cross-surface: stopped mirroring to %s:%s after %d/%d "
+                        "part(s) — disconnected or no longer permitted",
+                        link.channel_type,
+                        link.channel_id,
+                        sent,
+                        len(parts),
+                    )
+                    break
+                send_link, send_transport = governed
+                await send_transport.send_message(
+                    send_link.channel_id, part, thread_id=send_link.thread_id
+                )
+                sent += 1
+            else:
+                logger.info(
+                    "cross-surface: mirrored reply to %s:%s (%d chars, %d part(s))",
+                    link.channel_type,
+                    link.channel_id,
+                    len(text),
+                    len(parts),
+                )
+        except Exception:
+            # One channel failing must not cost the others their delivery.
+            logger.debug("Failed to mirror reply to %s", link.channel_type, exc_info=True)
 
 
 async def _deliver_cross_surface_user_message(
@@ -1673,23 +1820,40 @@ async def _deliver_cross_surface_user_message(
     """
     if not user_message:
         return
-    target = _resolve_mirror_target(state, session_key)
-    if target is None:
+    targets = await _resolve_mirror_targets(state, session_key)
+    if not targets:
         return
-    link, transport = target
-    try:
-        await transport.send_message(
-            link.channel_id,
-            f"💬 {_prepare_mirror_msg(user_message)}",
-            thread_id=link.thread_id,
-        )
-        logger.info(
-            "cross-surface: mirrored user message to %s:%s",
-            link.channel_type,
-            link.channel_id,
-        )
-    except Exception:
-        logger.debug("Failed to mirror user message to %s", link.channel_type, exc_info=True)
+    echo = f"💬 {_prepare_mirror_msg(user_message)}"
+    for link, _transport in targets:
+        try:
+            # Same reason as the reply loop: these targets were resolved for every
+            # binding before any of them sent, so by the time this one's turn comes
+            # its authorization can already be stale. One echo per binding, but the
+            # bindings are still a sequence.
+            governed = await _resolve_one_target(state, session_key, link)
+            if governed is None:
+                logger.info(
+                    "cross-surface: skipped the echo to %s:%s — disconnected or no "
+                    "longer permitted",
+                    link.channel_type,
+                    link.channel_id,
+                )
+                continue
+            send_link, transport = governed
+            await transport.send_message(
+                send_link.channel_id,
+                echo,
+                thread_id=send_link.thread_id,
+            )
+            logger.info(
+                "cross-surface: mirrored user message to %s:%s",
+                link.channel_type,
+                link.channel_id,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to mirror user message to %s", link.channel_type, exc_info=True
+            )
 
 
 def _prepare_mirror_msg(raw_user_message: str) -> str:
@@ -2393,6 +2557,9 @@ async def _run_chat(
             link = sessions.get_slack_link(raw_key)
             if link and link[0] and link[1]:
                 sessions.set_slack_link(session_key, link[0], link[1])
+                # No pause copy needed: SessionMap keys a pause under both the
+                # bare and the "dashboard:"-prefixed spelling, so the flag gates
+                # this turn from whichever one carries it.
 
     # No pre-turn readiness gate: latched readiness is only refreshed at boot and
     # on explicit user action, so denying here would block a send the CLI would
@@ -2800,6 +2967,62 @@ async def _run_chat(
     _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
     _mirror_task_counter = 0
+
+    def _slack_leg_muted() -> bool:
+        """Has the user disconnected — or UNLINKED — since this turn started?
+
+        In-memory only, so it is cheap enough to ask before every streamed event.
+        The leg used to be decided once, when `_mirror_thread`/`_mirror_chan`/
+        `_mirror_stream_ts` were populated, so a disconnect mid-turn kept the tool
+        stream and the final reply flowing into a thread the user had detached.
+
+        The mute is not the only way a leg goes away. An unlink REMOVES the Slack
+        link, and a session with no link is not paused, so asking only the mute read
+        a detached leg as live and kept posting to the thread captured at the top of
+        the turn — possibly one since rebound to a different session. So the current
+        link has to still BE the thread this turn captured; anything else, including
+        an unreadable answer, ends the leg.
+        """
+        if slack_mirror_is_paused(state, session_key):
+            return True
+        # `(thread_ts, channel_id)` — that order, and never None; an unlinked session
+        # answers `(None, None)`.
+        thread, channel = state.sessions.get_slack_link(session_key)
+        if not thread and not channel:
+            return True
+        return (channel or "") != (_mirror_chan or "") or (thread or "") != (
+            _mirror_thread or ""
+        )
+
+    _slack_policy_denied_latch = False
+
+    async def _slack_content_denied() -> bool:
+        """Mute OR policy: the full check, asked before every outbound Slack op.
+
+        Offloaded because the governance half reads policy files and writes a SEL
+        record. It is asked per streamed event and not only at message boundaries:
+        keeping it coarse left tool titles appending to the stream after the policy
+        had denied Slack, and content leaking outranks a verbose audit trail.
+
+        Two things bound the cost. The mute is evaluated first and short-circuits, so
+        a muted thread pays nothing. And a policy denial LATCHES for the rest of the
+        turn — once denied, the leg stays silent with no further policy reads, since a
+        mid-turn re-permit is not a case worth paying for on every event.
+        """
+        nonlocal _slack_policy_denied_latch
+        if _slack_policy_denied_latch:
+            return True
+        if _slack_leg_muted():
+            return True
+        denied = await asyncio.to_thread(slack_turn_egress_denied, state, session_key)
+        if denied:
+            _slack_policy_denied_latch = True
+            return True
+        # Asked AGAIN, because the line above is disk I/O on a worker thread: an
+        # unlink or mute landing inside it leaves the mute answer above stale, and a
+        # "permitted" verdict computed before the disconnect would license the send
+        # that follows. This is the answer the caller acts on.
+        return _slack_leg_muted()
     try:
         # Resolve agent bindings early so we pass the correct kiro-cli
         # agent name (e.g. "kirocrew") instead of the KiroCrew slot name
@@ -3380,7 +3603,21 @@ async def _run_chat(
         )
 
         # ── Bidirectional sync: mirror user message to linked Slack thread ──
-        if state.slack_client and not is_slash and not _is_synthetic:
+        # A paused link stops here and nowhere else: _mirror_thread/_mirror_chan
+        # and _mirror_stream_ts stay empty, which is what also silences the tool
+        # stream, the assistant reply, and the stream teardown further down.
+        if (
+            state.slack_client
+            and not is_slash
+            and not _is_synthetic
+            and not slack_mirror_is_paused(state, session_key)
+            # Re-asked per send, not inherited from link time. Offloaded (it
+            # reads policy files and writes SEL), and placed after the pause
+            # check so a muted thread short-circuits before that I/O.
+            and not await asyncio.to_thread(
+                slack_turn_egress_denied, state, session_key
+            )
+        ):
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
                 try:
@@ -3646,8 +3883,11 @@ async def _run_chat(
                         {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
                     )
                 await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
-                # Mirror tool call to linked Slack stream
-                if _mirror_stream_ts:
+                # Mirror tool call to linked Slack stream. Rechecked per event —
+                # mute AND policy: a disconnect or a policy narrowing mid-turn
+                # must stop the stream updates, neither of which the
+                # once-at-start gate could see.
+                if _mirror_stream_ts and not await _slack_content_denied():
                     try:
                         if _mirror_active_task:
                             await state.slack_client.append_task(
@@ -4502,6 +4742,10 @@ async def _run_chat(
                     and slot._slack_channel
                     and slot._slack_thread_ts
                     and state.slack_client
+                    and not slack_mirror_is_paused(state, session_key)
+                    and not await asyncio.to_thread(
+                        slack_turn_egress_denied, state, session_key
+                    )
                 ):
                     try:
                         _slack_approval_ts = await post_linked_approval(
@@ -5346,7 +5590,15 @@ async def _run_chat(
                 )
 
         # ── Bidirectional sync: mirror response to linked Slack thread ──
-        if assistant_text and state.slack_client and _mirror_thread and _mirror_chan:
+        if (
+            assistant_text
+            and state.slack_client
+            and _mirror_thread
+            and _mirror_chan
+            # The reply is the largest single piece of content this turn sends,
+            # so it gets the full check and not just the cheap one.
+            and not await _slack_content_denied()
+        ):
             try:
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
@@ -5361,9 +5613,25 @@ async def _run_chat(
                 # the tag entirely to to_slack_mrkdwn's self-truncation.
                 _mirror_body, _mirror_options = extract_options(assistant_text)
 
-                for _part in render_for_slack(_mirror_body):
+                _parts = list(render_for_slack(_mirror_body))
+                _stopped = False
+                for _index, _part in enumerate(_parts):
+                    # Each part is its own egress action, and the transport takes
+                    # real time per post, so the answer that authorized part 1 does
+                    # not authorize part 7. Stop rather than skip: resuming would
+                    # post a reply with a silent hole in it. The denial latches, so
+                    # the recheck costs one cheap mute read once denied.
+                    if _index and await _slack_content_denied():
+                        logger.info(
+                            "slack mirror: stopped after %d/%d part(s) — "
+                            "disconnected or no longer permitted",
+                            _index,
+                            len(_parts),
+                        )
+                        _stopped = True
+                        break
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
-                if _mirror_options:
+                if _mirror_options and not _stopped and not await _slack_content_denied():
                     await state.slack_client.post_blocks(
                         _mirror_chan,
                         build_options_blocks(_mirror_options),
@@ -5783,7 +6051,7 @@ async def _run_chat(
         try:
             if _mirror_stream_ts and state.slack_client and _mirror_chan:
                 try:
-                    if _mirror_active_task:
+                    if _mirror_active_task and not await _slack_content_denied():
                         await state.slack_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
@@ -5793,6 +6061,9 @@ async def _run_chat(
                         )
                 except Exception:
                     logger.debug("Task append cleanup failed", exc_info=True)
+                # stop_stream is NOT gated: it carries no content, and skipping it
+                # on disconnect would leave a live "Thinking…" stream dangling in
+                # the thread forever.
                 try:
                     await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
                 except Exception:

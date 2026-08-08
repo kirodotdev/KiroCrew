@@ -1585,13 +1585,25 @@ export const api = {
   rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
   slackLink: (slot: string, channel?: string, threadTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) } : undefined).then(j),
   unlinkSlack: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-unlink').then(j),
+  pauseSlack: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-pause').then(j),
   channelTargets: () => fetch('/api/chat/channel-targets').then(j),
-  linkMirror: (slot: string, channelType: string, targetId: string) => post(
+  linkMirror: (slot: string, channelType: string, targetId: string, confirm?: boolean) => post(
     '/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link',
-    { channel_type: channelType, target_id: targetId },
+    { channel_type: channelType, target_id: targetId, ...(confirm ? { confirm: true } : {}) },
   ).then(j),
-  remindMirror: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link').then(j),
-  unlinkMirror: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-unlink').then(j),
+  // Empty-body mirror-link for a channel already bound. On a muted binding this
+  // is the RECONNECT: it lifts the mute and catches the conversation up. On a
+  // live one it is a no-op. The channel is named because a session can hold
+  // several bindings.
+  reconnectMirror: (slot: string, channelType: string) => post(
+    '/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link',
+    { channel_type: channelType },
+  ).then(j),
+  pauseMirror: (slot: string, channelType: string) => post(
+    '/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-pause',
+    { channel_type: channelType },
+  ).then(j),
+  unlinkMirror: (slot: string, channelType: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-unlink', { channel_type: channelType }).then(j),
   slackChannels: () => fetch('/api/slack/channels').then(j),
   // Folders
   chatFolders: () => fetch('/api/chat/folders', { headers: { ..._sk } }).then(j),

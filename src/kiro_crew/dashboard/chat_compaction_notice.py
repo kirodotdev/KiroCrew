@@ -129,6 +129,13 @@ async def _deliver_slack(state: Any, key: str, text: str) -> None:
     sessions = getattr(state, "sessions", None)
     if client is None or sessions is None:
         return
+    # Lazy, same reason as the chat_runner import below: chat_utils imports
+    # dashboard.state, which imports this module at scope.
+    from kiro_crew.dashboard.chat_utils import slack_mirror_is_paused
+
+    # A compaction notice is turn narration, so a muted thread does not get it.
+    if slack_mirror_is_paused(state, key):
+        return
     try:
         thread_ts, channel_id = sessions.get_slack_link(key)
     except Exception:

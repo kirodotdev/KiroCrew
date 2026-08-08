@@ -4852,22 +4852,12 @@
       "copy_url_of": "复制 {{name}} 的网址"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "解除此会话与 {{label}} 的关联？\n\n那里发送的消息将不再到达此处，回复也将不再发送到那里。你可以在该频道使用 !sessions 重新关联。",
-      "confirm_stop_mirroring": "停止将此会话镜像到 {{label}}？\n\n回复将不再发送到那里。之后可从已配置频道选择器重新关联。",
-      "connected": "已连接：{{label}}",
-      "link_failed": "无法关联频道：{{reason}}",
-      "mirror": "镜像",
-      "mirror_stopped": "已停止镜像到 {{label}}",
-      "offline": "离线",
-      "origin": "来源",
-      "post_reminder": "在 {{label}} 中发布提醒",
-      "release": "解除 {{label}}",
-      "released": "已解除与 {{label}} 的关联",
-      "reminder_failed": "无法发布提醒：{{reason}}",
-      "reminder_sent": "已在 {{label}} 中发布提醒",
-      "stop_failed": "无法停止镜像：{{reason}}",
-      "stop_mirroring": "停止镜像到 {{label}}",
-      "two_way": "双向",
+      "unknown_error": "未知错误",
+      "confirm_takeover": "{{label}} 已连接到另一个会话。\n\n在此连接将断开那个会话。是否继续？",
+      "connect_failed": "无法连接到 {{label}}：{{reason}}",
+      "connect_to": "连接到 {{label}}",
+      "disconnect_failed": "无法断开与 {{label}} 的连接：{{reason}}",
+      "disconnect_from": "断开与 {{label}} 的连接",
       "unavailable": "此目标当前不可用。"
     },
     "logEntry": {
@@ -5593,11 +5583,6 @@
     "skillPickerMenu": {
       "loading_skills": "正在加载技能…",
       "no_matching_skills": "无匹配的技能"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "在 Slack 中发布提醒",
-      "send_to_slack": "发送到 Slack",
-      "unlink_from_slack": "取消与 Slack 的关联"
     },
     "slashCommandMenu": {
       "desc_agent": "切换或管理当前代理",
@@ -7260,6 +7245,7 @@
       "collapse_hidden_folders": "折叠隐藏文件夹",
       "column_filter": "列筛选",
       "column_name_optional": "列名称（可选）",
+      "connected_to": "已连接到 {{label}}",
       "create": "创建…",
       "creating": "正在创建…",
       "custom": "自定义",
@@ -7322,7 +7308,6 @@
       "match_mode": "匹配模式",
       "merged": "已合并",
       "min": "分钟",
-      "mirroring_to": "正在镜像到 {{label}}",
       "model_list": "模型列表",
       "more": "更多",
       "more_create_options": "更多创建选项",

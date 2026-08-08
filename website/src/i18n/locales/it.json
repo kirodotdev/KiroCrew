@@ -5010,22 +5010,12 @@
       "copy_url_of": "Copia URL di {{name}}"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "Scollegare questa sessione da {{label}}?\n\nI messaggi inviati lì non arriveranno più qui e le risposte non verranno più recapitate lì. Puoi ricollegarla con !sessions da quel canale.",
-      "confirm_stop_mirroring": "Interrompere il rispecchiamento di questa sessione su {{label}}?\n\nLe risposte non verranno più recapitate lì. Potrai ricollegarla in seguito dal selettore dei canali configurati.",
-      "connected": "Connesso: {{label}}",
-      "link_failed": "Impossibile collegare il canale: {{reason}}",
-      "mirror": "Rispecchia",
-      "mirror_stopped": "Rispecchiamento su {{label}} interrotto",
-      "offline": "Offline",
-      "origin": "Origine",
-      "post_reminder": "Pubblica un promemoria in {{label}}",
-      "release": "Scollega {{label}}",
-      "released": "Scollegata da {{label}}",
-      "reminder_failed": "Impossibile pubblicare il promemoria: {{reason}}",
-      "reminder_sent": "Promemoria pubblicato in {{label}}",
-      "stop_failed": "Impossibile interrompere il rispecchiamento: {{reason}}",
-      "stop_mirroring": "Interrompi il rispecchiamento su {{label}}",
-      "two_way": "Bidirezionale",
+      "unknown_error": "errore sconosciuto",
+      "confirm_takeover": "{{label}} è già connesso a un'altra sessione.\n\nConnetterlo qui disconnetterà quella sessione. Continuare?",
+      "connect_failed": "Impossibile connettersi a {{label}}: {{reason}}",
+      "connect_to": "Connetti a {{label}}",
+      "disconnect_failed": "Impossibile disconnettersi da {{label}}: {{reason}}",
+      "disconnect_from": "Disconnetti da {{label}}",
       "unavailable": "Questa destinazione non è disponibile."
     },
     "logEntry": {
@@ -5763,11 +5753,6 @@
     "skillPickerMenu": {
       "loading_skills": "Caricamento delle skill…",
       "no_matching_skills": "Nessuna skill corrispondente"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Pubblica un promemoria in Slack",
-      "send_to_slack": "Invia a Slack",
-      "unlink_from_slack": "Scollega da Slack"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambia o gestisci l’agente attivo",
@@ -7460,6 +7445,7 @@
       "collapse_hidden_folders": "Comprimi le cartelle nascoste",
       "column_filter": "Filtro colonna",
       "column_name_optional": "Nome colonna (facoltativo)",
+      "connected_to": "Connesso a {{label}}",
       "create": "Crea…",
       "creating": "Creazione…",
       "custom": "Personalizzato",
@@ -7524,7 +7510,6 @@
       "match_mode": "Modalità di corrispondenza",
       "merged": "Unita",
       "min": "min",
-      "mirroring_to": "Rispecchiamento su {{label}}",
       "model_list": "Elenco dei modelli",
       "more": "Altro",
       "more_create_options": "Altre opzioni di creazione",

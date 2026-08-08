@@ -10,6 +10,7 @@ from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 
 class _Client:
@@ -90,6 +91,10 @@ class _Provider:
 class _Sessions:
     def __init__(self) -> None:
         self.mirror_links: dict[str, ChannelLink] = {}
+        # Extra bindings the same session holds on OTHER channels. Only the
+        # multi-binding rule in `get_mirror_link` reads these; kept separate so the
+        # many tests that assert on `mirror_links` directly keep their simple shape.
+        self.sibling_mirror_links: dict[str, list[ChannelLink]] = {}
         self.origin_links: dict[str, ChannelLink] = {}
         self.inbound_keys: set[str] = set()
         self.last_key = ""
@@ -102,6 +107,20 @@ class _Sessions:
         *,
         accepts_inbound: bool = False,
     ) -> None:
+        # Interface parity: the real SessionMap refuses a second session on one
+        # conversation, for OUTBOUND claims too. Without that here, the in-channel
+        # `/link` handler's refusal path is unreachable and a test for it passes
+        # against unguarded code.
+        for _other, _held in self.mirror_links.items():
+            if _other == key:
+                continue
+            if (
+                _held.channel_type == link.channel_type
+                and _held.channel_id == link.channel_id
+            ):
+                raise ConversationOwnershipConflict(
+                    f"{link.channel_type} conversation is already held by {_other}"
+                )
         self.mirror_links[key] = link
         if accepts_inbound:
             self.inbound_keys.add(key)
@@ -114,8 +133,35 @@ class _Sessions:
     def get_origin_link(self, key: str) -> ChannelLink | None:
         return self.origin_links.get(key)
 
-    def get_mirror_link(self, key: str) -> ChannelLink | None:
-        return self.mirror_links.get(key)
+    def get_mirror_link(self, key: str, channel_type: str = "") -> ChannelLink | None:
+        """Interface parity with the real SessionManager, including the filter.
+
+        Two real behaviours are modelled, because the resume conflict check depends
+        on both:
+
+        * ``channel_type`` narrows to that channel's binding;
+        * UNNAMED, the real ``get_mirror_link`` returns ``None`` when a session holds
+          SEVERAL bindings — it refuses to pick an arbitrary sibling. That is what
+          made a multi-bound session sail through the conflict check.
+
+        ``mirror_links`` stays single-valued because most tests assert against it
+        directly; ``sibling_mirror_links`` lets a test say "this session also holds
+        other channels" so the multi-binding rule above is reachable.
+        """
+        link = self.mirror_links.get(key)
+        if channel_type:
+            if link is not None and link.channel_type == channel_type:
+                return link
+            for sibling in self.sibling_mirror_links.get(key, []):
+                if sibling.channel_type == channel_type:
+                    return sibling
+            return None
+        if link is None:
+            return None
+        # Several bindings: refuse to answer with one of them.
+        if self.sibling_mirror_links.get(key):
+            return None
+        return link
 
     def find_mirror_sessions(
         self,
@@ -129,7 +175,13 @@ class _Sessions:
             if candidate == link and (not inbound_only or key in self.inbound_keys)
         ]
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, channel_type: str = "") -> bool:
+        # Interface parity: a real clear is channel-scoped, because a session can
+        # hold one binding per channel. This fake models a single binding per key,
+        # so honouring the scope means only clearing when the channel matches.
+        existing = self.mirror_links.get(key)
+        if channel_type and (existing is None or existing.channel_type != channel_type):
+            return False
         self.inbound_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
@@ -547,7 +599,11 @@ async def test_binding_claimed_during_header_edit_is_not_overwritten() -> None:
     await dispatcher.handle_message(_message("!sessions"))
     custom_id, message_id = _picker_button(client)
 
-    rival = ChannelLink(channel_type="telegram", channel_id="rival")
+    rival = ChannelLink(channel_type="discord", channel_id="rival-conversation")
+    # A DISCORD rival, not a Telegram one. Multi-bind makes a cross-channel binding
+    # legitimate (a session may hold Telegram and Discord at once), so a Telegram
+    # rival no longer conflicts and would not exercise the re-check. Same channel
+    # type, different conversation, is the case that is still refused.
 
     async def _claim_mid_edit(*args: Any, **kwargs: Any) -> bool:
         # Simulates the dashboard/other-channel bind landing during the
@@ -977,7 +1033,14 @@ async def test_picker_nonce_is_bound_to_its_registered_choices() -> None:
 
 
 @pytest.mark.asyncio
-async def test_choice_refuses_session_linked_elsewhere() -> None:
+async def test_choice_allows_a_session_that_holds_a_DIFFERENT_channel() -> None:
+    """Multi-bind: holding Telegram must not block attaching Discord.
+
+    A session binding several channels at once is the feature, so the old
+    cross-channel refusal here was wrong. What is still refused is moving this
+    session's Discord binding to another Discord conversation — see
+    `test_choice_refuses_a_second_discord_conversation`.
+    """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     sessions.set_mirror_link(
         "dashboard:chat-1",
@@ -988,8 +1051,39 @@ async def test_choice_refuses_session_linked_elsewhere() -> None:
 
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
 
-    assert sessions.mirror_links["dashboard:chat-1"].channel_type == "telegram"
-    assert any("already active on Telegram" in text for _, text, _ in client.edits)
+    assert not any("already active on" in text for _, text, _ in client.edits), (
+        "a Telegram binding blocked a Discord attach — multi-bind allows both"
+    )
+
+
+@pytest.mark.asyncio
+async def test_choice_refuses_a_second_discord_conversation() -> None:
+    """A multi-bound session's Discord binding must not be silently replaced.
+
+    Unnamed, `get_mirror_link` returns None when a session holds SEVERAL bindings
+    (it refuses to pick an arbitrary sibling), so a session bound to Discord A AND
+    Telegram sailed through the conflict check and had its Discord A binding
+    replaced by a pick in Discord B — one binding per channel type per session, so
+    the old one simply disappeared.
+    """
+    dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+    held = ChannelLink(channel_type="discord", channel_id="discord-A")
+    sessions.mirror_links["dashboard:chat-1"] = held
+    # The session ALSO holds Telegram, which is what made the unnamed lookup return
+    # None and let the pick through. Without a second binding the defect is not even
+    # reachable and this test would pass against the unfixed code.
+    sessions.sibling_mirror_links["dashboard:chat-1"] = [
+        ChannelLink(channel_type="telegram", channel_id="tg-1")
+    ]
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert sessions.mirror_links["dashboard:chat-1"] == held, (
+        "the existing Discord binding was silently replaced by the picker"
+    )
+    assert any("already active on Discord" in text for _, text, _ in client.edits)
 
 
 @pytest.mark.asyncio
@@ -1040,13 +1134,16 @@ async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
 
 @pytest.mark.asyncio
 async def test_leave_resumed_session_frees_whole_location() -> None:
-    # The resumed-session release must clear co-located occupants too: the
-    # dashboard mirror-link endpoint performs no occupancy check, so an
-    # outbound mirror can share the location with the resume binding.
+    # The resumed-session release must clear co-located occupants too. That state is
+    # no longer creatable through `set_mirror_link` — one session per conversation is
+    # now enforced for outbound claims as well — but a map written before that check
+    # can still hold it, and the release has to free all of it. So the rows go in
+    # directly rather than through the writer.
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     loc = ChannelLink(channel_type="discord", channel_id="c1")
-    sessions.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
-    sessions.set_mirror_link("dashboard:bystander", loc)
+    sessions.mirror_links["dashboard:resumed"] = loc
+    sessions.inbound_keys.add("dashboard:resumed")
+    sessions.mirror_links["dashboard:bystander"] = loc
 
     released = dispatcher._session_resume.leave_resumed_session("c1")
 
@@ -1112,3 +1209,24 @@ async def test_new_leaves_resumed_session_and_advances_native_generation() -> No
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert dispatcher._session_key("u1") != old_key
     assert "left the resumed session" in client.sent[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_inchannel_link_refuses_a_conversation_another_session_holds() -> None:
+    """`/link` must report the refusal, not raise.
+
+    `set_mirror_link` now refuses a second session on one conversation — including an
+    OUTBOUND claim, which is what an in-channel link is. Unhandled that surfaced as a
+    generic failure and sent the user to retry a command working as intended.
+    """
+    dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+    # A dashboard session already mirrors into this conversation, outbound-only.
+    sessions.mirror_links["dashboard:chat-7"] = ChannelLink(
+        channel_type="discord", channel_id="c1"
+    )
+
+    await dispatcher.handle_message(_message("!link"))
+
+    assert any("already linked" in text for text, _ in client.sent), (
+        f"the refusal was not reported to the channel: {client.sent}"
+    )

@@ -44,6 +44,7 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 from kiro_crew.telegram.commands import (
     ConversationState,
     parse_command,
@@ -917,18 +918,38 @@ class TelegramDispatcher:
         # the supergroup General. None only for a DM (an authorized forum turn
         # always carries a Topic — General is denied at the gate).
         topic = self._route_thread(route)
-        self.sessions.set_mirror_link(
-            key,
-            ChannelLink(
-                "telegram",
-                channel_id=str(chat_id),
-                thread_id=(str(topic) if topic is not None else None),
-            ),
-        )
+        try:
+            await asyncio.to_thread(
+                self.sessions.set_mirror_link,
+                key,
+                ChannelLink(
+                    "telegram",
+                    channel_id=str(chat_id),
+                    thread_id=(str(topic) if topic is not None else None),
+                ),
+            )
+        except ConversationOwnershipConflict:
+            # One session per conversation: another session already delivers here, and
+            # two would interleave their transcripts into it. Refused with the
+            # instruction that frees the location, not a generic failure that would
+            # send the user to retry a command working exactly as intended.
+            #
+            # Through `_reply`, which threads the message into the originating forum
+            # Topic — a raw client send would land it in the supergroup's General.
+            logger.info("telegram link refused: conversation already held")
+            await self._reply(
+                chat_id,
+                "⚠️ Another session is already linked to this conversation. "
+                "Send /unlink here first.",
+                thread=topic,
+            )
+            return
         # Drop any pre-unification row so a stale binding cannot outlive the
         # rebind (reads prefer the channel key, but a leftover row would still
         # answer a clear).
-        self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
+        await asyncio.to_thread(
+            self.sessions.clear_mirror_link, legacy_dashboard_mirror_key(key)
+        )
         await self._reply(
             chat_id,
             "✅ Linked. Replies from the dashboard for this conversation will "
@@ -943,7 +964,8 @@ class TelegramDispatcher:
         # included). No dashboard nudge here: a swept slot's link chip is
         # refreshed by the periodic channel_slot_reconciler push.
         topic = self._route_thread(route)
-        reply, _swept = release_conversation_location(
+        reply, _swept = await asyncio.to_thread(
+            release_conversation_location,
             self.sessions,
             key=key,
             location=ChannelLink(

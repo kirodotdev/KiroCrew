@@ -97,8 +97,22 @@ export function slotChannelNamespace(slotKey?: string): string {
  * against `slotChannelNamespace`), so a namespace that matches must always
  * produce a non-empty label.
  */
-export function slotChannelLabel(slotKey?: string): string {
-  const ns = slotChannelNamespace(slotKey)
+/**
+ * The brand label for a CHANNEL TYPE (`"slack"`, `"discord"`), independent of any
+ * session key. `slotChannelLabel` answers the same question for a slot; this is
+ * for callers that already know the channel and need a label that does NOT vary
+ * with connection state — a row whose label changed between "connected" and
+ * "disconnected" would stop reading as one row with two states. Returns `''` for
+ * an unrecognised type so the caller can fall back to whatever the wire sent.
+ */
+export function channelBrandLabel(channelType?: string): string {
+  if (!channelType) return ''
+  return Object.prototype.hasOwnProperty.call(CHANNEL_BRAND, channelType)
+    ? CHANNEL_BRAND[channelType]
+    : ''
+}
+
+export function slotChannelLabel(slotKey?: string): string {  const ns = slotChannelNamespace(slotKey)
   if (!ns) return ''
   // `hasOwnProperty`, not `in`: an inherited Object.prototype member such as
   // `toString` would otherwise resolve to a function and be handed to i18next.

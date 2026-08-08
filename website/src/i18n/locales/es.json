@@ -5010,22 +5010,12 @@
       "copy_url_of": "Copiar URL de {{name}}"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "¿Desvincular esta sesión de {{label}}?\n\nLos mensajes enviados allí dejarán de llegar aquí y las respuestas dejarán de entregarse allí. Puedes volver a vincularla con !sessions desde ese canal.",
-      "confirm_stop_mirroring": "¿Dejar de copiar esta sesión en {{label}}?\n\nLas respuestas dejarán de entregarse allí. Puedes volver a vincularla más tarde desde el selector de canales configurados.",
-      "connected": "Conectado: {{label}}",
-      "link_failed": "No se pudo vincular el canal: {{reason}}",
-      "mirror": "Copia",
-      "mirror_stopped": "Se dejó de copiar en {{label}}",
-      "offline": "Sin conexión",
-      "origin": "Origen",
-      "post_reminder": "Publicar recordatorio en {{label}}",
-      "release": "Desvincular de {{label}}",
-      "released": "Se desvinculó de {{label}}",
-      "reminder_failed": "No se pudo publicar el recordatorio: {{reason}}",
-      "reminder_sent": "Recordatorio publicado en {{label}}",
-      "stop_failed": "No se pudo dejar de copiar: {{reason}}",
-      "stop_mirroring": "Dejar de copiar en {{label}}",
-      "two_way": "Bidireccional",
+      "unknown_error": "error desconocido",
+      "confirm_takeover": "{{label}} ya está conectado a otra sesión.\n\nConectarlo aquí desconectará esa sesión. ¿Continuar?",
+      "connect_failed": "No se pudo conectar con {{label}}: {{reason}}",
+      "connect_to": "Conectar con {{label}}",
+      "disconnect_failed": "No se pudo desconectar de {{label}}: {{reason}}",
+      "disconnect_from": "Desconectar de {{label}}",
       "unavailable": "Este destino no está disponible."
     },
     "logEntry": {
@@ -5763,11 +5753,6 @@
     "skillPickerMenu": {
       "loading_skills": "Cargando skills…",
       "no_matching_skills": "No hay skills coincidentes"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Publicar recordatorio en Slack",
-      "send_to_slack": "Enviar a Slack",
-      "unlink_from_slack": "Desvincular de Slack"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambiar o gestionar el agente activo",
@@ -7460,6 +7445,7 @@
       "collapse_hidden_folders": "Contraer las carpetas ocultas",
       "column_filter": "Filtro de columna",
       "column_name_optional": "Nombre de la columna (opcional)",
+      "connected_to": "Conectado a {{label}}",
       "create": "Crear…",
       "creating": "Creando…",
       "custom": "Personalizado",
@@ -7524,7 +7510,6 @@
       "match_mode": "Modo de coincidencia",
       "merged": "Fusionado",
       "min": "min",
-      "mirroring_to": "Copiando en {{label}}",
       "model_list": "Lista de modelos",
       "more": "Más",
       "more_create_options": "Más opciones de creación",

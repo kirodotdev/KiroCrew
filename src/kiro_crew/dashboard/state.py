@@ -3739,18 +3739,42 @@ class DashboardState:
     def _slot_links(self, slot: _ChatSlot) -> tuple[list[dict[str, Any]], bool, str, str]:
         """Build the redacted channel-neutral link projection for one slot."""
         # circular import: chat imports state at module scope.
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.chat_utils import (
+            effective_session_key,
+            mirror_is_paused,
+            slack_mirror_is_paused,
+        )
 
         session_key = effective_session_key(slot)
+        mirror_paused = slack_mirror_is_paused(self, session_key)
         mirror: ChannelLink | None = None
-        persisted_ts: str | None = None
-        persisted_channel: str | None = None
+        # Every non-Slack binding this session holds, each rendered as its own
+        # row. The singular read below is kept for the Slack-synthesis branch,
+        # which needs to know whether the legacy fields are standing in for a
+        # Slack link rather than a real channel binding.
+        channel_mirrors: list[ChannelLink] = []
         try:
             candidate = self.sessions.get_mirror_link(session_key)
             if isinstance(candidate, ChannelLink):
                 mirror = candidate
         except Exception:
             pass
+        listed: Any = None
+        try:
+            listed = self.sessions.get_mirror_links(session_key)
+        except Exception:
+            listed = None
+        if isinstance(listed, list):
+            channel_mirrors = [x for x in listed if isinstance(x, ChannelLink)]
+        else:
+            # Older/stubbed SessionManagers expose only the singular accessor (and
+            # a bare MagicMock returns a truthy non-list here), so fall back to it
+            # rather than silently dropping the session's binding.
+            channel_mirrors = (
+                [mirror] if mirror is not None and mirror.channel_type != SLACK_NAMESPACE else []
+            )
+        persisted_ts: str | None = None
+        persisted_channel: str | None = None
         try:
             raw_ts, raw_channel = self.sessions.get_slack_link(session_key)
             persisted_ts = raw_ts if isinstance(raw_ts, str) else None
@@ -3795,6 +3819,20 @@ class DashboardState:
                     "target": _redacted_link_target(channel_id),
                     "direction": direction,
                     "live": self._channel_link_is_live(normalized),
+                    # One wire shape for every link, so the frontend needs no
+                    # per-channel special case. The mute is read PER BINDING —
+                    # Slack from its own store, every other channel from its own
+                    # binding — so one muted channel never marks a connected
+                    # sibling. An ORIGIN row is never muted by either: a session's
+                    # birth conversation is not a binding the dashboard can
+                    # disconnect.
+                    "paused": (
+                        False
+                        if direction == "origin" and channel_type != SLACK_NAMESPACE
+                        else mirror_paused
+                        if channel_type == SLACK_NAMESPACE
+                        else mirror_is_paused(self, session_key, channel_type)
+                    ),
                 }
             )
 
@@ -3808,36 +3846,34 @@ class DashboardState:
                 "origin",
             )
 
-        if mirror is not None:
-            if mirror.channel_type == SLACK_NAMESPACE:
-                # get_mirror_link synthesizes Slack for the legacy fields. If
-                # those fields actually hold a namespaced non-Slack origin, the
-                # origin above is the only truthful representation.
-                if not namespaced_origin and genuine_slack and not slack_origin_self_link:
-                    append_link(
-                        ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
-                        "out",
-                    )
-            else:
-                # A resume binding (set by an in-channel `!sessions` pick) routes
-                # BOTH ways: this session's replies go to that channel AND
-                # messages from it are delivered back here. That is a materially
-                # different thing for the user to see and release than an
-                # outbound-only `!link` mirror, so it gets its own direction
-                # rather than being flattened into "out". Slack is excluded by
-                # the branch above — it carries inbound on its own thread index
+        if channel_mirrors:
+            for binding in channel_mirrors:
+                # A resume binding (set by an in-channel `!sessions` pick, or by
+                # the dashboard connecting a channel that routes replies back)
+                # routes BOTH ways: this session's replies go to that channel AND
+                # messages from it are delivered back here. Slack is appended
+                # separately below — it carries inbound on its own thread index
                 # and never sets the marker.
                 inbound = False
                 try:
-                    inbound = bool(self.sessions.mirror_accepts_inbound(session_key))
+                    inbound = bool(
+                        self.sessions.mirror_accepts_inbound(session_key, binding.channel_type)
+                    )
                 except Exception:
                     # Older/stubbed SessionManagers may not expose the accessor;
                     # degrade to the outbound reading rather than dropping the link.
                     inbound = False
-                append_link(mirror, "both" if inbound else "out")
-        elif genuine_slack and not slack_origin_self_link:
-            # Defensive fallback for SessionManager test doubles or older
-            # implementations that expose get_slack_link but not get_mirror_link.
+                append_link(binding, "both" if inbound else "out")
+
+        # A Slack row accompanies `slack_linked=True` on exactly the condition the
+        # return below uses, so the two can never disagree. It used to hang off an
+        # if/elif chain that any non-Slack binding won, which dropped the Slack row
+        # while still reporting slack_linked — and the row is what carries Slack's
+        # `paused`, so the frontend synthesized a replacement with no `paused` and
+        # a MUTED thread rendered as "Disconnect from Slack". Not a race: every
+        # push_slots_update re-sent the same Slack-less payload, so the label
+        # snapped back after each turn and the first click silently re-muted.
+        if genuine_slack and not slack_origin_self_link:
             append_link(
                 ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
                 "out",
@@ -3847,6 +3883,21 @@ class DashboardState:
             slack_namespace = _split_namespaced_channel_id(slack_channel)
             visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
             return links, True, visible_slack_channel, slack_ts or ""
+        if genuine_slack and slack_origin_self_link:
+            # The conversation LIVES in this thread, so name it -- as an origin,
+            # never "out". Suppressing the row entirely is what left a Slack-born
+            # session with no link at all on the wire, so the frontend fell
+            # through to the target picker and offered "Send to Slack" for a
+            # conversation already in Slack; with no row there was also nothing
+            # to hang a pause control on. "origin" keeps it out of every
+            # mirror-shaped affordance (release, reminder, offline pill) while
+            # still being addressable.
+            #
+            # ``slack_linked`` stays False below on purpose. The frontend
+            # synthesizes a phantom Slack row from that flag whenever the wire
+            # carries no Slack link, so flipping it true would resurrect exactly
+            # the duplicate badge this row replaces.
+            append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "origin")
         return links, False, "", ""
 
     def serialize_slot(

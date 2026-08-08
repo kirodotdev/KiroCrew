@@ -4931,22 +4931,12 @@
       "copy_url_of": "{{name}} का URL कॉपी करें"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "इस सेशन को {{label}} से अलग करें?\n\nवहाँ भेजे गए संदेश अब यहाँ नहीं आएँगे, और जवाब वहाँ नहीं पहुँचेंगे। आप उस चैनल से !sessions का उपयोग करके इसे फिर से जोड़ सकते हैं।",
-      "confirm_stop_mirroring": "इस सेशन को {{label}} पर मिरर करना रोकें?\n\nजवाब अब वहाँ नहीं पहुँचेंगे। आप बाद में कॉन्फ़िगर किए गए चैनल पिकर से इसे फिर से लिंक कर सकते हैं।",
-      "connected": "कनेक्टेड: {{label}}",
-      "link_failed": "चैनल लिंक नहीं किया जा सका: {{reason}}",
-      "mirror": "मिरर",
-      "mirror_stopped": "{{label}} पर मिरर करना बंद किया गया",
-      "offline": "ऑफ़लाइन",
-      "origin": "मूल",
-      "post_reminder": "{{label}} में रिमाइंडर पोस्ट करें",
-      "release": "{{label}} से अलग करें",
-      "released": "{{label}} से अलग किया गया",
-      "reminder_failed": "रिमाइंडर पोस्ट नहीं किया जा सका: {{reason}}",
-      "reminder_sent": "{{label}} में रिमाइंडर पोस्ट किया गया",
-      "stop_failed": "मिरर करना बंद नहीं किया जा सका: {{reason}}",
-      "stop_mirroring": "{{label}} पर मिरर करना रोकें",
-      "two_way": "दो-तरफ़ा",
+      "unknown_error": "अज्ञात त्रुटि",
+      "confirm_takeover": "{{label}} पहले से किसी दूसरे सेशन से कनेक्टेड है।\n\nइसे यहाँ कनेक्ट करने पर वह सेशन डिसकनेक्ट हो जाएगा। जारी रखें?",
+      "connect_failed": "{{label}} से कनेक्ट नहीं हो सका: {{reason}}",
+      "connect_to": "{{label}} से कनेक्ट करें",
+      "disconnect_failed": "{{label}} से डिसकनेक्ट नहीं हो सका: {{reason}}",
+      "disconnect_from": "{{label}} से डिसकनेक्ट करें",
       "unavailable": "यह गंतव्य उपलब्ध नहीं है।"
     },
     "logEntry": {
@@ -5678,11 +5668,6 @@
     "skillPickerMenu": {
       "loading_skills": "स्किल लोड हो रही हैं…",
       "no_matching_skills": "कोई मेल खाती स्किल नहीं"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Slack में रिमाइंडर पोस्ट करें",
-      "send_to_slack": "Slack पर भेजें",
-      "unlink_from_slack": "Slack से अनलिंक करें"
     },
     "slashCommandMenu": {
       "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
@@ -7360,6 +7345,7 @@
       "collapse_hidden_folders": "छिपे फ़ोल्डर समेटें",
       "column_filter": "कॉलम फ़िल्टर",
       "column_name_optional": "कॉलम नाम (वैकल्पिक)",
+      "connected_to": "{{label}} से कनेक्टेड",
       "create": "बनाएँ…",
       "creating": "बनाया जा रहा है…",
       "custom": "कस्टम",
@@ -7423,7 +7409,6 @@
       "match_mode": "मैच मोड",
       "merged": "मर्ज किया गया",
       "min": "मिनट",
-      "mirroring_to": "{{label}} पर मिरर हो रहा है",
       "model_list": "मॉडल सूची",
       "more": "अधिक",
       "more_create_options": "बनाने के अधिक विकल्प",

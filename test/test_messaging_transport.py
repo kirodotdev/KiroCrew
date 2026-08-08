@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import fields
 
 import pytest
 
@@ -39,18 +40,16 @@ class TestTransportCapabilities:
         d = cap.to_dict()
         assert d["streaming"] is True
         assert d["max_message_chars"] == 2000
-        assert set(d) == {
-            "streaming",
-            "edit",
-            "reactions",
-            "files_inbound",
-            "files_outbound",
-            "rich_blocks",
-            "threads",
-            "max_message_chars",
-            "max_buttons",
-            "supports_proactive_send",
-        }
+        # Compared against the DATACLASS FIELDS, not a hand-maintained list. The
+        # hardcoded set this replaces could not catch the defect it looked like it was
+        # guarding: a field added to the dataclass but forgotten in `to_dict` left
+        # keys == list and passed, while every legitimate addition failed it as
+        # bookkeeping noise. Against the fields, an omission fails and an addition
+        # that is wired through both places passes.
+        assert set(d) == {f.name for f in fields(TransportCapabilities)}, (
+            "to_dict() and the dataclass have diverged — a capability that is not "
+            "serialised is invisible to every consumer reading the dict form"
+        )
 
 
 class TestInboundMessage:

@@ -13,6 +13,7 @@ handler wiring.
 
 import asyncio
 import re
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,8 +32,22 @@ def _state(tmp_path):
     state.slack_client.open_dm = AsyncMock(return_value="D123")
     state.slack_client.post_message = AsyncMock(return_value="newts")
     state.owner_id = "U123"
-    state.sessions.get_slack_link = MagicMock(return_value=(None, None))
-    state.sessions.set_slack_link = MagicMock()
+    # The drain now re-asks the BINDING before every post, not just the mute: an
+    # `/slack-unlink` removes the link along with its pause marker, and a session with
+    # no link is not paused. So the double has to be STATEFUL — a flat value cannot
+    # serve both the tests that drain an explicit thread and the ones that go through
+    # `/slack-link`, which mints its own. Seeded with the thread the direct-drain tests
+    # pass, and updated by `set_slack_link` for the ones that establish a real link.
+    # Starts UNLINKED: `/slack-link` must see no link or it takes its
+    # already-linked path and never posts an anchor. `_drain` establishes one, which
+    # is what production does before any drain runs.
+    link: dict[str, tuple[str | None, str | None]] = {"v": (None, None)}
+
+    def _set_slack(_key, thread_ts, channel_id):
+        link["v"] = (thread_ts, channel_id)
+
+    state.sessions.get_slack_link = MagicMock(side_effect=lambda _key: link["v"])
+    state.sessions.set_slack_link = MagicMock(side_effect=_set_slack)
     state.push_slots_update = MagicMock()
     return state
 
@@ -50,6 +65,10 @@ def _posted(state):
 
 
 async def _drain(state, slot):
+    # A drain only ever runs for a link that already exists, and the drain re-asks
+    # that binding before every post — so establish it, exactly as the link endpoint
+    # would, rather than draining a thread the map says nothing about.
+    state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
     await drain_slack_backfill(state, slot, "C1", "1700.1")
     return _posted(state)
 
@@ -608,6 +627,7 @@ class TestBackfillHandlerWiring:
         _seed(slot, [("user", "one"), ("assistant", "two")])
         state.slack_client.post_message = AsyncMock(side_effect=RuntimeError("slack down"))
 
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
         await drain_slack_backfill(state, slot, "C1", "1700.1")
 
     @pytest.mark.asyncio
@@ -617,4 +637,284 @@ class TestBackfillHandlerWiring:
         _seed(slot, [("user", "one"), ("assistant", "two")])
         state.slack_client = None
 
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
         await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+
+class TestTheDrainStopsWhenTheThreadIsDisconnected:
+    """The backfill runs for many seconds, so a disconnect can land mid-drain.
+
+    Slack accepts roughly one message per second, so seeding a long transcript is
+    not instantaneous — the user can hit Disconnect while it is still posting.
+    Checked once at the start, the drain would keep pasting the conversation into a
+    thread the user had just detached, which is the opposite of what disconnecting
+    means. So the mute is rechecked before EVERY post.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_mute_landing_mid_drain_stops_the_posting(self, tmp_path, monkeypatch):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [(role, f"turn {i}") for i, role in enumerate(["user", "assistant"] * 8)])
+
+        # Live until two posts have landed, disconnected from then on. Keyed to POSTS,
+        # not to how many times the gate asks: it asks the mute on both sides of the
+        # policy await, so a question count would encode the gate's internals.
+        posts = {"n": 0}
+        real_post = state.slack_client.post_message
+
+        async def _count(*args, **kwargs):
+            posts["n"] += 1
+            return await real_post(*args, **kwargs)
+
+        state.slack_client.post_message = AsyncMock(side_effect=_count)
+
+        def _paused(_state, _key):
+            return posts["n"] >= 2
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused", _paused
+        )
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        posted = _posted(state)
+        assert len(posted) == 2, (
+            f"the drain kept posting into a disconnected thread: {len(posted)} messages"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_thread_already_disconnected_posts_nothing(self, tmp_path, monkeypatch):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "hello"), ("assistant", "hi")])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused",
+            lambda _state, _key: True,
+        )
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        state.slack_client.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_live_thread_is_seeded_in_full(self, tmp_path, monkeypatch):
+        """Non-vacuity: the recheck must not silence an ordinary reconnect."""
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "hello"), ("assistant", "hi")])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused",
+            lambda _state, _key: False,
+        )
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        posted = _posted(state)
+        assert posted, "a live thread received no backfill at all"
+        assert any("hello" in text for text in posted)
+
+
+class TestTheDrainStopsWhenPolicyDeniesSlackMidRun:
+    """Governance is rechecked before every post, not once per drain.
+
+    The drain runs for many seconds, so the channels policy can narrow to deny Slack
+    while it is still posting. The remaining transcript must not ride along on the
+    decision that authorised the reconnect. Unlike the inline mirror catch-up this
+    cannot fail the REQUEST closed — the response already went out — but it can and
+    does stop delivering.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_denial_landing_mid_drain_stops_the_posting(self, tmp_path, monkeypatch):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [(role, f"turn {i}") for i, role in enumerate(["user", "assistant"] * 8)])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused",
+            lambda _state, _key: False,
+        )
+
+        # Permitted for the first two posts, denied from then on.
+        calls = {"n": 0}
+
+        def _vet(*_args, **_kwargs):
+            calls["n"] += 1
+            return SimpleNamespace(permitted=calls["n"] <= 2, rule="", layer="", reason="")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_slack.vet_and_audit", _vet)
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        posted = _posted(state)
+        assert len(posted) == 2, (
+            f"the drain kept posting after the policy denied slack: {len(posted)} messages"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_denied_channel_posts_nothing(self, tmp_path, monkeypatch):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "hello"), ("assistant", "hi")])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused",
+            lambda _state, _key: False,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.vet_and_audit",
+            lambda *a, **k: SimpleNamespace(permitted=False, rule="", layer="", reason=""),
+        )
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        state.slack_client.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_governance_error_fails_closed(self, tmp_path, monkeypatch):
+        """An unreadable policy must stop delivery, not wave it through."""
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "hello"), ("assistant", "hi")])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused",
+            lambda _state, _key: False,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.vet_and_audit",
+            MagicMock(side_effect=RuntimeError("policy unreadable")),
+        )
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        state.slack_client.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_permitted_channel_is_seeded_in_full(self, tmp_path, monkeypatch):
+        """Non-vacuity: the gate must not silence an ordinary permitted reconnect."""
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "hello"), ("assistant", "hi")])
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.slack_mirror_is_paused",
+            lambda _state, _key: False,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_slack.vet_and_audit",
+            lambda *a, **k: SimpleNamespace(permitted=True, rule="", layer="", reason=""),
+        )
+
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        posted = _posted(state)
+        assert posted, "a permitted channel received no backfill at all"
+        assert any("hello" in text for text in posted)
+
+
+class TestTheDrainStopsWhenTheLinkIsRemovedMidRun:
+    """An unlink is not a mute, and the mute check cannot see it.
+
+    `/slack-unlink` REMOVES the link along with its pause marker, and a session with no
+    link is not paused — so asking only the mute read a detached thread as live and kept
+    seeding transcript history into it. A link rebound to a different thread is equally
+    disqualifying: the drain's `thread_ts`/`channel` were captured when it started.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_unlink_landing_mid_drain_stops_the_posting(self, tmp_path):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "one"), ("assistant", "two"), ("user", "three")])
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+
+        posts = {"n": 0}
+        real_post = state.slack_client.post_message
+
+        async def _unlink_after_two(*args, **kwargs):
+            posts["n"] += 1
+            if posts["n"] == 2:
+                # Exactly what `/slack-unlink` does: link and pause marker both gone.
+                state.sessions.set_slack_link("dashboard:s1", None, None)
+            return await real_post(*args, **kwargs)
+
+        state.slack_client.post_message = AsyncMock(side_effect=_unlink_after_two)
+
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        assert posts["n"] == 2, (
+            "the drain kept seeding a thread the user had unlinked: "
+            f"{posts['n']} posts"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_link_moved_to_another_thread_stops_it_too(self, tmp_path):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "one"), ("assistant", "two"), ("user", "three")])
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+
+        posts = {"n": 0}
+        real_post = state.slack_client.post_message
+
+        async def _rebind_after_two(*args, **kwargs):
+            posts["n"] += 1
+            if posts["n"] == 2:
+                state.sessions.set_slack_link("dashboard:s1", "9999.9", "C1")
+            return await real_post(*args, **kwargs)
+
+        state.slack_client.post_message = AsyncMock(side_effect=_rebind_after_two)
+
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        assert posts["n"] == 2, (
+            "the drain kept posting to the thread it captured at the start after the "
+            f"session was rebound elsewhere: {posts['n']} posts"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_live_link_is_still_seeded_in_full(self, tmp_path):
+        """The check must not stop a drain whose link is intact."""
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "one"), ("assistant", "two")])
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        body = "\n".join(_posted(state))
+        assert "one" in body and "two" in body, (
+            f"the binding check stopped a drain whose link never changed: {body!r}"
+        )
+
+
+class TestAnUnlinkDuringThePolicyAwaitStopsTheDrain:
+    """`_permitted()` is a policy load from disk, so it is a window, not an instant.
+
+    The binding and mute were checked before it; an `/slack-unlink` landing inside it
+    left those answers true-but-stale and the post went to a detached thread. Asked
+    again after it returns, which is the answer that decides the send.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_unlink_inside_the_policy_check_stops_it(self, tmp_path, monkeypatch):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        _seed(slot, [("user", "one"), ("assistant", "two"), ("user", "three")])
+        state.sessions.set_slack_link("dashboard:s1", "1700.1", "C1")
+
+        # The policy check itself is where the user unlinks.
+        def _permits(*_args, **_kwargs):
+            state.sessions.set_slack_link("dashboard:s1", None, None)
+            return SimpleNamespace(permitted=True)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_slack.vet_and_audit", _permits)
+
+        await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+        state.slack_client.post_message.assert_not_awaited()

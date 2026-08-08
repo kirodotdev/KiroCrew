@@ -415,6 +415,16 @@ export interface SessionLink {
    */
   direction: 'origin' | 'out' | 'both'
   live: boolean
+  /**
+   * The user muted this link: turn output stops flowing to it, but the binding
+   * is retained so replying there resumes the same session. Distinct from
+   * `live`, which reports whether the transport *can* send at all — a paused
+   * link on a healthy transport is still `live`.
+   *
+   * Optional because a browser holding a `slots` payload cached from before this
+   * field shipped has links without it; absent reads as not paused.
+   */
+  paused?: boolean
 }
 
 export interface ConfiguredChannelTarget {

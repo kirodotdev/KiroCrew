@@ -253,7 +253,15 @@ class FakeSessions:
     def set_mirror_link(self, key: str, link: Any) -> None:
         self.mirror_links[key] = link
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, channel_type: str = "") -> bool:
+        # Interface parity: a real clear is channel-scoped, because a session can
+        # hold one binding per channel. This fake models a single binding per key,
+        # so honouring the scope means only clearing when the channel matches.
+        existing = self.mirror_links.get(key)
+        if channel_type and (
+            existing is None or getattr(existing, "channel_type", None) != channel_type
+        ):
+            return False
         return self.mirror_links.pop(key, None) is not None
 
     def clear_mirror_links_at(self, link: Any) -> list[str]:

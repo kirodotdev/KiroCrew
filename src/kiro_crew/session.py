@@ -3867,6 +3867,14 @@ class SessionManager:
         """Remove a session's Slack link (stop mirroring). Returns True if one was present."""
         return self._session_map.clear_slack_link(key)
 
+    def set_slack_paused(self, key: str, paused: bool) -> bool:
+        """Pause/resume outbound Slack mirroring. Returns the previous state."""
+        return self._session_map.set_slack_paused(key, paused)
+
+    def is_slack_paused(self, key: str) -> bool:
+        """True when outbound Slack mirroring is paused for this session."""
+        return self._session_map.is_slack_paused(key)
+
     def get_session_for_thread(self, thread_ts: str) -> str | None:
         """Return the session key linked to a Slack thread, or None."""
         return self._session_map.get_session_for_thread(thread_ts)
@@ -3901,14 +3909,31 @@ class SessionManager:
             accepts_inbound=accepts_inbound,
         )
 
-    def get_mirror_link(self, key: str) -> ChannelLink | None:
-        """Return a session's outbound mirror target as a channel-neutral link,
-        or None. Legacy Slack sessions surface as a Slack ``ChannelLink``."""
-        return self._session_map.get_mirror_link(key)
+    def get_mirror_link(self, key: str, channel_type: str = "") -> ChannelLink | None:
+        """One binding by channel type, or the session's only one when unnamed
+        (None when it holds several, so no caller acts on an arbitrary sibling).
+        Legacy Slack sessions surface as a Slack ``ChannelLink``."""
+        return self._session_map.get_mirror_link(key, channel_type)
 
-    def mirror_accepts_inbound(self, key: str) -> bool:
-        """True iff this session's mirror is a session-resume (two-way) binding."""
-        return self._session_map.mirror_accepts_inbound(key)
+    def get_mirror_links(self, key: str) -> list[ChannelLink]:
+        """Every non-Slack binding this session holds. A session can mirror to
+        several channels at once, and outbound delivery resolves each on its own."""
+        return self._session_map.get_mirror_links(key)
+
+    def mirror_accepts_inbound(self, key: str, channel_type: str = "") -> bool:
+        """True iff a binding routes messages from that channel back into this
+        session (unnamed: any binding does)."""
+        return self._session_map.mirror_accepts_inbound(key, channel_type)
+
+    def set_mirror_paused(self, key: str, paused: bool, channel_type: str = "") -> bool:
+        """Mute or unmute one binding, keeping it bound. Returns the PREVIOUS
+        state. Unnamed applies to every binding. No-op with nothing bound."""
+        return self._session_map.set_mirror_paused(key, paused, channel_type)
+
+    def is_mirror_paused(self, key: str, channel_type: str = "") -> bool:
+        """True when the named binding is muted but still bound — or, unnamed,
+        when EVERY binding is, so one muted channel cannot silence a sibling."""
+        return self._session_map.is_mirror_paused(key, channel_type)
 
     def set_origin_link(self, key: str, link: ChannelLink) -> None:
         """Record the channel conversation this session was started from.
@@ -3949,13 +3974,48 @@ class SessionManager:
             inbound_only=inbound_only,
         )
 
-    def clear_mirror_link(self, key: str) -> bool:
-        """Remove a session's outbound mirror binding. Returns True iff present."""
-        return self._session_map.clear_mirror_link(key)
+    def clear_mirror_link(self, key: str, channel_type: str = "") -> bool:
+        """Remove one binding by channel type, or every one when unnamed.
+        Returns True iff something was removed."""
+        return self._session_map.clear_mirror_link(key, channel_type)
 
     def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
         """Clear every session mirroring to an exact location; return cleared keys."""
         return self._session_map.clear_mirror_links_at(link)
+
+    def replace_mirror_owner(
+        self,
+        key: str,
+        link: ChannelLink,
+        *,
+        accepts_inbound: bool = True,
+    ) -> list[tuple[str, ChannelLink, bool, bool]]:
+        """Evict other bindings at *link* and claim it for *key*, atomically.
+
+        One session-map mutation, so the conversation is never transiently vacant
+        between the eviction and the claim. Returns the displaced bindings
+        ``(key, link, accepts_inbound, paused)`` so a caller can undo the takeover
+        if what it did next failed.
+        """
+        return self._session_map.replace_mirror_owner(
+            key, link, accepts_inbound=accepts_inbound
+        )
+
+    def restore_mirror_owner(
+        self,
+        key: str,
+        link: ChannelLink,
+        displaced: list[tuple[str, ChannelLink, bool, bool]],
+        previous: tuple[ChannelLink, bool, bool] | None = None,
+    ) -> None:
+        """Undo a takeover — this key's claim AND the eviction — atomically.
+
+        The inverse of `replace_mirror_owner`, and one mutation for the same reason:
+        composed from the individual writers the compensation spans several awaits,
+        and a claim arriving in the middle costs the evicted session its binding now
+        that exclusivity is checked on every claim.
+        """
+        self._session_map.restore_mirror_owner(key, link, displaced, previous)
 
     # Backward-compat aliases used by callers not yet migrated
     async def set_channel(self, key: str, channel_id: str) -> None:

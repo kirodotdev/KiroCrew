@@ -13,7 +13,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
@@ -30,7 +30,7 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.messaging.link import SLACK_NAMESPACE, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
@@ -487,6 +487,128 @@ def effective_session_key(slot: _ChatSlot) -> str:
     the cases that genuinely start from a slot key with no slot in hand.
     """
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
+
+
+def mirror_is_paused(state: Any, session_key: str, channel_type: str = "") -> bool:
+    """True when a turn must NOT be mirrored to the named channel binding.
+
+    The channel-neutral twin of ``slack_mirror_is_paused``, and per BINDING: a
+    session can hold several, so muting Discord must leave a Telegram sibling
+    delivering. With no ``channel_type`` it answers for the session as a whole,
+    which the storage layer defines as "every binding is muted" — never "any" —
+    for exactly that reason.
+
+    The scope is genuinely narrower than Slack's because the hazard Slack has does
+    not exist here: no cron result, sub-agent completion, requested file or
+    auto-nudge tick reads a mirror binding at all — those address a channel
+    explicitly — so gating this predicate cannot reroute a delivery to the owner's
+    DM or destroy a monitor loop. It covers the two sites that carry turn output:
+    the user echo and the assistant reply.
+
+    Consult it before SENDING, never before routing. A muted binding must stay
+    visible to ``find_mirror_sessions``, to the resume-conflict check and to both
+    clear paths, or in-channel ``!unlink`` and conflict detection break.
+
+    Strict ``is True`` for the same reason as the Slack gate: ``sessions`` is a
+    bare ``MagicMock`` across much of the suite and returns a truthy child for
+    any unstubbed accessor, so truthiness here would mute every mirror in the
+    test suite. Failing open leaves a muted channel noisy at worst; failing
+    closed would make a live one silently dead.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        return sessions.is_mirror_paused(session_key, channel_type) is True
+    except TypeError:
+        # Older/stubbed SessionManagers predate the per-binding argument.
+        return sessions.is_mirror_paused(session_key) is True
+    except Exception:
+        logger.debug("mirror pause lookup failed for %s", session_key, exc_info=True)
+        return False
+
+
+def slack_mirror_is_paused(state: Any, session_key: str) -> bool:
+    """True when a turn must NOT be mirrored to the session's linked thread.
+
+    Pause retains the thread binding, so every inbound resolver still sees the
+    link and a reply still reaches the session that owns the thread. This is the
+    one predicate that tells outbound egress apart from that: consult it before
+    sending, never before routing.
+
+    Scope is deliberately turn mirroring -- the user message echo, its tool
+    stream, the assistant reply, the compaction notice, and the linked approval
+    prompt. Deliveries that merely *reuse* the thread as an address (a cron
+    result, a subagent completion, a requested file, an auto-nudge tick) are NOT
+    gated: an empty link makes those fall back to the owner's DM, and one of them
+    deletes the auto-nudge loop outright, so reading paused as no-link there
+    would reroute messages the user asked for and destroy a live monitor.
+
+    Strict ``is True`` rather than truthiness: ``sessions`` is a bare
+    ``MagicMock`` in much of the suite and returns a truthy child for any
+    unstubbed accessor. Failing open leaves a paused thread noisy at worst;
+    failing closed would make a live thread silently dead.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        return sessions.is_slack_paused(session_key) is True
+    except Exception:
+        logger.debug("slack pause lookup failed for %s", session_key, exc_info=True)
+        return False
+
+
+def slack_turn_egress_denied(state: Any, session_key: str) -> bool:
+    """Has channel governance stopped allowing Slack for THIS send?
+
+    The companion to ``slack_mirror_is_paused``, asked at the same three places
+    and about the same question — should this turn's output reach Slack — but
+    answering the policy half rather than the user half.
+
+    The mirror path re-resolves governance per send inside
+    ``_resolve_channel_target``, which deliberately skips Slack because Slack has
+    its own client and streaming path rather than a registered transport. That
+    left the Slack leg deciding egress on the policy as it stood when the link was
+    created: a link made (or RECONNECTED) while Slack was allowed kept posting
+    transcript content after the policy denied it. The backfill drain already
+    re-checks before every post; this closes the same gap on the turn path.
+
+    Returns True to DENY. Fail-closed on a broken evaluation, matching the
+    "channels"-scope gates elsewhere: this is an egress chokepoint on a network
+    surface, so a degraded answer must not read as permission.
+
+    Note the asymmetry with the pause lookup above, which fails OPEN. That one
+    guards against a bare ``MagicMock`` making every thread look muted; this one
+    guards a network send, where the safe direction is the other way. A policy
+    that cannot be evaluated is not a policy that permits.
+    """
+    try:
+        from kiro_crew.platform.context import PlatformCompositionError
+        from kiro_crew.platform.governance_profiles import vet_and_audit
+    except Exception:  # pragma: no cover - import-time composition failure
+        logger.debug("slack egress: governance module unavailable", exc_info=True)
+        return True
+    try:
+        decision = vet_and_audit(
+            "channels",
+            SLACK_NAMESPACE,
+            session_key=session_key,
+            tool_name="chat.slack_turn",
+            fail_closed=True,
+        )
+    except PlatformCompositionError:
+        # An invalid governance ceiling is re-raised by design elsewhere; here the
+        # caller is a delivery leg with nowhere to surface it, so it denies.
+        logger.warning("slack egress denied: governance ceiling is invalid")
+        return True
+    except Exception:
+        logger.debug("slack egress: governance check failed", exc_info=True)
+        return True
+    if not getattr(decision, "permitted", False):
+        logger.info("slack egress denied by channels governance policy")
+        return True
+    return False
 
 
 _INCOGNITO_PREFIX = (

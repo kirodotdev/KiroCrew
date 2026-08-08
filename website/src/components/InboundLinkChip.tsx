@@ -25,11 +25,14 @@ export default function InboundLinkChip({ slotKey }: { slotKey?: string }) {
   const inbound = slot?.links?.find(link => link.direction === 'both')
 
   const releaseMutation = useMutation({
-    mutationFn: () => api.unlinkMirror(slotKey as string),
+    // Name the channel the chip labels: the unnamed form clears EVERY binding, so
+    // releasing the Discord this chip names would also delete a Telegram binding
+    // the user never mentioned — and its `accepts_inbound` with it.
+    mutationFn: () => api.unlinkMirror(slotKey as string, inbound?.channel ?? ''),
     onSuccess: () => {
       dispatch(updateSlot({
         key: slotKey as string,
-        links: (slot?.links ?? []).filter(link => link.direction !== 'both'),
+        links: (slot?.links ?? []).filter(link => link !== inbound),
       }))
       dispatch(addNotification({
         ts: String(Date.now()),

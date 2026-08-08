@@ -14,6 +14,7 @@ def _make_slack_app(state):
     from kiro_crew.dashboard.chat_slack import (
         api_chat_slot_handoff,
         api_chat_slot_slack_link,
+        api_chat_slot_slack_pause,
         api_chat_slot_slack_unlink,
         api_handoff_channels,
         api_slack_channels,
@@ -23,6 +24,7 @@ def _make_slack_app(state):
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/slack-link", api_chat_slot_slack_link)
     app.router.add_post("/api/chat/slots/{slot}/slack-unlink", api_chat_slot_slack_unlink)
+    app.router.add_post("/api/chat/slots/{slot}/slack-pause", api_chat_slot_slack_pause)
     app.router.add_get("/api/slack/channels", api_slack_channels)
     app.router.add_post("/api/chat/slots/{slot}/handoff", api_chat_slot_handoff)
     app.router.add_get("/api/handoff-channels", api_handoff_channels)

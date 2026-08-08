@@ -4144,11 +4144,6 @@
       "loading_skills": "Loading skills…",
       "no_matching_skills": "No matching skills"
     },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Post reminder in Slack",
-      "send_to_slack": "Send to Slack",
-      "unlink_from_slack": "Unlink from Slack"
-    },
     "slotTagPopover": {
       "assign_tags": "Assign tags",
       "close": "Close",

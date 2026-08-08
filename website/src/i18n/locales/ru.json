@@ -5089,22 +5089,12 @@
       "copy_url_of": "Копировать URL для {{name}}"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "Отвязать эту сессию от {{label}}?\n\nСообщения, отправленные туда, перестанут поступать сюда, а ответы — доставляться туда. Вы сможете снова привязать её командой !sessions из того канала.",
-      "confirm_stop_mirroring": "Остановить зеркалирование этой сессии в {{label}}?\n\nОтветы больше не будут доставляться туда. Позже сессию можно снова привязать через выбор настроенных каналов.",
-      "connected": "Подключено: {{label}}",
-      "link_failed": "Не удалось связать канал: {{reason}}",
-      "mirror": "Зеркало",
-      "mirror_stopped": "Зеркалирование в {{label}} остановлено",
-      "offline": "Не в сети",
-      "origin": "Источник",
-      "post_reminder": "Опубликовать напоминание в {{label}}",
-      "release": "Отвязать от {{label}}",
-      "released": "Отвязано от {{label}}",
-      "reminder_failed": "Не удалось опубликовать напоминание: {{reason}}",
-      "reminder_sent": "Напоминание опубликовано в {{label}}",
-      "stop_failed": "Не удалось остановить зеркалирование: {{reason}}",
-      "stop_mirroring": "Остановить зеркалирование в {{label}}",
-      "two_way": "Двусторонняя связь",
+      "unknown_error": "неизвестная ошибка",
+      "confirm_takeover": "{{label}} уже подключён к другому сеансу.\n\nПодключение здесь отключит тот сеанс. Продолжить?",
+      "connect_failed": "Не удалось подключиться к {{label}}: {{reason}}",
+      "connect_to": "Подключиться к {{label}}",
+      "disconnect_failed": "Не удалось отключиться от {{label}}: {{reason}}",
+      "disconnect_from": "Отключиться от {{label}}",
       "unavailable": "Это место назначения недоступно."
     },
     "logEntry": {
@@ -5848,11 +5838,6 @@
     "skillPickerMenu": {
       "loading_skills": "Загрузка навыков…",
       "no_matching_skills": "Нет подходящих навыков"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Опубликовать напоминание в Slack",
-      "send_to_slack": "Отправить в Slack",
-      "unlink_from_slack": "Отвязать от Slack"
     },
     "slashCommandMenu": {
       "desc_agent": "Переключить активного агента или управлять им",
@@ -7560,6 +7545,7 @@
       "collapse_hidden_folders": "Свернуть скрытые папки",
       "column_filter": "Фильтр столбца",
       "column_name_optional": "Название столбца (необязательно)",
+      "connected_to": "Подключено к {{label}}",
       "create": "Создать…",
       "creating": "Создание…",
       "custom": "Свой",
@@ -7625,7 +7611,6 @@
       "match_mode": "Режим совпадения",
       "merged": "Влито",
       "min": "min",
-      "mirroring_to": "Зеркалирование в {{label}}",
       "model_list": "Список моделей",
       "more": "Ещё",
       "more_create_options": "Другие варианты создания",

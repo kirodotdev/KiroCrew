@@ -402,6 +402,16 @@ def test_slack_born_session_is_not_badged_twice():
         "slack_linked stayed true, so LinkedSurfacesSection rebuilds the "
         "releasable Slack mirror it was just stopped from showing"
     )
+    # Not surfaced as a mirror, but surfaced: the thread the conversation LIVES
+    # in is named as an origin. Emitting nothing at all is what left the panel
+    # with no Slack row, so it fell through to the target picker and offered
+    # "Send to Slack" for a session already in Slack -- and left nowhere to hang
+    # a pause control.
+    slack_rows = [x for x in links if x["channel"] == "slack"]
+    assert [x["direction"] for x in slack_rows] == ["origin"], (
+        "a Slack-born session must carry exactly one Slack row, as its origin"
+    )
+    assert slack_rows[0]["paused"] is False
 
 
 def test_dashboard_mirror_still_shows_its_slack_target():

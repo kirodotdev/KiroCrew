@@ -269,7 +269,13 @@ class FakeSessions:
             if candidate == link and (not inbound_only or key in self.inbound_mirror_keys)
         ]
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, channel_type: str = "") -> bool:
+        # Interface parity: a real clear is channel-scoped, because a session can
+        # hold one binding per channel. This fake models a single binding per key,
+        # so honouring the scope means only clearing when the channel matches.
+        existing = self.mirror_links.get(key)
+        if channel_type and (existing is None or existing.channel_type != channel_type):
+            return False
         self.inbound_mirror_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
