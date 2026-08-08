@@ -879,6 +879,50 @@ class TestReverseProxy:
             await runner.cleanup()
 
     @pytest.mark.asyncio
+    async def test_hmac_includes_percent_encoded_query_string_with_spaces(self, monkeypatch):
+        """HMAC signature correctly signs percent-encoded query parameters (spaces, #, non-ASCII)."""
+        from kiro_crew.apps.proxy_auth import verify_proxy_request
+
+        received_headers: dict[str, str] = {}
+
+        async def echo_handler(request: web.Request) -> web.Response:
+            for k, v in request.headers.items():
+                received_headers[k.lower()] = v
+            auth_hdr = request.headers.get("x-kirocrew-proxy", "")
+            verified = verify_proxy_request(
+                auth_hdr,
+                method=request.method,
+                target=request.rel_url.raw_path_qs,
+                body=b"",
+                secret=self._secret,
+            )
+            if not verified:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            return web.json_response({"ok": True, "raw_path_qs": request.rel_url.raw_path_qs})
+
+        backend_app = web.Application()
+        backend_app.router.add_route("*", "/{path:.*}", echo_handler)
+        runner = web.AppRunner(backend_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = runner.addresses[0][1]
+
+        import kiro_crew.apps.routes as rmod
+        monkeypatch.setattr(rmod, "_resolve_app_backend_url", lambda name: f"http://127.0.0.1:{port}")
+
+        try:
+            async with self._make_client() as client:
+                # Test path containing space (%20) (#2053)
+                resp = await client.get("/apps/proxy-app/api/read?path=/tmp/my%20notes.md")
+                assert resp.status == 200, f"Expected 200, got {resp.status}"
+                data = await resp.json()
+                assert data["ok"] is True
+                assert data["raw_path_qs"] == "/api/read?path=/tmp/my%20notes.md"
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
     async def test_hmac_covers_body(self, monkeypatch):
         """HMAC binds sha256 of the request body (integrity)."""
         import hashlib
