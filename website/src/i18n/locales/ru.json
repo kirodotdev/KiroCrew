@@ -7254,8 +7254,10 @@
       "recoveryCard": {
         "backend_error_continuing": "ошибка бэкенда · продолжение автоматически",
         "cancelled_continuing": "отменено · продолжение",
+        "continued_by_a_hook": "Продолжено хуком",
         "continued_by_you": "Продолжено по вашему запросу",
         "empty_output_continuing": "пустой вывод · продолжение автоматически",
+        "hook_requested_continuing": "хук запросил · продолжение",
         "n_patterns": "шаблонов: {{count}}",
         "n_tool_calls_blocked": "Заблокировано вызовов инструментов: {{count}}",
         "no_response_returned": "Ответ не получен",

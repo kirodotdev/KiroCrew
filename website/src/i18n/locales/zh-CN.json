@@ -6960,8 +6960,10 @@
       "recoveryCard": {
         "backend_error_continuing": "后端错误 · 正在自动继续",
         "cancelled_continuing": "已取消 · 继续中",
+        "continued_by_a_hook": "由 hook 继续",
         "continued_by_you": "按你的要求继续",
         "empty_output_continuing": "输出为空 · 正在自动继续",
+        "hook_requested_continuing": "hook 请求 · 继续中",
         "n_patterns": "{{count}} 条规则",
         "n_tool_calls_blocked": "{{count}} 个工具调用被阻止",
         "no_response_returned": "未返回响应",

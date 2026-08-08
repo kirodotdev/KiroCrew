@@ -7058,8 +7058,10 @@
       "recoveryCard": {
         "backend_error_continuing": "ব্যাকএন্ড ত্রুটি · স্বয়ংক্রিয়ভাবে চলছে",
         "cancelled_continuing": "বাতিল · চলছে",
+        "continued_by_a_hook": "হুক দ্বারা চালানো হয়েছে",
         "continued_by_you": "আপনার অনুরোধে চালানো হয়েছে",
         "empty_output_continuing": "খালি আউটপুট · স্বয়ংক্রিয়ভাবে চলছে",
+        "hook_requested_continuing": "হুক অনুরোধ করেছে · চলছে",
         "n_patterns": "{{count}}টি প্যাটার্ন",
         "n_tool_calls_blocked": "{{count}}টি টুল কল ব্লক করা হয়েছে",
         "no_response_returned": "কোনো প্রতিক্রিয়া পাওয়া যায়নি",

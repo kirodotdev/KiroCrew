@@ -102,6 +102,7 @@ from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
+    HOOK_CONTINUATION_RECOVERY_PREFIX,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
     NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
     NATIVE_SUBAGENT_OUTPUT_HARD,
@@ -121,6 +122,8 @@ from kiro_crew.dashboard.state import (
     build_stale_recovery_prompt,
     build_tool_stall_recovery_prompt,
     is_read_only_bash,
+    parse_hook_continuations,
+    should_queue_hook_continuation,
     should_queue_refusal_recovery,
     unsafe_bash_reason,
 )
@@ -2405,6 +2408,7 @@ async def _run_chat(
         tool_name: str = "",
         tool_input: dict | None = None,
         tool_response: dict | None = None,
+        hook_continuation_count: int = 0,
     ) -> list[str]:
         """Fire script hooks. Returns stdout texts from exit-0 hooks (for context injection)."""
         injected: list[str] = []
@@ -2421,6 +2425,7 @@ async def _run_chat(
                 tool_input=tool_input,
                 tool_response=tool_response,
                 parent_session_key=session_key,
+                hook_continuation_count=hook_continuation_count,
             )
             for r in results:
                 if r.exit_code == 0 and r.stdout:
@@ -2630,9 +2635,19 @@ async def _run_chat(
     # the turn ends — and the user did not stop it — a recovery continuation is
     # enqueued so the model learns why and can adapt instead of stalling.
     _refusal_reasons: list[tuple[str, str]] = []
-    # True when this turn IS an automatic refusal-recovery continuation. Used to
-    # keep the synthetic prompt out of the linked-Slack user-message mirror.
-    _is_recovery = message.startswith(REFUSAL_RECOVERY_PREFIX)
+    # True when this turn IS an automatic refusal-recovery continuation or a
+    # Stop-hook continuation. Used to keep the synthetic prompt out of the
+    # linked-Slack user-message mirror.
+    _is_recovery = message.startswith(REFUSAL_RECOVERY_PREFIX) or message.startswith(
+        HOOK_CONTINUATION_RECOVERY_PREFIX
+    )
+    # Track how deep an unbroken hook-continuation run is, so the Stop hook can
+    # see it: each consecutive hook continuation is one deeper; any other turn
+    # (a real user message, a refusal recovery) breaks the run and resets it.
+    if message.startswith(HOOK_CONTINUATION_RECOVERY_PREFIX):
+        slot._hook_continuation_depth += 1
+    else:
+        slot._hook_continuation_depth = 0
     # The post-fan-out synthesis prompt is a synthetic continuation too: never
     # mirror it to linked surfaces (Slack/Telegram) as if the user typed it —
     # only its assistant reply is delivered.
@@ -5323,7 +5338,33 @@ async def _run_chat(
         # [:500]) so the tail — e.g. the harness [OPTIONS:] line — reaches both
         # the matcher and the hook body.
         _final = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
-        await _fire(HOOK_EVENT_STOP, _final)
+        # Report how deep this hook-continuation run is so a gate hook can
+        # self-limit under the deliberate no-cap stance.
+        _stop_hook_out = await _fire(
+            HOOK_EVENT_STOP,
+            _final,
+            hook_continuation_count=slot._hook_continuation_depth,
+        )
+
+        # ── Stop-hook continuation ─────────────────────────────────────────
+        # A Stop hook that exits 0 and prints {"decision": "block", "reason":
+        # ...} asks the harness to continue with `reason` as the next message
+        # (https://kiro.dev/docs/hooks/types#agent-stop), so a hook can judge the
+        # finished turn and keep the session going — a test-gate hook, or one that
+        # auto-continues a trivial read — without a round-trip to the user.
+        # Suppressed on a user stop or a pending reset so a hook can never
+        # override the Stop button. No turn cap, matching refusal recovery: the
+        # contract's own use case is a feedback loop, and terminating it is the
+        # hook's responsibility. The finally block's dequeue loop dispatches it.
+        if should_queue_hook_continuation(slot._stopping, needs_session_reset, _stop_reason):
+            # Each queue_insert(0, …) prepends, so insert in reverse to keep
+            # several hooks' instructions in firing order.
+            for _reason in reversed(parse_hook_continuations(_stop_hook_out)):
+                slot.queue_insert(
+                    0,
+                    f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\n{_reason}",
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                )
 
         # ── Tool-refusal recovery ──────────────────────────────────────────
         # A recoverable refusal (host-gate policy deny or the read-only bash

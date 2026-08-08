@@ -6960,8 +6960,10 @@
       "recoveryCard": {
         "backend_error_continuing": "バックエンドエラー · 自動で続行中",
         "cancelled_continuing": "キャンセル済み · 続行中",
+        "continued_by_a_hook": "フックにより続行しました",
         "continued_by_you": "リクエストにより続行しました",
         "empty_output_continuing": "出力なし · 自動で続行中",
+        "hook_requested_continuing": "フックのリクエスト · 続行中",
         "n_patterns": "パターン {{count}} 件",
         "n_tool_calls_blocked": "ブロックされたツール呼び出し {{count}} 件",
         "no_response_returned": "応答がありませんでした",

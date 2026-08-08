@@ -135,6 +135,68 @@ in, which must classify as a plain user message.
 There is deliberately no retry cap on refusal recovery: the model decides when to
 stop, and the user's Stop button remains the hard breaker.
 
+## Stop-hook continuation
+
+A Stop hook that exits 0 and prints a block decision on stdout asks the harness to
+keep the session going instead of ending the turn
+([contract](https://kiro.dev/docs/hooks/types#agent-stop)):
+
+```json
+{"decision": "block", "reason": "<the instruction to continue with>"}
+```
+
+`reason` IS the message. The runner parses the hook outputs collected for the Stop
+event — exit-0 stdout, plus the `BLOCKED:` marker `_fire` synthesises for any
+exit-2 hook — and each well-formed decision is queued as the next turn behind
+`HOOK_CONTINUATION_RECOVERY_PREFIX = '[Hook continuation — automatic]'`. This
+lets a hook judge a finished turn and push it further — a gate that checks tests
+pass, or one that auto-continues a trivial read — with no round-trip to the user.
+
+- **Nothing failed.** Unlike the recovery continuations above, the turn ran to
+  completion; a hook simply asked for another. The card's copy names the hook as
+  the cause rather than reporting an interruption. The constant is named into the
+  `*_RECOVERY_PREFIX` family only so `test_recovery_card_prefixes.py` covers it —
+  a marker outside that family renders as a full-width bubble instead of a card.
+- **Only a block decision with a non-blank `reason` continues.** Plain logging
+  output, non-JSON, a non-block decision, a block with no reason, and the
+  `BLOCKED:` markers an exit-2 hook contributes are all ignored, so an ordinary
+  Stop hook stops the turn as before.
+- **A continuation is not queued once a stop is pending.** Injection is suppressed
+  when a stop is already in progress as the hook output is processed, when a
+  session reset is already re-queuing, and when the turn was cancelled by the
+  user. A soft stop arriving AFTER the entry is queued does not remove it: the
+  first Stop press deliberately preserves the queue, so the entry still drains on
+  the next dispatch (behind the session-reset notice). The second press clears the
+  queue outright, which is the hard breaker.
+- Several hooks' instructions keep firing order: each is inserted at the queue
+  front in reverse.
+- Entries carry `kind == "synthetic_recovery"` as well as the prefix, so the
+  dequeue path classifies them structurally and the flattened message still
+  classifies once the metadata is gone — which is what keeps the continuation out
+  of a linked Slack thread's user-message mirror.
+- There is no continuation cap, for the same reason refusal recovery has none: the
+  contract's own use case is a feedback loop, so terminating it is the hook's
+  responsibility and Stop stays the breaker.
+- **The Stop stdin payload carries `hook_continuation_count`**, the depth of the current
+  unbroken continuation run (`0` on a normal turn, one deeper per consecutive hook
+  continuation), plus `stop_hook_active` as its boolean shorthand (`count > 0`). The Kiro
+  contract defines no cap and neither field, so these are additive: a hook may self-limit
+  (`if not stop_hook_active: block` continues at most once), threshold on the count, or
+  surface it to the model, while a real gate hook checks its own condition and ignores them.
+  The depth is tracked on the slot and reset by any non-continuation turn; both keys ride
+  beside `assistant_text`, stamped on every Stop fire.
+- **Fail-closed by construction**, so no separate guard is needed: with no hook
+  store the Stop event produces no stdout, which parses to no instructions and
+  queues nothing — and that same branch returns a `BLOCKED:` marker for every
+  `PreToolUse` call, so no tool runs at all. A session that cannot govern its tool
+  calls cannot produce a continuation either.
+- The `reason` is external process output, and it is redacted (exfiltration URLs,
+  then credentials) on the dequeue path shared by every queued turn, before the
+  continuation is classified or dispatched.
+
+**How to treat it:** it is an instruction from an automation the operator
+configured, not a question from a person. Do the work it asks for and continue.
+
 ## Auto-nudge cycle
 
 The auto-nudge service arms an idle timer when a bound slot's turn completes

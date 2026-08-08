@@ -7058,8 +7058,10 @@
       "recoveryCard": {
         "backend_error_continuing": "Backend-Fehler · wird automatisch fortgesetzt",
         "cancelled_continuing": "abgebrochen · wird fortgesetzt",
+        "continued_by_a_hook": "Von einem Hook fortgesetzt",
         "continued_by_you": "Auf Ihre Anfrage fortgesetzt",
         "empty_output_continuing": "leere Ausgabe · wird automatisch fortgesetzt",
+        "hook_requested_continuing": "Von einem Hook angefordert · wird fortgesetzt",
         "n_patterns": "{{count}} Muster",
         "n_tool_calls_blocked": "{{count}} Werkzeugaufrufe blockiert",
         "no_response_returned": "Keine Antwort",

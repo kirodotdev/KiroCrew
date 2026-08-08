@@ -101,6 +101,11 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
         # posttoken labels above.
         "continued_by_you",
         "resuming_the_interrupted_turn",
+        # The Stop-hook continuation card. Its own pair because the turn
+        # completed: reusing an interruption label would report an event that
+        # did not happen.
+        "continued_by_a_hook",
+        "hook_requested_continuing",
     ],
 )
 def test_new_card_labels_are_in_the_english_catalog(key: str) -> None:
