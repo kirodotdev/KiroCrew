@@ -42,6 +42,36 @@ from kiro_crew.validation import ARTIFACT_SLUG_RE
 logger = logging.getLogger(__name__)
 
 
+# Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
+# here rather than imported to avoid dragging the chat_title import graph into
+# the persistence module's load path).
+_TITLE_ORIGINS = ("auto", "user")
+
+
+def _rehydrate_title_origin(titled: bool, stored: object) -> str:
+    """Resolve a rehydrated slot's title origin from persisted metadata.
+
+    Mirrors how ``_titled`` is derived from the presence of a persisted title,
+    so "a manual rename is final" survives a reload. A recognized stored
+    ``title_origin`` is used verbatim. A titled slot with NO stored origin is a
+    LEGACY session written before the field existed: treat it conservatively as
+    ``"user"`` so the background title refresh never rewrites what might be a
+    manual rename. An untitled slot has no origin.
+    """
+    if not titled:
+        return ""
+    if isinstance(stored, str) and stored in _TITLE_ORIGINS:
+        return stored
+    return "user"
+
+
+def _rehydrate_title_refresh_mark(stored: object) -> int:
+    """Resolve the persisted refresh mark; unknown/invalid values mean 0."""
+    if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
+        return stored
+    return 0
+
+
 _MAX_HISTORY_CHARS = 8000
 
 # Bounded retries for taking a consistent (window, _disk_older_count) snapshot
@@ -468,6 +498,8 @@ def _rehydrate_slot_from_history(
         raw_title, _ = redact_credentials(raw_title)
         slot.title = raw_title
         slot._titled = bool(meta.get("title"))
+        slot._title_origin = _rehydrate_title_origin(slot._titled, meta.get("title_origin"))
+        slot._title_refresh_mark = _rehydrate_title_refresh_mark(meta.get("title_refresh_mark"))
         if meta.get("created_at"):
             slot.created_at = meta["created_at"]
         if meta.get("agent"):
@@ -816,6 +848,8 @@ def _restore_recent_sessions_steps(
         raw_title, _ = redact_credentials(raw_title)
         slot.title = raw_title
         slot._titled = bool(s.get("title"))
+        slot._title_origin = _rehydrate_title_origin(slot._titled, meta.get("title_origin"))
+        slot._title_refresh_mark = _rehydrate_title_refresh_mark(meta.get("title_refresh_mark"))
         if meta.get("created_at"):
             slot.created_at = meta["created_at"]
         if meta.get("agent"):
@@ -1560,6 +1594,17 @@ def _save_slot_to_history(
             meta_line["memory_mode"] = slot.memory_mode
             if slot.title and slot.title != slot.key:
                 meta_line["title"] = slot.title
+                # Persist the title's provenance next to it (mirrors
+                # _persist_title): without this, the canonical full save would
+                # strip the field and rehydration would conservatively
+                # re-classify an auto title as "user" after restart —
+                # permanently locking the background refresh out.
+                _origin = getattr(slot, "_title_origin", "")
+                if _origin:
+                    meta_line["title_origin"] = _origin
+                _mark = getattr(slot, "_title_refresh_mark", 0)
+                if _mark:
+                    meta_line["title_refresh_mark"] = _mark
             if slot.agent:
                 meta_line["agent"] = slot.agent
             meta_line["model"] = slot.model
