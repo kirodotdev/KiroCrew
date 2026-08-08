@@ -550,6 +550,21 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _disable_dev_fleet_background_tasks(monkeypatch):
+    """Stop dev-fleet's app-startup hook from starting its background loops.
+
+    A test that boots the real app via ``dev_fleet.server.create_app()`` (to
+    exercise middleware, for instance) otherwise starts ``_status_refresher``,
+    a genuine network ``git fetch``, as a fire-and-forget task. That task can
+    still be running when the test's client tears down, and cancelling it then
+    is what leaked into unrelated tests and flaked ``Gateway Tests (macOS)``
+    (issue #1832). A test that wants the real refresher overrides this itself
+    via ``monkeypatch.setattr(mod, "_background_tasks_disabled", lambda: False)``.
+    """
+    monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_kiro_window_cache():
     """Give every test an EMPTY ``model_registry._KIRO_WINDOWS``, then restore it.
 

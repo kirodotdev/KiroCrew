@@ -4009,6 +4009,39 @@ async def test_hmac_invalid_signature_denial_is_audited(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_startup_skips_background_tasks_when_disabled(monkeypatch):
+    """``dev_fleet_startup`` must not start the refresher/reaper/warm tasks
+    when background tasks are disabled, so tests that boot the real app via
+    ``create_app()`` (e.g. the HMAC tests above) never drag in a live network
+    ``git fetch``. See issue #1832: an unstubbed ``_status_refresher`` leaked
+    into unrelated tests and flaked ``Gateway Tests (macOS)``."""
+    monkeypatch.setattr(mod, "_load_app_secret", lambda: "sekrit")
+    monkeypatch.setattr(mod, "_background_tasks_disabled", lambda: True)
+    app = mod.create_app()
+    async with TestClient(TestServer(app)):
+        assert mod._refresher_task is None
+        assert mod._reaper_task is None
+        assert mod._warm_task is None
+
+
+@pytest.mark.asyncio
+async def test_startup_starts_background_tasks_when_enabled(monkeypatch):
+    """The opposite of the above: with the gate off (production default),
+    startup still creates all three background tasks."""
+    monkeypatch.setattr(mod, "_load_app_secret", lambda: "sekrit")
+    monkeypatch.setattr(mod, "_background_tasks_disabled", lambda: False)
+    monkeypatch.setattr(mod, "_upstream_remote", AsyncMock(return_value="origin"))
+    monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(0, "", "")))
+    monkeypatch.setattr(mod, "_fleet_refresh", AsyncMock(return_value=None))
+    monkeypatch.setattr(mod, "_auto_prune_reaper", AsyncMock(return_value=None))
+    app = mod.create_app()
+    async with TestClient(TestServer(app)):
+        assert mod._refresher_task is not None
+        assert mod._reaper_task is not None
+        assert mod._warm_task is not None
+
+
+@pytest.mark.asyncio
 async def test_prunable_merged_unverified_when_oid_lookup_fails():
     """OID verification unavailable -> never a prune candidate (preview must
     match the removal path, which would refuse anyway)."""
