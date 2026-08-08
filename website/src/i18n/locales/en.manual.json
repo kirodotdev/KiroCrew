@@ -982,6 +982,22 @@
     }
   },
   "components": {
+    "kiroAccountModal": {
+      "account_details_unavailable": "Account details unavailable",
+      "checking_account": "Checking account…",
+      "checking_credit_usage": "Checking credit usage",
+      "credit_usage_unavailable": "Credit usage unavailable",
+      "days_until_expiration": "Days until expiration: {{count}}",
+      "estimated_overage_cost": "Estimated overage cost",
+      "hide_email": "Hide email",
+      "kiro_account": "Kiro Account",
+      "kiro_credit_usage": "Kiro credit usage",
+      "overage_rate_value": "{{rate}} / credit",
+      "remaining_credit_balance": "Remaining credit balance: {{count}}",
+      "show_email": "Show email",
+      "usage_scope": "Monthly Kiro credit usage from kiro-cli /usage across chat, agents, MCP, and subagents.",
+      "used_credits": "Used: {{used}} / {{total}}"
+    },
     "agentImportFlow": {
       "choose_sources": "Choose sources",
       "could_not_save_onboarding_state": "Could not save onboarding state.",

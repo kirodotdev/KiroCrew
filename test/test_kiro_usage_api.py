@@ -119,6 +119,22 @@ class TestMapResponse:
         assert out["bonus_used"] == 386.34
         assert out["bonus_limit"] == 500.0
         assert out["bonus_label"] == "Free Trial"
+        assert out["bonus_credits"] == [
+            {"name": "Free Trial", "used": 386.34, "total": 500.0}
+        ]
+
+    def test_extracts_multiple_bounded_bonus_pools(self):
+        data = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 41.0, "usageLimit": 1000.0},
+            {"resourceType": "WELCOME_BONUS", "title": "Welcome bonus",
+             "currentUsage": 500.0, "usageLimit": 500.0},
+            {"resourceType": "PROMO", "displayName": "Community grant",
+             "currentUsage": 185.84, "usageLimit": 2000.0},
+        ]}
+        assert api._map_response(data)["bonus_credits"] == [
+            {"name": "Welcome bonus", "used": 500.0, "total": 500.0},
+            {"name": "Community grant", "used": 185.84, "total": 2000.0},
+        ]
 
     def test_ignores_non_bonus_secondary_breakdown(self):
         # A TOKEN quota alongside CREDIT must NOT be mistaken for a bonus pool.

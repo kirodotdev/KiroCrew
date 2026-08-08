@@ -4,6 +4,15 @@
 
 Phase 5 adds self-learning from corrections, scheduled cron jobs, and a web dashboard.
 
+The Kiro credits readout opens a privacy-first account panel backed by the
+existing `/api/sessions/usage` authority. Account identity is exposed only when
+the billing ARN and `whoami` ARN are coupled; the UI never derives identity from
+the readiness latch and introduces no parallel account endpoint. Email is blurred
+by default and the local visibility choice persists. Every bounded promotional
+breakdown returned by the free billing API is retained, displayed individually,
+and pooled into the compact readout. The paid `kiro-cli /usage` turn remains
+fallback-only, and its two known bonus formats produce the same list shape.
+
 ## Self-Learning (`learn.py`)
 
 Detects user corrections (e.g. "use X instead of Y", "remember that X", "never use X") and stores them in `~/.kiro/crew/lessons.jsonl`. Categories: `tool`, `preference`, `knowledge`. Injected into LLM context as `[Learned corrections:]` block (max 50). Detection runs after each ACP response.
