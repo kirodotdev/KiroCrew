@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2 } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, FileDown } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SessionColorSwatches from './SessionColorSwatches'
@@ -174,6 +174,9 @@ export default function SessionActionsMenu({
       ),
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
+      </Item>,
+      <Item key="export-md" onSelect={() => api.exportSessionMarkdown(slotKey)}>
+        <FileDown size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.export_as_markdown')}
       </Item>,
       // Channel-neutral link state and actions — connected origins are read-only,
       // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
