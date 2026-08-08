@@ -97,6 +97,8 @@ from kiro_crew.config.validation import (  # noqa: F401
 )
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort, model_supports_effort
+from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
+from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_RECOVER_BACKOFF_MAX_SECS as _DEFAULT_BACKOFF_MAX
@@ -3392,6 +3394,20 @@ class InstancesConfig:
             "on a fast/local link where compression CPU outweighs the bandwidth win.",
         ),
     )
+    connect_timeout_secs: float = field(
+        default=_DEFAULT_CONNECT_TIMEOUT,
+        metadata=_meta(
+            "Connect Timeout (secs)",
+            "How long to wait for the local forward port to accept connections "
+            "before declaring a connect attempt failed. The default (15s) is "
+            "sufficient for a direct ssh TCP connect, but hosts behind a "
+            "ProxyCommand or jump host routinely need longer (the proxy handshake "
+            "runs before ssh begins the forward). Raise this if connecting a "
+            "remote instance times out while the same ssh forward succeeds by hand. "
+            "The SSM transport uses its own higher default (25s) unless this value "
+            "is explicitly set. Clamped to [1, 120].",
+        ),
+    )
     max_recovery_attempts: int = field(
         default=_DEFAULT_MAX_RECOVERY,
         metadata=_meta(
@@ -3431,6 +3447,21 @@ class InstancesConfig:
                 _DEFAULT_TUNNEL_BASE_PORT,
             )
             object.__setattr__(self, "tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT)
+        if self.connect_timeout_secs < 1.0:
+            logger.warning(
+                "instances.connect_timeout_secs %s < 1, using %s",
+                self.connect_timeout_secs,
+                _DEFAULT_CONNECT_TIMEOUT,
+            )
+            object.__setattr__(self, "connect_timeout_secs", _DEFAULT_CONNECT_TIMEOUT)
+        elif self.connect_timeout_secs > _CONNECT_TIMEOUT_CEILING:
+            logger.warning(
+                "instances.connect_timeout_secs %s > %s, clamping to %s",
+                self.connect_timeout_secs,
+                _CONNECT_TIMEOUT_CEILING,
+                _CONNECT_TIMEOUT_CEILING,
+            )
+            object.__setattr__(self, "connect_timeout_secs", _CONNECT_TIMEOUT_CEILING)
         if self.max_recovery_attempts < 1:
             logger.warning(
                 "instances.max_recovery_attempts %d < 1, using %d",
@@ -5164,6 +5195,10 @@ class KiroCrewConfig:
                 ),
                 ssh_compression=bool(
                     instances_data.get("ssh_compression", _DEFAULT_SSH_COMPRESSION)
+                ),
+                connect_timeout_secs=_safe_float(
+                    instances_data.get("connect_timeout_secs", _DEFAULT_CONNECT_TIMEOUT),
+                    _DEFAULT_CONNECT_TIMEOUT,
                 ),
                 max_recovery_attempts=_safe_int(
                     instances_data.get("max_recovery_attempts", _DEFAULT_MAX_RECOVERY),

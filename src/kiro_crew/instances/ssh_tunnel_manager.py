@@ -70,6 +70,12 @@ from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_
 from kiro_crew.instances.constants import (
     DEFAULT_RECOVER_BACKOFF_MAX_SECS as _RECOVER_BACKOFF_MAX_SECS,
 )
+from kiro_crew.instances.constants import (
+    DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_SSM_CONNECT_TIMEOUT_SECS as _DEFAULT_SSM_CONNECT_TIMEOUT_SECS,
+)
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REFRESH_FRACTION
 from kiro_crew.instances.constants import (
@@ -103,12 +109,6 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 logger = logging.getLogger(__name__)
 
 _LOOPBACK = "127.0.0.1"
-# How long to wait for the local forward port to start accepting connections
-# before declaring the connect attempt failed. SSM's session-manager-plugin
-# needs longer to establish (WebSocket handshake to the SSM service) than a
-# direct ssh TCP connect, so the SSM transport uses a longer timeout below.
-_DEFAULT_CONNECT_TIMEOUT_SECS = 15.0
-_DEFAULT_SSM_CONNECT_TIMEOUT_SECS = 25.0
 # Poll cadence while waiting for the forward to come up.
 _READY_POLL_INTERVAL_SECS = 0.25
 # Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
