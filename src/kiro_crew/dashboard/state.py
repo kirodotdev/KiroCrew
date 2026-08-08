@@ -2063,6 +2063,10 @@ class DashboardState:
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
         self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
+        self._chat_pins: list[dict[str, Any]] = []  # pinned chat messages
+        # Serializes pin mutation + persistence so concurrent requests cannot
+        # interleave snapshots and replace chat_pins.json out of order.
+        self._chat_pins_lock = asyncio.Lock()
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # True once load_tags() parsed tags.json successfully (or seeded a
@@ -2762,9 +2766,7 @@ class DashboardState:
             # snapshots — do not narrow it without giving this set its own lock.
             seen = set(keys)
             keys.extend(
-                k
-                for k in getattr(self, "unrestored_slot_keys", frozenset())
-                if k not in seen
+                k for k in getattr(self, "unrestored_slot_keys", frozenset()) if k not in seen
             )
             payload = json.dumps({"keys": keys, "ts": time.time()})
             # Use the canonical atomic_write helper, not a deterministic
@@ -3542,6 +3544,64 @@ class DashboardState:
                         exc_info=True,
                     )
         return True
+
+    # ── Chat message pin persistence ──
+
+    _CHAT_PINS_FILE = "chat_pins.json"
+
+    def load_chat_pins(self) -> None:
+        """Load pinned chat messages from disk, dropping malformed records."""
+        path = config_dir() / self._CHAT_PINS_FILE
+        try:
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(raw, list):
+                    logger.warning(
+                        "chat_pins.json is not a list (%s); ignoring", type(raw).__name__
+                    )
+                    raw = []
+                valid = [
+                    pin
+                    for pin in raw
+                    if isinstance(pin, dict)
+                    and all(
+                        isinstance(pin.get(key), str) and pin.get(key)
+                        for key in ("id", "slot_key", "message_ts")
+                    )
+                    and isinstance(pin.get("preview"), str)
+                ]
+                if len(valid) != len(raw):
+                    logger.warning(
+                        "Dropped %d malformed chat pin record(s) on load", len(raw) - len(valid)
+                    )
+                self._chat_pins = valid
+        except Exception:
+            logger.warning("Failed to load chat pins", exc_info=True)
+            self._chat_pins = []
+
+    def save_chat_pins(self) -> None:
+        """Persist pinned chat messages with an atomic, owner-only file replacement."""
+        path = config_dir() / self._CHAT_PINS_FILE
+        atomic_write(path, json.dumps(self._chat_pins), fsync=True, mode=0o600)
+
+    async def remove_chat_pins_for_slots(self, slot_keys: set[str]) -> int:
+        """Remove pins when their persisted history sessions are permanently deleted."""
+        keys = {key for key in slot_keys if key}
+        if not keys:
+            return 0
+        async with self._chat_pins_lock:
+            previous = self._chat_pins
+            remaining = [pin for pin in previous if pin.get("slot_key") not in keys]
+            removed = len(previous) - len(remaining)
+            if not removed:
+                return 0
+            self._chat_pins = remaining
+            try:
+                await asyncio.to_thread(self.save_chat_pins)
+            except Exception:
+                self._chat_pins = previous
+                raise
+            return removed
 
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a folder's ancestry root→leaf as a breadcrumb string.

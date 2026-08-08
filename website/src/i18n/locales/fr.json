@@ -7070,7 +7070,9 @@
         "turn_took_cost": "Le tour a pris {{elapsed}} ({{cost}} de coût API)",
         "turn_took_credits": "Le tour a pris {{elapsed}} et consommé {{credits}} crédits",
         "turn_took_credits_cost": "Le tour a pris {{elapsed}} et consommé {{credits}} crédits ({{cost}} de coût API)",
-        "use_as_plan_count": "Utiliser comme plan ({{count}} étapes)"
+        "use_as_plan_count": "Utiliser comme plan ({{count}} étapes)",
+        "pin_message": "Épingler le message",
+        "unpin_message": "Désépingler le message"
       },
       "chatFooter": {
         "compacting": "Compactage…",
@@ -7310,9 +7312,9 @@
         "aria_awaiting_approval": "En attente d’approbation pour l’outil : {{label}}",
         "aria_hide_details": "Masquer les détails de l’outil : {{label}}",
         "aria_show_details": "Afficher les détails de l’outil : {{label}}",
-        "blocked_by_security_policy": "Bloqué par la politique de sécurité",
         "open_in_side_panel": "Ouvrir {{path}} dans le panneau latéral",
-        "opened_in_the_side_panel": "Ouvert dans le panneau latéral"
+        "opened_in_the_side_panel": "Ouvert dans le panneau latéral",
+        "blocked_by_security_policy": "Bloqué par la politique de sécurité"
       },
       "toolDetails": {
         "auto": "Auto",
@@ -7333,7 +7335,9 @@
         "edit_resend": "Modifier et renvoyer",
         "send": "Envoyer",
         "send_enter": "Envoyer (Enter)",
-        "steered_into_the_running_turn": "Réorienté dans le tour en cours"
+        "steered_into_the_running_turn": "Réorienté dans le tour en cours",
+        "pin_message": "Épingler le message",
+        "unpin_message": "Désépingler le message"
       },
       "workflowCompletionCard": {
         "hide_result": "Masquer le résultat",
@@ -7351,6 +7355,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossible de charger l'instantané :",
         "events": "événements"
+      },
+      "pins": {
+        "pinned_messages": "Messages épinglés",
+        "close_panel": "Fermer le panneau des messages épinglés",
+        "loading": "Chargement…",
+        "no_pinned_messages": "Aucun message épinglé. Épinglez des messages importants pour les retrouver rapidement.",
+        "message_unavailable": "Ce message épinglé n’est plus disponible dans l’historique chargé.",
+        "pin_failed": "Impossible d’épingler le message. Réessayez.",
+        "unpin_failed": "Impossible de désépingler le message. Réessayez.",
+        "you": "Toi",
+        "assistant": "Assistant",
+        "just_now": "À l'instant",
+        "minutes_ago": "il y a {{count}} min",
+        "hours_ago": "il y a {{count}} h",
+        "days_ago": "il y a {{count}} j",
+        "copy_preview": "Copier le texte",
+        "copy_link": "Copier le lien vers le message",
+        "unpin": "Désépingler",
+        "open_pinned_messages": "Ouvrir les messages épinglés",
+        "jump_to_message": "Aller au message"
       }
     },
     "chatPage": {

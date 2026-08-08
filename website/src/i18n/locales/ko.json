@@ -6685,7 +6685,11 @@
       "v": "v",
       "ver": "버전",
       "widgets_files_and_snippets_live_tracked_with_ver": "위젯·파일·스니펫 — 버전 기록과 함께 실시간 추적",
-      "your_artifacts": "내 아티팩트"
+      "your_artifacts": "내 아티팩트",
+      "from_your_chats": "From your chats",
+      "show_all_count": "Show all ({{count}})",
+      "show_less": "Show less",
+      "star_a_document_in_from_your_chats_to_save_it_he": "No saved artifacts yet — star a document in \"From your chats\" to save it here."
     },
     "capabilitiesPage": {
       "agent_capabilities": "에이전트 기능",
@@ -6872,7 +6876,9 @@
         "turn_took_cost": "턴에 {{elapsed}} 걸렸습니다(API 비용 {{cost}})",
         "turn_took_credits": "턴에 {{elapsed}} 걸렸고 크레딧 {{credits}}을(를) 사용했습니다",
         "turn_took_credits_cost": "턴에 {{elapsed}} 걸렸고 크레딧 {{credits}}을(를) 사용했습니다(API 비용 {{cost}})",
-        "use_as_plan_count": "플랜으로 사용({{count}}단계)"
+        "use_as_plan_count": "플랜으로 사용({{count}}단계)",
+        "pin_message": "Pin message",
+        "unpin_message": "Unpin message"
       },
       "chatFooter": {
         "compacting": "압축 중…",
@@ -6976,7 +6982,8 @@
         "tool_call_blocked": "도구 호출이 차단되었습니다",
         "tool_stopped_responding": "도구가 응답하지 않습니다",
         "turn_interrupted": "턴이 중단되었습니다",
-        "turn_stalled": "턴이 멈춰 있습니다"
+        "turn_stalled": "턴이 멈춰 있습니다",
+        "session_busy_continuing": "session busy · continuing automatically"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "색상 팔레트는 표시 설정에서 변경할 수 있습니다",
@@ -7130,7 +7137,9 @@
         "edit_resend": "편집 후 다시 보내기",
         "send": "보내기",
         "send_enter": "보내기 (Enter)",
-        "steered_into_the_running_turn": "실행 중인 턴에 추가되었습니다"
+        "steered_into_the_running_turn": "실행 중인 턴에 추가되었습니다",
+        "pin_message": "Pin message",
+        "unpin_message": "Unpin message"
       },
       "workflowCompletionCard": {
         "hide_result": "결과 숨기기",
@@ -7148,6 +7157,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "스냅샷을 불러올 수 없습니다:",
         "events": "이벤트"
+      },
+      "pins": {
+        "pinned_messages": "Pinned messages",
+        "close_panel": "Close pinned messages panel",
+        "loading": "Loading pins…",
+        "no_pinned_messages": "No pinned messages yet. Pin important messages from the chat to find them quickly.",
+        "message_unavailable": "This pinned message is no longer available in the loaded history.",
+        "pin_failed": "Could not pin the message. Try again.",
+        "unpin_failed": "Could not unpin the message. Try again.",
+        "you": "You",
+        "assistant": "Assistant",
+        "just_now": "Just now",
+        "minutes_ago": "{{count}}m ago",
+        "hours_ago": "{{count}}h ago",
+        "days_ago": "{{count}}d ago",
+        "copy_preview": "Copy text",
+        "copy_link": "Copy link to message",
+        "unpin": "Unpin",
+        "open_pinned_messages": "Open pinned messages",
+        "jump_to_message": "Jump to message"
       }
     },
     "chatPage": {
@@ -9688,7 +9717,8 @@
         "sources": "소스",
         "test": "테스트",
         "use_default": "기본값 사용",
-        "volume": "음량"
+        "volume": "음량",
+        "preset_pulse": "Pulse"
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

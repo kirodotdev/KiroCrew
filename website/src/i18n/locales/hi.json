@@ -6973,7 +6973,9 @@
         "turn_took_cost": "टर्न में {{elapsed}} लगे ({{cost}} API लागत)",
         "turn_took_credits": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए",
         "turn_took_credits_cost": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए ({{cost}} API लागत)",
-        "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)"
+        "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)",
+        "pin_message": "संदेश पिन करें",
+        "unpin_message": "संदेश अनपिन करें"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -7211,9 +7213,9 @@
         "aria_awaiting_approval": "टूल के लिए स्वीकृति की प्रतीक्षा: {{label}}",
         "aria_hide_details": "टूल के लिए विवरण छिपाएँ: {{label}}",
         "aria_show_details": "टूल के लिए विवरण दिखाएँ: {{label}}",
-        "blocked_by_security_policy": "सुरक्षा नीति द्वारा अवरुद्ध",
         "open_in_side_panel": "{{path}} को साइड पैनल में खोलें",
-        "opened_in_the_side_panel": "साइड पैनल में खोला गया"
+        "opened_in_the_side_panel": "साइड पैनल में खोला गया",
+        "blocked_by_security_policy": "सुरक्षा नीति द्वारा अवरुद्ध"
       },
       "toolDetails": {
         "auto": "स्वतः",
@@ -7234,7 +7236,9 @@
         "edit_resend": "संपादित करें और फिर भेजें",
         "send": "भेजें",
         "send_enter": "भेजें (Enter)",
-        "steered_into_the_running_turn": "चल रहे टर्न में निर्देशित किया गया"
+        "steered_into_the_running_turn": "चल रहे टर्न में निर्देशित किया गया",
+        "pin_message": "संदेश पिन करें",
+        "unpin_message": "संदेश अनपिन करें"
       },
       "workflowCompletionCard": {
         "hide_result": "परिणाम छिपाएँ",
@@ -7252,6 +7256,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "स्नैपशॉट लोड नहीं हो सका:",
         "events": "इवेंट"
+      },
+      "pins": {
+        "pinned_messages": "पिन किए गए संदेश",
+        "close_panel": "पिन किए गए संदेश पैनल बंद करें",
+        "loading": "लोड हो रहा है…",
+        "no_pinned_messages": "अभी तक कोई पिन किया गया संदेश नहीं। महत्वपूर्ण संदेशों को जल्दी खोजने के लिए पिन करें।",
+        "message_unavailable": "यह पिन किया गया संदेश लोड किए गए इतिहास में अब उपलब्ध नहीं है।",
+        "pin_failed": "संदेश पिन नहीं किया जा सका। फिर से कोशिश करें।",
+        "unpin_failed": "संदेश से पिन नहीं हटाया जा सका। फिर से कोशिश करें।",
+        "you": "तुम",
+        "assistant": "सहायक",
+        "just_now": "अभी",
+        "minutes_ago": "{{count}} मिनट पहले",
+        "hours_ago": "{{count}} घंटे पहले",
+        "days_ago": "{{count}} दिन पहले",
+        "copy_preview": "टेक्स्ट कॉपी करें",
+        "copy_link": "संदेश का लिंक कॉपी करें",
+        "unpin": "अनपिन",
+        "open_pinned_messages": "पिन किए गए संदेश खोलें",
+        "jump_to_message": "संदेश पर जाएं"
       }
     },
     "chatPage": {

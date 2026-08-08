@@ -4905,7 +4905,9 @@
         "turn_took": "Turn took {{elapsed}}",
         "turn_took_cost": "Turn took {{elapsed}} ({{cost}} API cost)",
         "turn_took_credits": "Turn took {{elapsed}} and used {{credits}} credits",
-        "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)"
+        "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)",
+        "pin_message": "Pin message",
+        "unpin_message": "Unpin message"
       },
       "chatFooter": {
         "compacting": "Compacting…",
@@ -5073,7 +5075,9 @@
         "edit_resend": "Edit & Resend",
         "send": "Send",
         "send_enter": "Send (Enter)",
-        "steered_into_the_running_turn": "Steered into the running turn"
+        "steered_into_the_running_turn": "Steered into the running turn",
+        "pin_message": "Pin message",
+        "unpin_message": "Unpin message"
       },
       "workflowCompletionCard": {
         "open_in_the_workflows_panel": "Open in the Workflows panel",
@@ -5089,6 +5093,26 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Could not load snapshot:",
         "events": "events"
+      },
+      "pins": {
+        "pinned_messages": "Pinned messages",
+        "close_panel": "Close pinned messages panel",
+        "loading": "Loading pins…",
+        "no_pinned_messages": "No pinned messages yet. Pin important messages from the chat to find them quickly.",
+        "message_unavailable": "This pinned message is no longer available in the loaded history.",
+        "pin_failed": "Could not pin the message. Try again.",
+        "unpin_failed": "Could not unpin the message. Try again.",
+        "you": "You",
+        "assistant": "Assistant",
+        "just_now": "Just now",
+        "minutes_ago": "{{count}}m ago",
+        "hours_ago": "{{count}}h ago",
+        "days_ago": "{{count}}d ago",
+        "copy_preview": "Copy text",
+        "copy_link": "Copy link to message",
+        "unpin": "Unpin",
+        "open_pinned_messages": "Open pinned messages",
+        "jump_to_message": "Jump to message"
       }
     },
     "chatPage": {

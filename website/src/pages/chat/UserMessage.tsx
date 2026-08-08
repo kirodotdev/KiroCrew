@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, Target } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, Target, Pin, PinOff } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
@@ -28,9 +28,11 @@ interface UserMessageProps {
   slotKey?: string
   slotTitle?: string
   mode?: string
+  pinned?: boolean
+  onTogglePin?: () => void
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin }: UserMessageProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(content)
   const [copied, setCopied] = useState(false)
@@ -237,6 +239,16 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             aria-label={i18nT('pages.chat.userMessage.copy_link_to_message')}
           >
             {linkCopied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}
+          </button>
+        )}
+        {messageTs && onTogglePin && (
+          <button
+            onClick={onTogglePin}
+            className="text-muted hover:text-text p-0.5 rounded transition-colors"
+            title={pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message')}
+            aria-label={pinned ? i18nT('pages.chat.userMessage.unpin_message') : i18nT('pages.chat.userMessage.pin_message')}
+          >
+            {pinned ? <PinOff size={14} /> : <Pin size={14} />}
           </button>
         )}
         {canEdit && onEditResend && (
