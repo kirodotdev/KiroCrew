@@ -1,0 +1,57 @@
+{
+  "name": "security-scanner",
+  "version": "0.1.0",
+  "displayName": "Security Scanner",
+  "description": "A self-improving adversarial security scanner for KiroCrew. Splits each scan into focused topics that run as parallel agents, validates findings with sandboxed proof-of-concept exploits against an isolated pod, and learns from every scan — confirmed exploits become tagged patterns and false positives become suppressions. Ships with three high-signal topics: path traversal, auth bypass, and prompt injection.",
+  "author": "kirocrew",
+  "tags": [
+    "security",
+    "scanner",
+    "autonomy",
+    "self-improving",
+    "developer-tools"
+  ],
+  "highlights": [
+    "Decomposes each scan into narrow security topics that run as parallel agents",
+    "Each topic agent gets only its tagged knowledge slice — focused context, no pollution",
+    "Validates findings with real proof-of-concept exploits against an isolated pod, never the live gateway",
+    "Learns from every scan: confirmed exploits become patterns, false positives become suppressions",
+    "Ingests external security reports (CVE, Semgrep, pentest) into the tagged knowledge base",
+    "Findings are never auto-filed — the scanner reports, you decide what to act on",
+    "Ships three high-signal topics for KiroCrew: path traversal, auth bypass, prompt injection"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/security-scanner",
+      "/api/apps/security-scanner/*"
+    ],
+    "network": false,
+    "storage": true
+  },
+  "skills": [
+    "skills/security-scan"
+  ],
+  "crons": [
+    {
+      "name": "security-scanner-scan",
+      "message": "Run a scheduled security scan by invoking the security-scan skill against the KiroCrew codebase for all active topics (path-traversal, auth-bypass, prompt-injection). Persist findings and notify only on NEW actionable findings. Read SECURITY_NOTES.md first — exploit PoCs run only against an isolated pod, never the live gateway.",
+      "every": 21600,
+      "silent": true,
+      "persistent_session": false
+    }
+  ],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/security-scanner",
+        "label": "Security Scanner",
+        "icon": "ShieldCheck"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/security-scanner/icon.svg"
+}
