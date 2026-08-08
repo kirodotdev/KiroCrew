@@ -21,7 +21,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch } from '../store'
-import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, editQueuedMessage } from '../store/chatSlice'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { displayModel } from '../lib/model'
@@ -230,6 +230,19 @@ export default function ChatPane({
     api.cancelQueuedMessage(slotKey, queueId).catch(() => undefined)
   }, [dispatch, slotKey])
   const onInterruptQueued = useCallback((queueId: string) => { api.interruptSlot(slotKey, queueId).catch(() => undefined) }, [slotKey])
+  // Mirrors ChatPage's handleEditQueued: optimistic store update, then persist;
+  // the queue_edit WS event reconciles other clients. If the PATCH fails, roll
+  // the card back to its original content - otherwise the UI shows edited text
+  // while the agent still receives the original message.
+  const onEditQueued = useCallback((queueId: string, content: string) => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    const original = queuedMessages.find(m => (m.meta?.queueId as string) === queueId)?.content
+    dispatch(editQueuedMessage({ slot: slotKey, queue_id: queueId, content: trimmed }))
+    api.editQueuedMessage(slotKey, queueId, trimmed).catch(() => {
+      if (original !== undefined) dispatch(editQueuedMessage({ slot: slotKey, queue_id: queueId, content: original }))
+    })
+  }, [dispatch, slotKey, queuedMessages])
   // Split-view panes render tool calls with the full ToolCallLine (purpose / input /
   // output / live status) instead of the SDK's bare pill. ToolCallLine's slot-aware
   // selectors read THIS slot's per-slot tool log, so a background pane shows the same
@@ -295,7 +308,7 @@ export default function ChatPane({
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the
