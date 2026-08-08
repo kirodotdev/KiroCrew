@@ -15,7 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
-from kiro_crew.acp.types import TurnUsage
+from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -401,6 +401,7 @@ async def stream_and_collect(
     hooks: HookManager | None = None,
     on_chunk: Callable[[str], None] | None = None,
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
+    on_steer_consumed: Callable[[str], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -419,6 +420,11 @@ async def stream_and_collect(
         hooks: HookManager for HOOK_BASED approval policy.
         on_chunk: Optional callback invoked with each text chunk (for progress).
         on_tool_approval: Optional async callback for interactive approval.
+        on_steer_consumed: Optional callback invoked with the backend's
+            ``steering_consumed`` echo text. A mid-turn steer is a
+            fire-and-forget write, so this echo is the ONLY authoritative signal
+            that the backend injected it; a caller that steers must observe this
+            to know which of its steers to requeue when the turn ends.
         retry_transient: When True (default), transient backend errors are
             retried in-place with bounded backoff. Set False from callers that
             already own an outer transient-retry loop, so the inner arm doesn't
@@ -497,6 +503,9 @@ async def stream_and_collect(
                         event.title,
                         event.tool_input,
                     )
+                elif event.kind == EVENT_STEER_CONSUMED:
+                    if on_steer_consumed:
+                        on_steer_consumed(event.text or "")
                 elif event.kind == EVENT_COMPLETE:
                     break
             return result_text

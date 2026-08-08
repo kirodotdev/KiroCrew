@@ -124,6 +124,7 @@ from kiro_crew.dashboard.state import (
     should_queue_refusal_recovery,
     unsafe_bash_reason,
 )
+from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
@@ -2113,38 +2114,20 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
 def _settle_consumed_steers(slot: "_ChatSlot", snapshot: str) -> None:
     """Settle pending steers covered by a ``steering_consumed`` echo.
 
-    kiro-cli injects the CONCATENATION of every steer queued since the last
-    consumption; the echo text carries each one ``<user_message>``-wrapped.
-    Parse the snapshot into its individual blocks and settle by EQUALITY —
-    substring containment would false-positive short steers against longer
-    ones or against the wrapper text itself, and a falsely-settled steer is
-    silently lost when the turn dies. A steer registered after kiro-cli
-    snapshotted (not among the blocks) stays pending. Settling is COUNT-AWARE: each snapshot block settles at
-    most one pending entry, so a duplicate identical steer registered after
-    the snapshot stays pending instead of being swept by set membership.
-    When the echo carries no usable text (older backend, redacted echo),
-    fall back to settling all — worst case is a visible, cancellable
-    duplicate, never a silent loss.
+    The parse-and-match rules live in ``steer_settle.settle_consumed_steers``,
+    shared with the ``/side`` sidecar, which hands kiro-cli the same
+    fire-and-forget steers and needs the same answer.
     """
     if not slot._pending_steers:
         return
-    if snapshot.strip():
-        consumed_blocks = re.findall(r"<user_message>\n(.*?)\n</user_message>", snapshot, re.DOTALL)
-        # The steer RPC wraps message.strip(); pending stores the raw message.
-        # Strip for parity so whitespace never causes a false NON-match (the
-        # safe direction is a duplicate, but exact settling is better).
-        consumed_counts: dict[str, int] = {}
-        for block in consumed_blocks:
-            consumed_counts[block] = consumed_counts.get(block, 0) + 1
-        remaining = []
-        for m in slot._pending_steers:
-            key = m.strip()
-            if consumed_counts.get(key, 0) > 0:
-                consumed_counts[key] -= 1
-            else:
-                remaining.append(m)
-    else:
-        remaining = []
+    # settle_all_on_empty preserves this path's long-standing behaviour on an
+    # empty echo. The /side sidecar deliberately chose the opposite (an empty
+    # echo is no evidence, so keep entries pending and let the requeue show a
+    # cancellable card); whether the main chat should follow is a separate
+    # change, because its requeue is not exercised here.
+    remaining = settle_consumed_steers(
+        slot._pending_steers, snapshot, settle_all_on_empty=True
+    )
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
         slot.key,

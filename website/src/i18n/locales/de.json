@@ -7096,8 +7096,12 @@
         "context_from": "Kontext von",
         "copied": "Kopiert!",
         "copy": "Kopieren",
+        "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",
+        "queue_edit_failed": "Diese Frage in der Warteschlange konnte nicht aktualisiert werden",
         "refresh_context": "Kontext aktualisieren",
         "send": "Senden",
+        "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
+        "steered": "Gesteuert",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",
         "turn_other": "{{count}} Züge"
