@@ -300,3 +300,9 @@ bytes identical to pip bytes for a given version:
 make wheel                                   # builds dist/kirocrew-*.whl
 docker build -f docker/Dockerfile -t kirocrew:dev .
 ```
+
+## Troubleshooting
+
+For solutions to common Docker deployment issues — port binding, permission
+errors, sandbox failures, health check loops, data loss, and more — see the
+dedicated [Docker Troubleshooting Guide](docker-troubleshooting.md).
