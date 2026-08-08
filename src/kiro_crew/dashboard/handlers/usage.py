@@ -466,7 +466,7 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
     def _q(q: float) -> float:
         # Nearest-rank on the sorted samples: these are exact per-turn values,
         # not histogram buckets, so no interpolation is warranted.
-        idx = min(len(pcts) - 1, max(0, int(round(q * (len(pcts) - 1)))))
+        idx = min(len(pcts) - 1, max(0, math.ceil(q * len(pcts)) - 1))
         return round(pcts[idx], 1)
 
     sessions = sorted(
