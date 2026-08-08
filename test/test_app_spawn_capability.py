@@ -355,7 +355,7 @@ class TestManagerRefusesUnknownAgent:
         monkeypatch.setattr(
             disc,
             "list_agents",
-            lambda: [
+            lambda project_dir=None: [
                 types.SimpleNamespace(name="kirocrew"),
                 types.SimpleNamespace(name="mochi--mochi-bg"),
             ],

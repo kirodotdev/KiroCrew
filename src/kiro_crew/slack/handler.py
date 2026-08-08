@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
+from kiro_crew.agent_discovery import project_agent_files, project_agent_name
 from kiro_crew.config.loader import (
     ACTIVATION_REVIEW,
     ConfigReadError,
@@ -938,19 +939,16 @@ def _get_agent_for_session(session_key: str) -> str:
 
 
 def _discover_project_agents(project_dir: str | None) -> list[Path]:
-    """Return agent JSON files from <project_dir>/.kiro/ and .kiro/agents/."""
-    if not project_dir:
-        return []
-    if is_sensitive_path(project_dir):
-        return []
-    kiro_dir = Path(project_dir) / ".kiro"
-    if not kiro_dir.is_dir():
-        return []
-    specs = list(kiro_dir.glob("*.agent-spec.json"))
-    agents_dir = kiro_dir / "agents"
-    if agents_dir.is_dir():
-        specs.extend(agents_dir.glob("*.json"))
-    return sorted(specs, key=lambda f: f.stem)
+    """Return agent JSON files from <project_dir>/.kiro/ and .kiro/agents/.
+
+    Delegates to :func:`agent_discovery.project_agent_files`, the one implementation
+    now shared with the dashboard picker, ``spawn_run`` validation and per-turn agent
+    resolution. ``include_legacy=True`` is passed HERE and only here: Slack's
+    ``*.agent-spec.json`` convention predates ``.kiro/agents/`` and is kept for
+    continuity, but kiro-cli cannot activate such a name, so no dispatch surface may
+    offer it.
+    """
+    return project_agent_files(project_dir, include_legacy=True)
 
 
 def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None:
@@ -959,21 +957,12 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
     Searches project-local .kiro/ first (if project_dir set), then ~/.kiro/agents/.
     Returns the resolved name, or None if not found.
     """
-    # Project-local agents take priority
+    # Project-local agents take priority — kiro-cli resolves --agent against its
+    # cwd before the user-level dir, so a project agent is the one that would run.
     for spec in _discover_project_agents(project_dir):
-        if spec.stem == name or spec.stem.replace(".agent-spec", "") == name:
-            # Fallback must strip the ".agent-spec" suffix: the match arm
-            # accepts both "<name>" and "<name>.agent-spec", so returning the
-            # raw stem would yield "<name>.agent-spec" — a name that won't
-            # resolve downstream. Use the cleaned stem in every fallback branch.
-            fallback = spec.stem.removesuffix(".agent-spec")
-            raw = safe_read_file_bytes(str(spec))
-            if raw is None:
-                return fallback
-            try:
-                return json.loads(raw.decode("utf-8")).get("name", fallback)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return fallback
+        resolved = project_agent_name(spec)
+        if resolved == name or spec.stem == name or spec.stem.replace(".agent-spec", "") == name:
+            return resolved
 
     agents_dir = kiro_agents_dir()
     jsons = (

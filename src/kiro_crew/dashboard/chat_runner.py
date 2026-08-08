@@ -37,6 +37,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -2823,7 +2824,12 @@ async def _run_chat(
         try:
             cfg = KiroCrewConfig.load()
             provider_name = cfg.agent.provider
-            bindings = resolve_agent_bindings(cfg, slot.agent or None)
+            # Warm the project agent index OFF the loop, then resolve inline. Only
+            # the warm is offloaded: resolve_agent_bindings can raise StopIteration
+            # on a malformed config, and StopIteration cannot be delivered through a
+            # Future, so awaiting it would hang instead of surfacing the error.
+            await warm_project_agent_names(slot.project)
+            bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
             kiro_agent = bindings.kiro_agent
             memory_store = bindings.memory_store_name
             agent_model = normalize_agent_model(bindings.model)

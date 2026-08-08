@@ -11,6 +11,7 @@ Each agent is identified by its ``modeId`` — the value passed to
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -18,7 +19,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
+from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
@@ -37,6 +39,15 @@ def _kiro_agents_dir() -> Path:
     return _KIRO_AGENTS_DIR if _KIRO_AGENTS_DIR is not None else kiro_agents_dir()
 
 
+# Discovery scopes. A ``project`` agent comes from the session's own checkout and
+# SHADOWS a ``global`` agent of the same name, mirroring kiro-cli: it resolves
+# ``--agent`` against ``$PWD/.kiro/agents`` before ``~/.kiro/agents``. Kiro Crew
+# spawns kiro-cli with the session's project dir as cwd, so the shadowing is a
+# property of the backend rather than a policy choice here — surfacing the losing
+# entry as separately selectable would advertise an agent that cannot be reached.
+SCOPE_GLOBAL = "global"
+SCOPE_PROJECT = "project"
+
 # ── list_agents() result cache ──
 # list_agents() reads and JSON-parses every ~/.kiro/agents/*.json on each call.
 # Hot callers (agent picker, per-turn agent resolution) call it repeatedly, so an
@@ -44,8 +55,20 @@ def _kiro_agents_dir() -> Path:
 # Cache the parsed result keyed by directory and reuse it while a cheap stat-only
 # directory signature (file count + newest mtime) is unchanged — that signature
 # detects adds, removals, and in-place edits.
+#
+# The key carries BOTH scopes because the project scope varies per session: two
+# sessions on different checkouts must not serve each other's agents from one
+# entry. The signature is the pair of per-directory signatures, so an edit in
+# either scope invalidates.
 _ListAgentsSig = tuple[int, int]
-_LIST_AGENTS_CACHE: dict[str, tuple[_ListAgentsSig, list[AgentInfo]]] = {}
+_LIST_AGENTS_KEY = tuple[str, str]
+_LIST_AGENTS_CACHE: dict[_LIST_AGENTS_KEY, tuple[tuple[_ListAgentsSig, ...], list[AgentInfo]]] = {}
+
+# Dispatchable project agent NAMES, keyed by project dir and revalidated by the same
+# stat-only signature idea. Separate from the cache above because the per-turn
+# resolver needs only the name set: building full AgentInfo rows (and scanning the
+# user-level dir alongside) on every turn is the cost this index exists to avoid.
+_PROJECT_NAMES_CACHE: dict[str, tuple[tuple[_ListAgentsSig, ...], frozenset[str]]] = {}
 
 
 @dataclass
@@ -60,6 +83,7 @@ class AgentInfo:
     mcp_servers: list[str] = field(default_factory=list)
     source: str = "builtin"  # "kirocrew" | "package" | "builtin"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
+    scope: str = SCOPE_GLOBAL  # "global" | "project"
 
     def __post_init__(self) -> None:
         """Make the annotations above TRUE, at every construction site.
@@ -93,6 +117,7 @@ class AgentInfo:
             ("model", _DEFER_MODEL),
             ("source", "builtin"),
             ("package", ""),
+            ("scope", SCOPE_GLOBAL),
         ):
             if not isinstance(getattr(self, name), str):
                 setattr(self, name, fallback)
@@ -107,6 +132,211 @@ class AgentInfo:
 
 
 SKILL_URI_PREFIX = "skill://"
+
+# Kiro Crew-only spec convention, predating ``.kiro/agents/`` and still used by
+# projects driven from Slack. kiro-cli does NOT read this location, so a name
+# declared only here is NOT dispatchable: offering it as an agent would hand
+# kiro-cli a mode it cannot activate. It is therefore excluded from discovery by
+# default and included only for Slack's own listing/resolution, which predates
+# this scope — see :func:`project_agent_files`.
+AGENT_SPEC_SUFFIX = ".agent-spec.json"
+
+
+def _read_agent_spec(path: Path) -> dict[str, Any] | None:
+    """Parse an agent config file, or ``None`` when it is not usable.
+
+    The one reader for both scopes, so every guard applies uniformly: AppleDouble
+    sidecars, a symlink whose RESOLVED target is sensitive (``evil.json`` ->
+    ``~/.aws/credentials``), non-UTF-8 bytes, and JSON that is not an object are all
+    rejected. The agents directories are user-writable and shared with other tools,
+    so none of these are hypothetical.
+    """
+    if path.name.startswith("._"):
+        return None
+    try:
+        real = path.resolve(strict=True)
+    except OSError:
+        return None
+    if is_sensitive_path(str(real)):
+        logger.debug("Skipping sensitive agent config: %s", path)
+        _sel().log_api_access(
+            caller="agent_discovery",
+            operation="list_agents",
+            outcome="denied",
+            source="list_agents",
+            resources=str(real),
+            error="sensitive path rejected",
+        )
+        return None
+    try:
+        data = json.loads(real.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        logger.debug("Skipping unreadable agent config: %s", path)
+        return None
+    if not isinstance(data, dict):
+        logger.debug("Skipping non-object agent config: %s", path)
+        return None
+    return data
+
+
+def project_agent_files(
+    project_dir: str | Path | None,
+    include_legacy: bool = False,
+) -> list[Path]:
+    """Agent config files declared by a project checkout, sorted by stem.
+
+    Returns the kiro-cli-native ``<project>/.kiro/agents/*.json`` — the only project
+    location kiro-cli itself resolves ``--agent`` against, and therefore the only
+    one whose names are dispatchable.
+
+    *include_legacy* additionally returns ``<project>/.kiro/*.agent-spec.json``, Kiro
+    Crew's own older convention. It defaults to ``False`` because every dispatch
+    surface (the agent picker, ``spawn_run`` validation, per-turn resolution) must
+    offer only agents the backend can actually activate; a legacy-only name would be
+    accepted here and then fail at ``session/set_mode``. Slack passes ``True`` to
+    keep its pre-existing listing and resolution behavior.
+
+    Returns ``[]`` for a falsy or sensitive *project_dir*, and never raises: an
+    unreadable checkout yields no agents rather than failing the caller's scan.
+
+    The sensitive-path check is on the project root because that value arrives from
+    a caller-supplied session field; the per-file resolved-target check that
+    catches a planted symlink stays with the reader (:func:`_read_agent_spec`).
+    """
+    if not project_dir:
+        return []
+    if is_sensitive_path(str(project_dir)):
+        logger.debug("Skipping sensitive project dir for agent discovery: %s", project_dir)
+        return []
+    specs: list[Path] = []
+    try:
+        if include_legacy:
+            kiro_dir = project_kiro_dir(project_dir)
+            if kiro_dir.is_dir():
+                specs.extend(kiro_dir.glob(f"*{AGENT_SPEC_SUFFIX}"))
+        agents_dir = project_agents_dir(project_dir)
+        if agents_dir.is_dir():
+            specs.extend(agents_dir.glob("*.json"))
+    except OSError:
+        return []
+    return sorted(specs, key=lambda f: f.stem)
+
+
+def project_agent_name(spec: Path) -> str:
+    """The dispatchable name a project agent file declares.
+
+    The declared ``name`` wins over the filename, matching what kiro-cli lists and
+    accepts for ``--agent``. The stem is the fallback, with
+    :data:`AGENT_SPEC_SUFFIX` stripped — a raw ``<name>.agent-spec`` stem is not a
+    name anything downstream resolves.
+    """
+    fallback = spec.name
+    for suffix in (AGENT_SPEC_SUFFIX, ".json"):
+        if fallback.endswith(suffix):
+            fallback = fallback[: -len(suffix)]
+            break
+    data = _read_agent_spec(spec)
+    if data is None:
+        return fallback
+    return spec_str(data, "name", fallback)
+
+
+def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
+    """Stat-only signature of a project's agent scopes.
+
+    Covers both ``<project>/.kiro`` (legacy specs) and ``<project>/.kiro/agents``, so
+    an add, removal, or in-place edit in either invalidates. Stats only — no file is
+    opened — which is what makes revalidating a warm cache cheap.
+    """
+    return (
+        _dir_signature(project_kiro_dir(project_dir)),
+        _dir_signature(project_agents_dir(project_dir)),
+    )
+
+
+def project_agent_names(project_dir: str | Path | None) -> frozenset[str]:
+    """Dispatchable agent names declared by a project, cached on a stat signature.
+
+    Only ``<project>/.kiro/agents/*.json`` contributes, because only those names are
+    ones kiro-cli can activate (see :func:`project_agent_files`).
+
+    Cached per project directory and revalidated by :func:`_project_signature`, so a
+    repeat call on an unchanged checkout costs a pair of ``scandir`` walks rather than
+    re-reading and re-parsing every spec. This matters because the per-turn agent
+    resolver calls this on EVERY turn of a project-agent-bound session: bounding the
+    file count is not enough on its own, since the cost that stalls a caller is the
+    reads, not the count.
+
+    Never raises; an unreadable checkout yields an empty set.
+    """
+    if not project_dir:
+        return frozenset()
+    key = str(project_dir)
+    signature = _project_signature(project_dir)
+    cached = _PROJECT_NAMES_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    names = frozenset(project_agent_name(f) for f in project_agent_files(project_dir))
+    _PROJECT_NAMES_CACHE[key] = (signature, names)
+    return names
+
+
+def cached_project_agent_names(project_dir: str | Path | None) -> frozenset[str] | None:
+    """Cached names for *project_dir*, or ``None`` when nothing is cached yet.
+
+    Performs **no syscalls at all** — not even the stat pair
+    :func:`project_agent_names` uses to revalidate. That is the point: this is the
+    read the per-turn resolver makes while an event loop is running, where any
+    filesystem access is a potential gateway stall. A caller that needs a fresh
+    answer warms the cache off-loop first (see :func:`project_agent_names`); this
+    then serves it from memory.
+
+    Returning the possibly-stale cached value is deliberate. The alternative on the
+    loop is not "a fresher answer", it is "no answer" — and one turn resolved
+    against a snapshot taken moments earlier is strictly better than a stall or a
+    wrong fallback to the default agent.
+    """
+    if not project_dir:
+        return None
+    cached = _PROJECT_NAMES_CACHE.get(str(project_dir))
+    return None if cached is None else cached[1]
+
+
+def clear_project_agent_cache() -> None:
+    """Drop all cached :func:`project_agent_names` results.
+
+    Invalidation is normally automatic via the stat signature; call this only to
+    force an immediate refresh (tests, or right after writing a project spec).
+    """
+    _PROJECT_NAMES_CACHE.clear()
+
+
+async def warm_project_agent_names(project_dir: str | Path | None) -> None:
+    """Populate the project name cache from the discovery pool, off the event loop.
+
+    The counterpart to :func:`cached_project_agent_names`: an async caller runs this
+    first so the synchronous, on-loop resolution that follows is a cache HIT rather
+    than a fallback to the default agent.
+
+    Only the scan is offloaded. Resolution itself stays inline on purpose — moving a
+    synchronous resolver into an executor changes its exception semantics, and
+    ``StopIteration`` in particular cannot be delivered through a ``Future``, which
+    hangs the awaiting caller instead of surfacing the error.
+
+    A no-op without a *project_dir*. Best-effort and never raises: failing to warm
+    costs one turn's fallback, and must not break turn handling.
+    """
+    if not project_dir:
+        return
+    try:
+        from kiro_crew.executors import discovery_executor
+
+        await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), project_agent_names, project_dir
+        )
+    except Exception:  # noqa: BLE001 — a warm failure only costs a fallback
+        logger.debug("Failed to warm project agent names for %s", project_dir, exc_info=True)
+
 
 # The "no pin, defer to the tier below" spelling. Mirrors
 # ``config.loader.DEFAULT_MODEL``; duplicated as a literal rather than imported
@@ -374,20 +604,107 @@ def _with_edition_agents(disk_agents: list[AgentInfo]) -> list[AgentInfo]:
     return list(by_name.values())
 
 
-def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
-    """Scan ~/.kiro/agents/*.json for all installed agents.
+def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
+    """Build an :class:`AgentInfo` for a user-level (``~/.kiro/agents``) config."""
+    # Coerced BEFORE the package-detection below, which does
+    # ``stem.endswith(agent_name)``: a non-string name raised TypeError there, and
+    # the broad ``except`` around the caller's loop turned that into a silently
+    # DROPPED agent rather than a degraded one. Falling back to the filename stem
+    # keeps the row selectable under the name its file already implies.
+    agent_name = spec_str(data, "name", f.stem)
+    stem = f.stem
 
-    Returns a list of ``AgentInfo`` objects sorted by name. Each agent
-    corresponds to a kiro-cli agent config file that can be selected
-    via ``session/set_mode`` in the ACP protocol.
+    package = ""
+    # Package-installed agents follow the "{package}-{name}.json" filename
+    # convention (a generic package-manager convention, not tied to any specific
+    # tool). A plain "{name}.json" is built-in.
+    is_package_filename = agent_name and stem.endswith(agent_name) and stem != agent_name
+    if is_package_filename:
+        pkg_stem = f.stem
+        if pkg_stem.startswith("local-"):
+            pkg_stem = pkg_stem[len("local-") :]
+        package = pkg_stem[: -(len(agent_name) + 1)]
 
-    Results are cached per directory and reused while the directory signature
-    is unchanged, so repeated calls avoid re-reading and re-parsing every agent
+    if f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME):
+        source = "kirocrew"
+    elif is_package_filename:
+        source = "package"
+    else:
+        source = "builtin"
+
+    return AgentInfo(
+        name=agent_name,
+        filename=f.name,
+        description=spec_str(data, "description"),
+        model=spec_model(data),
+        skills=_extract_skills(data),
+        mcp_servers=_mcp_server_names(data),
+        source=source,
+        package=package,
+        scope=SCOPE_GLOBAL,
+    )
+
+
+def _project_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
+    """Build an :class:`AgentInfo` for a project-level (``<project>/.kiro``) config.
+
+    The ``{package}-{name}`` filename convention is deliberately NOT applied here:
+    a project checkout has no package manager installing into it, so a hyphenated
+    filename is just a filename and reading a package out of it would invent one.
+    """
+    return AgentInfo(
+        name=project_agent_name(f),
+        filename=f.name,
+        description=spec_str(data, "description"),
+        model=spec_model(data),
+        skills=_extract_skills(data),
+        mcp_servers=_mcp_server_names(data),
+        source="builtin",
+        package="",
+        scope=SCOPE_PROJECT,
+    )
+
+
+def _mcp_server_names(data: dict[str, Any]) -> list[str]:
+    """The ``mcpServers`` keys of a spec, or ``[]`` when the field is not a mapping."""
+    mcp = data.get("mcpServers") or {}
+    return list(mcp.keys()) if isinstance(mcp, dict) else []
+
+
+def list_agents(
+    agents_dir: Path | None = None,
+    project_dir: str | Path | None = None,
+) -> list[AgentInfo]:
+    """Scan the agent directories for all installed agents.
+
+    Returns a list of ``AgentInfo`` objects. Each agent corresponds to a kiro-cli
+    agent config file that can be selected via ``session/set_mode`` in the ACP
+    protocol.
+
+    Two scopes are searched when *project_dir* is given: the user-level directory
+    (``~/.kiro/agents``, or *agents_dir*) and the project's own
+    (``<project>/.kiro/agents`` plus ``<project>/.kiro/*.agent-spec.json``). A
+    project agent SHADOWS a user-level agent of the same name and the shadowing is
+    logged, mirroring kiro-cli — which resolves ``--agent`` against its cwd first,
+    and is spawned by Kiro Crew with the session's project dir as that cwd. The
+    losing entry is not returned: it is unreachable for this session, so listing it
+    would offer an agent that cannot run.
+
+    Omitting *project_dir* preserves the user-level-only behavior, which is what
+    callers with no session context (and therefore no project) want.
+
+    Results are cached per scope pair and reused while both directory signatures
+    are unchanged, so repeated calls avoid re-reading and re-parsing every agent
     JSON on the event loop.
     """
     d = agents_dir or _kiro_agents_dir()
-    cache_key = str(d)
-    signature = _dir_signature(d)
+    project_files = project_agent_files(project_dir)
+    cache_key = (str(d), str(project_dir or ""))
+    signature: tuple[_ListAgentsSig, ...] = (
+        _dir_signature(d),
+        _dir_signature(project_kiro_dir(project_dir)) if project_dir else (0, 0),
+        _dir_signature(project_agents_dir(project_dir)) if project_dir else (0, 0),
+    )
     cached = _LIST_AGENTS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature:
         return _with_edition_agents(list(cached[1]))
@@ -397,77 +714,10 @@ def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
     if d.is_dir():
         for f in sorted(d.glob("*.json")):
             try:
-                # Skip AppleDouble sidecars and sensitive symlink targets
-                if f.name.startswith("._"):
+                data = _read_agent_spec(f)
+                if data is None:
                     continue
-                try:
-                    real = f.resolve(strict=True)
-                except OSError:
-                    continue
-                if is_sensitive_path(str(real)):
-                    logger.debug("Skipping sensitive agent config: %s", f)
-                    _sel().log_api_access(
-                        caller="agent_discovery",
-                        operation="list_agents",
-                        outcome="denied",
-                        source="list_agents",
-                        resources=str(real),
-                        error="sensitive path rejected",
-                    )
-                    continue
-                raw = real.read_bytes()
-                try:
-                    text = raw.decode("utf-8")
-                except (UnicodeDecodeError, ValueError):
-                    logger.debug("Skipping non-UTF-8 agent config: %s", f)
-                    continue
-                data = json.loads(text)
-                if not isinstance(data, dict):
-                    logger.debug("Skipping non-object agent config: %s", f)
-                    continue
-                # Coerced BEFORE the package-detection below, which does
-                # ``stem.endswith(agent_name)``: a non-string name raised
-                # TypeError there, and the broad ``except`` around this loop
-                # turned that into a silently DROPPED agent rather than a
-                # degraded one. Falling back to the filename stem keeps the row
-                # selectable under the name its file already implies.
-                agent_name = spec_str(data, "name", f.stem)
-                stem = f.stem
-
-                package = ""
-                # Package-installed agents follow the "{package}-{name}.json"
-                # filename convention (a generic package-manager convention, not
-                # tied to any specific tool). A plain "{name}.json" is built-in.
-                is_package_filename = (
-                    agent_name and stem.endswith(agent_name) and stem != agent_name
-                )
-                if is_package_filename:
-                    pkg_stem = f.stem
-                    if pkg_stem.startswith("local-"):
-                        pkg_stem = pkg_stem[len("local-") :]
-                    package = pkg_stem[: -(len(agent_name) + 1)]
-
-                if f.name in ("kirocrew.json", "kirocrew-lite.json"):
-                    source = "kirocrew"
-                elif is_package_filename:
-                    source = "package"
-                else:
-                    source = "builtin"
-
-                agents.append(
-                    AgentInfo(
-                        name=agent_name,
-                        filename=f.name,
-                        description=spec_str(data, "description"),
-                        model=spec_model(data),
-                        skills=_extract_skills(data),
-                        mcp_servers=list((data.get("mcpServers") or {}).keys())
-                        if isinstance(data.get("mcpServers") or {}, dict)
-                        else [],
-                        source=source,
-                        package=package,
-                    )
-                )
+                agents.append(_global_agent_info(f, data))
             except Exception:
                 logger.debug("Skipping invalid agent config: %s", f)
                 continue
@@ -488,6 +738,31 @@ def list_agents(agents_dir: Path | None = None) -> list[AgentInfo]:
                 a.package,
                 existing.package,
             )
+
+    # Project scope LAST so it shadows: kiro-cli resolves --agent against its cwd
+    # before the user-level dir, and Kiro Crew spawns it with the session's project
+    # dir as cwd, so the project entry is what would actually run. The warning
+    # mirrors kiro-cli's own conflict notice — shadowing is correct here, silent
+    # shadowing is not, because the two configs can differ in tools and permissions.
+    for pf in project_files:
+        try:
+            data = _read_agent_spec(pf)
+            if data is None:
+                continue
+            info = _project_agent_info(pf, data)
+            shadowed = seen.get(info.name)
+            if shadowed is not None and shadowed.scope == SCOPE_GLOBAL:
+                logger.warning(
+                    "Project agent '%s' (%s) shadows the user-level agent in %s",
+                    info.name,
+                    pf,
+                    shadowed.filename,
+                )
+            seen[info.name] = info
+        except Exception:
+            logger.debug("Skipping invalid project agent config: %s", pf)
+            continue
+
     result = list(seen.values())
     _LIST_AGENTS_CACHE[cache_key] = (signature, result)
     return _with_edition_agents(result)

@@ -349,22 +349,43 @@ a per-agent model pin (per-agent pin > global default). Reads only the kiro
 `kiro_agents_dir()`.
 
 ### `kiro_agents_dir() -> Path` (`config/paths.py`)
-Leaf helper returning `~/.kiro/agents`. Lives in the leaf module so `loader.py`
-(and `_resolve_named_agent_model`'s `agents_dir` DI seam) can locate installed
-agent JSONs without importing `kiro_crew.agent` — which imports `config.loader`
-and would create an import cycle.
+Leaf helper returning `~/.kiro/agents` — the **user-level** scope. Lives in the leaf
+module so `loader.py` (and `_resolve_named_agent_model`'s `agents_dir` DI seam) can
+locate installed agent JSONs without importing `kiro_crew.agent` — which imports
+`config.loader` and would create an import cycle.
 
-### `resolve_agent_bindings(config, agent_name=None) -> ResolvedBindings`
+Deliberately **single-valued**: it is the WRITE target as well as a read scope
+(`bridges._register_agents` and `agent.rebuild_agent_config` both write here), so it
+is never widened into a search path.
+
+### `project_agents_dir(project_dir)` / `project_kiro_dir(project_dir)` (`config/paths.py`)
+The **project** scope, read-only: `<project>/.kiro/agents` (kiro-cli's own workspace
+agents dir) and `<project>/.kiro` (which holds Kiro Crew's older
+`*.agent-spec.json` convention). kiro-cli resolves `--agent` against
+`$PWD/.kiro/agents` before the user-level dir with **no upward walk**, and Kiro Crew
+spawns kiro-cli with the session's project directory as its cwd, so this is exactly
+the directory the backend searches for that session.
+
+Only `.kiro/agents/*.json` is **dispatchable**: kiro-cli does not read
+`*.agent-spec.json`, so `agent_discovery.project_agent_files()` excludes it unless
+the caller opts in with `include_legacy=True` (only the Slack handler does, for its
+own pre-existing listing/resolution). Offering a legacy-only name on a dispatch
+surface would have it accepted by the picker and by `spawn_run`, then fail at
+`session/set_mode`.
+
+### `resolve_agent_bindings(config, agent_name=None, project_dir=None) -> ResolvedBindings`
 Resolves the workspace, memory store and **kiro agent** a session runs under.
 Resolution order:
 
 1. `agent_name` is a key in `config.agents` — use that alias's bindings.
-2. `agent_name` is a **materialized kiro agent config** — a `~/.kiro/agents/*.json`
-   whose **declared `name`** matches (the filename stem only when the config
-   declares no name) — take the *default* alias's workspace/memory bindings but
-   dispatch **that agent itself**. `kiro-cli agent list` enumerates agents by
-   declared name, so a namespaced filename stem such as `mochi--mochi` is NOT a
-   name kiro-cli can resolve and must not be treated as dispatchable.
+2. `agent_name` is a **materialized kiro agent config** — a `*.json` under
+   `~/.kiro/agents/` or, when `project_dir` is given, under
+   `<project>/.kiro/agents/` — whose **declared `name`** matches (the filename stem
+   only when the config declares no name) — take the *default* alias's
+   workspace/memory bindings but dispatch **that agent itself**. `kiro-cli agent
+   list` enumerates agents by declared name, so a namespaced filename stem such as
+   `mochi--mochi` is NOT a name kiro-cli can resolve and must not be treated as
+   dispatchable.
 3. otherwise `config.default_agent`, then the first available alias, then bare
    defaults.
 
@@ -375,9 +396,38 @@ to `config.agents`** — that mapping is authored by setup / the user. Without i
 app-bound session fell through to `default_agent` and the DEFAULT agent answered
 while the slot still advertised the requested name, with none of the app's MCP
 tools. The rung is deliberately wider than app agents: **any** parseable config in
-that directory dispatches with default bindings, because the directory *is* the
+those directories dispatches with default bindings, because they *are* the
 kiro-cli agent registry and narrowing to app-registered names would require
-provenance it does not record.
+provenance they do not record.
+
+`project_dir` must be the directory the session actually runs in (the same value
+passed as the kiro-cli cwd).
+
+**Neither scope touches the filesystem on the event loop.** The user-level scope is
+served from the process-wide materialized snapshot (refreshed off-loop by the
+writer); the project scope differs per session, so it is served by
+`agent_discovery.project_agent_names()` — a per-project name set revalidated by a
+stat-only signature, so a repeat scan costs two `scandir` walks rather than
+re-reading every spec. `_project_declares_agent` splits on whether a loop is running:
+off-loop it scans, on-loop it reads `cached_project_agent_names()`, which performs
+**no syscalls at all** and reports "not declared" on a cold cache so the caller falls
+back — exactly as the cold-snapshot user-level path does. Bounding the file *count*
+is not the same guarantee as bounding *latency*: this runs on every turn of a
+project-bound session, so a network or otherwise slow checkout would become a
+recurring gateway stall the loop-stall watchdog blames on chat.
+
+Async callers therefore **warm the cache before resolving**:
+`agent_discovery.warm_project_agent_names()` runs the scan on
+`executors.discovery_executor()` (the pool `/api/agents/installed` uses), after which
+the on-loop read is a hit. `chat_runner._run_chat` and the side-turn handler both do
+this.
+
+**Only the warm is offloaded — never `resolve_agent_bindings` itself.** The resolver
+can raise `StopIteration` (its defensive `next(iter(config.agents))` branch on a
+malformed config), and `StopIteration` cannot be delivered through a `Future`:
+asyncio rejects it, so an awaiting caller hangs instead of seeing the error, and the
+`except Exception` that callers rely on never runs. Keeping resolution synchronous
+preserves its exception contract for every call site.
 
 `ResolvedBindings` additionally reports `requested_resolved` (whether the
 requested name was honored — False means the default answered) and

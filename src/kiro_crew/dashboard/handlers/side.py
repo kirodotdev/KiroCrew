@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 
 from kiro_crew.acp.client import AcpAuthRequired
+from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_state import SideState
@@ -88,7 +89,13 @@ async def _run_side_turn(
         kiro_agent: str | None = None
         try:
             cfg = KiroCrewConfig.load()
-            kiro_agent = resolve_agent_bindings(cfg, slot.agent or None).kiro_agent
+            # Warm off-loop, resolve inline — same reasoning as the main chat path
+            # (offloading the resolver itself would swallow a StopIteration into a
+            # Future and hang the await).
+            await warm_project_agent_names(slot.project)
+            kiro_agent = resolve_agent_bindings(
+                cfg, slot.agent or None, slot.project or None
+            ).kiro_agent
         except Exception:
             logger.warning(
                 "Side turn: failed to resolve agent bindings for slot=%s; "

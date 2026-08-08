@@ -517,14 +517,20 @@ class TestProjectSensitivePathCheck:
 
 
 class TestDiscoverProjectAgentsSensitivePath:
-    """Tests for sensitive path enforcement in _discover_project_agents."""
+    """Sensitive-path enforcement for project agent discovery.
+
+    The guard lives in ``agent_discovery.project_agent_files``, the implementation
+    the Slack handler now shares with the dashboard picker and spawn validation, so
+    it is patched there — patching the Slack module would miss it and the test would
+    pass while enforcing nothing.
+    """
 
     def test_returns_empty_for_sensitive_path(self, tmp_path):
         kiro = tmp_path / ".kiro"
         kiro.mkdir()
         spec = kiro / "agent.agent-spec.json"
         spec.write_text(json.dumps({"name": "agent"}))
-        with patch("kiro_crew.slack.handler.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.agent_discovery.is_sensitive_path", return_value=True):
             result = _discover_project_agents(str(tmp_path))
         assert result == []
 
@@ -533,6 +539,6 @@ class TestDiscoverProjectAgentsSensitivePath:
         kiro.mkdir()
         spec = kiro / "agent.agent-spec.json"
         spec.write_text(json.dumps({"name": "agent"}))
-        with patch("kiro_crew.slack.handler.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.agent_discovery.is_sensitive_path", return_value=False):
             result = _discover_project_agents(str(tmp_path))
         assert len(result) == 1

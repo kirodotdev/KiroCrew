@@ -122,8 +122,14 @@ def _safe_fire(coro: Awaitable[None]) -> None:
 _MAX_CONCURRENT = 3
 
 
-def _validate_agent(requested: str) -> tuple[str, str]:
-    """Validate agent name exists in ~/.kiro/agents/.
+def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
+    """Validate that an agent name is one kiro-cli can actually load.
+
+    Searches the user-level ``~/.kiro/agents/`` and, when *project_dir* is given,
+    that project's own ``.kiro`` scope. *project_dir* must be the SAME directory
+    the subagent is spawned in (its validated ``cwd``), because that is what
+    kiro-cli resolves ``--agent`` against — validating against any other directory
+    would accept a name the subagent then cannot load.
 
     Returns (agent_name, error). If agent found, error is empty.
     If not found, agent_name is empty and error explains what happened.
@@ -132,7 +138,7 @@ def _validate_agent(requested: str) -> tuple[str, str]:
         return "", ""
     from kiro_crew.agent_discovery import list_agents
 
-    known = {a.name for a in list_agents()}
+    known = {a.name for a in list_agents(project_dir=project_dir or None)}
     if requested in known:
         return requested, ""
     available = sorted(known - {"kirocrew", "kirocrew-conductor"})
@@ -2798,7 +2804,13 @@ class SubagentManager:
         # stalling chat and the heartbeat on a populated agents directory. Only
         # the app path sets it; every other caller still validates inline.
         if agent and not _agent_prevalidated:
-            agent, err = _validate_agent(agent)
+            # Validate against the cwd the subagent will ACTUALLY run in. When no
+            # explicit cwd was given the runtime falls back to the session pool's
+            # cwd, so validating only the explicit value refused a project agent
+            # kiro-cli would have loaded — the same interface asymmetry the project
+            # scope exists to remove, just one layer down.
+            effective_cwd = resolved_cwd or str(getattr(self._sessions, "_pool_cwd", "") or "")
+            agent, err = _validate_agent(agent, effective_cwd)
             if err:
                 info = SubagentInfo(
                     id=agent_id,

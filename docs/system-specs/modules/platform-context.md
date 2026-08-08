@@ -578,10 +578,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   existence-checked). Default `[]`.
 - `AgentCatalogProvider.builtin_agents() -> List[Dict[str, Any]]` — ADD-only
   agent-catalog rows merged by `agent_discovery.list_agents()` AFTER the on-disk
-  `~/.kiro/agents` scan (via `_with_edition_agents`, through
+  scan of `~/.kiro/agents` and, when the caller supplies a `project_dir`,
+  `<project>/.kiro/agents` (via `_with_edition_agents`, through
   `safe_context_call`), de-duped by name so an on-disk agent of the same name
-  wins. Each row is a plain dict of `AgentInfo` fields (`name` required;
-  `filename`/`description`/`model`/`skills`/`mcp_servers`/`source`/`package`
+  wins. Within the on-disk scan a **project** agent shadows a user-level one of
+  the same name (and the shadowing is logged), mirroring kiro-cli — which resolves
+  `--agent` against its cwd first, and which Kiro Crew spawns with the session's
+  project directory as that cwd, so the project entry is the one that would
+  actually run. Kiro Crew's legacy `<project>/.kiro/*.agent-spec.json` convention is
+  deliberately NOT scanned here (only the Slack handler opts into it): kiro-cli
+  cannot activate such a name, and this list is a dispatch surface. Each row is a
+  plain dict of `AgentInfo` fields (`name` required;
+  `filename`/`description`/`model`/`skills`/`mcp_servers`/`source`/`package`/`scope`
   optional). **EXECUTABLE INVARIANT:** every returned row MUST be spawnable —
   the edition guarantees a resolvable agent config exists for its `name`
   (materialized under `~/.kiro/agents` or otherwise resolvable by the ACP

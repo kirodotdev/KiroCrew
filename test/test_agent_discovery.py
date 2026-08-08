@@ -15,7 +15,17 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.agent_discovery import AgentInfo, clear_list_agents_cache, list_agents
+from kiro_crew.agent_discovery import (
+    SCOPE_GLOBAL,
+    SCOPE_PROJECT,
+    AgentInfo,
+    clear_list_agents_cache,
+    clear_project_agent_cache,
+    list_agents,
+    project_agent_files,
+    project_agent_name,
+    project_agent_names,
+)
 
 
 @pytest.fixture
@@ -29,6 +39,205 @@ def _agents_dir(home: Path) -> Path:
     d = home / ".kiro" / "agents"
     d.mkdir(parents=True)
     return d
+
+
+def _project_agents_dir(root: Path) -> Path:
+    d = root / ".kiro" / "agents"
+    d.mkdir(parents=True)
+    return d
+
+
+class TestProjectScopeDiscovery:
+    """Project-local ``<project>/.kiro`` agents, mirroring kiro-cli's workspace scope."""
+
+    def test_project_agent_is_discovered_and_marked(self, fake_home, tmp_path):
+        """An agent only in the project appears, tagged with the project scope."""
+        d = _agents_dir(fake_home)
+        (d / "userlevel.json").write_text(json.dumps({"name": "userlevel"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "repobot.json").write_text(json.dumps({"name": "repobot"}))
+
+        clear_list_agents_cache()
+        agents = {a.name: a for a in list_agents(agents_dir=d, project_dir=str(proj))}
+        assert set(agents) == {"userlevel", "repobot"}
+        assert agents["repobot"].scope == SCOPE_PROJECT
+        assert agents["userlevel"].scope == SCOPE_GLOBAL
+
+    def test_omitting_project_dir_keeps_user_level_only(self, fake_home, tmp_path):
+        """No project dir means no project scan — the pre-existing contract."""
+        d = _agents_dir(fake_home)
+        (d / "userlevel.json").write_text(json.dumps({"name": "userlevel"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "repobot.json").write_text(json.dumps({"name": "repobot"}))
+
+        clear_list_agents_cache()
+        assert [a.name for a in list_agents(agents_dir=d)] == ["userlevel"]
+
+    def test_project_agent_shadows_user_level_of_same_name(self, fake_home, tmp_path):
+        """One entry survives, and it is the project one kiro-cli would actually run."""
+        d = _agents_dir(fake_home)
+        (d / "dup.json").write_text(json.dumps({"name": "dup", "description": "user level"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "dup.json").write_text(
+            json.dumps({"name": "dup", "description": "project level"})
+        )
+
+        clear_list_agents_cache()
+        agents = [a for a in list_agents(agents_dir=d, project_dir=str(proj)) if a.name == "dup"]
+        assert len(agents) == 1
+        assert agents[0].scope == SCOPE_PROJECT
+        assert agents[0].description == "project level"
+
+    def test_declared_name_wins_over_filename(self, fake_home, tmp_path):
+        """kiro-cli lists an agent by its declared name, so discovery must match."""
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "file-stem.json").write_text(json.dumps({"name": "declared"}))
+
+        clear_list_agents_cache()
+        names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
+        assert names == ["declared"]
+
+    def test_legacy_spec_is_not_offered_as_a_dispatchable_agent(self, fake_home, tmp_path):
+        """``.agent-spec.json`` is not a location kiro-cli reads, so it must not be
+        offered anywhere an agent gets dispatched — the picker would accept the name
+        and the backend would then fail to activate the mode."""
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        kiro = proj / ".kiro"
+        kiro.mkdir(parents=True)
+        (kiro / "legacy.agent-spec.json").write_text(json.dumps({}))
+
+        clear_list_agents_cache()
+        assert [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))] == []
+        assert project_agent_files(str(proj)) == []
+        assert project_agent_names(str(proj)) == frozenset()
+
+    def test_legacy_spec_is_still_available_to_slack(self, tmp_path):
+        """Slack's pre-existing convention keeps working via the opt-in flag."""
+        proj = tmp_path / "repo"
+        kiro = proj / ".kiro"
+        kiro.mkdir(parents=True)
+        spec = kiro / "legacy.agent-spec.json"
+        spec.write_text(json.dumps({}))
+        assert project_agent_files(str(proj), include_legacy=True) == [spec]
+
+    def test_spec_suffix_is_stripped_from_the_fallback_name(self, tmp_path):
+        """A spec with no declared name must not resolve as ``<name>.agent-spec``."""
+        kiro = tmp_path / "repo" / ".kiro"
+        kiro.mkdir(parents=True)
+        spec = kiro / "legacy.agent-spec.json"
+        spec.write_text(json.dumps({}))
+        assert project_agent_name(spec) == "legacy"
+
+    def test_sensitive_project_dir_yields_no_agents(self, tmp_path, monkeypatch):
+        """A project path the security gate rejects must not be scanned at all."""
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery.is_sensitive_path",
+            lambda p: str(p) == str(tmp_path / "secret"),
+        )
+        proj = tmp_path / "secret"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        assert project_agent_files(str(proj)) == []
+
+    def test_missing_project_kiro_dir_is_not_an_error(self, tmp_path):
+        """A checkout with no ``.kiro`` yields no agents rather than raising."""
+        assert project_agent_files(str(tmp_path / "no-kiro")) == []
+        assert project_agent_files(None) == []
+        assert project_agent_files("") == []
+
+    def test_project_symlink_to_sensitive_file_is_not_read(self, fake_home, tmp_path):
+        """The per-file resolved-target guard applies in the project scope too."""
+        d = _agents_dir(fake_home)
+        secret = tmp_path / "creds"
+        secret.write_text("[default]\naws_access_key_id=AKIAEXAMPLE\n")
+        proj = tmp_path / "repo"
+        pdir = _project_agents_dir(proj)
+        try:
+            os.symlink(secret, pdir / "evil.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        def _sensitive(p):
+            return str(p) == str(secret)
+
+        clear_list_agents_cache()
+        import kiro_crew.agent_discovery as ad
+
+        original = ad.is_sensitive_path
+        ad.is_sensitive_path = _sensitive
+        try:
+            names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
+        finally:
+            ad.is_sensitive_path = original
+        assert names == []
+
+    def test_cache_does_not_leak_between_projects(self, fake_home, tmp_path):
+        """Two checkouts must not serve each other's agents from one cache entry."""
+        d = _agents_dir(fake_home)
+        one = tmp_path / "one"
+        two = tmp_path / "two"
+        (_project_agents_dir(one) / "only-one.json").write_text(json.dumps({"name": "only-one"}))
+        (_project_agents_dir(two) / "only-two.json").write_text(json.dumps({"name": "only-two"}))
+
+        clear_list_agents_cache()
+        assert [a.name for a in list_agents(agents_dir=d, project_dir=str(one))] == ["only-one"]
+        assert [a.name for a in list_agents(agents_dir=d, project_dir=str(two))] == ["only-two"]
+
+
+class TestProjectAgentNameCache:
+    """The per-turn resolver's name index: correct, cached, and per-project.
+
+    The resolver consults this on EVERY turn of a project-agent-bound session, so a
+    repeat call on an unchanged checkout must not re-read the specs.
+    """
+
+    def test_returns_declared_names(self, tmp_path):
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "file-stem.json").write_text(json.dumps({"name": "declared"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"declared"})
+
+    def test_repeat_call_does_not_reread_specs(self, tmp_path, monkeypatch):
+        """A warm cache costs stats, not reads — the whole point of the index."""
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+        import kiro_crew.agent_discovery as ad
+
+        monkeypatch.setattr(
+            ad, "_read_agent_spec", lambda p: pytest.fail("re-read a spec on a warm cache")
+        )
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+    def test_edit_invalidates_the_cache(self, tmp_path):
+        """A new spec must be picked up without an explicit cache clear."""
+        proj = tmp_path / "repo"
+        pdir = _project_agents_dir(proj)
+        (pdir / "a.json").write_text(json.dumps({"name": "a"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+        b = pdir / "b.json"
+        b.write_text(json.dumps({"name": "b"}))
+        os.utime(pdir, (0, 0))  # defeat a coarse directory-mtime clock
+        os.utime(b, None)
+        assert project_agent_names(str(proj)) == frozenset({"a", "b"})
+
+    def test_names_are_per_project(self, tmp_path):
+        one, two = tmp_path / "one", tmp_path / "two"
+        (_project_agents_dir(one) / "x.json").write_text(json.dumps({"name": "x"}))
+        (_project_agents_dir(two) / "y.json").write_text(json.dumps({"name": "y"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(one)) == frozenset({"x"})
+        assert project_agent_names(str(two)) == frozenset({"y"})
+
+    def test_empty_and_missing_inputs_are_safe(self, tmp_path):
+        assert project_agent_names(None) == frozenset()
+        assert project_agent_names("") == frozenset()
+        assert project_agent_names(str(tmp_path / "nope")) == frozenset()
 
 
 class TestListAgentsRobustness:
