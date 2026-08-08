@@ -251,9 +251,19 @@ async def run_bg_oneliner(
     sel_source: str = "bg_oneliner",
     sel_session_key: str = "_bg",
     timeout: float | None = None,
+    strict_model: bool = False,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
+
+    ``strict_model=True`` makes the requested ``model`` a hard requirement
+    rather than a preference: a failed ``set_model`` override raises instead
+    of silently degrading to the session default, and the reactive
+    rejected-model fallback below is disabled. Callers whose RESULT is only
+    meaningful on that exact model (e.g. the poisoned-conversation canary in
+    chat_runner, which uses a success as evidence to discard a conversation
+    served by that same model) must set it; ordinary best-effort callers
+    (title/nav/folder generation) keep the default lenient behavior.
 
     Consolidates the identical "acquire a ``_bg`` session -> best-effort pin the
     cheap model -> drive the event loop -> ``destroy()`` in ``finally``" skeleton
@@ -297,14 +307,40 @@ async def run_bg_oneliner(
         # a hardcoded/unentitled id, or "auto" on a partition that does not serve
         # it, is swapped for the first advertised model instead of
         # reaching the wire and failing mid-prompt with Invalid model ID.
-        # Best-effort: a failed override falls back to the default.
+        # Best-effort: a failed override falls back to the default — unless
+        # strict_model, where running on any other model would make the
+        # result meaningless (see docstring), so the failure propagates.
         if model_to_use and set_model is not None:
             try:
                 await set_model(model_to_use)
             except Exception:
+                if strict_model:
+                    raise
                 logger.debug(
                     "bg oneliner: model override to %s failed; using default", model_to_use
                 )
+            else:
+                if strict_model:
+                    # POST-CONDITION, not just no-exception: the substitute-style
+                    # set_model seam can silently inherit the session default
+                    # when the requested id is absent from the advertised set
+                    # (resolve_usable_model returns "" → no-op, no raise). A
+                    # strict caller (the poisoned-conversation canary) must
+                    # never run on any other model — verify the session now
+                    # SERVES the requested id and refuse otherwise. Unreadable
+                    # served model ⇒ cannot verify ⇒ refuse.
+                    served = str(getattr(session, "served_model", "") or "").strip()
+                    if served != model_to_use:
+                        raise RuntimeError(
+                            "run_bg_oneliner(strict_model=True): session serves "
+                            f"{served or 'unknown'!r}, not the required {model_to_use!r}"
+                        )
+        elif strict_model and model_to_use and set_model is None:
+            # No override seam at all: cannot guarantee the model — refuse
+            # rather than silently answer from the session default.
+            raise RuntimeError(
+                "run_bg_oneliner(strict_model=True) requires a session with set_model()"
+            )
         async for event in session.prompt(prompt):
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
@@ -356,7 +392,11 @@ async def run_bg_oneliner(
             # classifier tagged a rejected model AND named an advertised set.
             rejected = getattr(exc, "rejected_model", None)
             advertised = getattr(exc, "advertised", None) or []
-            fallback = _first_advertised_fallback(advertised, rejected) if rejected else None
+            fallback = (
+                _first_advertised_fallback(advertised, rejected)
+                if rejected and not strict_model
+                else None
+            )
             if not fallback:
                 raise
             logger.warning(

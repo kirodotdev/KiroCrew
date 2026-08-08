@@ -7,12 +7,15 @@ claude-agent-acp does not implement the kiro-only
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.acp.client import AcpAuthRequired
+from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
 from kiro_crew.providers.acp import AcpProvider
 
@@ -38,6 +41,88 @@ def _async_iter(items):
             yield it
 
     return _gen()
+
+
+class TestServedModel:
+    """served_model is the PUBLIC accessor the poisoned-conversation canary
+    probes (chat_runner never reaches into ``_client`` internals). These tests
+    pin the resolution to the REAL client shapes so a refactor that moves the
+    underlying model attribute fails HERE instead of silently disabling the
+    escalation in production."""
+
+    @staticmethod
+    def _session_shape(handle: AcpSessionHandle) -> AcpSessionProvider:
+        return AcpSessionProvider(handle, runtime=MagicMock())
+
+    @staticmethod
+    def _real_handle() -> AcpSessionHandle:
+        return AcpSessionHandle("s1", asyncio.Queue(), MagicMock())
+
+    def test_backend_default_model_is_readable(self):
+        # Regression: a session on the backend-SELECTED default never gets an
+        # explicit set_model, so handle._model stays "" — the served model
+        # arrives only as currentModelId in the session/new response. The
+        # accessor must surface it, or the poisoned-conversation escalation
+        # is silently disabled for every default-model session.
+        handle = self._real_handle()
+        handle.store_session_config(
+            {"models": {"currentModelId": "claude-opus-5", "availableModels": []}}
+        )
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+        provider._client = self._session_shape(handle)
+        assert provider.served_model == "claude-opus-5"
+
+    def test_explicit_set_model_takes_precedence(self):
+        handle = self._real_handle()
+        handle.store_session_config(
+            {"models": {"currentModelId": "default-model", "availableModels": []}}
+        )
+        handle._model = "user-picked-model"  # what set_model assigns
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+        provider._client = self._session_shape(handle)
+        assert provider.served_model == "user-picked-model"
+
+    def test_session_provider_unresolved_is_empty(self):
+        # Fresh handle: no set_model, no session/new config yet.
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+        provider._client = self._session_shape(self._real_handle())
+        assert provider.served_model == ""
+
+    def test_raw_client_uses_resolved_id_never_requested_model(self):
+        # The raw AcpClient carries the REQUESTED `_model` (defaults to the
+        # "auto" sentinel) and the BACKEND-RESOLVED `_resolved_model_id`.
+        # Only the latter is served evidence.
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+
+        class _RawShape:
+            _model = "auto"
+            _resolved_model_id = "gpt-5.6-sol"
+
+        provider._client = _RawShape()
+        assert provider.served_model == "gpt-5.6-sol"
+
+    def test_auto_sentinel_is_filtered_to_unknown(self):
+        # A requested-but-unresolved "auto" must read as unknown ("") — a
+        # canary probing "auto" could land on a DIFFERENT model than the
+        # failing session and fabricate discard evidence.
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+
+        class _RawShape:
+            _model = "auto"
+            _resolved_model_id = None
+
+        provider._client = _RawShape()
+        assert provider.served_model == ""
+
+    def test_unresolvable_model_is_empty_not_error(self):
+        # No readable model → "" (callers treat as inconclusive, never wildcard).
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+
+        class _Bare:
+            pass
+
+        provider._client = _Bare()
+        assert provider.served_model == ""
 
 
 class TestStreamCommandRouting:

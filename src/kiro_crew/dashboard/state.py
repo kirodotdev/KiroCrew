@@ -834,7 +834,8 @@ class _ChatSlot:
         "_todo",
         "_on_message",
         "_has_reader",
-        "_stop_state",
+        "_stop_state_raw",
+        "_stop_generation",
         "_stop_event_id",
         "_stop_escalated_card_id",
         "_pending_reset_history_key",
@@ -869,6 +870,8 @@ class _ChatSlot:
         "_tool_stall_retries",
         "_transient_5xx_retries",
         "_posttoken_retry_used",
+        "_prestream_exhausted_cycles",
+        "_poisoned_reset_used",
         "_empty_response_retries",
         "_batch_rejected",
         "_compaction_fail_streak",
@@ -964,7 +967,15 @@ class _ChatSlot:
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
         self._has_reader: bool = False  # True when HTTP SSE stream is draining
-        self._stop_state: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
+        self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
+        # Monotonic count of stop INITIATIONS (idle → active edges of
+        # _stop_state). Teardown resets _stop_state back to "idle" but never
+        # touches this, so long-running decision points (the poisoned-
+        # conversation canary probe) can capture it before a wait and detect
+        # a Stop that fired AND resolved during the wait — re-reading
+        # _stop_state alone would miss it (the exact race documented in
+        # chat_handlers._make_stop_resolver).
+        self._stop_generation: int = 0
         self._stop_event_id: str | None = None  # transcript message id for in-flight stop
         # Id of the stop card the user escalated to a hard kill, or None. Kept
         # separate from `_stop_state` because turn teardown resets that back to
@@ -1060,6 +1071,21 @@ class _ChatSlot:
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
         # completed turn alongside _transient_5xx_retries.
         self._posttoken_retry_used: bool = False
+        # Poisoned-conversation escalation (cross-cycle). A cycle that EXHAUSTS
+        # the transient-5xx ladder with ZERO output counts one pre-stream
+        # exhaustion; consecutive exhausted cycles indicate the backend is
+        # deterministically rejecting this session's persisted conversation
+        # (not a momentary blip — a fresh session on the same gateway works).
+        # At the threshold, chat_runner discards the native conversation
+        # (clearing the poisoned resume sid, keeping the session-map entry)
+        # and re-queues once. Streak broken only by a LANDED turn or a
+        # non-matching terminal error.
+        self._prestream_exhausted_cycles: int = 0
+        # One-shot guard for that discard+retry: consumed when a discard is
+        # enqueued, re-armed only by a LANDED turn — so a genuine prolonged
+        # outage gets at most one fresh-conversation attempt, never a
+        # discard loop.
+        self._poisoned_reset_used: bool = False
         self._empty_response_retries: int = 0
         self._batch_rejected: bool = False
         # Per-turn compaction-status failure tracking (Mesh compaction-spam
@@ -1218,6 +1244,20 @@ class _ChatSlot:
     @property
     def _plan_stage_count(self) -> int:
         return len(self._stage_titles)
+
+    @property
+    def _stop_state(self) -> str:
+        return self._stop_state_raw
+
+    @_stop_state.setter
+    def _stop_state(self, value: str) -> None:
+        # Count stop INITIATIONS (idle → active edge) in a monotonic
+        # generation that teardown never rewinds — see __init__ comment.
+        # Escalations (soft_pending → killing) and resets (→ idle) are not
+        # new initiations and do not bump it.
+        if value != "idle" and self._stop_state_raw == "idle":
+            self._stop_generation += 1
+        self._stop_state_raw = value
 
     @property
     def _stopping(self) -> bool:

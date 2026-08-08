@@ -20,10 +20,14 @@ class _FakeSession:
         self._raise = raise_on_prompt
         self.destroyed = False
         self.model = None
+        # Mirrors AcpSessionHandle: "" until a set_model lands, then the
+        # backend-resolved id (the fake resolves to exactly what was asked).
+        self.served_model = ""
         self.rejected: list = []
 
     async def set_model(self, model):
         self.model = model
+        self.served_model = model
 
     async def prompt(self, _prompt):
         if self._raise:
@@ -157,10 +161,12 @@ class _RejectThenSucceedSession:
         self._advertised = advertised
         self._text = success_text
         self.models: list = []
+        self.served_model = ""
         self.destroyed = False
 
     async def set_model(self, model):
         self.models.append(model)
+        self.served_model = model
 
     async def prompt(self, _prompt):
         self._calls += 1
@@ -201,6 +207,78 @@ async def test_reactive_retry_reraises_when_no_usable_fallback():
     sess = _RejectThenSucceedSession("auto", ["auto"])
     with pytest.raises(AcpError):
         await run_bg_oneliner(_FakeSessions(sess), "p", model="auto")
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_strict_model_disables_rejected_model_fallback():
+    """``strict_model=True`` makes the requested model a hard requirement: a
+    mid-prompt rejection propagates instead of retrying on the first
+    advertised model. Callers whose result is only meaningful on that exact
+    model (the poisoned-conversation canary) must never receive a success
+    produced by a different model."""
+    sess = _RejectThenSucceedSession("claude-x", ["gpt-5.6-terra"])
+    with pytest.raises(AcpError):
+        await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x", strict_model=True)
+    # Only the strict model was ever set — no fallback attempt.
+    assert sess.models == ["claude-x"]
+    assert sess.destroyed is True
+
+
+class _SetModelFailsSession(_FakeSession):
+    async def set_model(self, model):
+        raise RuntimeError("override refused")
+
+
+class _SilentInheritSession(_FakeSession):
+    """Mirrors the substitute-style set_model seam: a requested id absent from
+    the advertised set is a silent no-op (resolve_usable_model → "" → inherit
+    the session default) — NO exception, session keeps serving its default."""
+
+    async def set_model(self, model):
+        self.model = model  # request recorded...
+        self.served_model = "some-default-model"  # ...but default still served
+
+
+@pytest.mark.asyncio
+async def test_strict_model_rejects_silent_default_inherit():
+    """``strict_model=True`` verifies the POST-CONDITION, not just that
+    set_model didn't raise: when the seam silently inherits the session
+    default (requested id not advertised), the canary must refuse rather than
+    produce a success on a different model — that success would be fabricated
+    evidence for discarding a healthy conversation."""
+    sess = _SilentInheritSession([
+        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="should never stream"),
+        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+    ])
+    with pytest.raises(RuntimeError, match="serves"):
+        await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x", strict_model=True)
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_strict_model_raises_when_set_model_fails():
+    """``strict_model=True`` + failed set_model override → raise, never run
+    the prompt on the session default model."""
+    sess = _SetModelFailsSession([
+        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="should never stream"),
+        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+    ])
+    with pytest.raises(RuntimeError, match="override refused"):
+        await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x", strict_model=True)
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_lenient_mode_still_degrades_on_set_model_failure():
+    """Default (lenient) behavior is unchanged: a failed override logs and
+    runs on the session default."""
+    sess = _SetModelFailsSession([
+        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="ok"),
+        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+    ])
+    out = await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x")
+    assert out == "ok"
     assert sess.destroyed is True
 
 

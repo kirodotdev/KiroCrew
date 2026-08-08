@@ -157,6 +157,17 @@ class LLMProvider(ABC):
         """Working directory the provider operates in. Default: empty string."""
         return ""
 
+    @property
+    def served_model(self) -> str:
+        """Model id the live session actually resolved to serve.
+
+        Public accessor so callers (e.g. the poisoned-conversation canary in
+        chat_runner) never reach through provider internals. Default: empty
+        string, meaning "unknown" — callers must treat that as inconclusive,
+        never as a wildcard.
+        """
+        return ""
+
     def touch_activity(self) -> None:
         """Refresh provider activity timestamp without I/O. Default no-op."""
         return None

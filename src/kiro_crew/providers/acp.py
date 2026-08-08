@@ -302,6 +302,34 @@ class AcpProvider(LLMProvider):
         return self._client
 
     @property
+    def served_model(self) -> str:
+        """Model id the live session resolved (public — see LLMProvider).
+
+        Only BACKEND-RESOLVED ids count — the canary in chat_runner must
+        never probe a model the backend didn't actually serve. The two client
+        shapes store that differently, so resolve per shape:
+
+        - ``AcpSessionProvider`` (kiro path after startup): its public
+          ``served_model`` delegates to the handle, which prefers the
+          explicit ``set_model`` assignment and falls back to the
+          ``session/new|load`` response's ``currentModelId`` — so a session
+          on the backend-selected DEFAULT model is still readable.
+        - Raw ``AcpClient`` (claude backend / pre-startup): ``_model`` is the
+          REQUESTED id (defaults to the ``"auto"`` sentinel) and is
+          deliberately NOT consulted; only ``_resolved_model_id``, which the
+          backend reported, counts.
+
+        The ``"auto"`` sentinel is filtered to ``""`` (= unknown/inconclusive)
+        on both paths.
+        """
+        client = self._client
+        if isinstance(client, AcpSessionProvider):
+            model = str(client.served_model or "").strip()
+        else:
+            model = str(getattr(client, "_resolved_model_id", "") or "").strip()
+        return "" if model == DEFAULT_MODEL else model
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 

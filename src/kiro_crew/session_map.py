@@ -272,13 +272,24 @@ class SessionMap:
     def clear_sid(self, key: str) -> None:
         """Clear the stored session ID without removing the entry.
 
-        Used on provider switch: the SID is incompatible with the new
-        provider, but we keep the entry so Slack link and CWD persist.
+        Used on provider switch (the SID is incompatible with the new
+        provider) and by the poisoned-conversation discard. The cleared sid
+        is stashed as ``discarded_sid`` so the operation is diagnosable and
+        manually reversible — the native conversation still exists on disk;
+        only the pointer to it is dropped.
         """
         entry = self._data.get(canonical_key(key))
         if entry and entry.get("sid"):
+            entry["discarded_sid"] = entry["sid"]
             entry["sid"] = ""
             self._save()
+
+    def get_discarded_sid(self, key: str) -> str:
+        """Return the last sid dropped by :meth:`clear_sid`, or ''."""
+        entry = self._data.get(canonical_key(key))
+        if not entry:
+            return ""
+        return entry.get("discarded_sid", "")
 
     def delete(self, key: str) -> None:
         """Remove mapping and persist."""

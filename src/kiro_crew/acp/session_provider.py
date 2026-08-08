@@ -517,6 +517,17 @@ class AcpSessionProvider(LLMProvider):
         self._handle._model = value
 
     @property
+    def served_model(self) -> str:
+        """Backend-resolved model id serving this session (``""`` until known).
+
+        Public delegation to :attr:`AcpSessionHandle.served_model` — covers
+        both the explicit ``set_model`` path and the backend-default path
+        (``currentModelId``), unlike ``_model`` which only reflects the
+        former.
+        """
+        return self._handle.served_model
+
+    @property
     def _session_id(self) -> str:
         """Session ID (AcpClient-compatible attribute)."""
         return self._handle.session_id

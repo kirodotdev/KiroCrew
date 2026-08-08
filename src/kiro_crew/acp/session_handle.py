@@ -848,6 +848,19 @@ class AcpSessionHandle:
         return self._model
 
     @property
+    def served_model(self) -> str:
+        """Backend-resolved model id serving this session (``""`` until known).
+
+        Prefers the explicit ``set_model`` assignment (``_model``), falling
+        back to the ``session/new|load`` response's ``currentModelId``
+        (``_resolved_model_id``) so a session running on the backend-selected
+        DEFAULT is still readable — ``_model`` stays ``""`` on that path.
+        Both sources are backend-confirmed; the requested alias is never
+        reported here. May be a profile-form id, which is a valid wire id.
+        """
+        return self._model or self._resolved_model_id
+
+    @property
     def config_options(self) -> list[dict[str, Any]]:
         """ACP-reported configOptions (effort, model, mode selectors)."""
         return self._config_options

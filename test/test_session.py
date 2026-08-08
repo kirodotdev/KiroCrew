@@ -1940,6 +1940,64 @@ class TestDestroy:
         mock_delete.assert_called_once_with("k1")
 
 
+class TestDiscardConversation:
+    """Tests for discard_conversation() — the poisoned-conversation escape.
+
+    Unlike destroy(), the session-map ENTRY must survive: it carries the
+    Slack thread/channel linkage (and feeds the reverse thread→session sync
+    index), so deleting it would silently unlink a mirrored session. Only
+    the resume sid is cleared, forcing the next turn to cold-start a fresh
+    native conversation."""
+
+    @pytest.mark.asyncio
+    async def test_discard_shuts_down_and_clears_only_sid(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        with (
+            patch.object(mgr._session_map, "clear_sid") as mock_clear,
+            patch.object(mgr._session_map, "delete") as mock_delete,
+        ):
+            await mgr.discard_conversation("k1")
+        provider.shutdown.assert_awaited_once()
+        mock_clear.assert_called_once_with("k1")
+        mock_delete.assert_not_called()
+        assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_discard_preserves_slack_linkage(self, cfg):
+        """Regression for the poisoned-conversation escalation: a Slack-linked
+        session that discards its rejected conversation must keep its thread
+        binding, or the recovered answer is not mirrored and later inbound
+        replies fork a new conversation."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.release("k1")
+        mgr._session_map.set("k1", "sid-poisoned")
+        mgr._session_map.set_slack_link("k1", "1234.5678", "C0FFEE")
+        await mgr.discard_conversation("k1")
+        # sid gone → next turn cold-starts instead of session/load-ing the poison
+        assert not mgr._session_map.get("k1")
+        # ...but the Slack linkage survives.
+        assert mgr.get_slack_link("k1") == ("1234.5678", "C0FFEE")
+        # ...and the dropped sid is stashed, so a false-positive discard is
+        # diagnosable and manually reversible (the native conversation still
+        # exists on disk; only the pointer was cleared).
+        assert mgr._session_map.get_discarded_sid("k1") == "sid-poisoned"
+
+    @pytest.mark.asyncio
+    async def test_discard_shutdown_exception_still_clears_sid(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.shutdown = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch.object(mgr._session_map, "clear_sid") as mock_clear:
+            with pytest.raises(RuntimeError, match="boom"):
+                await mgr.discard_conversation("k1")
+        # finally block still runs
+        mock_clear.assert_called_once_with("k1")
+
+
 class TestContextInfo:
     """Tests for context_info() and _resolve_agent_model()."""
 
