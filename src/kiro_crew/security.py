@@ -7354,4 +7354,41 @@ def apply_resource_limits(config: dict | None = None) -> "Callable[[], None]":
         # Bias the OOM killer toward this child (see _bias_child_oom_score).
         _bias_child_oom_score()
 
-    return _set_limits
+    return _set_limi
+DEFAULT_BLOCKED_PATTERNS = [
+    "~/.aws",
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.azure",
+    "~/.gcloud",
+    "~/.docker",
+    "~/.env",
+    ".env",
+]
+
+def normalize_path_for_security(path_input: str) -> str:
+    """
+    Normalizes path separators and converts to lowercase for uniform cross-platform matching.
+    """
+    if not path_input:
+        return ""
+    return str(path_input).replace("\\", "/").lower()
+
+def is_sensitive_path(target_path: str, custom_blocked_patterns: list[str] | None = None) -> bool:
+    """
+    Evaluates whether a target path matches blocked sensitive directories or files.
+    """
+    normalized_target = normalize_path_for_security(target_path)
+    patterns = custom_blocked_patterns or DEFAULT_BLOCKED_PATTERNS
+
+    for pattern in patterns:
+        norm_pattern = normalize_path_for_security(pattern)
+        if norm_pattern.startswith("~/"):
+            search_pattern = norm_pattern[1:]
+        else:
+            search_pattern = norm_pattern
+
+        if search_pattern in normalized_target:
+            return True
+
+    return False
