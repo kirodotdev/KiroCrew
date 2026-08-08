@@ -61,11 +61,11 @@ class TestChannelAttribution:
         for key in ("chat-1-2", "telegram_9", "subagent:a", "_hb", "junk"):
             assert telemetry_channel_of(key) in TELEMETRY_CHANNELS
 
-    def test_telegram_spend_is_not_booked_as_dashboard(self, store):
-        """Both rows carry surface="dashboard" -- only the key can separate them.
+    def test_historical_wrong_surface_telegram_is_not_booked_as_dashboard(self, store):
+        """Both historical rows say dashboard; only the key can separate them.
 
-        Every persist site passes a hardcoded surface, so the chat runner stamps
-        "dashboard" whatever transport the human used.
+        The row schema has no writer marker, so a non-empty surface does not prove
+        that the row came from a corrected write site.
         """
         store([
             _row(slot="chat-1-1700000000", credits=10.0, surface="dashboard"),
@@ -229,6 +229,8 @@ class TestConversations:
         assert json.dumps(d).lower().count("subagent") == 0
 
     def test_an_unrecognised_surface_stays_visible_instead_of_becoming_bg(self, store):
+        # A known, non-empty row surface is deliberately not authoritative: old
+        # rows have no trust marker and can carry the same kind of wrong value.
         # The whole point of deciding `bg` by DENYLIST is that a surface nobody
         # taught the classifier about shows up under its own category, where it
         # can be noticed and fixed. `telemetry_channel_of` answers `other` for a
@@ -239,7 +241,11 @@ class TestConversations:
         store([
             _row(slot="chat-1-1", credits=1.0),
             _row(slot="cron:default:nightly", credits=2.0),
-            _row(slot="some-surface-nobody-taught-us-about", credits=3.0),
+            _row(
+                slot="some-surface-nobody-taught-us-about",
+                credits=3.0,
+                surface="telegram",
+            ),
         ])
         rows = {r["slot"]: r for r in usage_mod.cost_breakdown(7)["conversations"]}
         assert rows["cron:default:nightly"]["category"] == "bg"

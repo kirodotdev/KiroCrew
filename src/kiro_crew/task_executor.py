@@ -18,6 +18,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
+from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -551,7 +552,7 @@ async def execute_task(
                     "",
                     _complete_event,
                     provider=_usage_cfg.agent.provider,
-                    surface="task_runner",
+                    surface=telemetry_channel_of(session_key),
                     agent=read_effective_agent(client) or agent or "",
                     context_used=_used,
                     context_window=_window,
@@ -559,7 +560,7 @@ async def execute_task(
                     model_source=client,
                 )
             except Exception:
-                logger.debug("usage row (task_runner) persist failed", exc_info=True)
+                logger.debug("usage row (taskrunner) persist failed", exc_info=True)
 
         except AcpProcessDied:
             recoveries += 1
@@ -887,7 +888,7 @@ async def self_review(
                 "",
                 provider_last_turn_usage(client),
                 provider=_rv_cfg.agent.provider,
-                surface="task_runner",
+                surface=telemetry_channel_of(review_key),
                 agent=read_effective_agent(client) or agent or "",
                 context_used=_used,
                 context_window=_window,
