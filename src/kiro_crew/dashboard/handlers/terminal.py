@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import heapq
 import json
 import logging
@@ -55,18 +56,104 @@ _ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for relo
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
 
 
-def _redact_terminal(data: bytes | bytearray) -> bytes:
+def new_utf8_decoder() -> codecs.IncrementalDecoder:
+    """A fresh stateful UTF-8 decoder for one PTY output stream.
+
+    A PTY read returns whatever bytes are available, so a multi-byte character
+    is regularly split across two reads. Decoding each read independently turns
+    the halves into two U+FFFD replacement characters, which permanently
+    corrupts any non-ASCII output (CJK, emoji, box-drawing glyphs in a TUI) —
+    the client cannot recover the original bytes. An incremental decoder holds
+    the trailing partial sequence back and completes it on the next read
+    instead, so the corruption never happens. ``errors="replace"`` is kept for
+    genuinely undecodable bytes (a binary file catted into the terminal), which
+    must not raise.
+    """
+    return codecs.getincrementaldecoder("utf-8")("replace")
+
+
+def _redact_terminal(
+    data: bytes | bytearray,
+    decoder: codecs.IncrementalDecoder | None = None,
+) -> bytes:
     """Strip credentials/exfiltration URLs from PTY output before it reaches a
     client. ``kiro_crew.security`` redactors return ``(text, warnings)`` tuples
     (unlike upstream's str-returning ``redaction`` module), so unpack both.
 
     Accepts ``bytearray`` too: the reconnect-replay path passes the
     ``_TerminalSession.scrollback`` ring buffer (a ``bytearray``) directly, and
-    ``.decode()`` behaves identically on both."""
-    text = data.decode("utf-8", errors="replace")
+    both decode paths accept either.
+
+    ``decoder`` is a stateful decoder (see :func:`new_utf8_decoder`); the live
+    read loop MUST pass the session's so a character split across two PTY reads
+    survives, and the reconnect replay passes a FRESH one it then adopts as the
+    session's (see :func:`replay_payload`). Only a genuinely self-contained blob
+    — the selection re-scan — passes none and gets a one-shot decode.
+
+    Redaction itself still works per call, so a credential straddling a read
+    boundary can evade the live scan — that gap is closed at the one place PTY
+    output reaches the model, ``POST /api/terminal/redact``, which re-scans the
+    whole contiguous selection.
+    """
+    if decoder is not None:
+        text = decoder.decode(bytes(data))
+        if not text:
+            # Whole read was a partial character; nothing to emit yet.
+            return b""
+    else:
+        text = bytes(data).decode("utf-8", errors="replace")
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text.encode("utf-8")
+
+
+def flush_decoder(decoder: codecs.IncrementalDecoder) -> bytes:
+    """Redacted rendering of whatever *decoder* still holds once the stream ends.
+
+    The read loop withholds a trailing partial character waiting for the read
+    that completes it. If the shell EXITS instead, that read never comes and the
+    bytes would silently disappear — a program's last line of output vanishing
+    is worse than rendering it imperfectly. ``final=True`` resolves the
+    incomplete sequence to the replacement char under ``errors="replace"``, which
+    is the honest answer: the rest of the character genuinely does not exist.
+    Idempotent — a second call returns empty, so a double flush is harmless.
+    """
+    text = decoder.decode(b"", final=True)
+    if not text:
+        return b""
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text.encode("utf-8")
+
+
+def replay_payload(sess: "_TerminalSession", redact: bool) -> bytes:
+    """Bytes to send a client that has just reconnected, and the decoder state to
+    continue the live stream from.
+
+    The scrollback ring buffer holds the RAW stream, so its tail is exactly the
+    partial character the session's decoder is mid-way through. A one-shot decode
+    of the buffer would desynchronize the two: the replay renders that tail as
+    U+FFFD *and* the live decoder later completes the real character, so the
+    client sees both.
+
+    So the redacting path decodes the buffer with a FRESH decoder and adopts it
+    as the session's: it ends holding the same pending bytes at the same position
+    (truncation only ever cuts the front of the buffer), so nothing is emitted
+    twice and the character is completed by the next read. The raw path replays
+    verbatim and resets — in raw mode the decoder is never fed, so the reset only
+    asserts that, and the replay already carried every byte.
+
+    A leading replacement char is still possible and correct: a truncated buffer
+    can begin mid-character, and that byte's lead is genuinely gone.
+    """
+    replay = bytes(sess.scrollback)
+    if not redact:
+        sess.decoder.reset()
+        return replay
+    fresh = new_utf8_decoder()
+    payload = _redact_terminal(replay, fresh)
+    sess.decoder = fresh
+    return payload
 
 
 def _sel():
@@ -126,6 +213,18 @@ class _TerminalSession:
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Stateful UTF-8 decoder for the redaction path, carried ACROSS reads so a
+    # character split by a PTY read boundary is completed rather than replaced
+    # (see new_utf8_decoder). Per session, because it holds stream state.
+    decoder: codecs.IncrementalDecoder = field(default_factory=new_utf8_decoder)
+    # Whether this session's output is redacted, resolved ONCE when the PTY is
+    # created and never re-read. Latching is what makes the decoder safe: the
+    # two modes disagree about who holds a partial character (redacting buffers
+    # bytes the client has not seen; raw has already sent bytes the decoder must
+    # not re-emit), so a switch mid-character corrupts the stream in whichever
+    # direction it happens. Cost: re-enabling redaction in config applies to NEW
+    # terminal sessions, not ones already open — documented in dashboard.md.
+    redact_output: bool = True
 
 
 def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
@@ -156,6 +255,65 @@ def _is_enabled(request: web.Request) -> bool:
 
 
 _enabled_cache: list = [True, 0.0]  # [value, timestamp]
+
+
+async def _redacts_output(request: web.Request) -> bool:
+    """Whether live PTY output is redacted on its way to the client. Default on;
+    opt out via config.json:
+    {"dashboard": {"terminal": {"redact_output": false}}}
+
+    This governs only what the HUMAN sees in their own interactive shell, where
+    the redactors cost real correctness: they hide a token the user deliberately
+    printed (``gh auth token``), swallow a whole device-code login or presigned
+    URL the user is mid-flow on, and mis-fire on high-entropy build output
+    (an npm ``integrity sha512-…`` line). None of that protects the agent
+    boundary — the scrollback buffer is replayed only to the browser, so the one
+    path from PTY output into the model is the selection hand-off, and
+    ``POST /api/terminal/redact`` re-scans that unconditionally, more accurately
+    (whole contiguous selection, no read-boundary gap). Turning this off
+    therefore narrows nothing the model can reach.
+
+    Read ONCE per session, when the PTY is created, and latched onto
+    ``_TerminalSession.redact_output``. Latching is a correctness requirement,
+    not a shortcut: the two modes disagree about who is holding a partial
+    character — redacting withholds bytes the client has not seen, raw has
+    already sent bytes the decoder must not re-emit — so flipping mid-character
+    corrupts the stream in either direction. The cost is that re-enabling
+    redaction in config applies to NEW terminal sessions rather than ones already
+    open; the operator closes and reopens the tab. (Cached for 30s like
+    ``_is_enabled`` so a burst of session creations shares one read.)
+
+    Reachability, since this reads as a switch that turns a credential scan off:
+    it is operator-only by construction. ``config.json`` is in
+    ``security._WRITE_PROTECTED_HOME_PATHS``, so the agent's file-edit tools
+    cannot flip it — only the out-of-band dashboard config API / CLI can, neither
+    of which the model drives. And even flipped it exposes nothing to a model:
+    PTY output reaches one only through the selection hand-off, which this key
+    does not touch.
+
+    Cache-hit is a pure memory read, but a MISS reads config.json, and session
+    creation runs on the gateway event loop. A synchronous ``read_text()`` there
+    would stall every other loop task while the filesystem answers, which on a
+    network-backed data home is not bounded. So the refresh is offloaded to
+    ``discovery_executor`` (not the ``subprocess_executor`` shared with PTY
+    teardown's ``os.close``, which can itself wedge in the kernel). Hence async:
+    there is deliberately no sync variant, so no call site can reintroduce the
+    blocking read.
+    """
+    now = time.monotonic()
+    if now - _redact_cache[1] < 30:
+        return _redact_cache[0]
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        discovery_executor(),
+        lambda: bool(_get_config(request).get("redact_output", True)),
+    )
+    _redact_cache[0] = result
+    _redact_cache[1] = time.monotonic()
+    return result
+
+
+_redact_cache: list = [True, 0.0]  # [value, timestamp]
 
 
 def _resolve_cwd(cfg: dict, requested: str | None) -> str:
@@ -444,6 +602,16 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         )
         return web.Response(status=400, text="Invalid session_id")
 
+    # Resolve the latched redaction mode HERE, before the registry is read. It is
+    # the only await between entering this handler and reserving the session
+    # slot, and both of those windows must stay await-free: the registry check
+    # and the placeholder assignment together are the reservation, so a
+    # suspension point inside them lets two concurrent opens for one session id
+    # both pass the check and both spawn a PTY, leaking one untracked. Resolving
+    # unconditionally costs a cached read on reconnects, which is the right trade
+    # against that. (`test_session_reservation_has_no_await` pins it.)
+    redact_output = await _redacts_output(request)
+
     registry = _get_registry(request)
     cfg = _get_config(request)
     max_sessions = cfg.get("max_sessions", _MAX_SESSIONS)
@@ -485,7 +653,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # Replay scrollback BEFORE assigning ws to prevent read_pty from
         # forwarding live data before replay completes.
         if existing.scrollback:
-            await ws.send_bytes(_redact_terminal(existing.scrollback))
+            payload = replay_payload(existing, existing.redact_output)
+            if payload:
+                await ws.send_bytes(payload)
         existing.ws = ws
         existing.last_ws_disconnect = None
         # A fresh client starts with empty title/cwd state; clear the dedup
@@ -529,6 +699,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             return ws
         sess = _TerminalSession(
             session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws,  # wokeignore:rule=master
+            redact_output=redact_output,
         )
         registry[session_id] = sess
         _sel().log_api_access(
@@ -610,6 +781,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             master_fd=master_fd,
             proc=proc,
             ws=ws,
+            redact_output=redact_output,
         )
         registry[session_id] = sess
         _sel().log_api_access(
@@ -635,11 +807,46 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 sess.scrollback.extend(data)
                 if len(sess.scrollback) > _SCROLLBACK_MAX:
                     sess.scrollback = sess.scrollback[-_SCROLLBACK_MAX:]
-                if sess.ws and not sess.ws.closed:
+                # Capture the socket into a local and re-check it after the lock
+                # await: `sess.ws` is set to None by the WS handler on
+                # disconnect, so touching it after a suspension point can raise
+                # AttributeError, which `except OSError` does NOT catch — that
+                # would kill this task and stop PTY draining and scrollback
+                # capture for a session the client may yet reconnect to. Same
+                # capture-and-revalidate rule the title poller already follows.
+                live = sess.ws
+                if live is not None and not live.closed:
+                    # Raw passthrough when redaction is off for this session: no
+                    # decode at all, so the bytes the shell wrote are the bytes
+                    # the client renders (xterm.js does its own incremental
+                    # decoding). The mode is latched per session, so the decoder
+                    # is fed in exactly one of the two modes and never has to
+                    # reconcile a mid-character switch.
+                    if sess.redact_output:
+                        payload = _redact_terminal(data, sess.decoder)
+                        if not payload:
+                            continue  # held-back partial character
+                    else:
+                        payload = data
                     async with sess.send_lock:
-                        await sess.ws.send_bytes(_redact_terminal(data))
+                        if sess.ws is not live or live.closed:
+                            continue  # client went away while we waited
+                        await live.send_bytes(payload)
         except OSError:
             pass
+        finally:
+            # The shell can exit mid-character. Those bytes were withheld
+            # waiting for a continuation read that will never arrive, so without
+            # this flush the process's final output silently disappears.
+            try:
+                tail = flush_decoder(sess.decoder)
+                live = sess.ws
+                if tail and live is not None and not live.closed:
+                    async with sess.send_lock:
+                        if sess.ws is live and not live.closed:
+                            await live.send_bytes(tail)
+            except (OSError, RuntimeError, ConnectionError):
+                pass  # teardown racing the flush is not worth failing over
 
     if sess.reader_task is None or sess.reader_task.done():
         sess.reader_task = asyncio.ensure_future(read_pty())

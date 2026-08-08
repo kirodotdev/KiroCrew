@@ -164,6 +164,25 @@ value when the backend has reported one, else the terminal's spawn directory
 — and wrapped in a code fence so the agent reads it as literal output. Copy
 places the raw selection on the clipboard.
 
+**Credential redaction, and how to turn it off.** By default the live PTY
+stream is scanned on its way to your browser and credentials plus
+suspicious-looking URLs are replaced with `[REDACTED: …]`. In your own
+interactive shell that is often wrong: it hides a token you printed on
+purpose (`gh auth token`), swallows a whole device-code login or presigned
+S3 URL you are in the middle of using, and occasionally mis-fires on
+high-entropy build output such as an npm `integrity sha512-…` line. Opt out
+in `config.json`:
+
+```json
+{"dashboard": {"terminal": {"redact_output": false}}}
+```
+
+This changes only what *you* see. The selection hand-off above — the one path
+by which terminal output reaches the agent — is re-scanned server-side either
+way, so turning this off does not widen what the model can read. The setting is
+resolved when a terminal session starts, so changing it applies to terminals you
+open afterwards; close and reopen an existing tab to pick up the new value.
+
 ## Dark/Light Theme
 
 Toggle via the theme button in the topbar. Persists across sessions.

@@ -2035,7 +2035,11 @@ class DashboardConfig:
         default_factory=lambda: {"enabled": True},
         metadata=_meta(
             "Terminal",
-            "Terminal panel configuration. Set enabled=false to hide the CLI panel in the dashboard.",
+            "Terminal panel configuration. Set enabled=false to hide the CLI panel in the "
+            "dashboard. Set redact_output=false to stop redacting credentials and "
+            "suspicious URLs in the live PTY stream — this is the operator's own "
+            "interactive shell, where redaction hides a token they printed on purpose; "
+            "the selection hand-off into chat is re-scanned either way.",
         ),
     )
     default_project: str = field(

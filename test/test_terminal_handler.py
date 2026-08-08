@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import pathlib
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1761,6 +1762,10 @@ class TestScrollbackRedaction:
         assert isinstance(out, bytes)
         assert b"ok" in out
 
+    def test_redact_terminal_accepts_bytearray(self):
+        # The reconnect-replay path hands the ring buffer over directly.
+        assert terminal._redact_terminal(bytearray(b"$ ls\n")) == b"$ ls\n"
+
     def test_scrollback_default_is_empty_bytearray(self):
         sess = _make_session()
         assert sess.scrollback == bytearray()
@@ -1812,6 +1817,306 @@ class TestScrollbackRedaction:
             if len(sess.scrollback) > terminal._SCROLLBACK_MAX:
                 sess.scrollback = sess.scrollback[-terminal._SCROLLBACK_MAX:]
         assert len(sess.scrollback) == terminal._SCROLLBACK_MAX
+
+
+# ── incremental UTF-8 decoding + redact_output toggle ──
+
+
+class TestIncrementalDecoding:
+    """A PTY read ends wherever the kernel had bytes, so a multi-byte character
+    is regularly split across two reads. Decoding each read on its own turns the
+    halves into U+FFFD and permanently corrupts non-ASCII output (CJK, emoji, a
+    TUI's box-drawing glyphs); the session's incremental decoder must carry the
+    partial sequence across the boundary instead."""
+
+    _REPLACEMENT = "\ufffd".encode()
+
+    def test_per_chunk_decode_corrupts_a_split_character(self):
+        """Falsifies the fix below: without a decoder the split IS corrupted, so
+        the passing assertion there is measuring the decoder, not a no-op."""
+        whole = "构建成功".encode()
+        first, second = whole[:5], whole[5:]  # 3-byte chars → byte 5 is mid-char
+        joined = terminal._redact_terminal(first) + terminal._redact_terminal(second)
+        assert self._REPLACEMENT in joined
+        assert joined != whole
+
+    def test_incremental_decoder_preserves_a_split_character(self):
+        whole = "构建成功".encode()
+        first, second = whole[:5], whole[5:]
+        dec = terminal.new_utf8_decoder()
+        joined = (
+            terminal._redact_terminal(first, dec)
+            + terminal._redact_terminal(second, dec)
+        )
+        assert self._REPLACEMENT not in joined
+        assert joined == whole
+
+    def test_chunk_that_is_only_a_partial_character_emits_nothing(self):
+        # The read loop must be able to skip the send instead of pushing an
+        # empty frame; those bytes ride out with the next chunk.
+        dec = terminal.new_utf8_decoder()
+        assert terminal._redact_terminal("中".encode()[:2], dec) == b""
+
+    def test_undecodable_bytes_still_do_not_raise_through_a_decoder(self):
+        dec = terminal.new_utf8_decoder()
+        out = terminal._redact_terminal(b"\xff\xfeok", dec)
+        assert isinstance(out, bytes)
+        assert b"ok" in out
+
+    def test_each_session_gets_its_own_decoder(self):
+        a, b = _make_session(), _make_session()
+        assert a.decoder is not b.decoder
+        assert a.decoder.getstate()[0] == b""
+
+    def test_stream_ending_mid_character_still_emits_that_output(self):
+        """A shell that exits mid-character leaves bytes buffered. The read loop
+        withheld them waiting for a read that never comes, so the final flush is
+        what keeps a program's last output from vanishing."""
+        dec = terminal.new_utf8_decoder()
+        assert terminal._redact_terminal("ok 中".encode()[:5], dec) == b"ok "
+        tail = terminal.flush_decoder(dec)
+        assert tail == "\ufffd".encode()  # honest: the rest of the char is gone
+        assert terminal.flush_decoder(dec) == b""  # idempotent
+
+    def test_final_flush_still_redacts(self):
+        # The flush emits OUTPUT, so it must not be a hole in the scan.
+        dec = terminal.new_utf8_decoder()
+        terminal._redact_terminal(b"key=AKIAIOSFODNN7EXAMPL", dec)
+        # Nothing pending (all ASCII), so the flush is empty rather than a leak.
+        assert terminal.flush_decoder(dec) == b""
+
+    def test_nothing_pending_flushes_to_nothing(self):
+        assert terminal.flush_decoder(terminal.new_utf8_decoder()) == b""
+
+
+class TestRedactOutputToggle:
+    """``dashboard.terminal.redact_output`` — opt out of redacting the operator's
+    OWN interactive shell, where the redactors hide a token printed on purpose
+    (``gh auth token``) and swallow a device-code or presigned URL mid-flow. It
+    governs the live stream only; the selection hand-off into chat — the one path
+    from PTY output into the model — stays redacted unconditionally."""
+
+    def _request(self, cfg, tmp_path, monkeypatch):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": cfg}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_redact_cache", [True, 0.0])
+        return _make_request()
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_on_when_key_absent(self, tmp_path, monkeypatch):
+        req = self._request({"enabled": True}, tmp_path, monkeypatch)
+        assert await terminal._redacts_output(req) is True
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_on_when_config_unreadable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(terminal, "config_path", lambda: tmp_path / "missing.json")
+        monkeypatch.setattr(terminal, "_redact_cache", [True, 0.0])
+        assert await terminal._redacts_output(_make_request()) is True
+
+    @pytest.mark.asyncio
+    async def test_opt_out_is_honored(self, tmp_path, monkeypatch):
+        req = self._request({"redact_output": False}, tmp_path, monkeypatch)
+        assert await terminal._redacts_output(req) is False
+
+    @pytest.mark.asyncio
+    async def test_non_bool_truthy_value_does_not_disable(self, tmp_path, monkeypatch):
+        # bool("false") is True — a string must not read as an opt-out.
+        req = self._request({"redact_output": "false"}, tmp_path, monkeypatch)
+        assert await terminal._redacts_output(req) is True
+
+    @pytest.mark.asyncio
+    async def test_value_is_cached(self, tmp_path, monkeypatch):
+        req = self._request({"redact_output": False}, tmp_path, monkeypatch)
+        assert await terminal._redacts_output(req) is False
+        # Rewrite the file; the cached answer must survive the 30s window.
+        (tmp_path / "config.json").write_text(
+            json.dumps({"dashboard": {"terminal": {"redact_output": True}}})
+        )
+        assert await terminal._redacts_output(req) is False
+
+    @pytest.mark.asyncio
+    async def test_config_refresh_never_reads_on_the_event_loop(self, tmp_path, monkeypatch):
+        """The PTY read loop calls this per chunk, on the gateway event loop. A
+        cache MISS reads config.json, so that read must be offloaded — a
+        synchronous read_text() here stalls every other loop task, unbounded on a
+        network-backed data home."""
+        req = self._request({"redact_output": False}, tmp_path, monkeypatch)
+        loop = asyncio.get_running_loop()
+        offloaded: list[object] = []
+        real = loop.run_in_executor
+
+        def spy(executor, func, *args):
+            offloaded.append(executor)
+            return real(executor, func, *args)
+
+        monkeypatch.setattr(loop, "run_in_executor", spy)
+        assert await terminal._redacts_output(req) is False
+        assert offloaded, "cache miss read config on the event loop"
+        # Not subprocess_executor: its workers are shared with PTY teardown's
+        # os.close, which can wedge in the kernel.
+        assert offloaded[0] is terminal.discovery_executor()
+        # A cache HIT must not pay an executor hop at all.
+        offloaded.clear()
+        assert await terminal._redacts_output(req) is False
+        assert offloaded == []
+
+    @pytest.mark.asyncio
+    async def test_selection_handoff_ignores_the_toggle(self, tmp_path, monkeypatch):
+        """The opt-out must not widen what the agent can read: the chat hand-off
+        is the only PTY-output-to-model path and stays redacted."""
+        req = self._request({"redact_output": False}, tmp_path, monkeypatch)
+        req.json = AsyncMock(return_value={"text": "key=AKIAIOSFODNN7EXAMPLE"})
+        with patch.object(terminal, "_is_enabled", return_value=True), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_redact(req)
+        assert resp.status == 200
+        assert "AKIAIOSFODNN7EXAMPLE" not in resp.text
+
+    def test_session_reservation_has_no_await(self):
+        """Source guard for the reservation critical section.
+
+        The handler states its own invariant with the comment "Reserve slot
+        synchronously before any await to prevent race condition"; from there
+        through ``registry[session_id] = None`` the max-sessions check and the
+        placeholder assignment are only atomic while nothing suspends between
+        them. An await in there lets two concurrent opens for one session id both
+        pass the check and both spawn a PTY, leaking one untracked. This bit me
+        twice — first with the await inside the constructor call (a disconnect
+        racing setup hit ``None.winpty``), then with it between the check and the
+        reserve — so the region is pinned rather than trusted to review.
+
+        Deliberately starts at that comment, not at ``registry.get``: the
+        stale-entry cleanup above it awaits ``_kill_session`` and is pre-existing,
+        which is exactly why the authors drew the line where they did."""
+        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        start = src.index("    # Reserve slot synchronously before any await")
+        end = src.index("        registry[session_id] = None", start)
+        # Strip comments first: the anchor comment itself says the word "await",
+        # so a bare substring check matches the prose and never the code.
+        region = "\n".join(
+            line for line in src[start:end].splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "await" not in region, f"await in the reservation region:\n{region}"
+        # And the one await that resolves the latched mode must sit BEFORE it.
+        assert src.index("redact_output = await _redacts_output(request)") < start
+
+    def test_no_send_through_the_session_field_after_an_await(self):
+        """Source guard. ``sess.ws`` is set to None by the WS handler on
+        disconnect, so dereferencing it after a suspension point raises
+        AttributeError — which ``except OSError`` does NOT catch, killing the PTY
+        reader and stopping scrollback capture for a session the client may still
+        reconnect to. Every send must go through a captured local that was
+        revalidated after the await, so the pattern `sess.ws.send` must not exist
+        anywhere in this module."""
+        src = pathlib.Path(terminal.__file__).read_text(encoding="utf-8")
+        assert "sess.ws.send" not in src
+        # And the two sends the read loop owns must revalidate the capture.
+        assert src.count("if sess.ws is not live or live.closed:") == 1
+        assert src.count("if sess.ws is live and not live.closed:") == 1
+
+    def test_session_latches_the_mode_and_defaults_on(self):
+        """The mode is a per-session field, not consulted per chunk: the two modes
+        disagree about who holds a partial character, so a mid-character switch
+        would corrupt the stream in whichever direction it happened."""
+        assert _make_session().redact_output is True
+        assert terminal._TerminalSession(
+            session_id="s", master_fd=-1, redact_output=False,  # wokeignore:rule=master
+        ).redact_output is False
+
+    @pytest.mark.asyncio
+    async def test_read_loop_reads_the_latched_field_not_the_config(
+        self, monkeypatch, tmp_path
+    ):
+        """A per-chunk config read would (a) put a filesystem read on the event
+        loop at PTY-read rate and (b) reintroduce the mid-character switch. So the
+        read loop must never call the accessor — the session field is the only
+        source once the PTY exists."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        calls: list[int] = []
+        real = terminal._redacts_output
+
+        async def counting(request):
+            calls.append(1)
+            return await real(request)
+
+        monkeypatch.setattr(terminal, "_redacts_output", counting)
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(app)) as client:
+            async with client.ws_connect("/api/ws/terminal/latch-sess") as ws:
+                await ws.send_bytes(b"printf 'a\\nb\\nc\\n'\n")
+                for _ in range(6):
+                    msg = await ws.receive(timeout=5)
+                    if msg.type == web.WSMsgType.BINARY and b"a" in msg.data:
+                        break
+                await ws.close()
+            # Exactly one resolution, at session creation — not one per chunk.
+            assert calls == [1], f"accessor called {len(calls)}x; must be once"
+            await terminal._kill_session(registry["latch-sess"])
+
+
+class TestReconnectReplayDecoderSync:
+    """The scrollback ring buffer holds the RAW stream, so its tail is exactly the
+    partial character the session's decoder is mid-way through. A one-shot decode
+    desynchronizes the two: the replay renders that tail as a replacement char
+    AND the live decoder later completes the real character, so the client sees
+    both."""
+
+    _REPLACEMENT = "\ufffd".encode()
+    _WHOLE = "构建成功".encode()  # 4 chars * 3 bytes
+    _COMPLETE = _WHOLE[:9]  # 构建成
+    _PENDING = _WHOLE[9:11]  # first 2 bytes of 功
+    _CONTINUATION = _WHOLE[11:]  # its last byte
+
+    def _mid_character_session(self):
+        """A session whose decoder holds the lead bytes of a character, with those
+        same bytes at the tail of the scrollback — the state a disconnect
+        mid-character leaves behind."""
+        sess = _make_session()
+        for chunk in (self._COMPLETE, self._PENDING):
+            sess.scrollback.extend(chunk)
+            terminal._redact_terminal(chunk, sess.decoder)
+        assert sess.decoder.getstate()[0] == self._PENDING  # precondition
+        return sess
+
+    def test_redacting_replay_does_not_double_the_boundary_character(self):
+        sess = self._mid_character_session()
+        payload = terminal.replay_payload(sess, redact=True)
+        # The replay stops short of the partial character rather than rendering
+        # it as U+FFFD, and the adopted decoder completes it on the next read —
+        # so the character crosses the seam exactly once.
+        assert self._REPLACEMENT not in payload
+        assert payload == self._COMPLETE
+        after = terminal._redact_terminal(self._CONTINUATION, sess.decoder)
+        assert payload + after == self._WHOLE
+
+    def test_raw_replay_is_byte_exact_and_does_not_duplicate(self):
+        sess = self._mid_character_session()
+        payload = terminal.replay_payload(sess, redact=False)
+        assert payload == self._COMPLETE + self._PENDING  # verbatim
+        # In raw mode the decoder is never fed, so the reset only asserts that.
+        assert sess.decoder.getstate()[0] == b""
+        assert payload + self._CONTINUATION == self._WHOLE
+
+    def test_truncated_buffer_starting_mid_character_still_replays(self):
+        # A ring buffer trimmed to _SCROLLBACK_MAX can begin mid-character. That
+        # lead byte is genuinely gone, so a leading replacement char is correct
+        # rather than something to suppress.
+        sess = _make_session()
+        sess.scrollback.extend("构建".encode()[1:])
+        payload = terminal.replay_payload(sess, redact=True)
+        assert self._REPLACEMENT in payload
+        assert "建".encode() in payload
 
 
 # ── reap_orphaned_terminals ──
@@ -2043,6 +2348,52 @@ class TestTerminalWsIntegration:
                 await ws.close()
 
             await terminal._kill_session(registry["io-sess"])
+
+    @pytest.mark.asyncio
+    async def test_read_loop_honors_redact_output(self, monkeypatch, tmp_path):
+        """End-to-end through the real PTY read loop: with the default config an
+        AKIA key echoed by the shell is replaced before it reaches the client,
+        and with ``redact_output: false`` the same key arrives verbatim. Drives
+        the shipped loop rather than re-deriving its branch, so a regression in
+        the wiring (not just in the predicate) fails here."""
+        key = "AKIAIOSFODNN7EXAMPLE"
+
+        async def _collect(session_id, cfg):
+            cfg_file = tmp_path / f"config-{session_id}.json"
+            cfg_file.write_text(json.dumps({"dashboard": {"terminal": cfg}}))
+            monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+            monkeypatch.setattr(terminal, "_redact_cache", [True, 0.0])
+            monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
+            monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+            registry: dict = {}
+            app = _make_app(registry=registry)
+
+            from aiohttp.test_utils import TestClient, TestServer
+
+            seen = b""
+            async with TestClient(TestServer(app)) as client:
+                async with client.ws_connect(f"/api/ws/terminal/{session_id}") as ws:
+                    await ws.send_bytes(f"printf '{key}\\n'\n".encode())
+                    # The shell echoes the typed line first, then its output, so
+                    # keep reading until the marker resolves either way.
+                    for _ in range(40):
+                        msg = await ws.receive(timeout=5)
+                        if msg.type != web.WSMsgType.BINARY:
+                            continue
+                        seen += msg.data
+                        if key.encode() in seen or b"REDACTED" in seen:
+                            break
+                    await ws.close()
+                await terminal._kill_session(registry[session_id])
+            return seen
+
+        redacted = await _collect("redact-on", {"enabled": True})
+        assert b"REDACTED" in redacted
+        assert key.encode() not in redacted
+
+        raw = await _collect("redact-off", {"enabled": True, "redact_output": False})
+        assert key.encode() in raw
+        assert b"REDACTED" not in raw
 
     @pytest.mark.asyncio
     async def test_submitted_line_invalidates_the_cwd_memo(self, monkeypatch, tmp_path):
