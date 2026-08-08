@@ -119,6 +119,119 @@ describe('MarkdownPanel OverflowMenu', () => {
   })
 })
 
+/**
+ * The ⋯ menu's full inventory, asserted as an ORDERED list.
+ *
+ * Why a whole-inventory assertion rather than one `getByText` per entry: PR
+ * #1083 deleted two entries from this menu and the suite stayed green, because
+ * no test named them. Per-entry tests only protect the entries someone thought
+ * to name — the two that went missing were, by definition, not among them.
+ *
+ * This locks the list instead of its members. A deletion fails; so does an
+ * addition or a reorder, which is deliberate: the failure asks the author to
+ * state the new inventory here, and that edit is the record that the change
+ * was intended. Whoever wrote #1083 would have had to make it.
+ *
+ * The three cases below are the conditional matrix, not three flavours of the
+ * same render — every optional entry in the menu is gated on a prop or on
+ * fetched state, so a single render can only ever see a subset.
+ */
+describe('OverflowMenu inventory (regression guard for #1083)', () => {
+  /** Menu items in DOM order — the roving-focus order `useListboxKeyboard` walks. */
+  const itemsInOrder = () =>
+    Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"]'))
+      .map(el => (el.textContent || '').trim())
+
+  /** The knowledge hook's own contract: `enabled` + `supported_formats`. */
+  function stubKnowledge({ enabled, alreadyAdded }: { enabled: boolean; alreadyAdded: boolean }) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).startsWith('/api/knowledge/config')) {
+        return { ok: true, json: async () => ({ enabled, supported_formats: ['.md', '.txt'] }) }
+      }
+      if (String(url).startsWith('/api/knowledge/sources')) {
+        return { ok: true, json: async () => (alreadyAdded ? [{ id: 1 }] : []) }
+      }
+      return { ok: false, json: async () => ({}) }
+    }))
+  }
+
+  it('renders exactly six entries with no optional props and no library match', async () => {
+    stubKnowledge({ enabled: false, alreadyAdded: false })
+    render(<OverflowMenu filePath="/tmp/hello.bin" content="x" />, { wrapper })
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+    await waitFor(() => expect(screen.getByText('Add to artifacts')).toBeInTheDocument())
+    expect(itemsInOrder()).toEqual([
+      'Add to artifacts',
+      'Open with default app',
+      'Show in file manager',
+      'Copy path',
+      'Copy content',
+      'Download',
+    ])
+  })
+
+  it('renders every entry when all props are supplied and the file is a known artifact', async () => {
+    stubKnowledge({ enabled: true, alreadyAdded: false })
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [{ slug: 'notes-md', name: 'notes.md' }] })
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue({ live_dirty: false, pinned: false })
+    render(
+      <OverflowMenu
+        filePath="/tmp/notes.md"
+        content="x"
+        onRefresh={vi.fn()}
+        onFullscreen={vi.fn()}
+        onSnapshot={vi.fn()}
+      />,
+      { wrapper },
+    )
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+    await waitFor(() => expect(screen.getByText('Snapshot version')).toBeInTheDocument())
+    expect(itemsInOrder()).toEqual([
+      'Refresh',
+      'Full screen',
+      'In Artifacts',
+      'Snapshot version',
+      'Add to Knowledge',
+      'Open with default app',
+      'Show in file manager',
+      'Copy path',
+      'Copy content',
+      'Download',
+    ])
+  })
+
+  it('swaps Full screen for Exit full screen without changing the rest of the list', async () => {
+    stubKnowledge({ enabled: false, alreadyAdded: false })
+    render(
+      <OverflowMenu filePath="/tmp/hello.bin" content="x" onFullscreen={vi.fn()} fullscreen />,
+      { wrapper },
+    )
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+    await waitFor(() => expect(screen.getByText('Exit full screen')).toBeInTheDocument())
+    expect(itemsInOrder()).toEqual([
+      'Exit full screen',
+      'Add to artifacts',
+      'Open with default app',
+      'Show in file manager',
+      'Copy path',
+      'Copy content',
+      'Download',
+    ])
+    expect(screen.queryByText('Full screen')).not.toBeInTheDocument()
+  })
+
+  it('renders the already-in-library row as a non-actionable status, not a menu item', async () => {
+    stubKnowledge({ enabled: true, alreadyAdded: true })
+    render(<OverflowMenu filePath="/tmp/notes.md" content="x" />, { wrapper })
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+    await waitFor(() => expect(screen.getByText('In Library')).toBeInTheDocument())
+    // It is a <span>: nothing happens when it is activated, so exposing it to
+    // roving focus as a menuitem would be a dead stop on the keyboard path.
+    expect(itemsInOrder()).not.toContain('In Library')
+    expect(screen.queryByText('Add to Knowledge')).not.toBeInTheDocument()
+  })
+})
+
 describe('breadcrumbSegments', () => {
   it('shows the last three segments with the file last and non-navigable', () => {
     const crumbs = breadcrumbSegments('/home/user/project/src/app.ts')
