@@ -5,7 +5,13 @@ const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
-const { postShutdown, stopGatewayGracefully, forceStopPort, classifyPortOwner, KIROCREW_PROC_RE } = require("../gateway-stop");
+const {
+  postShutdown,
+  stopGatewayGracefully,
+  forceStopPort,
+  classifyPortOwner,
+  isKirocrewCommand,
+} = require("../gateway-stop");
 
 // Helper: temp KIROCREW_HOME containing a .local_secret file.
 function tmpHomeWithSecret(secret) {
@@ -245,6 +251,59 @@ test("forceStopPort: freed reflects real port state even after killing our targe
   assert.strictEqual(r.freed, false); // but the port is still held by 777
 });
 
+test("forceStopPort: awaits an asynchronous Windows kill before verifying", async () => {
+  let killFinished = false;
+  let probes = 0;
+  const r = await forceStopPort(7788, {
+    getListenPids: async () => {
+      probes += 1;
+      if (probes === 1) return [4242];
+      assert.strictEqual(killFinished, true, "verification raced taskkill completion");
+      return [];
+    },
+    getCommand: async () => "C:\\bundle\\kirocrew.exe gateway",
+    kill: async () => { killFinished = true; },
+    sleep: async () => {},
+    isKirocrew: (command) => command.includes("kirocrew.exe"),
+  });
+  assert.strictEqual(r.killed, 1);
+  assert.strictEqual(r.freed, true);
+});
+
+test("forceStopPort: a failed initial Windows probe is not a free port", async () => {
+  const probeError = new Error("netstat timed out");
+  const r = await forceStopPort(7788, {
+    getListenPids: async () => { throw probeError; },
+    getCommand: async () => "",
+    kill: async () => {},
+    sleep: async () => {},
+    failClosedOnProbeError: true,
+  });
+  assert.deepStrictEqual(r, {
+    killed: 0, freed: false, survivors: [], foreignHolder: false,
+    serviceHolder: false, probeFailed: true,
+  });
+});
+
+test("forceStopPort: a failed Windows verification never claims recovery", async () => {
+  let probes = 0;
+  const r = await forceStopPort(7788, {
+    getListenPids: async () => {
+      if (probes++ === 0) return [4242];
+      throw new Error("netstat verify timed out");
+    },
+    getCommand: async () => "C:\\bundle\\kirocrew.exe gateway",
+    kill: async () => {},
+    sleep: async () => {},
+    isKirocrew: (command) => command.includes("kirocrew.exe"),
+    failClosedOnProbeError: true,
+  });
+  assert.deepStrictEqual(r, {
+    killed: 1, freed: false, survivors: [], foreignHolder: false,
+    serviceHolder: false, probeFailed: true,
+  });
+});
+
 // ── classifyPortOwner ───────────────────────────────────────────────────────
 // Ground truth for "is the thing on our port local, or a tunnel?". Every
 // outcome except a positively identified local KiroCrew process must be
@@ -371,16 +430,32 @@ test("classifyPortOwner: ours wins when a mixed set holds the port", async () =>
 
 test("classifyPortOwner and forceStopPort share one KiroCrew matcher", async () => {
   // Drift between the two would let one mis-target a stranger's process.
-  assert.ok(KIROCREW_PROC_RE.test("python -m kiro_crew gateway"));
-  assert.ok(KIROCREW_PROC_RE.test("/Applications/KiroCrew.app/.../kirocrew"));
-  assert.ok(!KIROCREW_PROC_RE.test("ssh -NL 5476:localhost:5476 host"));
+  assert.ok(isKirocrewCommand("python -m kiro_crew gateway"));
+  assert.ok(isKirocrewCommand("/Applications/KiroCrew.app/.../kirocrew"));
+  assert.ok(!isKirocrewCommand("ssh -NL 5476:localhost:5476 host"));
+  assert.ok(!isKirocrewCommand("ssh -NL 5476:localhost:5476 kirocrew"));
   // The matcher keys on the executable/module TOKEN, not a path substring:
   // an unrelated process merely living under a `kirocrew` home dir is foreign.
-  assert.ok(!KIROCREW_PROC_RE.test("C:\\Users\\kirocrew\\OtherApp\\server.exe --port 5476"));
-  assert.ok(!KIROCREW_PROC_RE.test("/home/kirocrew/some-other-server --port 5476"));
-  assert.ok(!KIROCREW_PROC_RE.test("C:\\Users\\kirocrew\\python.exe -m http.server 5476"));
-  // …but the real Windows executable / backend / module invocation still match.
-  assert.ok(KIROCREW_PROC_RE.test("C:\\Program Files\\KiroCrew\\kirocrew.exe"));
-  assert.ok(KIROCREW_PROC_RE.test("C:\\Program Files\\KiroCrew\\kirocrew-backend.exe --gateway"));
-  assert.ok(KIROCREW_PROC_RE.test("C:\\Python\\python.exe -m kiro_crew gateway"));
+  assert.ok(!isKirocrewCommand("C:\\Users\\kirocrew\\OtherApp\\server.exe --port 5476"));
+  assert.ok(!isKirocrewCommand("/home/kirocrew/some-other-server --port 5476"));
+  assert.ok(!isKirocrewCommand("C:\\Users\\kirocrew\\python.exe -m http.server 5476"));
+  assert.ok(!isKirocrewCommand("python app.py C:\\tmp\\kirocrew"));
+  assert.ok(!isKirocrewCommand("python app.py -m kiro_crew"));
+  // Windows identity is path-bound: a matching basename at any other location
+  // remains foreign and can never authorize taskkill.
+  const trustedCli = "C:\\Program Files\\KiroCrew\\kirocrew.exe";
+  const trustedBackend = "C:\\Program Files\\KiroCrew\\kirocrew-backend.exe";
+  const trustedPython = "C:\\Program Files\\KiroCrew\\python.exe";
+  assert.ok(isKirocrewCommand(`"${trustedCli}"`, {
+    trustedExecutablePaths: [trustedCli],
+  }));
+  assert.ok(isKirocrewCommand(`"${trustedBackend}" --gateway`, {
+    trustedExecutablePaths: [trustedBackend],
+  }));
+  assert.ok(isKirocrewCommand(`"${trustedPython}" -m kiro_crew gateway`, {
+    trustedExecutablePaths: [trustedPython],
+  }));
+  assert.ok(!isKirocrewCommand("C:\\Temp\\kirocrew.exe gateway", {
+    trustedExecutablePaths: [trustedCli],
+  }));
 });
