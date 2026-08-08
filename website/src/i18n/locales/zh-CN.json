@@ -436,12 +436,18 @@
           "this_review_failed": "这次评审失败了"
         },
         "findingCard": {
+          "consequence": "后果",
+          "evidence": "证据",
+          "observation": "现象",
           "post_finding": "把这条发现发到 pull request 上",
           "post_finding_on": "把这条发现发到 {{target}}",
           "post_this_comment": "发布这条评论",
           "posted_to_the_pull_request": "已发到 pull request",
           "posting": "正在发布……",
+          "select_to_draft_together": "加入草稿",
           "select_to_post": "选择 {{label}} 以发布",
+          "severity_must_fix": "必须修",
+          "severity_should_fix": "建议修",
           "suggestion": "建议",
           "this_finding": "这条发现"
         },

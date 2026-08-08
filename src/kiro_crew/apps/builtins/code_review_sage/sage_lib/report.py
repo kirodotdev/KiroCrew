@@ -343,53 +343,101 @@ def _dot(color: str) -> str:
 
 
 def _finding_html(f: dict) -> str:
+    """One finding as HTML — mirrors the app's ``FindingCard.tsx``.
+
+    Structure (and the reason for it): a severity + dimension eyebrow, the
+    ``headline`` as the card's lead, the location, then Observation /
+    Consequence / Suggestion as label+value ROWS separated by rules. The
+    previous layout stacked three full-width prose paragraphs distinguished only
+    by font size, which read as one dense block — separation now comes from the
+    fixed label column and the row rules, not from type size. The snippet is
+    demoted to an evidence line under the observation it supports.
+
+    A record without ``headline`` (any review predating the field) falls back to
+    the dimension as the lead, so old reports still render.
+    """
     e = html.escape
     color, _bg = _SEV_COLORS["red" if f.get("severity") == "red" else "yellow"]
+    sev_word = "must-fix" if f.get("severity") == "red" else "should-fix"
     loc = e(str(f.get("file", "")))
     if f.get("line"):
         loc += f":{e(str(f.get('line')))}"
+    dimension = e(str(f.get("dimension", "")))
+    eyebrow = f"{sev_word} · {dimension}" if dimension else sev_word
+    headline = str(f.get("headline", "") or "").strip()
     snip = f.get("snippet", "")
     snip_html = (
-        "<pre style='margin:8px 0 0;padding:10px 12px;background:var(--bg);"
-        "border:1px solid var(--border);border-radius:8px;overflow:auto;font-size:11.5px;"
-        "line-height:1.45;white-space:pre-wrap;"
+        "<div style='margin:6px 0 0;padding:4px 9px;background:var(--bg);"
+        "border:1px solid var(--border);border-radius:6px;overflow:auto;display:flex;"
+        "gap:8px;align-items:baseline;font-size:11px;"
         "font-family:ui-monospace,SFMono-Regular,Menlo,monospace'>"
-        f"{e(snip)}</pre>" if snip else "")
+        "<span style='color:var(--muted);flex:0 0 auto'>Evidence</span>"
+        "<pre style='margin:0;min-width:0;white-space:pre-wrap;line-height:1.45;"
+        f"font-family:inherit'>{e(snip)}</pre></div>"
+        if snip else "")
+
+    def row(label: str, value: object, *, accent: bool = False, extra: str = "") -> str:
+        text = str(value or "").strip()
+        if not text and not extra:
+            return ""
+        lab_color = _LINK if accent else "var(--muted)"
+        return (
+            "<div style='display:flex;gap:12px;padding:9px 14px;"
+            "border-top:1px solid var(--border)'>"
+            f"<div style='flex:0 0 84px;font-size:10px;font-weight:600;letter-spacing:.06em;"
+            f"text-transform:uppercase;color:{lab_color};padding-top:2px'>{e(label)}</div>"
+            "<div style='flex:1;min-width:0;font-size:12.5px;line-height:1.6'>"
+            f"{e(text)}{extra}</div></div>"
+        )
+
     return (
-        f"<div style='padding:12px 14px;margin:10px 0;background:var(--bg);border:1px solid "
-        f"var(--border);border-left:3px solid {color};border-radius:10px'>"
-        f"<div style='font-size:13px;font-weight:600'>{_dot(color)}{e(str(f.get('dimension', '')))}"
-        f"<span style='color:var(--muted);font-weight:400'> · {loc}</span></div>"
-        f"<div style='font-size:13px;line-height:1.5;margin-top:6px'>{e(str(f.get('observation', '')))}</div>"
-        f"<div style='font-size:12px;color:var(--muted);line-height:1.5;margin-top:4px'>"
-        f"&#8627; {e(str(f.get('consequence', '')))}</div>"
-        f"{snip_html}"
-        f"<div style='font-size:12.5px;line-height:1.5;margin-top:8px'>"
-        f"<span style='color:{_LINK};font-weight:600'>Suggestion</span> &nbsp;"
-        f"{e(str(f.get('suggestion', '')))}</div>"
-        "</div>"
+        "<div style='margin:10px 0;background:var(--bg);border:1px solid var(--border);"
+        f"border-left:3px solid {color};border-radius:10px;overflow:hidden'>"
+        "<div style='padding:10px 14px 9px'>"
+        f"<div style='font-size:10px;font-weight:600;letter-spacing:.07em;"
+        f"text-transform:uppercase;color:{color}'>{e(eyebrow)}</div>"
+        + (f"<div style='font-size:13.5px;font-weight:600;line-height:1.4;margin:3px 0 4px'>"
+           f"{e(headline)}</div>" if headline else "")
+        + (f"<div style='font-size:10.5px;color:var(--muted);"
+           f"font-family:ui-monospace,SFMono-Regular,Menlo,monospace'>{loc}</div>"
+           if loc else "")
+        + "</div>"
+        + row("Observation", f.get("observation", ""), extra=snip_html)
+        + row("Consequence", f.get("consequence", ""))
+        + row("Suggestion", f.get("suggestion", ""), accent=True)
+        + "</div>"
     )
 
 
-def _design_facets(val: object) -> list[str]:
-    """Split a design-section value into scannable lines. Honors explicit
-    newlines (the gate now emits short labeled facets); if it's a single long
-    prose blob (records predating the structured prompt), splits into sentences
-    so it doesn't render as one dense, hard-to-read paragraph. The value is
-    redacted (idempotent — ``build_report`` is the primary chokepoint) so this
-    render helper never emits un-scrubbed LLM text to the dashboard surface."""
+def _design_facets(val: object) -> tuple[list[str], bool]:
+    """Split a design-section value into scannable lines, and report WHICH split
+    produced them.
+
+    Honors explicit newlines (the gate emits short labeled facets); a single long
+    prose blob (records predating the structured prompt) splits into sentences so
+    it doesn't render as one dense, hard-to-read paragraph. The value is redacted
+    (idempotent — ``build_report`` is the primary chokepoint) so this render helper
+    never emits un-scrubbed LLM text to the dashboard surface.
+
+    The second element is True only for the newline split. Only a real facet line
+    may have a ``Label:`` prefix pulled out: prose containing an early colon ("The
+    API returns 404: …") is a sentence, not a label, and bolding the clause before
+    the colon misreads it as one.
+    """
     s = pipeline._redact(str(val)).strip()
     parts = [p.strip(" \t-•") for p in s.splitlines() if p.strip()]
     if len(parts) <= 1 and len(s) > 160:
-        parts = [seg.strip() for seg in re.split(r"(?<=[.!?])\s+", s) if seg.strip()]
-    return parts or ([s] if s else [])
+        sentences = [seg.strip() for seg in re.split(r"(?<=[.!?])\s+", s) if seg.strip()]
+        return sentences, False
+    return (parts or ([s] if s else [])), True
 
 
-def _facet_html(line: str) -> str:
+def _facet_html(line: str, labeled: bool = True) -> str:
     """Render one facet line; bold a leading ``Label:`` prefix when present so
-    facets like ``Tradeoffs: …`` read as a labeled list."""
+    facets like ``Tradeoffs: …`` read as a labeled list. ``labeled=False`` (a
+    sentence-split line) renders the line whole — see ``_design_facets``."""
     e = html.escape
-    m = re.match(r"^([A-Z][\w /&'+-]{1,40}):\s+(.*)$", line)
+    m = re.match(r"^([A-Z][\w /&'+-]{1,40}):\s+(.*)$", line) if labeled else None
     if m:
         return ("<div style='font-size:13px;line-height:1.5;margin:3px 0'>"
                 f"<strong>{e(m.group(1))}:</strong> {e(m.group(2))}</div>")
@@ -419,7 +467,8 @@ def _design_html(r: dict) -> str:
     steps = [(lbl, val) for lbl, val in steps if val]
     if steps:
         for lbl, val in steps:
-            facets = "".join(_facet_html(line) for line in _design_facets(val))
+            lines, labeled = _design_facets(val)
+            facets = "".join(_facet_html(line, labeled) for line in lines)
             out.append(
                 "<div style='margin:0 0 12px'>"
                 "<div style='font-size:10.5px;font-weight:600;color:var(--muted);"
@@ -430,7 +479,8 @@ def _design_html(r: dict) -> str:
     if out:                       # headline present but no chain (older/short records)
         return "".join(out)
     if r.get("rationale"):
-        return "".join(_facet_html(line) for line in _design_facets(r["rationale"]))
+        lines, labeled = _design_facets(r["rationale"])
+        return "".join(_facet_html(line, labeled) for line in lines)
     return ""
 
 

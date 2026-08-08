@@ -238,12 +238,23 @@ def fetch_spec(platform: str) -> str:
 
 
 def _comment_body(finding: dict) -> str:
-    """Build the platform-neutral comment body (redacted). Shared across platforms."""
+    """Build the platform-neutral comment body (redacted). Shared across platforms.
+
+    When the finding carries a ``headline`` it leads the body in bold, and the
+    observation follows as its own paragraph. The headline is the one line a
+    reader on a busy pull request is guaranteed to see, so it belongs above the
+    evidence rather than buried as the first sentence of it. A record without a
+    headline (any review predating the field) renders exactly as before — the
+    observation leads — so old records keep posting unchanged.
+    """
     sev = "🔴" if finding.get("severity") == "red" else "🟡"
     lang = finding.get("lang", "")
     snippet = finding.get("snippet", "")
+    headline = str(finding.get("headline", "") or "").strip()
+    observation = str(finding.get("observation", "") or "").strip()
+    lead = f"{sev} **{headline}**\n\n{observation}" if headline else f"{sev} {observation}"
     body = (
-        f"{sev} {finding.get('observation', '').strip()}\n\n"
+        f"{lead}\n\n"
         f"```{lang}\n{snippet}\n```\n\n"
         f"**Why it matters:** {finding.get('consequence', '').strip()}\n\n"
         f"**Suggestion:** {finding.get('suggestion', '').strip()}\n\n"

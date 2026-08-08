@@ -442,12 +442,18 @@
           "this_review_failed": "Esta revisión falló"
         },
         "findingCard": {
+          "consequence": "Consecuencia",
+          "evidence": "Evidencia",
+          "observation": "Observación",
           "post_finding": "Publicar este hallazgo en el pull request",
           "post_finding_on": "Publicar este hallazgo en {{target}}",
           "post_this_comment": "Publicar este comentario",
           "posted_to_the_pull_request": "Publicado en el pull request",
           "posting": "Publicando…",
+          "select_to_draft_together": "Añadir al borrador",
           "select_to_post": "Seleccionar {{label}} para publicar",
+          "severity_must_fix": "debe corregirse",
+          "severity_should_fix": "debería corregirse",
           "suggestion": "Sugerencia",
           "this_finding": "este hallazgo"
         },

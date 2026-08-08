@@ -343,12 +343,18 @@
           "this_review_failed": "This review failed"
         },
         "findingCard": {
+          "consequence": "Consequence",
+          "evidence": "Evidence",
+          "observation": "Observation",
           "post_finding": "Draft this finding as a review comment",
           "post_finding_on": "Draft this finding as a review comment on {{target}}",
           "post_this_comment": "Draft this finding",
           "posted_to_the_pull_request": "Drafted — publish below",
           "posting": "Drafting…",
+          "select_to_draft_together": "Add to draft",
           "select_to_post": "Select {{label}} to draft",
+          "severity_must_fix": "must-fix",
+          "severity_should_fix": "should-fix",
           "suggestion": "Suggestion",
           "this_finding": "this finding"
         },
