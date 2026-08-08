@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 
 # Telegram message text limit.
 TELEGRAM_MAX_TEXT = 4096
+
+# ── Album (media group) coalescing ──
+# Telegram delivers an album as N separate `message` updates sharing one
+# `media_group_id`, with the caption on only one member. We buffer members and
+# emit ONE merged message so a four-screenshot album is one turn, not four.
+#: Idle gap after the last member before flushing. Album members arrive
+#: back-to-back (typically in a single getUpdates batch), so this only has to
+#: outlast intra-batch jitter -- not a user's typing.
+_ALBUM_WINDOW_S = 1.0
+#: Hard ceiling from the FIRST member, so a stream that keeps appending to one
+#: group can never defer the flush indefinitely.
+_ALBUM_MAX_WAIT_S = 5.0
+#: Per-group member cap. Telegram's own album limit is 10, so this is only
+#: reachable via a malformed/spoofed stream; it keeps the buffer bounded.
+_ALBUM_MAX_MEMBERS = 10
+#: Concurrent buffered groups. Defence-in-depth: each group self-flushes within
+#: _ALBUM_MAX_WAIT_S, so this only matters under a burst of incomplete groups.
+_ALBUM_MAX_GROUPS = 64
 # Safe chunk boundary (leave room for markdown overhead).
 TELEGRAM_CHUNK_LIMIT = 4000
 
@@ -289,6 +307,11 @@ class TelegramClient:
         self._last_status: bool | None = None
         # Live turn tasks — prevent GC of in-flight handlers.
         self._handler_tasks: set[asyncio.Task[None]] = set()
+        # Album (media group) coalescing buffers, keyed by media_group_id.
+        self._albums: dict[str, list[TelegramInbound]] = {}
+        self._album_timers: dict[str, asyncio.Task[None]] = {}
+        self._album_first_seen: dict[str, float] = {}
+        self._album_dropped: dict[str, int] = {}
 
     # ── Lifecycle ──
 
@@ -300,6 +323,12 @@ class TelegramClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
+        # Best-effort flush of buffered albums BEFORE cancelling the polling
+        # task. This is NOT a delivery guarantee -- see _flush_all_albums: the
+        # handler it spawns races SessionManager._closing and may be refused,
+        # exactly as a plain message arriving at shutdown already is today. It
+        # costs nothing, sometimes wins, and drains the buffer either way.
+        self._flush_all_albums()
         if self._task:
             self._task.cancel()
             try:
@@ -671,42 +700,187 @@ class TelegramClient:
             return result
         return []
 
+    # ── Album (media group) coalescing ──
+
+    def _buffer_album_member(self, group_id: str, inbound: TelegramInbound) -> None:
+        """Hold one album member and (re)arm its flush timer.
+
+        The timer is rearmed on every arrival, so the album flushes
+        ``_ALBUM_WINDOW_S`` after the LAST member rather than the first — album
+        members arrive back-to-back (usually in one getUpdates batch), so this
+        settles almost immediately. ``_ALBUM_MAX_WAIT_S`` is the hard ceiling
+        that stops a pathological stream which keeps appending to one group from
+        deferring the flush forever.
+        """
+        members = self._albums.get(group_id)
+        if members is None:
+            # Cap concurrent groups. Every group self-flushes within
+            # _ALBUM_MAX_WAIT_S, so this is defence-in-depth against a burst of
+            # never-completed groups rather than an expected path. Flush the
+            # oldest rather than dropping it, so no message is silently lost.
+            if len(self._albums) >= _ALBUM_MAX_GROUPS:
+                oldest = min(self._albums, key=lambda g: self._album_first_seen.get(g, 0.0))
+                logger.warning(
+                    "Telegram: album buffer at %d groups, force-flushing oldest",
+                    _ALBUM_MAX_GROUPS,
+                )
+                self._flush_album(oldest)
+            members = self._albums[group_id] = []
+            self._album_first_seen[group_id] = time.monotonic()
+
+        if len(members) < _ALBUM_MAX_MEMBERS:
+            members.append(inbound)
+        else:
+            # Telegram's own album limit is 10, so this is unreachable for a
+            # well-formed album. Count rather than grow, and surface it at flush
+            # so an over-cap group is visible instead of silently truncated.
+            self._album_dropped[group_id] = self._album_dropped.get(group_id, 0) + 1
+
+        self._arm_album_timer(group_id)
+
+    def _arm_album_timer(self, group_id: str) -> None:
+        """(Re)schedule the flush for *group_id*, respecting the hard ceiling."""
+        existing = self._album_timers.pop(group_id, None)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        elapsed = time.monotonic() - self._album_first_seen.get(group_id, 0.0)
+        delay = min(_ALBUM_WINDOW_S, max(0.0, _ALBUM_MAX_WAIT_S - elapsed))
+        task = asyncio.create_task(self._album_flush_after(group_id, delay))
+        self._album_timers[group_id] = task
+        # Tracked alongside handler tasks so a pending flush is not garbage
+        # collected mid-flight.
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
+
+    async def _album_flush_after(self, group_id: str, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return  # a newer member rearmed the timer
+        self._album_timers.pop(group_id, None)
+        self._flush_album(group_id)
+
+    def _flush_album(self, group_id: str) -> None:
+        """Merge one buffered album into a single message and dispatch it."""
+        members = self._albums.pop(group_id, None)
+        self._album_first_seen.pop(group_id, None)
+        dropped = self._album_dropped.pop(group_id, 0)
+        timer = self._album_timers.pop(group_id, None)
+        if timer is not None and not timer.done():
+            timer.cancel()
+        if not members:
+            return
+
+        # The caption rides on exactly one member (usually the first, but do not
+        # assume) -- take the first non-empty one so the user's question is not
+        # lost. Everything else comes from the first member: its message_id is
+        # what a reply or a steer-ack reaction should target.
+        head = members[0]
+        text = next((m.text for m in members if m.text), "")
+        attachments: list[dict[str, Any]] = []
+        for member in members:
+            attachments.extend(member.attachments)
+        if dropped:
+            logger.warning(
+                "Telegram: album %s exceeded %d members; %d ignored",
+                group_id,
+                _ALBUM_MAX_MEMBERS,
+                dropped,
+            )
+        merged = TelegramInbound(
+            chat_id=head.chat_id,
+            user_id=head.user_id,
+            username=head.username,
+            text=text,
+            message_id=head.message_id,
+            chat_type=head.chat_type,
+            message_thread_id=head.message_thread_id,
+            attachments=attachments,
+        )
+        self._spawn_handler(merged)
+
+    def _flush_all_albums(self) -> None:
+        """Best-effort flush of every buffered album, used on shutdown.
+
+        **Not a delivery guarantee.** Shutdown runs the channel teardown and
+        ``SessionManager.close_all()`` concurrently in one ``cleanup_tasks``
+        gather, and ``close_all`` sets ``_closing``, after which ``begin_turn``
+        raises ``SessionClosingError``. So a handler spawned here may lose the
+        race and be refused.
+
+        Kept anyway because it is free and sometimes wins, and because the
+        residual is not a new failure mode: a plain single message that arrives
+        just before shutdown is refused by that same ``_closing`` gate today.
+        Buffering an album widens that pre-existing window by at most
+        ``_ALBUM_WINDOW_S``; it does not introduce a class of loss that was not
+        already there. Draining the buffer here also keeps a closed client from
+        holding album state.
+        """
+        for group_id in list(self._albums):
+            self._flush_album(group_id)
+
+    @staticmethod
+    def _build_inbound(msg: dict) -> TelegramInbound:
+        """Map ONE Telegram ``message`` envelope onto ``TelegramInbound``.
+
+        Pure and side-effect free so both the single-message path and the album
+        merge path share exactly one envelope interpretation.
+        """
+        text = msg.get("text", "") or msg.get("caption", "")
+        chat = msg.get("chat", {})
+        user = msg.get("from", {})
+        # Extract file attachments. Telegram delivers each media type in its
+        # own top-level key. ``photo`` is an array of sizes — pick the last
+        # (largest). Each attachment dict carries at minimum ``file_id``.
+        attachments: list[dict[str, Any]] = []
+        if "photo" in msg and msg["photo"]:
+            # Largest photo is last in the array (Bot API guarantee).
+            largest = msg["photo"][-1]
+            # Synthesize a filename — photos have no file_name field.
+            largest.setdefault("file_name", "photo.jpg")
+            largest.setdefault("mime_type", "image/jpeg")
+            attachments.append(largest)
+        for key in ("document", "audio", "voice", "video_note", "video", "animation"):
+            if key in msg and isinstance(msg[key], dict):
+                attachments.append(msg[key])
+        # Stickers are intentionally excluded — they are decorative, not
+        # content the model should ingest.
+        return TelegramInbound(
+            chat_id=chat.get("id", 0),
+            user_id=user.get("id", 0),
+            username=user.get("username", ""),
+            text=text,
+            message_id=msg.get("message_id", 0),
+            chat_type=chat.get("type", ""),
+            message_thread_id=msg.get("message_thread_id"),
+            attachments=attachments,
+        )
+
+    def _spawn_handler(self, inbound: TelegramInbound) -> None:
+        """Run the message handler as a tracked background task."""
+        task = asyncio.create_task(self._invoke_message(inbound))
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
+
     def _dispatch(self, update: dict) -> None:
         """Route a single Update to the appropriate handler as a background task."""
         if "message" in update:
             msg = update["message"]
-            text = msg.get("text", "") or msg.get("caption", "")
-            chat = msg.get("chat", {})
-            user = msg.get("from", {})
-            # Extract file attachments. Telegram delivers each media type in its
-            # own top-level key. ``photo`` is an array of sizes — pick the last
-            # (largest). Each attachment dict carries at minimum ``file_id``.
-            attachments: list[dict[str, Any]] = []
-            if "photo" in msg and msg["photo"]:
-                # Largest photo is last in the array (Bot API guarantee).
-                largest = msg["photo"][-1]
-                # Synthesize a filename — photos have no file_name field.
-                largest.setdefault("file_name", "photo.jpg")
-                largest.setdefault("mime_type", "image/jpeg")
-                attachments.append(largest)
-            for key in ("document", "audio", "voice", "video_note", "video", "animation"):
-                if key in msg and isinstance(msg[key], dict):
-                    attachments.append(msg[key])
-            # Stickers are intentionally excluded — they are decorative, not
-            # content the model should ingest.
-            inbound = TelegramInbound(
-                chat_id=chat.get("id", 0),
-                user_id=user.get("id", 0),
-                username=user.get("username", ""),
-                text=text,
-                message_id=msg.get("message_id", 0),
-                chat_type=chat.get("type", ""),
-                message_thread_id=msg.get("message_thread_id"),
-                attachments=attachments,
-            )
-            task = asyncio.create_task(self._invoke_message(inbound))
-            self._handler_tasks.add(task)
-            task.add_done_callback(self._handler_tasks.discard)
+            inbound = self._build_inbound(msg)
+            # An album (media group) is delivered as N SEPARATE updates sharing
+            # one media_group_id, with the caption on only one member. Buffer
+            # them and emit a single merged message instead of N turns.
+            # Keyed by (chat_id, media_group_id), NOT media_group_id alone:
+            # nothing guarantees the id is unique across the chats one bot
+            # serves, and a collision would merge two chats' members into one
+            # message addressed to head.chat_id -- silently swallowing the other
+            # chat's copy and delivering its content into the wrong
+            # conversation. The composite key removes that class outright.
+            group_id = msg.get("media_group_id")
+            if isinstance(group_id, str) and group_id:
+                self._buffer_album_member(f"{inbound.chat_id}:{group_id}", inbound)
+                return
+            self._spawn_handler(inbound)
 
         elif "callback_query" in update:
             cq = update["callback_query"]

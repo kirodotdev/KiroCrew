@@ -464,7 +464,15 @@ class TelegramDispatcher:
         assert self.client is not None
         chat_id = int(msg.conversation_id)
         mode = override_mode or self.cfg.messaging.queue_mode
-        if mode != "queue":
+        # An attachment-bearing message can never take the steer path: ``steer``
+        # forwards TEXT ONLY, so steering a photo/document message would deliver
+        # its caption and silently drop every file. Such a message always goes to
+        # the queue path below, which carries ``attachments`` through the drain.
+        # Mirrors discord/transport_dispatch.py's identical gate -- Telegram was
+        # missing it, and album buffering makes it far more reachable: a follow-up
+        # typed during the debounce window starts a turn, so the album's own flush
+        # arrives mid-turn and would have been steered as caption-only.
+        if mode != "queue" and not msg.attachments:
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer when a turn is GENUINELY in flight. ``is_busy`` stays

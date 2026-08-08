@@ -1893,6 +1893,48 @@ class TestConfigMasking:
 
 
 class TestTelegramMidTurn:
+    def test_attachment_message_is_queued_not_steered(self) -> None:
+        """A mid-turn message carrying files must NEVER take the steer path.
+
+        ``steer`` forwards TEXT ONLY, so steering a photo/album message would
+        deliver its caption and silently discard every attachment. This is the
+        exact loss an album hits: a follow-up typed during the debounce window
+        starts a turn, so the album's own flush lands mid-turn.
+
+        The queue path is correct because it carries ``attachments`` through the
+        drain -- assert they survive, not merely that steer was skipped.
+        """
+        d, cli, sess = _dispatcher({7})
+        sess._busy = True
+        # Default (non-queue) mode: without the guard this would steer.
+        d.cfg.messaging.queue_mode = "steer"
+        photos = [
+            {"file_id": "p1", "file_name": "a.jpg", "mime_type": "image/jpeg"},
+            {"file_id": "p2", "file_name": "b.jpg", "mime_type": "image/jpeg"},
+        ]
+
+        async def _go() -> None:
+            await d.handle_message(
+                InboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="what is wrong here?",
+                    attachments=photos,
+                )
+            )
+
+        asyncio.run(_go())
+
+        assert sess._gp.steered == [], "an attachment message must not be steered"
+        assert len(sess.queued) == 1, "it must be queued instead"
+        _ts, text, kwargs = sess.queued[0]
+        assert text == "what is wrong here?"
+        assert kwargs.get("attachments") == photos, (
+            "the queue must carry the attachments -- otherwise the images are "
+            "silently dropped exactly as steering would have done"
+        )
+
     def test_busy_steer_folds_into_running_turn(self) -> None:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
