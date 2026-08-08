@@ -5473,6 +5473,13 @@
       "undo_remove": "撤销移除",
       "will_be_removed_on_save": "保存时将被移除。"
     },
+    "sendToInstanceSubmenu": {
+      "failed": "失败",
+      "not_connected": "未连接",
+      "send_a_copy_to": "发送副本到",
+      "sent": "已发送",
+      "unknown_error": "未知错误"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "移回主窗口",
       "close_session": "关闭会话",

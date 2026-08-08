@@ -5557,6 +5557,13 @@
       "undo_remove": "সরানো আনডু করুন",
       "will_be_removed_on_save": "সেভ করলে সরিয়ে দেওয়া হবে।"
     },
+    "sendToInstanceSubmenu": {
+      "failed": "ব্যর্থ",
+      "not_connected": "সংযুক্ত নয়",
+      "send_a_copy_to": "একটি অনুলিপি পাঠান",
+      "sent": "পাঠানো হয়েছে",
+      "unknown_error": "অজানা ত্রুটি"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "মূল উইন্ডোতে ফিরিয়ে আনুন",
       "close_session": "সেশন বন্ধ করুন",

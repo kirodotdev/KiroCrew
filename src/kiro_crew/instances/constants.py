@@ -83,3 +83,12 @@ DEFAULT_TOKEN_REFRESH_FRACTION: float = 0.8
 # the link is genuinely down and the caller returns an error rather than serving
 # an unconfirmed token. Kept tight so a tab activation never blocks perceptibly.
 DEFAULT_TOKEN_PROBE_TIMEOUT_SECS: float = 2.0
+
+# Timeout (secs) for one session-transfer request over an already-open tunnel
+# (POST the bundle to the peer's import endpoint — no SSH spawn). Far larger than
+# the token probe above because this carries a whole conversation: a bundle is
+# capped at ~20 MB of message content, and the SSH forward it crosses can be a
+# high-latency link, so a probe-sized budget would fail every large transfer. The
+# request is still bounded rather than unlimited, so an unresponsive peer
+# surfaces as a clean transfer error instead of hanging the caller's turn.
+DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS: float = 30.0

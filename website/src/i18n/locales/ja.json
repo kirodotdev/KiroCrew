@@ -5473,6 +5473,13 @@
       "undo_remove": "削除を取り消し",
       "will_be_removed_on_save": "保存時に削除されます。"
     },
+    "sendToInstanceSubmenu": {
+      "failed": "失敗",
+      "not_connected": "未接続",
+      "send_a_copy_to": "コピーを送信",
+      "sent": "送信しました",
+      "unknown_error": "不明なエラー"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "メインに戻す",
       "close_session": "セッションを閉じる",

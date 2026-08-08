@@ -1567,6 +1567,13 @@
       "hide": "Hide",
       "show": "Show"
     },
+    "sendToInstanceSubmenu": {
+      "failed": "Failed",
+      "not_connected": "not connected",
+      "send_a_copy_to": "Send a copy to",
+      "sent": "Sent",
+      "unknown_error": "Unknown error"
+    },
     "sessionActionsMenu": {
       "mark_as_read": "Mark as read",
       "mark_as_unread": "Mark as unread",
