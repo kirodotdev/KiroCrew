@@ -618,25 +618,52 @@ class TestGeneratePlaywrightConfig:
         assert not any("remote-debugging-port" in a for a in args)
 
     def test_config_has_correct_structure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = generate_playwright_config()
         config = json.loads(config_path.read_text(encoding="utf-8"))
         assert "browser" in config
         assert "capabilities" in config
         assert config["browser"]["browserName"] == "chromium"
-        assert "storageState" in config["browser"]["contextOptions"]
+        # A fresh home has no storage-state file, so storageState is omitted:
+        # attaching a path to a missing file makes Playwright raise ENOENT at
+        # context creation. contextOptions is still present (as an empty dict).
+        # See #2209.
+        assert "contextOptions" in config["browser"]
+        assert "storageState" not in config["browser"]["contextOptions"]
 
-    def test_storage_state_path_is_absolute(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_storage_state_absolute_and_attached_when_file_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         # The config path now derives from config_dir(), which reads KIROCREW_HOME
         # first (the conftest autouse fixture pins it). Clear it so config_dir()
         # resolves from the patched Path.home -> ~/.kiro/crew under tmp_path.
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # storageState is only attached when the file exists (#2209); seed it so
+        # this exercises the present-branch and the path is absolute.
+        state_file = config_dir() / "playwright-storage-state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
         config_path = generate_playwright_config()
         config = json.loads(config_path.read_text(encoding="utf-8"))
         storage_state = config["browser"]["contextOptions"]["storageState"]
         assert storage_state.startswith(str(tmp_path))
         assert "playwright-storage-state.json" in storage_state
+
+    def test_storage_state_omitted_when_file_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Regression for #2209: with no storage-state file on disk (the OSS
+        # default — refresh_storage_state() is a no-op), the generated config must
+        # NOT reference it. Playwright raises ENOENT at context creation for a
+        # storageState pointing at a missing file, which broke every browser_*
+        # call on a stock install.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert not (config_dir() / "playwright-storage-state.json").exists()
+        config = json.loads(generate_playwright_config().read_text(encoding="utf-8"))
+        assert "storageState" not in config["browser"]["contextOptions"]
 
     def test_config_written_to_kirocrew_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # Data home moved from top-level ~/.kirocrew to ~/.kiro/crew (config_dir()).

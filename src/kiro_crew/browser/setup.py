@@ -747,14 +747,23 @@ def generate_playwright_config(engine: str | None = None) -> Path:
     if engine == "chromium":
         launch_options["channel"] = "chromium"
 
+    # Only attach ``storageState`` when the file actually exists. Playwright
+    # raises ENOENT at context creation if ``storageState`` points at a missing
+    # file, and the sole writer of it — ``refresh_storage_state()`` — is a no-op
+    # in the OSS build (no SSO cookie source), so on a stock install the file is
+    # never created. Omitting it yields a clean, empty context instead of a
+    # launch failure; if a cookie source is ever wired, the next config regen
+    # picks the file up. See #2209.
+    context_options: dict[str, Any] = {}
+    if Path(storage_state).exists():
+        context_options["storageState"] = storage_state
+
     config = {
         "browser": {
             "browserName": engine,
             "isolated": True,
             "launchOptions": launch_options,
-            "contextOptions": {
-                "storageState": storage_state,
-            },
+            "contextOptions": context_options,
         },
         "capabilities": ["network", "storage"],
     }
