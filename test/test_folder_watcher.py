@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -656,6 +657,44 @@ class TestAsyncToThread:
 
         stats = await fw.scan_source(source)
         assert stats["new"] == 1
+
+    @pytest.mark.asyncio
+    async def test_per_file_dedup_runs_off_the_event_loop(
+            self, store, pipeline, vault, monkeypatch):
+        """Per-file dedup must never execute on the event-loop thread.
+
+        ``dedup_document`` rebuilds the entire entity graph on every collapse it
+        applies (``_load_graph``), so its cost scales with the corpus and with the
+        number of duplicates found. Run inline it stalls the loop past the loop-stall
+        watchdog and the supervisor respawns into the very same scan -- a crash loop.
+
+        Asserting the THREAD rather than the call shape is what keeps this
+        non-vacuous: a refactor that keeps calling ``dedup_document`` but drops the
+        ``asyncio.to_thread`` hop still fails here.
+        """
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault),
+                  "source_type": "local_folder", "properties": "{}"}
+
+        async def fake_ingest(path, **kwargs):
+            store.add_item("title", "content", "doc", source_id=source_id)
+            return "job1"
+        pipeline.ingest_file = fake_ingest
+
+        dedup_threads: list[int] = []
+        monkeypatch.setattr(
+            "kiro_crew.knowledge.folder_watcher.dedup_document",
+            lambda *a, **kw: dedup_threads.append(threading.get_ident()))
+
+        await fw.scan_source(source)
+
+        assert dedup_threads, (
+            "dedup_document was never called -- this test no longer exercises the "
+            "per-file dedup path and would pass vacuously")
+        assert threading.get_ident() not in dedup_threads, (
+            "dedup_document ran on the event-loop thread; it must be offloaded via "
+            "asyncio.to_thread (see ingestion.py / watcher.py for the precedent)")
 
 
 class TestDeleteSourceCascade:
