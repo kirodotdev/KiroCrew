@@ -18,12 +18,12 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
 | **Python** | Backend | `>= 3.10` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
-| **Node.js + npm** | Building the dashboard | `20 \|\| >= 22` (`website/package.json` `engines`); `ensure-node.sh` targets 20, and drops to 16 on Amazon Linux 2 where newer official builds need a glibc that host does not have |
+| **Node.js + npm** | Building the dashboard; optional Playwright Browser Mode | `20 \|\| >= 22` (`website/package.json` `engines`); `ensure-node.sh` targets 20, and drops to 16 on Amazon Linux 2 where newer official builds need a glibc that host does not have |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
-Node is only needed to *build* the dashboard. The prebuilt wheel, the DMG, and
-the AppImage all ship the dashboard already bundled, so end users of those
-artifacts need neither Node nor a compiler.
+The prebuilt wheel, DMG, and AppImage ship the dashboard already bundled, so
+their core chat experience needs neither Node nor a compiler. Playwright Browser
+Mode is optional and uses Node.js to fetch and run `@playwright/mcp` when enabled.
 
 ### Agent backend: `kiro-cli` (required)
 
@@ -295,6 +295,7 @@ so all user customizations survive.
 |----------|---------|---------|
 | `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases) |
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
+| `KIROCREW_NODE_BIN_DIR` | unset | Directory containing `node`, `npm`, and `npx` for this process |
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
 
@@ -567,6 +568,32 @@ is the row of the table above that applies to you.
 ## Troubleshooting
 
 Always start with `kirocrew doctor`.
+
+### Desktop Browser Mode cannot find Node.js
+
+Finder and Dock launches do not run an interactive zsh, so a `PATH` export in
+`~/.zshrc` does not reach the Kiro Crew desktop process. On macOS, Kiro Crew also
+checks Node directories registered in `/etc/paths` and `/etc/paths.d`, matching
+the system inputs used by `path_helper`. For an installation elsewhere, save its
+bin directory explicitly and fully quit and reopen the desktop app:
+
+```bash
+kirocrew node path /absolute/path/to/node/bin
+kirocrew node path                  # print the effective directory
+kirocrew node path --clear          # return to automatic discovery
+```
+
+`KIROCREW_NODE_BIN_DIR` is still available for process supervisors. For a
+temporary macOS login-session workaround, set it in the caller's launchd
+context, then fully quit and reopen Kiro Crew:
+
+```bash
+launchctl setenv KIROCREW_NODE_BIN_DIR /absolute/path/to/node/bin
+launchctl unsetenv KIROCREW_NODE_BIN_DIR
+```
+
+`launchctl setenv` affects future processes launched in that context; it does
+not update an already-running desktop process.
 
 ### `AcpTimeoutError: ACP prompt timed out`
 

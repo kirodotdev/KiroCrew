@@ -457,6 +457,21 @@ host with no gateway.
 Gateway only — a plain CLI invocation (`kirocrew doctor`, `kirocrew chat`, etc.)
 keeps running the install the user typed, not a worktree someone made live.
 
+## Node Command
+
+`kirocrew node path` manages the Node bin directory shared by browser setup,
+frontend builds, pod provisioning, and the Playwright proxy:
+
+- `kirocrew node path` prints the directory containing the effective `node`.
+- `kirocrew node path BIN_DIR` validates an executable `node` in `BIN_DIR` and
+  atomically writes `<data-home>/node-bin-dir`.
+- `kirocrew node path --clear` removes that marker and returns discovery to the
+  environment, version-manager scan, and platform fallbacks.
+
+`KIROCREW_NODE_BIN_DIR` remains the highest-precedence process-local override.
+The marker is also written by `ensure-node.sh`, so setup and operator-selected
+paths have one resolver rather than separate configuration paths.
+
 ## Environment Variables
 
 | Variable | Purpose |
@@ -465,6 +480,7 @@ keeps running the install the user typed, not a worktree someone made live.
 | `KIROCREW_PORT` | Override dashboard port (default `5476`, validated as int at CLI startup) |
 | `KIROCREW_PROJECT_DIR` | Override agent config/skills directory |
 | `KIROCREW_WORKSPACE` | Override workspace root directory |
+| `KIROCREW_NODE_BIN_DIR` | Override the directory containing Node.js tools for this process |
 
 For local dev:
 - **macOS/Linux**: `bin/kirocrew` (POSIX shell wrapper); `source setup.sh` adds `bin/` to PATH

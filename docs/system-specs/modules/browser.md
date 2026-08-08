@@ -68,6 +68,23 @@ launchable the SAME way the proxy runs it and the whole MCP ecosystem installs i
   "package"` with the two npm-free paths — the official Docker image
   (`mcr.microsoft.com/playwright/mcp`) and the `KIROCREW_PLAYWRIGHT_CMD` override.
 
+**Node resolution for desktop launches.** A packaged desktop gateway inherits
+its environment from Launch Services, not an interactive shell, so exports in
+`~/.zshrc` are absent. Node tools resolve in this order:
+
+1. `KIROCREW_NODE_BIN_DIR`, then the `<data-home>/node-bin-dir` marker managed by
+   `ensure-node.sh` or `kirocrew node path BIN_DIR`;
+2. supported version-manager layouts (mise, asdf, nvm, fnm, Volta, and n), then
+   the inherited `PATH`;
+3. on macOS, executable Node directories registered through `/etc/paths` or
+   `/etc/paths.d/*`, the same system-owned inputs used by `path_helper`.
+
+The macOS registry is a final fallback, so it repairs Finder/Dock launches
+without overriding a Node selected by a shell or version manager. Arbitrary
+layouts use the persisted CLI marker instead of adding package-manager-specific
+paths to the resolver. `kirocrew node path` prints the effective directory and
+`kirocrew node path --clear` removes the marker.
+
 **Public-registry pin.** Every npm/npx fetch Kiro Crew triggers — the prime, the
 browser install, and the proxy's own runtime `npx` launch — pins the public
 registry via `npm_config_registry=https://registry.npmjs.org/` in the child env.
@@ -89,6 +106,12 @@ degrades to `@latest` rather than reaching an npx argv; absent, it also falls ba
 to `@latest`. It resolves through the shared launch path, not the runtime PATH,
 which setup and the proxy now derive identically via `node_augmented_path` so a
 marker-bootstrapped Node toolchain the gateway did not inherit is found by both.
+
+To install the revision-matched browser, setup resolves
+`playwright-core/package.json` through Node and joins its sibling `cli.js`.
+`playwright-core` does not export the `playwright-core/cli.js` package subpath,
+so resolving that subpath directly is invalid even though the file is bundled
+inside `@playwright/mcp`.
 
 **Provisioning is always advisory — enabling never surfaces a raw error.** Turning
 Browser Mode on registers the proxy (the capability is on) BEFORE and independent

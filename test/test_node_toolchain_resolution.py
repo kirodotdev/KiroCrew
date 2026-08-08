@@ -40,8 +40,10 @@ def _fake_node_bin(d: Path) -> Path:
 def _clear_caches():
     """``node_bin_dirs`` is lru_cached for the process lifetime — reset per test."""
     env_mod.node_bin_dirs.cache_clear()
+    env_mod._macos_node_bin_dirs.cache_clear()
     yield
     env_mod.node_bin_dirs.cache_clear()
+    env_mod._macos_node_bin_dirs.cache_clear()
 
 
 @pytest.fixture
@@ -68,6 +70,8 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         env_mod, "_marker_node_bin_dir", lambda: None, raising=True
     )
+    monkeypatch.setattr(env_mod, "_MACOS_PATHS_FILE", tmp_path / "no-paths", raising=True)
+    monkeypatch.setattr(env_mod, "_MACOS_PATHS_DIR", tmp_path / "no-paths.d", raising=True)
     return home
 
 

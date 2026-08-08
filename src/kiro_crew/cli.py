@@ -696,6 +696,36 @@ def _consolidate_cmd(args) -> None:
     print("\nDone. Check ~/.kiro/crew/skills/auto/ for new skills.")
 
 
+def _node_cmd(args: argparse.Namespace) -> int:
+    """Inspect or update the Node bin directory used by Kiro Crew."""
+    from kiro_crew.env import clear_node_bin_dir, find_node_tool, set_node_bin_dir
+
+    bin_dir = getattr(args, "bin_dir", None)
+    if getattr(args, "clear", False):
+        if bin_dir:
+            print("Error: BIN_DIR cannot be used with --clear.", file=sys.stderr)
+            return 2
+        removed = clear_node_bin_dir()
+        print("Node path cleared." if removed else "No saved Node path.")
+        return 0
+
+    if bin_dir:
+        try:
+            saved = set_node_bin_dir(bin_dir)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print(saved)
+        return 0
+
+    node = find_node_tool("node")
+    if node is None:
+        print("Error: Node.js could not be found.", file=sys.stderr)
+        return 1
+    print(Path(node).parent)
+    return 0
+
+
 def main() -> None:
     """Entry point — parse args and dispatch to the appropriate subcommand."""
     # On Windows, force stdout/stderr to UTF-8 BEFORE anything prints — KiroCrew's
@@ -809,6 +839,21 @@ Examples:
         "--bundle",
         action="store_true",
         help="Collect logs + crash reports into a redacted diagnostics zip",
+    )
+
+    # node
+    node_parser = sub.add_parser("node", help="Inspect or configure Node.js discovery")
+    node_sub = node_parser.add_subparsers(dest="node_action", required=True)
+    node_path = node_sub.add_parser("path", help="Show or save the Node bin directory")
+    node_path.add_argument(
+        "bin_dir",
+        nargs="?",
+        help="Directory containing the node executable (omit to show the resolved path)",
+    )
+    node_path.add_argument(
+        "--clear",
+        action="store_true",
+        help="Remove the saved Node bin directory",
     )
 
     # gateway
@@ -2054,6 +2099,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         )
     elif args.command == "doctor":
         _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))
+    elif args.command == "node":
+        rc = _node_cmd(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "manifest":
         _manifest(
             alias=getattr(args, "alias", None),

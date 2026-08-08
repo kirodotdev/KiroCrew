@@ -23,6 +23,23 @@ Every config change is audit-logged to the security event log.
 
 The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
 
+## Node Toolchain
+
+Playwright Browser Mode uses Node.js to run `@playwright/mcp`. Inspect or save
+the bin directory Kiro Crew uses with:
+
+```bash
+kirocrew node path
+kirocrew node path /absolute/path/to/node/bin
+kirocrew node path --clear
+```
+
+The saved value lives at `<data-home>/node-bin-dir`, which is also the marker
+written by `ensure-node.sh`. `KIROCREW_NODE_BIN_DIR` overrides it for the current
+process. On macOS, automatic discovery also reads `/etc/paths` and
+`/etc/paths.d/*`, because desktop apps launched by Finder or Dock do not source
+`~/.zshrc`.
+
 ## Sandbox
 
 `agent.sandbox` controls whether Kiro Crew wraps the agent process in its own
@@ -239,6 +256,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `KIROCREW_PORT` | Override the dashboard port | `5476` |
 | `KIROCREW_PROJECT_DIR` | Override the agent-config/skills project directory | Auto-detected |
 | `KIROCREW_WORKSPACE` | Override the workspace root, used as-is with no subdirectory appended | Saved `workspace_dir`, else a platform default |
+| `KIROCREW_NODE_BIN_DIR` | Override the directory containing Node.js tools for this process | saved `node-bin-dir`, else automatic discovery |
 | `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests, CI, airgapped hosts) | unset |
 | `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF; wins over `memory.embed_model_url` and the CDN default | unset |
 | `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path` and suppresses the default download entirely | unset |
@@ -288,6 +306,7 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/hooks.json` | Script hooks |
 | `~/.kiro/crew/lessons.jsonl` | Learned corrections |
 | `~/.kiro/crew/notifications.jsonl` | Notification history |
+| `~/.kiro/crew/node-bin-dir` | Node bin directory saved by setup or `kirocrew node path` |
 | `~/.kiro/crew/models/` | Embedding model, downloaded in the background at startup |
 | `~/.kiro/crew/history/` | Chat history (JSONL) |
 | `~/.kiro/crew/workspace/memory/` | Memory files |
