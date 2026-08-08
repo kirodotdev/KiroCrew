@@ -2441,6 +2441,7 @@
       },
       "chat": {
         "ask_placeholder": "Pregúntale a {{name}}...",
+        "bind_failed": "No se pudo conectar el agente de la mascota — inténtalo de nuevo en un momento.",
         "edit_cancel": "Cancelar",
         "edit_mode": "Editando — envía para reemplazar o cancela",
         "load_earlier": "Cargar mensajes anteriores",

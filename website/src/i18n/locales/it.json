@@ -2441,6 +2441,7 @@
       },
       "chat": {
         "ask_placeholder": "Chiedi a {{name}}...",
+        "bind_failed": "Impossibile collegare l'agente dell'animale — riprova tra un attimo.",
         "edit_cancel": "Annulla",
         "edit_mode": "Modifica — invia per sostituire o annulla",
         "load_earlier": "Carica messaggi precedenti",

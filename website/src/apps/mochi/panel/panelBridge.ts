@@ -784,12 +784,40 @@ export async function sendMessage(text: string, screenshot?: string): Promise<vo
 let slotEnsured = false
 
 /**
+ * A slot-binding failure, as opposed to a transport failure. ChatPanel maps
+ * this to `apps.mochi.chat.bind_failed` ("couldn't connect the pet's agent —
+ * try again in a moment") instead of the generic send_failed ("check your
+ * connection"), which would misattribute a server-side binding refusal to the
+ * user's network.
+ */
+export class MochiBindError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MochiBindError'
+  }
+}
+
+/**
+ * Name-based guard rather than `instanceof`: classification survives module
+ * duplication and mocked bridges, where class identity does not.
+ */
+export function isMochiBindError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'MochiBindError'
+}
+
+/**
  * Create-or-get the pet's slot bound to the mochi agent BEFORE the first
  * send. Mirrors the original adapter's ensureSlot (createSlot = get_or_create):
  * without the binding the slot has no agent, so the ambient dashboard agent
  * answers the pet's chat. Binding via /api/chat/slots (get_or_create) rather
  * than the `agent` field on /api/chat avoids the 409 'slot agent mismatch'
  * path — the create endpoint never rejects an already-bound slot.
+ *
+ * Invariant: ensureSlot RETURNING means the slot exists and is bound to the
+ * mochi agent. Every failure path throws — sendMessage does not guard on our
+ * outcome, so a bare return on any branch would fall through to the chat POST
+ * and the ambient dashboard agent would answer the pet (the reported bug).
+ * Throws leave the latch false, so the next send retries the bind.
  */
 export async function ensureSlot(): Promise<void> {
   if (slotEnsured) return
@@ -799,25 +827,67 @@ export async function ensureSlot(): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: MOCHI_SLOT, agent: MOCHI_AGENT }),
   })
-  // A failed bind leaves the flag false so the next send retries rather than
-  // posting to an unbound slot.
-  if (!resp.ok) return
+  // See the invariant above: a failed slot-create must ABORT the send, not
+  // fall through to the chat POST.
+  if (!resp.ok) throw new MochiBindError('mochi slot: could not create the pet slot')
   // get_or_create returns an EXISTING slot UNCHANGED — it does not rebind its
-  // agent. So a `mochi`-named slot already owned by another agent comes back
-  // with that foreign agent, and sending the pet's turn into it would hijack and
-  // corrupt that session. Verify the returned binding and refuse otherwise; the
-  // throw aborts the send (ChatPanel restores the message and shows the error).
-  let bound: { agent?: unknown } = {}
+  // agent. Two cases follow from a returned binding that is not the mochi agent:
+  //   • EMPTY agent — a `mochi` slot that predates the agent-binding feature (or
+  //     was recreated without it, e.g. restored from open_slots.json at boot). It
+  //     is OUR OWN slot; get_or_create just won't (re)bind it, so the ambient
+  //     dashboard default answers the pet's chat. Adopt it via the explicit
+  //     rebind endpoint, which get_or_create deliberately does not call.
+  //   • A DIFFERENT named agent — someone else's session sharing the `mochi`
+  //     name; sending the pet's turn into it would hijack/corrupt it. Refuse; the
+  //     throw aborts the send (ChatPanel restores the message and shows the error).
+  let bound: { agent?: unknown; running?: unknown } = {}
   try {
     bound = await resp.json()
   } catch {
-    throw new Error('mochi slot: could not verify the agent binding')
+    throw new MochiBindError('mochi slot: could not verify the agent binding')
   }
-  if (bound.agent !== MOCHI_AGENT) {
-    throw new Error(
-      `mochi slot "${MOCHI_SLOT}" is bound to another agent ` +
-        `(${String(bound.agent) || 'none'}); refusing to send`,
-    )
+  const boundAgent = typeof bound.agent === 'string' ? bound.agent : ''
+  if (boundAgent !== MOCHI_AGENT) {
+    if (boundAgent !== '') {
+      throw new MochiBindError(
+        `mochi slot "${MOCHI_SLOT}" is bound to another agent ` +
+          `(${boundAgent}); refusing to send`,
+      )
+    }
+    // Adoption REBINDS, and the rebind endpoint resets the slot session with
+    // no running guard (chat_handlers.api_chat_slot_agent ->
+    // _reset_slot_session), so adopting a BUSY slot would tear down the turn
+    // already streaming in it — reachable because `mochi` is an ordinary
+    // dashboard slot, where with an empty binding the ambient default answers:
+    // exactly the population this adoption path targets. Refuse instead; the
+    // latch stays false, so the next send retries the bind once the turn ends.
+    // `running` rides along on the get_or_create response (serialize_slot ->
+    // slot.to_dict), so the guard costs no extra request.
+    if (bound.running) {
+      throw new MochiBindError('mochi slot: busy, cannot bind the pet agent right now')
+    }
+    const rebound = await fetch(`/api/chat/slots/${MOCHI_SLOT}/agent`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: MOCHI_AGENT }),
+    })
+    // A failed/unconfirmed adoption must ABORT the send, not fall through: a bare
+    // return leaves slotEnsured false (so the next send retries) BUT sendMessage
+    // does not guard on our outcome, so the turn is still POSTed to an unbound
+    // slot and the ambient dashboard agent answers the pet. Throwing aborts the
+    // send (ChatPanel restores the message and shows the error) and still leaves
+    // the flag false, so the next send retries the bind.
+    if (!rebound.ok) throw new MochiBindError('mochi slot: could not bind the pet agent')
+    let after: { agent?: unknown } = {}
+    try {
+      after = await rebound.json()
+    } catch {
+      throw new MochiBindError('mochi slot: could not bind the pet agent')
+    }
+    if (after.agent !== MOCHI_AGENT) {
+      throw new MochiBindError('mochi slot: could not bind the pet agent')
+    }
   }
   slotEnsured = true
 }

@@ -1137,11 +1137,24 @@ async def on_startup(ctx: Any) -> None:
     # than leaving a running pet that looks governed and is not.
 
     _settings = await asyncio.to_thread(load_settings, Path(ctx.data_dir))
-    await asyncio.to_thread(apply_policy, Path(ctx.data_dir), _settings)
     if _runtime is not None:
-        await _runtime.start()  # re-enable after disable: same instance restarts
+        # Re-enable after disable: the instance already rendered its prompt
+        # files at construction, so apply_policy finds them and pins the persona.
+        await asyncio.to_thread(apply_policy, Path(ctx.data_dir), _settings)
+        await _runtime.start()  # same instance restarts
         return
+    # FIRST enable: construct the runtime BEFORE apply_policy. MochiRuntime's
+    # __init__ renders the generated prompt files (mochi-prompt.md /
+    # mochi-prompt-bg.md) but does NOT start the agent — start() does. apply_policy
+    # then materializes the agent configs, and bridges._apply_agent_prompt copies
+    # the prompt only if the file EXISTS on disk. With the previous ordering
+    # (apply_policy first) the files did not yet exist, so the persona was silently
+    # dropped ('prompt file does not exist, ignoring') and the pet answered as the
+    # generic default agent until a later restart. Constructing first fixes that;
+    # apply_policy still runs before start(), so the MCP deny-by-default invariant
+    # (policy materialized before the agent can spawn) is preserved.
     _runtime = MochiRuntime(ctx)
+    await asyncio.to_thread(apply_policy, Path(ctx.data_dir), _settings)
     await _runtime.start()
 
 

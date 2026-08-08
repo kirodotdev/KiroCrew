@@ -2353,6 +2353,7 @@
       },
       "chat": {
         "ask_placeholder": "问问{{name}}…",
+        "bind_failed": "无法连接宠物的代理 — 请稍后重试。",
         "edit_cancel": "取消",
         "edit_mode": "编辑中 — 发送以替换原消息，或取消",
         "load_earlier": "加载更早的消息",
