@@ -1141,6 +1141,18 @@ Examples:
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)
+    tn_parser = sub.add_parser(
+        "tailnet", help="Publish this dashboard on your tailnet (Tailscale)"
+    )
+    tn_sub = tn_parser.add_subparsers(dest="tailnet_action")
+    tn_sub.add_parser(
+        "status", help="Show whether the dashboard is published and trusted on your tailnet"
+    )
+    tn_sub.add_parser(
+        "up", help="Publish the dashboard on your tailnet and trust its origin"
+    )
+    tn_sub.add_parser("down", help="Stop publishing the dashboard on your tailnet")
+
     tel_parser = sub.add_parser("telemetry", help="Inspect or disable anonymous usage telemetry")
     tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
     tel_sub.add_parser(
@@ -2101,6 +2113,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         asyncio.run(_run_eval(args))
     elif args.command == "security":
         _security(args)
+    elif args.command == "tailnet":
+        _tailnet(args)
     elif args.command == "telemetry":
         _telemetry(args)
     elif args.command == "policy":
@@ -2184,6 +2198,7 @@ from kiro_crew.cli_commands import (  # noqa: E402
     _run_eval,
     _security,
     _spawn,
+    _tailnet,
     _telemetry,
 )
 from kiro_crew.cli_config import _config_cmd  # noqa: E402

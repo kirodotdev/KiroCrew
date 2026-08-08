@@ -1289,14 +1289,24 @@ authenticated, state-changing requests from**. Read from the trust-root
 neither read nor rewrite its own ceiling), the row is a control the running app
 cannot undo.
 
-Consulted at **three** chokepoints — the derivation itself plus every write path to
-`dashboard.tailscale.enabled`; any one alone would be a half-control:
+Consulted at **four** chokepoints — the derivation, the publish action, and every
+write path to `dashboard.tailscale.enabled`; any one alone would be a
+half-control:
 
 | Chokepoint | Pinned-off behavior |
 |---|---|
 | `tailnet.resolve_tailnet_host()` | Contributes no origin **and does not spawn the CLI**, so the pin closes both halves an administrator objects to. Checked ahead of the daemon call |
+| `tailnet_serve.publish()` | Refuses to run `tailscale serve`, so the dashboard is never put on the tailnet in the first place. Checked before the spawn — refusing after publishing would be theatre |
 | `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `dashboard.tailscale.enabled=true` |
 | `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The generic setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
+
+`tailnet_serve.unpublish()` is deliberately **not** gated, and the asymmetry is
+load-bearing rather than an oversight. `is_governance_pinned_off` returns true both
+for a real policy deny and for a ceiling it could not evaluate, so gating withdrawal
+would mean a transient policy-read failure leaves a dashboard published on a tailnet
+with no supported way to take it down — a fail-closed control failing open in
+effect. Removing exposure is always permitted, the same direction that lets a config
+write of `false` through while `true` is refused.
 
 Writing `false` is **always** permitted, for the reason the telemetry row gives:
 the ceiling is a floor, so a narrower local choice composes with it and refusing it

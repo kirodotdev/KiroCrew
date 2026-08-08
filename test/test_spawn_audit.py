@@ -192,6 +192,25 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Tailscale. Routing it would make dashboard startup depend on sandbox
         # availability, which is exactly the failure that property rules out.
         "dashboard/tailnet.py::_run_json",
+        # Tailnet publish/withdraw (same RFC): three fixed argv shapes —
+        # ``serve status --json``, ``serve --bg --https=443 http://127.0.0.1:<port>``
+        # and ``serve --https 443 off``. The only interpolated value is the
+        # dashboard's own port, read from config and rendered as an int. Same
+        # hardening as the read path and for the same reasons: the binary comes
+        # from ``_cli_path``'s vetted absolute allowlist and never from ``PATH``,
+        # and the child gets ``sandbox.scrub_env()`` instead of the gateway's
+        # environment — both shared with ``tailnet.py`` by import rather than
+        # copied, so the two cannot drift apart.
+        #
+        # Deliberately NOT routed through ``sandboxed_spawn_argv``: the whole
+        # purpose of the call is to mutate the LOCAL Tailscale daemon's serve
+        # configuration through its unix socket, which is precisely the ambient
+        # authority a sandbox exists to remove. A routed call would either fail
+        # or need the socket handed back in, which is the sandbox in name only.
+        # This is an operator-initiated action, gated on the
+        # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
+        # never reached from a tool dispatch path.
+        "dashboard/tailnet_serve.py::_run",
         "apps/backend.py::_proc_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",

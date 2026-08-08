@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -37,17 +38,22 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.scaffold import scaffold_app
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.cli_server import resolve_client_port
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
+    ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
     WorkspaceConfig,
     build_provider_factory,
     config_path,
+    read_config_for_update,
+    write_config_atomically,
 )
 from kiro_crew.cron import CronSchedule, CronService, format_schedule
 from kiro_crew.cron_trigger import trigger_cron_job
+from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
@@ -1640,6 +1646,244 @@ def _pod(args: argparse.Namespace) -> None:
     from kiro_crew.pod.cli import dispatch
 
     dispatch(args)
+
+
+def _config_fingerprint(path: Path) -> str | None:
+    """A hash of *path*'s bytes, or ``None`` when it does not exist or is unreadable.
+
+    Content, not ``(mtime, size)``. The metadata pair looks equivalent and is not:
+    two writes of the same length inside one filesystem timestamp tick produce an
+    identical fingerprint, and coarse ``mtime`` granularity is common enough that a
+    change would go undetected. A test that mutated a same-length field twice in
+    quick succession slipped through exactly that gap. Hashing a config file is
+    cheap, and it makes "changed" exact rather than probable.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _record_tailnet_enabled() -> None:
+    """Persist ``dashboard.tailscale.enabled = true`` with a SINGLE read.
+
+    Deliberately its own small writer rather than a share of ``config set``'s. The
+    obvious move — extract ``config set``'s body and call it from here — was tried
+    and reverted, because ``config set`` reads the file **twice** on the way to a
+    write: once to validate, then again through ``KiroCrewConfig.load()`` to build
+    the full serialisation it persists. Between those two reads another writer can
+    truncate the file, and the second read then observes defaults which get written
+    back over everything the user has. Sharing that path would have meant either
+    inheriting the race or changing what every ``config set`` invocation writes to
+    disk, so ``config set`` is left exactly as it was.
+
+    One read, one mutation, one atomic write:
+
+    * ``read_config_for_update`` returns ``{}`` for an absent file and **raises**
+      ``ConfigReadError`` for one that is present but unreadable — so a corrupt or
+      half-written config aborts instead of being replaced by defaults.
+    * The value is set on that same dict, so nothing is re-read and there is no
+      window to lose.
+    * Only the one key is touched. Nothing else is serialised, which also means an
+      existing ``config.local.json`` overlay needs no subtraction: this never writes
+      a value that came from the overlay in the first place.
+
+    A non-object ``dashboard`` section is a refusal, not a coercion — replacing it
+    with ``{}`` would discard whatever the operator had there and still report
+    success.
+
+    **Lost-update handling, and what it does and does not promise.** A
+    read-modify-write is not atomic: a concurrent writer (a dashboard config save)
+    landing between the read and the write would be clobbered by our older snapshot.
+    So the file is fingerprinted (mtime + size) after the read and re-checked
+    immediately before writing; on a change we **re-read and re-apply** rather than
+    abort, which preserves the other writer's content instead of merely refusing.
+    Bounded to one retry: a second collision means something is writing
+    continuously, and looping would be worse than a clear failure.
+
+    This **narrows the window, it does not close it** — a writer can still land
+    between the final stat and the rename. Closing it needs a shared
+    compare-and-swap or file lock, which this repo does not have: every config
+    read-modify-write here (``config set``, the telemetry toggle, the dashboard
+    PATCH route) has the same gap, so a real fix belongs in one shared primitive
+    rather than bolted onto this one caller, where it would only look safe.
+    """
+    path = config_path()
+    for attempt in (0, 1):
+        # Fingerprint BEFORE the read, not after: a writer landing *during* the read
+        # would otherwise be invisible, because the post-read stat already reflects it.
+        before = _config_fingerprint(path)
+        raw = read_config_for_update(path)  # raises ConfigReadError; {} when absent
+        section = raw.get("dashboard")
+        if section is None:
+            section = {}
+        elif not isinstance(section, dict):
+            raise ConfigReadError(
+                f'"dashboard" is {type(section).__name__}, not an object; refusing to '
+                "replace it"
+            )
+        tailscale = section.get("tailscale")
+        if tailscale is None:
+            tailscale = {}
+        elif not isinstance(tailscale, dict):
+            raise ConfigReadError(
+                f'"dashboard.tailscale" is {type(tailscale).__name__}, not an object; '
+                "refusing to replace it"
+            )
+        tailscale["enabled"] = True
+        section["tailscale"] = tailscale
+        raw["dashboard"] = section
+        if _config_fingerprint(path) != before:
+            if attempt == 0:
+                continue  # someone else wrote; re-read so their content survives
+            raise ConfigReadError(
+                f"{path} kept changing while this update was being written; "
+                "refusing to overwrite a newer version"
+            )
+        write_config_atomically(path, raw)
+        return
+
+
+def _tailnet(args: argparse.Namespace) -> None:
+    """Publish, withdraw, or inspect tailnet dashboard access (``kirocrew tailnet``).
+
+    The command that was missing. Reaching the dashboard from another device on
+    your tailnet has always taken **two** independent steps — publish it with
+    ``tailscale serve``, and tell the gateway to trust the resulting origin — and
+    Kiro Crew only ever did the second. Doing one without the other is the failure
+    this exists to remove: publish without trusting and every request is refused
+    by the Origin check with a bare 403; trust without publishing and there is
+    nothing on the tailnet to open.
+
+    So ``up`` does both, in the order that cannot leave a half-state visible: it
+    publishes first and only records the config once publishing succeeded. A
+    config write followed by a failed publish would leave a host claiming tailnet
+    access is on with nothing serving it.
+    """
+    action = getattr(args, "tailnet_action", None) or "status"
+    cfg = KiroCrewConfig.load()
+    # ``resolve_client_port``, not ``parse_dashboard_url(cfg.dashboard.url)``. Two
+    # reasons, and the first one is a live bug on this very repo's dev hosts:
+    #
+    # * a gateway started with ``--port`` (or ``KIROCREW_PORT``) is not described by
+    #   ``dashboard.url`` at all, so parsing the config would publish 443 in front
+    #   of a port nothing is listening on — a working-looking publish that 502s.
+    #   ``resolve_client_port`` consults the flag, the env var, the config URL and
+    #   finally the gateway's own run-marker, so it finds the port actually bound.
+    # * ``dashboard.url`` is user-editable JSON and core installs may lack
+    #   jsonschema, so it can be any type (``"url": 123``). ``urlparse`` raises
+    #   TypeError on a non-str — which is not a ValueError, so it would crash every
+    #   tailnet action, INCLUDING withdrawal. ``resolve_client_port`` already
+    #   guards that (``_config_url_port``), so this reuses the existing guard
+    #   instead of adding a second one that could drift from it.
+    port = resolve_client_port(None)
+    enabled = bool(cfg.dashboard.tailscale.enabled)
+
+    if action == "status":
+        pinned = tailnet.is_governance_pinned_off()
+        # A LIVE read is correct here and would be wrong in the dashboard's status
+        # endpoint. This command reports what the machine can do next; the
+        # endpoint reports what the running server already trusts, which is the
+        # startup value. Conflating them is how "resolvable" gets rendered as
+        # "in the allowlist".
+        name = tailnet.self_dns_name()
+        state = tailnet_serve.serve_state(port)
+        print("👻 Tailnet dashboard access")
+        if pinned:
+            print(
+                "   Policy:     PINNED OFF by your administrator "
+                "(capabilities.tailnet_origin)"
+            )
+        print(f"   Trust:      {'enabled' if enabled else 'disabled'} "
+              f"(dashboard.tailscale.enabled)")
+        print(f"   Name:       {name or '— (no tailnet name resolvable right now)'}")
+        published = state.published
+        label = {True: "yes", False: "no", None: "unknown"}[published]
+        print(f"   Published:  {label} — {state.detail}")
+        if name and published is True:
+            print(f"   URL:        https://{name}")
+        if name and enabled and published is not True:
+            print("   Next:       kirocrew tailnet up")
+        return
+
+    if action not in ("up", "down"):
+        print(f"❌ Unknown tailnet action: {action}", file=sys.stderr)
+        sys.exit(1)
+
+    if action == "down":
+        result = tailnet_serve.unpublish(port)
+        print(("✅ " if result.ok else "❌ ") + result.detail)
+        if result.ok:
+            # The trust setting is deliberately left ON. It contributes one origin
+            # that nothing can reach while serve is off, so clearing it would be
+            # an unrequested second change — and would force a gateway restart to
+            # undo a withdrawal that took effect immediately.
+            print(
+                "   dashboard.tailscale.enabled is unchanged; the trusted origin "
+                "is unreachable while serve is off."
+            )
+        sys.exit(0 if result.ok else 1)
+
+    result = tailnet_serve.publish(port)
+    if not result.ok:
+        print(f"❌ {result.detail}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ {result.detail}")
+
+    if enabled:
+        print("   dashboard.tailscale.enabled was already on.")
+    else:
+        try:
+            _record_tailnet_enabled()
+        except (ConfigReadError, OSError) as exc:
+            # OSError as well as ConfigReadError: the write itself can fail for
+            # ordinary filesystem reasons (a read-only data home, a symlink pointing
+            # somewhere unwritable, a full disk), and letting that escape would end
+            # the command in a traceback **with the dashboard already published** —
+            # the operator would see a crash and no statement of what did or did not
+            # take effect. Both failures need the same partial-success report.
+            # Published, but the setting cannot be recorded without risking the
+            # operator's config. Refusing the write is the right half of the trade:
+            # the alternative is replacing everything they have with defaults. Say
+            # both things — what succeeded and what they must now do by hand.
+            print(
+                f"❌ Published, but {config_path()} could not be updated ({exc}), so "
+                "dashboard.tailscale.enabled was NOT recorded — writing it would "
+                "have risked replacing your config. Fix that file, then run "
+                "`kirocrew config set dashboard.tailscale.enabled true`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Verify the EFFECTIVE value, not the write. ``config.local.json`` takes
+        # PRECEDENCE over the base file — so a host whose overlay sets this false has
+        # just had a successful write that changes nothing on restart. Printing
+        # "= true" there would be the exact false promise this command exists to
+        # remove, and the operator's next clue would be a bare 403 from their phone.
+        if not KiroCrewConfig.load().dashboard.tailscale.enabled:
+            print(
+                "❌ Published, and dashboard.tailscale.enabled was written to "
+                "config.json — but the effective value is still false, so the "
+                "gateway will NOT trust the tailnet origin. An overlay is "
+                "overriding it: remove dashboard.tailscale.enabled from "
+                "config.local.json, or set it there instead "
+                "(`kirocrew config set --local dashboard.tailscale.enabled true`).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("✅ dashboard.tailscale.enabled = true")
+
+    name = tailnet.self_dns_name()
+    if name:
+        print(f"👻 URL:        https://{name}")
+    else:
+        print(
+            "⚠️  No tailnet name is resolvable right now, so the gateway will not "
+            "trust anything on restart. Check `tailscale status`."
+        )
+    # Said unconditionally, including when the switch was already on: the origin
+    # is resolved once at startup, so a gateway that booted before this command
+    # has an allowlist that does not contain the name yet.
+    print("👻 Restart the gateway for the tailnet origin to be trusted.")
 
 
 def _telemetry(args: argparse.Namespace) -> None:
