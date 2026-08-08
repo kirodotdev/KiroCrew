@@ -45,6 +45,8 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.handlers._shared import (
     MAX_AGENT_SKILLS,
     _capability_manager,
+    _read_session_key,
+    active_project_dir,
     agent_skill_keys,
     agent_skill_views,
     apply_skill_mapping,
@@ -598,7 +600,15 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     """GET /api/agents/installed — list all installed kiro-cli agents.
 
     kirocrew is always first; kirocrew-lite is excluded.
+
+    Scoped to the requesting session's project directory (``X-Session-Key``) so a
+    chat opened on a checkout also sees that checkout's ``<project>/.kiro`` agents,
+    the same scoping ``<project>/.kiro/skills`` and ``.kiro/steering`` already use.
+    A project agent shadows a user-level one of the same name because that is the
+    one kiro-cli would run; see ``agent_discovery.list_agents``.
     """
+    state = request.app["state"]
+    project_dir = active_project_dir(state, _read_session_key(request))
 
     # list_agents() does glob + per-file resolve(strict=True) + read_bytes +
     # json.loads over ~/.kiro/agents — blocking filesystem work that, on a large
@@ -606,7 +616,7 @@ async def api_agents_installed(request: web.Request) -> web.Response:
     # event loop past the loop-stall watchdog when a browser loads the dashboard.
     # Offload to the discovery pool, same as /api/skills.
     def _collect() -> list[Any]:
-        agents = list(list_agents())
+        agents = list(list_agents(project_dir=project_dir))
         agents.sort(key=lambda a: (0 if a.name == "kirocrew" else 1, a.name))
         return agents
 

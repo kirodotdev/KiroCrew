@@ -384,7 +384,7 @@ async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch
     )
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
-        lambda cfg, agent: MagicMock(kiro_agent="kirocrew"),
+        lambda cfg, agent, project_dir=None: MagicMock(kiro_agent="kirocrew"),
     )
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.side.stream_and_collect",

@@ -5809,7 +5809,7 @@ def schedule_materialized_agents_refresh() -> None:
         logger.debug("Failed to schedule materialized agent refresh", exc_info=True)
 
 
-def _materialized_kiro_agent(agent_name: str | None) -> str:
+def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = None) -> str:
     """Return *agent_name* when a materialized kiro agent config declares it.
 
     An APP's agents are copied into ``~/.kiro/agents/`` by
@@ -5850,27 +5850,98 @@ def _materialized_kiro_agent(agent_name: str | None) -> str:
     unwarmed lookup falls back to the default rather than block. Returns ``""``
     for a blank name or when nothing declares it, so a genuinely unknown agent
     still falls back to the default.
+
+    *project_dir* adds the session's own ``<project>/.kiro/agents`` scope, which
+    kiro-cli searches BEFORE the user-level directory (it resolves ``--agent``
+    against its cwd, and Kiro Crew spawns it with the project dir as cwd). It
+    deliberately does NOT use the snapshot: that is one process-wide set, while the
+    project scope differs per session, so sharing it would leak one checkout's
+    agents into another's.
+
+    The project lookup reads the filesystem, so like the user-level scan it is
+    NEVER performed on the event loop — see :func:`_project_declares_agent`. Callers
+    that need a project agent resolved must therefore invoke this off the loop;
+    ``chat_runner`` and the side-turn handler do so through the discovery pool. An
+    on-loop call degrades to the default agent for that turn rather than stalling
+    the gateway, which is the same trade the user-level scope already makes.
     """
     if not agent_name:
         return ""
+    if _MATERIALIZED_AGENTS_READY and agent_name in _MATERIALIZED_AGENTS:
+        return agent_name
     if not _MATERIALIZED_AGENTS_READY:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             # No loop on this thread: scanning here blocks nothing.
             refresh_materialized_agents()
+            if agent_name in _MATERIALIZED_AGENTS:
+                return agent_name
         else:
             # On the event loop with a cold snapshot: never scan. The boot warm
             # normally precedes any turn; falling back for one turn is strictly
             # preferable to stalling the gateway.
             logger.debug("Materialized agent snapshot cold on the event loop; falling back")
-            return ""
-    return agent_name if agent_name in _MATERIALIZED_AGENTS else ""
+    if project_dir and _project_declares_agent(agent_name, project_dir):
+        return agent_name
+    return ""
+
+
+def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
+    """Whether *project_dir* declares a dispatchable agent called *agent_name*.
+
+    Delegates to ``agent_discovery``, which owns the scan, its sensitive-path guards,
+    and the stat-signature cache.
+
+    Splits on whether an event loop is running, because that decides what is safe:
+
+    * **Off the loop** (the CLI, tests, and the discovery-pool thread the dashboard
+      call sites use) — scan and revalidate normally.
+    * **On the loop** — read the cache and nothing else, via a helper that makes no
+      syscalls whatsoever. Even one directory's worth of reads is unbounded in
+      LATENCY, and this runs on EVERY turn of a project-agent-bound session, so a
+      network or otherwise slow checkout would become a recurring gateway stall the
+      loop-stall watchdog blames on chat. A cold cache reports "not declared" and the
+      caller falls back, exactly as the user-level cold-snapshot path does.
+
+    The dashboard call sites warm the cache through the discovery pool immediately
+    before resolving, so the on-loop read is a hit rather than a fallback. Only the
+    WARM is offloaded, never ``resolve_agent_bindings`` itself: that function can
+    raise ``StopIteration`` on a malformed config, and ``StopIteration`` cannot be
+    delivered through a ``Future`` — asyncio rejects it, and the awaiting caller
+    hangs instead of seeing the error.
+
+    Deferred import so this module keeps its leaf-level import graph. Best-effort — a
+    lookup failure means "not declared here", never an exception into turn handling.
+    """
+    try:
+        from kiro_crew.agent_discovery import (
+            cached_project_agent_names,
+            project_agent_names,
+        )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return agent_name in project_agent_names(project_dir)
+        names = cached_project_agent_names(project_dir)
+        if names is None:
+            logger.debug(
+                "Project agent cache cold on the event loop for %r; falling back "
+                "(warm it off-loop before resolving to dispatch a project agent)",
+                agent_name,
+            )
+            return False
+        return agent_name in names
+    except Exception:  # noqa: BLE001 — a probe failure only costs a fallback
+        logger.debug("Project agent probe failed for %r", agent_name, exc_info=True)
+        return False
 
 
 def resolve_agent_bindings(
     config: KiroCrewConfig,
     agent_name: str | None = None,
+    project_dir: str | None = None,
 ) -> ResolvedBindings:
     """Resolve workspace, memory store, and kiro agent for a session.
 
@@ -5882,6 +5953,12 @@ def resolve_agent_bindings(
        registered in ``~/.kiro/agents/`` and never added to ``config.agents``, so
        this is the only thing that stops an app-bound session from silently
        running the default agent.
+
+    *project_dir* is the session's active project directory, which widens step 2 to
+    that project's own ``.kiro`` scope. It must be the same directory Kiro Crew
+    passes as the kiro-cli cwd, so an agent found through it is one the backend
+    will genuinely resolve; passing a directory the session does not run in would
+    reintroduce the silent-substitution bug this lookup exists to prevent.
     """
     import dataclasses as _dc
 
@@ -5890,7 +5967,7 @@ def resolve_agent_bindings(
     # ITSELF. Computed only when the name is not an alias — the lookup touches
     # the filesystem.
     alias_hit = bool(agent_name) and agent_name in config.agents
-    passthrough = "" if alias_hit else _materialized_kiro_agent(agent_name)
+    passthrough = "" if alias_hit else _materialized_kiro_agent(agent_name, project_dir)
     # A non-empty name that matched NEITHER an alias nor a materialized config is
     # about to be answered by the default agent. Reported so callers that store
     # the requested name never advertise a binding that is not running.

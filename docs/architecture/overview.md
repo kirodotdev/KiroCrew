@@ -20,7 +20,8 @@ Three layers sit beneath Kiro Crew, and the distinction matters:
    tool execution (bash, file read/write, grep, glob), MCP server management,
    session persistence, context compaction, and **ACP** (the Agent Client
    Protocol): a JSON-RPC 2.0 stdio interface any orchestrator can drive.
-2. **Agent configs** (JSON under `~/.kiro/agents/`) tell kiro-cli *how* to
+2. **Agent configs** (JSON under `~/.kiro/agents/`, or a project's own
+   `<project>/.kiro/agents/`) tell kiro-cli *how* to
    behave: system prompt, enabled tools, MCP servers. Every agent runs as
    `kiro-cli acp --agent <name>`; the `--agent` flag selects the config, the
    runtime is always kiro-cli. Kiro Crew generates and refreshes its own
@@ -572,7 +573,9 @@ automatically. Selected entries:
 
 Generated kiro-cli agent JSON does **not** live here: it is written to
 `~/.kiro/agents/` (`kiro_home()/agents`), because that is where kiro-cli reads
-agent specs.
+agent specs. That directory stays the only *write* target; a project's own
+`<project>/.kiro/agents/` is additionally *read* for sessions bound to a project
+(kiro-cli searches it first, since Kiro Crew runs kiro-cli in that directory).
 
 ## Feature and subsystem map
 

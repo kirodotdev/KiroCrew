@@ -4049,6 +4049,176 @@ class TestAppAgentDispatch(unittest.TestCase):
                     ):
                         assert asyncio.run(_on_loop()).kiro_agent == "kirocrew"
 
+    def _project_dir(self, tmp: Path, files: dict[str, dict]) -> Path:
+        d = tmp / "repo" / ".kiro" / "agents"
+        d.mkdir(parents=True, exist_ok=True)
+        for filename, body in files.items():
+            (d / filename).write_text(json.dumps(body), encoding="utf-8")
+        return tmp / "repo"
+
+    def test_project_agent_dispatches_itself(self):
+        # A project-local agent is resolvable by kiro-cli (Kiro Crew spawns it with
+        # the project dir as cwd) but is not a Kiro Crew alias, so without the
+        # project scope it fell through to default_agent and the DEFAULT agent
+        # answered a session the user bound to the repo's own agent.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            proj = self._project_dir(Path(td), {"repobot.json": {"name": "repobot"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                r = loader.resolve_agent_bindings(
+                    self._config(), agent_name="repobot", project_dir=str(proj)
+                )
+        assert r.kiro_agent == "repobot"
+        assert r.requested_resolved is True
+
+    def test_project_agent_needs_the_project_dir_to_dispatch(self):
+        # Without the project dir there is no second scope to search, so the same
+        # agent must still fall back — the pre-existing contract for callers that
+        # have no session context.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            self._project_dir(Path(td), {"repobot.json": {"name": "repobot"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                r = loader.resolve_agent_bindings(self._config(), agent_name="repobot")
+        assert r.kiro_agent == "kirocrew"
+        assert r.requested_resolved is False
+
+    def test_alias_still_wins_over_a_project_agent(self):
+        # An explicit Kiro Crew alias is authored config; it must not be displaced by
+        # a file that happens to share its name.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            proj = self._project_dir(Path(td), {"default.json": {"name": "default"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                r = loader.resolve_agent_bindings(
+                    self._config(), agent_name="default", project_dir=str(proj)
+                )
+        assert r.kiro_agent == "kirocrew"
+
+    def test_unknown_name_still_falls_back_with_a_project_dir(self):
+        # The project scope widens where a name can be found; it must not make an
+        # unknown name dispatchable.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            proj = self._project_dir(Path(td), {"repobot.json": {"name": "repobot"}})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                r = loader.resolve_agent_bindings(
+                    self._config(), agent_name="nope", project_dir=str(proj)
+                )
+        assert r.kiro_agent == "kirocrew"
+        assert r.requested_resolved is False
+
+    def test_user_level_hit_does_no_project_filesystem_io(self):
+        # The hot path must stay filesystem-free: a name already in the snapshot
+        # must not trigger the project probe, even when a project dir is supplied.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
+            proj = self._project_dir(Path(td), {})
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
+                loader.refresh_materialized_agents()
+                with unittest.mock.patch.object(
+                    loader, "_project_declares_agent", side_effect=AssertionError("probed")
+                ) as probe:
+                    r = loader.resolve_agent_bindings(
+                        self._config(), agent_name="mochi", project_dir=str(proj)
+                    )
+                probe.assert_not_called()
+        assert r.kiro_agent == "mochi"
+
+    def test_project_lookup_reads_nothing_on_the_loop_with_a_cold_cache(self):
+        # The project lookup reads a checkout, so on the loop it consults the cache
+        # and nothing else. Cold cache => "not declared" => default agent for that
+        # turn, mirroring the user-level cold-snapshot rule. A slow/network checkout
+        # would otherwise stall every turn of a project-bound session.
+        import asyncio
+
+        import kiro_crew.agent_discovery as ad
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            proj = self._project_dir(Path(td), {"repobot.json": {"name": "repobot"}})
+            ad.clear_project_agent_cache()
+
+            async def _on_loop():
+                return loader.resolve_agent_bindings(
+                    self._config(), agent_name="repobot", project_dir=str(proj)
+                )
+
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                with unittest.mock.patch.object(loader, "_MATERIALIZED_AGENTS_READY", True):
+                    assert asyncio.run(_on_loop()).kiro_agent == "kirocrew"
+
+    def test_warming_off_loop_lets_the_loop_resolve_a_project_agent(self):
+        # The shape the dashboard call sites use: warm through the discovery pool,
+        # then resolve inline. The on-loop read is then a cache HIT, so a
+        # project-bound session dispatches its own agent on the very first turn.
+        import asyncio
+
+        import kiro_crew.agent_discovery as ad
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            proj = self._project_dir(Path(td), {"repobot.json": {"name": "repobot"}})
+            ad.clear_project_agent_cache()
+
+            async def _warm_then_resolve():
+                await ad.warm_project_agent_names(str(proj))
+                return loader.resolve_agent_bindings(
+                    self._config(), agent_name="repobot", project_dir=str(proj)
+                )
+
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                with unittest.mock.patch.object(loader, "_MATERIALIZED_AGENTS_READY", True):
+                    assert asyncio.run(_warm_then_resolve()).kiro_agent == "repobot"
+
+    def test_resolution_raises_stopiteration_synchronously(self):
+        # resolve_agent_bindings raises StopIteration on a malformed config (the
+        # defensive `next(iter(config.agents))` branch), and callers rely on catching
+        # it: _run_chat's `except Exception` logs and continues.
+        #
+        # This is why the resolver MUST stay inline and only the cache warm is
+        # offloaded. StopIteration cannot be delivered through a Future, so running
+        # this in an executor makes the awaiting caller hang on 3.10 (and raise an
+        # unrelated RuntimeError on newer runtimes) instead of seeing the error.
+        # The offloaded half is deliberately NOT exercised here -- reproducing it
+        # would hang the suite on the very runtime the bug affects.
+        import kiro_crew.config.loader as loader
+
+        with self.assertRaises(StopIteration):
+            loader.resolve_agent_bindings(unittest.mock.MagicMock(), "anything", None)
+
+    def test_legacy_spec_is_not_dispatchable(self):
+        # kiro-cli cannot activate a name declared only in
+        # <project>/.kiro/*.agent-spec.json, so resolution must NOT dispatch it --
+        # otherwise the slot advertises an agent that fails at set_mode.
+        import kiro_crew.agent_discovery as ad
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            agents = self._agents_dir(Path(td), {})
+            kiro = Path(td) / "repo" / ".kiro"
+            kiro.mkdir(parents=True, exist_ok=True)
+            (kiro / "legacy.agent-spec.json").write_text(json.dumps({}), encoding="utf-8")
+            ad.clear_project_agent_cache()
+            with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: agents):
+                r = loader.resolve_agent_bindings(
+                    self._config(), agent_name="legacy", project_dir=str(Path(td) / "repo")
+                )
+        assert r.kiro_agent == "kirocrew"
+        assert r.requested_resolved is False
+
 
 class TestWeixinConfig(unittest.TestCase):
     """The WeChat allow-list must survive a config round trip.

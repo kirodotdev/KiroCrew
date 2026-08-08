@@ -4454,7 +4454,7 @@ class TestRuntimeWiring:
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.resolve_agent_bindings",
-            lambda cfg, name: mock_bindings,
+            lambda cfg, name, project_dir=None: mock_bindings,
         )
 
         # Create a context builder with mocked build_message
