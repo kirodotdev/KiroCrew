@@ -37,7 +37,12 @@ export default function NotificationsPage() {
   return (
     <>
       <PageHeader title={i18nT('pages.notificationsPage.notifications')} subtitle={i18nT('pages.notificationsPage.all_agent_activity_cron_results_webhooks_and_app')} />
-      <div className="px-6 pb-8 flex-1 min-h-0 flex flex-col overflow-hidden">
+      {/* Desktop height-locks the master/detail split so feed and detail scroll
+          as independent panes. On mobile the split collapses to one column and
+          the stat grid stacks several rows tall, so height-locking would pin
+          the feed/detail to the sliver left under the grid; the page scrolls as
+          a whole instead (the standard page skeleton). */}
+      <div className={`px-6 pb-8 flex-1 min-h-0 flex flex-col ${isMobile ? 'overflow-y-auto' : 'overflow-hidden'}`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(120px,1fr))] mb-4 shrink-0">
           <StatCard label={i18nT('pages.notificationsPage.total')} value={items.length} accent />
           <StatCard label={i18nT('pages.notificationsPage.unread')} value={unread} />
@@ -47,7 +52,7 @@ export default function NotificationsPage() {
         </div>
 
         {/* Split layout: feed + detail */}
-        <div className="flex-1 min-h-0 flex gap-4">
+        <div className={`flex gap-4 ${isMobile ? '' : 'flex-1 min-h-0'}`}>
           {/* Left: feed */}
           <div className={`flex flex-col shrink-0 ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[420px] w-[40%]'} ${isMobile && selected ? 'hidden' : ''}`}>
             <Card className="flex flex-col flex-1 min-h-0">
@@ -59,7 +64,9 @@ export default function NotificationsPage() {
           {/* Right: detail panel */}
           {isMobile && selected ? (
             <div className="flex-1 min-w-0">
-              <Card className="flex flex-col h-full min-h-0">
+              {/* Natural height: the page scrolls on mobile, so the detail body
+                  grows instead of inner-scrolling a clipped pane. */}
+              <Card className="flex flex-col">
                 <button className="flex items-center gap-1 px-2 py-1.5 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none mb-1" onClick={() => setSelectedTs(null)}>
                   <ArrowLeft size={14} /> {i18nT('pages.notificationsPage.back')}
                 </button>
