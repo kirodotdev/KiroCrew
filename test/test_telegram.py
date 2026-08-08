@@ -34,8 +34,13 @@ from kiro_crew.telegram.client import (
     truncate_html_safe,
 )
 from kiro_crew.telegram.commands import (
+    COMMAND_SPEC,
     ConversationState,
+    bot_command_payload,
+    build_help_text,
+    is_bare_mid_turn_override,
     parse_command,
+    parse_command_argument,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import (
@@ -57,7 +62,11 @@ from kiro_crew.telegram.transport import (
     TelegramTransport,
     forum_gate_outcome,
 )
-from kiro_crew.telegram.transport_dispatch import _STEER_ACK_EMOJI, TelegramDispatcher
+from kiro_crew.telegram.transport_dispatch import (
+    _MODEL_PICKER_TTL_SECS,
+    _STEER_ACK_EMOJI,
+    TelegramDispatcher,
+)
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
@@ -163,11 +172,25 @@ class _Ev:
 class FakeProvider:
     supports_steer = True
 
-    def __init__(self, reply: str = "Answer") -> None:
+    def __init__(self, reply: str = "Answer", models: list | None = None) -> None:
         self._reply = reply
         self.steered: list = []
         self.cancelled = 0
         self.active_turn = True  # gates _handle_busy's live-turn steer check
+        # Models the backend "advertised" at session init, plus the ids a
+        # /model press pushed through session/set_model.
+        self.advertised: list = list(models or [])
+        self.set_models: list[str] = []
+        self.set_model_error: Exception | None = None
+        self.client = SimpleNamespace(set_model=self._set_model)
+
+    def available_models(self) -> list:
+        return list(self.advertised)
+
+    async def _set_model(self, model_id: str) -> None:
+        if self.set_model_error is not None:
+            raise self.set_model_error
+        self.set_models.append(model_id)
 
     def has_active_turn(self) -> bool:
         return self.active_turn
@@ -209,6 +232,7 @@ class FakeSessions:
         self.successes: list[str] = []
         self.failures: list[str] = []
         self.last_agent: Any = None
+        self.last_model: Any = None
         self.raise_on_get = raise_on_get
         self._busy = False
         self._has = True
@@ -217,8 +241,11 @@ class FakeSessions:
         self.mirror_links: dict[str, Any] = {}
         self._pid: Any = None
 
-    async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
+    async def get_or_create(
+        self, key: str, *, agent: Any = None, channel_id: Any = None, model: Any = None
+    ) -> Any:
         self.last_agent = agent
+        self.last_model = model
         if self.raise_on_get:
             raise RuntimeError("cold-start failed")
         return FakeProvider(), True, False
@@ -391,6 +418,72 @@ class TestParseCommand:
     def test_mid_turn_override_none_without_body(self) -> None:
         # A bare directive with no message body is not an override.
         assert parse_mid_turn_override("/queue") == (None, "/queue")
+
+    def test_model_and_yolo(self) -> None:
+        assert parse_command("/model") == "model"
+        assert parse_command("/models") == "model"  # typo-safe alias
+        assert parse_command("/yolo") == "yolo"
+        assert parse_command("/yolo on") == "yolo"
+
+    def test_command_argument(self) -> None:
+        assert parse_command_argument("/yolo on") == "on"
+        assert parse_command_argument("/yolo   on  ") == "on"
+        assert parse_command_argument("/yolo") == ""
+
+    def test_bare_mid_turn_override_is_flagged(self) -> None:
+        # A lone directive must be recognised so it can get a usage hint instead
+        # of reaching the model as the literal string "/queue".
+        assert is_bare_mid_turn_override("/queue") is True
+        assert is_bare_mid_turn_override("  /STEER ") is True
+        assert is_bare_mid_turn_override("/queue do this") is False
+        assert is_bare_mid_turn_override("/new") is False
+        assert is_bare_mid_turn_override("hello") is False
+
+
+class TestCommandCatalogue:
+    """COMMAND_SPEC is the one source behind /help AND the Bot API menu."""
+
+    def test_help_card_lists_every_spec_row(self) -> None:
+        help_text = build_help_text()
+        for name, desc in COMMAND_SPEC:
+            assert f"/{name} — {desc}" in help_text
+
+    def test_every_spec_row_is_a_real_command(self) -> None:
+        # A menu entry the parser does not recognise would send the user's tap
+        # straight to the model as chat text.
+        for name, _desc in COMMAND_SPEC:
+            assert parse_command(f"/{name}") is not None, name
+
+    def test_menu_excludes_body_taking_directives(self) -> None:
+        # The Telegram client SENDS a menu entry on tap, so /queue and /steer —
+        # which are prefixes needing a message body — must not be listed.
+        names = {name for name, _ in COMMAND_SPEC}
+        assert "queue" not in names and "steer" not in names
+        # They stay documented in the help card's footer.
+        assert "/queue <msg>" in build_help_text()
+
+    def test_payload_matches_bot_api_shape(self) -> None:
+        payload = bot_command_payload()
+        assert payload[0] == {"command": "new", "description": "Start a fresh conversation"}
+        assert len(payload) == len(COMMAND_SPEC)
+        for row in payload:
+            assert set(row) == {"command", "description"}
+            assert row["command"] == row["command"].lower()
+            assert row["command"].lstrip("/") == row["command"]  # no leading slash
+            assert 1 <= len(row["command"]) <= 32
+            assert 1 <= len(row["description"]) <= 256
+
+    def test_malformed_row_is_dropped_not_sent(self, monkeypatch: Any) -> None:
+        # Telegram rejects the WHOLE array on one bad row, so a malformed entry
+        # must be skipped rather than cost the user the entire menu.
+        from kiro_crew.telegram import commands as tg_commands
+
+        monkeypatch.setattr(
+            tg_commands,
+            "COMMAND_SPEC",
+            (("new", "ok"), ("Bad-Name", "rejected by the Bot API"), ("blank", "")),
+        )
+        assert tg_commands.bot_command_payload() == [{"command": "new", "description": "ok"}]
 
 
 class TestConversationState:
@@ -2936,3 +3029,275 @@ class TestTelegramSessionPidPublish:
                 pub.assert_awaited_once_with(sess, "telegram:kirocrew:direct:7")
 
         asyncio.run(_go())
+
+
+# ── /yolo + /model (transport_dispatch.py) ─────────────────────────────────
+
+
+def _dm(text: str, uid: str = "7") -> InboundMessage:
+    return InboundMessage(
+        channel_type="telegram", user_id=uid, conversation_id=uid, text=text
+    )
+
+
+def _press(data: str, *, message_id: int = 101, uid: int = 7, label: str = "") -> Any:
+    return SimpleNamespace(
+        callback_query_id="q1",
+        user_id=uid,
+        chat_id=uid,
+        message_id=message_id,
+        data=data,
+        label=label,
+        chat_type="private",
+    )
+
+
+class TestYoloCommand:
+    """/yolo drives the SAME process-wide grant as the dashboard and Slack."""
+
+    def _reset(self) -> Any:
+        from kiro_crew.safety_override import safety_override
+
+        so = safety_override()
+        if so.is_active():
+            so.deactivate("test")
+        return so
+
+    def test_bare_yolo_reports_status_without_changing_it(self) -> None:
+        so = self._reset()
+        d, cli, _ = _dispatcher({7})
+        try:
+            asyncio.run(d.handle_message(_dm("/yolo")))
+            assert "OFF" in cli.sent[-1][0]
+            assert "Usage: /yolo on | off | renew" in cli.sent[-1][0]
+            assert so.is_active() is False, "a status read must not arm the grant"
+        finally:
+            self._reset()
+
+    def test_on_then_off_round_trips_the_grant(self) -> None:
+        so = self._reset()
+        d, cli, _ = _dispatcher({7})
+        try:
+            asyncio.run(d.handle_message(_dm("/yolo on")))
+            assert so.is_active() is True
+            assert "ON" in cli.sent[-1][0]
+
+            asyncio.run(d.handle_message(_dm("/yolo off")))
+            assert so.is_active() is False
+            assert "OFF" in cli.sent[-1][0]
+        finally:
+            self._reset()
+
+    def test_unknown_argument_falls_back_to_status(self) -> None:
+        so = self._reset()
+        d, cli, _ = _dispatcher({7})
+        try:
+            asyncio.run(d.handle_message(_dm("/yolo maybe")))
+            assert so.is_active() is False, "an unrecognised verb must never arm the grant"
+            assert "Usage:" in cli.sent[-1][0]
+        finally:
+            self._reset()
+
+    def test_grant_is_read_per_request_not_captured_at_boot(self) -> None:
+        # The predicate handed to TurnDriver must consult the LIVE grant, or
+        # /yolo would only take effect after a gateway restart. Mutating the
+        # grant between calls proves the closure is not a captured snapshot.
+        so = self._reset()
+        d, _cli, _sess = _dispatcher({7})
+        captured: list = []
+
+        class _Recorder:
+            def __init__(self, *a: Any, **kw: Any) -> None:
+                captured.append(kw.get("auto_approve_session"))
+
+            async def run(self, message: str) -> str:
+                return "ok"
+
+        try:
+            with patch("kiro_crew.telegram.transport_dispatch.TurnDriver", _Recorder):
+                asyncio.run(d.handle_message(_dm("hi")))
+            predicate = captured[0]
+            assert predicate is not None
+            assert predicate() is False
+            so.activate("test")
+            assert predicate() is True, "the predicate must re-read the grant, not cache it"
+        finally:
+            self._reset()
+
+
+class TestModelPicker:
+    """/model is button-only: the user picks from what the backend advertised."""
+
+    _MODELS = [
+        {"modelId": "claude-opus-5", "name": "Opus 5"},
+        {"modelId": "gpt-5.6-sol", "name": "GPT 5.6 Sol"},
+    ]
+
+    def _with_models(self, models: list | None = None) -> Any:
+        d, cli, sess = _dispatcher({7})
+        sess._gp.advertised = list(self._MODELS if models is None else models)
+        return d, cli, sess
+
+    def test_posts_one_button_per_model_plus_auto(self) -> None:
+        d, cli, _ = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        text, markup = cli.sent[-1]
+        rows = markup["inline_keyboard"]
+        assert [r[0]["callback_data"] for r in rows] == ["m:0", "m:1", "m:2"]
+        assert "Auto" in rows[0][0]["text"]
+        assert "Opus 5" in rows[1][0]["text"]
+        assert "Current model:" in text
+
+    def test_callback_data_stays_inside_the_64_byte_cap(self) -> None:
+        # Telegram rejects callback_data over 64 bytes and real model ids run
+        # long, which is why the button carries an index, never the id.
+        long_id = "a" * 300
+        d, cli, _ = self._with_models([{"modelId": long_id, "name": long_id}])
+        asyncio.run(d.handle_message(_dm("/model")))
+        for row in cli.sent[-1][1]["inline_keyboard"]:
+            assert len(row[0]["callback_data"].encode()) <= 64
+
+    def test_press_switches_the_live_session_and_stores_the_pick(self) -> None:
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        picker_mid = cli.sent[-1] and 101
+        asyncio.run(d.on_callback(_press("m:2", message_id=picker_mid)))
+        assert sess._gp.set_models == ["gpt-5.6-sol"]
+        assert d._model_pref[("direct", "7")] == "gpt-5.6-sol"
+        assert "Now using gpt-5.6-sol" in cli.edits[-1][1]
+        assert cli.edits[-1][2] == {"inline_keyboard": []}, "the keyboard must be retired"
+
+    def test_pick_flows_into_the_next_session(self) -> None:
+        # The stored preference is only useful if session creation consumes it.
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:2")))
+        asyncio.run(d.handle_message(_dm("hi")))
+        assert sess.last_model == "gpt-5.6-sol"
+
+    def test_auto_is_recorded_without_a_wire_call(self) -> None:
+        # There is no ACP id meaning "let the backend choose", so Auto can only
+        # be recorded — claiming a live switch would be a lie.
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:0")))
+        assert sess._gp.set_models == []
+        assert d._model_pref[("direct", "7")] == ""
+        assert "next message" in cli.edits[-1][1]
+
+    def test_auto_reaches_session_creation_as_none_not_empty_string(self) -> None:
+        # Auto must mean "as if never picked". get_or_create gates its own model
+        # resolution on `model is None`, so handing it the Auto row's stored ""
+        # would skip that resolution and land on the provider factory's narrower
+        # fallback — a different model than an untouched conversation gets.
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:0")))
+        asyncio.run(d.handle_message(_dm("hi")))
+        assert sess.last_model is None
+
+    def test_failed_switch_does_not_claim_success(self) -> None:
+        d, cli, sess = self._with_models()
+        sess._gp.set_model_error = RuntimeError("model not available")
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:2")))
+        outcome = cli.edits[-1][1]
+        assert "Couldn't switch" in outcome and "Now using" not in outcome
+
+    def test_busy_session_defers_instead_of_racing_the_turn(self) -> None:
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        sess._busy = True  # try_acquire refuses -> no JSON-RPC on a live channel
+        asyncio.run(d.on_callback(_press("m:2")))
+        assert sess._gp.set_models == []
+        assert "still running" in cli.edits[-1][1]
+        assert d._model_pref[("direct", "7")] == "gpt-5.6-sol"
+
+    def test_advertised_id_is_sent_verbatim(self) -> None:
+        # An advertised id is already what this backend accepts. Routing it
+        # through the canonical registry would REWRITE some ids into a different
+        # model (model_registry.to_acp_id("opus-4.8-1m") == "claude-opus-4.8"),
+        # so the picked id must reach set_model untouched.
+        d, cli, sess = self._with_models([{"modelId": "opus-4.8-1m", "name": "Opus 4.8 (1M)"}])
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:1")))
+        assert sess._gp.set_models == ["opus-4.8-1m"]
+
+    def test_no_advertised_models_asks_for_a_message_first(self) -> None:
+        d, cli, _ = self._with_models([])
+        asyncio.run(d.handle_message(_dm("/model")))
+        assert "send a message first" in cli.sent[-1][0]
+        assert cli.sent[-1][1] is None, "no keyboard when there is nothing to pick"
+
+    def test_expired_picker_refuses_to_act_on_a_stale_list(self) -> None:
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        picker = d._model_pickers["7:101"]
+        picker.created_at -= _MODEL_PICKER_TTL_SECS + 1
+        asyncio.run(d.on_callback(_press("m:2")))
+        assert sess._gp.set_models == []
+        assert "no longer active" in cli.edits[-1][1]
+
+    def test_unknown_picker_is_reported_not_ignored(self) -> None:
+        d, cli, sess = self._with_models()
+        asyncio.run(d.on_callback(_press("m:0", message_id=999)))
+        assert sess._gp.set_models == []
+        assert "no longer active" in cli.edits[-1][1]
+
+    def test_out_of_range_index_cannot_pick_a_model(self) -> None:
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:99")))
+        assert sess._gp.set_models == []
+        assert "no longer active" in cli.edits[-1][1]
+
+    def test_second_press_cannot_apply_twice(self) -> None:
+        d, cli, sess = self._with_models()
+        asyncio.run(d.handle_message(_dm("/model")))
+        asyncio.run(d.on_callback(_press("m:2")))
+        asyncio.run(d.on_callback(_press("m:2")))
+        assert sess._gp.set_models == ["gpt-5.6-sol"], "the picker must be single-use"
+
+
+class TestBareMidTurnDirective:
+    def test_bare_queue_gets_usage_not_a_model_turn(self) -> None:
+        d, cli, sess = _dispatcher({7})
+        asyncio.run(d.handle_message(_dm("/queue")))
+        assert "Those take a message" in cli.sent[-1][0]
+        assert sess.successes == [], "the bare token must never reach the model"
+
+    def test_queue_with_a_body_still_runs_as_content(self) -> None:
+        d, _cli, sess = _dispatcher({7})
+        asyncio.run(d.handle_message(_dm("/queue do the thing")))
+        assert sess.successes == ["telegram:kirocrew:direct:7"]
+
+
+class TestSetMyCommands:
+    def test_empty_list_is_refused_so_the_menu_is_never_wiped(self) -> None:
+        # Telegram reads an empty array as "this bot has no commands" and clears
+        # the menu, so an empty payload must not reach the wire.
+        client = TelegramClient(token="t")
+        calls: list = []
+
+        async def _api(method: str, params: dict, *a: Any, **kw: Any) -> Any:
+            calls.append(method)
+            return True
+
+        client._api = _api  # type: ignore[assignment]
+        assert asyncio.run(client.set_my_commands([])) is False
+        assert calls == []
+
+    def test_publishes_the_catalogue(self) -> None:
+        client = TelegramClient(token="t")
+        sent: list = []
+
+        async def _api(method: str, params: dict, *a: Any, **kw: Any) -> Any:
+            sent.append((method, params))
+            return True
+
+        client._api = _api  # type: ignore[assignment]
+        assert asyncio.run(client.set_my_commands(bot_command_payload())) is True
+        assert sent[0][0] == "setMyCommands"
+        assert {"command": "model", "description": "Choose the model from a list"} in sent[0][1][
+            "commands"
+        ]

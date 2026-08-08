@@ -823,3 +823,37 @@ def grant_declared_yolo() -> ActivationResult:
         "the declared grant falls back to the ad-hoc duration"
     )
     return so.activate(SafetyOverride._DECLARED_SOURCE)
+
+
+# ── User-facing grant-lifetime text (channel-neutral) ──
+
+NO_EXPIRY_TEXT = "stays on until Kiro Crew restarts"
+
+
+def fmt_grant_duration(secs: int) -> str:
+    """Render an ad-hoc TTL for a user-facing message (e.g. "6h", "30min")."""
+    if secs % 3600 == 0:
+        return f"{secs // 3600}h"
+    return f"{secs // 60}min"
+
+
+def describe_grant_lifetime() -> str:
+    """Describe the LIVE grant's lifetime truthfully.
+
+    A grant can have no timed expiry at all, in which case ``remaining_secs()``
+    is -1. Claiming such a grant "auto-expires" would tell the operator the
+    skip-every-approval mode disarms itself when it never does.
+    """
+    so = safety_override()
+    if not so.is_active():
+        return "off"
+    if so.is_permanent:
+        return NO_EXPIRY_TEXT
+    return f"{max(0, so.remaining_secs()) // 60}min remaining"
+
+
+def describe_new_grant(result_ttl: int) -> str:
+    """Describe the lifetime of a grant that was just created."""
+    if result_ttl <= 0:
+        return NO_EXPIRY_TEXT
+    return f"auto-expires in {fmt_grant_duration(result_ttl)}"

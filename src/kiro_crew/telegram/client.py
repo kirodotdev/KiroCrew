@@ -479,6 +479,18 @@ class TelegramClient:
             },
         )
 
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> bool:
+        """Publish the bot's ``/`` autocomplete menu (``setMyCommands``).
+
+        Telegram REPLACES the whole default-scope menu on each call, so the full
+        list must be sent every time — that is also what retires a command the
+        bot no longer serves. An empty list is refused rather than sent, because
+        Telegram would read it as "this bot has no commands" and wipe the menu.
+        """
+        if not commands:
+            return False
+        return bool(await self._api("setMyCommands", {"commands": commands}))
+
     # ── Polling loop ──
 
     async def _call_raw(self, method: str, params: dict, timeout: int = 15) -> Any:

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.telegram.client import TelegramAuthError, TelegramClient
+from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.transport import TelegramTransport
 from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 
@@ -110,6 +111,16 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         except Exception as exc:
             startup_error = f"Telegram unreachable at startup ({type(exc).__name__})"
             logger.warning("%s — starting polling anyway (will retry).", startup_error)
+
+        if token_ok:
+            # Publish the "/" autocomplete menu so the commands are discoverable
+            # in the Telegram client instead of only via /help. Best-effort and
+            # gated on a proven token: a failure here costs autocomplete, never
+            # the channel, and an unreachable Telegram would fail anyway.
+            try:
+                await client.set_my_commands(bot_command_payload())
+            except Exception:
+                logger.warning("Telegram: setMyCommands failed", exc_info=True)
 
         await transport.connect()  # starts the long-polling loop
         assert client is not None  # constructed above; narrows the Optional for mypy
