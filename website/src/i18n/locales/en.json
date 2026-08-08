@@ -4038,6 +4038,13 @@
       "undo_remove": "Undo remove",
       "will_be_removed_on_save": "Will be removed on save."
     },
+    "sendToInstanceSubmenu": {
+      "failed": "Failed",
+      "not_connected": "not connected",
+      "send_a_copy_to": "Send a copy to",
+      "sent": "Sent",
+      "unknown_error": "Unknown error"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "Bring back to main",
       "close_session": "Close session",

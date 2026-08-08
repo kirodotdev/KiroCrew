@@ -23,6 +23,11 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.session_transfer import (
+    SnapshotUnstable,
+    build_transfer_bundle_async,
+    local_instance_label,
+)
 from kiro_crew.instances.registry import (
     DuplicateInstanceError,
     InstanceNotFoundError,
@@ -407,3 +412,138 @@ async def api_instances_restart(request: web.Request) -> web.Response:
         return web.json_response(result)
     _audit("restart", "failure", request_id=instance_id, error=result.get("message", ""))
     return web.json_response(result, status=502)
+
+
+async def api_instances_send_session(request: web.Request) -> web.Response:
+    """POST /api/instances/{id}/send-session — copy a local session to a peer.
+
+    Body: ``{ "slot": "<local slot key>" }``.
+
+    Copy semantics: the local session is left completely untouched, and the peer
+    allocates a fresh key. Nothing here can delete or mutate a conversation on
+    either side, which is why the route needs no confirmation step.
+
+    The minted token is NOT part of this response — the transfer is performed
+    inside ``SshTunnelManager.send_session_bundle`` precisely so that ``connect``
+    and ``refresh-token`` stay the only two routes where a token crosses this
+    boundary (see the module docstring and instances.md §6).
+    """
+    denied = _guard(request, "send_session")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    inst = _registry(state).get(instance_id)
+    if inst is None:
+        _audit("send_session", "denied", request_id=instance_id, error="not found")
+        return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("send_session", "denied", request_id=instance_id, error="manager unavailable")
+        return web.json_response(
+            {"error": "instances manager not running", "code": "instances_manager_down"},
+            status=503,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "invalid JSON body", "code": "transfer_invalid_json"}, status=400
+        )
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "transfer_body_not_object"},
+            status=400,
+        )
+    slot_key = body.get("slot")
+    if not isinstance(slot_key, str) or not slot_key:
+        return web.json_response(
+            {"error": "slot must be a non-empty string", "code": "transfer_missing_slot"},
+            status=400,
+        )
+    slot = state._slots.get(slot_key)
+    if slot is None:
+        _audit("send_session", "denied", request_id=instance_id, error="slot not found")
+        return web.json_response(
+            {"error": "session not found", "code": "transfer_slot_not_found"}, status=404
+        )
+    # App-scope ownership, mirroring chat_fork. An app token sets request["user"]
+    # so it clears _guard(), and an app whose manifest declares /api/instances
+    # reaches here — without this it could name ANOTHER slot's key and have that
+    # transcript copied to a peer, which is an exfiltration path out of the app
+    # sandbox. 404 rather than 403, like fork: a slot owned by another app must be
+    # indistinguishable from one that does not exist, or the error code itself
+    # enumerates slots across the isolation boundary (CWE-204). The real reason is
+    # recorded server-side in the audit event.
+    request_app = request.get("app", "")
+    if request_app and (not getattr(slot, "_app", "") or slot._app != request_app):
+        _audit(
+            "send_session",
+            "denied",
+            request_id=instance_id,
+            error=f"app {request_app!r} does not own this slot",
+        )
+        return web.json_response(
+            {"error": "session not found", "code": "transfer_slot_not_found"}, status=404
+        )
+    if slot.memory_mode != "persistent":
+        # An incognito/temporary session has no durable transcript by design;
+        # transferring one would defeat the mode the user deliberately chose.
+        _audit("send_session", "denied", request_id=instance_id, error="non-persistent slot")
+        return web.json_response(
+            {
+                "error": "cannot transfer a non-persistent session",
+                "code": "transfer_slot_not_persistent",
+            },
+            status=400,
+        )
+
+    # The source is NOT flushed before bundling. A copy leaves the source
+    # untouched, and build_transfer_bundle already merges the on-disk transcript
+    # with the unflushed in-memory tail — so a flush here would add nothing
+    # except a duplication bug: save_slot_off_loop writes the tail to disk
+    # without clearing ``_dirty``, after which the bundle re-appends that same
+    # tail from memory and every unsaved turn lands twice in the copy.
+    try:
+        bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
+    except SnapshotUnstable:
+        # No consistent view of the source: either a flush landed inside every
+        # retry, or a rewind/regenerate rewrite is still owed so disk is stale.
+        # Retryable, and the source is untouched.
+        _audit("send_session", "failure", request_id=instance_id, error="snapshot unstable")
+        return web.json_response(
+            {
+                "error": "the session could not be copied consistently right now; please retry",
+                "code": "transfer_snapshot_unstable",
+            },
+            status=503,
+        )
+    ok, payload = await mgr.send_session_bundle(instance_id, bundle)
+    if not ok:
+        _audit(
+            "send_session",
+            "failure",
+            request_id=instance_id,
+            error=str(payload.get("code", "unknown")),
+        )
+        # Re-emit the peer's reason explicitly rather than forwarding *payload*
+        # verbatim: the code must be statically visible in the response body
+        # (test_error_code_contract.py), and spelling both fields out also
+        # guarantees a code is present even if a future peer omits one.
+        return web.json_response(
+            {
+                "error": payload.get("error", "the transfer failed"),
+                "code": payload.get("code", "transfer_peer_refused"),
+            },
+            status=502,
+        )
+    _audit("send_session", "success", request_id=instance_id)
+    return web.json_response(
+        {
+            "ok": True,
+            "instance": instance_id,
+            "remote_key": payload.get("key", ""),
+            "messages": len(bundle.get("messages", [])),
+        }
+    )

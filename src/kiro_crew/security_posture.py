@@ -130,6 +130,20 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "output-boundary reason as the app plan/activity-log sinks.",
     ),
     (
+        "Session transfer bundle",
+        "dashboard/session_transfer.py",
+        "Transcript content copied to another Kiro Crew instance over an Instances "
+        "tunnel. The bundle LEAVES this host, so it is an output boundary: a "
+        "transcript written before the redactors existed (or carried in from a "
+        "channel) can still hold a raw credential on disk, and relying on the "
+        "receiving instance to scrub it would send the secret across the boundary "
+        "first. Covers the Layer B kiro-cli context too, whose events blob is RAW "
+        "state the redactors may never have seen — scrubbed whole, user turns "
+        "included, because it is model context rather than the human's shown words. "
+        "The importer redacts again — idempotent, and it must not assume a "
+        "well-behaved sender.",
+    ),
+    (
         "Profile artifact",
         "perf_sampler.py",
         "Folded-stack profiles written by `kirocrew perf sample`. Frame labels are "

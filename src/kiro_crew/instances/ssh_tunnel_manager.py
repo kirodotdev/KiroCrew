@@ -70,6 +70,7 @@ from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_
 from kiro_crew.instances.constants import (
     DEFAULT_RECOVER_BACKOFF_MAX_SECS as _RECOVER_BACKOFF_MAX_SECS,
 )
+from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REFRESH_FRACTION
 from kiro_crew.instances.constants import (
@@ -1404,6 +1405,104 @@ class SshTunnelManager:
                 type(e).__name__,  # never the token
             )
             return False
+
+    async def send_session_bundle(self, instance_id: str, bundle: dict) -> tuple[bool, dict]:
+        """POST a session-transfer *bundle* to a connected instance's importer.
+
+        Returns ``(ok, payload)``: on success *payload* is the peer's JSON reply
+        (carrying the new session key); on failure it carries ``error`` and a
+        machine-readable ``code`` so the caller can tell a stale token from an
+        unreachable peer from a bundle the peer refused.
+
+        Runs entirely over the already-open forward — **no SSH spawn**, same as
+        :meth:`token_validates`.
+
+        **The token never leaves this object.** The request is issued here rather
+        than in the API layer specifically so that ``connect`` and
+        ``refresh-token`` remain the only two routes where a minted token crosses
+        the API boundary (instances.md §6). A transfer needs the credential but
+        the browser does not, so handing it out would widen that boundary for no
+        reason. It is sent as a cookie rather than a query parameter so it cannot
+        land in the peer's HTTP access log, and it is never logged here.
+        """
+        st = self.status(instance_id)
+        if st is None or st.state is not TunnelState.CONNECTED:
+            return False, {
+                "error": "instance is not connected",
+                "code": "transfer_peer_not_connected",
+            }
+        local_port = st.local_port
+        if local_port <= 0:
+            return False, {
+                "error": "no live credential for this instance; reconnect it",
+                "code": "transfer_no_credential",
+            }
+        url = f"http://{_LOOPBACK}:{int(local_port)}/api/chat/slots/import"
+        # The dashboard cookie is keyed by the port the CLIENT connects to, taken
+        # from the Host header (token_auth._cookie_port_from_host) — not by the
+        # peer's own listen port, so two remotes both serving 7777 through
+        # different forwards do not collide on one cookie. We connect to
+        # 127.0.0.1:<local_port>, so that is the name the peer will look for; a
+        # bare ``mc_token`` is never read and would 403 every transfer.
+        cookie_name = f"mc_token_{int(local_port)}"
+        timeout = aiohttp.ClientTimeout(total=_TRANSFER_TIMEOUT)
+        # One re-mint retry on a rejected credential. A retained credential can go
+        # stale while the tunnel stays CONNECTED — the same condition
+        # ``token_validates`` exists for (a failed self-heal re-mint, or a remote
+        # restart that invalidates credentials). Retrying once with a fresh mint
+        # turns that into a transparent success instead of a spurious rejection.
+        for attempt in range(2):
+            token = self._tokens.get(instance_id, "")
+            if not token:
+                return False, {
+                    "error": "no live credential for this instance; reconnect it",
+                    "code": "transfer_no_credential",
+                }
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url, json=bundle, headers={"Cookie": f"{cookie_name}={token}"}
+                    ) as resp:
+                        try:
+                            payload = await resp.json()
+                        except Exception:
+                            payload = {}
+                        if 200 <= resp.status < 300:
+                            return True, payload if isinstance(payload, dict) else {}
+                        if resp.status in (401, 403):
+                            if attempt == 0 and await self.refresh_token(instance_id):
+                                continue  # retry once with the fresh credential
+                            return False, {
+                                "error": "peer rejected the credential",
+                                "code": "transfer_unauthorized",
+                            }
+                        # Forward the peer's own code when it sent one: a version
+                        # mismatch or an oversized bundle is actionable, and
+                        # rewriting it here would erase that.
+                        code = payload.get("code") if isinstance(payload, dict) else None
+                        return False, {
+                            "error": (
+                                payload.get("error")
+                                if isinstance(payload, dict) and payload.get("error")
+                                else f"peer refused the transfer (HTTP {resp.status})"
+                            ),
+                            "code": code or "transfer_peer_refused",
+                        }
+            except Exception as e:
+                logger.info(
+                    "Session transfer to %s failed (%s)",
+                    instance_id,
+                    type(e).__name__,  # never the credential, never the bundle
+                )
+                return False, {
+                    "error": f"could not reach the instance ({type(e).__name__})",
+                    "code": "transfer_unreachable",
+                }
+        # Both attempts came back unauthorized.
+        return False, {
+            "error": "peer rejected the credential",
+            "code": "transfer_unauthorized",
+        }
 
     def token_ttl_remaining(self, instance_id: str) -> int | None:
         """Seconds until the current token reaches its TTL, or None if unknown.
