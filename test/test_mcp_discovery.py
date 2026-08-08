@@ -2748,3 +2748,135 @@ class TestWindowsTeardownOffLoop:
                     f"kill_process_tree called on the loop: {line.strip()}"
                 )
         assert "asyncio.to_thread(" in src
+
+
+class TestProbeSandboxUnavailable:
+    """A probe that could not RUN must not be reported as a broken server.
+
+    kiro-cli launches MCP servers from the agent config without going through
+    this probe, so on a host with no sandbox backend (any Windows host, macOS
+    >= 26) the servers work while the probe cannot spawn them. Reporting that as
+    an ordinary server fault renders every row red with "0 tools" and sends the
+    user debugging a server that is fine.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sandbox_refusal_is_reported_as_a_probe_limitation(self, monkeypatch) -> None:
+        import kiro_crew.mcp_discovery as md
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        monkeypatch.setattr(md, "_probe_sandbox_warned", set())
+
+        def _refuse(*args, **kwargs):
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable and allow_unsandboxed_exec is not set.",
+                kind="no_backend",
+                detail="not Linux",
+            )
+
+        # A THIRD-PARTY server: managed ones never reach the spawn path at all
+        # (their tools are read in-process), so they cannot exercise this branch.
+        server = McpServerInfo(name="playwright-mcp", command="node")
+        with patch("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _refuse), patch(
+            "kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/node"
+        ):
+            result = await probe_server(server)
+
+        # Machine-readable prefix so a presentation layer can tell this apart from
+        # a genuine handshake failure without parsing prose.
+        assert result.error.startswith("mcp_probe_sandbox_unavailable:"), result.error
+        assert "server itself may be fine" in result.error, result.error
+        assert "sandbox_allow_unsandboxed_exec" in result.error, result.error
+
+    @pytest.mark.asyncio
+    async def test_a_managed_server_is_still_spawned_when_the_sandbox_works(self) -> None:
+        """The spawn is the only thing that proves the server can START.
+
+        `_fix_stale_managed_command` exists because the managed invocation does go
+        stale ("command not found: kirocrew; the built-in cron/core tools then never
+        load"), and the probe was the one surface that caught it. Short-circuiting
+        on the server name would report `ok` for a managed server that cannot run —
+        silently changing what `ok` means in the shared `_cache_probe` store.
+        """
+        spawned: dict[str, bool] = {}
+
+        def _wrap(argv, **kwargs):
+            spawned["yes"] = True
+            raise RuntimeError("stop at the wrap")
+
+        server = McpServerInfo(name="kirocrew-core", command="kirocrew", args=["mcp-core"])
+        with patch("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap), patch(
+            "kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/kirocrew"
+        ):
+            await probe_server(server)
+
+        assert spawned.get("yes") is True, "a working sandbox must still be used"
+
+    @pytest.mark.asyncio
+    async def test_a_managed_server_falls_back_to_its_declaration_with_no_backend(
+        self, monkeypatch
+    ) -> None:
+        """No backend: serve the declared list rather than an error.
+
+        This is what removes the opt-in for a read-only listing. The import runs
+        package code in the gateway process, which is only acceptable BECAUSE the
+        sandbox could not confine anything on this host anyway — hence fallback,
+        never primary.
+        """
+        import kiro_crew.mcp_discovery as md
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        monkeypatch.setattr(md, "_managed_in_process_warned", set())
+
+        def _refuse(*args, **kwargs):
+            raise SandboxUnavailableError("no backend", kind="no_backend", detail="not Linux")
+
+        for name, expect_tools in (("kirocrew-core", True), ("kirocrew-cron", True)):
+            server = McpServerInfo(name=name, command="kirocrew", args=["mcp-x"])
+            with patch("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _refuse), patch(
+                "kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/kirocrew"
+            ):
+                result = await probe_server(server)
+
+            assert result.status == "ok", (name, result.error)
+            assert bool(result.tools) is expect_tools, (name, len(result.tools))
+
+    @pytest.mark.asyncio
+    async def test_a_third_party_server_gets_no_declaration_fallback(self) -> None:
+        """Only OUR OWN servers have a declaration to read; a third-party one keeps
+        the honest probe-limitation error."""
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        def _refuse(*args, **kwargs):
+            raise SandboxUnavailableError("no backend", kind="no_backend", detail="not Linux")
+
+        server = McpServerInfo(name="playwright-mcp", command="node")
+        with patch("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _refuse), patch(
+            "kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/node"
+        ):
+            result = await probe_server(server)
+
+        assert result.status == "error"
+        assert result.error.startswith("mcp_probe_sandbox_unavailable:"), result.error
+
+    @pytest.mark.asyncio
+    async def test_the_remedy_paragraph_is_logged_once_per_server(
+        self, monkeypatch, caplog
+    ) -> None:
+        """The cause is the HOST, so it recurs every cycle for every server.
+
+        Unbounded, a four-server config logged four identical multi-line remedy
+        paragraphs per discovery cycle, forever.
+        """
+        import logging
+
+        import kiro_crew.mcp_discovery as md
+
+        monkeypatch.setattr(md, "_probe_sandbox_warned", set())
+        with caplog.at_level(logging.WARNING, logger=md.logger.name):
+            md._warn_probe_sandbox_unavailable_once("kirocrew-core")
+            md._warn_probe_sandbox_unavailable_once("kirocrew-core")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+        assert "probe skipped" in warnings[0].getMessage()

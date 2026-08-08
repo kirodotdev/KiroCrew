@@ -181,6 +181,53 @@ Probes run from `POST /api/mcp/probe`:
   `_PROBE_TEARDOWN_WAIT_SECS` twice (graceful wait, then again after SIGKILL)
   before the process-group reap, which is why that budget is a named constant
   tests can shrink.
+- **A probe that could not RUN is reported as a probe limitation, not a server
+  fault.** `SandboxUnavailableError` is caught ahead of the generic handler:
+  `probe_server` spawns through `sandboxed_spawn_argv(mode="standard")`, which
+  fail-closes on a host with no OS sandbox backend (any Windows host, macOS >= 26).
+  But kiro-cli launches these servers from the agent config **without going through
+  this probe**, so the servers work while the probe cannot spawn them. Reported as
+  an ordinary error, every row rendered red with "0 tools" and sent the user
+  debugging a server that was fine. `server.error` therefore leads with the
+  machine-readable `mcp_probe_sandbox_unavailable:` prefix (mirroring the `code`
+  field on dashboard JSON error bodies), states that the server itself may be fine,
+  and names the `agent.sandbox_allow_unsandboxed_exec` remedy. Because the cause is
+  the HOST, it recurs identically for every server on every discovery cycle, so the
+  remedy paragraph warns once per server name
+  (`_warn_probe_sandbox_unavailable_once`) and demotes repeats to DEBUG.
+  - **A managed server FALLS BACK to its declared tool list when — and only when —
+    the sandbox refuses.** `kirocrew-core` / `-cron` / `-computer` declare their
+    tools statically in this package (`mcp_core._list_tools()` and friends, the very
+    functions the stdio shim answers `tools/list` from), so
+    `_managed_tools_in_process` can serve the listing with no subprocess at all.
+    That is what removes the `agent.sandbox_allow_unsandboxed_exec` opt-in for a
+    read-only listing on a backendless host.
+    - **Fallback, never primary.** When a backend exists the real spawn still runs,
+      because it is the only thing that proves the server can **start**.
+      `_fix_stale_managed_command` exists precisely because that invocation goes
+      stale ("command not found: kirocrew; the built-in cron/core tools then never
+      load"), and the probe is the one surface that catches it. Short-circuiting on
+      the server *name* would report `ok` for a managed server that cannot run,
+      silently changing what `ok` means in the shared `_cache_probe` store.
+    - **Why the import is acceptable only here.** Reading the declaration imports
+      package code **into the gateway process**, which the gateway does not
+      otherwise do (these modules are absent from `sys.modules` at boot). The
+      package directory is writable by the same uid the agent runs as and is not on
+      the sensitive-path floor, so on a host where the sandbox *works*, importing
+      would beat the isolation the spawn provides — which is why an earlier revision
+      that made this the primary path was wrong. Reaching the fallback means the
+      sandbox could not confine anything anyway, so the import concedes nothing the
+      refused spawn had not already conceded.
+    - The substitution is logged at **WARNING**, once per server: `ok` here means
+      "this package declares these tools", not "the server answered", and the
+      default log level is WARNING, so at info it would be invisible on exactly the
+      hosts where it always happens. Third-party servers have no declaration to
+      read and keep the honest `mcp_probe_sandbox_unavailable` error.
+    - Modules are imported **lazily** (they pull in the validation/artifacts graph,
+      which cannot be imported at `mcp_discovery` import time). Any failure returns
+      `None` and the original refusal is reported, so a bad read never invents a
+      result. An **empty** list is a real result: `mcp_computer._list_tools()`
+      returns `[]` by design while the keystone enable is off.
 - An MCP command that does not resolve is a **stable** fact, so it warns once
   per `(server, command)` and demotes the repeats to DEBUG. Timeouts and
   handshake errors stay at WARNING every time: a server that newly starts timing
