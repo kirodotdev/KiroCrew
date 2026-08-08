@@ -15,6 +15,7 @@ from collections.abc import MutableMapping
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,13 @@ _NODE_BIN_DIR_MARKER = "node-bin-dir"
 # toolchain lives somewhere none of the layouts above cover.
 _NODE_BIN_DIR_ENV = "KIROCREW_NODE_BIN_DIR"
 
+# macOS path_helper builds login-shell PATH from these files. Launch Services
+# does not run a login shell for desktop apps, so read the same system-owned
+# path registry directly instead of baking package-manager prefixes into Kiro
+# Crew. Every candidate is still gated by _has_node before it reaches PATH.
+_MACOS_PATHS_FILE = Path("/etc/paths")
+_MACOS_PATHS_DIR = Path("/etc/paths.d")
+
 
 def _mise_data_dir(home: str) -> str:
     """mise's data dir, honouring ``MISE_DATA_DIR`` then ``XDG_DATA_HOME``."""
@@ -162,12 +170,80 @@ def _validated_bin_dir(val: str) -> str | None:
 
 
 def _marker_node_bin_dir() -> str | None:
-    """Read the node bin dir recorded by ``ensure-node.sh``, or ``None``."""
+    """Read the node bin dir recorded by setup or ``kirocrew node path``."""
     try:
         raw = (data_home() / _NODE_BIN_DIR_MARKER).read_text(encoding="utf-8")
     except (OSError, ValueError):
         return None
     return _validated_bin_dir(raw.strip().splitlines()[0] if raw.strip() else "")
+
+
+def set_node_bin_dir(bin_dir: str) -> str:
+    """Validate and persist the preferred Node bin directory.
+
+    The marker is shared with ``ensure-node.sh`` so every Node consumer uses
+    the same answer. Returns the normalized absolute directory that was saved.
+    """
+    candidate = Path(bin_dir).expanduser().resolve()
+    validated = _validated_bin_dir(str(candidate))
+    if validated is None or not _has_node(candidate):
+        raise ValueError(f"Node is not executable in {candidate}")
+    atomic_write(data_home() / _NODE_BIN_DIR_MARKER, validated + "\n")
+    node_bin_dirs.cache_clear()
+    return validated
+
+
+def clear_node_bin_dir() -> bool:
+    """Remove the persisted Node bin directory, returning whether it existed."""
+    marker = data_home() / _NODE_BIN_DIR_MARKER
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        removed = False
+    else:
+        removed = True
+    node_bin_dirs.cache_clear()
+    return removed
+
+
+@functools.lru_cache(maxsize=1)
+def _macos_node_bin_dirs() -> tuple[str, ...]:
+    """Return Node dirs registered with macOS ``path_helper``.
+
+    ``path_helper`` reads ``/etc/paths`` followed by one-path-per-line files in
+    ``/etc/paths.d``. Finder and Dock launches do not run that shell helper, so
+    a desktop gateway otherwise misses paths registered there by installers.
+    """
+    if not platform_compat.IS_MACOS:
+        return ()
+
+    files = [_MACOS_PATHS_FILE]
+    try:
+        files.extend(sorted(path for path in _MACOS_PATHS_DIR.iterdir() if path.is_file()))
+    except OSError:
+        pass
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in files:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            candidate = _validated_bin_dir(line)
+            if candidate is None:
+                continue
+            candidate = os.path.normpath(candidate)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                if _has_node(Path(candidate)):
+                    out.append(candidate)
+            except OSError:
+                continue
+    return tuple(out)
 
 
 @functools.lru_cache(maxsize=1)
@@ -177,9 +253,9 @@ def node_bin_dirs() -> tuple[str, ...]:
     Resolution order, most specific first:
 
     1. ``KIROCREW_NODE_BIN_DIR`` -- explicit operator override.
-    2. ``<data-home>/node-bin-dir`` -- the marker ``ensure-node.sh`` writes
-       after installing/locating node. Preferred over a bare filesystem scan
-       because it names the version that script decided on.
+    2. ``<data-home>/node-bin-dir`` -- the marker ``ensure-node.sh`` or
+       ``kirocrew node path`` writes. Preferred over a bare filesystem scan
+       because it names the version setup or the operator decided on.
     3. The highest version found under each per-version manager root
        (mise / asdf / nvm / fnm).
     4. Shim dirs (mise shims, volta, n).
@@ -254,17 +330,20 @@ def node_bin_dirs() -> tuple[str, ...]:
 
 
 def node_augmented_path(base_path: str = "") -> str:
-    """Return *base_path* with :func:`node_bin_dirs` PREPENDED.
+    """Return *base_path* with managed dirs before and system fallbacks after it.
 
-    Prepended, not appended: a distribution's system ``node`` can be older than
-    what ``website/package.json`` declares in ``engines`` (Amazon Linux 2023
-    ships node 18 against a ``20 || >=22`` requirement), whereas
-    ``ensure-node.sh`` installs a version chosen to satisfy the build. Where
-    both exist the managed toolchain is the one that works.
+    Managed dirs are prepended because ``ensure-node.sh`` installs a version
+    chosen to satisfy the build. macOS ``path_helper`` candidates are appended:
+    they repair the Finder/Dock environment without overriding an inherited or
+    explicitly managed Node selected by a shell-launched process.
     """
     parts = [*node_bin_dirs()]
     if base_path:
         parts.append(base_path)
+    base_entries = set(base_path.split(os.pathsep)) if base_path else set()
+    parts.extend(
+        path for path in _macos_node_bin_dirs() if path not in base_entries and path not in parts
+    )
     return os.pathsep.join(parts)
 
 
@@ -272,9 +351,10 @@ def find_node_tool(name: str, base_path: str | None = None) -> str | None:
     """Resolve a node-toolchain executable (``npm``, ``node``, ``npx``) absolutely.
 
     Searches :func:`node_bin_dirs` first, then *base_path* (default: the
-    inherited ``PATH``). Returns ``None`` when the tool is nowhere -- callers
-    must surface an actionable message rather than spawning a bare name and
-    letting the OS raise ``FileNotFoundError``.
+    inherited ``PATH``), then macOS paths registered with ``path_helper``.
+    Returns ``None`` when the tool is nowhere -- callers must surface an
+    actionable message rather than spawning a bare name and letting the OS
+    raise ``FileNotFoundError``.
 
     Absolute by design: on Windows npm is ``npm.CMD``, which PATHEXT-aware
     ``shutil.which`` finds but ``CreateProcess`` cannot spawn by bare name.
