@@ -15,7 +15,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, isSupersededPagingRejection,
   appendMessage, appendSlotMessage, resumeFromHistory, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage,
   selectComposerBusy,
   selectContinuable,
   selectTurnInterrupted,
@@ -32,7 +32,7 @@ import { addNotification, removeNotificationByTs } from '../store/notificationsS
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -5331,10 +5331,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!activeSlot) return
     const trimmed = content.trim()
     if (!trimmed) return
-    // Optimistically update the card; WS event reconciles other clients
-    dispatch(editQueuedMessage({ slot: activeSlot, queue_id: queueId, content: trimmed }))
-    api.editQueuedMessage(activeSlot, queueId, trimmed).catch(() => {})
-  }, [activeSlot, dispatch])
+    // No client-side dispatch: the queue_edit WS broadcast is the single
+    // authoritative store update (a local dispatch can race a concurrent
+    // edit and overwrite newer content with stale text). A rejected PATCH
+    // must not swallow the replacement text either: the inline editor has
+    // already closed, so restore it - into the live composer while this slot
+    // is still on screen (merging with text the user typed meanwhile),
+    // otherwise into the slot's saved draft.
+    const slot = activeSlot
+    api.editQueuedMessage(slot, queueId, trimmed).catch((err) => {
+      // Only an HTTP rejection (ApiError: the server answered and refused)
+      // proves the edit was not committed. A transport-level failure is
+      // ambiguous - the server may have committed and broadcast before the
+      // response was lost - and restoring then would duplicate committed
+      // text. Restore only on the proven rejection; on the ambiguous case
+      // the card keeps its old text, which is the user's cue to retry.
+      if (!(err instanceof ApiError)) return
+      // The composer is live for `slot` only when BOTH refs agree: activeSlot
+      // advances during render while composerSlotRef lags until the
+      // outgoing-slot persist effect runs. Testing activeSlotRef alone would
+      // either type into the slot the user just switched to, or let that
+      // pending effect flush stale text over the restored edit. Same contract
+      // as the failed-send and voice-transcript recovery paths above.
+      const onScreen = slot === activeSlotRef.current && composerSlotRef.current === slot
+      if (onScreen) {
+        // Functional update: two pending edits rejecting in one React batch
+        // would both read the same stale inputRef, the second overwriting the
+        // first edit's recovered text. `prev` chains the recoveries instead.
+        setInput(prev => mergeIntoDraft(prev, trimmed))
+      } else {
+        const merged = mergeIntoDraft(drafts.current[slot], trimmed)
+        setDraft(drafts.current, slot, merged)
+        // Mid-switch guard: if the composer still belongs to `slot`, the
+        // outgoing-slot persist effect will flush inputRef.current into
+        // drafts[slot] and overwrite the merge. Carry the merged value into
+        // inputRef too so the flush preserves it.
+        if (composerSlotRef.current === slot) inputRef.current = merged
+        saveDrafts()
+      }
+    })
+  }, [activeSlot, saveDrafts])
 
   const handleReorderQueued = useCallback((queueId: string, direction: 'next' | 'later') => {
     if (!activeSlot) return

@@ -33,6 +33,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { i18nT } from '../i18n/t'
+import { editQueuedMessage } from '../store/chatSlice'
 import { store as appStore } from '../store'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -560,11 +561,20 @@ describe('ChatPage — queued message actions', () => {
   })
 
   it('editing a queued card trims and commits, and refuses a blank edit', async () => {
-    await renderWithQueue()
+    const { store } = await renderWithQueue()
     act(() => { queueProps!.onEdit('q1', '   ') })
     expect(apiSpy('editQueuedMessage')).not.toHaveBeenCalled()
     act(() => { queueProps!.onEdit('q1', '  run the tests twice  ') })
     expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice')
+    // The card is NOT repainted client-side: the authoritative `queue_edit` WS
+    // broadcast is the single writer, so a local dispatch cannot race a
+    // concurrent echo (same contract as the merged queue-reorder PR #2250).
+    expect(queueProps!.messages.find(m => m.meta?.queueId === 'q1')?.content)
+      .toBe('run the tests')
+    // Replaying that echo exactly as the WS handler does lands the edit.
+    act(() => {
+      store.dispatch(editQueuedMessage({ slot: 'chat-1', queue_id: 'q1', content: 'run the tests twice' }))
+    })
     await waitFor(() =>
       expect(queueProps!.messages.find(m => m.meta?.queueId === 'q1')?.content)
         .toBe('run the tests twice'),
