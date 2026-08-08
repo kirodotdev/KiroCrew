@@ -41,6 +41,7 @@ describe('TrustDropdown', () => {
   // interpolated INTO the sentence and still renders monospaced.
   it.each([
     ['ja', '「ls /tmp」を信頼', 'ls コマンドをすべて信頼'],
+    ['ko', '‘ls /tmp’ 신뢰', 'ls 명령 모두 신뢰'],
     ['de', '„ls /tmp“ vertrauen', 'Allen ls-Befehlen vertrauen'],
     ['zh-CN', '信任“ls /tmp”', '信任所有 ls 命令'],
   ])('places the command inside a whole translated message in %s', async (lng, cmdText, baseText) => {
