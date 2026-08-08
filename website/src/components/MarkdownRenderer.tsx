@@ -7,6 +7,8 @@ import remarkGfm from 'remark-gfm'
 import remarkCjkFriendly from 'remark-cjk-friendly'
 import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import remarkMath from 'remark-math'
+import remarkParse from 'remark-parse'
+import { unified } from 'unified'
 import rehypeRaw from 'rehype-raw'
 import rehypeKatex from 'rehype-katex'
 import type { PluggableList } from 'unified'
@@ -1399,6 +1401,336 @@ function rehypeStreamingCaret() {
   }
 }
 
+// ── CJK autolink boundaries ────────────────────────────────────────────────
+//
+// GFM's autolink-literal extension ends a bare `https://…` run only at ASCII
+// whitespace or `<`. CJK punctuation written directly after a URL — the way
+// Chinese and Japanese prose actually writes it, with no space — is therefore
+// swallowed INTO the href:
+//
+//   （https://example.com/pull/1，`abc`）：`ready`
+//   -> href="https://example.com/pull/1%EF%BC%8C%60abc%60…"
+//
+// The wrong href is the smaller half of the damage. The run also eats the
+// OPENING backtick of the code span that follows, which shifts every later
+// backtick pairing in the paragraph by one: prose renders as inline code and
+// real code renders with literal backticks. One missing space corrupts the
+// rest of the message.
+//
+// This has to be fixed at the SOURCE level, not on the mdast: re-splitting the
+// link node after the fact cannot restore the code-span pairing, because the
+// pairing is decided while micromark tokenizes the whole paragraph. So force
+// the boundary before parsing by re-emitting the URL head as an angle autolink
+// `<url>`, which has an explicit end and renders identically.
+//
+// The cut is EVIDENCE-BASED, not character-based — see cjkCutIndex. CJK
+// punctuation reaches real URLs raw (`…/wiki/苹果（公司）`), so cutting on the
+// character alone would break links that render correctly today.
+//
+// Which regions are off-limits is read off remark's OWN parse (see
+// autolinkLiteralSpans) rather than a hand-rolled scanner: only a real GFM
+// autolink-literal node is ever touched, so code, existing links, raw HTML and
+// math are excluded by construction instead of by a mask that has to re-derive
+// every CommonMark block and inline rule correctly.
+//
+// Scope: only `http(s)://` runs. Scheme-less `www.` literals have the same flaw
+// but cannot be closed with `<…>` (angle autolinks require a scheme).
+
+// Punctuation classes. CJK punctuation is NOT by itself proof that a URL ended:
+// real page titles contain it, and they reach the URL raw —
+// `https://zh.wikipedia.org/wiki/苹果（公司）`, `https://zh.wikipedia.org/wiki/我，机器人`,
+// `https://ja.wikipedia.org/wiki/モーニング娘。`. Cutting on the character alone
+// would break links that render correctly today, so a cut needs EVIDENCE.
+const CJK_PUNCT_RE =
+  /[\u00b7\u2018\u2019\u201c\u201d\u2026\u3000-\u303f\u30fb\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/
+const CJK_OPEN_BRACKETS = '\u3008\u300a\u300c\u300e\u3010\u3014\u3016\u3018\u301a\uff08\uff3b\uff5b\uff5f\uff62'
+const CJK_CLOSE_BRACKETS = '\u3009\u300b\u300d\u300f\u3011\u3015\u3017\u3019\u301b\uff09\uff3d\uff5d\uff60\uff63'
+// Sentence-ending CJK punctuation. These are NEVER treated as a URL boundary,
+// because real page titles end in them and reach the URL raw —
+// `…/wiki/モーニング娘。`, `…/wiki/魔法先生ネギま！`, `…/wiki/そして誰もいなくなった…`.
+// A separator like `，` or `、` does not end a title, so it stays eligible.
+const CJK_SENTENCE_ENDERS = '\u3002\uff0e\uff01\uff1f\u2026\uff61'
+// The one character that makes markdown do something AND cannot appear in a
+// raw-written URL. RFC 3986 excludes the backtick, so browsers percent-encode
+// it — while `*`, `[` and `]` are all legal and common in query strings
+// (`?q=foo，*test`, `?filter[name]=x`), so they are NOT evidence. The backtick
+// is also the character whose loss does the real damage: the run eats an opening
+// code-span delimiter and every later backtick pairing in the paragraph shifts.
+const MD_ACTIVE_RE = /`/
+
+// Where a bare URL may START, and the run GFM's tokenizer would take from there
+// (everything up to ASCII whitespace or `<`). Only needed for a SECOND URL
+// inside one autolink node's own run.
+const URL_START_RE = /https?:\/\//g
+const URL_RUN_AT_RE = /^https?:\/\/[^\s<]*/
+
+// GFM only autolinks a host containing a dot, and neither of the last two
+// labels may contain `_`. Wrapping a run GFM would NOT have linked would CREATE
+// a link the author never wrote, so the head has to clear the same bar.
+const AUTOLINKABLE_HOST_RE = /^https?:\/\/([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)(?::\d+)?(?:[/?#]|$)/
+
+// Which regions are off-limits (code, existing links, raw HTML, math) is NOT
+// decided by hand-rolled scanning — it is read off remark's own parse of the
+// source. Anything inside a fence, an indented block, an inline-code span
+// (including a multi-line one), an existing link/image, an angle autolink, a raw
+// HTML tag, or a math span simply never becomes an autolink-literal node, so it
+// is unreachable here by construction. Built from the SAME `REMARK_PLUGINS` the
+// render pipeline uses, so a future plugin addition cannot make the span-finder
+// and the renderer disagree about what a link is.
+const AUTOLINK_PARSER = unified().use(remarkParse).use(REMARK_PLUGINS).freeze()
+
+type MdastNode = {
+  type: string
+  url?: string
+  value?: string
+  children?: MdastNode[]
+  position?: { start: { offset?: number }; end: { offset?: number } }
+}
+
+// Node types whose source text is not prose. A bracket inside one of them is
+// part of a URL, a code sample, a tag or a formula — never the `（` that wraps a
+// following URL — so they are excluded from the bracket-balance prefix.
+const NON_PROSE_TYPES = new Set([
+  'inlineCode',
+  'code',
+  'link',
+  'linkReference',
+  'image',
+  'imageReference',
+  'html',
+  'math',
+  'inlineMath',
+  'definition',
+  'footnoteDefinition',
+])
+
+/**
+ * Source offsets of every GFM autolink LITERAL in `content` — a bare
+ * `http(s)://…` run that remark turned into a link on its own — plus a mask
+ * marking every character that belongs to a non-prose node.
+ *
+ * Excludes `<https://…>` angle autolinks and `[text](url)` links from the
+ * literal list, which already carry explicit boundaries: both can also satisfy
+ * `text === url`, so the test is on the source text at the node's start, not on
+ * the node shape alone.
+ */
+function autolinkLiteralSpans(content: string): {
+  literals: Array<[number, number]>
+  nonProse: Uint8Array
+} {
+  let tree: MdastNode
+  try {
+    tree = AUTOLINK_PARSER.parse(content) as unknown as MdastNode
+  } catch {
+    // A parse failure must not take the message down with it — the unfixed
+    // render is strictly better than no render.
+    return { literals: [], nonProse: new Uint8Array(content.length) }
+  }
+  const literals: Array<[number, number]> = []
+  const nonProse = new Uint8Array(content.length)
+  const visit = (node: MdastNode): void => {
+    const start = node.position?.start.offset
+    const end = node.position?.end.offset
+    const positioned = typeof start === 'number' && typeof end === 'number'
+    if (node.type === 'link' && positioned) {
+      const text =
+        node.children?.length === 1 && node.children[0].type === 'text' ? node.children[0].value : undefined
+      if (text !== undefined && text === node.url && /^https?:\/\//.test(content.slice(start, end))) {
+        // Deliberately NOT masked here. A greedy literal run can hold several
+        // URLs with real prose between them (`（…/1）和【…/2】` is ONE run), and
+        // that prose is where the second URL's bracket context lives. The caller
+        // masks each URL's own characters as it consumes them instead.
+        literals.push([start as number, end as number])
+        return
+      }
+    }
+    if (positioned && NON_PROSE_TYPES.has(node.type)) nonProse.fill(1, start, end)
+    for (const child of node.children ?? []) visit(child)
+  }
+  visit(tree)
+  return { literals, nonProse }
+}
+
+/**
+ * Index in `run` where the URL demonstrably stops, or -1 when there is no
+ * evidence that it does. `prefix` is the source text before the URL on its own
+ * line — it decides whether a closing bracket had an opener to close.
+ *
+ * Two things count as evidence:
+ *
+ *  1. A CJK closing bracket that closes an opener SURROUNDING the URL — one left
+ *     unclosed in `prefix` and not opened inside the run. This is GFM's own ASCII
+ *     paren-balancing rule, generalised. `（https://x.com/a）` and
+ *     `（见 https://x.com/a）` cut; `https://x.com/苹果（公司）` does not (the
+ *     opener is inside the URL), and neither does `https://x.com/search?q=foo）`
+ *     (nothing to close, so the bracket is plausibly part of the query).
+ *  2. A SEPARATOR-class CJK punctuation mark IMMEDIATELY followed by a BACKTICK.
+ *     That is the destructive case (the run eats an opening code-span delimiter
+ *     and shifts every later pairing) and the backtick is the one character that
+ *     cannot appear in a raw-written URL. `…/2137，`96ed647b`）` cuts.
+ *
+ *     Sentence-enders (`。．！？…｡`) are EXCLUDED from this rule: real page titles
+ *     end in them and reach the URL raw, so `…/wiki/モーニング娘。`紹介`` must not
+ *     cut. Separators like `，`、`、`、`；`、`：` do not end titles, so they stay
+ *     eligible. `…/wiki/我，机器人`简介`` is still safe for a different reason —
+ *     its comma is followed by more title, not by the backtick.
+ *
+ * Deliberately NOT covered: `…/pull/1，然后` — a bare CJK sentence continuing
+ * off a URL with no space and no markup. It is character-for-character
+ * indistinguishable from a legitimate `…/wiki/我，机器人`, so it keeps today's
+ * behaviour rather than risking a correct link.
+ */
+function cjkCutIndex(run: string, prefix: string): number {
+  // Openers left unclosed before the URL, per bracket type: only those have
+  // something for a closer inside the run to close.
+  const pending = new Map<string, number>()
+  for (const ch of prefix) {
+    const open = CJK_OPEN_BRACKETS.indexOf(ch)
+    if (open >= 0) {
+      pending.set(ch, (pending.get(ch) ?? 0) + 1)
+      continue
+    }
+    const close = CJK_CLOSE_BRACKETS.indexOf(ch)
+    if (close >= 0) {
+      const opener = CJK_OPEN_BRACKETS[close]
+      const n = pending.get(opener) ?? 0
+      if (n > 0) pending.set(opener, n - 1)
+    }
+  }
+  let depth = 0
+  for (let i = 1; i < run.length; i++) {
+    const ch = run[i]
+    if (CJK_OPEN_BRACKETS.includes(ch)) {
+      depth++
+      continue
+    }
+    const close = CJK_CLOSE_BRACKETS.indexOf(ch)
+    if (close >= 0) {
+      if (depth > 0) {
+        depth--
+        continue
+      }
+      if ((pending.get(CJK_OPEN_BRACKETS[close]) ?? 0) > 0) return i
+      // No opener to close — the bracket is plausibly part of the URL itself.
+      continue
+    }
+    if (depth > 0 || !CJK_PUNCT_RE.test(ch)) continue
+    // Sentence-enders are never a boundary — a real title can end in one. This
+    // also means a mixed run like `。，` cuts at the `，`, leaving the `。` inside
+    // the URL, because the loop reaches the separator on a later iteration.
+    if (CJK_SENTENCE_ENDERS.includes(ch)) continue
+    // Walk the contiguous punctuation run — `、，` before a backtick is one
+    // boundary, not two — and require the evidence to sit directly after it.
+    let end = i
+    while (end < run.length && CJK_PUNCT_RE.test(run[end])) end++
+    if (end < run.length && MD_ACTIVE_RE.test(run[end])) return i
+  }
+  return -1
+}
+
+function isAutolinkableHost(head: string): boolean {
+  const m = AUTOLINKABLE_HOST_RE.exec(head)
+  if (!m) return false
+  // GFM: `_` is not allowed in either of the last two domain labels.
+  return m[1].split('.').slice(-2).every((label) => !label.includes('_'))
+}
+
+/**
+ * Drop the trailing characters GFM strips from an autolink literal but an angle
+ * autolink would keep, so `…/1.，`b`` links `…/1` and leaves `.` as prose.
+ */
+function trimGfmAutolinkTail(s: string): string {
+  let out = s
+  for (let guard = 0; guard < s.length; guard++) {
+    const next = out.replace(/[?!.,:*_~]+$/, '')
+    if (next.endsWith(')')) {
+      const open = (next.match(/\(/g) ?? []).length
+      const close = (next.match(/\)/g) ?? []).length
+      // GFM keeps a `)` that closes a `(` from inside the URL itself.
+      if (close > open) {
+        out = next.slice(0, -1)
+        continue
+      }
+    }
+    if (next === out) return out
+    out = next
+  }
+  return out
+}
+
+/**
+ * The PROSE text before `at` on its own line, with every non-prose character
+ * blanked out. Only this text can supply the opener a closing bracket inside the
+ * URL closes — a `（` sitting in an earlier URL's query string, a code sample or
+ * an HTML attribute is not bracket context for the URL that follows.
+ *
+ * Line-scoped on purpose: a paragraph-wide scan would be less conservative, and
+ * a cut is the risky direction.
+ */
+function prosePrefix(content: string, nonProse: Uint8Array, at: number): string {
+  const lineStart = content.lastIndexOf('\n', at - 1) + 1
+  let out = ''
+  for (let i = lineStart; i < at; i++) out += nonProse[i] ? ' ' : content[i]
+  return out
+}
+
+/**
+ * Close a bare `http(s)://` run where CJK punctuation shows the URL has ended,
+ * by re-emitting its head as an angle autolink. Returns `content` unchanged when
+ * there is no such evidence.
+ *
+ * NOT safe to run when `data-sourcepos` is in play: it inserts two characters
+ * per fixed URL, which shifts every later column on that line and would
+ * mis-anchor an inline comment. Callers gate on that (see MarkdownBlock).
+ */
+export function fixCjkAutolinkBoundaries(content: string): string {
+  if (!content.includes('://') || !CJK_PUNCT_RE.test(content)) return content
+  const { literals, nonProse } = autolinkLiteralSpans(content)
+  const inserts: Array<[number, string]> = []
+  for (const [start, end] of literals) {
+    // Everything of this node already accounted for. A `https://` nested in the
+    // URL's own path (`?u=https://…`) must not be cut separately — that would
+    // corrupt the outer URL and emit out-of-order inserts.
+    let consumedTo = start
+    URL_START_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = URL_START_RE.exec(content.slice(start, end))) !== null) {
+      const at = start + m.index
+      if (at < consumedTo) continue
+      const run = URL_RUN_AT_RE.exec(content.slice(at, end))?.[0] ?? ''
+      const cut = cjkCutIndex(run, prosePrefix(content, nonProse, at))
+      if (cut < 0) {
+        // The whole run is one URL — mask it, so a bracket in its query string
+        // cannot pose as prose context for a later URL.
+        nonProse.fill(1, at, at + run.length)
+        consumedTo = at + run.length
+        continue
+      }
+      const head = trimGfmAutolinkTail(run.slice(0, cut))
+      if (!isAutolinkableHost(head)) {
+        nonProse.fill(1, at, at + run.length)
+        consumedTo = at + run.length
+        continue
+      }
+      inserts.push([at, '<'], [at + head.length, '>'])
+      // Resume right after the head: a second URL inside the same autolink node
+      // (`（https://a/1）和【https://b/2】` is ONE run) still needs its own
+      // boundary. Only the head just consumed is masked — the text between the
+      // two URLs is real prose, and it is where the next bracket's opener lives.
+      nonProse.fill(1, at, at + head.length)
+      consumedTo = at + head.length
+    }
+  }
+  if (inserts.length === 0) return content
+  let out = ''
+  let pos = 0
+  for (const [at, ch] of inserts) {
+    out += content.slice(pos, at) + ch
+    pos = at
+  }
+  return out + content.slice(pos)
+}
+
 export function fixCodeFences(s: string): string {
   // Escape bare "N." lines so markdown doesn't render them as ordered lists.
   // CommonMark: 0-3 leading spaces = list item, 4+ = indented code block.
@@ -1563,9 +1895,22 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
     if (smooth) tail.push(rehypeStreamingReveal)
     rehypePlugins = [...baseRehype, ...tail]
   }
+  // `fixCodeFences` runs FIRST: its later passes CREATE code blocks the raw
+  // source did not have (blank line before a fence glued to preceding text,
+  // splitting a closing fence glued to trailing text). Rewriting boundaries
+  // before that would judge such a region as prose and leave a literal `<…>`
+  // inside what ends up displayed as code.
+  //
+  // `sourcePos` mode maps a DOM selection back to source coordinates through
+  // `data-sourcepos` for inline commenting. fixCjkAutolinkBoundaries inserts two
+  // characters per fixed URL, which shifts every later column on that line and
+  // would anchor a comment to the wrong occurrence — so that surface keeps the
+  // unfixed (but coordinate-accurate) render.
+  const fenced = fixCodeFences(clean)
+  const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fenced)
   const md = (
     <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-      {fixCodeFences(clean)}
+      {prepared}
     </ReactMarkdown>
   )
   const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
