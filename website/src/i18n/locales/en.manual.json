@@ -948,7 +948,7 @@
       "optimizing_another_chat_please_wait": "Optimizing another chat — please wait",
       "project": "Project",
       "project_2": "Project: {{path}}",
-      "queue_run_after_the_current_turn_finishes_enter": "Queue — run after the current turn finishes (Enter)",
+      "queue_run_after_the_current_turn_finishes_enter": "Queue — run after the current work finishes (Enter)",
       "recording_click_mic_to_stop": "Recording… click mic to stop",
       "reject_all": "Reject all",
       "reject_sub_agent": "Reject sub-agent: {{name}}",
@@ -956,7 +956,7 @@
       "resolving": "Resolving…",
       "select_project": "Select project",
       "steer": "Steer",
-      "steer_inject_into_the_running_turn_enter": "Steer — inject into the running turn (Enter)",
+      "steer_inject_into_the_running_turn_enter": "Steer — act on this as soon as possible (Enter)",
       "stop_recording": "Stop recording",
       "stop_the_current_response_to_switch_agents": "Stop the current response to switch agents",
       "stop_the_current_response_to_switch_model": "Stop the current response to switch model",
@@ -967,8 +967,8 @@
       "transcribing_please_wait": "Transcribing, please wait…",
       "voice_input": "Voice input",
       "queue": "Queue",
-      "queue_desc": "Run after the current turn finishes",
-      "steer_desc": "Inject into the running turn right away"
+      "queue_desc": "Run after the current work finishes",
+      "steer_desc": "Act on this right away"
     },
     "chatPane": {
       "forked_from": "Forked from {{name}}"

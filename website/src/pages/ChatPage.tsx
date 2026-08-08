@@ -14,7 +14,7 @@ import { useConnected } from '../hooks/useConnected'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory,
-  appendMessage, resumeFromHistory, forkSlot,
+  appendMessage, appendSlotMessage, resumeFromHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
   selectContinuable,
@@ -3238,7 +3238,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const planActionMutationRef = useRef(planActionMutation)
   planActionMutationRef.current = planActionMutation
 
-  const send = useCallback(async (optionText?: string, targetSlot?: string) => {
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean) => {
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -3572,7 +3572,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const metaPayload = Object.keys(meta).length ? meta : undefined
     // Skip optimistic user bubble when the slot is busy (shared rule:
     // chatSlice.selectComposerBusy) — the backend sends a "queued" role
-    // message instead, avoiding a duplicate.
+    // message instead, avoiding a duplicate. A steer-flagged send usually
+    // bypasses the queue and starts a turn, so nothing would represent it; its
+    // bubble is appended from the response instead (see below), because only
+    // the server knows whether this particular send got queued after all.
     const _busy = selectComposerBusy(store.getState(), slot ?? null)
     if (!_busy || forceNew) {
       dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
@@ -3650,7 +3653,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
     try {
-      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload)
+      const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload, steerNow)
       clearTimeout(timeout)
       const body = await r.json().catch(() => ({}))
       if (!body.queued && !body.ok) {
@@ -3659,6 +3662,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // The server explicitly accepted neither (`ok` nor `queued`), so nothing
         // was sent — recovering the composer cannot duplicate a delivered turn.
         restoreComposerAfterFailedSend()
+      } else if (steerNow && _busy && !body.queued && !body.steered) {
+        // A steer-flagged send the server neither queued nor injected: it
+        // started a turn, so no `queue_push` or `steer_push` echo is coming and
+        // the busy rule above left the text with nothing to represent it.
+        // Append only once the answer rules out both echoes — a mid-plan send
+        // is queued, and a child turn that started while this POST was in
+        // flight is injected mid-turn, each of which brings its own bubble.
+        // Addressed to the SENDING slot, not the active one: the user can
+        // switch sessions while the POST is in flight, and this text belongs to
+        // the transcript it was typed into (same reason `steer_push` uses this).
+        if (slot) {
+          dispatch(appendSlotMessage({
+            slot,
+            message: { role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload },
+          }))
+        }
       }
     } catch (e: unknown) {
       clearTimeout(timeout)
@@ -4671,6 +4690,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // ChatInput) so text and attachments clear atomically.
   const steer = useCallback(() => {
     if (!activeSlot) return
+    // Nothing to inject into: the composer is busy purely because background
+    // sub-agents are still running for this slot (spawn_run is fire-and-forget,
+    // so the parent turn already ended). The intent is the same — act on this
+    // text now, don't park it — so start a real turn through the normal send
+    // path, which carries `ws=1` and so streams, and flag it to skip the
+    // server-side hold that keeps a user message behind running sub-agents.
+    // Delegating here, BEFORE the composer is read and cleared below, leaves
+    // send() owning the draft, attachment and optimistic-bubble bookkeeping.
+    // A multi-stage autopilot plan also reads busy-but-not-running. There the
+    // server keeps `_in_stage_execution` set for the WHOLE plan, so the flag
+    // finds no live session to inject into and the message queues — the right
+    // answer between stages, and unconditional across the plan rather than a
+    // race with the gaps.
+    if (!slotRunning) { void send(undefined, undefined, true); return }
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
     if (!raw && !files.length) return
@@ -4750,7 +4783,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, steerMutation, saveDrafts, dispatch])
+  }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch])
 
   const handleCancelQueued = useCallback((queueId: string) => {
     if (!activeSlot) return
@@ -5936,7 +5969,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               value={input}
               onChange={setInput}
               onSend={() => send()}
-              canSteer={slotRunning}
+              canSteer={composerBusy}
               onSteer={steer}
               onFollowUpSend={(text?: string) => send(text)}
               disabled={

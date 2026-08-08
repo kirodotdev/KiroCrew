@@ -90,9 +90,10 @@ const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
 
-// Send behavior while a turn is RUNNING. 'steer' (default) injects the
-// composer into the running turn; 'queue' defers it to the next turn. The
-// user picks via the split send button's dropdown; choice persists.
+// Send behavior while the composer is BUSY — a running turn, or background
+// sub-agents still running for the slot. 'steer' (default) acts on the text
+// immediately (injecting into a live turn, or starting one); 'queue' defers it.
+// The user picks via the split send button's dropdown; choice persists.
 const BUSY_SEND_MODE_LS_KEY = 'mc-busy-send-mode'
 type BusySendMode = 'steer' | 'queue'
 /**
@@ -225,14 +226,18 @@ interface ChatInputProps {
    * surfaces like the feature tip can never drift out of alignment the way
    * parallel sibling containers with percentage widths do. */
   aboveComposer?: React.ReactNode
-  /** When true (turn is running), show the split Steer/Queue send button.
-   * v1 gates on turn-running only; if the slot's backend is not steer-capable
-   * (e.g. claude), the POST safely falls through to the queue server-side.
+  /** When true (composer is busy — a running turn, or background sub-agents
+   * still running for the slot), show the split Steer/Queue send button.
+   * Steer's meaning follows the state: mid-turn it injects into the live turn;
+   * with only sub-agents running it starts a turn now instead of parking the
+   * message behind them. If the slot's backend is not steer-capable (e.g.
+   * claude), the POST safely falls through to the queue server-side.
    * Plumbing a per-slot capability flag is a follow-up. */
   canSteer?: boolean
-  /** Inject a mid-turn steer into the running turn. Reads the composer text
-   * and pending files itself (ChatPage) and clears them atomically — ChatInput
-   * must NOT clear the value around this call. */
+  /** Act on the composer NOW rather than queueing: a mid-turn steer into the
+   * running turn, or a fresh turn when only sub-agents are running. Reads the
+   * composer text and pending files itself (ChatPage) and clears them
+   * atomically — ChatInput must NOT clear the value around this call. */
   onSteer?: () => void
   disabled?: boolean
   placeholder?: string
@@ -999,10 +1004,10 @@ function ChatInput({
     safeSetItem(BUSY_SEND_MODE_LS_KEY, m)
     closeBusyMenuToTrigger()
   }
-  // Steer is the active Enter/send action only while a live (not stopping)
-  // turn is running on a steer-capable slot and the user hasn't switched the
+  // Steer is the active Enter/send action only while the composer is busy and
+  // not stopping, on a steer-capable slot, and the user hasn't switched the
   // split button to Queue. Everywhere else the composer falls back to onSend
-  // (normal send, or server-side queue while running).
+  // (normal send, or server-side queue while busy).
   const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
   const fireComposer = useCallback(() => {
     if (disabled) return
@@ -1766,8 +1771,8 @@ function ChatInput({
       // default Enter behavior (newline insert into draft) doesn't leak
       // through when the gateway is offline. The action itself is gated on
       // `connected` to match the disabled-state on the Send button.
-      // While a turn is running, Enter follows the split-button mode:
-      // steer (default) injects into the running turn; queue defers.
+      // While the composer is busy, Enter follows the split-button mode:
+      // steer (default) acts on the text now; queue defers it.
       e.preventDefault()
       if (connected) fireComposer()
       return
