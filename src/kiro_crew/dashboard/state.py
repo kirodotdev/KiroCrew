@@ -1104,7 +1104,9 @@ class _ChatSlot:
         # no-blocking-call-on-event-loop rule forbids. Refreshed at the save
         # boundary, where the lock is already held and the foreign lines are
         # already parsed.
-        self._disk_tail_ts: str | None = None        # Cached frozen-prefix bytes for the append-safe save model.
+        self._disk_tail_ts: str | None = (
+            None  # Cached frozen-prefix bytes for the append-safe save model.
+        )
         # The session file is FROZEN-PREFIX (the first _disk_older_count on-disk
         # message lines, OLDER than the in-memory window) + a fresh re-serialize
         # of the whole window. The prefix is never rewritten, so a restart that
@@ -2737,9 +2739,7 @@ class DashboardState:
             # snapshots — do not narrow it without giving this set its own lock.
             seen = set(keys)
             keys.extend(
-                k
-                for k in getattr(self, "unrestored_slot_keys", frozenset())
-                if k not in seen
+                k for k in getattr(self, "unrestored_slot_keys", frozenset()) if k not in seen
             )
             payload = json.dumps({"keys": keys, "ts": time.time()})
             # Use the canonical atomic_write helper, not a deterministic
@@ -2920,6 +2920,32 @@ class DashboardState:
         """Look up a slot by name without creating it. Returns None if absent."""
         return self._slots.get(name)
 
+    def running_session_keys(self) -> frozenset[str]:
+        """Session keys with a turn in flight right now.
+
+        This is the only signal for "something is using this session at this
+        instant", as distinct from "this session could be resumed" — which is what
+        a ``session_map`` entry means. Storage reclamation needs the first
+        question: moving a session's files is dangerous while a turn is running,
+        and merely being resumable is not.
+
+        Exposed as a method rather than leaving callers to read ``_slots`` so a
+        test double cannot invent the interface: a fake that grants an attribute
+        this class does not have would assert against a fiction while the feature
+        is dead at runtime.
+        """
+        # Local import: chat_utils imports from this module, so a top-level import
+        # would close a cycle. Same shape as the other call sites in this file.
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        # Snapshot the values first. This is called from a worker thread (the
+        # storage scan runs off the event loop), so the loop can create or drop a
+        # slot mid-iteration — which raises RuntimeError and turns an inventory
+        # read into a 500. A list() copy is atomic enough for that.
+        return frozenset(
+            effective_session_key(slot) for slot in list(self._slots.values()) if slot.running
+        )
+
     def spend_slot_by_session(self) -> dict[str, str]:
         """Map each live slot's SESSION key to the SLOT key its spend is filed under.
 
@@ -3099,9 +3125,7 @@ class DashboardState:
                 # The previous owner's slot may already be gone; fall back to
                 # deriving its key from the name in that case.
                 old_key = (
-                    effective_session_key(old_slot)
-                    if old_slot
-                    else _history_key_for(old_owner)
+                    effective_session_key(old_slot) if old_slot else _history_key_for(old_owner)
                 )
                 self.sessions.set_slack_link(old_key, "", "")
         slot._slack_linked = True
@@ -3112,9 +3136,7 @@ class DashboardState:
         if self.sessions:
             from kiro_crew.dashboard.chat_utils import effective_session_key
 
-            self.sessions.set_slack_link(
-                effective_session_key(slot), thread_ts, channel_id
-            )
+            self.sessions.set_slack_link(effective_session_key(slot), thread_ts, channel_id)
         self.push_slots_update()
 
     def get_or_create_slot(

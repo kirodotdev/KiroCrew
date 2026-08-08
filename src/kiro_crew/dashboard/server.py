@@ -2046,6 +2046,13 @@ async def start_dashboard(
     app.router.add_get("/api/status", handlers.api_status)
     app.router.add_get("/api/system", handlers.api_system)
     app.router.add_get("/api/system/session-storage", handlers.api_session_storage)
+    # The inventory list and its per-row detail. Registered before the {uid} route
+    # so the literal path cannot be swallowed by the pattern.
+    app.router.add_get("/api/system/session-storage/sessions", handlers.api_session_inventory)
+    app.router.add_get(
+        "/api/system/session-storage/sessions/{uid}", handlers.api_session_inventory_detail
+    )
+    app.router.add_post("/api/system/session-storage/trash", handlers.api_session_inventory_trash)
     app.router.add_post("/api/system/session-storage/cleanup", handlers.api_session_storage_cleanup)
     app.router.add_post("/api/system/session-storage/restore", handlers.api_session_storage_restore)
     app.router.add_post("/api/system/session-storage/empty", handlers.api_session_storage_empty)

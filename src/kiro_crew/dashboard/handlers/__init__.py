@@ -301,6 +301,9 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
 
 # ── Sessions (extracted to handlers/sessions.py) ──
 from kiro_crew.dashboard.handlers.session_storage import (  # noqa: E402, F401
+    api_session_inventory,
+    api_session_inventory_detail,
+    api_session_inventory_trash,
     api_session_storage,
     api_session_storage_cleanup,
     api_session_storage_empty,
