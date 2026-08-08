@@ -65,6 +65,51 @@ function prLabel(row: ReportRow): string {
   return row.change_id || '#?'
 }
 
+/** Split a design-section value into scannable lines — mirrors report.py
+ * `_design_facets`. The reviewer emits `solution_assessment` as short labeled
+ * facets on SEPARATE LINES (see `review_driver.build_review_task`), but this view
+ * used to hand the whole value to the markdown renderer, which collapsed them
+ * into one dense paragraph — the archived HTML report split them and the app did
+ * not. A record predating the structured prompt is one long prose blob, so that
+ * case falls back to splitting on sentences rather than rendering a wall.
+ *
+ * `labeled` reports WHICH of those two splits produced the lines, because only a
+ * real facet line may have a `Label:` prefix pulled out: prose with an early colon
+ * ("The API returns 404: …") is a sentence, not a label, and treating it as one
+ * crams the clause into the narrow label column.
+ *
+ * The sentence split deliberately avoids a lookbehind (`(?<=[.!?])`). WebKit only
+ * shipped lookbehind in Safari 16.4, and an unsupported group is a SyntaxError at
+ * MODULE EVALUATION — so it would take the whole app down on an older browser,
+ * not just degrade this view. */
+function designFacets(value: string): { lines: string[]; labeled: boolean } {
+  const s = value.trim()
+  const lines = s.split('\n').map((l) => l.replace(/^[\s\-•]+/, '').trim()).filter(Boolean)
+  if (lines.length <= 1 && s.length > 160) {
+    // A terminator is a boundary only at a word gap: `[.!?](?=\S)` keeps the
+    // period inside `src/foo.py` and `v2.0` instead of fragmenting the token.
+    const sentences = (s.match(/(?:[^.!?]|[.!?](?=\S))+[.!?]*/g) ?? [])
+      .map((seg) => seg.trim())
+      .filter(Boolean)
+    return { lines: sentences, labeled: false }
+  }
+  return { lines: lines.length ? lines : (s ? [s] : []), labeled: true }
+}
+
+/** One facet line. On a real facet line a leading `Label:` prefix is pulled into
+ * its own column so the facets read as a labeled list instead of running together
+ * — mirrors `_facet_html`. Sentence-fallback lines are left whole. */
+function Facet({ line, labeled }: { line: string; labeled: boolean }) {
+  const m = labeled ? /^([A-Z][\w /&'+-]{1,40}):\s+(.*)$/.exec(line) : null
+  if (!m) return <div className="text-[12.5px] leading-relaxed">{line}</div>
+  return (
+    <div className="flex gap-2.5 text-[12.5px] leading-relaxed">
+      <span className="w-[96px] flex-shrink-0 font-semibold text-muted">{m[1]}</span>
+      <span className="min-w-0 flex-1">{m[2]}</span>
+    </div>
+  )
+}
+
 /** The design narrative as a scannable chain — mirrors report.py `_design_html`:
  * the headline, then Problem / Why it matters / Solution fit, falling back to the
  * freeform rationale for records predating the structured fields. */
@@ -89,12 +134,21 @@ function DesignChain({ row }: { row: ReportRow }) {
           <MarkdownRenderer content={row.design_headline as string} />
         </div>
       )}
-      {present.map(([label, value]) => (
-        <div key={label}>
-          <SectionLabel>{label}</SectionLabel>
-          <MarkdownRenderer content={value as string} />
-        </div>
-      ))}
+      {present.map(([label, value]) => {
+        const { lines: facets, labeled } = designFacets(value as string)
+        return (
+          <div key={label}>
+            <SectionLabel>{label}</SectionLabel>
+            {facets.length > 1 ? (
+              <div className="space-y-1">
+                {facets.map((line, i) => <Facet key={i} line={line} labeled={labeled} />)}
+              </div>
+            ) : (
+              <MarkdownRenderer content={value as string} />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -449,12 +449,18 @@
           "this_review_failed": "Это ревью завершилось ошибкой"
         },
         "findingCard": {
+          "consequence": "Последствие",
+          "evidence": "Подтверждение",
+          "observation": "Наблюдение",
           "post_finding": "Опубликовать эту находку в pull request",
           "post_finding_on": "Опубликовать эту находку в {{target}}",
           "post_this_comment": "Опубликовать этот комментарий",
           "posted_to_the_pull_request": "Опубликовано в pull request",
           "posting": "Публикую…",
+          "select_to_draft_together": "Выбрать для пакетного черновика",
           "select_to_post": "Выбрать {{label}} для публикации",
+          "severity_must_fix": "Обязательно",
+          "severity_should_fix": "Желательно",
           "suggestion": "Предложение",
           "this_finding": "эту находку"
         },

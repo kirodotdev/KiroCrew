@@ -440,12 +440,18 @@
           "this_review_failed": "이 리뷰가 실패했습니다"
         },
         "findingCard": {
+          "consequence": "영향",
+          "evidence": "근거",
+          "observation": "관찰",
           "post_finding": "이 지적을 리뷰 댓글 초안으로 작성",
           "post_finding_on": "이 지적을 {{target}}에 리뷰 댓글 초안으로 작성",
           "post_this_comment": "이 지적 초안 작성",
           "posted_to_the_pull_request": "초안 작성됨 — 아래에서 게시하세요",
           "posting": "초안 작성 중…",
+          "select_to_draft_together": "일괄 초안용으로 선택",
           "select_to_post": "초안으로 작성할 {{label}} 선택",
+          "severity_must_fix": "필수",
+          "severity_should_fix": "권장",
           "suggestion": "제안",
           "this_finding": "이 지적"
         },
