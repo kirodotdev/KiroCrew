@@ -188,3 +188,16 @@ class TestContextOccupancyLatestWins:
         # ...while the peak still remembers how close the session got.
         assert s["peak_pct"] == 90.0
         assert s["turns"] == 2
+
+    @pytest.mark.parametrize("stored_surface", ["task_runner", "taskrunner"])
+    def test_taskrunner_surface_uses_canonical_spelling(
+        self, _isolated_shards, stored_surface
+    ):
+        _write(
+            _isolated_shards,
+            [_row("taskrunner:run:task0", 500_000, surface=stored_surface)],
+        )
+
+        session = usage_mod.context_occupancy(14)["sessions"][0]
+
+        assert session["surface"] == "taskrunner"

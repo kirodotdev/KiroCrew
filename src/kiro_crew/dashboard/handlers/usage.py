@@ -312,6 +312,18 @@ _BACKGROUND_CHANNELS = frozenset(
 NAVIGABLE_CATEGORY = "dashboard"
 
 
+_LEGACY_TELEMETRY_SURFACES = {"task_runner": "taskrunner"}
+
+
+def _canonical_telemetry_surface(surface: str) -> str:
+    """Return the operational telemetry spelling used for new and stored rows.
+
+    The alias keeps historical token shards comparable with current writes;
+    artifact use-case labels are a separate schema and are not normalized here.
+    """
+    return _LEGACY_TELEMETRY_SURFACES.get(surface, surface)
+
+
 def is_session_slot(slot: str) -> bool:
     """Whether *slot* is a session in its own right, and so earns a row."""
     return bool(slot) and telemetry_channel_of(slot) not in _NON_SESSION_CHANNELS
@@ -446,7 +458,9 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                                 "window": window,
                                 "agent": str(obj.get("agent") or ""),
                                 "model": str(obj.get("model") or ""),
-                                "surface": str(obj.get("surface") or ""),
+                                "surface": _canonical_telemetry_surface(
+                                    str(obj.get("surface") or "")
+                                ),
                             }
                         )
         except (OSError, UnicodeDecodeError):
@@ -589,10 +603,11 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
       model switch, which on real data moved the bill far more than usage volume
       did, and a single-user store is small enough to render complete.
     * ``channel`` is derived from the session key, NOT read from the row's
-      ``surface`` field. Each persist site passes a hardcoded surface, so every
-      turn routed through the dashboard chat runner is stamped ``dashboard``
-      whatever transport the human used -- the field cannot separate a Telegram
-      turn from a browser one, and the key can.
+      ``surface`` field. Historical rows can carry a wrong but non-empty value
+      such as ``dashboard`` for a Telegram turn, and the token-row schema has no
+      version or writer marker that distinguishes them from trustworthy rows.
+      The key therefore remains authoritative until the store gains such a
+      boundary; a surface-first fallback would silently misattribute history.
     * Context bands are absolute token counts rather than occupancy ratios:
       spend tracks how many tokens get re-sent, and window sizes differ per
       model, so a ratio would average incomparable populations.

@@ -1,4 +1,4 @@
-"""Turn wall-clock accounting for the task_runner dispatch surface (issue #647).
+"""Turn wall-clock accounting for the taskrunner dispatch surface (issue #647).
 
 ``task_executor`` persists a per-turn usage row at two sites — the main
 execution turn in :func:`execute_task` and the separate model turn in
@@ -115,7 +115,7 @@ async def _run_execute_task(monkeypatch: pytest.MonkeyPatch, provider_ms: int) -
         None,  # test_cmd
         "",  # work_dir
         AsyncMock(),  # on_notify (unused on the happy path)
-        "task-test:task1",
+        "taskrunner:task-test:task1",
     )
     assert ok is True
     assert len(captured) == 1, "execute_task must persist exactly one row per turn"
@@ -144,7 +144,9 @@ async def _run_self_review(monkeypatch: pytest.MonkeyPatch, provider_ms: int) ->
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
 
-    ok = await task_executor.self_review(run, task, sessions, "agentX", "task-test:task1")
+    ok = await task_executor.self_review(
+        run, task, sessions, "agentX", "taskrunner:task-test:task1"
+    )
     assert ok is True
     assert len(captured) == 1, "self_review must persist exactly one row per turn"
     return captured[0]
@@ -154,7 +156,7 @@ async def _run_self_review(monkeypatch: pytest.MonkeyPatch, provider_ms: int) ->
 async def test_execute_task_records_local_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     # Provider silent (the acp reality) -> the row's duration is the local clock.
     record = await _run_execute_task(monkeypatch, provider_ms=0)
-    assert record["surface"] == "task_runner"
+    assert record["surface"] == "taskrunner"
     assert isinstance(record["duration_ms"], int)
     assert record["duration_ms"] >= 1, "execute_task turn must record a non-zero local duration"
 
@@ -170,7 +172,7 @@ async def test_execute_task_provider_duration_wins(monkeypatch: pytest.MonkeyPat
 @pytest.mark.asyncio
 async def test_self_review_records_local_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     record = await _run_self_review(monkeypatch, provider_ms=0)
-    assert record["surface"] == "task_runner"
+    assert record["surface"] == "taskrunner"
     assert isinstance(record["duration_ms"], int)
     assert record["duration_ms"] >= 1, "self_review turn must record a non-zero local duration"
 

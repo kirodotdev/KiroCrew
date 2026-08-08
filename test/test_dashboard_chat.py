@@ -3752,6 +3752,95 @@ class TestTokenPersistenceBackfill:
         assert slot.model == "claude-opus-4.6"
 
 
+class TestTokenUsageSurface:
+    """Usage rows record the slot's effective session source."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slot_key", "linked_session_key", "expected"),
+        [
+            ("named-dashboard-tab", "", "dashboard"),
+            ("slack-tab", "slack:1234567890.123456", "slack"),
+            ("telegram-tab", "telegram:123:456", "telegram"),
+        ],
+    )
+    async def test_completion_uses_effective_session_identity(
+        self,
+        tmp_path,
+        monkeypatch,
+        slot_key,
+        linked_session_key,
+        expected,
+    ):
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        complete = LLMEvent(
+            kind=EVENT_COMPLETE,
+            usage=TurnUsage(input_tokens=1, output_tokens=1, duration_ms=25),
+        )
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot(slot_key)
+        slot._titled = True
+        slot.linked_session_key = linked_session_key
+        client = TestTokenPersistenceBackfill._make_mock_client(
+            [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), complete]
+        )
+        client.context_used_tokens = MagicMock(return_value=10)
+        client.context_window_tokens = MagicMock(return_value=100)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        persist = AsyncMock()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.persist_token_record_async", persist
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert persist.await_args.args[0] == slot_key
+        assert persist.await_args.kwargs["surface"] == expected
+
+    @pytest.mark.asyncio
+    async def test_completion_keeps_source_of_session_that_ran(self, tmp_path, monkeypatch):
+        """A mid-turn rebind must not move the completed turn's attribution."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        complete = LLMEvent(
+            kind=EVENT_COMPLETE,
+            usage=TurnUsage(input_tokens=1, output_tokens=1, duration_ms=25),
+        )
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("channel-tab")
+        slot._titled = True
+        slot.linked_session_key = "slack:1234567890.123456"
+        client = TestTokenPersistenceBackfill._make_mock_client([])
+        client.context_used_tokens = MagicMock(return_value=10)
+        client.context_window_tokens = MagicMock(return_value=100)
+
+        async def _stream(_message):
+            # _run_chat has already selected the Slack session for this turn.
+            slot.linked_session_key = "telegram:123:456"
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield complete
+
+        client.stream = _stream
+        client.stream_command = _stream
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        persist = AsyncMock()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.persist_token_record_async", persist
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert persist.await_args.args[0] == slot.key
+        assert persist.await_args.kwargs["surface"] == "slack"
+
+
 class TestKiroBackfillProfileGuard:
     """Regression tests for the kiro/acp backfill must NOT store a
     resolved Bedrock inference-profile id into slot.model.
