@@ -25,6 +25,8 @@ a matching update to the invariant tests (GATE group B in
 from __future__ import annotations
 
 import ast
+import re
+import string
 import symtable
 from dataclasses import dataclass, field
 from typing import Any
@@ -126,6 +128,84 @@ FORBIDDEN_NAMES = frozenset(
 # Modules that especially must not be imported: determinism (B3) and egress (B7).
 # All imports are rejected regardless; this set only sharpens the error message.
 DETERMINISM_MODULES = frozenset({"time", "random", "uuid", "datetime", "secrets", "os"})
+
+# Introspection attributes that are neither dunders nor underscore-prefixed, so
+# the dunder/private rules below miss them, yet each hands back the frame /
+# globals / builtins chain that reaches ``__import__`` and the real builtins:
+#   gen.gi_frame.f_back.f_builtins["__import__"]
+# Blocked by exact name wherever they appear in the tree (``_Validator`` walks
+# helper bodies too), so no amount of aliasing or indirection gets past them.
+FORBIDDEN_ATTRS = frozenset(
+    {
+        # generator / coroutine / async-generator introspection
+        "gi_frame", "gi_code", "gi_yieldfrom", "gi_running",
+        "cr_frame", "cr_code", "cr_await", "cr_running", "cr_origin",
+        "ag_frame", "ag_code", "ag_await", "ag_running",
+        # frame object
+        "f_back", "f_globals", "f_builtins", "f_locals", "f_code", "f_trace",
+        # traceback object
+        "tb_frame", "tb_next",
+        # function object (py2-era aliases still resolve on some builds)
+        "func_globals", "func_code", "func_builtins",
+    }
+)
+
+
+def _attr_reason(attr: str) -> str | None:
+    """Why *attr* may not be accessed, or None if it is allowed.
+
+    One predicate shared by attribute-node checks and the format-string scan so
+    a name blocked as ``x.__class__`` is blocked identically inside a
+    ``"{0.__class__}".format(x)`` field — the two must never diverge.
+    """
+    if _is_dunder(attr):
+        return f"dunder attribute access '.{attr}' is not allowed"
+    if attr.startswith("_"):
+        # Single-underscore is the private-API convention; a workflow reaching
+        # ``ctx._ports`` (directly or via a helper that forwards ctx) is grabbing
+        # host internals the public surface deliberately withholds.
+        return f"private attribute access '.{attr}' is not allowed"
+    if attr in FORBIDDEN_ATTRS:
+        return f"introspection attribute access '.{attr}' is not allowed"
+    return None
+
+
+_MAX_FORMAT_RECURSION = 5
+
+
+def _format_field_reasons(value: str, *, _depth: int = 0) -> list[str]:
+    """Reasons a str literal is a ``str.format`` traversal escape, if any.
+
+    ``"{0.__class__.__mro__}".format(ctx)`` never appears as an ``Attribute``
+    node — the traversal lives inside the string literal and only ``.format`` /
+    ``.format_map`` (both plain, allowed method names) trigger it — so the AST
+    walk cannot see it. Parse each replacement field's attribute components and
+    apply the same ``_attr_reason`` predicate; recurse into nested fields inside
+    a format spec (``"{0:{1.__class__}}"``). A string that is not a valid format
+    string would raise at run time rather than escape, so it is left alone.
+
+    Depth is bounded to prevent a recursion bomb (deeply nested format specs)
+    from crashing the validator with ``RecursionError``.
+    """
+    if _depth > _MAX_FORMAT_RECURSION:
+        return ["format string nesting exceeds maximum depth"]
+    reasons: list[str] = []
+    try:
+        parsed = list(string.Formatter().parse(value))
+    except (ValueError, RecursionError):
+        return reasons
+    for _literal, field_name, format_spec, _conversion in parsed:
+        if field_name:
+            # field_name := arg_name ("." attr | "[" index "]")* ; pull the
+            # ``.attr`` components (indices cannot name an attribute).
+            for attr in re.findall(r"\.([A-Za-z_][A-Za-z0-9_]*)", field_name):
+                reason = _attr_reason(attr)
+                if reason is not None:
+                    reasons.append(reason)
+        if format_spec:
+            reasons.extend(_format_field_reasons(format_spec, _depth=_depth + 1))
+    return reasons
+
 
 ENTRYPOINT = "workflow"
 META_NAME = "META"
@@ -260,6 +340,36 @@ def _is_dunder(name: str) -> bool:
     return len(name) >= 5 and name.startswith("__") and name.endswith("__")
 
 
+def _try_fold_str_binop(node: ast.BinOp) -> str | None:
+    """Try to constant-fold a string concatenation BinOp tree.
+
+    Returns the combined string if ALL leaves are str constants joined by ``+``,
+    or None if any leaf is a non-constant expression (runtime value that cannot
+    be evaluated statically). This lets the validator catch split-literal
+    bypasses like ``"{" + "0._session_key}"`` where each half is individually
+    harmless but the result is a dangerous format string.
+    """
+    if isinstance(node.op, ast.Add):
+        left = _fold_str_operand(node.left)
+        right = _fold_str_operand(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _fold_str_operand(node: ast.expr) -> str | None:
+    """Resolve a node to a string if it is a str constant or a tree of str
+    constants joined by ``+``; otherwise return None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_str_operand(node.left)
+        right = _fold_str_operand(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
 class _Validator(ast.NodeVisitor):
     """Walks the whole tree (including helper defs) collecting violations."""
 
@@ -284,10 +394,39 @@ class _Validator(ast.NodeVisitor):
         )
 
     def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802 (ast.NodeVisitor API)
-        if _is_dunder(node.attr):
-            self.errors.append(
-                f"line {node.lineno}: dunder attribute access '.{node.attr}' is not allowed"
-            )
+        reason = _attr_reason(node.attr)
+        if reason is not None:
+            self.errors.append(f"line {node.lineno}: {reason}")
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:  # noqa: N802 (ast.NodeVisitor API)
+        # ``str.format`` / ``format_map`` traversal hides the attribute walk
+        # inside a string literal, out of reach of visit_Attribute. Scan the
+        # literal's format fields with the same predicate. Checking every str
+        # constant (not only those we can prove reach ``.format``) is deliberate:
+        # a literal that spells out an introspection traversal has no legitimate
+        # use, and tying the check to call-site analysis would reopen the gap.
+        if isinstance(node.value, str):
+            for reason in _format_field_reasons(node.value):
+                self.errors.append(
+                    f"line {node.lineno}: {reason} (in a format string)"
+                )
+        self.generic_visit(node)
+
+    def visit_BinOp(self, node: ast.BinOp) -> None:  # noqa: N802 (ast.NodeVisitor API)
+        # String concatenation (``"{" + "0._session_key}"``) produces two
+        # separate Constant nodes that individually look harmless but whose
+        # combined result is a dangerous format string. Resolve the full value
+        # at compile time (only when ALL leaves are str constants — runtime
+        # expressions are out of reach for static analysis) and re-validate.
+        if isinstance(node.op, ast.Add):
+            combined = _try_fold_str_binop(node)
+            if combined is not None:
+                for reason in _format_field_reasons(combined):
+                    self.errors.append(
+                        f"line {node.lineno}: {reason} "
+                        f"(in a concatenated format string)"
+                    )
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:  # noqa: N802 (ast.NodeVisitor API)
