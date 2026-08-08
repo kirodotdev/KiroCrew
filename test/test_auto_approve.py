@@ -534,3 +534,77 @@ class TestAutoApproveProvenanceGating:
         # (async) SEL write failure reaches this fail-closed handler rather than
         # being swallowed by the background writer after the gate has returned.
         assert boom.log_tool_invocation.call_args.kwargs["critical"] is True
+
+
+class TestSpecDeclaredApprovalGating:
+    """A spec that declares ``approval: auto`` requests trust through the SAME
+    provenance gate as the UI flag — it can never self-elevate a non-dashboard
+    launch. (Issue #2068: spec-declared approval mode.)
+    """
+
+    async def _start_auto_approve_passed(
+        self, tmp_path: Path, spec_body: str, source: str,
+        request_app: str = "", ui_flag: bool = False,
+    ) -> bool:
+        runner = MagicMock()
+        runner._work_dir = tmp_path
+        runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = request_app  # "" == dashboard itself
+        req.json = AsyncMock(
+            return_value={
+                "spec": f"__inline__:{spec_body}",
+                "source": source,
+                "auto_approve": ui_flag,
+            }
+        )
+        await api_taskrunner_start(req)
+        return runner.start_background.call_args.kwargs["auto_approve"]
+
+    _SPEC_AUTO = "---\napproval: auto\n---\n# Task: t\n## Steps\n1. do\n"
+    _SPEC_PLAIN = "# Task: t\n## Steps\n1. do\n"
+
+    @pytest.mark.asyncio
+    async def test_dashboard_spec_auto_grants_without_ui_flag(self, tmp_path: Path) -> None:
+        # Dashboard launch + spec-declared auto → trust, even though the UI flag
+        # was not set. The spec directive is a first-class request path.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "dashboard", request_app="", ui_flag=False
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_cron_spec_auto_still_denied(self, tmp_path: Path) -> None:
+        # SAME directive, cron source → the provenance gate still denies it.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "cron", request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_mcp_spec_auto_still_denied(self, tmp_path: Path) -> None:
+        # task_run (MCP) source → denied despite the spec asking for auto.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "mcp", request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_app_embedded_spec_auto_denied(self, tmp_path: Path) -> None:
+        # Even a dashboard-source claim cannot self-trust from an app/proxy embed.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_AUTO, "dashboard", request_app="someapp", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_dashboard_plain_spec_no_trust(self, tmp_path: Path) -> None:
+        # No directive + no UI flag → deny-by-default, even on the dashboard.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_PLAIN, "dashboard", request_app="", ui_flag=False
+        ) is False
+
+    @pytest.mark.asyncio
+    async def test_ui_flag_still_works_without_directive(self, tmp_path: Path) -> None:
+        # The pre-existing UI-flag path is unchanged by the OR with the directive.
+        assert await self._start_auto_approve_passed(
+            tmp_path, self._SPEC_PLAIN, "dashboard", request_app="", ui_flag=True
+        ) is True
