@@ -67,6 +67,23 @@ describe('BroadcastBar', () => {
     expect(caption.getAttribute('aria-live')).toBe('polite')
   })
 
+  it('wraps the caption instead of clipping it to a single line', () => {
+    // `truncate` carried `white-space: nowrap` plus an ellipsis, and
+    // `text-overflow` shows a string's HEAD — so a caption longer than the bar
+    // displayed the oldest speech and looked like it had stopped updating.
+    // `line-clamp-2` bounds the height: this bar is `flex-none`, so an unbounded
+    // caption would push the composer off-screen.
+    //
+    // Asserted by class name because the vitest env computes no layout and does
+    // not load index.css — the same reasoning recorded in
+    // `ChatSidebar.scrollbar.test.tsx`.
+    render(<BroadcastBar onSend={vi.fn()} caption="Alice said hello" />)
+    const caption = screen.getByTestId('meetings-caption')
+    expect(caption.className).not.toContain('truncate')
+    expect(caption.className).toContain('break-words')
+    expect(caption.className).toContain('line-clamp-2')
+  })
+
   it('renders no caption row when there is nothing to show', () => {
     render(<BroadcastBar onSend={vi.fn()} />)
     expect(screen.queryByTestId('meetings-caption')).toBeNull()

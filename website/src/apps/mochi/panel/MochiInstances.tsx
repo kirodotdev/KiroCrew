@@ -21,6 +21,15 @@
  *
  * Consequence worth saying out loud in the UI: appearance and chat history both
  * live in the chosen gateway's data dir, so switching swaps both.
+ *
+ * SECOND consequence, only visible once a remote is picked: the "is there a pet
+ * at all" switch belongs to the HOST gateway — whichever one answers on the
+ * shell's `localhost:<port>`, which for a remote setup is an `ssh -L` forward and
+ * so is NOT necessarily this machine. Switching Mochi off there stops that
+ * gateway's own background work (its `on_shutdown` cancels the pollers, watchlist
+ * guard and stats) but no longer removes a pet being served by another crew — see
+ * instanceGate.hostDisabledMeansTeardown. The App Store toggle that does it is
+ * generic core UI with no Mochi hook, so this pane is where the boundary is said.
  */
 import { useEffect, useState } from 'react'
 import { listInstances, type CoreInstance, type InstancesView } from './panelBridge'
@@ -119,7 +128,17 @@ export function MochiInstancesList({
     let cancelled = false
 
     const load = async () => {
-      const next = await listInstances()
+      // Prefer the SHELL's answer: `/api/instances` is same-origin, so inside a pet
+      // that is already showing a remote it returns the REMOTE's registry — a
+      // different set of crews, or none at all if that gateway has the feature off,
+      // so the crew the user wants to return to can be missing entirely. The host
+      // owns the registry the stored ids refer to. Falls back to the direct fetch
+      // with no shell (a browser tab, where the tab IS the host).
+      //
+      // The shell hands back a full InstancesView, so `disabled` and `inactive`
+      // survive: rebuilding the view from a boolean here is what erased them.
+      const next: InstancesView =
+        (api?.instancesList ? await api.instancesList() : null) ?? (await listInstances())
       if (cancelled) return
       setView(next)
       if (api?.instancesEnabledMap) {
@@ -263,6 +282,17 @@ export function MochiInstancesList({
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.6 }}>
         {i18nT('apps.mochi.instances.switch_note')}
       </div>
+
+      {/* Only for a REMOTE choice, because only then are the two gateways
+          different and the split worth explaining: with 'self' the crew serving
+          this window IS the crew being shown. Informational rather than a
+          warning — since the pet now survives a local disable, this describes a
+          boundary instead of announcing a loss. */}
+      {current !== SELF_INSTANCE && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.6 }}>
+          {i18nT('apps.mochi.instances.host_disable_note')}
+        </div>
+      )}
     </>
   )
 }

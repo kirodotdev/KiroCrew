@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -56,6 +57,7 @@ _CRON_BUSY_BODY = {"error": "cron store busy, please retry", "retryable": True}
 def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
+
     return _pkg.sel()
 
 
@@ -215,6 +217,16 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
+    # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
+    # anything else is a 400 so the two entry points cannot diverge.
+    folder_id = body.get("folder_id", "")
+    if folder_id is None:
+        folder_id = ""
+    elif not isinstance(folder_id, str) or len(folder_id) > MAX_SHORT_STRING:
+        return web.json_response(
+            {"error": "invalid folder_id format", "code": "invalid_folder_id"},
+            status=400,
+        )
     # Validate model BEFORE add_job so an invalid value never leaves an
     # orphaned job behind (a retried create would then duplicate it).
     model_raw = body.get("model")
@@ -250,6 +262,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "timezone": (timezone_val or ""),
         "strict_schedule": bool(strict_schedule),
         "hide_in_chat": bool(hide_in_chat),
+        "folder_id": folder_id,
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
@@ -378,9 +391,29 @@ async def api_cron_update(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     kwargs: dict[str, Any] = {}
-    for key in ("name", "message", "channel", "approval_mode", "silent", "strict_schedule", "hide_in_chat"):
+    for key in (
+        "name",
+        "message",
+        "channel",
+        "approval_mode",
+        "silent",
+        "strict_schedule",
+        "hide_in_chat",
+        "folder_id",
+    ):
         if key in body:
             kwargs[key] = body[key]
+    # folder_id must be a string (or null → ""): a non-string JSON value
+    # would be persisted verbatim into the schema and corrupt reads.
+    if "folder_id" in kwargs:
+        fid = kwargs["folder_id"]
+        if fid is None:
+            kwargs["folder_id"] = ""
+        elif not isinstance(fid, str) or len(fid) > MAX_SHORT_STRING:
+            return web.json_response(
+                {"error": "invalid folder_id format", "code": "invalid_folder_id"},
+                status=400,
+            )
     # UI sends "agent"; internal kwarg is "agent_id". Accept "agent_id" for scripted callers.
     # Normalize whitespace and coerce null so update and create persist the same value.
     if "agent" in body:
@@ -441,8 +474,14 @@ async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
-    jobs = state.crons.list_jobs(include_disabled=True)
-    job = next((j for j in jobs if j.id == job_id), None)
+    # Freshness-guaranteed lookup: this endpoint is handed a job id minted by
+    # ANOTHER process (`kirocrew cron add`, the MCP cron_add tool), which writes
+    # crons.json directly. The cache-only `list_jobs()` would not see that job
+    # until the timer tick refreshes the in-memory snapshot (≤_TIMER_POLL_SECS),
+    # so triggering a just-created job 404'd for up to that long. Same rationale
+    # as the GET handler below; the read runs in a worker thread, so the loop is
+    # not blocked.
+    job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
     # Reject if a run is already in flight. Overwriting _running_tasks[job_id]
@@ -450,7 +489,9 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # tracked/cancelled/joined) and allow overlapping duplicate runs. The
     # check-and-set below is atomic: there is no await between the guard and the
     # assignment, so the single-threaded event loop cannot interleave a second
-    # request into this critical section.
+    # request into this critical section. (The lookup above awaits, so two
+    # concurrent requests can both reach the guard — but only one can pass it,
+    # because the guard and the assignment are not separated by an await.)
     if job_id in state.crons._running_tasks or state.crons.is_running(job_id):
         return web.json_response({"error": "job is already running"}, status=409)
     task = asyncio.create_task(state.crons.run_job(job_id))  # type: ignore[arg-type]
@@ -759,6 +800,11 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "rule is required"}, status=400)
     category = cleaned.get("category", "knowledge")
     scope = cleaned.get("scope", "global")
+    # LEARN_ADD_SCHEMA accepts and validates ``negative``, but both write paths
+    # below discarded it -- write_lesson got a literal None and the JSONL Lesson
+    # omitted the kwarg -- so every NOT-clause sent to this route, from the
+    # learn_add MCP tool, the dashboard, or the CLI, was silently lost.
+    negative = cleaned.get("negative") or None
     # Write to vector store if available, else JSONL
     vs = _get_memory(state).vector_store
     if vs:
@@ -780,31 +826,46 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # for a lesson that was actually saved (and re-saved on every retry).
         # Writing first, then sweeping in the background, keeps the slow LLM call
         # off the request path.
-        await asyncio.to_thread(
+        wrote = await asyncio.to_thread(
             vs.write_lesson,
             rule,
             category,
-            None,
+            negative,
             "user_explicit",
             rule_emb,
             rule_emb_generation,
         )
-        candidates = await asyncio.to_thread(
-            vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
-        )
-        if candidates:
-            # Fire-and-forget via this module's _background_tasks
-            # pattern. The sweep only supersedes OTHER (older) lessons, never
-            # the one just written (self-match scores ~1.0, above the 0.85
-            # candidate ceiling), so deferring it is safe. No retry/queue: a
-            # missed sweep self-heals on the next learn_add touching the topic.
-            task = asyncio.create_task(
-                _resolve_and_supersede(state, sk, rule, candidates, vs)
+        # Sweep ONLY when the lesson actually landed. write_lesson returns False
+        # for a value its preflight refuses (reachable now that ``negative`` is
+        # forwarded here at all -- this call site passed a literal None before) and
+        # for a dedup refusal. The return value used to be discarded, so a refused
+        # write still ran the sweep below, and _resolve_and_supersede would
+        # delete_semantic an older contradicted lesson whose "replacement" was never
+        # stored -- destroying a lesson on a request that persisted nothing, under
+        # HTTP 200. Superseding on the authority of a write that did not happen is
+        # wrong for BOTH False cases, so gate on the result rather than the cause.
+        if wrote:
+            candidates = await asyncio.to_thread(
+                vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
             )
-            state._background_tasks.add(task)
-            task.add_done_callback(state._background_tasks.discard)
+            if candidates:
+                # Fire-and-forget via this module's _background_tasks
+                # pattern. The sweep only supersedes OTHER (older) lessons, never
+                # the one just written (self-match scores ~1.0, above the 0.85
+                # candidate ceiling), so deferring it is safe. No retry/queue: a
+                # missed sweep self-heals on the next learn_add touching the topic.
+                task = asyncio.create_task(
+                    _resolve_and_supersede(state, sk, rule, candidates, vs)
+                )
+                state._background_tasks.add(task)
+                task.add_done_callback(state._background_tasks.discard)
     else:
-        lesson = Lesson(rule=rule, category=category, ts=datetime.now(timezone.utc).isoformat())
+        lesson = Lesson(
+            rule=rule,
+            category=category,
+            negative=negative,
+            ts=datetime.now(timezone.utc).isoformat(),
+        )
         if scope == "workspace":
             ws = cleaned.get("workspace")
             _get_lessons(state, ws).save(lesson)
@@ -822,10 +883,15 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     if _blocks_reads_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
-            caller=sk, operation="lessons.delete", outcome="denied",
-            source="dashboard", resources=sk,
+            caller=sk,
+            operation="lessons.delete",
+            outcome="denied",
+            source="dashboard",
+            resources=sk,
         )
-        return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
+        return web.json_response(
+            {"error": "Memory writes are not allowed in this session mode."}, status=403
+        )
     try:
         body = await request.json()
     except Exception:
@@ -836,9 +902,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     scope = body.get("scope", "global")
     # Delete from vector store if active, else JSONL
     vs = _get_memory(state).vector_store
-    vs_lessons = vs.get_lessons() if vs else None
+    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
-        ok = vs.delete_lesson(rule_sub)
+        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub)
     else:
         if scope == "workspace":
             ws = body.get("workspace")
@@ -883,11 +949,13 @@ async def api_crons(request: web.Request) -> web.Response:
             "silent": j.silent,
             "strict_schedule": j.strict_schedule,
             "hide_in_chat": j.hide_in_chat,
+            "folder_id": j.folder_id,
             "last_run_ts": j.last_run_ts,
             "has_result": bool(j.last_result),
             "has_slot": state.has_slot(f"cron-{j.id}"),
             "next_run_ts": compute_next_run_ts(j, now=now),
-            "timezone": redact_credentials(redact_exfiltration_urls(j.timezone or "")[0])[0] or None,
+            "timezone": redact_credentials(redact_exfiltration_urls(j.timezone or "")[0])[0]
+            or None,
             "skip_dates": (
                 [redact_credentials(redact_exfiltration_urls(d)[0])[0] for d in j.skip_dates]
                 if j.skip_dates
@@ -910,6 +978,118 @@ async def api_crons(request: web.Request) -> web.Response:
     )
 
 
+# ── Cron Folders ──
+
+# Serializes all cron-folder mutations (create/rename/delete) so concurrent
+# requests cannot race on the in-memory list + disk persist cycle. The lock is
+# created lazily and re-created if the running event loop changes (Python 3.10
+# binds a Lock to the loop it first waits on) — mirrors _get_config_lock in
+# agents.py.
+_cron_folders_lock: asyncio.Lock | None = None
+_cron_folders_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_cron_folders_lock() -> asyncio.Lock:
+    """Return a cron-folders lock bound to the current event loop."""
+    global _cron_folders_lock, _cron_folders_lock_loop
+    loop = asyncio.get_running_loop()
+    if _cron_folders_lock is None or _cron_folders_lock_loop is not loop:
+        _cron_folders_lock = asyncio.Lock()
+        _cron_folders_lock_loop = loop
+    return _cron_folders_lock
+
+
+async def api_cron_folders(request: web.Request) -> web.Response:
+    """GET /api/cron-folders — list all cron folders."""
+    state: DashboardState = request.app["state"]
+    # Bare list, matching the chat-folders precedent (api_chat_folders).
+    return web.json_response(state._cron_folders)
+
+
+async def api_cron_folders_create(request: web.Request) -> web.Response:
+    """POST /api/cron-folders — create a new cron folder."""
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+        return web.json_response(
+            {"error": "name must be a string", "code": "name_required"}, status=400
+        )
+    name = body["name"].strip()
+    if not name:
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
+    if len(name) > MAX_SHORT_STRING:
+        return web.json_response({"error": "name too long", "code": "name_too_long"}, status=400)
+
+    async with _get_cron_folders_lock():
+        folder_id = uuid.uuid4().hex[:8]
+        try:
+            folder = await asyncio.to_thread(state.create_cron_folder, name, folder_id)
+        except Exception:
+            logger.warning("Failed to persist cron folder create", exc_info=True)
+            return web.json_response(
+                {"error": "failed to save folder", "code": "folder_save_failed"}, status=500
+            )
+    state.push_refresh("crons")
+    return web.json_response(folder)
+
+
+async def api_cron_folders_update(request: web.Request) -> web.Response:
+    """PATCH /api/cron-folders/{folder_id} — rename a cron folder."""
+    state: DashboardState = request.app["state"]
+    folder_id = request.match_info["folder_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+        return web.json_response(
+            {"error": "name must be a string", "code": "name_required"}, status=400
+        )
+    name = body["name"].strip()
+    if not name:
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
+    if len(name) > MAX_SHORT_STRING:
+        return web.json_response({"error": "name too long", "code": "name_too_long"}, status=400)
+
+    async with _get_cron_folders_lock():
+        try:
+            folder = await asyncio.to_thread(state.rename_cron_folder, folder_id, name)
+        except Exception:
+            logger.warning("Failed to persist cron folder rename", exc_info=True)
+            return web.json_response(
+                {"error": "failed to save folder", "code": "folder_save_failed"}, status=500
+            )
+    if folder is None:
+        return web.json_response(
+            {"error": "folder not found", "code": "folder_not_found"}, status=404
+        )
+    state.push_refresh("crons")
+    return web.json_response(folder)
+
+
+async def api_cron_folders_delete(request: web.Request) -> web.Response:
+    """DELETE /api/cron-folders/{folder_id} — delete folder and clear assignments."""
+    state: DashboardState = request.app["state"]
+    folder_id = request.match_info["folder_id"]
+    async with _get_cron_folders_lock():
+        try:
+            found = await asyncio.to_thread(state.delete_cron_folder, folder_id)
+        except Exception:
+            logger.warning("Failed to persist cron folder delete", exc_info=True)
+            return web.json_response(
+                {"error": "failed to save folder", "code": "folder_save_failed"}, status=500
+            )
+    if not found:
+        return web.json_response(
+            {"error": "folder not found", "code": "folder_not_found"}, status=404
+        )
+    state.push_refresh("crons")
+    return web.json_response({"ok": True})
+
+
 async def api_lessons(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     # Block lesson reads only for temporary sessions (blocks_reads=True).
@@ -924,7 +1104,7 @@ async def api_lessons(request: web.Request) -> web.Response:
     workspace = request.query.get("workspace")
     # Read from vector store if it has lessons, else JSONL
     vs = _get_memory(state).vector_store
-    vs_lessons = vs.get_lessons() if vs else None
+    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
         data = []
         for e in vs_lessons[-50:]:

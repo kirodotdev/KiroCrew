@@ -138,6 +138,7 @@ from kiro_crew.session_pid import (  # noqa: F401
 )
 from kiro_crew.session_pid import (
     find_orphan_mcp_candidates,
+    get_session_rss_mb,
     kill_orphan_mcps,
 )
 from kiro_crew.stats import Stats
@@ -468,6 +469,34 @@ def _provider_has_active_turn(provider: LLMProvider) -> bool:
     return res is True
 
 
+def _context_pct_is_unknown(provider: LLMProvider) -> bool:
+    """True only if ``provider`` reports its 0% context reading as unknown.
+
+    Mirrors :func:`_provider_has_active_turn`'s defensive shape: the probe is
+    optional (stubs and warm-pool doubles need not implement it), and an
+    ``AsyncMock``-style double that returns a coroutine is closed rather than
+    left to raise a RuntimeWarning. Anything that is not exactly ``True`` reads
+    as "the percentage is trustworthy", keeping the caller's recycle decision
+    fail-quiet on a double.
+    """
+    fn = getattr(provider, "context_usage_unknown", None)
+    if not callable(fn):
+        return False
+    try:
+        res = fn()
+    except Exception:
+        return False
+    if inspect.isawaitable(res):
+        close = getattr(res, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return False
+    return res is True
+
+
 def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
     """True only if ``provider`` reports a native turn that has not reached its
     done boundary — INDEPENDENT of cancel state (unlike
@@ -535,6 +564,31 @@ class _Session:
     provider_switch_replay: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
+    # Set after context compaction drops the session-start skill index.
+    # Consumed one-shot by the next prompt builder to re-inject the skills
+    # index so the model can still discover skills post-compaction.
+    needs_context_reinjection: bool = False
+
+    def adopt_provider(self, provider: LLMProvider) -> None:
+        """Swap in a freshly-spawned *provider*, resetting conversation state.
+
+        Recycling in place — rather than registering a new ``_Session`` — is what
+        lets a caller already holding this session (or blocked on its semaphore)
+        pick up the replacement instead of a torn-down provider: both the
+        semaphore and the object identity the registry is keyed on survive.
+        Everything reset below describes the OLD transcript, so carrying it onto
+        a fresh provider would misreport its size or replay a preamble the new
+        conversation never lost. ``agent`` and ``approval_policy`` describe the
+        session's role, not its transcript, so they are kept.
+        """
+        self.provider = provider
+        self.provider_switch_replay = False
+        self.prompt_count = 0
+        self.consecutive_failures = 0
+        self.prev_turn_cancelled = False
+        self.needs_context_reinjection = False
+        self.created_at = time.time()
+        self.last_used = time.monotonic()
 
 
 class _ProviderBgSession:
@@ -2043,35 +2097,100 @@ class SessionManager:
         """Check background session context and recycle if too full.
 
         Background tasks are stateless (cron, heartbeat, lessons), so we
-        don't need compaction — just kill the old session and create a fresh
-        one.  Called after each background task completes.
+        don't need compaction — just swap in a fresh provider.  Called after
+        each background task completes.
 
         Thresholds are more aggressive than chat compaction:
         - At ≥ 70% context → recycle
+        - Once the backend reports a post-compaction unknown → recycle
         - After 40 prompts with no metadata → recycle (blind fallback)
+
+        Runs under the session's own turn semaphore, so it is mutually exclusive
+        with background turns: callers ``release`` it on the line before calling
+        here, and a waiter can take it in that gap, so deciding or tearing down
+        outside it would SIGKILL a turn that had already started.
         """
         session = self._sessions.get(BACKGROUND_KEY)
         if not session:
             return
 
-        pct = session.provider.context_usage_pct()
-        needs_recycle = pct >= _BG_RECYCLE_PCT
-        if not needs_recycle and pct == 0.0:
-            # Blind fallback: recycle after N prompts if metadata never reports %
-            needs_recycle = session.prompt_count >= _BG_BLIND_RECYCLE_PROMPTS
-
-        if not needs_recycle:
+        # Take the same semaphore a turn takes, then re-validate identity and
+        # liveness under _lock — the shared dance every multiplexing path uses.
+        # If a waiter got the turn first this blocks until that turn finishes;
+        # if the entry was replaced or removed while we waited, we own nothing
+        # and must not tear anything down. No caller holds the semaphore at this
+        # point (they release immediately before calling), so this cannot
+        # self-deadlock.
+        if not await self._reacquire_and_validate(BACKGROUND_KEY, session):
             return
+        try:
+            provider = session.provider
 
-        reason = f"context at {pct:.0f}%" if pct > 0 else f"blind ({session.prompt_count} prompts)"
-        logger.info("Recycling background session — %s", reason)
+            # Count the completed turn HERE. ``check_context_usage`` — the only
+            # other place that advances ``prompt_count`` — is a chat-turn hook
+            # and never runs for BACKGROUND_KEY, so without this the blind
+            # fallback below reads a permanently-zero counter and can never fire.
+            session.prompt_count += 1
 
-        async with self._lock:
-            old = self._sessions.pop(BACKGROUND_KEY, None)
-        if old:
-            await old.provider.shutdown()
+            pct = provider.context_usage_pct()
+            needs_recycle = pct >= _BG_RECYCLE_PCT
+            # A 0% that the backend flags unknown means it already compacted this
+            # session in place: the transcript reached its ceiling and its
+            # post-compact size is unmeasured. Recycling now is strictly cheaper
+            # than leaving it to compact again, because every compaction is a
+            # billed summarization turn over the whole transcript and a
+            # background session keeps nothing worth summarizing.
+            post_compaction = pct == 0.0 and _context_pct_is_unknown(provider)
+            if not needs_recycle and post_compaction:
+                needs_recycle = True
+            elif not needs_recycle and pct == 0.0:
+                # Blind fallback: recycle after N prompts if metadata never reports %
+                needs_recycle = session.prompt_count >= _BG_BLIND_RECYCLE_PROMPTS
 
-        await self._ensure_background()
+            if not needs_recycle:
+                return
+
+            if pct > 0:
+                reason = f"context at {pct:.0f}%"
+            elif post_compaction:
+                reason = "compacted in place (context size unknown)"
+            else:
+                reason = f"blind ({session.prompt_count} prompts)"
+            logger.info("Recycling background session — %s", reason)
+
+            if not self._provider_factory:
+                return
+            # Spawn the replacement BEFORE tearing the old one down: a failed
+            # spawn then leaves the working session in place instead of leaving
+            # _bg with nothing, and the registered entry is never absent.
+            try:
+                replacement = self._provider_factory(BACKGROUND_KEY, agent=BACKGROUND_AGENT)
+                async with self._start_sem:
+                    await replacement.start()
+            except Exception:
+                logger.warning(
+                    "Background session recycle kept the old provider — "
+                    "replacement failed to start",
+                    exc_info=True,
+                )
+                return
+
+            async with self._lock:
+                # reset()/remove()/close_all() do not take the turn semaphore, so
+                # the entry can still have moved out from under us while the
+                # replacement was starting. Whoever owns it now owns the
+                # lifecycle; discard ours rather than overwrite theirs.
+                adopted = self._sessions.get(BACKGROUND_KEY) is session
+                if adopted:
+                    session.adopt_provider(replacement)
+
+            doomed = provider if adopted else replacement
+            try:
+                await doomed.shutdown()
+            except Exception:
+                logger.debug("Background recycle provider shutdown failed", exc_info=True)
+        finally:
+            session.semaphore.release()
 
     async def recycle_heartbeat(self) -> None:
         """Tear down the heartbeat session at the end of a cycle.
@@ -2799,6 +2918,31 @@ class SessionManager:
             logger.warning("Compact callback already registered; replacing existing handler")
         self._on_compacted = cb
 
+    def mark_needs_reinjection(self, key: str) -> None:
+        """Flag *key*'s session to re-inject skill context on the next turn.
+
+        Called after a successful compaction drops the session-start context
+        (which includes the skills index).  The flag is consumed one-shot by
+        :meth:`consume_needs_reinjection`.
+        """
+        sess = self._sessions.get(self._fold_key(key))
+        if sess is not None:
+            sess.needs_context_reinjection = True
+
+    def consume_needs_reinjection(self, key: str) -> bool:
+        """Read *and clear* *key*'s re-injection flag; return what it was.
+
+        One-shot by construction: the flag is cleared as it is read, so the
+        skills index is re-injected on exactly the FIRST turn after a
+        compaction rather than on every subsequent turn (which would re-pay
+        the index cost forever and defeat the point of compacting).
+        """
+        sess = self._sessions.get(self._fold_key(key))
+        if sess is None or not sess.needs_context_reinjection:
+            return False
+        sess.needs_context_reinjection = False
+        return True
+
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
         """Register a callback fired when the watchdog recycles a session.
 
@@ -3049,6 +3193,25 @@ class SessionManager:
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Invoke ``_on_compacted`` if registered, swallowing exceptions."""
+        # Mark BEFORE the callback check, and here rather than in any one
+        # surface's callback: all the compaction-success paths funnel through
+        # this method, so every surface (dashboard, Slack, Discord) gets the
+        # flag, and it is still set when no callback is registered at all.
+        # Placing it in DashboardState._on_compacted instead would miss every
+        # channel-born session, and even dashboard sessions with no open tab —
+        # that branch returns before the callback body runs.
+        #
+        # A RECYCLE is excluded even though it reports success=True: recycling
+        # destroys the session, so its successor cold-starts and receives the
+        # index through the normal new-session context — there is nothing to
+        # restore. Without this guard, the `_recycle_held` branch that finds its
+        # entry "already replaced" by a racing cold-start would flag that fresh
+        # replacement, making an un-compacted session re-inject a redundant
+        # index. In the ordinary recycle branch the session is already popped so
+        # the mark would no-op anyway; the guard makes that intent explicit
+        # rather than leaving it to an ordering accident.
+        if success and key not in self._recycling:
+            self.mark_needs_reinjection(key)
         if self._on_compacted is None:
             return
         try:
@@ -4093,19 +4256,34 @@ class SessionManager:
                     candidates.append((key, pid, sess))
         victims: list[tuple[str, int, _Session]] = []
         if candidates:
-            # Build the /proc parent->child map ONCE per tick, off-loop. It is
-            # identical for every candidate this sweep, so measuring each tree
-            # via get_session_rss_mb (which builds its own map) would rescan all
-            # of /proc K times; scan once and share the read-only map instead.
             # Offloaded to the bounded maintenance pool (not the default
             # executor), matching the sibling hooks, so an unrelated default-
-            # pool backlog can't starve this periodic /proc walk.
+            # pool backlog can't starve this periodic walk.
             loop = asyncio.get_running_loop()
-            child_map = await loop.run_in_executor(maintenance_executor(), _build_child_map)
+            measure: Callable[[int], int]
+            if platform_compat.IS_WINDOWS:
+                # No /proc, and no snapshot worth sharing: a raw Toolhelp
+                # parent->child map can attach an unrelated subtree to a recycled
+                # PID, so each tree goes through the lineage-validating route
+                # instead. That costs one enumeration per candidate rather than
+                # one per tick — the price of never recycling a healthy session
+                # on stale ancestry.
+                def measure(pid: int) -> int:
+                    return get_session_rss_mb(pid)
+
+            else:
+                # Build the /proc parent->child map ONCE per tick. It is
+                # identical for every candidate this sweep, so measuring each
+                # tree via get_session_rss_mb (which builds its own map) would
+                # rescan all of /proc K times; scan once and share the read-only
+                # map instead.
+                child_map = await loop.run_in_executor(maintenance_executor(), _build_child_map)
+
+                def measure(pid: int) -> int:
+                    return _rss_mb_from_tree(pid, child_map)
+
             for key, pid, sess in candidates:
-                rss = await loop.run_in_executor(
-                    maintenance_executor(), _rss_mb_from_tree, pid, child_map
-                )
+                rss = await loop.run_in_executor(maintenance_executor(), measure, pid)
                 if rss > self._rss_max_mb:
                     victims.append((key, rss, sess))
         for key, rss, sess in victims:

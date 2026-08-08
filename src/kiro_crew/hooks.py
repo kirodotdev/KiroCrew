@@ -2423,6 +2423,9 @@ async def run_script_hook(
             "KIROCREW_HOOK_CONTEXT": env_context,
         }
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
+        # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
+        # platforms — only the eventual spawn form differs (see the Windows
+        # branch under the spawn).
         if platform_compat.IS_WINDOWS:
             argv = ["cmd", "/c", hook.command]
         else:
@@ -2434,15 +2437,41 @@ async def run_script_hook(
         # on the build fleet): start_new_session=True is a no-op on Windows,
         # creationflags resolves to 0 (no-op) on POSIX. The Windows flag makes the
         # tree taskkill /T-reapable; POSIX setsid -> killpg.
-        proc = await create_subprocess_limited(
-            *wrapped_argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-        )
+        if platform_compat.IS_WINDOWS and wrapped_argv == argv:
+            # cmd.exe must receive the operator's command line VERBATIM. Spawning
+            # ``["cmd", "/c", command]`` as an argv routes it through
+            # ``subprocess.list2cmdline``, which backslash-escapes every quote the
+            # operator wrote — so a command as ordinary as
+            # ``"C:\Program Files\Python\python.exe" -c "print(1)"`` arrives as
+            # ``\"C:\Program Files\...\"`` and cmd.exe answers "is not recognized
+            # as an internal or external command". ``create_subprocess_shell``
+            # formats ``%ComSpec% /c "<command>"`` with no argv escaping, which is
+            # the same parse the operator gets typing the line at a prompt (and
+            # the only form under which ``%VAR%`` and a literal ``%`` both behave
+            # as written — a temp ``.cmd`` wrapper would eat both).
+            #
+            # Guarded on the wrap being a no-op: Windows has no sandbox or cgroup
+            # backend, so neither chokepoint can prepend anything today. Should
+            # one ever appear, the wrapper MUST own the spawn — that case falls
+            # through to the argv path below, choosing isolation over quoting.
+            proc = await asyncio.create_subprocess_shell(
+                hook.command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            )
+        else:
+            proc = await create_subprocess_limited(
+                *wrapped_argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(input=stdin_data), timeout=hook.timeout

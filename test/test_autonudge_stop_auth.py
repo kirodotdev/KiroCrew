@@ -67,7 +67,20 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install)
         "message": "check PR #1 until green",
         "idle_secs": 300,
         "max_cycles": 5,
+        "max_runtime_secs": 0,
     }
+
+
+def test_monitor_start_runtime_budget_passes_through(default_install):
+    """An explicit wall-clock budget lands in the directive payload and is
+    echoed in the confirmation; omitting it defaults to 0 (unlimited)."""
+    result = _call_tool_inner(
+        "monitor_start",
+        {"message": "watch CI", "max_runtime_secs": 7200},
+    )
+    args = session_directive.decode(result, "monitor_start")
+    assert args["max_runtime_secs"] == 7200
+    assert "7200s" in result
 
 
 def test_monitor_start_defaults_interval_300_and_bounded_cap(default_install):
@@ -136,6 +149,15 @@ def test_monitor_update_interval_maps_to_idle_secs(default_install):
     assert session_directive.decode(result, "monitor_update")["patch"] == {"idle_secs": 900}
 
 
+def test_monitor_update_runtime_budget_passes_through(default_install):
+    """A revised wall-clock budget lands in the patch; untouched fields are
+    omitted, not defaulted over."""
+    result = _call_tool_inner("monitor_update", {"max_runtime_secs": 3600})
+    assert session_directive.decode(result, "monitor_update")["patch"] == {
+        "max_runtime_secs": 3600
+    }
+
+
 def test_monitor_update_empty_patch_returns_plain_message_no_directive(default_install):
     """A no-field call is a plain 'nothing to change' message — no directive."""
     result = _call_tool_inner("monitor_update", {})
@@ -198,11 +220,17 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch):
 
 
 class _FakeLoop:
-    def __init__(self, loop_id, *, cycle_count=0, max_cycles=0, active=True):
+    def __init__(
+        self, loop_id, *, cycle_count=0, max_cycles=0, active=True, created_ts=0.0,
+        max_runtime_secs=0, stopped_reason="",
+    ):
         self.id = loop_id
         self.cycle_count = cycle_count
         self.max_cycles = max_cycles
         self.active = active
+        self.created_ts = created_ts
+        self.max_runtime_secs = max_runtime_secs
+        self.stopped_reason = stopped_reason
 
 
 class _FakeSvc:
@@ -325,6 +353,45 @@ def test_applier_monitor_update_refuses_cap_at_or_below_cycle_count(monkeypatch)
     assert not update_calls
 
 
+def test_applier_monitor_update_refuses_spent_runtime_budget(monkeypatch):
+    """SPENT-BUDGET: a wall-clock budget at/below the loop's elapsed age would
+    deactivate it on the next timer without firing again, so it is refused —
+    same shape as the cycle-cap guard. A larger budget passes through."""
+    import time as _time
+
+    armed_two_hours_ago = _time.time() - 7200
+    loop = _FakeLoop("loop-8", cycle_count=3, max_cycles=24, active=True,
+                     created_ts=armed_two_hours_ago)
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch, loop=loop)
+    # 3600s budget on a loop already 7200s old → refused, no update call.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_runtime_secs": 3600}},
+        )
+    )
+    assert "at or below" in result
+    assert not update_calls
+    # A budget beyond the elapsed age is applied.
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_runtime_secs": 86400}},
+        )
+    )
+    assert len(update_calls) == 1
+    assert update_calls[0]["max_runtime_secs"] == 86400
+    assert "updated" in result.lower()
+
+
 def test_applier_monitor_update_refuses_to_resume_a_paused_loop(monkeypatch):
     """PAUSED-LOOP: an inactive loop that did NOT stop at its cap is not resumed
     as a side effect of a metadata edit — refused, no update call."""
@@ -356,6 +423,88 @@ def test_applier_monitor_update_revives_a_capped_loop_only_when_cap_is_raised(mo
     assert update_calls[0]["max_cycles"] == 40
     assert update_calls[0]["active"] is True
     assert "re-armed" in result
+
+
+def test_applier_monitor_update_revives_a_budget_stopped_loop_on_budget_raise(monkeypatch):
+    """PAUSED-LOOP symmetry (design-review on #2116): a loop stopped by its
+    wall-clock budget gets the SAME agent-side recovery as a cap-stopped one —
+    raising the budget above the loop's elapsed age revives it. Keyed on the
+    persisted stopped_reason, not elapsed-time inference."""
+    import time as _time
+
+    loop = _FakeLoop(
+        "loop-budget", cycle_count=5, max_cycles=24, active=False,
+        created_ts=_time.time() - 7200, max_runtime_secs=3600,
+        stopped_reason="runtime_budget",
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch, loop=loop)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_runtime_secs": 86400}},
+        )
+    )
+    assert len(update_calls) == 1
+    assert update_calls[0]["max_runtime_secs"] == 86400
+    assert update_calls[0]["active"] is True
+    assert "re-armed" in result
+
+
+def test_applier_manual_pause_is_never_revived_by_a_budget_raise(monkeypatch):
+    """GPT P1 repro on #2116: pause a loop manually, let wall-clock pass its
+    budget, then raise max_runtime_secs — the loop must STAY paused. Elapsed
+    time cannot distinguish a pause from an expiry; only the persisted
+    stopped_reason can, and 'manual' never auto-resumes."""
+    import time as _time
+
+    loop = _FakeLoop(
+        "loop-paused-budget", cycle_count=5, max_cycles=24, active=False,
+        created_ts=_time.time() - 7200, max_runtime_secs=3600,
+        stopped_reason="manual",
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_runtime_secs": 86400}},
+        )
+    )
+    assert not update_calls, "a manual pause must not be resumed by a budget raise"
+    assert "paused manually" in result
+
+
+def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypatch):
+    """When a budget-stopped loop is NOT being revived, the refusal must name
+    the bound that stopped it — not send the agent chasing max_cycles."""
+    import time as _time
+
+    loop = _FakeLoop(
+        "loop-budget2", cycle_count=5, max_cycles=24, active=False,
+        created_ts=_time.time() - 7200, max_runtime_secs=3600,
+        stopped_reason="runtime_budget",
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(), _fake_slot(), _SESSION, "monitor_update",
+            {"patch": {"message": "revised"}},
+        )
+    )
+    assert not update_calls
+    assert "wall-clock" in result and "max_runtime_secs" in result
+    assert "max_cycles" not in result
 
 
 def test_applier_monitor_update_without_a_loop_is_a_clean_noop(monkeypatch):

@@ -368,6 +368,15 @@ interface ChatState {
   workflowRuns: Record<string, WorkflowRunProgress>
   activityOpen: boolean
   activityTab: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'
+  /** Monotonic counter bumped ONLY by `openActivityToTab` — i.e. only when
+   *  something deliberately asks for a view (a slash command, a sub-agent /
+   *  workflow card, a keyboard shortcut). The side panel's tab strip owns which
+   *  tab is focused and persists that per chat, so a consumer must distinguish a
+   *  genuine request from `activityTab` merely taking a new VALUE: switching
+   *  chats restores the incoming chat's cached tab (defaulting to Files), and
+   *  treating that as a request would force-focus Files or the last requested
+   *  view over the tab the user actually left the chat on. */
+  activityTabRequest: number
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
@@ -455,6 +464,7 @@ const initialState: ChatState = {
   workflowRuns: {},
   activityOpen: false,
   activityTab: 'files' as const,
+  activityTabRequest: 0,
   focusToolCallId: null,
   mcpApps: {},
   slotActivity: seedSlotActivity(),
@@ -601,9 +611,13 @@ function applyNonActiveFrame(
     }
   }
   if (role === 'user') {
-    sa.toolLog = []
-    for (const m of msgs) {
-      if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
+    // A steered message does not start a new turn — skip the "stale permissions"
+    // cleanup so the approval bar remains visible and answerable (#1667).
+    if (!meta?.steer) {
+      sa.toolLog = []
+      for (const m of msgs) {
+        if (m.role === 'permission' && !m.meta?.resolved) { if (m.meta) m.meta.resolved = 'rejected'; else m.meta = { resolved: 'rejected' } }
+      }
     }
     // Reconcile the optimistic user bubble (appendSlotMessage) rather than
     // pushing a 2nd identical one when the server echoes the user frame — same
@@ -645,8 +659,10 @@ export const selectSlotSubagents = (state: RootState, slot: string | null): Reco
  *  so each grid pane's approval bar reflects ITS slot, not the global active one. */
 export const selectSlotPendingApproval = (state: RootState, slot: string | null): ChatMessage | null => {
   const msgs = slot ? selectSlotMessages(state, slot) : state.chat.messages
+  // Find the last NON-steer user message — steered messages don't start a new
+  // turn, so they must not hide a pending approval bar (#1667).
   let lastUserIdx = -1
-  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user') { lastUserIdx = i; break } }
+  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i].meta?.steer) { lastUserIdx = i; break } }
   for (let i = msgs.length - 1; i > lastUserIdx; i--) {
     const m = msgs[i]
     if (m.role === 'permission' && !m.meta?.resolved && m.meta?.approval_id) return m
@@ -1269,17 +1285,27 @@ export const selectContinuable = (state: RootState): boolean => {
 }
 
 /**
+ * True when *m* is the card recorded because the USER pressed Stop.
+ *
+ * Two forms exist and both are load-bearing: the websocket path sets `kind` AND
+ * `meta.kind` (see the stop_event branch in the message reducer), while a
+ * transcript rehydrated from disk carries only the JSON-encoded `cls` that
+ * `parse_cls_meta()` unpacks into `meta`. `ChatPage` and `ChatMessageList`
+ * already test both; this is the same predicate named once so a fourth caller
+ * cannot check only half of it.
+ */
+export const isStopEvent = (m: ChatMessage): boolean =>
+  m.kind === 'stop_event' || (m.meta as { kind?: string } | undefined)?.kind === 'stop_event'
+
+/**
  * True when the transcript SHOWS the last turn ending without the assistant
  * handing the floor back — the user's row is last, or an `error` row trails the
  * assistant's.
  *
- * Copy only. `selectContinuable` decides whether the button appears; this
- * decides what it says, so a slot that was visibly cut short can name that
- * ("the last turn was interrupted") while a slot that finished gets the neutral
- * "keep going" wording. Mirrors `_is_interrupted` in
- * `src/kiro_crew/dashboard/chat_handlers.py`, which makes the same split to pick
- * the continuation body handed to the model — the two must agree, or the button
- * promises one thing and the agent is told another.
+ * Gates the composer's Resume button (composed with `selectContinuable` in
+ * ChatPage) and selects the continuation body handed to the model. Mirrors
+ * `_is_interrupted` in `src/kiro_crew/dashboard/chat_handlers.py` — the two must
+ * agree, or the button promises one thing and the agent is told another.
  *
  * A false result means "nothing in the transcript proves an interruption", never
  * "the turn definitely finished": the force-quit case leaves no evidence.
@@ -1289,6 +1315,18 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
   let sawTrailingError = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
+    // A deliberate Stop ENDS the turn; it does not interrupt it. This must be
+    // tested before the user/assistant check, because pressing Stop before the
+    // reply produced any text leaves `[user, stop_event]` — shape-identical to
+    // "the gateway died before anything came back", which is what this scan
+    // would otherwise read it as. Without this branch the same visible action
+    // (pressing Stop) offered Resume or not depending purely on whether a
+    // segment had flushed first, i.e. on invisible timing the user cannot
+    // predict. The user chose to stop; the floor is theirs, so the composer
+    // shows Send. Reached only for the NEWEST turn's terminator — an older stop
+    // card deeper in history is never scanned, because a later user/assistant
+    // row returns first.
+    if (isStopEvent(m)) return false
     if (m.role === 'error') { sawTrailingError = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
@@ -1594,7 +1632,7 @@ const chatSlice = createSlice({
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
     toggleActivity(state) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null; persistActivityOpen(state.activeSlot, state.activityOpen) },
     openActivityPanel(state) { state.activityOpen = true; persistActivityOpen(state.activeSlot, true) },
-    openActivityToTab(state, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
+    openActivityToTab(state, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.activityTabRequest += 1; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
     /** Tool details expand inline in the chat. This action signals the matching
      *  ToolCallLine pill to auto-expand and scroll into view. */
     openActivityToTool(state, action: PayloadAction<string>) { state.focusToolCallId = action.payload },
@@ -2275,12 +2313,16 @@ const chatSlice = createSlice({
       }
       // New user message = new turn — clear activity log
       if (role === 'user') {
-        state.toolLog = []
-        // Auto-resolve any stale permissions from previous turn so they don't block the new turn
-        for (const m of state.messages) {
-          if (m.role === 'permission' && !m.meta?.resolved) {
-            if (m.meta) m.meta.resolved = 'rejected'
-            else m.meta = { resolved: 'rejected' }
+        // A steered message does not start a new turn — skip the "stale permissions"
+        // cleanup so the approval bar remains visible and answerable (#1667).
+        if (!meta?.steer) {
+          state.toolLog = []
+          // Auto-resolve any stale permissions from previous turn so they don't block the new turn
+          for (const m of state.messages) {
+            if (m.role === 'permission' && !m.meta?.resolved) {
+              if (m.meta) m.meta.resolved = 'rejected'
+              else m.meta = { resolved: 'rejected' }
+            }
           }
         }
       }

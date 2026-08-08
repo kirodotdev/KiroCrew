@@ -230,6 +230,10 @@ wrapper for the same reason.
 Registration is read at module load (see `src/extensions.ts`); registering after
 the shell has rendered does not take effect until the next theme switch.
 
+Authoring a compiled (edition) theme end to end — CSS specificity against the
+core palette, module resolution, typechecking — is covered in
+[extension-seams § Authoring an edition](extension-seams.md#authoring-an-edition-the-build-pitfalls).
+
 ## Checker (advisory)
 
 ```bash

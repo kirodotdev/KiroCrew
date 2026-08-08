@@ -61,8 +61,13 @@ def _matches_any(path: str, globs: list[str]) -> bool:
 # affords a bounded slice of the context budget, so on-demand skills are ranked
 # by usage and summarized top-down; the tail is discoverable via `skill_search`.
 # Per-skill description is truncated to this many chars in the summary line so a
-# few verbose descriptions can't dominate the block.
-_SHORT_DESC_CHARS = 160
+# few verbose descriptions can't dominate the block. Sized as a guardrail against
+# a pathological description rather than a routine trim: the description is the
+# only signal the model has for deciding whether to load a skill, so the cap sits
+# above the typical length (~290 chars across the built-in set) and bites only the
+# outliers. Descriptions also arrive from the public registry, where their length
+# is not ours to control — hence a cap rather than hand-trimming.
+_SHORT_DESC_CHARS = 300
 # A skill whose file mtime is within this window gets a recency boost in the
 # ranking so a freshly-added, never-used skill still surfaces instead of being
 # starved by the rich-get-richer usage ordering.
@@ -334,6 +339,108 @@ def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
                 return True
         except (OSError, ValueError):
             continue
+    return False
+
+
+#: Basename every skill's body lives under. Used as a cheap pre-filter before
+#: any filesystem work when deciding whether a tool call touched a skill.
+_SKILL_FILE = "SKILL.md"
+
+#: Argument names under which file-reading tools carry their target. Covers the
+#: builtin read tool's ``path`` plus the spellings other tools use; a name that
+#: is absent simply yields no candidate.
+_TOOL_READ_PATH_KEYS = ("path", "file_path", "filePath", "paths", "files")
+
+#: A whitespace/quote-delimited token ending in the skill basename — how a skill
+#: read appears inside a shell command (``cat /x/SKILL.md``). Anchored on the
+#: basename so it cannot match an arbitrary argument.
+_SHELL_SKILL_PATH_RE = re.compile(r"""[^\s"'|;&><]+SKILL\.md""")
+
+
+def _tool_read_path_candidates(
+    tool_name: str, raw_params: dict | None, command: str | None
+) -> list[str]:
+    """File targets of a tool call that DELIVERS file content to the model.
+
+    Returns nothing for a call that merely names a path — a delete, move, line
+    count, or grep. The ledger's hits mean "a body reached the model", so
+    crediting a mention would re-create the mention-as-use conflation that the
+    separate searches tally exists to avoid.
+
+    Never raises on a malformed params dict — a tool's arguments are
+    model-authored and may hold anything.
+    """
+    out: list[str] = []
+    if isinstance(raw_params, dict) and tool_name in _CONTENT_READ_TOOLS:
+        for key in _TOOL_READ_PATH_KEYS:
+            value = raw_params.get(key)
+            if isinstance(value, str):
+                out.append(value)
+            elif isinstance(value, (list, tuple)):
+                out.extend(v for v in value if isinstance(v, str))
+    if isinstance(command, str) and command:
+        for segment in _shell_segments_reading_content(command):
+            out.extend(_SHELL_SKILL_PATH_RE.findall(segment))
+    return out
+
+
+#: Shell commands that deliver a file's CONTENT to the model. Deliberately
+#: narrow: the ledger counts bodies that reached the model, so a command that
+#: merely names a path — ``rm``, ``mv``, ``wc``, ``chmod`` — earns nothing, and
+#: neither does ``grep``, which emits matching lines rather than the body.
+#: ``head``/``tail`` deliver a prefix, which is still a body the model read.
+_SHELL_READ_VERBS = frozenset(
+    {"cat", "bat", "head", "tail", "less", "more", "view", "type"}
+)
+
+#: Tools whose result hands the model a file's content. ``grep``/``glob`` are
+#: read-KIND but return matches and names, not bodies, so they are excluded for
+#: the same reason ``grep`` is above.
+_CONTENT_READ_TOOLS = frozenset({"fs_read", "read", "read_file", "readFile"})
+
+#: Splits a shell command into independently-invoked segments, so the verb that
+#: applies to a given path is the one that precedes it in ITS segment — without
+#: this, ``cat a.txt && rm x/SKILL.md`` would read as a ``cat`` of the skill.
+_SHELL_SEGMENT_RE = re.compile(r"(?:\|\||&&|[;|&\n]|\$\(|`)")
+
+
+def _shell_segments_reading_content(command: str) -> list[str]:
+    """Segments of *command* whose leading verb delivers file content.
+
+    A segment's verb is its first bare token; leading environment assignments
+    (``FOO=bar cat x``) and absolute paths (``/bin/cat``) are tolerated.
+    """
+    reading: list[str] = []
+    for segment in _SHELL_SEGMENT_RE.split(command):
+        for token in segment.split():
+            if "=" in token and not token.startswith("-"):
+                continue  # leading VAR=value assignment
+            verb = token.rsplit("/", 1)[-1]
+            if verb in _SHELL_READ_VERBS:
+                reading.append(segment)
+            break  # only the segment's first bare token is its verb
+    return reading
+
+
+def _mentions_skill_basename(raw_params: dict | None, command: str | None) -> bool:
+    """Whether a tool call's arguments name a skill body at all.
+
+    Independent of read intent: used only to tell "this call had nothing to do
+    with skills" apart from "this call named a skill but our read-intent
+    allowlists did not recognise it", which is what a provider tool rename looks
+    like from here.
+    """
+    if isinstance(command, str) and _SKILL_FILE in command:
+        return True
+    if not isinstance(raw_params, dict):
+        return False
+    for value in raw_params.values():
+        if isinstance(value, str):
+            if _SKILL_FILE in value:
+                return True
+        elif isinstance(value, (list, tuple)):
+            if any(isinstance(v, str) and _SKILL_FILE in v for v in value):
+                return True
     return False
 
 
@@ -619,6 +726,12 @@ class SkillsLoader:
         cached = self._fm_cache.get(key)
         if cached and cached[0] == mtime:
             return cached[1]
+        # Failures PROPAGATE deliberately. Not every caller is a reader:
+        # ``update_auto_skill`` reads this to carry ``created_at``, ``version``,
+        # ``pinned`` and ``inject_on_trigger`` across a rewrite, so degrading an
+        # unreadable file to "no metadata" here would make it silently drop those
+        # and clobber a version snapshot. A reader that would rather show a row
+        # than fail catches this at ITS call site instead.
         meta = self._parse_frontmatter(path)
         self._fm_cache[key] = (mtime, meta)
         return meta
@@ -697,6 +810,198 @@ class SkillsLoader:
             return skill_file.is_relative_to(self._dir)
         except (OSError, ValueError):
             return False
+
+    def _served_key_by_realpath(self) -> dict[str, str]:
+        """Map each served skill file's realpath to its canonical served key.
+
+        Applies the same canonical rule as ``resolve_ledger_aliases`` — the real
+        file's key beats a symlink's, then alphabetical — so a read through a
+        symlinked skill is credited to the key the budget screen displays rather
+        than splitting one file's cost across two rows. Uncached and
+        resolve()-bound for the same reason stated there, so callers must gate
+        it behind a cheap check rather than running it per tool call.
+        """
+        by_realpath: dict[str, list[tuple[str, Path]]] = {}
+        for key, skill_file in self._iter():
+            try:
+                rp = str(skill_file.resolve())
+            except (OSError, RuntimeError):
+                # A cyclic symlink raises RuntimeError, not OSError.
+                continue
+            by_realpath.setdefault(rp, []).append((key, skill_file))
+        return {
+            rp: min(pairs, key=lambda p: (p[1].is_symlink(), p[0]))[0]
+            for rp, pairs in by_realpath.items()
+        }
+
+    def resolve_tool_read_keys(
+        self,
+        tool_name: str = "",
+        raw_params: dict | None = None,
+        command: str | None = None,
+    ) -> list[str]:
+        """Served skill keys whose body a tool call is about to deliver.
+
+        Resolution only — nothing is recorded, so the caller can run this off
+        the event loop and credit later, once the read is confirmed to have
+        completed. Returns keys deduped, so one command naming a file twice
+        yields it once.
+
+        Only content-delivering reads qualify (see
+        ``_tool_read_path_candidates``): a tool call that merely names a skill
+        path earns nothing, because the ledger's hits mean a body reached the
+        model.
+
+        Filesystem-bound (``_iter`` plus a ``resolve()`` per served skill), so
+        candidates are filtered on the ``SKILL.md`` basename first and callers
+        must keep this off the event loop.
+        """
+        if self._usage is None:
+            return []
+        candidates = [
+            c
+            for c in _tool_read_path_candidates(tool_name, raw_params, command)
+            if _SKILL_FILE in c
+        ]
+        if not candidates:
+            # The read-intent allowlists (`_CONTENT_READ_TOOLS`,
+            # `_SHELL_READ_VERBS`) encode the provider's current tool spellings.
+            # A rename would silently restore the pre-existing undercount with
+            # nothing failing, so a call that clearly names a skill yet yields no
+            # candidate is logged — the one signal that distinguishes drift from
+            # a legitimately non-reading tool call.
+            if _mentions_skill_basename(raw_params, command):
+                logger.debug(
+                    "skill-read: %r names a skill but is not a content read "
+                    "(tool=%r); check the read-intent allowlists if the provider "
+                    "renamed its tools",
+                    command or raw_params,
+                    tool_name,
+                )
+            return []
+        try:
+            realpath_to_key = self._served_key_by_realpath()
+        except OSError:
+            return []
+        keys: list[str] = []
+        for cand in candidates:
+            try:
+                rp = str(Path(cand).expanduser().resolve())
+            except (OSError, RuntimeError, ValueError):
+                continue
+            key = realpath_to_key.get(rp)
+            if key is not None and key not in keys:
+                keys.append(key)
+        return keys
+
+    def credit_skill_reads(self, keys: list[str]) -> None:
+        """Record a delivery for each key in *keys*. Best-effort, never raises.
+
+        Separate from ``resolve_tool_read_keys`` so the credit lands only after
+        the read has actually completed — a tool call that was denied or failed
+        must not leave a delivery behind.
+        """
+        for key in keys:
+            self._record_use(key)
+
+    def resolve_ledger_aliases(self) -> dict[str, list[str]]:
+        """Map served skill keys to ledger keys that resolve to the same file.
+
+        Returns ``{served_key: [alias_key, ...]}`` — only entries with at least
+        one alias appear. Unresolvable ledger keys (no SKILL.md on disk) are
+        dropped silently.
+
+        The result is NOT cached. It depends on what each served path currently
+        resolves to, so any sound cache key would have to resolve every served
+        file — the same work the cache would save. `_iter()` has its own TTL, so
+        repeat calls (e.g. dashboard refreshes) do not re-walk the skills tree.
+
+        This is the public seam for *alias resolution* specifically — the budget
+        endpoint no longer builds the map itself. It still reads other loader
+        internals to assemble its rows, so this is one step out of that coupling,
+        not the end of it. It deliberately does NOT live inside ``list_skills()``
+        — that method guarantees one stat per skill and runs on the hot path
+        during context assembly; filesystem resolution here is acceptable only
+        at dashboard-refresh frequency.
+        """
+        if self._usage is None:
+            return {}
+
+        snapshot = self._usage.snapshot()
+        if not snapshot:
+            return {}
+
+        # NOT cached, deliberately. The map is a function of the ledger's keys
+        # AND of what each served path currently RESOLVES to, so a sound cache key
+        # has to resolve every served file — exactly the work a cache would be
+        # there to avoid. Keying on names alone was demonstrably unsound: deleting
+        # an alias, or retargeting a served symlink, changes no name, so a hit
+        # kept crediting deliveries to the wrong skill. A cache that is only
+        # correct when nothing moved is worse than no cache, and `_iter()` already
+        # carries its own TTL, so repeat calls do not re-walk the tree.
+        skill_pairs = self._iter()
+
+        # Group served keys by resolved path. Two served keys CAN name the same
+        # file: a file-level symlink (`old/SKILL.md` -> `new/SKILL.md`) leaves
+        # both directories real, so `_iter()` yields both. Treating each as its
+        # own skill splits one file's cost across two rows, which is the very
+        # thing this fold exists to prevent — so one key per file is canonical
+        # and the rest are aliases.
+        by_realpath: dict[str, list[tuple[str, Path]]] = {}
+        for key, skill_file in skill_pairs:
+            try:
+                rp = str(skill_file.resolve())
+            except (OSError, RuntimeError):
+                # A cyclic symlink raises RuntimeError("Symlink loop from ..."),
+                # NOT OSError, so it must be caught explicitly or one bad link
+                # takes the whole endpoint down with a 500.
+                continue
+            by_realpath.setdefault(rp, []).append((key, skill_file))
+
+        realpath_to_served: dict[str, str] = {}
+        alias_map: dict[str, list[str]] = {}
+        for rp, pairs in by_realpath.items():
+            # The real file's key beats a symlink's, then alphabetical — so the
+            # winner does not depend on directory iteration order.
+            canonical, _ = min(pairs, key=lambda p: (p[1].is_symlink(), p[0]))
+            realpath_to_served[rp] = canonical
+            for key, _ in pairs:
+                if key != canonical:
+                    alias_map.setdefault(canonical, []).append(key)
+
+        # Roots to resolve a ledger key against. `_iter()` serves the main skills
+        # dir AND every extra path (an installed app's own skills dir), and each
+        # names its skills relative to its OWN root — so an app skill's alias key
+        # only resolves under that app's root. Resolving against `_dir` alone
+        # silently drops every app-skill alias.
+        roots = [self._dir, *self._extra_paths]
+
+        # A ledger key that no longer names a served skill: resolve it on disk and
+        # fold it into whichever served key shares its file.
+        for ledger_key in snapshot:
+            if ledger_key in realpath_to_served.values():
+                continue  # Already the canonical key for its file.
+            if any(ledger_key in a for a in alias_map.values()):
+                continue  # Already folded as a served alias above.
+            for root in roots:
+                candidate = root / ledger_key / "SKILL.md"
+                try:
+                    rp = str(candidate.resolve())
+                except (OSError, RuntimeError):
+                    continue  # Unresolvable or a symlink loop — try the next root.
+                if not Path(rp).exists():
+                    continue
+                served_key = realpath_to_served.get(rp)
+                if served_key is None:
+                    continue
+                if ledger_key != served_key:
+                    alias_map.setdefault(served_key, []).append(ledger_key)
+                break  # First root that resolves wins; a key names one file.
+
+        for aliases in alias_map.values():
+            aliases.sort()
+
+        return alias_map
 
     def _delivery_count(self, key: str) -> int | None:
         """Body deliveries recorded for *key*, or ``None`` when untracked.
@@ -2534,12 +2839,9 @@ class SkillsLoader:
             if skill_file is None:
                 continue
             meta = self._cached_frontmatter(skill_file)
-            desc = (meta.get("description", "") or name).strip()
-            if len(desc) > _SHORT_DESC_CHARS:
-                desc = desc[:_SHORT_DESC_CHARS].rstrip() + "…"
+            desc = self._short_desc(meta.get("description", "") or name, suffix="…")
             lines.append(
-                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}` "
-                f"(dir: `{skill_file.parent}`)"
+                f"- **{meta.get('name', name)}**: {desc} → `{skill_file}`"
             )
         if not lines:
             return ""
@@ -2647,7 +2949,7 @@ class SkillsLoader:
             for s in ranked:
                 line = (
                     f"- **{s['name']}**: {self._short_desc(s['description'])} "
-                    f"-> `{s['path']}` (dir: `{s['dir']}`)"
+                    f"-> `{s['path']}`"
                 )
                 if (
                     budget is not None
@@ -2701,12 +3003,12 @@ class SkillsLoader:
                 "",
                 "If a user request relates to any skill below, read the full "
                 "skill file first with `cat <path>` before responding.",
-                "To run a skill's scripts, `cd` into its directory first.",
+                "To run a skill's scripts, `cd` into the directory containing its `SKILL.md`.",
                 "",
             ]
             for s in on_demand:
                 summary_lines.append(
-                    f"- **{s['name']}**: {s['description']} → `{s['path']}` (dir: `{s['dir']}`)"
+                    f"- **{s['name']}**: {self._short_desc(s['description'])} → `{s['path']}`"
                 )
             parts.append("\n".join(summary_lines))
         return "[Skills:]\n" + "\n\n---\n\n".join(parts) + "\n[End of skills]\n\n"
@@ -2739,12 +3041,21 @@ class SkillsLoader:
         return self._usage.score(s["key"], recency_boost=boost)
 
     @staticmethod
-    def _short_desc(desc: str) -> str:
-        """Collapse whitespace and truncate a description for the summary line."""
+    def _short_desc(desc: str, suffix: str = "...") -> str:
+        """Collapse whitespace and truncate a description for the summary line.
+
+        Cuts on a word boundary when one falls in the last fifth of the budget so
+        the line ends on a readable word instead of mid-token; a description with
+        no such boundary (one very long token) is cut hard.
+        """
         d = " ".join((desc or "").split())
-        if len(d) > _SHORT_DESC_CHARS:
-            return d[:_SHORT_DESC_CHARS].rstrip() + "..."
-        return d
+        if len(d) <= _SHORT_DESC_CHARS:
+            return d
+        cut = d[:_SHORT_DESC_CHARS]
+        space = cut.rfind(" ")
+        if space >= _SHORT_DESC_CHARS * 4 // 5:
+            cut = cut[:space]
+        return cut.rstrip() + suffix
 
     def search_skills(self, query: str, limit: int = 20) -> list[dict]:
         """Grep skills by keyword for on-demand discovery (the skill_search tool).

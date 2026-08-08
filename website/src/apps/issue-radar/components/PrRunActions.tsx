@@ -42,7 +42,13 @@ export default function PrRunActions({
     // commit's runs (and its cancel/re-run ids) until the next poll landed.
     queryKey: ['issue-radar', 'pull-runs', scopeKey, number, headSha],
     queryFn: () => issueRadarApi.pullRuns(repoRef, number, headSha ?? ''),
-    enabled: Boolean(headSha),
+    // `canWrite` too, not just the sha: the runs feed ONLY the cancel/re-run
+    // controls, which the `!canWrite` guard below hides on a read-only repo. Without
+    // it every PR-detail open on such a repo fetched /pull/runs and re-polled it
+    // every 30s for buttons the user can never see — a provider round-trip per cycle
+    // spent on data that is always discarded. React-query re-enables automatically
+    // if access flips, so a writable repo is unchanged.
+    enabled: canWrite && Boolean(headSha),
     // Only while the PR is live, and at the same cadence as the detail pane — a
     // run's status is exactly as volatile as the checks beside it.
     refetchInterval: detailPollMs(live),

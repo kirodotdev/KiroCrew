@@ -31,7 +31,12 @@ from kiro_crew.apps.execution import (
 )
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import (
+    config_dir,
+    config_local_path,
+    config_path,
+    write_config_atomically,
+)
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.sel import sel
 
@@ -762,6 +767,39 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
     if not dest.is_dir():
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
 
+    # Withdraw the execution grant FIRST, and abort the whole uninstall if it
+    # cannot be withdrawn.
+    #
+    # A grant is keyed on the app NAME and nothing else, so one left behind admits
+    # a DIFFERENT app later installed under this name — in-process code execution
+    # with no consent prompt, because the gate just sees a name it was told to
+    # trust. Doing this AFTER the files were deleted (as this did) produced a state
+    # the user could not recover from: the app is gone, so there is nothing left to
+    # uninstall and no retry that would clear the grant, while the name stays
+    # armed. Ordering it first makes the failure retryable — nothing has been
+    # destroyed, the user fixes the cause (typically an overlay-owned setting) and
+    # runs uninstall again. Same reasoning as the revoke path, which runs teardown
+    # before its config write for exactly this reason.
+    try:
+        # Recorded BEFORE the withdrawal so a failed delete below can put back
+        # exactly what was there — and only when there WAS something. Restoring a
+        # grant the app never held would be granting, not restoring.
+        had_grant = _has_trust_grant(name)
+        _drop_trust_grant(name)
+    except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
+        logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
+        return AppResult(
+            ok=False,
+            name=name,
+            error=(
+                f"not uninstalling {name!r}: its third-party execution grant could "
+                f"not be removed ({exc}). The grant is keyed on the name, so removing "
+                f"the app while it stands would let any future app installed under "
+                f"this name run code without asking. Clear the cause and retry."
+            ),
+            error_code="trust_grant_not_removed",
+        )
+
     try:
         if keep_data:
             data = dest / "data"
@@ -776,9 +814,86 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
         else:
             shutil.rmtree(dest)
     except OSError as exc:
-        return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}")
+        # The delete failed, so the app is STILL INSTALLED — but its grant was
+        # withdrawn above, which would leave a trusted app silently stripped of the
+        # permission the operator gave it, from an operation that did not even
+        # succeed. Put it back.
+        #
+        # Restoring is not widening: this re-adds the grant the operator had already
+        # made, to an app that is still on disk, returning the exact state that
+        # existed before this call. The alternative shapes are both worse. Deferring
+        # the withdrawal until after a successful delete re-opens the hole the
+        # pre-delete ordering exists to close — a withdrawal that then fails leaves
+        # the app GONE with its name still armed, and no app left to uninstall means
+        # no retry can ever clear it. Leaving the grant withdrawn here is fail-safe
+        # but silently punitive. Restoring keeps the withdrawal-first ordering (so a
+        # withdrawal failure stays retryable with nothing destroyed) AND leaves a
+        # failed uninstall with no side effect on trust.
+        restore_note = ""
+        try:
+            _restore_trust_grant(name, had_grant)
+        except Exception as restore_exc:  # noqa: BLE001 - report, never mask the real error
+            logger.warning(
+                "could not restore %r's execution grant after a failed uninstall",
+                name,
+                exc_info=True,
+            )
+            restore_note = (
+                f" Its third-party execution grant was withdrawn and could not be "
+                f"restored ({restore_exc}); re-grant it in Settings if you still "
+                f"want this app to run its own code."
+            )
+        return AppResult(
+            ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}"
+        )
 
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
+
+    # Withdraw the grant a SECOND time, now that the files are actually gone.
+    #
+    # The first withdrawal above deliberately runs BEFORE the delete so that a
+    # failure is retryable with nothing destroyed. That ordering, though, leaves a
+    # cross-process window a dashboard grant can land in — no in-process lock helps,
+    # because this runs under `kirocrew app uninstall` in a DIFFERENT process:
+    #
+    #   this process: drop grant (no-op, none yet) ................ then ... rmtree
+    #   dashboard:      app exists? yes -> write grant -> app still exists? yes -> 200
+    #
+    # Every check on both sides passes, and the grant is left standing over a name
+    # no app occupies — the exact orphan both sides exist to prevent, and one that
+    # would let a DIFFERENT app later installed under this name execute with no
+    # consent prompt.
+    #
+    # Closing it needs no cross-process lock, only this ordering argument. The grant
+    # is orphaned only if the write happened, the delete happened, AND the handler's
+    # post-write existence check still saw the app. That check seeing the app means
+    # it ran before this `rmtree` finished — so this second withdrawal, which runs
+    # after the delete, necessarily runs after that write and therefore SEES the
+    # grant. The handler's post-write check covers the opposite interleaving (delete
+    # completes first, so the check finds nothing and rolls its own write back).
+    # Between them the two guards leave no window, without either side blocking on
+    # the other.
+    residual = ""
+    try:
+        _drop_trust_grant(name)
+    except Exception as exc:  # noqa: BLE001 - the app is already gone; report, never hide
+        # Refusing the uninstall is not available here and would be a lie: the
+        # files are deleted. So report it. A live grant over a name with no app is
+        # precisely the state that must not stay quiet — it is invisible in the app
+        # list (there is no app to show) and only surfaces when something new takes
+        # the name.
+        logger.warning(
+            "app %r was uninstalled but its execution grant could not be withdrawn "
+            "afterwards; the grant is still standing",
+            name,
+            exc_info=True,
+        )
+        residual = (
+            f" WARNING: a third-party execution grant for {name!r} is still in "
+            f"agent.apps_trusted and could not be removed ({exc}). Remove it in "
+            f"Settings -> Security before installing anything under this name."
+        )
+
     # Drop any dev-mode sentinel entry so an app later reinstalled under this
     # name does not inherit stale dev-mode serving/watching. Lazy import avoids
     # a module-level cycle (dev_mode imports from manager).
@@ -788,7 +903,200 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
         remove_dev_app(name)
     except Exception:
         logger.debug("dev-mode cleanup on uninstall of %r failed", name, exc_info=True)
-    return AppResult(ok=True, name=name, message=f"uninstalled {name}")
+    return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
+
+
+def trust_grant_removal_blocked(name: str) -> str | None:
+    """Return why *name*'s execution grant could not be dropped, or ``None``.
+
+    A read-only PRECONDITION. Both uninstall entry points run destructive,
+    non-idempotent work (cron deregistration, the app's own ``onUninstall``
+    script, backend stop, dependency cleanup) before they reach
+    :func:`uninstall_app`, so a refusal discovered inside ``uninstall_app`` is
+    not the retryable "nothing has been destroyed" case it was written as: it
+    strands a half-removed app and re-runs ``onUninstall`` on every retry. Callers
+    therefore ask this FIRST and abort while it is still free to abort — the same
+    reason the cron cleanup is ordered ahead of the script.
+    """
+    # An overlay-owned grant cannot be dropped by writing config.json: the loader
+    # deep-merges config.local.json OVER it and save() strips overlay-owned values
+    # from the output, so the write is ineffective in both directions.
+    #
+    # Scoped to a grant this app actually holds. An overlay that pins
+    # `apps_trusted` for OTHER apps says nothing about THIS uninstall, and gating
+    # on the key's mere presence made every app un-uninstallable for any operator
+    # who set it at all — a blanket refusal, not a grant-specific one.
+    local = config_local_path()
+    if local.is_file():
+        try:
+            raw_local = json.loads(local.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raw_local = {}  # the loader ignores an unreadable overlay, so do we
+        agent_local = raw_local.get("agent") if isinstance(raw_local, dict) else None
+        if isinstance(agent_local, dict):
+            overlay_grants = agent_local.get("apps_trusted")
+            # A non-list overlay value cannot express a grant for this app, so
+            # there is nothing here that a write would have to survive.
+            if isinstance(overlay_grants, list) and name in overlay_grants:
+                return f"apps_trusted is set in {local}, which overrides config.json"
+
+    path = config_path()
+    if path.is_file():
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            # Report rather than stay silent: a quiet bail here is precisely the
+            # "uninstalled but still trusted" state the caller must not reach. The
+            # write is still refused (it would erase everything else the file
+            # holds) — it just is not refused quietly.
+            return f"{path} is unreadable: {exc}"
+    return None
+
+
+def _drop_trust_grant(name: str) -> None:
+    """Remove *name* from ``agent.apps_trusted``, if present.
+
+    A no-op when the app held no grant, which is the common case. Refuses to write
+    over an unparseable ``config.json`` for the same reason the trusted-apps
+    endpoints do: ``KiroCrewConfig.load()`` degrades a corrupt file to defaults, so
+    a blind load/save would erase everything else the file holds.
+    """
+    blocked = trust_grant_removal_blocked(name)
+    if blocked:
+        raise RuntimeError(blocked)
+
+    # Operate on the BASE file's own list, not the merged view.
+    #
+    # `KiroCrewConfig.load()` deep-merges `config.local.json` OVER `config.json`,
+    # and a list MERGE REPLACES rather than unions — so with base
+    # `apps_trusted: ["foo"]` and overlay `["bar"]`, the merged value is `["bar"]`
+    # and a merged-view check concludes `foo` holds no grant and removes nothing.
+    # The base entry then survives the uninstall: inert while the overlay stands,
+    # but live again the moment the operator edits or drops that overlay key, at
+    # which point a DIFFERENT app installed under the name `foo` inherits a grant
+    # nobody made for it. Reading merged state to decide a base-file write is the
+    # bug; the two layers have to be reasoned about separately.
+    #
+    # Writing through `cfg.save()` cannot fix it either: save() deliberately
+    # strips overlay-owned keys from its output, so the one key we need to rewrite
+    # is exactly the one it will not emit. Hence a targeted edit of the raw base
+    # document, which also keeps the blast radius to a single key instead of
+    # re-serialising the whole config from the model.
+    path = config_path()
+    if not path.is_file():
+        return
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        # RAISE rather than return: a silent bail here is precisely the
+        # "uninstalled but still trusted" state the caller must not reach. The
+        # write is still refused — it would erase everything else the file holds.
+        raise RuntimeError(f"{path} is unreadable: {exc}") from exc
+    if not isinstance(raw, dict):
+        return
+    agent_raw = raw.get("agent")
+    if not isinstance(agent_raw, dict):
+        return
+    base_grants = agent_raw.get("apps_trusted")
+    # A non-list value cannot express a grant for this app, so there is nothing
+    # here that would later admit a replacement under this name.
+    if not isinstance(base_grants, list) or name not in base_grants:
+        return
+    agent_raw["apps_trusted"] = [a for a in base_grants if a != name]
+    # Concurrency: this is the repo's standard config read-modify-write, and it
+    # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
+    # the way out so no reader can see a torn file. `read_config_for_update`'s own
+    # docstring describes the same shape and the same residual exposure, and the
+    # base branch has two dozen writers in it, `kirocrew config set` among them, so
+    # a CLI write racing a dashboard write can drop the loser's settings today
+    # regardless of this function. Closing that properly means locking at the config
+    # layer for every writer at once, which is its own change; doing it for this one
+    # writer would serialize it against nothing.
+    #
+    # What is in scope here is not adding exposure: the early returns above mean the
+    # ordinary uninstall (no grant on the name) reaches no write at all, and a write
+    # happens only when there really is a grant to withdraw — locked by
+    # `test_uninstall_writes_no_config_at_all_when_there_is_no_grant`. The write is
+    # also a single-key edit of the raw document rather than a re-serialisation of
+    # the whole config, so what it can clobber is bounded to a concurrent edit that
+    # lands inside the same read-to-write window.
+    write_config_atomically(path, raw)
+    logger.info("Dropped third-party trust grant for uninstalled app %s", name)
+    # Audited, because this REVOKES an execution permission. The dashboard's revoke
+    # endpoint emits its own SEL event, but this path runs from `kirocrew app
+    # uninstall` — so a grant could be withdrawn with nothing in the security event
+    # log to show it, and the log is what an operator reconstructs a trust timeline
+    # from. A permission boundary that moves silently is exactly what SEL exists to
+    # make visible; the log records the transition, not merely the request that
+    # caused it. Emitted AFTER the write so it attests something that actually
+    # happened, and never allowed to fail the uninstall: losing the audit line is
+    # bad, refusing to complete a withdrawal because the audit sink is unavailable
+    # is worse.
+    try:
+        sel().log_api_access(
+            caller="cli",
+            operation="app_trust_revoke",
+            outcome="allowed",
+            resources=f"{name}=grant_removed_on_uninstall",
+        )
+    except Exception:  # noqa: BLE001 - the withdrawal already happened
+        logger.warning("could not audit the trust withdrawal for %r", name, exc_info=True)
+
+
+def _has_trust_grant(name: str) -> bool:
+    """Whether the BASE ``config.json`` currently grants *name* execution.
+
+    Reads the base document, not the merged view, for the same reason
+    :func:`_drop_trust_grant` writes to it: an overlay list REPLACES rather than
+    unions, so the merged value answers a different question than "is there a base
+    entry here to put back".
+    """
+    path = config_path()
+    if not path.is_file():
+        return False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    agent_raw = raw.get("agent")
+    if not isinstance(agent_raw, dict):
+        return False
+    grants = agent_raw.get("apps_trusted")
+    return isinstance(grants, list) and name in grants
+
+
+def _restore_trust_grant(name: str, had_grant: bool) -> None:
+    """Put *name*'s grant back after an uninstall failed with the app still installed.
+
+    A no-op when the app held no grant to begin with — restoring one it never had
+    would be GRANTING execution permission as a side effect of a failed uninstall,
+    which is the one thing this must never do. Also a no-op if a grant is already
+    present, so a concurrent re-grant is not duplicated.
+    """
+    if not had_grant or _has_trust_grant(name):
+        return
+    path = config_path()
+    raw = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"{path} does not hold a JSON object")
+    agent_raw = raw.setdefault("agent", {})
+    if not isinstance(agent_raw, dict):
+        raise RuntimeError(f"{path} has a non-object agent section")
+    grants = agent_raw.get("apps_trusted")
+    agent_raw["apps_trusted"] = [*(grants if isinstance(grants, list) else []), name]
+    write_config_atomically(path, raw)
+    logger.info("Restored %s's trust grant after a failed uninstall", name)
+    try:
+        sel().log_api_access(
+            caller="cli",
+            operation="app_trust_restore",
+            outcome="allowed",
+            resources=f"{name}=grant_restored_after_failed_uninstall",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("could not audit the trust restore for %r", name, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ files / uploads / artifacts / URLs
 | `FETCH_TIMEOUT` | `120.0` | `llm_pool.py`, `agent_fetch.py` | URL-fetch worker timeout |
 | `AGENT_NAME` | `"kirocrew-knowledge"` | `llm_pool.py` | kiro-cli agent the ACP worker drives |
 | `_VALID_SANDBOX_MODES` | `{auto, standard, strict, cc, off}` | `llm_pool.py` | Accepted `agent.sandbox` values |
-| `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv}` | `folder_watcher.py` | Directories never walked |
+| `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv, dist, build, out, target, cdk.out}` | `folder_watcher.py` | Directories never walked |
 | `_LARGE_REBUILD_WARN_THRESHOLD` | `1000` | `watcher.py` | Stale-item count at which the self-heal rebuild logs a prominent WARNING (usually an embedder-sig change invalidating the whole corpus) |
 | `DEFAULT_MAX_FILES` | `5000` | `folder_watcher.py` | Per-source file cap (newest-first) |
 | `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size (words) |
@@ -86,9 +86,15 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 `FolderWatcher.scan_source(source)` scans a folder-type source under a per-`source_id` `asyncio.Lock` (one scan per source at a time) and returns `{new, changed, deleted, skipped, capped, failed}`.
 
 **`_walk(root, ignore_patterns, extra_skip_dirs)`** (run via `asyncio.to_thread`) is the discovery step:
-- Prunes `HARD_SKIP_DIRS`, any per-source-type extra skip dirs (`SOURCE_TYPE_SKIP_DIRS["obsidian_vault"] = {.obsidian, .trash}`), and **all** dotfiles/dot-dirs in place during `os.walk`.
-- Skips OS junk/lock files by case-insensitive basename match against `DEFAULT_IGNORE_GLOBS` (macOS AppleDouble `._*`, `.ds_store`, Office `~$*`, LibreOffice `.~lock.*`, `thumbs.db`, `desktop.ini`, `*.tmp`, editor swap/backup, partial downloads). This exists because a discovered-but-unreadable file that carries a supported extension fails ingestion, is never auto-retried, and would otherwise leave a source permanently stalled below 100%.
+- Prunes `HARD_SKIP_DIRS`, any per-source-type extra skip dirs (`SOURCE_TYPE_SKIP_DIRS["obsidian_vault"] = {.obsidian, .trash}`), and **all** dotfiles/dot-dirs in place during `os.walk`. Build-output trees are in `HARD_SKIP_DIRS` because a rebuild presents hundreds of regenerated files as changed content; `cdk.out` (AWS CDK synth output) needs its own entry because its name only *contains* a dot, so the dot-prefix rule never prunes it.
+- Skips files that are never documents by case-insensitive basename match against `DEFAULT_IGNORE_GLOBS`. Two classes:
+  - OS junk / editor and Office lock files (macOS AppleDouble `._*`, `.ds_store`, Office `~$*`, LibreOffice `.~lock.*`, `thumbs.db`, `desktop.ini`, `*.tmp`, editor swap/backup, partial downloads). A discovered-but-unreadable file carrying a supported extension fails ingestion, is never auto-retried, and would leave a source permanently stalled below 100%.
+  - Dependency lock files (`package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `bun.lock`, `poetry.lock`, `uv.lock`, `pipfile.lock`, `cargo.lock`, `gemfile.lock`, `composer.lock`, `packages.lock.json`, `gradle.lockfile`, `flake.lock`). These ingest successfully, which is the problem: they are large machine-generated resolution output, each chunk costs one extraction call, and regenerating one bills it again on the next sweep.
 - Applies the source's `ignore_patterns` (fnmatch against the relative path).
+- **`.kiroignore` (`kiroignore.py`)**: when the SOURCE ROOT holds a `.kiroignore`, its rules are compiled once per sweep and applied on top of everything above. Matching **directories are pruned in place** during `os.walk`, so a generated tree (`cdk.out`, coverage output) is never descended rather than filtered file by file. The rule file itself is never indexed — its extensionless name is in `FileReader.SUPPORTED`, so it would otherwise be ingested as a document.
+  - Syntax is a documented SUBSET of gitignore: `#` comments, blank lines, trailing `/` (directories only), leading `/` (root-anchored), any other embedded `/` (also anchored; a separator-free pattern matches that basename at any depth), `*` / `?` / `**`, and `!` negation where the last matching rule wins. NOT supported: `[a-z]` character classes (brackets match literally), backslash escapes other than a leading `\#` / `\!`, nested `.kiroignore` files in subdirectories, and re-including a path underneath an excluded directory (as in git).
+  - **Defensive by contract**: the file is user-authored and re-read every sweep, so an unreadable, oversized (> `MAX_FILE_BYTES` = 64 KiB) or undecodable one degrades to "no extra exclusions" and never raises mid-scan; a single unusable pattern is dropped and the rest of the file still applies. Rules are capped at `MAX_RULES` = 1000.
+  - **`.gitignore` is deliberately NOT read as a fallback.** A scan treats a file that stops being discovered as DELETED and archives its items (`_handle_deleted`), so honouring `.gitignore` implicitly would, on the next sweep, drop already-indexed documents out of every existing folder source whose root happens to be a repository — including every auto-registered `project_docs.py` source. Creating a `.kiroignore` is an explicit act, so the same removal is the user's intent.
 - **Extension filter**: keeps a file only if its lower-cased suffix is in `FileReader.SUPPORTED` **or** equals `.canvas` (Obsidian canvas files).
 - **Sensitive-path guard**: resolves each candidate (`Path.resolve()`) and skips it if `is_sensitive_path()` matches.
 - Returns `[(full_path, mtime)]`.
@@ -193,11 +199,25 @@ so `knowledge.doc_ingest_hosts` — whose default is `[]` = deny-all — must NO
 path, or the feature would ingest nothing on a default config while its toggle read on.
 
 **Chunk budget.** `folder_watcher._do_scan` orders discovered files newest-first
-unconditionally and stops once a sweep has ingested `knowledge.auto_ingest_chunk_budget`
-chunks. Files not reached keep (or lack) their `folder_file_state` row, so the next sweep
-resumes from them — the existing `status` column already carries the resume point.
-Applied only to auto-registered sources: a folder the user added by hand is a folder they
-asked for in full.
+unconditionally and stops once a sweep has ingested its budget of chunks. Files not
+reached keep (or lack) their `folder_file_state` row, so the next sweep resumes from
+them — the existing `status` column already carries the resume point. Every folder
+source is budgeted: `knowledge.auto_ingest_chunk_budget` for an auto-registered one,
+`knowledge.folder_ingest_chunk_budget` (resolved by `folder_watcher.folder_chunk_budget`,
+overridable per source via a `chunk_budget` property, 0 = unbounded) for one the user
+added by hand. A hand-added folder still gets ingested in full; the budget only decides
+how fast. It applies to the confirm- and resume-triggered scans as well as the sweep,
+because the confirm scan is the largest burst — nothing is ingested yet, so every
+discovered file is new.
+
+**Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
+anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
+`estimated_llm_calls` and `chunk_budget_per_sweep` alongside the
+`pending_confirmation` status. The walk uses `folder_watcher.walk_filters`, the same
+filter set the sweep applies, so the count describes the files that would actually be
+ingested. The chunk figure is derived from the chunker's target size and file bytes
+(`_estimated_chunks`), never measured: it exists to show order of magnitude before the
+user confirms, and no code path treats it as a bound.
 
 ## 3. LLMPool workers (`llm_pool.py`)
 

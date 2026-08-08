@@ -17,9 +17,12 @@ def _run_collect() -> dict:
     from kiro_crew.dashboard import handlers_system
 
     with patch.object(handlers_system, "_get_static_system_info", return_value={}):
-        # Reset cache so each test gets a fresh call
+        # Reset both caches so each test gets a fresh call — the process scan
+        # cache has a 15s TTL that survives across xdist workers.
         handlers_system._metrics_cache.clear()
         handlers_system._metrics_cache_ts = 0.0
+        handlers_system._proc_scan_cache = {}
+        handlers_system._proc_scan_cache_ts = 0.0
         return handlers_system._collect_system_metrics()
 
 

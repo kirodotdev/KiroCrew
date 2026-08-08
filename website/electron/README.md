@@ -17,18 +17,21 @@ The app will:
 2. Launch `kirocrew gateway` when needed
 3. Show a loading screen while the backend boots
 4. Load the dashboard
-5. Guide the user through Kiro CLI installation and device sign-in on the
-   gateway host when either prerequisite is missing
+5. Point the user at Kiro CLI installation and sign-in on the gateway host when
+   either prerequisite is missing
 
 The Electron shell uses the same gateway-hosted setup screen as every browser;
-it has no separate installer or login runner. On macOS and Linux, **Install Kiro
-CLI** downloads and runs Kiro's official HTTPS installer only after the user
-clicks the button. Native Windows gateways expose the same workflow through the
-browser dashboard. **Sign in to Kiro** starts
-`kiro-cli login --use-device-flow`; the app waits for `kiro-cli whoami` to
-succeed before continuing. Candidate selection is fail-closed: a broken
-higher-priority Kiro CLI is shown as needing repair and is not skipped in favor
-of a later candidate. Remote tunnel sessions check the remote gateway host.
+it has no separate installer or login runner, and it performs neither step. The
+screen links out to <https://kiro.dev/cli/> for the CLI, and names the commands
+the user runs to sign in: `kiro-cli login` for a personal account, or
+`kiro-cli login --use-device-flow --license pro` for organization SSO. Both are
+shown because the portal the bare command opens offers a free Builder ID
+alongside organization SSO, and picking the wrong one still succeeds — the
+mismatch only surfaces later as missing models. The app observes completion
+through the read-only `kiro-cli whoami` probe. Candidate selection is
+fail-closed: a broken higher-priority Kiro CLI is shown as needing repair and is
+not skipped in favor of a later candidate. Remote tunnel sessions check the
+remote gateway host.
 
 ## Install as macOS App
 

@@ -38,9 +38,9 @@ def counting_log(tmp_path, monkeypatch):
     calls: list[str] = []
     original = ConversationLog._build_folded
 
-    def counted(self, key: str):
+    def counted(self, key: str, mtime: float):
         calls.append(key)
-        return original(self, key)
+        return original(self, key, mtime)
 
     monkeypatch.setattr(ConversationLog, "_build_folded", counted)
     return log, calls
@@ -147,25 +147,50 @@ class TestSearchFoldingIsMemoized:
 
 
 class TestFoldCacheCoversTheScanWindow:
-    """An LRU smaller than the scan window would hit 0%, not degrade.
+    """A bound smaller than the scan window would hit 0%, not degrade.
 
     ``search_sessions`` walks ``_SEARCH_SCAN_WINDOW`` sessions in the same order
-    on every query. If the cache holds fewer entries than that, each session is
-    evicted one step before its next read, so the hit rate collapses to zero and
-    the memoization silently stops working — precisely for the users with the
-    most sessions, who need it most.
+    on every query. If the cache cannot hold them, each session is dropped one
+    step before its next read, so the hit rate collapses to zero and the
+    memoization silently stops working — precisely for the users with the most
+    sessions, who need it most.
+
+    The bound is BYTES rather than entries, because a session is read up to
+    ``_SESSION_MAX_BYTES``: an entry count of 500 was anywhere from a few MB to
+    ~1 GB depending on the corpus, so it bounded memory only by accident.
+    ``_SearchTextCache`` preserves the no-collapse guarantee by refusing
+    admission instead of evicting.
     """
 
-    def test_cache_is_sized_to_at_least_the_scan_window(self, tmp_path):
+    def test_fold_cache_is_bounded_by_bytes_not_entries(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        assert log._folded_cache._maxsize >= history._SEARCH_SCAN_WINDOW
+        stats = log._folded_cache.stats()
+        assert stats["max_bytes"] == history._SEARCH_FOLD_BUDGET_BYTES
+        assert stats["max_bytes"] > 0, "the ceiling must actually be enforced"
 
-    def test_a_small_cache_max_cannot_shrink_it_below_the_window(self, tmp_path):
-        """The fold cache holds derived strings, not the parsed transcripts
-        ``cache_max`` is tuned for, so it must not follow that knob down."""
+    def test_a_small_cache_max_cannot_shrink_the_search_budgets(self, tmp_path):
+        """The search memos hold derived text, not the parsed transcripts
+        ``cache_max`` is tuned for, so they must not follow that knob down."""
         log = ConversationLog(base_dir=tmp_path, cache_max=8)
-        assert log._folded_cache._maxsize >= history._SEARCH_SCAN_WINDOW
+        assert log._folded_cache.stats()["max_bytes"] == history._SEARCH_FOLD_BUDGET_BYTES
+        assert log._snippet_cache.stats()["max_bytes"] == history._SEARCH_SNIPPET_BUDGET_BYTES
         assert log._msg_cache._maxsize == 8, "the transcript cache still honors cache_max"
+
+    def test_the_budget_holds_a_full_scan_window_of_ordinary_sessions(self, tmp_path):
+        """The ceiling has to be generous enough to not be the common case.
+
+        A budget tight enough to refuse ordinary corpora would reintroduce the
+        very cliff this class exists to prevent, just measured in bytes. Pinned
+        against a deliberately roomy per-session estimate so the assertion fails
+        if someone tightens the budget without re-reasoning about the window.
+        """
+        generous_session_chars = 64 * 1024
+        capacity = history._SEARCH_FOLD_BUDGET_BYTES // generous_session_chars
+        assert capacity >= history._SEARCH_SCAN_WINDOW, (
+            f"the fold budget holds only {capacity} sessions of "
+            f"{generous_session_chars} chars, fewer than the "
+            f"{history._SEARCH_SCAN_WINDOW}-session scan window"
+        )
 
     def test_no_thrash_across_a_corpus_larger_than_the_transcript_cache(
         self, tmp_path, monkeypatch
@@ -185,9 +210,9 @@ class TestFoldCacheCoversTheScanWindow:
         calls: list[str] = []
         original = ConversationLog._build_folded
 
-        def counted(self, key: str):
+        def counted(self, key: str, mtime: float):
             calls.append(key)
-            return original(self, key)
+            return original(self, key, mtime)
 
         monkeypatch.setattr(ConversationLog, "_build_folded", counted)
 
@@ -252,7 +277,7 @@ class TestFoldDoesNotPinParsedTranscripts:
         mtime = log._path("s0").stat().st_mtime
         log._msg_cache["s0"] = (mtime, [{"role": "user", "content": "phantom text"}])
 
-        built = log._build_folded("s0")
+        built = log._build_folded("s0", mtime)
         assert built is not None
         assert built[1] == "on disk only", "the fold must come from the file"
         assert "phantom" not in built[1]
@@ -293,9 +318,9 @@ class TestFoldDoesNotPinParsedTranscripts:
         real_build = ConversationLog._build_folded
         observed: list[int] = []
 
-        def observing(self, key: str):
+        def observing(self, key: str, mtime: float):
             observed.append(depth[0])
-            return real_build(self, key)
+            return real_build(self, key, mtime)
 
         log = ConversationLog(base_dir=tmp_path)
         for i in range(3):
@@ -401,7 +426,7 @@ class TestFoldDoesNotPinParsedTranscripts:
 
     def test_unreadable_file_signals_failure_rather_than_empty(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        assert log._build_folded("never-existed") is None
+        assert log._build_folded("never-existed", 0.0) is None
 
     def test_both_halves_of_a_query_share_one_definition_of_searchable_text(
         self, tmp_path, monkeypatch
@@ -410,8 +435,15 @@ class TestFoldDoesNotPinParsedTranscripts:
 
         They are two readers of the same on-disk format; divergent skip rules
         would let a query count a match the snippet cannot then locate (an empty
-        snippet on a matched row), or vice versa. Pinned by routing both through
-        ``_iter_message_texts``.
+        snippet on a matched row), or vice versa.
+
+        The guarantee is now structural rather than conventional: the fold hands
+        the snippet memo the very list it folded, so a single traversal of
+        ``_iter_message_texts`` serves both halves and there is no second
+        traversal that could apply different rules. One call, not two — the
+        second call is what this used to assert, and its disappearance is the
+        optimization. The fallback path (memo refused or stale) still routes
+        through the shared iterator; see ``TestSnippetSourceIsMemoized``.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("s0", "user", "the wombat entry")
@@ -428,8 +460,13 @@ class TestFoldDoesNotPinParsedTranscripts:
 
         assert [h["key"] for h in hits] == ["s0"]
         assert "wombat" in hits[0]["snippet"]
-        assert callers == ["s0", "s0"], (
-            f"fold and snippet must both go through the shared iterator, saw {callers}"
+        assert callers == ["s0"], (
+            "one traversal must serve both the fold and the snippet, "
+            f"saw {callers}"
+        )
+        stored = log._snippet_cache.get("s0")
+        assert stored is not None and stored[1] == ["the wombat entry"], (
+            "the snippet memo must hold exactly what the fold read"
         )
 
     def test_the_shared_iterator_skips_metadata_and_unparseable_lines(self, tmp_path):
@@ -539,3 +576,367 @@ class TestSearchResultsUnchangedByMemoization:
         hits = log.search_sessions("needle", 50)
         assert "needle" in hits[0]["snippet"]
         assert "filler" not in hits[0]["snippet"], "window must stay in the matching message"
+
+
+class TestSearchTextCacheByteBudget:
+    """The bound is bytes, and it is a ceiling rather than an eviction trigger.
+
+    An entry count bounded nothing that mattered: a session is read up to
+    ``_SESSION_MAX_BYTES``, so ``_SEARCH_SCAN_WINDOW`` entries ranged from a few
+    MB to ~1 GB depending on whose corpus it was.
+    """
+
+    def _cache(self, max_bytes: int) -> history._SearchTextCache[str]:
+        return history._SearchTextCache(max_bytes, len)
+
+    def test_entry_that_would_exceed_the_budget_is_refused_not_evicted(self):
+        """Admission control, not LRU eviction.
+
+        A search walks the scan window in the same recency order every query, so
+        the working set is cyclic. Evicting to make room for the newcomer would
+        drop the entry needed one step later — the hit rate collapses to zero
+        instead of degrading. Refusing the newcomer keeps whatever fits.
+        """
+        cache = self._cache(10)
+        cache["a"] = "1234567890"  # exactly fills the budget
+
+        cache["b"] = "x"
+
+        assert cache.get("a") == "1234567890", "the entry that fit must survive"
+        assert cache.get("b") is None, "the entry that did not fit is refused"
+        assert cache.stats()["refused"] == 1
+
+    def test_partial_fill_still_serves_the_sessions_that_fit(self):
+        cache = self._cache(6)
+        for name in ("a", "b", "c", "d"):
+            cache[name] = "xxx"  # 3 bytes each: only two fit
+
+        held = [n for n in ("a", "b", "c", "d") if cache.get(n) is not None]
+        assert held == ["a", "b"], "the earliest (most recent sessions) stay cached"
+        assert cache.stats()["bytes"] == 6
+
+    def test_replacing_a_key_releases_the_old_cost_first(self):
+        """A session being appended to must not inflate the accounting.
+
+        Without releasing the previous value the byte total would grow on every
+        rewrite of the same key, and the session would eventually be refused
+        admission for its OWN new value while still counting against the budget.
+        """
+        cache = self._cache(10)
+        cache["a"] = "12345"
+        cache["a"] = "67890"
+
+        assert cache.get("a") == "67890"
+        assert cache.stats()["bytes"] == 5, "the old value's cost is released"
+        assert cache.stats()["refused"] == 0
+
+    def test_pop_releases_the_budget(self):
+        cache = self._cache(10)
+        cache["a"] = "1234567890"
+        cache.pop("a", None)
+
+        assert cache.stats()["bytes"] == 0
+        cache["b"] = "1234567890"
+        assert cache.get("b") is not None, "the freed budget is reusable"
+
+    def test_pop_of_an_absent_key_does_not_corrupt_the_accounting(self):
+        cache = self._cache(10)
+        cache["a"] = "123"
+        cache.pop("missing", None)
+
+        assert cache.stats()["bytes"] == 3, "a miss must not subtract anything"
+
+    def test_zero_budget_disables_the_bound(self):
+        cache = self._cache(0)
+        cache["a"] = "x" * 10_000
+        assert cache.get("a") is not None
+        assert cache.stats()["refused"] == 0
+
+
+class TestSnippetSourceIsMemoized:
+    """The snippet is 92% of a warm query unless its source is memoized.
+
+    Matching is already cheap (the fold cache). What was not cheap: every
+    returned row re-opened its file and re-parsed JSONL until the first hit.
+    """
+
+    def test_warm_query_builds_snippets_without_reading_any_file(
+        self, tmp_path, monkeypatch
+    ):
+        log = ConversationLog(base_dir=tmp_path)
+        _seed(log, sessions=3)
+        log.search_sessions("deployment", 50)  # warm both memos
+
+        reads: list[str] = []
+        original = ConversationLog._iter_message_texts
+
+        def counted(self, key: str):
+            reads.append(key)
+            return original(self, key)
+
+        monkeypatch.setattr(ConversationLog, "_iter_message_texts", counted)
+
+        results = log.search_sessions("deployment", 50)
+
+        assert results, "the query must still return rows"
+        assert all(r.get("snippet") for r in results), "each row still has its snippet"
+        assert reads == [], "a warm query must not re-read any session file"
+
+    def test_snippet_falls_back_to_the_file_when_the_memo_has_no_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """The budget may refuse admission, so the memo is an optimization only.
+
+        With a zero-byte budget nothing is ever stored, which is the same state
+        as a refused entry — and the snippet must still be produced.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        _seed(log, sessions=2)
+        monkeypatch.setattr(log, "_snippet_cache", history._SearchTextCache(1, lambda v: 10**9))
+
+        results = log.search_sessions("deployment", 50)
+
+        assert results
+        assert all(r.get("snippet") for r in results), "fallback still yields snippets"
+
+    def test_a_write_that_preserves_mtime_still_drops_the_snippet_memo(self, tmp_path):
+        """The case the memo's own mtime check cannot see.
+
+        Housekeeping writes restore the pre-write mtime (``_restore_mtime``) so
+        consolidation does not float stale sessions to the top of
+        ``list_sessions``. After one of those the file's mtime still matches what
+        the memo recorded, so the mtime guard in :meth:`_snippet_texts` is blind
+        and ``_invalidate_cache`` is the only thing standing between the user and
+        a preview quoting text the session no longer contains.
+
+        Asserted on the memo directly rather than through a snippet, because a
+        content-changing rewrite bumps the mtime and would pass on the guard
+        alone — which is exactly the false confidence this test exists to avoid.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s0", "user", "the original wording mentions deployment")
+        log.search_sessions("deployment", 50)
+        assert log._snippet_cache.get("s0") is not None, "precondition: memo warm"
+        before = log._path("s0").stat().st_mtime
+
+        log.mark_consolidated("s0", 1)
+
+        assert log._path("s0").stat().st_mtime == before, (
+            "precondition: this write path preserves mtime, so the guard is blind"
+        )
+        assert log._snippet_cache.get("s0") is None, (
+            "the memo must be dropped by invalidation, not left to the mtime guard"
+        )
+
+    def test_no_stale_preview_survives_a_content_rewrite(self, tmp_path):
+        """End-to-end check that the two defences together hold.
+
+        This one passes on the mtime guard alone; the preserved-mtime case above
+        is what pins the invalidation.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s0", "user", "the original wording mentions deployment")
+        log.search_sessions("deployment", 50)  # memoize the original text
+
+        log.rewrite_session("s0", [{"role": "user", "content": "replaced deployment text"}])
+
+        results = log.search_sessions("deployment", 50)
+        assert results, "the session still matches after the rewrite"
+        assert "original wording" not in results[0]["snippet"], "no stale preview"
+        assert "replaced" in results[0]["snippet"]
+
+    def test_a_changed_mtime_falls_back_rather_than_serving_a_stale_snippet(
+        self, tmp_path
+    ):
+        """Defence in depth behind ``_invalidate_cache``.
+
+        If a write path ever forgets to drop the memo, the stored mtime must
+        still stop the snippet from being served from it.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s0", "user", "first deployment wording")
+        log.search_sessions("deployment", 50)
+
+        stored = log._snippet_cache.get("s0")
+        assert stored is not None, "precondition: the memo holds this session"
+        # Poison the memo, keeping its (now wrong) mtime.
+        log._snippet_cache["s0"] = (stored[0], ["poisoned deployment content"])
+        # Make the file's mtime disagree with the memo's.
+        path = log._path("s0")
+        os.utime(path, (stored[0] + 10, stored[0] + 10))
+
+        snippet = log._content_snippet("s0", "deployment")
+        assert "poisoned" not in snippet, "a stale mtime must not be trusted"
+        assert "first deployment wording" in snippet
+
+    def test_unreadable_session_drops_both_memos_together(self, tmp_path):
+        """The two memos are two views of one file; they must never disagree.
+
+        A stat failure invalidates the fold, and leaving the snippet source
+        behind would let a later query pair a fresh fold with a stale preview.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("s0", "user", "deployment notes")
+        log.search_sessions("deployment", 50)
+        assert log._snippet_cache.get("s0") is not None
+
+        log._path("s0").unlink()
+        log._folded_content("s0")
+
+        assert log._folded_cache.get("s0") is None
+        assert log._snippet_cache.get("s0") is None, "both memos drop together"
+
+
+class TestBudgetCountsRealBytesNotCharacters:
+    """``len()`` would undercount the ceiling by up to 4x.
+
+    CPython stores a ``str`` at the narrowest width its contents allow, so one
+    character is 1 byte for latin-1, 2 for the BMP and 4 for astral planes. A
+    ceiling counted in characters retains 168 MB of ASCII, 336 MB of CJK or
+    671 MB of emoji at a nominal 160 MB — and CJK is the ordinary case for a
+    non-English corpus, so this is not a pathological-input concern.
+    """
+
+    def test_wide_characters_consume_more_budget_than_narrow_ones(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        sizer = log._folded_cache._sizer
+
+        narrow = sizer((0.0, 0, "a" * 1000))
+        wide = sizer((0.0, 0, "\U0001f600" * 1000))
+
+        assert wide > narrow * 3, (
+            f"a 4-byte-per-char string must cost ~4x a 1-byte one, "
+            f"got narrow={narrow} wide={wide}"
+        )
+
+    def test_a_wide_string_is_refused_where_the_same_length_of_ascii_fits(self):
+        """The behavioural consequence: the ceiling holds regardless of script."""
+        budget = "x" * 2000
+        cache: history._SearchTextCache[str] = history._SearchTextCache(
+            budget.__sizeof__(), lambda v: v.__sizeof__()
+        )
+
+        cache["ascii"] = "y" * 2000
+        assert cache.get("ascii") is not None, "same-width content of equal length fits"
+
+        cache.clear()
+        cache["emoji"] = "\U0001f600" * 2000
+        assert cache.get("emoji") is None, (
+            "the same CHARACTER count of astral text is ~4x the bytes and must not fit"
+        )
+
+    def test_the_snippet_sizer_charges_for_its_list_container(self, tmp_path):
+        """Many small strings make the list itself a real share of the cost."""
+        log = ConversationLog(base_dir=tmp_path)
+        sizer = log._snippet_cache._sizer
+
+        texts = ["x" * 10 for _ in range(500)]
+        charged = sizer((0.0, texts))
+        strings_only = sum(t.__sizeof__() for t in texts)
+
+        assert charged > strings_only, "the list container must be charged too"
+        assert charged == strings_only + texts.__sizeof__()
+
+
+class TestAdmissionControlIsNotAOneWayRatchet:
+    """A full cache must not freeze on its first-fill set.
+
+    Admission control avoids the LRU cliff, but on its own it means entries
+    persist forever once admitted: sessions that age out of the scan window keep
+    holding budget while every newly created session is refused. The newest and
+    most-searched sessions would become exactly the cold ones, and warm latency
+    would regress over process lifetime until a restart.
+    """
+
+    def test_retain_frees_entries_outside_the_live_set(self):
+        cache: history._SearchTextCache[str] = history._SearchTextCache(100, len)
+        cache["old"] = "x" * 40
+        cache["new"] = "y" * 40
+
+        dropped = cache.retain({"new"})
+
+        assert dropped == 1
+        assert cache.get("old") is None
+        assert cache.get("new") is not None
+        assert cache.stats()["bytes"] == 40, "the freed budget is accounted"
+
+    def test_retain_resets_the_pressure_signal(self):
+        cache: history._SearchTextCache[str] = history._SearchTextCache(10, len)
+        cache["a"] = "x" * 10
+        cache["b"] = "y"  # refused
+        assert cache.refused_since_prune() == 1
+
+        cache.retain({"a"})
+
+        assert cache.refused_since_prune() == 0, "a prune clears the signal it acted on"
+        assert cache.stats()["refused"] == 1, "the cumulative count survives for diagnosis"
+
+    def test_a_session_that_left_the_window_stops_holding_budget(self, tmp_path, monkeypatch):
+        """End-to-end: an aged-out session's budget becomes reusable.
+
+        The valve fires from ``search_sessions`` only when a memo is refusing, and
+        a refusal happens *during* the walk while the prune runs *before* it — so
+        the release lands on the NEXT query, not the one that discovered the
+        pressure. That one-query lag is deliberate and bounded: the prune needs
+        the scan window, which is computed at the top of the walk, and a query
+        costs ~20 ms against a keystroke-driven caller. What must not happen is
+        the budget staying pinned forever, which is what this asserts.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        monkeypatch.setattr(history, "_SEARCH_SCAN_WINDOW", 1)
+        # Equal-length content so the budget freed by one exactly admits the other,
+        # which is what proves the valve restored service rather than just freeing.
+        log.append("older", "user", "mentions deployment nine")
+        log.search_sessions("deployment", 50)
+        assert log._folded_cache.get("older") is not None, "precondition: cached"
+
+        # A newer session displaces the older one from a 1-session window.
+        log.append("newer", "user", "mentions deployment ten!")
+        # Shrink the budget so admitting "newer" is refused while "older" holds it.
+        log._folded_cache._max_bytes = log._folded_cache.stats()["bytes"]
+
+        log.search_sessions("deployment", 50)  # discovers the pressure
+        assert log._folded_cache.refused_since_prune() > 0, "precondition: refusing"
+        assert log._folded_cache.get("newer") is None, "precondition: newer was refused"
+
+        log.search_sessions("deployment", 50)  # acts on it
+
+        assert log._folded_cache.get("older") is None, (
+            "a session outside the scan window must not keep holding budget"
+        )
+        assert log._folded_cache.get("newer") is not None, (
+            "the freed budget must admit the session that is actually in the window"
+        )
+
+    def test_an_uncontended_cache_is_never_pruned(self, tmp_path, monkeypatch):
+        """The scan is only worth paying under pressure."""
+        log = ConversationLog(base_dir=tmp_path)
+        _seed(log, sessions=3)
+        log.search_sessions("deployment", 50)
+
+        calls: list[int] = []
+        original = history._SearchTextCache.retain
+
+        def counted(self, live_keys):
+            calls.append(1)
+            return original(self, live_keys)
+
+        monkeypatch.setattr(history._SearchTextCache, "retain", counted)
+        log.search_sessions("deployment", 50)
+
+        assert calls == [], "no refusals means no prune"
+
+    def test_first_refusal_is_logged_once(self, caplog):
+        """``refused`` in stats() is only diagnosable if something surfaces it."""
+        cache: history._SearchTextCache[str] = history._SearchTextCache(
+            10, len, "test-memo"
+        )
+        cache["a"] = "x" * 10
+
+        with caplog.at_level("WARNING"):
+            cache["b"] = "y"
+            cache["c"] = "z"
+
+        hits = [r for r in caplog.records if "test-memo" in r.getMessage()]
+        assert len(hits) == 1, f"warn once, not per refusal; saw {len(hits)}"
+        assert "ceiling" in hits[0].getMessage()

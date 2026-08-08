@@ -116,6 +116,102 @@ silently empty data, and they appear only at runtime, only in the edition build.
 package to that list**, and the edition should declare these as peer deps. The
 dedupe is harmless in the stock single-`node_modules` build.
 
+## Authoring an edition: the build pitfalls
+
+The seams above make an edition build possible; this section is what makes a
+first one work. Each pitfall below is silent or misleading at the moment it is
+introduced, and every one was hit in practice by a real downstream edition.
+
+### Theme CSS: never rely on load order, take specificity
+
+An edition that registers a theme (`registerTheme()`) ships that theme's CSS
+block in its own file, imported from its composition root. In the current
+build that CSS lands in the entry chunk's stylesheet, which `index.html` links
+**before** the chunk carrying the core's `index.css` — but chunk order is an
+artifact of the build, not a contract. What is contractual is the cascade: the
+core's default palette block sets the theme variables on
+`:root, [data-theme="dark"], …`, and `:root` is specificity (0,1,0). An edition
+block headed `[data-theme="acme"]` is also (0,1,0), so whichever stylesheet
+loads later wins — today that is the core, and every variable its default block
+also sets silently overrides the edition's. Nothing errors: the picker shows
+the theme, the palette stays stock.
+
+The built-in themes never hit this because their blocks live in `index.css`
+itself, after the default block — same sheet, later, wins.
+
+Prescription: prefix the edition's theme selectors with `html`, which wins on
+specificity regardless of load order:
+
+```css
+/* loses: (0,1,0), and the core's :root default block loads later */
+[data-theme='acme'] { --accent: #0055aa; }
+
+/* wins: (0,1,1) beats (0,1,0) in either load order */
+html[data-theme='acme'] { --accent: #0055aa; }
+```
+
+### Bare imports: the edition dir needs its own `node_modules`
+
+The composition root lives outside the SPA root, and Node-style resolution
+walks **up from the importing file** — it never reaches
+`website/node_modules` from a sibling repo. The first bare specifier in the
+edition (`import { Sparkles } from 'lucide-react'`) fails the build:
+
+```
+[vite]: Rolldown failed to resolve import "lucide-react" from
+"<edition dir>/extensions.tsx".
+```
+
+Give the edition dir its own `node_modules`: either a real install that
+declares the shared packages as peer dependencies, or a build-script symlink to
+`website/node_modules`. Either way, read the "Edition peer-dependency rule"
+above — once two `node_modules` trees exist, every context-carrying singleton
+must stay deduplicated or hooks bind to a second React.
+
+### Typecheck the edition, or ship ReferenceErrors
+
+The core's `tsc -b` covers `website/src` only (`tsconfig.app.json` has
+`"include": ["src"]`), so the edition's sources are outside every typecheck the
+core runs. The bundler does not fill the gap: TypeScript is erased, and a free
+identifier — a typo like `registerThemee` — compiles into the bundle as an
+assumed **global**. The build succeeds, `tsc -b` stays green, and the app
+throws `ReferenceError` at module load. Because the composition root runs
+before `App` mounts, that is a blank page, not a broken widget.
+
+Give the edition a `tsconfig.json` that extends the core's and run it in the
+edition's own build or CI (`npx tsc -p <edition>/tsconfig.json`) — the core
+will never run it for you:
+
+```jsonc
+{
+  "extends": "../KiroCrew/website/tsconfig.app.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Without vite/client, every `import.meta.env` the edition touches
+    // (directly or via a core module it imports) is a TS2339 false positive.
+    "types": ["vite/client"]
+  },
+  "include": ["."]
+}
+```
+
+`extends` keeps the `@/*` path mapping working (TypeScript resolves inherited
+`paths` relative to the config that declares them), so the edition's
+`import { registerTheme } from '@/hooks/useTheme'` typechecks against the real
+core sources. With this in place the typo above is caught at build time:
+`TS2552: Cannot find name 'registerThemee'. Did you mean 'registerTheme'?`
+
+### A default theme needs configuration, not a seam
+
+To make the edition's theme the default, do not look for a frontend seam —
+seed `dashboard.theme_color` (and `theme_mode`) in the deployment's
+`config.json`. The dashboard applies the server value from
+`GET /api/theme/boot` over any stored client choice and writes it back, so a
+fresh install lands on the edition's theme and the user keeps free choice from
+then on. One caveat: the very first paint, before that response arrives, uses
+the compiled-in default (`DEFAULT_COLOR_THEME`); a returning visitor is
+unaffected because the applied value persists in `localStorage`.
+
 ## Collision policy
 
 `apps/seamCollision.ts` is the one policy every registrar routes rejections

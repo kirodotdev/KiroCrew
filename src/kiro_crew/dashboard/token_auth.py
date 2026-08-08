@@ -416,27 +416,44 @@ _BYPASS_EXACT = {
     "/api/health",
     "/api/live",
     "/api/ready",
-    # Microsoft Teams inbound webhook: Bot Framework (Microsoft's servers, no
-    # dashboard cookie) POSTs activities here. The handler does its OWN auth --
-    # it validates the Bot Framework JWT (issuer + App-ID audience + signature)
-    # before processing -- so it must bypass the dashboard cookie gate. Same
-    # self-authenticating-external-caller class as a chat provider webhook.
-    "/api/messaging/teams",
-    # Inbound agent webhook: external systems (CI runners, code-review bots,
-    # deploy pipelines) POST here holding a webhook token and nothing else — no
-    # dashboard cookie, no gateway IPC secret. The handler does its OWN auth:
-    # api_hooks_agent calls _verify_hook_token, which compares the bearer
-    # against the sha256 of every stored token entry with hmac.compare_digest
-    # and refuses with 401 when none match (and when no token exists at all, so
-    # the endpoint is closed by default on a fresh install). Same
-    # self-authenticating-external-caller class as /api/messaging/teams above.
-    #
-    # This is a deliberate exposure decision: a valid token authorizes a real
-    # agent turn with full tool access, so the handler also rate-limits repeated
-    # failures per source (webhooks.auth_throttle) and records every 401 in the
-    # run history the dashboard shows. It was previously in
-    # server._STRICT_INTERNAL_API_PATHS, which made the token layer dead code.
-    "/api/hooks/agent",
+}
+
+# Exact-path bypasses that apply to SOME methods only, path -> allowed methods.
+#
+# A path-only bypass is unsound whenever another route pattern also matches the
+# same literal path under a different method: the entry opens every one of those
+# methods, not just the self-authenticating one it was written for. Scoping the
+# entry to the method whose handler does its own auth leaves the rest on the
+# ordinary token gate. Every self-authenticating webhook belongs here rather than
+# in the path-only set above, whether or not another route currently collides —
+# the collision is a property of the route table, which moves.
+#
+# ``POST /api/hooks/agent`` is the inbound agent webhook: external systems (CI
+# runners, code-review bots, deploy pipelines) post here holding a webhook token
+# and nothing else — no dashboard cookie, no gateway IPC secret. The handler does
+# its OWN auth (api_hooks_agent -> _verify_hook_token compares the bearer against
+# the sha256 of every stored token entry with hmac.compare_digest and refuses
+# with 401 when none match, including when no token exists at all, so the
+# endpoint is closed by default on a fresh install). It is a deliberate exposure
+# decision: a valid token authorizes a real agent turn with full tool access, so
+# the handler also rate-limits repeated failures per source
+# (webhooks.auth_throttle) and records every 401 in the run history.
+#
+# For that entry the method scope is load-bearing, not tidiness. The literal
+# string ``agent`` also matches the ``{hook_id}`` wildcard of the dashboard's own
+# hook CRUD routes — PUT and DELETE ``/api/hooks/{hook_id}`` — whose handler
+# (api_hook_detail) authenticates via the dashboard token alone. Unscoped, both
+# reach it with no credential of any kind.
+#
+# ``POST /api/messaging/teams`` is the Microsoft Teams inbound webhook: Bot
+# Framework (Microsoft's servers, no dashboard cookie) posts activities there and
+# the handler does its OWN auth, validating the Bot Framework JWT (issuer +
+# App-ID audience + signature) before processing. Only POST is routed today, so
+# the scope closes nothing yet — it is here so the shape a future entry gets
+# copied from is the safe one.
+_BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
+    "/api/hooks/agent": frozenset({"POST"}),
+    "/api/messaging/teams": frozenset({"POST"}),
 }
 
 # Anchored bypass for installed-app static UI bundles only (federated-app
@@ -1499,6 +1516,11 @@ def token_auth_middleware(
         if any(path.startswith(p) for p in _BYPASS_PREFIXES):
             return await handler(request)  # type: ignore[operator]
         if path in _BYPASS_EXACT:
+            return await handler(request)  # type: ignore[operator]
+        # Method-scoped exact bypasses. A non-listed method on the same path
+        # falls through to the ordinary token gate rather than bypassing it.
+        _bypass_methods = _BYPASS_EXACT_METHODS.get(path)
+        if _bypass_methods is not None and request.method in _bypass_methods:
             return await handler(request)  # type: ignore[operator]
         # Icon files: anchored regex with bounded digit count to prevent
         # ReDoS and ensure only legitimate PWA icon paths bypass auth.

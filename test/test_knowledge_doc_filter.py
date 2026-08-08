@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from test_folder_watcher import LOCK_FILES
+
 from kiro_crew.knowledge.doc_filter import (
     DOC_EXTENSIONS,
     MIN_DOC_BYTES,
@@ -77,6 +79,20 @@ class TestSkips:
 
     def test_hard_skip_dirs_pruned(self):
         assert not should_ingest_doc("node_modules/pkg/readme.md", BIG)
+
+    def test_cdk_out_pruned(self):
+        # Inherited from HARD_SKIP_DIRS. The prose case is the one that matters:
+        # synth output is JSON, which the extension allowlist already drops.
+        assert not should_ingest_doc("cdk.out/tree.json", BIG)
+        assert not should_ingest_doc("infra/cdk.out/docs/readme.md", BIG)
+
+    def test_dependency_locks_need_no_project_doc_patterns(self):
+        # The extension allowlist alone excludes every lock file, at any depth,
+        # so this filter carries no lock-file entries of its own.
+        for name in LOCK_FILES:
+            assert Path(name).suffix.lower() not in DOC_EXTENSIONS, name
+            assert not should_ingest_doc(name, BIG), name
+            assert not should_ingest_doc(f"tools/{name}", BIG), name
 
     def test_os_junk_dropped(self):
         assert not should_ingest_doc("docs/._notes.md", BIG)

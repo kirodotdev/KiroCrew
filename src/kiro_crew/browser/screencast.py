@@ -1,6 +1,6 @@
 """Live browse screencast — relay screenshots the agent already takes to the dashboard.
 
-The headless ``[BROWSE]`` Chromium runs on the gateway host; the only window onto
+The headless browse Chromium runs on the gateway host; the only window onto
 it from a laptop is the dashboard (reachable over the reverse SSH tunnel). This
 module gives the dashboard a near-real-time mirror **without opening any debug
 port on the browser**.

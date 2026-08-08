@@ -64,10 +64,10 @@ window (`range(181)`) and picks a rendering per day by age.
 
 The assembled string is capped when injected. `MemoryStore.get_context()`
 declares `history_cap=25_000` as its own signature default, but the live caller
-is `ContextBuilder.build_session_context()`, which always passes
+is `ContextBuilder.build_session_context()`, which passes
 `caps.memory_history` (26,400 chars at the reference window, scaled per model
-window, see Context Builder below), so 25,000 only applies to a direct
-programmatic call. Timestamps use local timezone.
+window, see Context Builder below) whenever the `memory` group is in scope, so
+25,000 only applies to a direct programmatic call. Timestamps use local timezone.
 
 `read_recent_history` runs on every message turn (context build) and otherwise
 stats + reads up to 181 daily files synchronously. The assembled string is
@@ -257,6 +257,7 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 - The underlying `Llama` object is NOT thread-safe — inference on a loaded model is serialized behind a lock (tens of ms per short text)
 - `get_shared_embedder()` — process-wide singleton (~700MB RSS when loaded), shared by vector memory AND the knowledge library; `close()` unloads the model to free RSS
 - Per-platform native libs live in `_vendor/llama_cpp_libs/{linux_x86_64,linux_aarch64,macos_arm64,macos_x86_64,win_amd64}`, selected at import time via `LLAMA_CPP_LIB_PATH` (upstream-supported override; an operator-set value wins, enabling e.g. a GPU build). Unsupported platforms and import failures degrade to keyword-only memory search. See `_vendor/README.md`
+- **The shipped closure is declared, not inferred.** `_REQUIRED_VENDORED_LIBS` names the exact files each platform must carry, and `verify_vendored_libs(root=None)` returns `{platform: [missing…]}` (empty when complete) against a source tree, an unpacked sdist, or an installed wheel. `_load_llama_class()` consults it before importing, so an incomplete install is reported as a **packaging defect naming the absent files** rather than surfacing as ctypes' `Shared library with base name 'llama' not found` — which reads as an unsupported architecture and misdirected the real-world diagnosis of this bug. `kirocrew doctor` prints the same detail. The check is **skipped when `LLAMA_CPP_LIB_PATH` is set**: the libs then load from the operator's directory, so the bundled tree's contents no longer determine whether the runtime works, and refusing on them would disable the documented override for exactly the users an incomplete wheel stranded (the warning names the env var as a remedy for that reason). Each packaging lane selects these files by a different mechanism (MANIFEST.in for the sdist, `package_data` for the wheel, the PyInstaller spec for the desktop bundle), so each is guarded independently in `test/test_vendored_llama_payload.py`, and both `build.yml` (every PR) and `build-wheel.yml` (release/nightly) re-check the built wheel **and** sdist against the same declaration via the shared `scripts/verify_vendored_payload.py` (one script for both lanes, so they cannot drift into a gate that stops guarding without failing) — the sdist explicitly, because `python -m build --wheel` never evaluates `MANIFEST.in` and so cannot see an sdist regression at all. Linux ships no BLAS backend by design: upstream publishes none in its Linux CPU wheels (macOS gets `libggml-blas` only via the system Accelerate framework), and the Linux `libggml-cpu` carries the optimized GEMM kernels instead
 - Failed model loads (corrupt file, bad native libs) are retried only after a 300s cooldown so a broken state can't spawn a loader thread per embed call
 
 **Embedding backend abstraction** (`EmbeddingBackend` ABC): the public swap seam for future runtimes (Ollama again, remote endpoints, ONNX) and user-defined models. Surface: `model_id`, `dim`, `is_ready()`, `embed()`, `embed_batch()`, `close()`. Consumers (vector memory, knowledge library) depend only on this interface; everything llama.cpp-specific lives in `LlamaCppEmbedder`. Swap flow: `register_embedding_backend(factory)` + `reset_shared_embedder()` replaces the singleton (pass `None` to restore the default). A backend with a different `model_id`/`dim` produces incomparable vectors — the knowledge library's `embed_signature` folds `model_id` in, so a swap automatically triggers the sig-gated knowledge re-embed; vector memory re-embeds via `migrate`.
@@ -609,9 +610,73 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 - **OFF** (`get_context(budget=None)`): the byte-for-byte legacy full dump — every on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`.
 - **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
 
-**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in `get_triggered_skills` (`_record_use`) and `resolve_dollar_skills` **regardless of the `lazy_load` flag**, so ranking data accrues even while the feature is off. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
+**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **`skill_search` MCP tool (`kirocrew-core`):** greps skill name/description then, only on a metadata miss, the skill body (bounded, tool-call only — never per message). Schema in `mcp_core.py`, validated against `SKILL_SEARCH_SCHEMA` (`validation.py`). Does NOT record usage — searching is not using. Scope is **locally installed skills only**.
+
+**Direct reads.** The model reaches most skills by reading `SKILL.md` itself — a
+file-read tool, or `cat` in a shell — which bypasses the loader and so recorded
+nothing. Unrecorded, the ledger described one access route only, pushing
+search-discovered skills permanently down the ranking and making them harder to
+find still: a self-reinforcing bias, not a flat undercount.
+
+Crediting is two-phase, because the ledger's hits mean *a body reached the
+model*. `SkillsLoader.resolve_tool_read_keys(tool_name, raw_params, command)`
+resolves which served skills a tool call would deliver, recording nothing;
+`credit_skill_reads(keys)` records once the read is known to have happened.
+
+**Only content-delivering reads qualify.** A tool call that merely *names* a
+skill path earns nothing — `rm`, `mv`, `cp`, `wc`, `chmod`, `stat`, and `grep`
+(which emits matching lines, not the body) are all excluded. Crediting a mention
+would re-create the very mention-as-use conflation that keeps the searches tally
+out of `score()`, and would let a skill-maintenance session push an unread skill
+up the ranking. The shell path attributes a verb **per command segment**
+(`_shell_segments_reading_content`), so `cat a.txt && rm x/SKILL.md` does not
+read as a `cat` of the skill; the structured path allowlists content-returning
+tools (`_CONTENT_READ_TOOLS`), so an edit or grep tool carrying a `path` is not
+mistaken for a delivery.
+
+Reads are attributed through `_served_key_by_realpath()`, which applies the same
+canonical rule as `resolve_ledger_aliases` (real file beats symlink, then
+alphabetical), so a read through a symlinked skill lands on the key the Context
+Budget screen displays instead of splitting one file's cost.
+
+Observation sits in the **ACP client**, registered process-wide via
+`set_global_skill_read_observer` — the same module-level-slot pattern as
+`get_global_hook_store`. That layer is the only one that sees every surface's
+tool calls (dashboard, Slack, subagents, task runner); wiring it per surface
+would have left subagent reads uncounted, which is a skewed ledger rather than a
+partial one. The per-surface permission gate (`HookManager.on_tool_call`) is NOT
+usable here: file reads are auto-approved and never reach it.
+
+Registration goes through one helper, `register_skill_read_observer` in
+`skill_usage.py` — a leaf module, so no runtime imports another surface just to
+register. Called from every runtime that owns a `ContextBuilder`:
+`start_dashboard`, `start_api_server`, and the CLI in `cli_server.py`. Crediting
+must not vary by entry point: route-dependent visibility is precisely the bias
+this exists to remove, so a runtime that recorded nothing would ship a smaller
+version of the same defect. The helper takes several candidates and installs the
+first exposing a loader, because the API-server path builds its state **without**
+a `context_builder` and reaches the loader through `task_runner._ctx`; it returns
+whether it installed one so that path can log a miss instead of silently
+recording nothing.
+
+The read-intent allowlists (`_CONTENT_READ_TOOLS`, `_SHELL_READ_VERBS`) encode
+the provider's current tool spellings, so a rename would silently restore the
+pre-existing undercount. A call whose arguments clearly name a `SKILL.md` yet
+yields no candidate is therefore logged at debug — the one signal that separates
+tool-name drift from a legitimately non-reading call.
+
+`_maybe_note_skill_read` resolves at the tool call and **offloads to a thread** —
+resolution walks the skills tree after cache expiry and resolves every served
+skill, which on the event loop would stall every session in the gateway. Both the
+initial `tool_call` and its `tool_call_update` refinement are observed, since
+which one carries `rawInput` is provider-specific, deduped by `tool_call_id`.
+`_maybe_credit_skill_read` then records only on a `status == "completed"` result
+(`tool_final`), so a read that was denied, errored, or never ran leaves no
+delivery; that call is in-memory and safe inline. A cheap `SKILL.md` substring
+gate runs before the offload, so a tool call touching no skill costs a substring
+scan; observer failures in either phase are logged and swallowed.
 
 **Registry discovery — `skill_discover` / `skill_fetch` MCP tools (`kirocrew-core`).**
 The agent-facing twins of the dashboard's Skills → Discover panel, covering the
@@ -778,8 +843,9 @@ setting that the runtime reads must be added to that carry list, or an unrelated
 approval will silently undo it.
 
 Unchanged: `always: true` pinned skills (skipped by the matcher entirely) and the
-explicit `$skillname` token. Set `skills.max_triggered = 0` to stop flagging
-altogether and rely only on the index, `$skillname`, and `skill_search`. The
+explicit `$skillname` token. `skills.max_triggered` defaults to 0 (disabled): the
+trigger matcher does not fire in stock config, so the agent relies only on the
+index, `$skillname`, and `skill_search`. Set to a positive integer to re-enable. The
 pointer block is attributed as `skill_hint` in the per-turn context breakdown, so
 it is never folded into whatever precedes it.
 
@@ -796,14 +862,26 @@ opt-out is stateless and has neither failure mode. Dedup remains a legitimate
 future addition — it is orthogonal, since re-sending a body ACP already replays
 does nothing for enforcement even on a skill that must be enforced.
 
-**What `_record_use` counts.** A trigger match, which is what it has always
-counted — the call sits in `get_triggered_skills` ahead of any delivery decision,
-as it did when delivery was unconditional. Decoupling delivery does make the
-consequence plainer: the lazy-load hotness ledger accrues hits for skills the
-agent may never read, so a matcher false positive still earns ranking weight.
-That is pre-existing, and cheaper to correct now that a false positive costs a
-line rather than a body — measuring the matcher's false-positive rate is the
-prerequisite, not a change to the ledger.
+**What `_record_use` counts.** Actual body delivery — the call now sits in the body-delivery loop in `context.py`, after `load_skill` confirms the content and the body is appended to the prompt. Only skills whose body is actually injected earn a hit; pointer-only skills (`inject_on_trigger: false`) and undelivered false positives contribute nothing to the ranking. The `resolve_dollar_skills` path also records, since `$skillname` is an intentional user action. With `max_triggered` defaulting to 0 in stock config, this recorder is inactive — only `resolve_dollar_skills` contributes hits unless the trigger matcher is re-enabled. This ensures the lazy-load hotness ledger ranks by actual utility to the agent, not by how often the word-overlap matcher fires on common words.
+
+**CRUD operations** (via `SkillsLoader`):
+
+**Context Budget endpoint.** `GET /api/skills/-/budget` returns the 30-day
+per-skill injection cost with alias folding across renamed/aliased ledger keys.
+Response shape: `{window_days, total_chars, rows: [{key, name, size_bytes,
+deliveries, chars, inject_on_trigger, always, owned, source, idle_days,
+folded_from?}]}`. `deliveries` is `null` when untracked (no ledger entry),
+distinct from `0` (entry exists but zero hits). `chars = size_bytes *
+(deliveries ?? 0)`. `folded_from` lists alias ledger keys whose `SKILL.md`
+resolves (via symlink) to the same real file as the canonical key; their hits are
+summed into `deliveries`. Unresolvable ledger keys (orphaned after relocation)
+are dropped, not guessed. `idle_days` is days since last delivery, `null` when
+untracked. `total_chars` equals the sum of all row `chars`. The fold logic lives
+in a dedicated handler (`skill_budget.py`), NOT in `list_skills()`, because it
+requires per-ledger-key path resolution and `list_skills()` must remain O(skills)
+on the event loop. The endpoint offloads all blocking work to `discovery_executor`
+(same pattern as `GET /api/skills`). The alias map is cached on the ledger's key
+set so repeat calls don't re-resolve.
 
 **CRUD operations** (via `SkillsLoader`):
 - `create_skill(name, content)` — creates `{name}/SKILL.md`, supports nested paths
@@ -865,6 +943,12 @@ Auto-sync at startup + on-demand discovery from dashboard. Default servers: `kir
 **sync_to_agent_config()**: registers servers via `kiro-cli mcp add` in parallel (all Popen spawned at once, then waited), followed by a single config patch pass for `tools`/`allowedTools`. Atomic write (tmp + rename) prevents corrupted config. Checks returncode, logs stderr on failure, separate timeout handling. Falls back to direct JSON edit if kiro-cli unavailable.
 
 **On-demand discovery** (dashboard): same `discover_servers_to_sync()` + `sync_to_agent_config()` triggered by "Discover & Sync" button.
+
+**Command divergence** (`_commands_diverged`): an existing server is only re-synced when its `mcp.json` command differs from the one recorded in the agent config. The two legitimately differ in spelling because `agent._resolve_command` stores the `shutil.which` result while `mcp.json` keeps the bare name, so the comparison folds path resolution:
+
+- A basename match is only accepted when one side is a **rooted path** and the other a **bare name** (no separator), since PATH lookup is what produced the rooted form. Two distinct rooted paths sharing a basename (`/opt/a/srv` vs `/opt/b/srv`) and a CWD-relative path (`bin/srv` vs `/usr/bin/srv`) each name a specific different file, so both stay divergent.
+- On Windows the keys are `normcase`+`normpath` folded (paths are case-insensitive and accept either separator), and a trailing `PATHEXT` suffix is stripped from the **rooted side only** — `shutil.which("npx")` returns `...\npx.CMD`, which would otherwise read as divergent from `npx` on every cycle and re-sync + reset every session at each startup. Stripping both sides would wrongly collapse distinct executables (`foo.bat` vs `foo.cmd`).
+- A leading separator with no drive letter (`/usr/bin/srv`) counts as rooted on Windows even though `ntpath.isabs` rejects it, so an `mcp.json` authored on macOS/Linux is read identically on every host.
 
 **Probing**: spawns each MCP server, sends JSON-RPC `initialize` + `tools/list` handshake, reports status + tool names. 30-second timeout, 1MB stdout buffer (an MCP server's responses exceed the default 64KB). Cleanup via `finally` block (no zombie processes). Results cached in `handlers.py` with 10-min TTL; GET `/api/mcp/probe` returns cached results non-blocking, POST `/api/mcp/probe` forces a fresh probe and updates cache.
 
@@ -991,7 +1075,7 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 ```json
 {
   "skills": {
-    "max_triggered": 3,
+    "max_triggered": 0,
     "auto_create_from_sessions": false,
     "approval_required": true,
     "auto_refine_on_deviation": false,
@@ -1030,6 +1114,40 @@ Hook evaluation order: deny overrides approve; auto-reply → transform → cont
 Foreign-agent hooks are never imported. Hook scripts, hook commands, matchers,
 and hook runtime state are unsupported items: scan/apply may report their
 presence, but must not copy or register them.
+
+### Script hooks (`ScriptHook`, `run_script_hook`) — the shell per platform
+
+A script hook's `command` is a single shell command line stored in
+`~/.kiro/crew/hooks.json`. It runs in that platform's native shell language, and
+a hook is therefore **not portable across platforms**:
+
+| | Shell | Env var in a command | Quote grouping |
+|---|---|---|---|
+| POSIX | `/bin/sh -c <command>` | `$KIROCREW_HOOK_EVENT` | `'…'` and `"…"` |
+| Windows | `%ComSpec% /c "<command>"` | `%KIROCREW_HOOK_EVENT%` | `"…"` only (cmd.exe gives `'` no meaning) |
+
+Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
+env vars and the same hook-event JSON on stdin.
+
+**Windows spawns through `asyncio.create_subprocess_shell`, not an argv.** cmd.exe
+must receive the operator's command line verbatim: an argv spawn of
+`["cmd", "/c", command]` routes it through `subprocess.list2cmdline`, which
+backslash-escapes every quote the operator wrote, so an ordinary
+`"C:\Program Files\Python\python.exe" -c "print(1)"` reaches cmd.exe as
+`\"C:\Program Files\…\"` and fails with *"is not recognized as an internal or
+external command"*. `create_subprocess_shell` formats `%ComSpec% /c "<command>"`
+with no argv escaping — the same parse the operator gets typing the line at a
+prompt, and the only form under which both `%VAR%` and a literal `%` behave as
+written. The shell spawn is guarded on `wrap_argv` + `cgroup_scope_argv` having
+been no-ops; if a wrapper ever prepends anything the code falls back to the argv
+path, choosing isolation over quoting fidelity.
+
+On Windows both wrappers are pass-throughs whenever they return at all — there is
+no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
+passing through unless `agent.sandbox_allow_unsandboxed_exec` is set, so a
+Windows script hook needs that opt-in (the same one script crons and Papyrus
+need). Without it the hook's `SandboxUnavailableError` surfaces as the result's
+`error`, naming the setting.
 
 ### `safe_read_file(path: str) -> str`
 
@@ -1079,6 +1197,7 @@ Assembles all sources into prompts:
 - Runtime identity is turn-aware rather than key-only. Channel and dashboard dispatchers pass trusted `runtime_source` metadata to `build_message()`. New sessions use it for `[RUNTIME]`; follow-up turns refresh `[RUNTIME]` outside the one-time session context. This is required because a stable `dashboard:*` session can be resumed from Discord and `messaging.dm_scope="unified"` intentionally removes the originating channel from the session key. When trusted metadata is absent, namespaced keys (`discord:*`, `telegram:*`, `wecom:*`, `weixin:*`, `webex:*`, `teams:*`, `slack:*`) are recognized directly; bare unknown keys keep the legacy Slack fallback.
 - Thread history is injected only at session start (via `build_session_context`). Within the same ACP session, kiro-cli manages conversation history natively — duplicate injection wastes context window and accelerates compaction.
 - `_CRITICAL_RULES` injected for ALL agents (including custom) at session start — ensures diff rendering and OPTIONS buttons work universally
+- Switchable context groups (see below) let a spawning parent drop whole sections for one sub-agent.
 - Cap: `_CONTEXT_BUDGET_BASE` = 165,000 chars (~55k tokens). Which ceiling applies depends on `skills.lazy_load`: OFF (the default) uses `caps.base` as one flat shared pool; ON uses `caps.max_context`, the SUM of the independent per-section caps (190,575 chars at the reference window), so skills/steering can never eat into memory/lessons space. Note the per-section caps are computed and passed to every section either way; `lazy_load` changes the *global* ceiling and the skills block's shape (full dump vs usage-ranked top-K), not whether sections have caps.
 
 #### Per-section caps (reference window)
@@ -1122,6 +1241,27 @@ The `_CONTEXT_BUDGET_BASE` (165k) and its derived per-section caps above are the
 - **Fail-safe fallbacks (`resolve_model_window(model)`):** delegates to the central `model_registry.model_window(model)` authority (kiro-list cache > registry > supplementary id map > `[1m]` heuristic > `None`). `""`/`None`/`"auto"` and any genuinely-unknown id resolve to `None` ⇒ the 1M reference — so ONLY a model with a confidently-known smaller window scales the budget down; an unknown/auto window never silently shrinks the default deployment (`provider=acp` + `model="auto"` runs a 1M model). The central authority returns `None` (not a silent 200K) for unknown ids, so this fail-safe is now the authority's own contract rather than a special case here. **A context window is a property of the model, not the serving provider** — so `resolve_model_window` takes NO provider arg and `model_window` is provider-independent.
 - **Floor:** `_MIN_CONTEXT_BUDGET_BASE` (20% of base ≈ the 200K tier) clamps a pathologically small/misreported window so caps can't collapse to ~0. Known limitation: below 200K every window collapses to this same floored base (forward-compat only — the registry's smallest real window is 200K), and the **fixed preamble** (`_CRITICAL_RULES` + identity/workspace/date, ~3k chars) does NOT scale, so on a small window it consumes a larger *fixed* fraction than the linear model implies. Linear scaling is intentional per the design (window-share parity); a reserve-fixed-overhead curve is a possible future refinement.
 - **Callers:** dashboard (`chat_runner`), Slack (`handler`), and subagents (`subagent`) all resolve the window from the live session client via `window_for_provider_client(client)` — which prefers the provider's public `context_window_tokens()` accessor (0 until a turn completes; at `is_new` it falls through) and otherwise derives from the resolved model id via `resolve_model_window`. Background/cron paths that don't resolve a model pass `None` (reference). See `context.py` `_resolve_caps` / `resolve_model_window` / `window_for_provider_client` and the central `model_registry.model_window()` / `has_known_window()`.
+
+### Switchable context groups (sub-agents)
+
+A spawning parent decides which of three groups its sub-agent inherits, via `include_memory` / `include_lessons` / `include_project` on `spawn_run` and `spawn_sub_agents`. All default to `true`, so a caller that passes nothing produces byte-identical context: `build_session_context(context_groups=None)` — what every non-sub-agent caller passes — and an all-on `frozenset` are equivalent by construction.
+
+| Group | Sections | Switchable |
+|---|---|---|
+| conduct | `_CRITICAL_RULES`, `[CURRENT DATE]`, agent identity + `[RUNTIME]`, UI language, `[WORKSPACE IDENTITY]`, skills index | no |
+| `memory` | preferences, projects, `## Recent History`, `[Semantic Memory]`, `[Episodic Memory]`, `## Recent Session Context` | yes |
+| `lessons` | `[Learned corrections]` (global + workspace), `[USER PROFILE]` | yes |
+| `project` | `[DOCUMENTATION]` pointer, steering resources (CC backend only), `[PROJECT]` directory line | yes |
+
+The steering row carries a backend caveat: the steering block is injected only on the Claude Code backend (`is_cc`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC only — an ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
+
+conduct is not switchable because every member is an output contract or a capability pointer: a sub-agent without the skills index cannot discover what it can do, and one without `_CRITICAL_RULES` cannot format what it reports back.
+
+Omitting a group **skips its sections** rather than capping them to zero — `MemoryStore.get_context()`'s `_cap(text, 0)` returns a `…[truncated]` marker, not an empty string, so a zero cap emits headers with no content behind them.
+
+A sub-agent that had a group withheld is told so by name (`[CONTEXT SCOPE]`, built by `_build_context_scope_section`), so it reports the gap instead of inventing what it cannot see. That is what makes an aggressive opt-out recoverable: a wrong `false` surfaces as a question rather than a fabrication.
+
+The flags resolve once at spawn and live on `SubagentInfo`. Every path that re-materializes a run from stored fields carries them — the stagger queue entry and `POST /api/spawn/{id}/retry` — so a queued or retried run sees the scope its caller chose. `spawn_continue` does not accept the flags but **inherits** them (`_inherited_context_groups`): a continuation rebuilds session context, because `get_or_create` returns `is_new=True` even when it restores the session via `session/load` (`resumed` is a separate flag and gates only thread history), so an un-inherited continuation would silently regain a withheld group. The live record wins; the run's persisted `context_groups` is the fallback, and a run predating the field records no scope at all — distinguishable from "all withheld" and defaulting to all-on. `GET /api/spawn` reports `context_withheld` only when something was withheld, and `_run_inner` logs the resolved set with the resulting context length.
 
 ### Session Resume (`resumed=True`)
 

@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
+
+import kiro_crew.sandbox as _sb_mod
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     _CC_DIRS,
@@ -19,6 +22,16 @@ from kiro_crew.sandbox import (
     scrub_env,
     wrap_argv,
 )
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_sandbox_env(monkeypatch):
+    """Prevent the 'already inside sandbox' passthrough on sandboxed hosts."""
+    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    monkeypatch.setattr(
+        _sb_mod, "_KIRO_INTERNAL_SETTINGS_PATH",
+        "/nonexistent/kirocrew-test/amazon-internal.json",
+    )
 
 
 class TestCcDirsList:

@@ -42,6 +42,7 @@ from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
+    KIRO_CLI_SSO_LOGIN_COMMAND,
     OFFICIAL_INSTALL_DOCS_URL,
     KiroPrerequisiteService,
     PrerequisiteStatus,
@@ -3045,6 +3046,7 @@ class TestKiroPrerequisiteHandlers:
             "repair_required": False,
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
             "login_command": KIRO_CLI_LOGIN_COMMAND,
+            "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
         }
 
         async def fake_snapshot(
@@ -3060,6 +3062,9 @@ class TestKiroPrerequisiteHandlers:
             assert read.status == 200
             body = await read.json()
             assert body["login_command"] == KIRO_CLI_LOGIN_COMMAND
+            # The owner branch passes the snapshot through verbatim, so both
+            # sign-in commands reach the gate that has to offer the tier choice.
+            assert body["sso_login_command"] == KIRO_CLI_SSO_LOGIN_COMMAND
             assert (await client.post("/api/kiro-prerequisite/login")).status == 404
             assert (await client.post("/api/kiro-prerequisite/install")).status == 404
 
@@ -3543,6 +3548,11 @@ class TestKiroPrerequisiteHandlers:
             # only the owner can act on a missing spec.
             assert body["missing_agent_specs"] == []
             assert body["agent_spec_repair_error"] == ""
+            # Both sign-in commands are served here too. The redacted branch
+            # hardcodes its fields, so a field added only to the dataclass would
+            # reach the owner and leave this caller's client reading undefined.
+            assert body["login_command"] == KIRO_CLI_LOGIN_COMMAND
+            assert body["sso_login_command"] == KIRO_CLI_SSO_LOGIN_COMMAND
             # The pre-upgrade-tab shim is served to every caller, so the payload
             # shape does not vary by who asks.
             assert body["operation"]["status"] == "idle"
@@ -3911,6 +3921,19 @@ class TestKiroCrewNeverSetsUpKiroCli:
         assert KIRO_CLI_LOGIN_COMMAND == "kiro-cli login"
         assert PrerequisiteStatus(platform="Linux").login_command == KIRO_CLI_LOGIN_COMMAND
 
+    def test_status_names_the_organization_sso_command(self) -> None:
+        # Both flags are pinned because either one alone silently does nothing:
+        # kiro-cli discards every login flag unless --use-device-flow is set (or
+        # the environment is already remote), so --license pro on its own falls
+        # through to the browser portal where a free Builder ID is a peer option
+        # -- the exact wrong-tier sign-in this command exists to rule out.
+        assert KIRO_CLI_SSO_LOGIN_COMMAND == "kiro-cli login --use-device-flow --license pro"
+        assert "--use-device-flow" in KIRO_CLI_SSO_LOGIN_COMMAND
+        assert "--license pro" in KIRO_CLI_SSO_LOGIN_COMMAND
+        assert (
+            PrerequisiteStatus(platform="Linux").sso_login_command == KIRO_CLI_SSO_LOGIN_COMMAND
+        )
+
     @pytest.mark.asyncio
     async def test_payload_keeps_an_idle_operation_for_pre_upgrade_tabs(
         self,
@@ -3954,7 +3977,16 @@ class TestKiroCrewNeverSetsUpKiroCli:
         source = Path(prerequisite_module.__file__).read_text(encoding="utf-8")
         assert '"--version"' in source
         assert '"whoami"' in source
-        assert "--use-device-flow" not in source
+        # Matched as a STANDALONE QUOTED TOKEN, the shape a flag has when it is an
+        # element of a spawn argv (and the same shape the two assertions above
+        # use). The bare substring would also hit the sign-in command this module
+        # SERVES for the user to type, which is a display string that is never
+        # executed -- so matching it would forbid naming the flag while leaving
+        # the actual "what gets spawned" question untested. The behavioral
+        # guarantee is pinned separately by the argv-equality assertion in
+        # test_repeated_forced_snapshots_probe_once.
+        assert '"--use-device-flow"' not in source
+        assert '"login"' not in source
 
     def test_no_installer_download_or_execution_surface_exists(self) -> None:
         for attribute in (

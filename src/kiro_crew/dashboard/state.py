@@ -25,7 +25,11 @@ from aiohttp import web
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import (
+    OPTIONS_RE_LINE,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIX,
+)
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
@@ -45,6 +49,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
+from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -485,7 +490,15 @@ _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 CRON_NOTIFY_PREFIX = "[Cron notification from "
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
-SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
+# Both sub-agent markers, for the checks that must treat either shape as a system
+# injection. Pass this straight to ``str.startswith`` (it accepts a tuple) instead
+# of listing the prefixes per call site: the batch marker is a SIBLING of the
+# per-agent one rather than an extension of it, so a per-prefix check written
+# against one silently misses the other, and a third shape would miss both.
+SUBAGENT_COMPLETION_PREFIXES = (
+    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+)
 # One-shot synthesis turn fired after ALL sub-agents in a fan-out complete and
 # each result has been processed in its own turn (see gateway._subagent_done arm
 # + chat_runner drain/idle branch). Its visible reply is the consolidated,
@@ -825,6 +838,7 @@ class _ChatSlot:
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
+        "channel_origin",
         "folder_id",
         "_folder_changed",
         "_folder_suggested",
@@ -867,7 +881,6 @@ class _ChatSlot:
         "_pending_rewrite",
         "_file_changes",
         "linked_session_key",
-        "_browse_mode",
         "_side",
         "_acp_client",
         "_steer_segment_cut",
@@ -1113,7 +1126,14 @@ class _ChatSlot:
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
-        self._browse_mode: bool = False  # per-turn: True when user explicitly enables browser
+        # True only when this slot was created to DISPLAY a conversation that
+        # already lives in a channel transcript (the reconciler surfacing a
+        # thread, a restore, a History resume). It is what separates such a tab
+        # from a dashboard slot that merely happens to be NAMED like one --
+        # a filename-shaped name is not provenance, and inferring it from the
+        # name would let `POST /api/chat/slots` with a colliding `slack_<ts>`
+        # name write a fresh conversation into an existing thread's transcript.
+        self.channel_origin: bool = False
         self._side: SideState | None = None
         # Live inner AcpClient for the in-flight turn, published by _run_chat at
         # turn start and cleared in its finally. Lets a concurrent request (the
@@ -1531,6 +1551,18 @@ class _ChatSlot:
         Linear scan (no regex backtracking) validated by the source-provider
         URL parser and cached behind an explicit content revision.
 
+        Ordered MOST RECENTLY MENTIONED FIRST, which is what makes the sidebar's
+        chip budget useful. Only ``_SERIALIZED_SOURCE_LINKS_PER_SLOT`` chips per
+        kind are serialized and the rest collapse into a "+N" pill, so a
+        first-mention order handed those slots to the OLDEST pull requests in the
+        session and hid the one being worked on -- the longer the session ran, the
+        more certain it was to hide the interesting chip. Scanning backwards also
+        means the ``_MAX_SOURCE_LINKS_PER_SLOT`` ceiling keeps the newest links
+        rather than the first 64 ever mentioned.
+
+        Recency is LAST mention, not first: a pull request under active work gets
+        re-mentioned as it progresses, which is exactly the signal wanted here.
+
         Each entry carries a ``kind`` discriminator (``"change"`` for a pull or
         merge request, ``"issue"`` for an issue). Readers that only handle pull
         requests -- the chip-status cache and every path that reaches ``gh pr
@@ -1555,21 +1587,56 @@ class _ChatSlot:
 
         stop_chars = set(" \t\n<>()[]{}\"'")
         found: dict[str, dict] = {}
-        for msg in self.messages:
-            if len(found) >= _MAX_SOURCE_LINKS_PER_SLOT:
+        # Hard ceiling on parse attempts for the WHOLE call, not per message and not
+        # only on success. `len(found)` advances only for a new valid url, so a
+        # message repeating one rejected candidate (or one valid one) never advanced
+        # it and every occurrence reached the parser: a 58 MB accepted body froze the
+        # event loop for ~13.6s, and this runs synchronously inside `to_dict` on
+        # `push_slots_update`. A budget bounds every flood shape at once -- rejected,
+        # repeated and distinct -- which a dedup set could not, because remembering
+        # candidates in order to skip them is itself unbounded memory.
+        #
+        # Sized far above any real transcript: 64 serialized chips come from a
+        # handful of occurrences each, so 4096 attempts is ~64x headroom while
+        # capping worst-case work in the tens of milliseconds. The walk is
+        # newest-first, so a truncated flood keeps the most recent candidates.
+        parse_budget = _MAX_SOURCE_LINKS_PER_SLOT * 64
+        # Newest message first, and newest url first WITHIN a message, so the
+        # dedup below keeps each url's LAST mention and `found` comes out in
+        # descending recency. One message mentioning several urls is ordered by
+        # position in the text, its only available proxy for "later".
+        for msg in reversed(self.messages):
+            if len(found) >= _MAX_SOURCE_LINKS_PER_SLOT or parse_budget <= 0:
                 break
             if not isinstance(msg, dict) or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES:
                 continue
             content = msg.get("content")
             if not isinstance(content, str) or "https://" not in content:
                 continue
-            idx = 0
-            while len(found) < _MAX_SOURCE_LINKS_PER_SLOT:
-                idx = content.find("https://", idx)
+            # Walk this message's urls from the END with `rfind`, so the newest
+            # mention is admitted first and the cap below can stop the walk. An
+            # earlier draft collected the whole message's urls and reversed the
+            # list, which allocated in proportion to the message and parsed every
+            # occurrence before the cap was consulted -- a single message carrying
+            # thousands of urls would stall slot serialization on the event loop.
+            #
+            search_end = len(content)
+            while len(found) < _MAX_SOURCE_LINKS_PER_SLOT and parse_budget > 0:
+                idx = content.rfind("https://", 0, search_end)
                 if idx == -1:
                     break
+                # A candidate ends at the first stop char OR where the NEXT
+                # occurrence begins, whichever comes first. The bound is what keeps
+                # the whole walk linear: without it, content like "https://" repeated
+                # thousands of times has no stop char until the very end, so every
+                # occurrence would rescan the entire tail -- quadratic, on a path
+                # `to_dict` runs synchronously during push_slots_update, which is
+                # enough to trip the event-loop watchdog. Bounded this way each
+                # character is examined once across the whole message.
+                token_limit = search_end
+                search_end = idx
                 end = idx
-                while end < len(content) and content[end] not in stop_chars:
+                while end < token_limit and content[end] not in stop_chars:
                     end += 1
                 # Also strip markdown emphasis (**bold**, *italic*, `code`,
                 # _underscore_, ~~strike~~): agent messages routinely wrap PR
@@ -1577,17 +1644,21 @@ class _ChatSlot:
                 # check. Valid PR/MR URLs end in a number, so these chars can
                 # never belong to a legitimate link tail.
                 candidate = content[idx:end].rstrip(".,!?;:*_~`")
-                idx = end
                 if (
                     "/pull/" not in candidate
                     and "/merge_requests/" not in candidate
                     and "/issues/" not in candidate
                 ):
                     continue
+                # Every attempt is charged, whether it parses or not -- that is
+                # what makes the bound hold on a rejected-candidate flood.
+                parse_budget -= 1
                 try:
                     ref = parse_source_url(candidate)
                 except ValueError:
                     continue
+                # First writer wins, and because the walk is backwards the first
+                # writer IS the most recent mention.
                 if ref.url not in found:
                     found[ref.url] = {
                         "provider": ref.provider,
@@ -1794,6 +1865,13 @@ class DashboardState:
     _slots_push_suspend: int = 0
     _slots_push_pending: bool = False
     restoring_open_slots: bool = False
+    # Keys the last open-tab restore could not read (not keys it proved absent).
+    # _persist_open_slots folds these back into the snapshot so a transient read
+    # failure cannot erase the reopen seed. The class-level baseline is an
+    # IMMUTABLE frozenset on purpose: a bare set() here would be one object
+    # shared by every __new__-built instance. __init__ and the restore each
+    # assign a fresh set(), so mutation only ever touches an instance attribute.
+    unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
 
     def __init__(
         self,
@@ -1921,6 +1999,8 @@ class DashboardState:
         # being restored from with a half-populated slot set — see
         # _persist_open_slots.
         self.restoring_open_slots = False
+        # Per-instance (see the class-level frozenset baseline for why).
+        self.unrestored_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()
         self._unread_count: int = 0
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
@@ -1963,6 +2043,7 @@ class DashboardState:
         # never acquires it.
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
+        self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
@@ -2196,6 +2277,15 @@ class DashboardState:
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
+            # Which release lane these bytes came from: "nightly", "insider" or
+            # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
+            # dashboard to parse `version` itself, because the rule is not
+            # obvious (the same release is stamped as SemVer for desktop and
+            # PEP 440 for wheels, and neither PEP 440 prerelease spelling
+            # contains a `-`) and a frontend mirror of it would drift silently.
+            # The dashboard uses this to give prerelease users an obvious way to
+            # report a bug; see release_channel.py for the full rule.
+            "release_channel": _release_channel_of_build(),
             # True when the gateway has wired up a live Slack client (Socket Mode
             # connected). None in pure-dashboard mode or when Slack is disabled.
             "slack_connected": self.slack_client is not None,
@@ -2632,6 +2722,25 @@ class DashboardState:
                 for name, slot in list(self._slots.items())
                 if getattr(slot, "memory_mode", "persistent") == "persistent"
             ]
+            # Re-add keys the last restore could not READ. Without this, a tab
+            # dropped by a transient metadata failure is erased from the seed by
+            # the very next flush (this snapshot is taken from live _slots), so
+            # "recoverable on a later restore pass" stops being true and the tab
+            # is gone for good. Only keys that came out of open_slots.json land
+            # here, so the persistent-only filter above still holds for them.
+            #
+            # Iterating this set is safe ONLY because the restoring_open_slots
+            # early-return above covers the one writer: the restore mutates it
+            # between tabs, and this method runs from two threads (the 5s
+            # executor flush and the shutdown thread). That guard is therefore
+            # load-bearing for thread safety here, not just for partial
+            # snapshots — do not narrow it without giving this set its own lock.
+            seen = set(keys)
+            keys.extend(
+                k
+                for k in getattr(self, "unrestored_slot_keys", frozenset())
+                if k not in seen
+            )
             payload = json.dumps({"keys": keys, "ts": time.time()})
             # Use the canonical atomic_write helper, not a deterministic
             # ".json.tmp" name — _persist_open_slots can run concurrently from
@@ -2811,6 +2920,38 @@ class DashboardState:
         """Look up a slot by name without creating it. Returns None if absent."""
         return self._slots.get(name)
 
+    def spend_slot_by_session(self) -> dict[str, str]:
+        """Map each live slot's SESSION key to the SLOT key its spend is filed under.
+
+        Per-turn usage is persisted under ``slot.key``
+        (``chat_runner.persist_token_record_async``), while a session is addressed
+        by :func:`effective_session_key`. For an ordinary dashboard slot those are
+        the same string modulo the ``dashboard:`` prefix, so a prefix rule is
+        enough. For a slot bound to a channel or cron conversation they are
+        UNRELATED: the turns run under ``linked_session_key`` while the spend rows
+        still carry the dashboard slot key, so a consumer joining spend by session
+        key finds nothing and renders "unknown" for a session that did spend.
+
+        This is the reverse index that closes that gap. It lives here because
+        DashboardState owns the slots and the identity rule; a consumer rebuilding
+        it would be a second owner of the rule, which is how the two sides drifted
+        apart in the first place.
+        """
+        # Local import: chat_utils imports FROM state at module level, so a
+        # top-level import here is a cycle. state.py already defers
+        # `dashboard_slot_key` the same way.
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        out: dict[str, str] = {}
+        for slot in list(self._slots.values()):
+            try:
+                session_key = effective_session_key(slot)
+            except Exception:  # pragma: no cover - defensive; a slot mid-teardown
+                continue
+            if session_key:
+                out[session_key] = slot.key
+        return out
+
     def native_subagent_snapshots(
         self,
         terminal_limit: int = NATIVE_SUBAGENT_TERMINAL_KEEP,
@@ -2987,6 +3128,7 @@ class DashboardState:
         ephemeral: bool | None = None,
         app: str = "",
         linked_session_key: str = "",
+        channel_origin: bool = False,
     ) -> _ChatSlot:
         """Return existing slot or create a new one.
 
@@ -3054,6 +3196,11 @@ class DashboardState:
         # write their namespaced origin id through the legacy channel field;
         # those are projected separately via ``links`` and must never make the
         # destructive Slack actions appear.
+        if channel_origin:
+            # Additive: never cleared, because get_or_create_slot also returns
+            # EXISTING slots and a later plain call must not downgrade a tab
+            # that a channel path already claimed.
+            slot.channel_origin = True
         if linked_session_key:
             slot.linked_session_key = linked_session_key
         elif self.sessions:
@@ -3065,12 +3212,14 @@ class DashboardState:
             # dashboard-only session whose replies never reach the thread.
             #
             # Only ever adopts a key the session map actually holds, so a slot
-            # whose name merely looks channel-shaped stays unbound.
-            from kiro_crew.messaging.link import is_channel_session_key
-
+            # whose name merely looks channel-shaped stays unbound. Validated the
+            # same way ``surface_channel_session`` validates its own argument:
+            # only a real channel key may become a binding, so a malformed map
+            # answer leaves the slot unbound (a supported state) rather than
+            # routing the user's replies to a session no channel reads.
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
-                if resolved:
+                if isinstance(resolved, str) and is_channel_session_key(resolved):
                     slot.linked_session_key = resolved
         try:
             if self.sessions:
@@ -3242,6 +3391,137 @@ class DashboardState:
         path = config_dir() / self._FOLDERS_FILE
         self._atomic_write_json(path, self._folders)
 
+    _CRON_FOLDERS_FILE = "cron_folders.json"
+
+    def load_cron_folders(self) -> None:
+        """Load cron folder definitions from disk.
+
+        Validates the loaded shape: the file must contain a JSON array of
+        folder objects. Anything else (a hand-edited ``{}``, a string, or
+        malformed entries) is discarded with a warning instead of being
+        assigned verbatim — a non-list value would flow to the frontend
+        and crash grouping (``folders.map is not a function``).
+        """
+        path = config_dir() / self._CRON_FOLDERS_FILE
+        try:
+            if path.exists():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, list):
+                    logger.warning(
+                        "Ignoring %s: expected a JSON array, got %s",
+                        self._CRON_FOLDERS_FILE,
+                        type(loaded).__name__,
+                    )
+                    return
+                valid = [
+                    f
+                    for f in loaded
+                    if isinstance(f, dict)
+                    and isinstance(f.get("id"), str)
+                    and f.get("id")
+                    and isinstance(f.get("name"), str)
+                    and f.get("name")
+                    and isinstance(f.get("order"), (int, float))
+                    and not isinstance(f.get("order"), bool)
+                ]
+                if len(valid) != len(loaded):
+                    logger.warning(
+                        "Dropped %d malformed entr(ies) while loading %s",
+                        len(loaded) - len(valid),
+                        self._CRON_FOLDERS_FILE,
+                    )
+                self._cron_folders = valid
+        except Exception:
+            logger.warning("Failed to load cron folders", exc_info=True)
+
+    def save_cron_folders(self) -> None:
+        """Persist cron folder definitions to disk (atomic write).
+
+        Raises on I/O failure so callers can surface a 500 to the client
+        rather than silently losing the write.
+        """
+        path = config_dir() / self._CRON_FOLDERS_FILE
+        self._atomic_write_json_strict(path, self._cron_folders)
+
+    def create_cron_folder(self, name: str, folder_id: str) -> dict:
+        """Create a new cron folder and persist.
+
+        Returns the created folder dict. Raises on persistence failure
+        (callers should surface a 500); in-memory state is rolled back.
+        """
+        order = max((f["order"] for f in self._cron_folders), default=-1) + 1
+        folder = {"id": folder_id, "name": name, "order": order}
+        self._cron_folders.append(folder)
+        try:
+            self.save_cron_folders()
+        except Exception:
+            self._cron_folders.pop()
+            raise
+        return folder
+
+    def rename_cron_folder(self, folder_id: str, name: str) -> dict | None:
+        """Rename a cron folder and persist.
+
+        Returns the updated folder dict, or None if folder_id not found.
+        Raises on persistence failure (callers should surface a 500);
+        original name is restored on failure.
+        """
+        for folder in self._cron_folders:
+            if folder["id"] == folder_id:
+                old_name = folder["name"]
+                folder["name"] = name
+                try:
+                    self.save_cron_folders()
+                except Exception:
+                    folder["name"] = old_name
+                    raise
+                return folder
+        return None
+
+    def delete_cron_folder(self, folder_id: str) -> bool:
+        """Remove a cron folder and clear its assignment on all jobs.
+
+        Returns True if the folder existed, False otherwise.
+        Raises on persistence failure (callers should surface a 500).
+
+        Ordering: the folder removal is the single authoritative write —
+        it is removed from memory and persisted FIRST (rolled back in
+        memory if the save fails, keeping memory consistent with disk).
+        Job ``folder_id`` clears happen afterwards as best-effort cleanup:
+        a dangling ``folder_id`` is benign (grouping renders unknown ids
+        in the Ungrouped bucket, and a job's next folder move overwrites
+        it), so a crash or per-job failure between writes can never strand
+        jobs in a half-deleted state — the folder is either fully present
+        or fully gone.
+        """
+        if not any(f["id"] == folder_id for f in self._cron_folders):
+            return False
+        # Remove the folder definition and persist — the one write that
+        # decides whether the delete happened.
+        snapshot = list(self._cron_folders)
+        self._cron_folders = [f for f in self._cron_folders if f["id"] != folder_id]
+        try:
+            self.save_cron_folders()
+        except Exception:
+            self._cron_folders = snapshot
+            raise
+        # Best-effort: clear the now-dangling folder_id on affected jobs.
+        # Failures are logged and tolerated — consumers treat an unknown
+        # folder_id as ungrouped, so a leftover id has no user-visible
+        # effect and self-heals on the job's next folder assignment.
+        for job in self.crons.list_jobs(include_disabled=True):
+            if job.folder_id == folder_id:
+                try:
+                    self.crons.update_job(job.id, folder_id="")
+                except Exception:
+                    logger.warning(
+                        "Failed to clear folder_id on job %s after folder delete "
+                        "(benign: unknown ids render as ungrouped)",
+                        job.id,
+                        exc_info=True,
+                    )
+        return True
+
     def folder_breadcrumb(self, folder_id: str, sep: str = " › ") -> str:
         """Render a folder's ancestry root→leaf as a breadcrumb string.
 
@@ -3322,24 +3602,40 @@ class DashboardState:
         self._atomic_write_json(config_dir() / self._TAG_BOARDS_FILE, self._tag_boards)
 
     @staticmethod
-    def _atomic_write_json(path: Path, data: Any) -> None:
-        """Atomic JSON write used by folder/tag persistence helpers."""
+    def _atomic_write_json_strict(path: Path, data: Any) -> None:
+        """Atomic JSON write that RAISES on failure (no swallowing).
+
+        Used by persistence helpers where the caller needs to know about
+        write failures (e.g. to return HTTP 500).
+        """
+        payload = json.dumps(data).encode()
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
-            payload = json.dumps(data).encode()
-            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            # fdopen takes ownership of fd; file-object write() guarantees
+            # the full buffer is written or an exception is raised (a bare
+            # os.write may return a short count silently, which would let
+            # os.replace() install truncated JSON).
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(path))
+        except Exception:
             try:
-                try:
-                    os.write(fd, payload)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, str(path))
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: Any) -> None:
+        """Atomic JSON write used by folder/tag persistence helpers.
+
+        Delegates to _atomic_write_json_strict but swallows errors (logs a
+        warning instead of raising).
+        """
+        try:
+            DashboardState._atomic_write_json_strict(path, data)
         except Exception:
             logger.warning("Failed to write %s", path.name, exc_info=True)
 

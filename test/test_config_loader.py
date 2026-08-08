@@ -180,6 +180,38 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
 
+def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
+    """The opt-in must survive ``load()`` and a later ``save()``.
+
+    ``DashboardConfig`` is built field-by-field in ``load()``, so a nested
+    section that nobody wires up is silently dropped: the documented
+    ``kirocrew config set dashboard.tailscale.enabled true`` would land in
+    config.json, read back as ``False``, and — because ``to_dict()`` re-serializes
+    the default — be rewritten to ``false`` by the next unrelated ``save()``.
+    That makes the whole feature inert while looking configured, so both halves
+    are pinned here: hydration, and the round trip that would erase it.
+    """
+    assert KiroCrewConfig().dashboard.tailscale.enabled is False
+    assert _load_from_dict({}).dashboard.tailscale.enabled is False
+
+    enabled = _load_from_dict({"dashboard": {"tailscale": {"enabled": True}}})
+    assert enabled.dashboard.tailscale.enabled is True
+
+    # A save() built from the loaded config must not drop the operator's value.
+    assert _load_from_dict(enabled.to_dict()).dashboard.tailscale.enabled is True
+
+    # A malformed section degrades to the default instead of raising.
+    for bad in ("yes", 1, [], None):
+        assert _load_from_dict({"dashboard": {"tailscale": bad}}).dashboard.tailscale.enabled is (
+            False
+        ), bad
+    assert (
+        _load_from_dict({"dashboard": {"tailscale": {"enabled": "true"}}})
+        .dashboard.tailscale.enabled
+        is False
+    )
+
+
 def test_sandbox_allow_unsandboxed_exec_default_is_platform_independent(monkeypatch) -> None:
     """No platform may flip this default on its own.
 
@@ -3053,6 +3085,22 @@ class TestKnowledgeAutoIngest:
         cfg = _load_from_dict({"knowledge": {"auto_ingest_chunk_budget": bad}})
         assert cfg.knowledge.auto_ingest_chunk_budget == 150
 
+    def test_folder_chunk_budget_default(self) -> None:
+        assert _load_from_dict({}).knowledge.folder_ingest_chunk_budget == 300
+
+    def test_folder_chunk_budget_reads_value(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"folder_ingest_chunk_budget": 40}})
+        assert cfg.knowledge.folder_ingest_chunk_budget == 40
+
+    def test_folder_chunk_budget_zero_is_allowed(self) -> None:
+        cfg = _load_from_dict({"knowledge": {"folder_ingest_chunk_budget": 0}})
+        assert cfg.knowledge.folder_ingest_chunk_budget == 0
+
+    @pytest.mark.parametrize("bad", [-5, "many", True, None, 1.5])
+    def test_folder_chunk_budget_rejects_junk(self, bad: object) -> None:
+        cfg = _load_from_dict({"knowledge": {"folder_ingest_chunk_budget": bad}})
+        assert cfg.knowledge.folder_ingest_chunk_budget == 300
+
     def test_dedup_cadence_default(self) -> None:
         assert _load_from_dict({}).knowledge.dedup_every_n_sweeps == 12
 
@@ -3073,6 +3121,7 @@ class TestKnowledgeAutoIngest:
                     "knowledge.auto_register_project_docs",
                     "knowledge.auto_ingest_artifacts",
                     "knowledge.auto_ingest_chunk_budget",
+                    "knowledge.folder_ingest_chunk_budget",
                     "knowledge.dedup_every_n_sweeps"):
             assert key in _EDITABLE_CONFIG, key
 

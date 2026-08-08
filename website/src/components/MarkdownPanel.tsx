@@ -272,6 +272,29 @@ async function downloadFile(filePath: string) {
   } catch (err) { console.error('downloadFile failed', err); alert(i18nT('components.markdownPanel.download_failed')) }
 }
 
+/**
+ * Hand the open file to the desktop: `open` launches it in the OS default
+ * application, `reveal` selects it in Finder / Explorer / the Linux file
+ * manager.
+ *
+ * A headless host (SSH, container, cloud desktop) has neither, and the backend
+ * says so by answering with `copy` rather than an error — `api.revealPath` puts
+ * the path on the clipboard in that case, so the alert here tells the user why
+ * nothing appeared on screen instead of leaving the click looking broken. A
+ * rejected request (a path the SEL guard treats as sensitive, or `open` on a
+ * directory) surfaces the server's own message.
+ */
+async function revealOrOpen(filePath: string, action: 'open' | 'reveal') {
+  try {
+    const res = await api.revealPath(filePath, action)
+    if (res?.copy) alert(i18nT('components.markdownPanel.path_copied_to_clipboard_no_desktop_available'))
+  } catch (err) {
+    // eslint-disable-next-line no-console -- surface reveal failures for diagnostics
+    console.error('revealPath failed', err)
+    alert((err as Error).message)
+  }
+}
+
 /** 26px square icon toggle for the file toolbar (borderless, accent when on). */
 const barIconBtn = (on: boolean) =>
   `flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors border-none shrink-0 ${on ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`
@@ -413,7 +436,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
   const canAddToKnowledge = knowledge.formats && knowledge.formats.includes(ext)
   return (
     <div ref={ref} className="relative">
-      <button ref={triggerRef} aria-label={i18nT('components.markdownPanel.more_options')} aria-haspopup="menu" aria-expanded={open} className={barIconBtn(open)} onClick={() => setOpen(!open)}>
+      <button ref={triggerRef} data-testid="markdown-panel-more-options" aria-label={i18nT('components.markdownPanel.more_options')} aria-haspopup="menu" aria-expanded={open} className={barIconBtn(open)} onClick={() => setOpen(!open)}>
         <Ellipsis size={15} />
       </button>
       {open && (
@@ -468,6 +491,16 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             )
           )}
           <div className="h-px bg-border my-1 mx-2" />
+          {/* File-location group: hand the file to the desktop, then the
+              clipboard/download fallbacks for hosts that have no desktop.
+              Iconless like its neighbours — the group reads as a list of
+              destinations, and two glyphs among five would look arbitrary. */}
+          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { void revealOrOpen(filePath, 'open'); setOpen(false) }}>
+            {i18nT('components.markdownPanel.open_with_default_app')}
+          </button>
+          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { void revealOrOpen(filePath, 'reveal'); setOpen(false) }}>
+            {i18nT('components.markdownPanel.show_in_file_manager')}
+          </button>
           <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}
           </button>

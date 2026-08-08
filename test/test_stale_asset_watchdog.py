@@ -317,7 +317,7 @@ def test_token_probe_warns_on_stale_dashboard():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.urllib.request.urlopen", return_value=mock_resp), \
+    with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp), \
          patch("sys.stderr", stderr_capture):
         _probe_dashboard_health(7777)
 
@@ -336,7 +336,7 @@ def test_token_probe_silent_on_healthy_dashboard():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.urllib.request.urlopen", return_value=mock_resp), \
+    with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp), \
          patch("sys.stderr", stderr_capture):
         _probe_dashboard_health(7777)
 
@@ -349,7 +349,7 @@ def test_token_probe_silent_on_network_error():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.urllib.request.urlopen", side_effect=OSError("connection refused")), \
+    with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=OSError("connection refused")), \
          patch("sys.stderr", stderr_capture):
         _probe_dashboard_health(7777)
 

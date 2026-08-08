@@ -716,6 +716,12 @@ def _invalidate_toolchain_cache() -> None:
 # arbitrarily long stderr.
 _SANDBOX_ERR_MAX = 900
 
+# Upper bound on a propagated generic git-discovery error. Git's own failure
+# messages are short ("fatal: not a git repository", "cannot change to ..."),
+# so a tight cap keeps the Discovery Error banner readable while still bounding
+# an arbitrarily long stderr from a broken repo.
+_GIT_ERR_MAX = 300
+
 
 def _trusted_bin(name: str) -> str | None:
     """Resolve *name* to a canonical executable in a system or Homebrew bin dir.
@@ -1494,7 +1500,35 @@ async def _discover_worktrees() -> list[dict]:
             # swallow the fix. Keep a generous bound purely to stop an unbounded
             # stderr reaching the UI.
             raise RuntimeError(raw[:_SANDBOX_ERR_MAX])  # already prefixed by _run_cmd
-        return []
+        # Every other git failure was previously swallowed into a silent [] —
+        # which the UI renders as the "No worktrees found / Nothing under the
+        # worktrees root yet" empty state. When MAIN_REPO is wrong that empty
+        # state is a lie: the fleet is not empty, it is unreadable. This is the
+        # default condition on packaged installs, where KIROCREW_PROJECT_DIR
+        # points at the app bundle (no .git) and discovery falls through to the
+        # hardcoded ~/kirocrew — raise instead, so api_dev_fleet_fleet's
+        # existing error path renders the Discovery Error banner with the path
+        # it tried and the remedy.
+        # The .git probe is a filesystem stat — on a wedged network mount it
+        # can block indefinitely, and this branch is reachable precisely when
+        # the checkout is unhealthy (git already failed or timed out against
+        # it). Same "Blocking — executor only" convention as _is_checkout().
+        loop = asyncio.get_running_loop()
+        repo_is_git = await loop.run_in_executor(
+            subprocess_executor(), (Path(MAIN_REPO) / ".git").exists
+        )
+        if not repo_is_git:
+            raise RuntimeError(
+                f"main checkout not found: {MAIN_REPO} is missing or not a git "
+                "checkout. Set KIROCREW_DEVFLEET_REPO to your Kiro Crew checkout, "
+                "or clone it to ~/kirocrew."
+            )
+        # The repo exists but git failed for some other reason (corrupt repo,
+        # permissions): surface git's own message, redacted and bounded.
+        raise RuntimeError(
+            f"git worktree discovery failed in {MAIN_REPO}: "
+            f"{_redact(raw)[:_GIT_ERR_MAX] or 'unknown git error'}"
+        )
     entries = _parse_worktree_porcelain(stdout)
     # `git worktree list --porcelain` always lists the primary checkout
     # first — that is the authoritative main, regardless of whether

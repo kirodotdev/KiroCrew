@@ -272,7 +272,7 @@ class TestBrowseSessionKeyResolution:
 
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
         monkeypatch.setattr(proxy.threading, "Thread", _Thread)
-        monkeypatch.setattr(proxy.urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(proxy, "loopback_urlopen", _fake_urlopen)
         monkeypatch.setattr(proxy, "_internal_secret", lambda: "secret")
         monkeypatch.setattr(proxy, "_SESSION_KEY", "env-key")
 
@@ -591,7 +591,7 @@ class TestPumpAudit:
 
         calls = []
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", True)
-        monkeypatch.setattr(proxy.urllib.request, "urlopen", lambda *a, **k: calls.append("post"))
+        monkeypatch.setattr(proxy, "loopback_urlopen", lambda *a, **k: calls.append("post"))
         # Extension mode: the user sees their own Chrome; no audit POST, and the
         # caller treats the False return as "do not inject".
         assert proxy._post_pump_audit() is False
@@ -601,14 +601,14 @@ class TestPumpAudit:
         import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
-        monkeypatch.setattr(proxy.urllib.request, "urlopen", lambda *a, **k: self._resp(200))
+        monkeypatch.setattr(proxy, "loopback_urlopen", lambda *a, **k: self._resp(200))
         assert proxy._post_pump_audit() is True  # gateway acked -> injection allowed
 
     def test_post_pump_audit_false_on_non_2xx(self, monkeypatch):
         import kiro_crew.mcp_playwright_proxy as proxy
 
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
-        monkeypatch.setattr(proxy.urllib.request, "urlopen", lambda *a, **k: self._resp(500))
+        monkeypatch.setattr(proxy, "loopback_urlopen", lambda *a, **k: self._resp(500))
         assert proxy._post_pump_audit() is False  # not acked -> caller skips the injection
 
     def test_post_pump_audit_false_on_failure(self, monkeypatch):
@@ -618,7 +618,7 @@ class TestPumpAudit:
             raise OSError("gateway down")
 
         monkeypatch.setattr(proxy, "_EXTENSION_MODE", False)
-        monkeypatch.setattr(proxy.urllib.request, "urlopen", _boom)
+        monkeypatch.setattr(proxy, "loopback_urlopen", _boom)
         # A failed audit must report False so the pump skips the injection rather
         # than run an unaudited browser_take_screenshot.
         assert proxy._post_pump_audit() is False

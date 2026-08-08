@@ -653,19 +653,19 @@ class TestRuntimeHelpers:
             def __exit__(self, *a: object) -> bool:
                 return False
 
-        monkeypatch.setattr(rt.urllib.request, "urlopen", lambda *a, **k: _Resp())
+        monkeypatch.setattr(rt, "loopback_urlopen", lambda *a, **k: _Resp())
         assert rt.health(7999) == 200
 
         def _raise_http(*a: object, **k: object) -> None:
             raise urllib.error.HTTPError("u", 403, "f", {}, None)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(rt.urllib.request, "urlopen", _raise_http)
+        monkeypatch.setattr(rt, "loopback_urlopen", _raise_http)
         assert rt.health(7999) == 403
 
         def _raise_url(*a: object, **k: object) -> None:
             raise urllib.error.URLError("down")
 
-        monkeypatch.setattr(rt.urllib.request, "urlopen", _raise_url)
+        monkeypatch.setattr(rt, "loopback_urlopen", _raise_url)
         assert rt.health(7999) == 0
 
     def test_mint_token_reads_secret_and_posts(
@@ -687,7 +687,7 @@ class TestRuntimeHelpers:
             def read(self) -> bytes:
                 return b'{"token":"tok-xyz"}'
 
-        monkeypatch.setattr(rt.urllib.request, "urlopen", lambda *a, **k: _Resp())
+        monkeypatch.setattr(rt, "loopback_urlopen", lambda *a, **k: _Resp())
         assert rt.mint_token(c, "demo", "1h") == "tok-xyz"
 
     def test_mint_token_no_secret_raises(
@@ -949,7 +949,7 @@ class TestReviewRound1Fixes:
             captured["url"] = req.full_url  # type: ignore[attr-defined]
             return _Resp()
 
-        monkeypatch.setattr(rt.urllib.request, "urlopen", _urlopen)
+        monkeypatch.setattr(rt, "loopback_urlopen", _urlopen)
         rt.mint_token(c, "demo", "1 h")
         assert "ttl=1%20h" in captured["url"]
 

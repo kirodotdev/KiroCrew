@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS
 from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
@@ -585,7 +586,7 @@ def health(port: int, timeout: int = 3) -> int:
         # Loopback-only probe to the pod's own gateway on 127.0.0.1; the URL is
         # internally derived (never attacker-supplied), so the dynamic-URL SSRF
         # audit rule is a false positive here.
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosemgrep
+        with loopback_urlopen(url, timeout=timeout) as resp:  # nosemgrep
             return resp.status
     except urllib.error.HTTPError as e:
         return e.code
@@ -612,7 +613,7 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     try:
         # Loopback-only call to the pod's own gateway on 127.0.0.1; the URL is
         # internally derived, so the dynamic-URL SSRF audit rule is a false positive.
-        with urllib.request.urlopen(req, timeout=5) as resp:  # nosemgrep
+        with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
             token = json.loads(resp.read()).get("token", "")
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc

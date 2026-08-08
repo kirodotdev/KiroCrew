@@ -34,5 +34,9 @@
       }
     ]
   },
-  "iconUrl": "/app-assets/spec-builder/icon.svg"
+  "iconUrl": "/app-assets/spec-builder/icon.svg",
+  "heroImage": "/app-assets/spec-builder/hero-light.svg",
+  "heroImageDark": "/app-assets/spec-builder/hero-dark.svg",
+  "heroImageDetail": "/app-assets/spec-builder/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/spec-builder/hero-detail-dark.svg"
 }

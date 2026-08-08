@@ -82,6 +82,13 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
+`stable` suits everyone, `insider` is for power users who want features days to
+weeks early and accept the new bugs that arrive with them, and `nightly` is
+untested `main` HEAD for us and contributors. The
+[Release channels](../../README.md#release-channels) table has the full
+comparison; re-running the installer with a different `--channel` is how a CLI
+install moves between lanes.
+
 The installer verifies the wheel's digest against the signed manifest and
 refuses to install on a mismatch; there is no checksum-only fallback. It uses
 `pipx` when available, otherwise it creates a managed venv **beside** the data
@@ -89,6 +96,18 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 `~/.local/bin/kirocrew` at it. The venv is deliberately not nested inside the
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
+
+If the host has no Python 3.10+, the installer installs one from your distro:
+`apt` on Debian/Ubuntu (including the split `python3-venv` package), `dnf` on
+Amazon Linux / RHEL / CentOS Stream, and `yum` on CentOS 7. Where no base-repo
+package supplies 3.10+ (CentOS 7 ships 3.6, older Ubuntu 3.8) it uses an
+**already-installed** [mise](https://mise.jdx.dev/) python-build-standalone
+interpreter if you have one (it runs on the older glibc those releases carry);
+otherwise it prints how to get a newer Python and stops. The signed installer
+never pipes an unsigned third-party script into a shell — to use the mise path,
+install mise yourself first (`curl https://mise.run | sh`). When it finishes it
+prints the next step: `kirocrew gateway` to start now, or `kirocrew service
+install` to run it as a service.
 
 ### b. From source (development)
 
@@ -112,6 +131,12 @@ Both targets bootstrap their toolchain first (`ensure-node.sh`,
 `ensure-python.sh`) and fall back to whatever is on `PATH` if that fails. The
 backend target refuses to build a venv from an interpreter older than 3.10
 rather than letting the install backtrack forever.
+
+After the backend target runs, `bin/kirocrew` resolves its real install root,
+sets `KIROCREW_PROJECT_DIR`, and delegates to `.venv/bin/kirocrew`. That console
+script comes from the editable package metadata (`kiro_crew._bootstrap:main`),
+so the virtual environment makes `src/kiro_crew` importable without the wrapper
+modifying `PYTHONPATH`; caller-provided entries pass through unchanged.
 
 Any CLI subcommand works the same way, for example
 `PYTHONPATH=src python -m kiro_crew setup` or `... doctor`.
@@ -149,7 +174,7 @@ Installed console script:
 
 | Command | Entry point |
 |---------|-------------|
-| `kirocrew` | `kiro_crew.cli:main` |
+| `kirocrew` | `kiro_crew._bootstrap:main` |
 
 `pyproject.toml`'s `[project.scripts]` declares `kirocrew` and nothing else.
 Because a `[project]` table exists, setuptools reads the entry points from
@@ -233,7 +258,10 @@ in place of `kirocrew`.
 
 The wizard installs the agent config, then walks through the workspace
 directory, Slack credentials, the slash-command name, timezone, dashboard URL,
-the Playwright browser MCP server, and (on macOS) the desktop app.
+and (on macOS) the desktop app. It does NOT install `@playwright/mcp` or register
+the browser proxy: Browser Mode is a durable toggle you turn on later in
+**Settings → Browser**, and enabling it there is what downloads `@playwright/mcp`
+plus the selected engine's browser binary and registers the compression proxy.
 
 **Answering "n" to "Configure Slack tokens?" leaves Slack disabled and gives you
 dashboard-only mode.** The web dashboard is fully functional without any
@@ -273,6 +301,9 @@ so all user customizations survive.
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
 ephemeral port). The `dashboard.url` config key only advertises a remote URL.
+For the installed service the port is baked into the unit at install time — see
+[Running as a service](#running-as-a-service) for how to set and later change
+it.
 
 ### The data home lives under `~/.kiro/`
 
@@ -330,7 +361,41 @@ kirocrew service uninstall
 
 On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
 for the unit file and the `systemctl` calls; the gateway itself runs as your own
-user, never under sudo). On macOS it writes a launchd plist and needs no sudo.
+user, never under sudo). When you are already root — a minimal container or
+`root` login — no `sudo` binary is required. On macOS it writes a launchd plist
+and needs no sudo.
+
+The gateway runs untrusted agent tools, so it must run as a **non-root** user:
+the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
+`$USER`), and **refuses to install a `User=root` service**. From a bare `root`
+login (or `sudo` with no `$SUDO_USER`), first create or pick a normal account and
+install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
+install` (the official Docker image already runs as the `kirocrew` user).
+
+### Setting the service port
+
+A system service inherits none of your shell environment, so `export
+KIROCREW_PORT=…` in your shell does **not** reach it. Set the port when you
+install so it is baked into the unit:
+
+```bash
+KIROCREW_PORT=5477 kirocrew service install
+```
+
+To change it later without reinstalling, edit the overrides file the installer
+creates and restart:
+
+```bash
+sudo sed -i 's/^#\?KIROCREW_PORT=.*/KIROCREW_PORT=5477/' /etc/kirocrew/kirocrew.env
+sudo systemctl restart kirocrew
+```
+
+`/etc/kirocrew/kirocrew.env` is read by the unit via `EnvironmentFile=`, so its
+values override the install-time snapshot and survive a reinstall. Use this to
+move the service off the default `5476` when that port is already taken (for
+example by a local crew you also run on this host — there is one
+`kirocrew.service` unit, so re-running `service install` updates it in place
+rather than creating a second service).
 
 For remote hosts, see [remote-and-mobile.md](remote-and-mobile.md).
 

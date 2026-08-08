@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import frontend, platform_compat
 
 
@@ -360,6 +361,7 @@ def _repo_with_build(root: Path) -> Path:
     return built
 
 
+@requires_symlinks
 def test_stage_built_dist_replaces_symlink_with_real_copy(tmp_path):
     """A static/dist symlinked at website/dist becomes an independent copy.
 
@@ -450,6 +452,7 @@ def test_stage_built_dist_sweeps_abandoned_staging_dirs(tmp_path):
     assert leftovers == []
 
 
+@requires_symlinks
 def test_concurrent_staging_does_not_destroy_the_served_tree(tmp_path):
     """Two overlapping stagers must not leave static/dist missing.
 
@@ -569,6 +572,7 @@ def test_stage_built_dist_restores_previous_bundle_when_swap_fails(tmp_path):
     assert leftovers == [], leftovers
 
 
+@requires_symlinks
 def test_stage_built_dist_restores_symlink_when_swap_fails(tmp_path):
     """A failed swap must restore the SYMLINK a source install serves through.
 

@@ -11,6 +11,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     effective_session_key,
+    slot_history_key,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import carry_provenance
@@ -137,7 +138,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     async with slot._fork_lock:
         all_messages: list[dict] = []
         if state.conversation_log:
-            all_messages = state.conversation_log.read_messages_chained(effective_session_key(slot))
+            all_messages = state.conversation_log.read_messages_chained(slot_history_key(slot))
         if all_messages and slot._dirty:
             new_msgs = slot.messages[slot._resumed_count:]
             if new_msgs:

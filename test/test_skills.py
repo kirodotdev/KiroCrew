@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skill_usage import SkillUsageLedger
+from kiro_crew.skills import _SHORT_DESC_CHARS, SkillsLoader
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,142 @@ def _create_skill(skills_dir, name, content):
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(content)
+
+
+class TestNoteToolRead:
+    """Only content-delivering reads credit the ledger."""
+
+    def _loader(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _create_skill(
+            skills_dir, "alpha", "---\nname: alpha\ndescription: A\n---\n# Alpha\n"
+        )
+        _create_skill(
+            skills_dir, "beta", "---\nname: beta\ndescription: B\n---\n# Beta\n"
+        )
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        loader._usage = SkillUsageLedger(tmp_path / "skill-usage.json")
+        return loader, skills_dir
+
+    def _read(self, loader, **kw):
+        """Resolve then credit, the way the ACP layer does across two events."""
+        keys = loader.resolve_tool_read_keys(**kw)
+        loader.credit_skill_reads(keys)
+        return keys
+
+    def test_read_tool_path_credits_a_hit(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        assert self._read(loader, tool_name="fs_read", raw_params={"path": path}) == [
+            "alpha"
+        ]
+        assert loader._usage.score("alpha")[0] == 1.0
+        assert loader._usage.score("beta")[0] == 0.0
+
+    def test_shell_cat_credits_a_hit(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        cmd = f"cat {skills_dir / 'beta' / 'SKILL.md'}"
+        assert self._read(loader, command=cmd) == ["beta"]
+        assert loader._usage.score("beta")[0] == 1.0
+
+    def test_resolution_alone_records_nothing(self, tmp_path):
+        # The ACP layer resolves at call time and credits only once the tool
+        # reports completion, so resolving must have no side effect.
+        loader, skills_dir = self._loader(tmp_path)
+        cmd = f"cat {skills_dir / 'alpha' / 'SKILL.md'}"
+        assert loader.resolve_tool_read_keys(command=cmd) == ["alpha"]
+        assert loader._usage.snapshot() == {}
+
+    def test_one_command_naming_a_file_twice_counts_once(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "alpha" / "SKILL.md"
+        assert self._read(loader, command=f"cat {p} && cat {p}") == ["alpha"]
+        assert loader._usage.score("alpha")[0] == 1.0
+
+    def test_non_read_shell_verbs_are_not_credited(self, tmp_path):
+        # A tool call that merely NAMES a skill is not a delivery. Crediting it
+        # would be the same mention-as-use conflation the searches tally avoids:
+        # a maintenance session could push an unread skill up the ranking.
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "alpha" / "SKILL.md"
+        for cmd in (
+            f"rm {p}",
+            f"mv {p} /tmp/x",
+            f"wc -l {p}",
+            f"grep -l foo {p}",
+            f"chmod 600 {p}",
+            f"cp {p} /tmp/x",
+            f"stat {p}",
+        ):
+            assert loader.resolve_tool_read_keys(command=cmd) == [], cmd
+        assert loader._usage.snapshot() == {}
+
+    def test_a_read_verb_in_another_segment_does_not_launder_a_delete(self, tmp_path):
+        # `cat` applies to its OWN segment only; without per-segment verb
+        # attribution this would credit the deleted skill.
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "alpha" / "SKILL.md"
+        assert loader.resolve_tool_read_keys(command=f"cat /etc/hosts && rm {p}") == []
+
+    def test_read_verb_variants_are_credited(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "beta" / "SKILL.md"
+        for cmd in (f"head -20 {p}", f"tail -5 {p}", f"/bin/cat {p}", f"LC_ALL=C cat {p}"):
+            assert loader.resolve_tool_read_keys(command=cmd) == ["beta"], cmd
+
+    def test_non_read_tool_name_is_not_credited(self, tmp_path):
+        # Structured tools are allowlisted: an edit/write tool carrying a path
+        # must not be mistaken for a delivery.
+        loader, skills_dir = self._loader(tmp_path)
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        assert loader.resolve_tool_read_keys("fs_write", {"path": path}) == []
+        assert loader.resolve_tool_read_keys("grep", {"path": path}) == []
+        assert loader.resolve_tool_read_keys("fs_read", {"path": path}) == ["alpha"]
+
+    def test_unrelated_tool_call_records_nothing(self, tmp_path):
+        loader, _ = self._loader(tmp_path)
+        assert self._read(loader, tool_name="fs_read", raw_params={"path": "/etc/hosts"}) == []
+        assert self._read(loader, command="ls -la /tmp") == []
+        assert loader._usage.snapshot() == {}
+
+    def test_path_outside_the_skills_tree_is_not_credited(self, tmp_path):
+        # A file that merely shares the basename must not be attributed to a skill.
+        decoy = tmp_path / "elsewhere"
+        decoy.mkdir()
+        (decoy / "SKILL.md").write_text("---\nname: fake\n---\n")
+        loader, _ = self._loader(tmp_path)
+        assert loader.resolve_tool_read_keys("fs_read", {"path": str(decoy / "SKILL.md")}) == []
+
+    def test_malformed_params_do_not_raise(self, tmp_path):
+        loader, _ = self._loader(tmp_path)
+        assert loader.resolve_tool_read_keys("fs_read", {"path": 42}) == []
+        assert loader.resolve_tool_read_keys("fs_read", {"paths": [None, 7]}) == []
+        assert loader.resolve_tool_read_keys("fs_read", "not-a-dict") == []  # type: ignore[arg-type]
+
+    def test_read_without_a_ledger_is_a_noop(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        loader._usage = None
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        assert loader.resolve_tool_read_keys("fs_read", {"path": path}) == []
+
+    def test_symlinked_skill_credits_the_canonical_key(self, tmp_path):
+        # Reading through a symlinked skill must credit the same key the budget
+        # screen shows, or one file's cost splits across two rows.
+        loader, skills_dir = self._loader(tmp_path)
+        link_dir = skills_dir / "alpha-alias"
+        link_dir.mkdir()
+        try:
+            (link_dir / "SKILL.md").symlink_to(skills_dir / "alpha" / "SKILL.md")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+        loader._iter_cache = None  # re-walk so the alias is served
+        recorded = self._read(
+            loader, tool_name="fs_read", raw_params={"path": str(link_dir / "SKILL.md")}
+        )
+        canonical = loader._served_key_by_realpath()[
+            str((skills_dir / "alpha" / "SKILL.md").resolve())
+        ]
+        assert recorded == [canonical] == ["alpha"]
 
 
 class TestSkillsLoader:
@@ -212,7 +349,8 @@ class TestRepoScope:
     ) -> None:
         skills = tmp_path / "skills"
         self._write_skill(skills, "repo-only", "src/kiro_crew")
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
         repo = tmp_path / "checkout"
         (repo / "src" / "kiro_crew").mkdir(parents=True)
         subdir = repo / "website"
@@ -225,7 +363,8 @@ class TestRepoScope:
     ) -> None:
         skills = tmp_path / "skills"
         self._write_skill(skills, "anywhere", None)
-        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
         outside = tmp_path / "elsewhere"
         outside.mkdir()
         monkeypatch.chdir(outside)
@@ -332,7 +471,8 @@ class TestTriggeredSkills:
             "tiny-url",
             f"---\nname: tiny-url\ndescription: Shorten URLs\ntriggers: {triggers}\n---\n# Tiny URL\n",
         )
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False, config=cfg)
         if monkeypatch is not None:
             from unittest.mock import MagicMock
 
@@ -518,11 +658,9 @@ class TestTriggerMatching:
             "weather",
             "---\nname: weather\ndescription: Get weather info\ntriggers: weather forecast\n---\n",
         )
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False, config=cfg)
 
-        mock_config = MagicMock()
-        mock_config.skills.max_triggered = 3
-        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", lambda: mock_config)
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: MagicMock())
 
         result = loader.get_triggered_skills("what's the weather forecast today")
@@ -538,11 +676,9 @@ class TestTriggerMatching:
             "code-search",
             "---\nname: code-search\ndescription: Search code\ntriggers: search code, !search examples\n---\n",
         )
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False, config=cfg)
 
-        mock_config = MagicMock()
-        mock_config.skills.max_triggered = 3
-        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", lambda: mock_config)
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: MagicMock())
 
         # Positive match without negative words
@@ -586,11 +722,9 @@ class TestTriggerMatching:
             "better",
             "---\nname: better\ndescription: Better\ntriggers: alpha beta gamma\n---\n",
         )
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=5))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False, config=cfg)
 
-        mock_config = MagicMock()
-        mock_config.skills.max_triggered = 5
-        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", lambda: mock_config)
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: MagicMock())
 
         result = loader.get_triggered_skills("alpha beta gamma")
@@ -606,11 +740,9 @@ class TestTriggerMatching:
             skills_dir, "always", "---\nname: always\nalways: true\ntriggers: test\n---\n"
         )
         _create_skill(skills_dir, "normal", "---\nname: normal\ntriggers: test\n---\n")
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=5))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False, config=cfg)
 
-        mock_config = MagicMock()
-        mock_config.skills.max_triggered = 5
-        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", lambda: mock_config)
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: MagicMock())
 
         result = loader.get_triggered_skills("test")
@@ -627,11 +759,9 @@ class TestTriggerMatching:
             "tiny-url",
             "---\nname: tiny-url\ndescription: Shorten URLs\ntriggers: shorten url, create tiny link, make short url\n---\n",
         )
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False, config=cfg)
 
-        mock_config = MagicMock()
-        mock_config.skills.max_triggered = 3
-        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", lambda: mock_config)
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: MagicMock())
 
         assert "tiny-url" in loader.get_triggered_skills("please shorten this url")
@@ -1180,7 +1310,11 @@ class TestTriggerPerformance:
             "pipeline",
             "---\nname: pipeline\ndescription: d\ntriggers: pipeline health\n---\n# x\n",
         )
-        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        loader = SkillsLoader(
+            skills_path=skills_dir,
+            install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
 
         fake_sel = MagicMock()
         monkeypatch.setattr("kiro_crew.skills.sel", lambda: fake_sel)
@@ -1513,10 +1647,13 @@ class TestLazyLoadContext:
                 "---\nname: core-pinned\ndescription: core\nalways: true\n---\n# CorePinned\nAlways here.",
             )
         for i in range(n_on_demand):
+            # Description is sized off the cap so it always exceeds it — a fixed
+            # repetition count silently stops testing truncation if the cap rises.
+            verbose = ("word%d " % i) * (_SHORT_DESC_CHARS // 4)
             _create_skill(
                 skills_dir,
                 f"od{i}",
-                f"---\nname: od{i}\ndescription: {'word%d ' % i * 40}\n---\n# OD{i}\nBody {i}.",
+                f"---\nname: od{i}\ndescription: {verbose}\n---\n# OD{i}\nBody {i}.",
             )
         return SkillsLoader(skills_path=skills_dir, install_builtins=False)
 
@@ -1562,12 +1699,34 @@ class TestLazyLoadContext:
         loader = self._make(tmp_path, n_on_demand=1)
         # Description truncation applies only on the opt-in (integer-budget) path.
         ctx = loader.get_context(budget=100_000)
-        # The verbose 'word0 '*40 description is truncated with an ellipsis.
+        # The verbose description is truncated with an ellipsis.
         assert "..." in ctx
+
+    def test_short_desc_cuts_on_a_word_boundary(self, tmp_path):
+        loader = self._make(tmp_path, n_on_demand=1)
+        # A space falls in the last fifth of the budget, so the cut lands there
+        # and the line does not end mid-word.
+        desc = "alpha " * 200
+        out = loader._short_desc(desc)
+        assert out.endswith("alpha...")
+        assert len(out) <= _SHORT_DESC_CHARS + len("...")
+
+    def test_short_desc_hard_cuts_a_single_long_token(self, tmp_path):
+        loader = self._make(tmp_path, n_on_demand=1)
+        # No word boundary to cut on -- fall back to a hard cut rather than
+        # returning the whole token or an empty string.
+        out = loader._short_desc("x" * (_SHORT_DESC_CHARS + 50))
+        assert out == "x" * _SHORT_DESC_CHARS + "..."
+
+    def test_short_desc_leaves_a_description_under_the_cap_alone(self, tmp_path):
+        loader = self._make(tmp_path, n_on_demand=1)
+        # The cap is a guardrail: a typical-length description is untouched.
+        desc = "Drive a change to a review-ready pull request."
+        assert loader._short_desc(desc) == desc
 
     def test_budget_none_is_legacy_full_dump(self, tmp_path):
         # Opt-in OFF (budget=None): legacy block — old header, every skill shown,
-        # no top-K / tail-pointer, no skill_search. Byte-for-byte pre-feature.
+        # no top-K / tail-pointer, no skill_search.
         loader = self._make(tmp_path, n_on_demand=3)
         ctx = loader.get_context(budget=None)
         assert "If a user request relates to any skill below" in ctx
@@ -1576,6 +1735,25 @@ class TestLazyLoadContext:
         assert "skill_search" not in ctx
         for i in range(3):
             assert f"**od{i}**" in ctx
+
+    def test_skills_config_max_triggered_default_is_zero(self):
+        assert SkillsConfig().max_triggered == 0
+
+    def test_budget_none_truncates_long_description(self, tmp_path):
+        # On the budget=None (legacy) path, an over-cap description is truncated.
+        skills_dir = tmp_path / "skills"
+        long_desc = "x" * (_SHORT_DESC_CHARS + 40)
+        _create_skill(
+            skills_dir,
+            "longdesc",
+            f"---\nname: longdesc\ndescription: {long_desc}\n---\n# LD\nBody.",
+        )
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        ctx = loader.get_context(budget=None)
+        # The full description should NOT appear verbatim.
+        assert long_desc not in ctx
+        # Truncated with ellipsis.
+        assert "..." in ctx or "…" in ctx
 
 
 class TestSearchSkills:

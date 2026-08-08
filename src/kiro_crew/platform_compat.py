@@ -311,6 +311,7 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -
     blocking wait, so a legitimately long holder (a data-home migration) is
     waited out rather than raced.
     """
+
     def _try_once() -> bool:
         try:
             os.lseek(fd, 0, os.SEEK_SET)
@@ -469,6 +470,85 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Win32 struct layouts
+# ---------------------------------------------------------------------------
+# These MUST stay at module scope, never inside the functions that use them.
+# ``ctypes.POINTER(T)`` memoises T -> POINTER(T) in a module-level dict inside
+# ctypes and never evicts it, so a Structure subclass declared in a function
+# body pins a BRAND-NEW pair of type objects on every call. The helpers below
+# are polled (the dashboard's system metrics, the RSS-recycle watchdog, the
+# tree-kill parent-map walk, the MCP pipe's per-connection peer check), which
+# turns that into unbounded growth in a long-lived gateway. Declared once here,
+# the memo holds a single entry for the process lifetime.
+#
+# ``wintypes`` supplies type aliases only, so these definitions import cleanly
+# on POSIX; the functions below still resolve the DLLs lazily, which is what
+# keeps them patchable from the non-Windows test fleet.
+
+
+class _ProcessEntry32(ctypes.Structure):
+    """Toolhelp ``PROCESSENTRY32`` — process-enumeration snapshot entry."""
+
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", ctypes.c_char * 260),
+    ]
+
+
+class _ProcessMemoryCounters(ctypes.Structure):
+    """psapi ``PROCESS_MEMORY_COUNTERS`` — per-process working set."""
+
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("PageFaultCount", wintypes.DWORD),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
+class _MemoryStatusEx(ctypes.Structure):
+    """kernel32 ``MEMORYSTATUSEX`` — system-wide physical memory."""
+
+    _fields_ = [
+        ("dwLength", wintypes.DWORD),
+        ("dwMemoryLoad", wintypes.DWORD),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+class _SidAndAttributes(ctypes.Structure):
+    """advapi32 ``SID_AND_ATTRIBUTES``."""
+
+    _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+
+class _TokenUser(ctypes.Structure):
+    """advapi32 ``TOKEN_USER`` — the ``TokenUser`` information-class payload."""
+
+    _fields_ = [("User", _SidAndAttributes)]
+
+
+# ---------------------------------------------------------------------------
 # Process termination / existence
 # ---------------------------------------------------------------------------
 
@@ -514,26 +594,13 @@ def get_ppid(pid: int) -> int:
 
             TH32CS_SNAPPROCESS = 0x00000002  # noqa: N806 — Windows API constant
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-
-            class PE32(ctypes.Structure):
-                _fields_ = [
-                    ("dwSize", wintypes.DWORD),
-                    ("cntUsage", wintypes.DWORD),
-                    ("th32ProcessID", wintypes.DWORD),
-                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
-                    ("th32ModuleID", wintypes.DWORD),
-                    ("cntThreads", wintypes.DWORD),
-                    ("th32ParentProcessID", wintypes.DWORD),
-                    ("pcPriClassBase", ctypes.c_long),
-                    ("dwFlags", wintypes.DWORD),
-                    ("szExeFile", ctypes.c_char * 260),
-                ]
+            entry_ptr = ctypes.POINTER(_ProcessEntry32)
 
             kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
             kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-            kernel32.Process32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+            kernel32.Process32First.argtypes = [wintypes.HANDLE, entry_ptr]
             kernel32.Process32First.restype = wintypes.BOOL
-            kernel32.Process32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+            kernel32.Process32Next.argtypes = [wintypes.HANDLE, entry_ptr]
             kernel32.Process32Next.restype = wintypes.BOOL
             kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
             kernel32.CloseHandle.restype = wintypes.BOOL
@@ -542,8 +609,8 @@ def get_ppid(pid: int) -> int:
             if snap == wintypes.HANDLE(-1).value:
                 return -1
             try:
-                entry = PE32()
-                entry.dwSize = ctypes.sizeof(PE32)
+                entry = _ProcessEntry32()
+                entry.dwSize = ctypes.sizeof(_ProcessEntry32)
                 if not kernel32.Process32First(snap, ctypes.byref(entry)):
                     return -1
                 while True:
@@ -830,31 +897,13 @@ def _windows_process_parent_map() -> dict[int, int]:
         th32cs_snapprocess = 0x00000002
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
 
-        class ProcessEntry32(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", ctypes.c_long),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", ctypes.c_char * 260),
-            ]
+        entry_ptr = ctypes.POINTER(_ProcessEntry32)
 
         kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
         kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        kernel32.Process32First.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(ProcessEntry32),
-        ]
+        kernel32.Process32First.argtypes = [wintypes.HANDLE, entry_ptr]
         kernel32.Process32First.restype = wintypes.BOOL
-        kernel32.Process32Next.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(ProcessEntry32),
-        ]
+        kernel32.Process32Next.argtypes = [wintypes.HANDLE, entry_ptr]
         kernel32.Process32Next.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
@@ -865,8 +914,8 @@ def _windows_process_parent_map() -> dict[int, int]:
         if snapshot == wintypes.HANDLE(-1).value:
             raise OSError("Windows process snapshot creation failed")
         try:
-            entry = ProcessEntry32()
-            entry.dwSize = ctypes.sizeof(ProcessEntry32)
+            entry = _ProcessEntry32()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry32)
             if not kernel32.Process32First(snapshot, ctypes.byref(entry)):
                 raise OSError("Windows first process enumeration failed")
             result: dict[int, int] = {}
@@ -971,9 +1020,9 @@ def _windows_last_error() -> int:
 
 
 # Bounds for the exited-but-exit-FILETIME-unpublished window (see
-# _windows_process_handle_identity). The observed window closes within ~20ms;
-# the ceiling is generous enough to absorb a loaded host without letting a
-# genuinely unreadable handle stall a caller.
+# _windows_process_handle_identity). The window closes within a few tens of
+# milliseconds; the ceiling is generous enough to absorb a loaded host without
+# letting a genuinely unreadable handle stall a caller.
 _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS = 0.25
 _WINDOWS_EXIT_FILETIME_POLL_SECS = 0.002
 
@@ -1043,11 +1092,10 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
         exit_value = _filetime_value(exit_)
         # GetExitCodeProcess reports the exit BEFORE the kernel publishes the
         # exit FILETIME, so a just-terminated process reads back as
-        # exited-with-exit_time==0 for a sub-millisecond-to-tens-of-milliseconds
-        # window (observed on 57/60 back-to-back spawns, resolving in
-        # 0.05-20ms). Treating that window as "no identity" makes the caller
-        # reject a perfectly good handle, so poll briefly for the real value
-        # instead. The bound stays short because the only alternative to a
+        # exited-with-exit_time==0 for a brief window (sub-millisecond to a few
+        # tens of milliseconds). Treating that window as "no identity" makes the
+        # caller reject a perfectly good handle, so poll briefly for the real
+        # value. The bound stays short because the only alternative to a
         # published exit time is refusing the handle.
         if not active and exit_value <= 0:
             deadline = time.monotonic() + _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS
@@ -1284,26 +1332,13 @@ def _win_process_image_name(pid: int) -> str | None:
 
         TH32CS_SNAPPROCESS = 0x00000002  # noqa: N806 — Windows API constant
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-
-        class PE32(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", ctypes.c_long),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", ctypes.c_char * 260),
-            ]
+        entry_ptr = ctypes.POINTER(_ProcessEntry32)
 
         kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
         kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        kernel32.Process32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+        kernel32.Process32First.argtypes = [wintypes.HANDLE, entry_ptr]
         kernel32.Process32First.restype = wintypes.BOOL
-        kernel32.Process32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PE32)]
+        kernel32.Process32Next.argtypes = [wintypes.HANDLE, entry_ptr]
         kernel32.Process32Next.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
@@ -1312,8 +1347,8 @@ def _win_process_image_name(pid: int) -> str | None:
         if snap == wintypes.HANDLE(-1).value:
             return None
         try:
-            entry = PE32()
-            entry.dwSize = ctypes.sizeof(PE32)
+            entry = _ProcessEntry32()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry32)
             if not kernel32.Process32First(snap, ctypes.byref(entry)):
                 return None
             while True:
@@ -1989,6 +2024,7 @@ def rmtree_force(path: str | os.PathLike) -> bool:
     # still supports 3.9+, so pick by capability rather than by version number.
     kwarg = "onexc" if sys.version_info >= (3, 12) else "onerror"
     if kwarg == "onerror":  # pragma: no cover - exercised on Python < 3.12
+
         def _legacy(func: Any, target: str, exc_info: Any) -> None:
             _clear_readonly_and_retry(func, target, exc_info[1])
 
@@ -2144,12 +2180,6 @@ def _process_token_sid_unguarded(pid: int | None = None) -> str | None:
     permits ``OpenProcessToken``, and one a user always holds over their own
     processes without elevation.
     """
-
-    class _SidAndAttributes(ctypes.Structure):
-        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
-
-    class _TokenUser(ctypes.Structure):
-        _fields_ = [("User", _SidAndAttributes)]
 
     try:
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
@@ -2649,20 +2679,6 @@ def proc_rss_bytes() -> int:
             return 0
     try:
 
-        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):  # noqa: N801 — Windows struct
-            _fields_ = [
-                ("cb", wintypes.DWORD),
-                ("PageFaultCount", wintypes.DWORD),
-                ("PeakWorkingSetSize", ctypes.c_size_t),
-                ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t),
-                ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
         psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         # argtypes/restype are load-bearing on 64-bit: without them ctypes
@@ -2673,12 +2689,12 @@ def proc_rss_bytes() -> int:
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
         psapi.GetProcessMemoryInfo.argtypes = [
             wintypes.HANDLE,
-            ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+            ctypes.POINTER(_ProcessMemoryCounters),
             wintypes.DWORD,
         ]
         psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-        counters = PROCESS_MEMORY_COUNTERS()
-        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+        counters = _ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
         if psapi.GetProcessMemoryInfo(
             kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
         ):
@@ -2709,21 +2725,6 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
         return None
     try:
 
-        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):  # noqa: N801 — Windows struct
-            _fields_ = [
-                ("cb", wintypes.DWORD),
-                ("PageFaultCount", wintypes.DWORD),
-                ("PeakWorkingSetSize", ctypes.c_size_t),
-                ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t),
-                ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
-        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806 — Windows constant
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
         psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -2732,7 +2733,7 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
         kernel32.CloseHandle.restype = wintypes.BOOL
         psapi.GetProcessMemoryInfo.argtypes = [
             wintypes.HANDLE,
-            ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+            ctypes.POINTER(_ProcessMemoryCounters),
             wintypes.DWORD,
         ]
         psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
@@ -2740,8 +2741,8 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
         if not handle:
             return None
         try:
-            counters = PROCESS_MEMORY_COUNTERS()
-            counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
             if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
                 return int(counters.WorkingSetSize)
             return None
@@ -2749,6 +2750,61 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
             kernel32.CloseHandle(handle)
     except Exception:
         return None
+
+
+def proc_rss_tree_mb_for_pid(pid: int) -> float | None:
+    """Sum RSS (MiB) of *pid* and its LINEAGE-VALIDATED Windows descendants.
+
+    Windows-only; returns None on other platforms (callers keep their /proc or
+    ps route). The naive way to sum a Windows tree — walk Toolhelp's
+    ``th32ParentProcessID`` map — is unsafe for a kill/health decision: that
+    field is never cleared when a parent dies and Windows recycles PIDs
+    aggressively, so a raw walk sums unrelated subtrees rooted at a recycled
+    PID. This reuses :func:`descendant_termination_handles`, which validates
+    every parent->child edge against exact creation/exit times across two
+    snapshots, so only genuine descendants are counted. RSS that cannot be read
+    for a given descendant (another session / higher integrity) is skipped, but
+    the root itself always contributes, so the result is never a phantom-low
+    tree total attached to a recycled root.
+
+    Returns None if even the root's RSS is unavailable, matching the "unknown,
+    do not judge" contract the RSS staleness probe relies on.
+    """
+
+    if not IS_WINDOWS:
+        return None
+    if type(pid) is not int or pid <= 1:
+        return None
+    root_handle = _open_process_termination_handle(pid)
+    if root_handle is None:
+        # Cannot even anchor the root — fall back to the single-process read so a
+        # readable self still yields a number rather than a spurious None.
+        rss = proc_rss_bytes_for_pid(pid)
+        return None if rss is None else rss / (1024 * 1024)
+    descendants: dict[int, int] = {}
+    try:
+        identity = _windows_process_handle_identity(root_handle)
+        if identity is None or identity[0] != pid:
+            rss = proc_rss_bytes_for_pid(pid)
+            return None if rss is None else rss / (1024 * 1024)
+        try:
+            descendants = descendant_termination_handles(pid, root_handle=root_handle)
+        except Exception:
+            # Enumeration failed (transient snapshot race): measure the root
+            # alone rather than an unvalidated tree.
+            descendants = {}
+        total_bytes = 0
+        found = False
+        for member in (pid, *descendants):
+            member_rss = proc_rss_bytes_for_pid(member)
+            if member_rss is not None:
+                total_bytes += member_rss
+                found = True
+        return total_bytes / (1024 * 1024) if found else None
+    finally:
+        for handle in descendants.values():
+            close_process_handle(handle)
+        close_process_handle(root_handle)
 
 
 def proc_cpu_seconds() -> float:
@@ -2767,6 +2823,20 @@ def proc_cpu_seconds() -> float:
     try:
 
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # argtypes/restype are load-bearing on 64-bit: without them ctypes
+        # defaults GetCurrentProcess's return to a 32-bit int and truncates the
+        # pseudo-handle, so GetProcessTimes fails and this reads 0.0 (mirrors the
+        # proc_rss_bytes fix — same truncation, same cause).
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
         creation = wintypes.FILETIME()
         exit_ = wintypes.FILETIME()
         kernel = wintypes.FILETIME()
@@ -2808,22 +2878,9 @@ def system_memory() -> "tuple[int, int] | None":
         return None
     try:
 
-        class MEMORYSTATUSEX(ctypes.Structure):  # noqa: N801 — Windows struct
-            _fields_ = [
-                ("dwLength", wintypes.DWORD),
-                ("dwMemoryLoad", wintypes.DWORD),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        stat = MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        stat = _MemoryStatusEx()
+        stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
         if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
             return int(stat.ullTotalPhys), int(stat.ullAvailPhys)
         return None

@@ -6,16 +6,21 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
+from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
 from .ingestion import DUPLICATE_JOB_STATUS
+from .kiroignore import KIROIGNORE_FILENAME
+from .kiroignore import load as load_kiroignore
 from .readers import FileReader
 
 logger = logging.getLogger(__name__)
@@ -25,9 +30,25 @@ logger = logging.getLogger(__name__)
 # per-file graph reload runs on the event loop and can stall it past the loop
 # watchdog (dist/assets/*.js was the motivating case). Dot-dirs (.cache, .next,
 # .venv) are already pruned separately by the startswith(".") rule in _walk.
+# ``cdk.out`` is the same churn with a cost attached rather than a stall: AWS CDK
+# rewrites hashed asset bundles and template JSON on every synth, so each build
+# presents megabytes of generated JSON as changed content and the scan pays a
+# fresh extraction call per chunk. Its name only CONTAINS a dot, so the
+# dot-prefix rule never prunes it, and the bare ``out`` entry does not match it.
 HARD_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                  "dist", "build", "out", "target"}
+                  "dist", "build", "out", "target", "cdk.out"}
 DEFAULT_MAX_FILES = 5000
+
+# How many times a file left in 'scanning' is retried before its row is retired to
+# 'failed'. The marker means "an attempt started and never reached a terminal state",
+# so retrying it is the whole point of crash recovery -- but a retry is not free: it
+# re-chunks the file and pays for one model extraction call per chunk plus a document
+# summary. A file that interrupts the sweep every time (an input the reader hangs or
+# dies on, a kill that always lands in the same place) would therefore be billed
+# again on every sweep, forever, with nothing recording that it keeps losing. The cap
+# turns that unbounded loop into a bounded one and leaves a 'failed' row the user can
+# see and act on.
+MAX_SCAN_ATTEMPTS = 3
 
 # How many discovered files a scan processes between ``scan_paused`` re-reads.
 # The check used to run per file, i.e. one on-loop sqlite SELECT against
@@ -41,12 +62,23 @@ SOURCE_TYPE_SKIP_DIRS: dict[str, set[str]] = {
     "obsidian_vault": {".obsidian", ".trash"},
 }
 
-# OS-generated temp / lock / junk files that are never real documents. Matched
-# case-insensitively against the file basename for every folder source type, in
-# addition to any per-source ignore_patterns. Without this, files that carry an
-# otherwise-supported extension are discovered, fail ingestion, and (since failed
-# files are never auto-retried) leave a source permanently stalled below 100%.
-# The motivating case: macOS AppleDouble sidecars (``._<name>.docx``).
+# Files that are never real documents, matched case-insensitively against the
+# file basename for every folder source type in addition to any per-source
+# ignore_patterns. Entries must therefore be lowercase.
+#
+# Two classes, for two different reasons:
+#
+# OS-generated temp / lock / junk files carry an otherwise-supported extension,
+# so they are discovered, fail ingestion, and -- since failed files are never
+# auto-retried -- leave a source permanently stalled below 100%. macOS
+# AppleDouble sidecars (``._<name>.docx``) are the common case.
+#
+# Dependency lock files ingest successfully, which is worse: they are large,
+# fully machine-generated, and answer no question a human would ask, yet every
+# chunk costs one extraction call and a regenerated lock file is billed again on
+# the next sweep. Several of them carry an extension no reader supports today,
+# so the glob is what keeps them out regardless of what ``FileReader.SUPPORTED``
+# accepts.
 DEFAULT_IGNORE_GLOBS: tuple[str, ...] = (
     "._*",            # macOS AppleDouble resource forks
     ".ds_store",      # macOS Finder metadata
@@ -63,6 +95,22 @@ DEFAULT_IGNORE_GLOBS: tuple[str, ...] = (
     "*.crdownload",   # incomplete browser downloads
     "*.part",
     "*.partial",
+    # Dependency lock files: generated resolution output, not documentation.
+    "package-lock.json",     # npm
+    "npm-shrinkwrap.json",
+    "yarn.lock",             # Yarn
+    "pnpm-lock.yaml",        # pnpm
+    "bun.lockb",             # Bun (binary and text forms)
+    "bun.lock",
+    "poetry.lock",           # Python
+    "uv.lock",
+    "pipfile.lock",
+    "cargo.lock",            # Rust
+    "gemfile.lock",          # Ruby
+    "composer.lock",         # PHP
+    "packages.lock.json",    # NuGet
+    "gradle.lockfile",       # Gradle
+    "flake.lock",            # Nix
 )
 
 
@@ -116,10 +164,145 @@ def _within(candidate: str, base: str) -> bool:
 
 
 def _prop_int(value: object) -> int:
-    """Coerce a non-negative integer source property; 0 when absent or unusable."""
+    """Coerce a non-negative integer source property; 0 when absent or unusable.
+
+    Floats are accepted because a source may already carry one, but a non-finite
+    one is not: ``inf`` (which is what ``1e309`` parses to) survives a ``> 0``
+    test and then raises in ``int()``.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
     return int(value) if value > 0 else 0
+
+
+def _rel_posix(rel_dir: str, name: str) -> str:
+    """Join a walk-relative directory and an entry name into a ``/``-separated path.
+
+    ``.kiroignore`` patterns are written with ``/``, so a Windows ``\\``-separated
+    relative path has to be normalised or every pattern carrying a separator
+    silently never matches.
+    """
+    if rel_dir in ("", "."):
+        return name
+    return f"{rel_dir.replace(os.sep, '/')}/{name}"
+
+
+#: Per-source property that overrides the configured folder budget. Separate from
+#: the config knob so one oversized folder can be paced harder (or, at 0, let run
+#: unbounded) without changing the default every other folder gets.
+CHUNK_BUDGET_PROP = "chunk_budget"
+
+
+def walk_filters(props: dict, source_type: str = "local_folder") -> dict:
+    """``FolderWatcher._walk`` keyword arguments for a source's properties.
+
+    Shared with any caller that walks a folder outside a scan -- the add-source
+    preview does -- so the files it counts are the files a sweep would take. A
+    looser set there reports a count for files the scan then skips.
+    """
+    return {
+        "ignore_patterns": props.get("ignore_patterns", []),
+        "extra_skip_dirs": (SOURCE_TYPE_SKIP_DIRS.get(source_type, set())
+                            | _prop_str_set(props.get("extra_skip_dirs"))),
+        "include_extensions": _prop_extensions(props.get("include_extensions")),
+        "min_size": _prop_int(props.get("min_file_bytes")),
+        "confine_to_root": bool(props.get("confine_to_root")),
+    }
+
+
+def folder_chunk_budget(props: dict) -> int | None:
+    """Chunks a hand-added folder source may ingest in one sweep; ``None`` = unbounded.
+
+    Ingestion costs one LLM extraction call per chunk plus one summary call per
+    file, on a pool of billed sessions, so an unpaced first scan of a source-code
+    repository spends real money in minutes with nobody watching. The budget does
+    not drop any file: the scan takes newest-first until the budget is reached and
+    the rest resume on the next sweep from their ``folder_file_state`` rows.
+
+    A per-source ``chunk_budget`` of 0 means "no bound" -- the explicit opt-out for
+    a user who does want the whole folder in one burst. Absent, the configured
+    default applies, and a configured 0 likewise removes the bound.
+
+    ``properties`` is user-editable JSON reachable from the add-source request
+    body, so an override of any other shape -- a float (``1e309`` parses to
+    ``inf``, whose ``int()`` raises), a bool (an ``int`` subclass, so ``True``
+    would read as a budget of 1), a string, a negative -- means "use the
+    configured default" rather than an error. Nothing here may raise: this runs
+    inside a request handler and inside a sweep, where a raise is a 500 or a
+    skipped scan instead of a paced one.
+    """
+    override = props.get(CHUNK_BUDGET_PROP)
+    if isinstance(override, int) and not isinstance(override, bool) and override >= 0:
+        return override or None
+    try:
+        configured = int(KiroCrewConfig.load().knowledge.folder_ingest_chunk_budget)
+    except Exception:
+        # Read per call so the knob is live, matching the rest of the watcher.
+        logger.debug("Could not read folder_ingest_chunk_budget", exc_info=True)
+        return None
+    return max(0, configured) or None
+
+
+#: Average bytes per whitespace-separated word, including the separator.
+_BYTES_PER_WORD = 6
+
+
+def _estimated_chunks(size: int) -> int:
+    """Chunks the chunker would produce for a file of *size* bytes.
+
+    Derived from the chunker's own target rather than measured: a chunk targets
+    ``CHUNK_TOKEN_SIZE`` tokens, ``_word_count`` approximates 1.3 tokens per word,
+    and prose averages roughly ``_BYTES_PER_WORD`` bytes per word including its
+    separator. Reading and chunking every file to be exact would cost the walk
+    what the scan itself costs, and this number exists to show a user the order of
+    magnitude before they commit -- so it is an estimate, never a bound the scan
+    enforces.
+    """
+    words_per_chunk = max(1, int(CHUNK_TOKEN_SIZE / 1.3))
+    chunks = -(-max(size, 1) // (words_per_chunk * _BYTES_PER_WORD))
+    return min(chunks, MAX_CHUNKS_PER_FILE)
+
+
+def max_files_prop(props: dict) -> int:
+    """A source's ``max_files`` cap, falling back to :data:`DEFAULT_MAX_FILES`.
+
+    Coerced because ``properties`` is user-editable JSON and the value is used in
+    arithmetic; a non-positive, non-numeric or non-finite entry means "unset", not
+    "cap at 0". ``inf`` has to be excluded explicitly -- it passes a ``> 0`` test
+    and then raises in ``int()``.
+    """
+    value = props.get("max_files", DEFAULT_MAX_FILES)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return DEFAULT_MAX_FILES
+    if isinstance(value, float) and not math.isfinite(value):
+        return DEFAULT_MAX_FILES
+    return int(value)
+
+
+def estimate_scan_cost(discovered: list[tuple[str, float]], *,
+                       max_files: int = DEFAULT_MAX_FILES) -> dict:
+    """What a first full scan of *discovered* would cost, in files and LLM calls.
+
+    Mirrors the sweep's own newest-first ordering and file cap so the numbers
+    describe the files that would actually be ingested, not everything the walk
+    saw. ``llm_calls`` counts one extraction call per chunk plus the per-file
+    source-summary call.
+    """
+    ordered = sorted(discovered, key=lambda f: f[1], reverse=True)
+    capped = max(0, len(ordered) - max_files)
+    ordered = ordered[:max_files]
+    chunks = 0
+    for path, _ in ordered:
+        try:
+            chunks += _estimated_chunks(os.path.getsize(path))
+        except OSError:
+            # A file that vanished between the walk and this stat contributes
+            # nothing; the scan will not find it either.
+            continue
+    return {"files": len(ordered), "capped": capped, "chunks": chunks,
+            "llm_calls": chunks + len(ordered)}
 
 
 class FolderWatcher:
@@ -134,9 +317,9 @@ class FolderWatcher:
         """Scan a folder source. Returns {new, changed, deleted, skipped, capped}.
 
         ``chunk_budget`` stops the scan once that many chunks have been ingested
-        in THIS sweep, leaving the rest for later sweeps. It is passed only for
-        auto-registered sources: a folder the user added by hand is a folder they
-        asked for in full, so it keeps the unbounded behaviour.
+        in THIS sweep, leaving the rest for later sweeps. ``None`` is unbounded.
+        Callers resolve the value: :func:`folder_chunk_budget` for a hand-added
+        folder, ``knowledge.auto_ingest_chunk_budget`` for an auto-registered one.
         """
         source_id = source["id"]
         if source_id not in self._locks:
@@ -155,18 +338,11 @@ class FolderWatcher:
             return {"error": f"Directory not found: {uri}"}
 
         max_files = props.get("max_files", DEFAULT_MAX_FILES)
-        ignore_patterns = props.get("ignore_patterns", [])
         source_type = source.get("source_type", "local_folder")
-        extra_skip_dirs = SOURCE_TYPE_SKIP_DIRS.get(source_type, set()) | _prop_str_set(
-            props.get("extra_skip_dirs"))
-        include_extensions = _prop_extensions(props.get("include_extensions"))
-        min_file_bytes = _prop_int(props.get("min_file_bytes"))
-        confine_to_root = bool(props.get("confine_to_root"))
+        filters = walk_filters(props, source_type)
 
         # 1. Discover files
-        discovered = await asyncio.to_thread(
-            self._walk, uri, ignore_patterns, extra_skip_dirs,
-            include_extensions, min_file_bytes, confine_to_root)
+        discovered = await asyncio.to_thread(self._walk, uri, **filters)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
@@ -246,6 +422,41 @@ class FolderWatcher:
                 stats["skipped"] += 1
                 continue
 
+            # A row still holding 'scanning' belongs to an attempt that never reached
+            # a terminal state -- the sweep was interrupted (process exit, task
+            # cancellation) between the marker below and the write that would have
+            # replaced it. Retrying is correct, but each retry re-ingests the file at
+            # full cost, so the retries are counted and the row is retired once the
+            # budget is spent.
+            #
+            # The budget belongs to the VERSION that kept failing, not to the path:
+            # the hash on the interrupted row identifies what was being ingested.
+            # Equal hashes mean the same attempt is about to be repeated, so the cap
+            # applies. A DIFFERENT hash is a document that has never been tried, and
+            # it starts with a full budget -- retiring it would strand new content
+            # behind a retirement earned by content the user has already replaced.
+            # This is why the hash is read first: the decision cannot be made without
+            # it, and it costs one read on the single sweep that retires the row
+            # (later sweeps take the 'failed' gate above and read nothing).
+            prior_attempts = int(state.get("attempts") or 0) if state else 0
+            if state and state.get("status") == "scanning":
+                if content_hash != state.get("content_hash"):
+                    prior_attempts = 0
+                elif prior_attempts >= MAX_SCAN_ATTEMPTS:
+                    # Retirement is terminal, so it clears the count like every other
+                    # terminal write: what keeps the file out of later sweeps is the
+                    # 'failed' gate above, not a spent budget. Carrying the exhausted
+                    # count onto the row would make the user's retry -- which clears
+                    # the status but not the count -- re-enter the scan already over
+                    # budget and be retired again by the very next sweep.
+                    self._update_state(
+                        source_id, file_path, content_hash, mtime,
+                        state.get("item_ids", "[]") or "[]", now, "failed",
+                        f"ingestion did not complete after {MAX_SCAN_ATTEMPTS} attempts",
+                        commit=False)
+                    stats["failed"] += 1
+                    continue
+
             if state and state.get("status") == "done" and content_hash == state.get("content_hash"):
                 # Touched but content unchanged
                 self._update_state(source_id, file_path, content_hash, mtime, state.get("item_ids", "[]"), now, "done", commit=False)
@@ -269,13 +480,28 @@ class FolderWatcher:
                 if not state:
                     stats["new"] += 1
 
-            # Mark scanning before processing (crash recovery: scanning = interrupted)
-            self._update_state(source_id, file_path, content_hash, mtime, json.dumps(old_ids), now, "scanning")
+            # Mark scanning before processing (crash recovery: scanning = interrupted).
+            # The incremented attempt count rides along, so the row itself carries how
+            # much of its retry budget is left even though nothing else in this sweep
+            # survives an abrupt exit.
+            self._update_state(source_id, file_path, content_hash, mtime,
+                               json.dumps(old_ids), now, "scanning",
+                               attempts=prior_attempts + 1)
 
             item_ids, outcome = await self._ingest_file(
                 file_path, source_id, namespace, props, old_ids, root=uri)
             if item_ids is None:
-                # Ingestion failed
+                # Ingestion failed. The 'scanning' marker above is only a crash hint,
+                # so it has to be replaced with a terminal status here rather than
+                # left to whichever branch inside _ingest_file returned: a row that
+                # keeps the marker is re-ingested, at full cost, on every later sweep.
+                # Writing it from the caller also restores the content hash and mtime
+                # the marker carried, which is what lets the UI say WHICH version of
+                # the file failed. The reason recorded by _ingest_file is preserved.
+                self._update_state(
+                    source_id, file_path, content_hash, mtime, json.dumps(old_ids),
+                    now, "failed", self._current_error(source_id, file_path),
+                    commit=False)
                 stats["failed"] += 1
             elif outcome == "deduped":
                 # Refused by the pre-ingest gate: this exact content is already in
@@ -341,6 +567,9 @@ class FolderWatcher:
         supported = FileReader.SUPPORTED
         results = []
         skip_dirs = HARD_SKIP_DIRS | extra_skip_dirs
+        # Root-level rules only, re-read each sweep so editing the file takes effect
+        # without touching the source's properties.
+        kiroignore = load_kiroignore(root)
         root_real = ""
         if confine_to_root:
             try:
@@ -349,15 +578,25 @@ class FolderWatcher:
                 return []
 
         for dirpath, dirnames, filenames in os.walk(root):
+            rel_dir = os.path.relpath(dirpath, root)
             # Prune skip dirs in-place.
             # Windows: the `.`-prefix hidden check is POSIX-centric — Windows marks
             # hidden via the NTFS hidden attribute, not a dotfile name, so some
             # dirs that are hidden on Windows aren't pruned (benign over-ingestion).
             # Tracked as follow-on work.
             dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+            if kiroignore is not None:
+                # Excluded directories are PRUNED, not filtered per file, so a huge
+                # generated tree (cdk.out, coverage output) is never descended.
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not kiroignore.is_ignored(_rel_posix(rel_dir, d), is_dir=True)]
 
-            rel_dir = os.path.relpath(dirpath, root)
             for fname in filenames:
+                # The rule file is configuration, not a document. Its extensionless
+                # name is in FileReader.SUPPORTED, so it would otherwise be indexed.
+                if rel_dir == "." and fname == KIROIGNORE_FILENAME:
+                    continue
                 # Skip OS-generated temp/lock/junk files (basename, case-insensitive)
                 if any(fnmatch(fname.lower(), pat) for pat in DEFAULT_IGNORE_GLOBS):
                     continue
@@ -366,6 +605,9 @@ class FolderWatcher:
                 # normalized before matching or every pattern containing a
                 # separator silently never matches on Windows.
                 if any(fnmatch(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
+                    continue
+                if kiroignore is not None and kiroignore.is_ignored(
+                        _rel_posix(rel_dir, fname), is_dir=False):
                     continue
                 # Extension filter
                 ext = Path(fname).suffix.lower()
@@ -393,11 +635,23 @@ class FolderWatcher:
     def _load_state(self, source_id: str) -> dict[str, dict]:
         """Load folder_file_state rows for this source."""
         rows = self.store.db.execute(
-            "SELECT file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message FROM folder_file_state WHERE source_id = ?",
+            "SELECT file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts FROM folder_file_state WHERE source_id = ?",
             (source_id,)).fetchall()
         return {r["file_path"]: dict(r) for r in rows}
 
-    def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, commit: bool = True):
+    def _current_error(self, source_id: str, file_path: str) -> str | None:
+        """The reason already recorded on this row, if any.
+
+        The failure branches inside ``_ingest_file`` write the specific cause; the
+        caller then re-writes the row to make the status transition terminal, and
+        reads the cause back so replacing the row does not discard it.
+        """
+        row = self.store.db.execute(
+            "SELECT error_message FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, file_path)).fetchone()
+        return row["error_message"] if row else None
+
+    def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, commit: bool = True):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
         # lookups have to relate this row to items, and items are keyed by the text
         # hash -- for a PDF or HTML file that is a different string from the bytes
@@ -432,9 +686,13 @@ class FolderWatcher:
             # coalesces to content_hash for such a row, which is the right answer
             # wherever it can be reached: the gate can only have refused a plaintext
             # file in that situation, and for plaintext the two hashes are equal.
+        # ``attempts`` defaults to 0, so every terminal write ('done', 'deduped',
+        # 'failed') clears the retry budget as a side effect of not passing it: the
+        # count only ever accumulates across consecutive 'scanning' markers, which is
+        # what it is meant to bound.
         self.store.db.execute(
-            "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message))
+            "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message, attempts))
         if commit:
             self.store.db.commit()
 

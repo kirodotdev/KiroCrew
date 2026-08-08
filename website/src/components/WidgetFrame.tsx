@@ -6,6 +6,7 @@ import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { effectiveWidgetSlug } from '../lib/widgetSlug'
+import { analyzeWidgetComplexity } from '../lib/widgetComplexity'
 import { api, ApiError } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -278,9 +279,23 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
+
+  // Analyze widget complexity to decide rendering path. Cached per html content.
+  const complexity = useMemo(() => analyzeWidgetComplexity(html), [html])
+
   const srcdoc = useMemo(
-    () => visible ? buildSrcdoc({ html, themeVars, mode: theme, includeHeightReporter: true }) : '',
-    [html, themeVars, theme, visible],
+    () => visible ? buildSrcdoc({
+      html,
+      themeVars,
+      mode: theme,
+      includeHeightReporter: true,
+      // Heavy widgets get an in-iframe indicator so a perceptible Tailwind
+      // compile reads as progress rather than a broken render. The label is
+      // passed in because the iframe cannot reach the parent's i18n catalog.
+      showLoadingOverlay: complexity.needsProgressIndicator,
+      loadingLabel: i18nT('components.widgetFrame.rendering'),
+    }) : '',
+    [html, themeVars, theme, visible, complexity.needsProgressIndicator],
   )
 
   // Blob URL — only created when visible
@@ -620,18 +635,42 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
         </IconButtonGroup>
       </div>
 
-      {/* onLoad is a frame-load lifecycle handler (fade the iframe in), not a */}
-      {/* user interaction; the rule flags onLoad regardless. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-      {blobUrl && <iframe
-        ref={iframeRef}
-        src={blobUrl}
-        onLoad={() => setIframeLoaded(true)}
-        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
-        className="w-full border-none bg-card transition-opacity duration-200 ease-out motion-reduce:transition-none"
-        style={{ height: expanded ? 'calc(100% - 36px)' : height, opacity: iframeLoaded ? 1 : 0 }}
-        title={title}
-      />}
+      {blobUrl && <div className="relative">
+        {/* Parent-side progress indicator. REQUIRED in addition to the in-iframe
+            overlay: the iframe below renders at opacity 0 until its onLoad
+            fires, so anything inside it is invisible during exactly the window
+            where the user is most likely to think the widget is broken. Only
+            shown for widgets heavy enough for that window to be perceptible. */}
+        {!iframeLoaded && complexity.needsProgressIndicator && (
+          <div
+            // Pinned to the TOP, not centred. The height reporter grows this box
+            // to the widget's full height (measured: 200px -> 1781px), and a
+            // centred indicator drifts below the fold — mounted but invisible,
+            // which is the very failure this is meant to prevent.
+            className="absolute inset-0 z-10 flex items-start justify-center gap-2 rounded bg-card pt-6 text-[12px] text-muted"
+            style={{ height: expanded ? 'calc(100% - 36px)' : height }}
+          >
+            <span
+              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-border motion-reduce:animate-none"
+              style={{ borderTopColor: 'var(--accent)' }}
+              aria-hidden
+            />
+            {i18nT('components.widgetFrame.rendering')}
+          </div>
+        )}
+        {/* onLoad is a frame-load lifecycle handler (fade the iframe in), not a
+            user interaction; the rule flags onLoad regardless. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+        <iframe
+          ref={iframeRef}
+          src={blobUrl}
+          onLoad={() => setIframeLoaded(true)}
+          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+          className="w-full border-none bg-card transition-opacity duration-200 ease-out motion-reduce:transition-none"
+          style={{ height: expanded ? 'calc(100% - 36px)' : height, opacity: iframeLoaded ? 1 : 0 }}
+          title={title}
+        />
+      </div>}
 
       {expanded && (
         // Click-outside backdrop to collapse; keyboard users collapse via the

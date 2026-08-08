@@ -411,14 +411,17 @@ The `audit_source` constructor param (default `None`) tags an `AcpClient` that r
 
 1. Reads the file (paths over `MAX_IMAGE_BYTES` = 10 MB stay as text, not inlined)
 2. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding to the same format (an oversized GIF becomes a PNG still frame)
-3. Base64-encodes the (possibly downscaled) bytes
-4. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
-5. Replaces the path in the text with `[image: filename.png]`
-6. Sends both text and image blocks in the `prompt` array
+3. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
+4. Base64-encodes the (possibly downscaled) bytes
+5. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
+6. Replaces the path in the text with `[image: filename.png]`
+7. Sends both text and image blocks in the `prompt` array
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
 
 **Dimension backstop** (`build_prompt_blocks` in `acp/prompt_blocks.py`). This shared builder is the single funnel every channel's images cross before reaching kiro-cli, so the `MAX_IMAGE_EDGE_PX` (2000 px) downscale runs for all of them — dashboard upload/paste/screenshot, Slack, Discord. Anthropic rejects the ENTIRE request when a many-image conversation (>20 images) carries any image over 2000 px on a side; because kiro-cli replays the full message history every turn, one oversized image would otherwise sit at a fixed history index and wedge the session permanently (a follow-up resize cannot evict the original). The browser's client-side resize (1568 px, `website/src/utils/resizeImage.ts`) is a token-cost optimization on top; this server-side cap is the correctness guarantee that still holds when that resize is skipped or bypassed (e.g. the native `/api/screenshot` capture, or non-dashboard channels).
+
+**Encoded-size backstop** (`_fit_encoded_budget`, same module). The dimension cap alone does not bound the payload: a raster can sit well inside 2000 px and still encode past the backend's per-image byte ceiling. `MAX_IMAGE_B64_BYTES` is **5 MiB, read out of the backend's own rejection** rather than derived from which provider kiro-cli routes through (which we treat as opaque) — the error names the limit in bytes, `image exceeds 5 MB maximum: 6714372 bytes > 5242880`, and 5242880 is exactly 5 × 1024 × 1024. Anthropic's published per-image ceiling for Bedrock and Google Cloud agrees, which is corroboration rather than the basis. The check must run on the ENCODED payload AFTER any downscale: `MAX_IMAGE_BYTES` measures the file before the re-encode and cannot see base64's 4/3 inflation, so a ~3.9 MiB raster passes every pre-encode gate and is still rejected on the wire. Because a rejected image is replayed from a fixed history index on every later turn, this has the same wedge-the-session consequence as the dimension case. Erring low merely ships a smaller image while erring high ships a refused payload, so the cap is set to the observed value and callers can override it via `max_image_b64_bytes` if a backend ever reports a different number. `_fit_encoded_budget` applies the dimension cap, then keeps shrinking (0.8 per pass, up to 6 passes, from the rendition's OWN long edge so an already-in-cap image still makes progress) until the encoding fits. If nothing fits above `MIN_IMAGE_EDGE_PX` (256 px) it fails CLOSED — the path stays in the text and no image block is emitted, because inlining a payload the backend refuses is strictly worse than sending a reference a tool-capable agent can open.
 
 
 ## AcpRuntime & AcpSessionHandle (session multiplexing)
@@ -464,15 +467,60 @@ Three properties make the counter safe on the demux hot path: it never awaits
 (`_DROP_SUMMARY_MAX_KEYS` = 64 distinct keys forces an early flush instead of
 growth, and both backend-controlled key halves are truncated to
 `_DROP_SUMMARY_KEY_MAX_CHARS` = 80), and the residual count is flushed in the
-loop's `finally` on **every** exit (EOF, stdout overrun, cancel, crash) so a
-low-rate trickle is reported late rather than swallowed. No lock is needed:
-`_reader_loop` is the sole writer (`spawn()` creates exactly one reader task).
-The two response-shaped drop branches (non-numeric id, unmatched id) stay
+loop's `finally` on **every** exit (EOF, exhausted oversize-drain budget, cancel,
+crash) so a low-rate trickle is reported late rather than swallowed. No lock is
+needed: `_reader_loop` is the sole writer (`spawn()` creates exactly one reader
+task). The two response-shaped drop branches (non-numeric id, unmatched id) stay
 per-frame on purpose — the id is their whole diagnostic value and is distinct per
 frame, so aggregating by it would give the counter an unbounded key space while
 aggregating without it would discard the only identifying datum; both are also
 bounded by the requests this runtime issued, so neither has the after-teardown
 steady state.
+
+**An oversize stdout line is a dropped frame, not a dead runtime.** A single
+JSON-RPC line over the reader's `_STDOUT_BUFFER_LIMIT` (10 MB) used to
+`_mark_dead` the runtime, which fails every pending future and poisons every
+session queue — so one huge frame ended *every* session multiplexed on that
+process mid-turn, surfacing to users as "process exited / chat failure". Both ACP
+readers did this on the strength of a claim that asyncio leaves the stream
+corrupted after an overrun and every subsequent read also fails. That claim is
+false: `StreamReader.readline` repairs the buffer *before* raising `ValueError`
+(deleting the oversize line through its terminating newline when one is buffered,
+else clearing the buffer) and resumes the transport, as its own docstring states.
+
+So `_reader_loop` reads through `readuntil(b"\n")` and, on `LimitOverrunError`,
+hands the line to `_drain_oversize_line()`, which consumes it **entirely, through
+its terminating newline**, and discards it — the same consume-prefix-and-retry
+drain as `mcp_gateway/backend.py::run_stdout_pump`, where a plain `read(n)` would
+eat into the *next* frame. Draining the whole line rather than one prefix at a
+time is load-bearing, not tidiness: the unterminated branch's discard boundary is
+an arbitrary byte offset (`consumed = len(buffer)`), so surfacing the remainder as
+a line hands the parser a byte-slice that can start mid-character. `json.loads`
+then raises `UnicodeDecodeError`, which is **not** a `json.JSONDecodeError` — it
+escapes the loop's non-JSON guard into its crash handler and kills every
+multiplexed session, the very outcome this replaces. Any oversize frame carrying
+CJK or emoji reaches it whenever the final remainder falls under the reader limit.
+
+Because this reader is a standalone task with no deadline, an endlessly
+unterminated stream still needs a terminal state, so the drain carries a budget of
+`_OVERSIZE_DRAIN_MAX_BYTES` (160 MB) and raises `OversizeLineUnrecoverable` past
+it, which the loop turns into `_mark_dead`. The budget counts **bytes** and is
+scoped to a single drain call — deliberately *not* a count of oversize *frames*,
+and needing no cross-iteration state because every call that returns ends on a
+frame boundary. A replay of properly terminated but oversize frames therefore
+stays survivable frame after frame; a frame counter would reproduce the very
+defect this replaces. The liveness oracle cannot substitute for the budget: it
+judges by CPU/IO movement, and a garbage-spewing stream moves both, so it would
+report `WORKING`.
+
+A pending request whose response was in a dropped frame is not orphaned —
+`_send_and_await` wraps every future in `wait_for(timeout=…)`, so the caller gets
+a timeout; the warning names the request ids in flight at the drop so that timeout
+is attributable. `AcpClient._read_message` takes the same drop-and-continue stance
+by returning `None` (joining its blank-line and non-JSON paths) but keeps
+`readline` and carries **no** budget: every call there is bounded by the caller's
+`timeout` and the callers run their own deadlines, so the worst case is one turn
+ending on its deadline rather than unbounded state.
 
 Every kiro session runs on `AcpRuntime` + `AcpSessionHandle`:
 `AcpProvider.start()` (`providers/acp.py`) unconditionally calls

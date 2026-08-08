@@ -53,6 +53,8 @@ import { getSettings, getStats, updateSettings } from '../api'
 import { PINNED_PANEL_WIDTH, WATCHLIST_PANEL_WIDTH } from './shared/constants'
 import { buildWidgetPopoutHtml } from './shared/widgetPopout'
 import type { MochiSettings, MochiSettingsPatch } from '../api'
+import type { InstancesView } from '../panel/panelBridge'
+import { DEFAULT_CONFIG } from './shared/config'
 import type { AppConfig } from './shared/config'
 import type { CatPreset } from './shared/catPresets'
 import type { PackMeta, Result } from './shared/appearanceTypes'
@@ -87,6 +89,22 @@ interface ShellChannels {
    * badge instead of showing a control that cannot answer.
    */
   instancesEnabledMap?: () => Promise<Record<string, boolean>>
+  /**
+   * The per-MACHINE prefs from the shell's store, or null with no shell. Source of
+   * truth for `petInstance` and the accelerators — see petBridge.machinePrefs.
+   */
+  machinePrefs?: () => Promise<{
+    petInstance: string
+    shortcuts: Record<string, string> | null
+  } | null>
+  /** Store the pointer AND move the pet, in one shell call. */
+  setPetInstance?: (instanceId: string) => Promise<boolean>
+  /**
+   * Core's instance list for THIS MACHINE's host gateway as a full view; null with
+   * no shell. Full view, not a boolean: the `disabled` / `inactive` states carry
+   * the only guidance the pane gives, and rebuilding them from a flag loses them.
+   */
+  instancesList?: () => Promise<InstancesView | null>
 
   /**
    * Apply a just-saved `petInstance` now rather than on the shell's next reconcile
@@ -179,6 +197,18 @@ const GALLERY_OWNED_KEYS = new Set([
 ])
 
 /**
+ * Keys the SHELL owns, dropped from `updateConfig` writes.
+ *
+ * `petInstance` is a property of this COMPUTER (one pet on one screen), not of any
+ * gateway — see petBridge.machinePrefs for why storing it per-gateway made the
+ * instance switch a one-way door. Posting it same-origin would write it onto
+ * whichever gateway served the window, where nothing reads it, so the write is
+ * dropped here and routed through IPC instead. `shortcuts` is handled the same way
+ * in flattenConfig, for the same reason (one keyboard per machine).
+ */
+const SHELL_OWNED_MOCHI_KEYS = new Set(['petInstance'])
+
+/**
  * Nest the builtin's flat settings into the tree the original renderer reads
  * (`config.mochi.*`, `config.shortcuts.*`, `config.window.*`).
  *
@@ -221,10 +251,15 @@ export function flattenConfig(partial: Partial<NestedConfig>): MochiSettingsPatc
       // the save.
       if (key === 'activityMode') out.mode = value
       else if (UNOWNED_MOCHI_KEYS.has(key) || GALLERY_OWNED_KEYS.has(key)) continue
+      else if (SHELL_OWNED_MOCHI_KEYS.has(key)) continue
       else out[key] = value
     }
   }
-  if (partial.shortcuts !== undefined) out.shortcuts = partial.shortcuts
+  // NOT posted: the shell's store owns the accelerators, and `mochi-shortcuts:apply`
+  // persists them there. Posting them here too would leave two copies that drift,
+  // and the gateway copy is the one nothing reads. Because this drops them with no
+  // fallback, the Settings pane must not offer the editor without a shell — it
+  // gates on `api.hasShell`.
   if (partial.window !== undefined && 'chatAlwaysOnTop' in partial.window) {
     out.chatAlwaysOnTop = partial.window.chatAlwaysOnTop
   }
@@ -850,8 +885,49 @@ const impl = {
   // Cast because nestConfig reconstructs only the paths the renderer reads;
   // claiming a complete AppConfig would be a lie, but the vendored call sites
   // are typed against it.
-  getConfig: async (): Promise<AppConfig> =>
-    nestConfig(await getSettings()) as unknown as AppConfig,
+  getConfig: async (): Promise<AppConfig> => {
+    const nested = nestConfig(await getSettings())
+    // Overlay the per-MACHINE prefs from the SHELL, which is their source of
+    // truth. Without this the Settings window shows the copy belonging to
+    // whichever gateway served it — and on a pet that is already showing a
+    // remote, that is the wrong machine's answer.
+    //
+    // A null result means there is no shell (a plain browser tab), where the
+    // gateway's own copy is the best available answer — so the pre-shell
+    // behaviour is preserved rather than replaced by invented defaults.
+    const prefs = await pet.machinePrefs()
+    if (prefs) {
+      if (typeof prefs.petInstance === 'string') nested.mochi.petInstance = prefs.petInstance
+      // MERGED over the full defaults, never assigned wholesale. Neither source is
+      // guaranteed complete: the gateway's flat store may hold no accelerators at
+      // all, and the shell's store deliberately OMITS an action it has no usable
+      // value for (see mergeAcceptedShortcuts) so shortcuts.js can fall back to
+      // its own defaults. The renderer has no such fallback — `displayAccelerator`
+      // splits the string — so a missing key throws while rendering the Shortcuts
+      // pane and React tears down the whole panel.
+      if (prefs.shortcuts) {
+        nested.shortcuts = {
+          ...DEFAULT_CONFIG.shortcuts,
+          ...nested.shortcuts,
+          ...prefs.shortcuts,
+        }
+      }
+    }
+    return nested as unknown as AppConfig
+  },
+  /**
+   * True only inside an Electron Mochi window, where shell IPC exists.
+   *
+   * A BOOLEAN, and deliberately not a method-presence test: the shell-backed
+   * members below (`machinePrefs`, `setPetInstance`, `instancesList`) are
+   * assigned unconditionally from petBridge, so they are DEFINED in a plain
+   * browser tab too and merely resolve null/false there. A `!api.setPetInstance`
+   * style guard therefore never fires and silently renders a dead control.
+   */
+  hasShell: pet.hasShell,
+  machinePrefs: pet.machinePrefs,
+  setPetInstance: pet.setPetInstance,
+  instancesList: pet.instancesList,
   updateConfig: async (partial: Partial<NestedConfig>): Promise<void> => {
     const flat = flattenConfig(partial)
     if (Object.keys(flat).length === 0) return

@@ -108,13 +108,25 @@ vi.mock('../utils/terminalRegistry', () => ({
   sendRawToTerminalSession: (_id: string, data: string) => { sent.push(data); return true },
 }))
 
-function mockComplete(
-  entries: { name: string; dir: boolean; at?: number }[], prefix = '', dir = '/work',
-) {
+interface MockEntry {
+  name: string
+  dir?: boolean
+  at?: number
+  kind?: 'sub' | 'flag'
+  desc?: string
+  nospace?: boolean
+}
+
+function mockComplete(entries: MockEntry[], prefix = '', dir: string | null = '/work') {
   return vi.fn().mockResolvedValue({
     ok: true,
     json: async () => ({ entries, prefix, dir, truncated: false, cwd: dir }),
   })
+}
+
+/** A command-tier reply: `dir` is null, and each entry carries a `kind`. */
+function mockCommand(entries: MockEntry[], prefix = '') {
+  return mockComplete(entries, prefix, null)
 }
 
 /** Render under a fresh QueryClient — the listing is a React Query. */
@@ -158,15 +170,37 @@ describe('TerminalCompletion', () => {
 
     expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
     expect(screen.getByText('KiroCrew/')).toBeInTheDocument()
-    // `cd` is a directory-only command, so the request narrows the listing.
+    // `cd` is a directory-only command, so the request narrows the listing. No
+    // `argv`: its ABSENCE is what selects the path tier server-side.
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body).toEqual({ session_id: 's1', token: '../', folders_only: true })
   })
 
-  it('does not open for a non-path command', async () => {
-    const fetchMock = mockComplete([{ name: 'x', dir: false }])
+  it('asks the command tier for a non-path command, and stays shut when it has nothing', async () => {
+    // `echo` is not a path command and `hello` cannot be a path, so this is the
+    // command tier's word — but `echo` speaks no completion protocol, so the
+    // backend answers with no entries and no menu appears.
+    const fetchMock = mockComplete([])
     vi.stubGlobal('fetch', fetchMock)
     const line = `${PROMPT}echo hello`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body).toEqual({
+      session_id: 's1', token: 'hello', folders_only: false, argv: ['echo'],
+    })
+    expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+  })
+
+  it('asks for nothing while the command name itself is being typed', async () => {
+    // No command word yet, so neither tier applies: completing the command NAME
+    // is out of scope, and there is nothing to complete a path or a subcommand
+    // against.
+    const fetchMock = mockComplete([{ name: 'x', dir: false }])
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}gh`
     const h = makeTerm(line, line.length)
     renderCompletion(h.term)
     await trigger(h)
@@ -799,5 +833,213 @@ describe('TerminalCompletion', () => {
     renderCompletion(h.term)
     await trigger(h)
     expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
+  })
+})
+
+describe('TerminalCompletion — command tier', () => {
+  it('offers subcommands with their descriptions for `gh pr `', async () => {
+    const fetchMock = mockCommand([
+      { name: 'create', kind: 'sub', desc: 'Create a pull request' },
+      { name: 'checkout', kind: 'sub', desc: 'Check out a pull request in git' },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}gh pr `
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    const menu = screen.getByTestId('terminal-completion')
+    expect(menu).toHaveAttribute('data-mode', 'command')
+    expect(screen.getByText('create')).toBeInTheDocument()
+    // The tool's own help is what answers "what does this do" — the question that
+    // would otherwise send the user to `--help`.
+    expect(screen.getAllByText('Create a pull request')).toHaveLength(2)
+    // Full argv, so the backend knows WHERE in the command tree the cursor is.
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      session_id: 's1', token: '', folders_only: false, argv: ['gh', 'pr'],
+    })
+  })
+
+  it('sends the whole argv, flag words included', async () => {
+    // Cobra's position in its own tree depends on the flags already typed, so
+    // dropping `--repo o/r` would ask about a different command.
+    const fetchMock = mockCommand([{ name: 'list', kind: 'sub', desc: '' }])
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}gh --repo o/r pr `
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).argv)
+      .toEqual(['gh', '--repo', 'o/r', 'pr'])
+  })
+
+  it('completes a flag word, which the path tier refuses outright', async () => {
+    const fetchMock = mockCommand([
+      { name: '--title', kind: 'flag', desc: 'Title for the pull request' },
+    ], '--ti')
+    vi.stubGlobal('fetch', fetchMock)
+    const line = `${PROMPT}gh pr create --ti`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).token).toBe('--ti')
+  })
+
+  it('types an accepted flag verbatim — no `./` path guard', async () => {
+    // The guard exists so a FILE called `--force` is typed as `./--force`. A FLAG
+    // called `--force` must be typed as `--force`; `./--force` would name a path
+    // that does not exist. Same characters, opposite correct answers.
+    vi.stubGlobal('fetch', mockCommand([{ name: '--force', kind: 'flag', desc: '' }], '--f'))
+    const line = `${PROMPT}gh pr merge --f`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    await act(async () => { h.key({ key: 'Enter' }) })
+    expect(sent).toEqual(['orce '])
+  })
+
+  it('appends no separator when the protocol says the value is unfinished', async () => {
+    // cobra's NoSpace directive: the cursor must land where the value goes, not one
+    // space past it. Shown on a cobra tool rather than git, because git flag
+    // completion is refused outright (its probe could execute a `!` alias).
+    vi.stubGlobal('fetch', mockCommand(
+      [{ name: '--message=', kind: 'flag', desc: '', nospace: true }], '--m',
+    ))
+    const line = `${PROMPT}gh pr create --m`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    await act(async () => { h.key({ key: 'Enter' }) })
+    expect(sent).toEqual(['essage='])
+  })
+
+  it('re-opens on the next word after a subcommand, to walk down the tree', async () => {
+    // The path tier suppresses the empty word after accepting a FILE (the word is
+    // finished). A subcommand is the opposite: accepting `pr` should immediately
+    // offer `create`, which is how the tree is walked without typing.
+    vi.stubGlobal('fetch', mockCommand([{ name: 'pr', kind: 'sub', desc: 'Manage PRs' }], 'p'))
+    const line = `${PROMPT}gh p`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    await act(async () => { h.key({ key: 'Enter' }) })
+    expect(sent).toEqual(['r '])
+
+    // The echo lands and the cursor moves on: the next word is empty and the menu
+    // is NOT suppressed, so a fresh request goes out for `gh pr `.
+    const next = `${PROMPT}gh pr `
+    h.setLine(next)
+    h.setCursor(next.length)
+    await trigger(h)
+    expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
+  })
+
+  it('shows no description bar when the protocol supplies no help text', async () => {
+    // git's `--list-cmds` returns bare names. An empty strip under the rows would
+    // read as a rendering bug.
+    vi.stubGlobal('fetch', mockCommand([
+      { name: 'commit', kind: 'sub', desc: '' },
+      { name: 'checkout', kind: 'sub', desc: '' },
+    ], 'c'))
+    const line = `${PROMPT}git c`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    const menu = screen.getByTestId('terminal-completion')
+    expect(menu).toHaveAttribute('data-mode', 'command')
+    // Two option rows and nothing else — no caption element.
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    expect(menu.querySelector('.border-t')).toBeNull()
+  })
+
+  it('does not synthesise the "use this folder" row in command mode', async () => {
+    // That row confirms a directory the user already named. A subcommand list has
+    // no such case, and offering it would be an unacceptable no-op row.
+    vi.stubGlobal('fetch', mockCommand([{ name: 'add', kind: 'sub', desc: '' }]))
+    const line = `${PROMPT}git remote `
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    const rows = screen.getAllByRole('option')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute('aria-label', 'add')
+  })
+
+  it('aborts acceptance when the command word changed under the same token', async () => {
+    // The bug this pins: `gh pr c` and `git c` share the token `c`, so a
+    // token-only staleness check let a menu computed for one tool be accepted into
+    // the other's command line — silently corrupting it.
+    vi.stubGlobal('fetch', mockCommand([{ name: 'checkout', kind: 'sub', desc: '' }], 'c'))
+    const line = `${PROMPT}gh pr c`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+    expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
+
+    // Same token, different command. Enter must go to the shell untouched.
+    const changed = `${PROMPT}git c`
+    h.setLine(changed)
+    h.setCursor(changed.length)
+    let passedThrough = false
+    await act(async () => { passedThrough = h.key({ key: 'Enter' }).passedThrough })
+    expect(passedThrough).toBe(true)
+    expect(sent).toEqual([])
+  })
+
+  it('drops an entry that does not belong to the tier that was asked for', async () => {
+    // The tier the CLIENT asked for decides how an accepted value is typed —
+    // escaped and `./`-guarded for a path, verbatim for a command token. An entry
+    // arriving without a recognised `kind` therefore cannot be reinterpreted as
+    // the other kind; it is dropped, and with nothing left the menu stays shut.
+    vi.stubGlobal('fetch', mockComplete(
+      [{ name: '--rf', kind: 'bogus' as unknown as 'sub', desc: '' }], '--r', null,
+    ))
+    const line = `${PROMPT}gh pr --r`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+    await act(async () => { h.key({ key: 'Enter' }) })
+    expect(sent).toEqual([])
+  })
+
+  it('drops a command value that is not a protocol-shaped token', async () => {
+    // The command tier types its values WITHOUT escaping, so a value carrying
+    // shell metacharacters is refused rather than escaped — there is no such flag,
+    // and inserting `--x; rm -rf ~` verbatim would be a command injection.
+    vi.stubGlobal('fetch', mockCommand([
+      { name: '--x; rm -rf ~', kind: 'flag', desc: 'hostile' },
+      { name: '--safe', kind: 'flag', desc: 'ok' },
+    ], '--'))
+    const line = `${PROMPT}gh pr --`
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    const rows = screen.getAllByRole('option')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute('aria-label', '--safe')
+  })
+
+  it('does not offer a path entry through the command tier', async () => {
+    // A path listing has no business carrying `kind`, and a command listing has no
+    // business carrying bare filesystem entries — either would mean the tiers had
+    // crossed, so each drops what is not its own.
+    vi.stubGlobal('fetch', mockCommand([{ name: 'notes', dir: true }]))
+    const line = `${PROMPT}gh pr `
+    const h = makeTerm(line, line.length)
+    renderCompletion(h.term)
+    await trigger(h)
+
+    expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
   })
 })

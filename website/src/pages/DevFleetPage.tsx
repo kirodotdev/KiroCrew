@@ -22,6 +22,7 @@ import {
 import * as api from './devFleetApi'
 
 import { i18nT } from '../i18n/t'
+import { compareText } from '../i18n/format'
 /* ─── Notification helper (replaces useNotify) ─── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _dispatch: any = null
@@ -344,21 +345,90 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
 }
 
 interface ConfirmBtnProps { title: string; desc: string; confirmLabel?: string; onConfirm: () => void; btn?: Record<string, unknown>; children: ReactNode }
+// Confirm popover width, and the height estimate that drives the flip
+// decision. The estimate only picks a side; `maxHeight` + `overflowY` below
+// keep the popover inside the viewport even when a locale's `desc` wraps to
+// more lines than assumed here.
+const CONFIRM_W = 264
+const CONFIRM_EST_H = 140
 function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: ConfirmBtnProps) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLSpanElement>(null)
+  // Trigger rect captured on open; drives the portaled popover's fixed
+  // position. Same approach as MenuBtn above: an absolutely positioned
+  // popover is clipped by the row's `.card-glow { overflow: hidden }`
+  // ancestor, so it must be portaled to <body> instead.
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    // Portaled to <body>, so the popover is not a DOM descendant of the
+    // trigger — the outside-click guard must exclude BOTH, or every click
+    // inside the popover (including Cancel/Start) would close it first.
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!triggerRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); triggerRef.current?.focus() } }
+    // position:fixed desyncs from any scrolling ancestor — close on scroll
+    // (capture phase catches nested scrollers) and on resize.
+    const onScrollOrResize = () => setOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onScrollOrResize, true)
+      window.removeEventListener('resize', onScrollOrResize)
+    }
+  }, [open])
+
+  const toggle = () => {
+    if (!open && triggerRef.current) setRect(triggerRef.current.getBoundingClientRect())
+    setOpen((o) => !o)
+  }
+
+  // Right-align to the trigger (as before), clamped so the popover never sits
+  // flush against a viewport edge. Open downward by default; flip up when
+  // there is no room below and more room above. Either `top` or `bottom` is
+  // set, never both.
+  const spaceBelow = rect ? window.innerHeight - rect.bottom - MENU_GAP : 0
+  const spaceAbove = rect ? rect.top - MENU_GAP : 0
+  const openUp = !!rect && spaceBelow < CONFIRM_EST_H + MENU_MARGIN && spaceAbove > spaceBelow
+  const avail = Math.max(80, (openUp ? spaceAbove : spaceBelow) - MENU_MARGIN)
+  const posStyle: CSSProperties = rect
+    ? {
+        position: 'fixed',
+        right: Math.max(MENU_MARGIN, window.innerWidth - rect.right),
+        ...(openUp
+          ? { bottom: window.innerHeight - rect.top + MENU_GAP }
+          : { top: rect.bottom + MENU_GAP }),
+        maxHeight: avail,
+      }
+    : { position: 'fixed' }
+
   return (
-    <span ref={ref} style={{ position: 'relative', display: 'inline-flex' } as CSSProperties}>
-      <Btn {...(btn || {})} onClick={() => setOpen(!open)}>{children}</Btn>
-      {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 1200, background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', width: 264, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', textAlign: 'left' as const } as CSSProperties}>
+    <span style={{ display: 'inline-flex' } as CSSProperties}>
+      <Btn ref={triggerRef} {...(btn || {})} onClick={toggle} aria-haspopup="dialog" aria-expanded={open}>{children}</Btn>
+      {open && rect && createPortal(
+        <div
+          ref={popRef}
+          role="dialog"
+          aria-label={title}
+          data-placement={openUp ? 'up' : 'down'}
+          style={{ ...posStyle, zIndex: 4000, overflowY: 'auto', background: 'var(--card, #16161a)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px', width: CONFIRM_W, boxShadow: '0 8px 24px rgba(0,0,0,0.45)', textAlign: 'left' as const } as CSSProperties}
+        >
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>{title}</div>
           <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>{desc}</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' } as CSSProperties}>
             <Btn onClick={() => setOpen(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn>
             <Btn primary onClick={() => { setOpen(false); onConfirm() }}>{confirmLabel || i18nT('pages.devFleetPage.start')}</Btn>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   )
@@ -377,7 +447,7 @@ interface Worktree {
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
   path?: string
 }
-interface FleetData { worktrees: Worktree[]; error?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
+interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; phase: number; phaseAt?: number; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -1069,16 +1139,33 @@ export default function DevFleetPage() {
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
   const statusRank = (w: Worktree) => (w.is_main ? 0 : w.running ? 1 : (!w.has_dist ? 3 : 2))
+  // Secondary key for the status sort: the PR pill is the other "status" on a
+  // row, so rows with equal pod status order by review state — active work
+  // (open, then draft) floats up and finished work (closed, then merged)
+  // sinks to the bottom of its group, next in spirit to the Prune-merged
+  // button. Without this, a fleet that is mostly not-built degenerates into
+  // a plain alphabetical list with open/merged pills interleaved at random.
+  // Check order mirrors reviewState() below so the sort always agrees with
+  // the rendered pill.
+  const prRank = (w: Worktree) => {
+    if (!w.pr) return 2
+    const s = String(w.pr.state || '').toUpperCase()
+    if (s === 'MERGED') return 4
+    if (s === 'DRAFT' || w.pr.isDraft) return 1
+    if (s === 'OPEN') return 0
+    if (s === 'CLOSED') return 3
+    return 2 // unknown state — rank with the PR-less rows
+  }
   const mainRows = wts.filter((w) => w.is_main)
   const legacyAll = wts.filter((w) => !w.is_main && w.legacy)
   const others = wts.filter((w) => !w.is_main && matchesRow(w) && (showLegacy || !w.legacy))
   others.sort((a, b) => sortBy === 'name'
-    ? a.name.localeCompare(b.name)
+    ? compareText(a.name, b.name)
     : sortBy === 'recent'
-      ? ((b.last_updated_at || 0) - (a.last_updated_at || 0)) || a.name.localeCompare(b.name)
+      ? ((b.last_updated_at || 0) - (a.last_updated_at || 0)) || compareText(a.name, b.name)
       : sortBy === 'behind'
-        ? ((b.behind || 0) - (a.behind || 0)) || a.name.localeCompare(b.name)
-        : (statusRank(a) - statusRank(b)) || a.name.localeCompare(b.name))
+        ? ((b.behind || 0) - (a.behind || 0)) || compareText(a.name, b.name)
+        : (statusRank(a) - statusRank(b)) || (prRank(a) - prRank(b)) || compareText(a.name, b.name))
   const visible = [...mainRows, ...others]
 
   const reviewState = (w: Worktree) => {
@@ -1277,7 +1364,17 @@ export default function DevFleetPage() {
           <div style={{ minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', overflow: 'hidden' } as CSSProperties}>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.name}</span>
             {w.dirty ? <span title={i18nT('pages.devFleetPage.uncommitted_changes')}>{"\u2022"}</span> : null}
-            {w.is_main ? <span style={mut}>{i18nT('pages.devFleetPage.main')}</span> : null}
+            {/* The primary checkout can be left parked on a feature branch (a
+                past PR checked out in place and never switched back). The row's
+                name is hardcoded to the base branch, so without this badge the
+                fleet renders "main" while every git fact on the row (PR pill,
+                behind count) describes the parked branch — and the user only
+                learns the truth when Pull+Build refuses to sync. Requires
+                base_branch in the payload so an absent field can never
+                false-flag a repo whose base is not literally "main". */}
+            {w.is_main ? (fleet?.base_branch && w.branch && w.branch !== fleet.base_branch
+              ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_primary_checkout_is_on_branch_not_base', { branch: w.branch, base: fleet.base_branch })}>{i18nT('pages.devFleetPage.parked_on_branch', { branch: w.branch })}</Badge>
+              : <span style={mut}>{i18nT('pages.devFleetPage.main')}</span>) : null}
             {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_live_gateway_on_this_port_runs_from_this_che')}>{i18nT('pages.devFleetPage.live')}</Badge> : null}
             {/* A staged cutover outlives the toast that announced it: without a
                 persistent marker an operator who dismissed or missed the toast

@@ -61,6 +61,19 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PERF_ATTEMPTS = 5
 _PERF_MIN_BASE_SECS = 0.020
 
+# Baseline workloads, tried in order until one produces a measurable baseline.
+# A single fixed size cannot serve both ends of the hardware range: 20k costs a
+# fast machine ~19-21ms, which straddles the floor above, so the ratio went
+# UNJUDGED on a large fraction of runs -- the check reported `ok` while testing
+# nothing. Growing the workload buys a measurable baseline instead of abandoning
+# the check.
+#
+# Escalating is close to free because a REGRESSED scan never reaches it: its
+# baseline is ~25x the linear one, so it clears the floor at the first size and
+# is judged there. Only linear scans -- the fast case -- ever pay for a larger
+# size, and a slow runner clears the floor at 20k and pays nothing at all.
+_PERF_BASE_SIZES = (20_000, 50_000, 120_000)
+
 # ---------------------------------------------------------------------------
 # What counts as a misspelling
 # ---------------------------------------------------------------------------
@@ -665,23 +678,37 @@ def self_test() -> int:
                 best, best_pair = candidate, (base_time, doubled_time)
         return (0.0 if best is math.inf else best), best_pair[0], found[0], found[1]
 
-    ratio, base_time, base_found, doubled_found = ratio_of(20_000)
-    if (base_found, doubled_found) != (20_000, 40_000):
-        print(f"  FAIL repeated-brands: found {base_found}/{doubled_found}, want 20000/40000")
+    # Grow the workload until the baseline is big enough to divide. `ratio_of`
+    # is only called again when the previous size came in under the floor, so
+    # the common cases cost exactly one call.
+    base_count = 0
+    ratio = base_time = 0.0
+    base_found = doubled_found = 0
+    for base_count in _PERF_BASE_SIZES:
+        ratio, base_time, base_found, doubled_found = ratio_of(base_count)
+        if base_time >= _PERF_MIN_BASE_SECS:
+            break
+
+    if (base_found, doubled_found) != (base_count, base_count * 2):
+        print(f"  FAIL repeated-brands: found {base_found}/{doubled_found}, "
+              f"want {base_count}/{base_count * 2}")
         failures += 1
     elif base_time < _PERF_MIN_BASE_SECS:
-        # Too small to divide. Quadratic growth at this size costs far more than
-        # the floor, so a baseline under it cannot be hiding a regression --
-        # report the fact rather than dividing noise by noise.
-        print(f"  ok   repeated-brands (baseline {base_time * 1000:.1f}ms below the "
-              f"{_PERF_MIN_BASE_SECS * 1000:.0f}ms measurement floor; ratio not judged)")
+        # Even the largest workload was too fast to measure. Quadratic growth at
+        # that size costs orders of magnitude more than the floor, so this cannot
+        # be hiding a regression -- report the fact rather than dividing noise by
+        # noise.
+        print(f"  ok   repeated-brands (baseline {base_time * 1000:.1f}ms at {base_count} "
+              f"brands still below the {_PERF_MIN_BASE_SECS * 1000:.0f}ms measurement "
+              f"floor; ratio not judged)")
     elif ratio > 3.0:
         print(f"  FAIL repeated-brands: doubling the input cost {ratio:.1f}x CPU time "
-              f"(best of {_PERF_ATTEMPTS}, baseline {base_time:.3f}s); linear is ~2x, "
-              f"so a per-match scan of the line has come back")
+              f"(best of {_PERF_ATTEMPTS}, baseline {base_time:.3f}s at {base_count} "
+              f"brands); linear is ~2x, so a per-match scan of the line has come back")
         failures += 1
     else:
-        print(f"  ok   repeated-brands (doubling cost {ratio:.1f}x, linear)")
+        print(f"  ok   repeated-brands (doubling cost {ratio:.1f}x at {base_count} "
+              f"brands, linear)")
 
     # A wider fence is not closed by a narrower run inside it, so a doc can quote
     # a fenced example without exposing its contents as prose.

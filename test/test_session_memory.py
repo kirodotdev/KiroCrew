@@ -442,3 +442,371 @@ def test_runtime_pids_skips_dead_manager_runtimes() -> None:
 
     keys = {r["key"] for r in mgr.runtime_pids()}
     assert "Background runtime" not in keys
+
+
+# ── orphan detection (_all_runtime_pids / _unattributed) ───────────────────
+
+
+def test_all_runtime_pids_returns_none_on_non_linux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """None means 'cannot ask', not 'none found'."""
+    monkeypatch.setattr(sm.sys, "platform", "darwin")
+    assert sm._all_runtime_pids() is None
+
+
+def test_all_runtime_pids_finds_matching_cmdlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sm.sys, "platform", "linux")
+    monkeypatch.setattr(sm.os, "listdir", lambda path: ["1", "2", "3", "notpid"])
+    cmdlines = {
+        1: "python -m kirocrew_sandbox --port 8811",
+        2: "/usr/bin/kiro-cli chat --agent kirocrew",
+        3: "vim session_memory.py",
+    }
+    monkeypatch.setattr(sm, "_read_cmdline", lambda pid: cmdlines.get(pid, ""))
+    assert sm._all_runtime_pids() == {1, 2}
+
+
+def test_unattributed_returns_none_when_platform_cannot_enumerate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """null in the payload, NOT a zero record."""
+    monkeypatch.setattr(sm, "_all_runtime_pids", lambda: None)
+    result = sm._unattributed(set(), 999)
+    assert result is None
+
+
+def test_unattributed_excludes_owned_and_gateway_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Owned pids + the gateway's own tree must be subtracted from every runtime."""
+    # Pretend pids 10, 20, 30, 40 are runtimes
+    monkeypatch.setattr(sm, "_all_runtime_pids", lambda: {10, 20, 30, 40})
+    # Owned set from sessions: 10, 20
+    owned = {10, 20}
+    # Gateway pid 99 with descendants 99, 100, 101 -- 30 is the gateway's child
+    monkeypatch.setattr(
+        sm, "_iter_descendant_pids", lambda pid: [99, 100, 101, 30] if pid == 99 else []
+    )
+    monkeypatch.setattr(sm, "_rss_mb_for_pid", lambda pid: 512.0)
+    monkeypatch.setattr(sm, "_process_uptime_s", lambda pid: 3600.0)
+    result = sm._unattributed(owned, 99)
+    assert result is not None
+    # Only pid 40 is unattributed (10,20 owned; 30 in gateway tree)
+    assert result["procs"] == 1
+    assert result["rss_mb"] == 512.0
+    assert result["oldest_uptime_s"] == 3600.0
+
+
+def test_rss_mb_for_pid_returns_none_on_unreadable_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A vanished/restricted pid returns None without raising."""
+
+    def _raise(*_a: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("builtins.open", _raise)
+    assert sm._rss_mb_for_pid(99999) is None
+
+
+def test_unattributed_rss_is_none_when_every_pid_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """procs counts the pids even when RSS is unreadable for all of them."""
+    monkeypatch.setattr(sm, "_all_runtime_pids", lambda: {50, 51})
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [])
+    monkeypatch.setattr(sm, "_rss_mb_for_pid", lambda pid: None)
+    monkeypatch.setattr(sm, "_process_uptime_s", lambda pid: None)
+    result = sm._unattributed(set(), 1)
+    assert result is not None
+    assert result["procs"] == 2
+    assert result["rss_mb"] is None
+
+
+def test_oldest_uptime_reports_maximum_age(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The MAXIMUM age across the orphan set, not first or last."""
+    monkeypatch.setattr(sm, "_all_runtime_pids", lambda: {60, 61, 62})
+    monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [])
+    monkeypatch.setattr(sm, "_rss_mb_for_pid", lambda pid: 100.0)
+    ages = {60: 100.0, 61: 9999.0, 62: 500.0}
+    monkeypatch.setattr(sm, "_process_uptime_s", lambda pid: ages.get(pid))
+    result = sm._unattributed(set(), 1)
+    assert result is not None
+    assert result["oldest_uptime_s"] == 9999.0
+
+
+# ── credits / turns (slot_spend — unified aggregator in usage.py) ──────────
+
+
+def test_slot_spend_sums_credits_and_counts_turns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """A slot with shard rows gets summed credits and a turns count."""
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    now = datetime.now(timezone.utc)
+    shard = tmp / now.strftime("%Y-%m-%d.jsonl")
+    rows = [
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-1-999", "credits": 5.5},
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-1-999", "credits": 3.2},
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "slack:C123", "credits": 10.0},
+    ]
+    shard.write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "is_session_slot", lambda s: True)
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+
+    result = usage.slot_spend()
+    # Bare chat keys are normalized to their full session key form.
+    assert result["dashboard:chat-1-999"]["credits"] == pytest.approx(8.7)
+    assert result["dashboard:chat-1-999"]["turns"] == 2
+    # Non-dashboard keys pass through unchanged.
+    assert result["slack:C123"]["credits"] == pytest.approx(10.0)
+    assert result["slack:C123"]["turns"] == 1
+
+
+def test_slot_spend_returns_empty_for_no_shards(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """A slot with no rows means credits=None and turns=None in the payload."""
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    tmp.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+
+    result = usage.slot_spend()
+    assert result == {}
+
+
+def test_slot_spend_drops_nan_and_infinity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """NaN/Infinity in a shard row must not poison the slot total."""
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    now = datetime.now(timezone.utc)
+    shard = tmp / now.strftime("%Y-%m-%d.jsonl")
+    rows = [
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-5-111", "credits": float("nan")},
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-5-111", "credits": float("inf")},
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-5-111", "credits": 7.0},
+    ]
+    shard.write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "is_session_slot", lambda s: True)
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+
+    result = usage.slot_spend()
+    # Only the valid row (7.0) survives
+    assert result["dashboard:chat-5-111"]["credits"] == pytest.approx(7.0)
+    assert result["dashboard:chat-5-111"]["turns"] == 1
+
+
+def test_slot_spend_cache_expires_as_the_cutoff_moves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """A row aging past the cutoff drops out even when no shard file changes.
+
+    The cache is keyed on shard size + mtime, but the result also depends on
+    ``cutoff = now - days*86400``, which moves continuously. On an idle machine
+    nothing writes a shard, so without a time component in the cache key a row
+    that has aged out keeps being counted -- the number goes silently wrong.
+    """
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    real_now = datetime.now(timezone.utc)
+    # 30s inside the 7-day window, so a small clock advance takes it outside.
+    row_ts = real_now - timedelta(days=usage.SPEND_WINDOW_DAYS) + timedelta(seconds=30)
+    shard = tmp / real_now.strftime("%Y-%m-%d.jsonl")
+    shard.write_text(
+        _json.dumps({
+            "_type": "tokens",
+            "ts": row_ts.isoformat(),
+            "slot": "chat-9-777",
+            "credits": 4.0,
+        }) + "\n",
+    )
+
+    # Pin the shard SET so this exercises the cache key alone; otherwise a clock
+    # advance across midnight could invalidate it by changing which files match.
+    monkeypatch.setattr(usage, "_shards_in_window", lambda days: [shard])
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "is_session_slot", lambda s: True)
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_AT", 0.0)
+
+    clock = {"t": real_now.timestamp()}
+    monkeypatch.setattr(usage.time, "time", lambda: clock["t"])
+
+    first = usage.slot_spend()
+    assert first["dashboard:chat-9-777"]["credits"] == pytest.approx(4.0)
+
+    # Advance past the TTL. The row is now older than the window; the shard file
+    # is untouched, so the signature is identical.
+    clock["t"] += usage._SLOT_SPEND_TTL_S + 1
+    second = usage.slot_spend()
+    assert "dashboard:chat-9-777" not in second, (
+        "row aged past the cutoff but the cache still served it"
+    )
+
+
+def test_slot_spend_excludes_non_session_slots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """A non-session slot must not appear in the mapping."""
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    now = datetime.now(timezone.utc)
+    shard = tmp / now.strftime("%Y-%m-%d.jsonl")
+    rows = [
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "internal:pool-0", "credits": 50.0},
+        {"_type": "tokens", "ts": now.isoformat(), "slot": "chat-9-222", "credits": 2.0},
+    ]
+    shard.write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "is_session_slot", lambda s: s.startswith("chat-"))
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+
+    result = usage.slot_spend()
+    assert "internal:pool-0" not in result
+    assert "dashboard:chat-9-222" in result
+
+
+def test_slot_spend_cache_invalidates_on_shard_growth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """Cache returns the same object when shards unchanged, recomputes on growth."""
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    now = datetime.now(timezone.utc)
+    shard = tmp / now.strftime("%Y-%m-%d.jsonl")
+    shard.write_text(
+        _json.dumps({"_type": "tokens", "ts": now.isoformat(),
+                     "slot": "chat-7-333", "credits": 1.0}) + "\n"
+    )
+
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "is_session_slot", lambda s: True)
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+
+    first = usage.slot_spend()
+    second = usage.slot_spend()
+    assert first is second, "cache should return same object on unchanged shards"
+
+    # Append a new row -> shard grows
+    with shard.open("a") as fh:
+        fh.write(
+            _json.dumps({"_type": "tokens", "ts": now.isoformat(),
+                         "slot": "chat-7-333", "credits": 2.0}) + "\n"
+        )
+
+    third = usage.slot_spend()
+    assert third is not first, "cache should invalidate after shard growth"
+    assert third["dashboard:chat-7-333"]["credits"] == pytest.approx(3.0)
+    assert third["dashboard:chat-7-333"]["turns"] == 2
+
+
+# ── Regression: Sessions table and Spend tab share the same window ─────────
+
+
+def test_slot_spend_window_matches_cost_breakdown_window() -> None:
+    """The Sessions table and the Spend tab MUST use the same window.
+
+    Regression pin: the old code used _CREDITS_WINDOW_DAYS=14 in session_memory
+    while cost_breakdown defaulted to 7. A turn aged 8-14 days was counted by
+    Sessions but not Spend, making the two disagree.
+    """
+    # Both use the same constant; this pinning test catches any drift.
+    import inspect
+
+    from kiro_crew.dashboard.handlers import usage
+
+    sig = inspect.signature(usage.cost_breakdown)
+    cost_default = sig.parameters["days"].default
+    assert cost_default == usage.SPEND_WINDOW_DAYS
+    # slot_spend also uses the same default
+    sig2 = inspect.signature(usage.slot_spend)
+    assert sig2.parameters["days"].default == usage.SPEND_WINDOW_DAYS
+
+
+def test_slot_spend_applies_per_row_timestamp_cutoff(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object,
+) -> None:
+    """A row inside the boundary shard but older than the cutoff is NOT counted.
+
+    Regression pin: the old _slot_spend in session_memory filtered by shard file
+    date only, not by each row's timestamp. A shard named 2026-08-01 (within
+    window) could contain rows timestamped 2026-07-25 (outside the per-row
+    cutoff) which were then over-counted.
+    """
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    from kiro_crew.dashboard.handlers import usage
+
+    tmp = Path(str(tmp_path))
+    now = datetime.now(timezone.utc)
+    # Create a shard with today's date (will be picked up by _shards_in_window)
+    shard = tmp / now.strftime("%Y-%m-%d.jsonl")
+
+    # One recent row (should be counted) and one old row (should NOT be counted)
+    recent_ts = now.isoformat()
+    old_ts = (now - timedelta(days=usage.SPEND_WINDOW_DAYS + 1)).isoformat()
+    rows = [
+        {"_type": "tokens", "ts": recent_ts, "slot": "chat-1-999", "credits": 5.0},
+        {"_type": "tokens", "ts": old_ts, "slot": "chat-1-999", "credits": 100.0},
+    ]
+    shard.write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+
+    monkeypatch.setattr(usage, "_TOKEN_USAGE_DIR", tmp)
+    monkeypatch.setattr(usage, "is_session_slot", lambda s: True)
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE", {})
+    monkeypatch.setattr(usage, "_SLOT_SPEND_CACHE_SIG", ())
+
+    result = usage.slot_spend()
+    # Only the recent row is counted; the 100-credit old row is excluded.
+    assert result["dashboard:chat-1-999"]["credits"] == pytest.approx(5.0)
+    assert result["dashboard:chat-1-999"]["turns"] == 1

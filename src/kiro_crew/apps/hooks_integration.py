@@ -206,10 +206,18 @@ async def on_app_enable(
     return result
 
 
-async def on_app_disable(app_name: str, app_info: dict[str, Any]) -> dict[str, Any]:
+async def on_app_disable(
+    app_name: str, app_info: dict[str, Any], *, run_app_hooks: bool = True
+) -> dict[str, Any]:
     """Called before an app is disabled — deregister routes and invoke shutdown hook.
 
-    Returns dict with hook results.
+    ``run_app_hooks=False`` skips the app's OWN ``on_shutdown`` hook while still
+    doing everything the GATEWAY owns (route deregistration, cron cleanup). The
+    caller passes it when there is no reason to believe the app is running: its
+    shutdown hook is third-party code, and *starting* that code as part of
+    withdrawing its permission to run would turn the security operation into an
+    execution vector. Nothing that STOPS something is ever skipped by this flag —
+    see the split in ``apps/teardown.py``.
     """
     result: dict[str, Any] = {}
     manifest = app_info.get("manifest", {})
@@ -226,7 +234,7 @@ async def on_app_disable(app_name: str, app_info: dict[str, Any]) -> dict[str, A
 
     # Invoke on_shutdown hook if declared
     shutdown_hook = hooks.get("on_shutdown", "")
-    if shutdown_hook and _lifecycle_dispatcher:
+    if shutdown_hook and _lifecycle_dispatcher and run_app_hooks:
         success = await _lifecycle_dispatcher._invoke(
             app_name,
             shutdown_hook,

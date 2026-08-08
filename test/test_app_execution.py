@@ -386,8 +386,8 @@ class TestExecutionDecision:
         assert len(events) == 1
         assert events[0]["operation"] == "app_execution_admission"
         assert events[0]["outcome"] == "denied"
-        assert "app=audit-app" in events[0]["resources"]
-        assert "action=open_command" in events[0]["resources"]
+        assert "app='audit-app'" in events[0]["resources"]
+        assert "action='open_command'" in events[0]["resources"]
 
     def test_allowed_with_working_audit_emits_event(self, monkeypatch) -> None:
         from kiro_crew.apps import execution
@@ -407,7 +407,7 @@ class TestExecutionDecision:
                 "caller": "dashboard",
                 "operation": "app_execution_admission",
                 "outcome": "allowed",
-                "resources": "app=audit-app action=open_command provenance=unverified",
+                "resources": "app='audit-app' action='open_command' provenance=unverified",
             }
         ]
 
@@ -553,13 +553,20 @@ class TestLaunchAndLifecycleBoundary:
         self, tmp_path, monkeypatch
     ) -> None:
         import kiro_crew.apps.routes as routes
+        from kiro_crew.apps import lifecycle_scripts
 
         _install_test_app(tmp_path, monkeypatch)
 
         async def _unexpected_spawn(*args, **kwargs):
             pytest.fail("lifecycle script spawned while execution was disabled")
 
-        monkeypatch.setattr(routes, "create_subprocess_limited", _unexpected_spawn)
+        # Patched where the runner now LIVES, not where it is re-exported. The
+        # function moved to `lifecycle_scripts` (so `teardown.py` can run
+        # `onDisable` without importing `routes` back), which means its globals
+        # resolve there. Left on `routes` this guard still passes — but vacuously,
+        # because a real spawn would reach the unpatched original instead of
+        # failing the test. A guard that cannot fire is worse than no guard.
+        monkeypatch.setattr(lifecycle_scripts, "create_subprocess_limited", _unexpected_spawn)
         result = await routes._run_lifecycle_script(
             "execution-test-app", "echo should-not-run", action="on_enable"
         )
@@ -571,12 +578,20 @@ class TestLaunchAndLifecycleBoundary:
         self, tmp_path, monkeypatch
     ) -> None:
         import kiro_crew.apps.routes as routes
-        from kiro_crew.apps import execution
+
+        # Patched on `lifecycle_scripts`, not `routes`: the runner moved there so
+        # that `teardown.py` can run `onDisable` without importing `routes` back
+        # (a cycle). `routes._run_lifecycle_script` is still the same function by
+        # alias, but its module globals now resolve in its new home — patching
+        # `routes.wrap_argv` here would silently miss and run the real sandbox.
+        from kiro_crew.apps import execution, lifecycle_scripts
 
         _install_test_app(tmp_path, monkeypatch)
         monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: True)
-        monkeypatch.setattr(routes, "wrap_argv", lambda argv, **kwargs: (argv, None))
-        monkeypatch.setattr(routes, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(
+            lifecycle_scripts, "wrap_argv", lambda argv, **kwargs: (argv, None)
+        )
+        monkeypatch.setattr(lifecycle_scripts, "cgroup_scope_argv", lambda argv: argv)
 
         class _Process:
             pid = 55
@@ -588,7 +603,7 @@ class TestLaunchAndLifecycleBoundary:
         async def _spawn(*argv, **kwargs):
             return _Process()
 
-        monkeypatch.setattr(routes, "create_subprocess_limited", _spawn)
+        monkeypatch.setattr(lifecycle_scripts, "create_subprocess_limited", _spawn)
         result = await routes._run_lifecycle_script(
             "execution-test-app", "echo admitted", action="on_enable"
         )
@@ -631,6 +646,83 @@ class TestLaunchAndLifecycleBoundary:
         meta = _read_installed("execution-test-app")
         assert meta is not None
         assert meta.enabled is False
+
+
+class TestTrustedGrantBounds:
+    """``execution.trusted_app_names`` bounds — the gate's per-decision cost.
+
+    The set is rebuilt on EVERY execution decision (each hook load, backend
+    spawn, bridge registration and boot-reconcile iteration), so an unbounded
+    name or an unbounded list turns a hand-edited ``config.json`` into a cost
+    multiplier on the hot path. The caps are a DoS bound, not a naming rule:
+    a too-long NAME is dropped (it can name no real app), while a too-long LIST
+    is TRUNCATED rather than emptied, because ``apps_trusted`` is append-ordered
+    — the operator's real grants sit at the front, and denying the whole list
+    would revoke them all over someone else's junk.
+    """
+
+    @staticmethod
+    def _seed(tmp_path, monkeypatch, entries: list) -> None:
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        (home / "config.json").write_text(
+            json.dumps({"agent": {"apps_trusted": entries}}), encoding="utf-8"
+        )
+
+    def test_name_at_the_cap_is_still_a_grant(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.apps.execution import _MAX_GRANT_NAME_LEN, trusted_app_names
+
+        at_cap = "a" * _MAX_GRANT_NAME_LEN
+        self._seed(tmp_path, monkeypatch, [at_cap])
+        # The cap is inclusive — bounding cost must not silently revoke a
+        # legitimate (if absurdly named) grant one character early.
+        assert at_cap in trusted_app_names()
+
+    def test_over_long_name_is_not_a_grant(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.apps.execution import (
+            _MAX_GRANT_NAME_LEN,
+            app_execution_denied,
+            trusted_app_names,
+        )
+
+        over = "a" * (_MAX_GRANT_NAME_LEN + 1)
+        self._seed(tmp_path, monkeypatch, [over])
+        assert over not in trusted_app_names()
+        # Postcondition, not just the set: the gate still DENIES that name.
+        assert app_execution_denied(over, action="module_load") is not None
+
+    def test_over_long_list_is_truncated_not_honoured_whole(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.apps.execution import _MAX_GRANT_ENTRIES, trusted_app_names
+
+        entries = [f"app-{i:04d}" for i in range(_MAX_GRANT_ENTRIES + 50)]
+        self._seed(tmp_path, monkeypatch, entries)
+        effective = trusted_app_names()
+
+        # Bounded: the work per execution decision cannot grow without limit.
+        assert len(effective) == _MAX_GRANT_ENTRIES
+        # Truncated from the TAIL — the operator's earliest (real) grants survive.
+        assert entries[0] in effective
+        assert entries[_MAX_GRANT_ENTRIES - 1] in effective
+        assert entries[_MAX_GRANT_ENTRIES] not in effective
+        assert entries[-1] not in effective
+
+    def test_over_long_list_still_admits_a_grant_at_the_front(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.apps.execution import (
+            _MAX_GRANT_ENTRIES,
+            app_execution_denied,
+        )
+
+        real = "real-grant-app"
+        padding = [f"junk-{i:04d}" for i in range(_MAX_GRANT_ENTRIES + 50)]
+        self._seed(tmp_path, monkeypatch, [real, *padding])
+        # Truncation is not a denial: the real grant is still enforced.
+        assert app_execution_denied(real, action="module_load") is None
+        assert app_execution_denied(padding[-1], action="module_load") is not None
 
 
 class TestRegistryAndProvenanceBoundary:

@@ -19,7 +19,108 @@ concurrency:
   # ~1.4min median merge gap, main gets periodic verdicts instead of none.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Tests that need capabilities the GH Actions runners lack (Linux-namespace
+# sandbox, a real git/gh, or POSIX rmtree/path assumptions). Deselected on
+# EVERY backend pytest invocation -- full AND reduced, Linux AND Windows --
+# from this single source so the lists cannot drift apart. They drifted once:
+# the reduced (frontend-only) runs omitted these, and the surface selector
+# legitimately lists test_dogfood_learnings.py as cross-surface, so a reduced
+# run re-ran a file the full run excludes and failed the shards. A --deselect
+# of a path a given run did not collect is a harmless no-op, so the reduced
+# runs carry the full list safely. Expanded UNQUOTED on purpose so it
+# word-splits into separate args (no deselect path contains a space).
+env:
+  BACKEND_DESELECTS: >-
+    --deselect=test/test_script_hooks.py
+    --deselect=test/test_cron_script.py
+    --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
+    --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py
+    --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
+
 jobs:
+  # ── Surface detection (issue #1556) ──────────────────────────────────
+  # Most tests only exercise their own surface, so a single-surface diff can
+  # skip the opposite suite's *provably* single-surface files. The selector
+  # (scripts/ci-surface-tests.py) is deny-by-default: every cross-surface
+  # parity guard -- and anything it cannot classify -- stays in the must-run
+  # set, so a heuristic miss costs CI time, never a skipped guard.
+  #
+  # only_backend / only_frontend are computed here ONCE. `backend` is a
+  # catch-all, so every changed file is exactly one of frontend / meta /
+  # backend: a diff that touches two buckets (or meta) leaves BOTH flags false
+  # and the full matrix runs.
+  changes:
+    name: Detect changed surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # dorny/paths-filter reads the PR's changed-file list from the GitHub REST
+    # API on pull_request events -> needs pull-requests:read. Job-level
+    # permissions REPLACE the top-level grant, so contents:read is restated.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      only_backend: ${{ steps.decide.outputs.only_backend }}
+      only_frontend: ${{ steps.decide.outputs.only_frontend }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # 'some-with-excludes': a file matches a filter when it matches at
+          # least one pattern AND none of the negated ones. That lets `backend`
+          # be a true CATCH-ALL ("every changed file that is not frontend and not
+          # meta") instead of an allowlist that would have to be complete to be
+          # safe. Every changed file therefore lands in exactly one bucket, which
+          # is what makes "only_X means only X changed" literally true -- an
+          # unrecognised path (docs/**, *.md, a new root file) counts as backend
+          # rather than silently riding along under a narrowed suite.
+          # NOTE: this quantifier requires >= v4.0.3 (added upstream in PR #322);
+          # v4.0.2 rejects the input and throws, so do not lower the pin.
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            frontend:
+              - 'website/**'
+            meta:
+              - '.github/**'
+              - 'scripts/**'
+            backend:
+              - '**'
+              - '!website/**'
+              - '!.github/**'
+              - '!scripts/**'
+
+      - name: Decide surface
+        id: decide
+        env:
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          BACKEND: ${{ steps.filter.outputs.backend }}
+          META: ${{ steps.filter.outputs.meta }}
+          # Escape hatch: the ci-full-run label forces the full matrix. NOTE:
+          # this workflow does not listen for the `labeled` event (that would
+          # re-run everything on every bot label), so the label takes effect on
+          # the NEXT push, not the instant it is applied.
+          FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
+        run: |
+          # A surface is "only" when it changed and NO other bucket did.
+          # `backend` is a catch-all, so an unrecognised path counts as backend
+          # and cannot ride along under a narrowed suite.
+          only_backend=false; only_frontend=false
+          if [ "$FULL_RUN" != "true" ] && [ "$META" != "true" ]; then
+            if [ "$BACKEND" = "true" ] && [ "$FRONTEND" != "true" ]; then only_backend=true; fi
+            if [ "$FRONTEND" = "true" ] && [ "$BACKEND" != "true" ]; then only_frontend=true; fi
+          fi
+          echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
+          echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
+          echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
   scrub-lint:
     name: De-Amazon Scrub Lint
     runs-on: ubuntu-latest
@@ -135,6 +236,7 @@ jobs:
 
   backend-test:
     name: Backend Tests
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -171,6 +273,32 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
+      - name: Select test scope
+        id: scope
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        # A frontend-only diff cannot affect a backend test that never touches
+        # the frontend surface, so we run only the files the selector could NOT
+        # prove single-surface (every parity guard, plus anything unclassified).
+        # Every failure path here falls back to the FULL suite on purpose --
+        # never trade a missed test for a faster run.
+        run: |
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full backend suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
         # committed .test_durations file the split is balanced by *recorded time*,
@@ -183,20 +311,39 @@ jobs:
         # a partial data file merged later by the coverage-combine job. 3.10
         # passes --no-cov (overriding setup.cfg's forced --cov) for a trace-free,
         # faster run.
+        env:
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
+          # Reduced scope (frontend-only diff): run just the cross-surface
+          # files, still sharded, with coverage off -- a subset's coverage is
+          # not comparable to the repo floor, so Coverage Combine/Gate skip the
+          # backend lane for this run (see coverage-gate).
+          if [ "$REDUCED" = "true" ]; then
+            TARGETS=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+            pytest -q -n auto --timeout=120 \
+              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+              --no-cov \
+              $BACKEND_DESELECTS \
+              "${TARGETS[@]}"
+            exit 0
+          fi
           pytest -q -n auto --timeout=120 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
             ${{ matrix.python-version == '3.12' && '--cov=kiro_crew' || '--no-cov' }} \
-            --deselect=test/test_script_hooks.py \
-            --deselect=test/test_cron_script.py \
-            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
-            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+            $BACKEND_DESELECTS
         # Deselected tests require capabilities unavailable on GH Actions:
         #   test_script_hooks, test_cron_script: Linux namespace sandbox (unshare NEWNS)
         #   ops_mission_control test_ledger_sync_git, test_schedule_file: the same
         #     capability gap, for the same reason. They drive REAL `git`/`gh` through
         #     `sandboxed_spawn_argv`, which raises SandboxUnavailableError on these runners
         #     (`unshare(CLONE_NEWNS)` -> EPERM), so all 29 + 1 of them fail here.
+        #   auto_improvement: same capability gap. These seven spawn a real `git`/`pytest`
+        #     through the profile's strict-mode sandbox (or need a real OS sandbox), which the
+        #     runner cannot provide; they pass locally with a working sandbox and are the exact
+        #     set kept off the shards while `testpaths` was a per-file list, now that the dir
+        #     is globbed. Making them CI-portable is tracked as a follow-up in the PR body.
         #
         #     These only became visible when `testpaths` grew to cover the in-package app
         #     suites (see setup.cfg) -- before that they never ran in CI at all, on any job.
@@ -212,7 +359,7 @@ jobs:
         #     job of their own is a follow-up, tracked in the PR body.
 
       - name: Stage shard coverage data
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && steps.scope.outputs.reduced != 'true'
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
         # combine job can merge all shards with `coverage combine`.
@@ -222,7 +369,7 @@ jobs:
           mv .coverage ".coverage.${{ matrix.group }}"
 
       - name: Upload shard coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && steps.scope.outputs.reduced != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-shard-${{ matrix.group }}
@@ -242,6 +389,7 @@ jobs:
   # run the same tests measurably slower.
   backend-test-windows:
     name: Backend Tests (Windows)
+    needs: [changes]
     runs-on: windows-latest
     # windows-latest runs the same shards measurably slower than POSIX.
     timeout-minutes: 40
@@ -252,6 +400,11 @@ jobs:
         group: [1, 2, 3, 4]
     env:
       SHARD_COUNT: 4
+      # windows-latest subprocess spawn + filesystem latency is slow and
+      # highly variable; the md_notebook git-ops default (30s) intermittently
+      # times out on plain `git add` here (#1673). Give git invocations a
+      # wider budget on this job only.
+      MDNB_GIT_TIMEOUT_SEC: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -271,21 +424,58 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
+      - name: Select test scope
+        id: scope
+        # bash (Git Bash on windows-latest), not pwsh -- same reason as the test
+        # step below. Mirrors the POSIX backend-test selector exactly.
+        shell: bash
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        run: |
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full backend suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares
         # the POSIX job's line-continuation and env-interpolation syntax.
         shell: bash
+        env:
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
+          if [ "$REDUCED" = "true" ]; then
+            TARGETS=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+            pytest -q -n auto --timeout=180 --no-cov \
+              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+              $BACKEND_DESELECTS \
+              "${TARGETS[@]}"
+            exit 0
+          fi
           pytest -q -n auto --timeout=180 --no-cov \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-            --deselect=test/test_script_hooks.py \
-            --deselect=test/test_cron_script.py \
-            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
-            --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
+            $BACKEND_DESELECTS
         # Same deselects as backend-test (the Linux-namespace sandbox tests are
         # unavailable here too). The ops git/gh suites are deselected for a second reason as
         # well: they drive a real POSIX `git`/`gh` and the namespace-sandbox job that DOES run
-        # them is Linux-only, so on Windows they are simply out of scope.
+        # them is Linux-only, so on Windows they are simply out of scope. The seven
+        # auto_improvement suites are deselected for the same sandbox reason; the two that also
+        # carry POSIX path/rmtree assumptions (test_dogfood_learnings, test_pr_watchers) would
+        # fail on Windows regardless, and their residual node ids stay tracked in
+        # test/windows-expected-failures.txt.
 
   # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
   # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
@@ -400,7 +590,11 @@ jobs:
 
   coverage-combine:
     name: Coverage Combine
-    needs: backend-test
+    needs: [backend-test, changes]
+    # A frontend-only diff runs the backend suite as a coverage-free subset, so
+    # there are no shard artifacts to combine. Coverage Gate asserts this job is
+    # exactly `skipped` in that case, and `success` otherwise.
+    if: needs.changes.outputs.only_frontend != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -463,7 +657,34 @@ jobs:
     name: Coverage Gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [coverage-combine, frontend-test]
+    needs: [coverage-combine, frontend-test, backend-test, changes]
+    # Single source of truth for the floors -- referenced by the check steps,
+    # their names, and the summary table so the three can never drift apart.
+    #
+    # RATCHET POLICY: keep each floor a little under what `main` actually
+    # measures, so the gate blocks a real coverage regression without going red
+    # on ordinary noise. Raise a floor only after main has held the higher
+    # number for a while, and never above the LOWEST recent main measurement.
+    #
+    #   Backend  measured ~81.9% on main (2026-08-07) -> floor 80%
+    #   Frontend measured 60.46-61.74% on main (2026-08-07) -> floor 60%
+    #     (frontend sits ~0.5pp above its floor: it cannot be ratcheted until
+    #      website/src gains real test coverage)
+    #
+    # How backend got here, so the next person can judge the headroom:
+    #   78.69%  starting point
+    #   80.15%  #2090 stopped measuring test files CI never executes (the
+    #           BACKEND_DESELECTS set) -- an accounting fix, not new tests
+    #   81.50%  #2103 added unit coverage for 7 pure-logic-ish modules
+    #   81.94%  #2115 added 11 dashboard/Slack/app-platform modules
+    # 80% therefore leaves ~1.9pp of headroom, wider than the ~1.4pp the 77%
+    # floor had. Deliberately conservative: the last wave converted at a third
+    # the rate of the one before it (1,883 tests for +0.44pp vs 1,040 for
+    # +1.35pp), because the remaining uncovered lines sit behind I/O a unit test
+    # cannot reach. Do not assume the next raise is as cheap.
+    env:
+      BACKEND_MIN: 80
+      FRONTEND_MIN: 60
     # Always run so the required check emits a real verdict. Without
     # `if: always()`, a failing OR skipped dependency would SKIP this job, and
     # GitHub treats a skipped required check as SATISFIED -- silently defeating
@@ -476,32 +697,67 @@ jobs:
         env:
           CC: ${{ needs.coverage-combine.result }}
           FE: ${{ needs.frontend-test.result }}
+          BE: ${{ needs.backend-test.result }}
+          ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
         run: |
-          echo "coverage-combine=$CC  frontend-test=$FE"
-          if [ "$CC" != "success" ] || [ "$FE" != "success" ]; then
-            echo "::error::Upstream coverage jobs did not succeed (coverage-combine=$CC, frontend-test=$FE) -- failing closed."
+          echo "coverage-combine=$CC  frontend-test=$FE  backend-test=$BE  only_backend=$ONLY_BACKEND  only_frontend=$ONLY_FRONTEND"
+          # Empty flags mean the surface-detection job never reported (it failed
+          # or was cancelled) -- its verdict can't be trusted, so fail closed.
+          if [ -z "$ONLY_BACKEND" ] || [ -z "$ONLY_FRONTEND" ]; then
+            echo "::error::surface detection (changes) never reported -- failing closed."
+            exit 1
+          fi
+          # Both test jobs always RUN (only their scope narrows), so both must
+          # always have succeeded -- a subset run that fails is still a failure.
+          # backend-test is checked explicitly because on a frontend-only diff
+          # coverage-combine is skipped by design and would otherwise be the only
+          # signal, masking a failed reduced backend suite.
+          if [ "$FE" != "success" ]; then
+            echo "::error::frontend-test=$FE -- failing closed."
+            exit 1
+          fi
+          if [ "$BE" != "success" ]; then
+            echo "::error::backend-test=$BE -- failing closed."
+            exit 1
+          fi
+          # Backend coverage lane: required to succeed, EXCEPT on a frontend-only
+          # diff where the backend suite ran as a coverage-free subset and
+          # coverage-combine is therefore skipped by design. Anything else
+          # (failure, cancellation, dependency-skip, or a run that happened when
+          # it shouldn't have) fails closed.
+          if [ "$ONLY_FRONTEND" = "true" ]; then
+            if [ "$CC" != "skipped" ]; then
+              echo "::error::coverage-combine=$CC but this run was frontend-only (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+          elif [ "$CC" != "success" ]; then
+            echo "::error::coverage-combine=$CC -- failing closed."
             exit 1
           fi
 
       - name: Download backend coverage
+        if: needs.coverage-combine.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: coverage-backend
           path: backend-cov
 
       - name: Download frontend coverage
+        if: needs.changes.outputs.only_backend != 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: coverage-frontend
           path: frontend-cov
 
-      - name: Check backend coverage (min 70%)
+      - name: Check backend coverage (min ${{ env.BACKEND_MIN }}%)
+        if: needs.coverage-combine.result == 'success'
         run: |
           F=backend-cov/coverage.xml
           test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
           # Compare the raw line-rate against the threshold; round only for
-          # display (a round-then-compare would let 69.95%..69.99% pass 70%).
-          python3 - "$F" 70 Backend <<'PY'
+          # display (a round-then-compare would let 79.95%..79.99% pass 80%).
+          python3 - "$F" "$BACKEND_MIN" Backend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
@@ -511,11 +767,12 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Check frontend coverage (min 60%)
+      - name: Check frontend coverage (min ${{ env.FRONTEND_MIN }}%)
+        if: needs.changes.outputs.only_backend != 'true'
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
-          python3 - "$F" 60 Frontend <<'PY'
+          python3 - "$F" "$FRONTEND_MIN" Frontend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]
           rate = float(ET.parse(path).getroot().attrib["line-rate"]) * 100
@@ -534,12 +791,12 @@ jobs:
           BF=backend-cov/coverage.xml
           if [ -f "$BF" ]; then
             B=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$BF').getroot().attrib['line-rate'])*100:.2f}\")")
-            echo "| Backend | ${B}% | 70% |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Backend | ${B}% | ${BACKEND_MIN}% |" >> "$GITHUB_STEP_SUMMARY"
           fi
           FF=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           if [ -n "$FF" ]; then
             FR=$(python3 -c "import xml.etree.ElementTree as ET; print(f\"{float(ET.parse('$FF').getroot().attrib['line-rate'])*100:.2f}\")")
-            echo "| Frontend | ${FR}% | 60% |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Frontend | ${FR}% | ${FRONTEND_MIN}% |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   frontend-lint:
@@ -717,6 +974,7 @@ jobs:
 
   frontend-test:
     name: Frontend Tests
+    needs: [changes]
     runs-on: ubuntu-latest
     # vitest + coverage is the longest ubuntu job (~23 min observed max).
     timeout-minutes: 50
@@ -733,6 +991,39 @@ jobs:
         working-directory: website
         run: npm ci --no-audit --no-fund
 
+      - name: Select test scope
+        id: scope
+        env:
+          ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
+          TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
+        # Mirror of the backend selector: a backend-only diff cannot affect a
+        # spec that never touches the backend surface. Cross-surface specs (and
+        # anything unclassified) still run. Any failure falls back to the FULL
+        # suite rather than silently narrowing it.
+        run: |
+          if [ "$ONLY_BACKEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full frontend suite (diff is not backend-only)."
+            exit 0
+          fi
+          rc=0
+          python3 scripts/ci-surface-tests.py --surface frontend --summary > "$TARGETS_FILE.all" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE.all" ]; then
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL frontend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # vitest runs with cwd=website and only covers website/src; the
+          # Electron shell specs belong to electron-test, which stays always-on.
+          sed -n 's#^website/##p' "$TARGETS_FILE.all" | grep -v '^electron/' > "$TARGETS_FILE" || true
+          if [ ! -s "$TARGETS_FILE" ]; then
+            echo "::warning::no in-scope cross-surface specs resolved -- running the FULL frontend suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface spec(s)."
+
       - name: Unit tests
         working-directory: website
         env:
@@ -744,6 +1035,8 @@ jobs:
           # Same expression as `frontend-lint`: the base branch on a PR, the commit the
           # push replaced on a push to main.
           I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
         # `actions/checkout` fetches depth 1, so the base is not present and
         # `git diff`/`git show` against it would fail. Fetch just that one commit, and
         # fail the step if it cannot be fetched — the gates throw on an unresolvable
@@ -752,9 +1045,19 @@ jobs:
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped i18n test gates')" || exit 1
           export I18N_BASE_REF
-          npx vitest run --coverage
+          if [ "$REDUCED" = "true" ]; then
+            # Subset run (backend-only diff): coverage of a subset is not
+            # comparable to the repo floor, so it is not collected and the
+            # Coverage Gate skips the frontend lane for this run.
+            TARGETS=()
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+            npx vitest run "${TARGETS[@]}"
+          else
+            npx vitest run --coverage
+          fi
 
       - name: Upload coverage
+        if: steps.scope.outputs.reduced != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-frontend

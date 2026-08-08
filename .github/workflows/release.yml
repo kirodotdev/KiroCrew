@@ -66,6 +66,142 @@ jobs:
           echo "wheel_version=$WHEEL_VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing $VERSION on channel $CHANNEL (wheel: $WHEEL_VERSION)"
 
+  # ── Stable publication gate ───────────────────────────────────────────
+  # A tag name is the ONLY thing that decides the channel, and the whole run
+  # is unattended: on v0.1.3 the stable CLI wheel was public 3m41s after the
+  # tag push, CDN keys are immutable (a republish is refused), and
+  # `cancel-in-progress: false` means a corrected tag queues behind rather
+  # than superseding. So `v0.2.0-rc.2` mistyped as `v0.2.0` is an
+  # unrecoverable stable release, and there is no window in which anyone
+  # would notice. This job is the missing precondition check.
+  #
+  # DETERMINISTIC, NOT A PROMPT. An approval button is the other obvious
+  # design; it is deliberately not this one, because the failure mode here is
+  # a typo by someone who believes they are shipping a prerelease — exactly
+  # the state of mind that clicks through a confirmation. These two checks
+  # instead ask for evidence the release was intended, and a mistyped bare
+  # tag cannot produce that evidence.
+  #
+  # WHY IT NEVER USES `if:`. The publish jobs `needs` this one, and a SKIPPED
+  # dependency skips its dependents — an `if: channel == 'stable'` here would
+  # silently stop insider and nightly from publishing at all. The channel test
+  # therefore lives INSIDE the step, which always runs and exits 0 for every
+  # non-stable channel.
+  #
+  # Validated against history: both prior stable releases promote the exact
+  # commit their last insider tag shipped (v0.1.2 == v0.1.2-insider.4,
+  # v0.1.3 == v0.1.3-insider.2), so check 2 encodes practice that already
+  # holds rather than imposing a new one. Check 1 would have blocked v0.1.3,
+  # which shipped with no CHANGELOG section — that is the check working, and
+  # it means a stable release now requires its section to be written first.
+  stable-gate:
+    name: Stable publication gate
+    needs: [version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Replaces the workflow default: `actions: read` is what lets the promotion
+    # check ask whether a prerelease tag's release run actually SUCCEEDED.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the stable tag resolves unambiguously, and so the
+          # CHANGELOG read is of the tagged commit rather than a partial tree.
+          fetch-depth: 0
+      - name: Verify stable publication preconditions
+        env:
+          CHANNEL: ${{ needs.version.outputs.channel }}
+          VERSION: ${{ needs.version.outputs.version }}
+          # Scoped to ONE version on purpose: it must equal the version being
+          # released, so it cannot be left switched on for every future tag.
+          OVERRIDE: ${{ vars.STABLE_GATE_OVERRIDE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "$CHANNEL" != "stable" ]; then
+            echo "channel=$CHANNEL -- the stable gate does not apply."
+            exit 0
+          fi
+
+          failures=0
+
+          # ── 1. The release is documented ────────────────────────────────
+          # Heading form is `## [0.1.2] — 2026-07-30`. Matched as a LITERAL
+          # prefix through awk's index(), never as a regex: an unescaped
+          # `0.1.3` pattern would also be satisfied by a `## [0.1.31]` or
+          # `## [0y1z3]` heading, and a version string is exactly the kind of
+          # value whose dots must stay literal.
+          if awk -v want="## [$VERSION]" \
+               'index($0, want) == 1 { found = 1 } END { exit !found }' \
+               CHANGELOG.md; then
+            echo "changelog: CHANGELOG.md documents $VERSION"
+          else
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section. A stable release must be documented before it ships."
+            failures=$((failures + 1))
+          fi
+
+          # ── 2. Stable only promotes bytes insiders actually received ─────
+          # A TAG IS NOT EVIDENCE OF A RELEASE. A cancelled or failed
+          # prerelease run leaves its tag behind, so matching on tag names
+          # alone would let stable promote a candidate that never shipped
+          # (GPT 5.6 review on 2ce9bcef). The evidence is a SUCCESSFUL
+          # release-workflow run for a v<version>-* tag at this exact commit.
+          #
+          # Queried from GitHub's own API rather than the distribution CDN: an
+          # API outage already means this run is not happening, whereas a CDN
+          # blip is an unrelated failure that must not block a legitimate
+          # release (the objection #1031 raises elsewhere in this pipeline).
+          # A failed query FAILS CLOSED and says so -- a check that could not
+          # run is not a check that passed.
+          #
+          # The tag lookup is GUARDED rather than left to `set -e`: an absent
+          # tag would otherwise abort the script mid-way with git's own
+          # "ambiguous argument" fatal, skipping both the failure summary and
+          # the override path.
+          STABLE_COMMIT=""
+          if ! STABLE_COMMIT="$(git rev-list -n 1 "refs/tags/v$VERSION" 2>/dev/null)"; then
+            echo "::error::tag v$VERSION is not present in this checkout, so the promotion check cannot run. A deleted or unfetched tag fails closed."
+            failures=$((failures + 1))
+          else
+            # Exported so the jq program reads it through `env` instead of
+            # having a value spliced into the filter text.
+            export STABLE_COMMIT
+            # gh exits NON-ZERO on an API failure and zero-with-no-output when
+            # nothing matched. That distinction is the whole point: it
+            # separates "checked, and no such release exists" from "could not
+            # check", and only the first is a verdict.
+            if ! promoted="$(gh api --paginate \
+                 "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?event=push&status=success&per_page=100" \
+                 --jq '.workflow_runs[]
+                       | select(.head_sha == env.STABLE_COMMIT)
+                       | select(.head_branch | startswith("v" + env.VERSION + "-"))
+                       | .head_branch' 2>&1)"; then
+              echo "::error::could not list successful release runs, so the promotion check could not run: $promoted"
+              failures=$((failures + 1))
+            elif [ -n "$promoted" ]; then
+              echo "promotion: $(printf '%s' "$promoted" | head -n 1) published $STABLE_COMMIT in a successful release run"
+            else
+              echo "::error::no SUCCESSFUL release run for a v$VERSION-* tag at $STABLE_COMMIT. Stable must promote a commit that already shipped to insider -- a prerelease tag whose run was cancelled or failed does not count."
+              failures=$((failures + 1))
+            fi
+          fi
+
+          if [ "$failures" -eq 0 ]; then
+            echo "stable gate: both preconditions satisfied for $VERSION"
+            exit 0
+          fi
+
+          if [ "${OVERRIDE:-}" = "$VERSION" ]; then
+            echo "::warning::stable gate overridden for $VERSION by vars.STABLE_GATE_OVERRIDE ($failures unmet precondition(s))."
+            exit 0
+          fi
+
+          echo "::error::stable publication of $VERSION blocked by $failures unmet precondition(s). Fix them, or set the repository variable STABLE_GATE_OVERRIDE to exactly '$VERSION' to release anyway."
+          exit 1
+
   dependency-vulnerability-gate:
     name: Production Dependency Vulnerability Gate
     uses: ./.github/workflows/dependency-vulnerability.yml
@@ -114,7 +250,7 @@ jobs:
   # failure never blocks the CLI release.
   publish-cli:
     name: Publish CLI (${{ needs.version.outputs.channel }} channel)
-    needs: [version, build-wheel]
+    needs: [version, stable-gate, build-wheel]
     permissions:
       contents: read
       id-token: write
@@ -134,7 +270,7 @@ jobs:
   # macOS signing failure can block it (per-platform releases).
   publish-linux:
     name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel)
-    needs: [version, build-desktop]
+    needs: [version, stable-gate, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -155,7 +291,7 @@ jobs:
   # also moves :latest.
   publish-docker:
     name: Publish Docker Image (${{ needs.version.outputs.channel }} channel)
-    needs: [version, build-wheel]
+    needs: [version, stable-gate, build-wheel]
     permissions:
       contents: read
       packages: write
@@ -183,7 +319,7 @@ jobs:
   # test_workflow_permissions.py).
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, build-wheel, build-desktop]
+    needs: [version, stable-gate, build-wheel, build-desktop]
     permissions:
       id-token: write
       contents: read
@@ -197,7 +333,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: [version, sign-and-notarize]
+    needs: [version, stable-gate, sign-and-notarize]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

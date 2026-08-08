@@ -14,6 +14,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context_management import OrchestrationTracker
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.turn_dispatch import _bounded_turn
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import SecurityEvent, sel
@@ -266,7 +267,56 @@ async def _stage_loop(
             )
             slot.append("user", context, "msg msg-u auto-go")
             try:
-                await _run_chat(state, slot, context)
+                # `_bounded_turn`, NOT `asyncio.wait_for`. `_run_chat` CATCHES
+                # CancelledError (it flushes the partial assistant output and
+                # returns), so wait_for would absorb its own deadline: the inner
+                # task completes "normally", wait_for hands back a value instead
+                # of raising, and a half-finished stage would advance as if it
+                # had succeeded. `_bounded_turn` records that its own timer
+                # fired and raises on that observed fact, so a swallowed
+                # cancellation still surfaces. See its docstring in
+                # turn_dispatch.py -- it exists for exactly this trap.
+                #
+                # A falsy stage_timeout_seconds means "disabled" everywhere else
+                # in the tracker, so skip the ceiling entirely rather than
+                # passing 0, which would cut every stage instantly.
+                _turn_timeout = tracker.stage_timeout_seconds
+                if _turn_timeout:
+                    await _bounded_turn(_run_chat(state, slot, context), _turn_timeout)
+                else:
+                    await _run_chat(state, slot, context)
+            except (asyncio.TimeoutError, TimeoutError):
+                # `_bounded_turn` raises builtin TimeoutError; on 3.10
+                # asyncio.TimeoutError is a DIFFERENT class, so catch both (the
+                # convention already used by _run_pending_synthesis).
+                logger.error(
+                    "Stage %d exceeded its %ds ceiling for slot %s",
+                    stage_num, tracker.stage_timeout_seconds, slot.key,
+                )
+                _timeout_msg = (
+                    f"⏱️ Stage {stage_num} timed out after {tracker.timeout_human}. "
+                    "Auto-run stopped."
+                )
+                slot._auto_run = False
+                slot.append("assistant", _timeout_msg, "msg msg-a")
+                state.broadcast_ws(
+                    "chat_append",
+                    {"slot": slot.key, "html": _timeout_msg, "cls": "msg msg-a"},
+                )
+                sel().log(
+                    SecurityEvent(
+                        event_id=uuid.uuid4().hex,
+                        timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                        event_type="auto_run_timeout",
+                        caller_identity=f"dashboard:{slot.key}",
+                        agent=getattr(slot, "agent", ""),
+                        source="dashboard",
+                        operation="stage_turn_ceiling",
+                        outcome="stopped",
+                        resources=f"slot={slot.key},stage={stage_num}",
+                    )
+                )
+                break
             except Exception:
                 logger.exception("_run_chat failed during stage %d for slot %s", stage_num, slot.key)
                 _err_msg = f"❌ Stage {stage_num} failed due to an internal error. Auto-run stopped."
@@ -296,6 +346,19 @@ async def _stage_loop(
 
             # Wait for pending subagents spawned during this stage
             _sa_rounds = 0
+            # Dynamic poll cap. Each poll sleeps 2s, so `stage_timeout // 4`
+            # rounds ≈ half the stage timeout in wall-clock, hard-capped at 450
+            # rounds (15 min). This replaces a fixed 150 (5 min), which was far
+            # shorter than a subagent's own 30-min budget and abandoned
+            # legitimate long-running analysis agents mid-flight.
+            # A falsy stage timeout means "disabled", so fall back to the 15-min
+            # ceiling rather than 0 (which would skip the wait entirely).
+            # Worst case per stage is therefore turn-timeout + subagent-wait;
+            # the total-plan watchdog (separate follow-up) bounds the run.
+            if tracker.stage_timeout_seconds:
+                _sa_max_rounds = min(tracker.stage_timeout_seconds // 4, 450)
+            else:
+                _sa_max_rounds = 450
             session_key = f"dashboard:{slot.key}"
             if state.subagents is None:
                 # Fail-closed: subagent manager missing — stop auto-run
@@ -369,7 +432,7 @@ async def _stage_loop(
                 )
                 while (
                     _pending
-                    and _sa_rounds < 150
+                    and _sa_rounds < _sa_max_rounds
                     and not slot._stopping
                 ):
                     _sa_rounds += 1
@@ -414,14 +477,16 @@ async def _stage_loop(
                     )
                 )
                 break
-            if _sa_rounds >= 150:
+            if _sa_rounds >= _sa_max_rounds:
+                _wait_secs = _sa_rounds * 2
                 logger.warning(
-                    "Stage %d: subagent wait exhausted after %ds for slot %s",
-                    stage_num, _sa_rounds * 2, slot.key,
+                    "Stage %d: subagent wait exhausted after %ds (%d rounds, cap %d) for slot %s",
+                    stage_num, _wait_secs, _sa_rounds, _sa_max_rounds, slot.key,
                 )
                 slot._auto_run = False
                 _sa_msg = (
-                    f"⚠️ Stage {stage_num}: subagent wait exhausted after 5 minutes. "
+                    f"⚠️ Stage {stage_num}: subagent wait exhausted after "
+                    f"{_wait_secs // 60} minutes. "
                     "Auto-run stopped — some results may be incomplete."
                 )
                 slot.append("assistant", _sa_msg, "msg msg-a")

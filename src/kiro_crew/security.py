@@ -4169,6 +4169,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # handler is the only writer and it opens the path directly, not through this
     # gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Browser Mode's durable ENABLE gate. Same class of control as
+    # ``computer_use.json`` directly above: while it is present the browse proxy
+    # is registered and the ``browser_*`` tools are in the agent's tool list,
+    # which lets the agent operate a real browser — and in attach mode that is
+    # the operator's own running, logged-in browser. Presence alone is the
+    # authorization, so a bare ``touch`` of this file would be a prompt-injected
+    # self-grant of browser operation. It gets read+write keystone protection on
+    # both the tool path (``is_sensitive_path``) and the shell forms (``touch``,
+    # ``>``, ``tee``, extraction verbs). The dashboard PUT handler is the only
+    # writer and opens the path directly, not through this gate, so the Settings
+    # toggle still works. The sibling ``browser-engine`` leaf is protected too:
+    # it selects the browser Playwright launches, so an agent-authored value
+    # could steer the launch, and it must not diverge from the enable beside it.
+    "browser-mode-enabled",
+    "browser-engine",
     # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
     # API + application keys). These are live credentials against a user's
     # production incident tooling: a leaked one can acknowledge or resolve real
@@ -5946,6 +5961,43 @@ def redact(text: str) -> str:
     text = redact_exfiltration_urls(text)[0]
     text = redact_credentials(text)[0]
     return text
+
+
+# Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to
+# real filesystem roots rather than "any slash-separated token", and both branches
+# refuse to start mid-token so a URL is never mistaken for a path -- without the
+# lookbehinds, ``https://api.github.com/repos/x`` matches twice (``s:/`` as a drive
+# letter, ``/repos`` as a root) and the URL is destroyed.
+_LOCAL_PATH_RE = re.compile(
+    r"(?:"
+    r"(?<![\w:/])/(?:home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+    r"|(?<![A-Za-z])[A-Za-z]:\\"
+    r")"
+    r"[^\s'\"<>|]*"
+)
+_LOCAL_PATH_PLACEHOLDER = "[redacted-path]"
+
+
+def redact_local_paths(text: str) -> tuple[str, list[str]]:
+    """Strip absolute host filesystem paths from *text*.
+
+    Complements :func:`redact_credentials`, which matches credential *patterns*
+    and leaves a bare path such as
+    ``[Errno 2] No such file or directory: '/home/alice/.kiro/crew/vaults/v1'``
+    untouched. That string is the common shape of an OS or subprocess error, and
+    on an error surface that reaches a browser it discloses the account name and
+    on-disk layout of the host (CWE-209).
+
+    Returns the redacted text and a list of human-readable notes, matching the
+    signature of the sibling passes so callers can chain them uniformly.
+    """
+    notes: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        notes.append(f"Redacted local path ({len(match.group(0))} chars)")
+        return _LOCAL_PATH_PLACEHOLDER
+
+    return _LOCAL_PATH_RE.sub(_sub, text), notes
 
 
 # ── Streaming redaction (pentest issue 3) ──

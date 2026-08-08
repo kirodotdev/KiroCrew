@@ -8,6 +8,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from conftest import make_escaping_link
 from kiro_crew.apps.manifest import (
     AppManifest,
     CapabilityDependencies,
@@ -116,22 +117,64 @@ class TestValidation:
         assert m.validate() == []
 
     def test_canonical_containment_with_app_root(self, tmp_path):
-        # A symlink whose target escapes the app root must be flagged when
+        # A link whose target escapes the app root must be flagged when
         # app_root is known; a plain relative path inside the root passes.
         app_root = tmp_path / "app"
         app_root.mkdir()
         outside = tmp_path / "outside"
         outside.mkdir()
         (outside / "secret.py").write_text("x = 1\n")
-        (app_root / "link.py").symlink_to(outside / "secret.py")
         (app_root / "ok.py").write_text("y = 2\n")
+        entry_point = make_escaping_link(app_root, outside)
 
-        escaping = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "link.py"}))
+        escaping = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": entry_point}))
         errors = escaping.validate(app_root=app_root)
         assert any("path traversal" in e for e in errors)
 
         contained = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "ok.py"}))
         assert contained.validate(app_root=app_root) == []
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "/tmp/evil.py",  # POSIX-absolute
+            "\\\\server\\share\\evil.py",  # UNC
+            "C:/evil.py",  # drive + root, forward slashes
+            "C:\\evil.py",  # drive + root, backslashes
+            "D:evil.py",  # drive-RELATIVE: no root, but relocates the join
+            "..\\evil.py",  # backslash traversal
+            "../evil.py",  # forward-slash traversal
+            "ui/../../evil.py",  # traversal in a non-leading segment
+        ],
+    )
+    def test_rooted_or_traversing_entrypoint_rejected(self, entry, tmp_path):
+        # Rooted and traversing paths must be refused identically whether or not
+        # app_root is known, and on either host OS -- an app-resource path is
+        # joined onto the app root, so anything carrying a drive, a root anchor
+        # or a ".." segment can relocate that join. Asserting BOTH call forms is
+        # what pins host-independence: a manifest is portable data validated on
+        # whichever host installs the app, and "..\evil.py" resolves *inside* a
+        # POSIX app_root, so a validator that leaned on canonical containment
+        # for traversal would accept on POSIX what it rejects on Windows.
+        m = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": entry}))
+        assert any("path traversal" in e for e in m.validate())
+        assert any("path traversal" in e for e in m.validate(app_root=tmp_path))
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "index.mjs",
+            "backend/server.py",
+            "ui\\index.mjs",  # backslash separator is not a traversal
+            "kiro_crew.apps.builtins.x.server",  # dotted module-style
+            "a..b/c.py",  # ".." inside a segment, not a segment itself
+        ],
+    )
+    def test_plain_relative_entrypoint_accepted(self, entry):
+        # Guards the flip side of the containment rule: widening it must not
+        # start refusing the ordinary relative paths every shipped app declares.
+        m = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": entry}))
+        assert m.validate() == []
 
     def test_cron_missing_name(self):
         m = AppManifest.from_dict(_valid_manifest(crons=[{"every": 60, "message": "hi"}]))

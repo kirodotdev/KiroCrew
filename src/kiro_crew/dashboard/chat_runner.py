@@ -20,6 +20,8 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpPromptBusy,
     _is_safe_oauth_url,
+    advertised_model_ids,
+    model_is_unusable,
 )
 from kiro_crew.acp.types import (
     EVENT_AGENT_SWITCHED,
@@ -83,6 +85,7 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     effective_session_key,
     is_system_injection,
+    slot_history_key,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -107,7 +110,7 @@ from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
-    SUBAGENT_COMPLETION_PREFIX,
+    SUBAGENT_COMPLETION_PREFIXES,
     SUBAGENT_SYNTHESIS_PREFIX,
     SUBAGENT_SYNTHESIS_PROMPT,
     TOOL_STALL_RECOVERY_PREFIX,
@@ -365,6 +368,45 @@ def _backfill_canonical_model(client: Any, provider: str) -> str:
     if provider != "claude_code" and _is_bedrock_profile_id(prov_model):
         return ""
     return model_registry.canonicalize_for_provider(prov_model, provider)
+
+
+def _pinned_model_withheld(client: Any, model: str, provider: str) -> bool:
+    """True when the live session cannot run the model this slot is pinned to.
+
+    ``providers.acp`` withholds an inherited/persisted model the account is not
+    entitled to and leaves the session on the backend default, so the turn
+    succeeds — but nothing told the user, and the composer chip plus the picker
+    went on reporting a model no turn would ever use (observed after a plan
+    downgrade: the chip still read ``claude-opus-5`` while every turn ran on
+    auto). This is the read side of that withhold, using the SAME predicate so
+    the two cannot disagree about what "usable" means.
+
+    The caller only REPORTS on a true result — it does not clear the pin. The
+    withhold already keeps the model off the wire and the frontend already
+    displays the effective model, so a stale pin is inert and recovers by itself
+    if entitlement returns.
+
+    Only the kiro/acp path is checked. ``slot.model`` is a bare dotted wire id
+    there — the same namespace ``session/new`` advertises — while claude_code
+    holds canonical keys against bare advertised ids, and comparing those two
+    namespaces would call every legitimate model unusable (see
+    :func:`model_is_unusable`'s namespace note). ``model_is_unusable`` itself
+    fails open on an empty advertised set, so a session that advertised nothing
+    (or a provider with no getter) leaves the pin alone: entitlement unknown is
+    not entitlement denied.
+    """
+    if not model or model == "auto" or provider == "claude_code":
+        return False
+    if getattr(client, "is_claude_backend", False):
+        return False
+    getter = getattr(client, "available_models", None)
+    if not callable(getter):
+        return False
+    try:
+        advertised = advertised_model_ids(getter())
+    except Exception:
+        return False
+    return model_is_unusable(model, advertised)
 
 
 def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
@@ -2221,7 +2263,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     next_msg, _ = redact_exfiltration_urls(next_msg)
     next_msg, _ = redact_credentials(next_msg)
     is_cron = next_msg.startswith(CRON_NOTIFY_PREFIX)
-    is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIX)
+    is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIXES)
     is_recovery = (
         next_msg.startswith(REFUSAL_RECOVERY_PREFIX)
         or next_msg.startswith(STALE_RECOVERY_PREFIX)
@@ -2572,6 +2614,17 @@ async def _run_chat(
     saw_compaction = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
     _retrying_empty = False
+    # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
+    # Bound at turn scope, not at the consume site: the consume lives inside the
+    # context-builder leg, and the probe/base legs skip it entirely — reading an
+    # unbound local at the restore would raise UnboundLocalError.
+    _needs_reinjection = False
+    # Set ONLY where the turn is recorded as successful. The `finally` restores
+    # the re-injection flag when this is still False, which covers every
+    # non-landing exit — the early `return`s (stale-recover, tool-stall, error
+    # re-queue), every `except` arm, and a hard CancelledError — not just the
+    # graceful-cancel and empty-re-queue paths that reach the success check.
+    _turn_landed = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
     # recorded during this turn as (redacted_title, reason). If non-empty when
     # the turn ends — and the user did not stop it — a recovery continuation is
@@ -2758,8 +2811,18 @@ async def _run_chat(
         # agent.model fallback, both of which get_or_create resolves when this
         # and slot.model are empty.
         agent_model = ""
+        # Read the provider into a local alongside the other bindings. Both model
+        # branches below need it, and `cfg` is only bound inside the try — a
+        # malformed config raises, the except swallows it, and touching
+        # `cfg.agent.provider` afterwards would raise UnboundLocalError and kill
+        # the turn. "" is the honest value for "config unreadable": it is not
+        # "claude_code", so the model helpers fall through to their live-client
+        # guards (`is_claude_backend`, the advertised list) rather than trusting a
+        # provider name that could not be read.
+        provider_name = ""
         try:
             cfg = KiroCrewConfig.load()
+            provider_name = cfg.agent.provider
             bindings = resolve_agent_bindings(cfg, slot.agent or None)
             kiro_agent = bindings.kiro_agent
             memory_store = bindings.memory_store_name
@@ -2798,16 +2861,71 @@ async def _run_chat(
         # highlight and the header shows the raw provider id). Gated on the real
         # provider so a kiro/acp dotted id (which collides with a claude_code
         # alias spelling) is left as-is.
+        withheld_pin = False
         if not slot.model:
-            slot.model = _backfill_canonical_model(client, cfg.agent.provider) or slot.model
+            slot.model = _backfill_canonical_model(client, provider_name) or slot.model
+        elif (is_new or resumed) and _pinned_model_withheld(
+            client, slot.model, provider_name
+        ):
+            withheld_pin = True
+            # The session just advertised what this account can run, and the pin
+            # is not on the list — the spawn withheld it, so this session runs on
+            # the backend default.
+            #
+            # The pin is deliberately KEPT. Withholding (providers.acp) already
+            # guarantees it is never sent and `displayModel` already guarantees
+            # it is never shown as the running model, so a stale pin is inert —
+            # while clearing it would be a one-way delete of an explicit user
+            # setting, decided from ONE session's advertised list. Keeping it
+            # means a plan re-upgrade (or a transiently short advertised list)
+            # self-heals with no action from the user; clearing would force them
+            # to notice and re-pick. Inert-and-recoverable beats tidy.
+            #
+            # Gated on a fresh/resumed session so this reports once per spawn —
+            # the moment the withhold actually happens — rather than repeating on
+            # every turn of a warm session.
+            logger.warning(
+                "Slot %s is pinned to %s, which this account cannot run; "
+                "the session is on the backend default (pin kept for re-upgrade)",
+                slot.key,
+                slot.model,
+            )
+            # Say it in the transcript too, not only in the server log. Otherwise
+            # the chip silently reads Auto, the picker no longer lists the model,
+            # and there is no way to learn the account lost access to it.
+            #
+            # A persisted "notice" card rather than a transient activity line: the
+            # explanation has to survive a reload, because the state it explains
+            # does (the pin stays, and the chip keeps reading Auto). Soft info
+            # styling for the same reason the empty-response notices use it — a
+            # plan change is not a crash. slot.append persists AND broadcasts one
+            # chat_message, so it needs no companion broadcast_ws.
+            slot.append(
+                "notice",
+                f"{slot.model} isn't offered right now — "
+                f"this session is running on auto instead. Pick another model "
+                f"from the composer, or leave it: your model choice is kept and "
+                f"will be used automatically once it's offered again.",
+                "msg msg-info",
+            )
         agent_label = kiro_agent or slot.agent or "default"
-        model_label = slot.model or "auto"
+        # The label states what the session RUNS on, so a withheld pin reports the
+        # effective model rather than `slot.model` — the pin is kept, so reading it
+        # here would print the withheld model on the activity line directly beside
+        # the notice card explaining that it is not what is running.
+        model_label = "auto" if withheld_pin else (slot.model or "auto")
+        # `spawned` marks the frames where a session was actually (re)started, so
+        # consumers can act on a real session boundary. The frame itself is also
+        # emitted on warm turns, where nothing was spawned and the advertised
+        # model list cannot have changed.
+        spawned = bool(is_new or resumed)
         if resumed:
             state.broadcast_ws(
                 "activity_event",
                 {
                     "slot": slot.key,
                     "kind": "session",
+                    "spawned": spawned,
                     "text": f"Session resumed · {agent_label} · {model_label}",
                 },
             )
@@ -2817,6 +2935,7 @@ async def _run_chat(
                 {
                     "slot": slot.key,
                     "kind": "session",
+                    "spawned": spawned,
                     "text": f"Session created · {agent_label} · {model_label}",
                 },
             )
@@ -3111,6 +3230,10 @@ async def _run_chat(
             # build_message performs blocking work (episodic query embed via
             # urllib to Ollama, file reads) — run off-loop (mc-embed bulkhead)
             # so a slow embedding endpoint can't stall the gateway event loop.
+            # A compaction on the PREVIOUS turn dropped the session-start
+            # context, taking the skills index with it. Read-and-clear the flag
+            # here so this turn re-injects the index exactly once.
+            _needs_reinjection = state.sessions.consume_needs_reinjection(session_key)
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
@@ -3135,6 +3258,7 @@ async def _run_chat(
                     + attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
                 ),
                 user_span_out=_user_span,
+                needs_reinjection=_needs_reinjection,
             )
             # The reported span is valid for the message as build_message
             # returned it. Several later steps PREPEND to the finished prompt
@@ -3175,7 +3299,7 @@ async def _run_chat(
                     _last_stop_soft = True
                 break
             if not _last_stop_soft:
-                history_key = effective_session_key(slot)
+                history_key = slot_history_key(slot)
                 disk_count = 0
                 if state.conversation_log:
                     disk_count = len(state.conversation_log.read_messages(history_key))
@@ -5171,6 +5295,10 @@ async def _run_chat(
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
         if _stop_reason != STOP_REASON_CANCELLED and not _retrying_empty:
             state.sessions.record_success(session_key)
+            # This turn landed: the prompt (including any re-injected skills
+            # index) reached the model, so the `finally` must NOT restore the
+            # one-shot flag.
+            _turn_landed = True
             # Per-interaction telemetry (PlatformContext seam) — shared helper so
             # the payload shape and model reflection cannot drift across surfaces.
             record_interaction_event(client, session_key, "dashboard")
@@ -5568,6 +5696,21 @@ async def _run_chat(
                 f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
                 "msg msg-err",
             )
+            # This branch ENDS the retry cycle: the error is terminal and
+            # nothing is re-queued. Refresh the transient-5xx budget now so the
+            # NEXT cycle — the Continue press this very error message invites
+            # ("retry in a moment"), or a new user message — gets the designed
+            # TRANSIENT_RETRIES fresh attempts. Without this, the budget
+            # consumed by a failed cycle leaks into every later cycle (the
+            # happy-path reset only runs when a cycle COMPLETES), so after one
+            # exhaustion ❌ a single further 5xx fails instantly with zero
+            # retries until some turn happens to finish cleanly. Loop safety is
+            # unchanged: the reset happens only on a NO-REQUEUE exit, so a new
+            # budget always requires a new user- or system-initiated cycle —
+            # automatic retry chains within a cycle stay bounded at
+            # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
+            # here: it is already refreshed at genuine-turn start.)
+            slot._transient_5xx_retries = 0
     except Exception as exc:
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))
@@ -5597,6 +5740,19 @@ async def _run_chat(
             _flush_file_changes(slot)
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
+        # This turn consumed the one-shot post-compaction re-injection flag but
+        # never landed, so the prompt carrying the skills index was discarded —
+        # an early return (stale-recover / tool-stall / error re-queue), an
+        # except arm, a hard CancelledError, a graceful cancel, or an empty
+        # re-queue. Put the flag back here rather than at the success check,
+        # because most of those paths never reach it; without this the index is
+        # lost for the remaining life of the session. Wrapped for the same
+        # reason as the flush above.
+        if _needs_reinjection and not _turn_landed:
+            try:
+                state.sessions.mark_needs_reinjection(session_key)
+            except Exception:
+                logger.debug("re-arming skills re-injection failed", exc_info=True)
         # ── AutoNudge: (re)arm the idle timer on EVERY turn-exit path. ──
         # Must be in finally, not the happy path: a turn that ends via timeout
         # / AcpProcessDied / AcpError / cancel would otherwise never re-arm,

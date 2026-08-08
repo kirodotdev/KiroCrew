@@ -139,6 +139,8 @@ jobs:
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           case "$EVENT" in
@@ -149,12 +151,36 @@ jobs:
               # `workflow_run.pull_requests` is empty for a fork head AND for
               # the managed `dynamic` CodeQL runs, so it can never be the only
               # way in. Resolve the PR from the immutable head SHA instead.
+              #
+              # NOT via `repos/{repo}/commits/{sha}/pulls`: that endpoint only
+              # lists PRs whose head commit is reachable in THIS repo, and a
+              # fork PR's head commit is not reachable from any base-repo
+              # branch until it merges -- so it returns empty for every OPEN
+              # fork PR, skipping every re-evaluation and freezing the fork
+              # verdict at the `opened` snapshot (a premature red). Match the
+              # head SHA against the open-PR list instead: a PR object always
+              # carries its `head.sha` regardless of which repo the commit
+              # lives in, so this resolves fork and same-repo heads alike.
+              #
+              # A head SHA is not by itself unique -- two open PRs can point at
+              # the same commit (e.g. the same fork commit pushed to two
+              # branches). Disambiguate with the triggering run's head
+              # repository + branch (both populated on every workflow_run),
+              # exactly as the verdict step binds monitored runs below; fall
+              # back to SHA-only when either is absent.
               if [ -z "$PR" ]; then
-                associated="$(gh api "repos/$REPO/commits/$RUN_SHA/pulls")"
-                PR="$(jq -r --arg sha "$RUN_SHA" '
-                  [.[] | select(.state == "open" and .head.sha == $sha)]
-                  | first.number // empty
-                ' <<<"$associated")"
+                PR="$(gh api --paginate \
+                  "repos/$REPO/pulls?state=open&per_page=100" \
+                  | jq -rs \
+                      --arg sha "$RUN_SHA" \
+                      --arg repo "$RUN_HEAD_REPO" \
+                      --arg ref "$RUN_HEAD_REF" '
+                      first(.[][]
+                        | select(.head.sha == $sha
+                                 and ($repo == "" or .head.repo.full_name == $repo)
+                                 and ($ref  == "" or .head.ref == $ref))
+                        | .number) // empty
+                    ')"
               fi
               if [ -z "$PR" ]; then
                 {
@@ -170,9 +196,15 @@ jobs:
           esac
 
           pr_json="$(gh pr view "$PR" --repo "$REPO" \
-            --json number,state,isDraft,isCrossRepository,headRefName,headRefOid,headRepository,headRepositoryOwner,url)"
+            --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,url)"
           SHA="$(jq -r '.headRefOid' <<<"$pr_json")"
           STATE="$(jq -r '.state' <<<"$pr_json")"
+          # The default branch is where CI / Build / CodeQL are gated to run
+          # (`pull_request: branches: [<default>]` and CodeQL default-setup).
+          # A PR whose base is any other branch -- a stacked PR sitting on
+          # another feature branch -- can never start those lanes, so the
+          # verdict step marks them ineligible instead of pending-forever.
+          DEFAULT_BRANCH="$(gh api "repos/$REPO" --jq '.default_branch')"
 
           {
             echo "pr=$PR"
@@ -181,6 +213,8 @@ jobs:
             echo "fork=$(jq -r '.isCrossRepository' <<<"$pr_json")"
             echo "draft=$(jq -r '.isDraft' <<<"$pr_json")"
             echo "url=$(jq -r '.url' <<<"$pr_json")"
+            echo "base=$(jq -r '.baseRefName' <<<"$pr_json")"
+            echo "default_branch=$DEFAULT_BRANCH"
             # (head repository, head branch) is how a monitored workflow run is
             # bound back to this PR below. Both fields are populated on a fork
             # run, unlike `pull_requests`.
@@ -229,17 +263,48 @@ jobs:
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
           DRAFT: ${{ steps.context.outputs.draft }}
           FORK: ${{ steps.context.outputs.fork }}
+          BASE_REF: ${{ steps.context.outputs.base }}
+          DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
 
-          workflow_specs=(
-            "ci.yml|CI"
-            "build.yml|Build"
-            "code-review.yml|Code Review"
-          )
+          # CI, Build and CodeQL only ever run for a PR whose base is the
+          # default branch: ci.yml / build.yml declare `pull_request:
+          # branches: [<default>]`, and CodeQL default-setup only scans PRs
+          # into the default branch. A stacked PR (base is another feature
+          # branch) therefore never starts those workflows, so the head SHA
+          # carries no run for them. Counting a run that structurally cannot
+          # exist as "(not started)" froze such a PR at pending forever, with
+          # no future event able to recompute it. Mark them ineligible on a
+          # non-default base instead -- the same "Not eligible" treatment the
+          # fork lane gives CodeQL. This is not a coverage hole: when the
+          # bottom PR of the stack merges, GitHub auto-retargets this PR to the
+          # default branch and CI/Build/CodeQL then run over the combined diff
+          # before anything can reach the default branch.
+          stacked=false
+          if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            stacked=true
+          fi
+
+          workflow_specs=()
           skipped=()
+
+          if [ "$stacked" = "true" ]; then
+            skipped+=("CI (only runs on PRs to $DEFAULT_BRANCH)")
+            skipped+=("Build (only runs on PRs to $DEFAULT_BRANCH)")
+          else
+            workflow_specs+=(
+              "ci.yml|CI"
+              "build.yml|Build"
+            )
+          fi
+
+          # Code Review and the AI reviewers trigger on `pull_request` with no
+          # base-branch filter, so they run on every PR regardless of base.
+          workflow_specs+=("code-review.yml|Code Review")
+
           if [ "$FORK" = "true" ]; then
             # A fork head cannot run the repository's managed default-setup
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
@@ -257,8 +322,12 @@ jobs:
               "checkrun:UX Review|UX Review"
             )
           else
+            if [ "$stacked" = "true" ]; then
+              skipped+=("CodeQL (only runs on PRs to $DEFAULT_BRANCH)")
+            else
+              workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
+            fi
             workflow_specs+=(
-              "dynamic/github-code-scanning/codeql|CodeQL"
               "claude-review.yml|Opus 5 Review"
               "codex-review.yml|GPT 5.6 Review"
               "design-review.yml|Design Review"

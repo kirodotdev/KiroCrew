@@ -32,6 +32,8 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
     is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
 )
 from kiro_crew.slack.handler import is_tracked_channel
 from kiro_crew.validation import (
@@ -678,6 +680,11 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True})
     except Exception as e:
+        # A Slack SDK / network exception can carry file paths, host and URL
+        # fragments, or credentials embedded in a URL. Sanitize before it
+        # reaches the client or the audit record (see api_slack_pins).
+        safe_error, _ = redact_credentials(str(e))
+        safe_error, _ = redact_exfiltration_urls(safe_error)
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -685,9 +692,9 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
             tool_kind="slack",
             outcome="error",
             downstream_service="slack",
-            error=str(e),
+            error=safe_error,
         )
-        return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"error": safe_error}, status=500)
 
 
 async def api_upload(request: web.Request) -> web.Response:
@@ -2531,12 +2538,12 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             cfg.dashboard.widget_density = val
         if "verbosity" in body:
             val = body["verbosity"]
-            if val not in ("default", "concise"):
+            if val not in ("default", "concise", "ultra"):
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
-                    {"error": "verbosity must be 'default' or 'concise'"}, status=400
+                    {"error": "verbosity must be 'default', 'concise' or 'ultra'"}, status=400
                 )
             cfg.dashboard.verbosity = val
         if "tail_fork_enabled" in body:

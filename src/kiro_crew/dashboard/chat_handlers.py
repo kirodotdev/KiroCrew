@@ -58,6 +58,7 @@ from kiro_crew.dashboard.chat_utils import (
     _remove_queued_by_id,
     _sync_dashboard_slots,
     effective_session_key,
+    slot_history_key,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import (
@@ -66,6 +67,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    parse_cls_meta,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance
@@ -390,9 +392,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # ── Sweep orphaned permissions from prior turns ──
     _sweep_stale_permissions(slot)
 
-    slot._browse_mode = bool(body.get("browse"))
-    if slot._browse_mode and "[BROWSE]" not in message:
-        message = "[BROWSE] " + message
+    # No per-message browse marker: Browser Mode is a capability, not a per-turn
+    # gate. When it is on the `browser_*` MCP tools are registered and present in
+    # the agent's tool list; when it is off they are not. The agent itself decides
+    # whether to operate a browser or read with web_fetch (the system prompt and
+    # the kirocrew-commands / web-browse skills tell it how), so the backend
+    # injects nothing here.
     slot.append("user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None)
 
     # Note: untitled slots display as "New Session…" via _ChatSlot.display_title
@@ -770,7 +775,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     if limit_raw is None and before is None:
         mem_msgs = list(slot.messages)
         if slot._disk_older_count > 0 and state.conversation_log:
-            history_key = effective_session_key(slot)
+            history_key = slot_history_key(slot)
             try:
                 disk_msgs = state.conversation_log.read_messages_chained(history_key)
             except Exception:
@@ -786,7 +791,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
         limit = min(int(limit_raw or "200"), 500)
-        history_key = effective_session_key(slot)
+        history_key = slot_history_key(slot)
         try:
             all_msgs = (
                 state.conversation_log.read_messages_chained(history_key)
@@ -1549,20 +1554,51 @@ def _has_conversation(slot: _ChatSlot) -> bool:
     return False
 
 
+def _is_stop_event(m: dict) -> bool:
+    """True when *m* is the card recorded because the user pressed Stop.
+
+    Three carriers, and the in-memory one is the easy miss: the stop is appended
+    as ``slot.append("system", stop_msg, stop_msg)`` with **no** ``meta=`` kwarg,
+    so ``_ChatSlot.append`` never creates a ``meta`` key and the discriminator
+    exists ONLY inside the JSON-encoded ``cls``/``content``. ``parse_cls_meta()``
+    is what unpacks it, and it runs on the way OUT to a client
+    (``_prepare_messages`` / ``_broadcast_chat_message``) — which is why the
+    frontend sees ``meta.kind`` while this module, reading the live window, does
+    not. Checking only ``kind``/``meta.kind`` here therefore matched a restored
+    row but never a freshly-stopped one, silently diverging from the frontend
+    mirror in exactly the case the two must agree on.
+
+    Mirrors ``isStopEvent`` in ``website/src/store/chatSlice.ts``.
+    """
+    if m.get("kind") == "stop_event":
+        return True
+    meta = m.get("meta") or {}
+    if meta.get("kind") == "stop_event":
+        return True
+    # Live window: the discriminator is still JSON inside `cls`.
+    parsed = parse_cls_meta(m.get("cls") or "")
+    return bool(parsed and parsed.get("kind") == "stop_event")
+
+
 def _is_interrupted(slot: _ChatSlot) -> bool:
     """True when the transcript shows a turn that ended without a reply.
 
-    Two shapes: the last conversational row is the USER's (nothing came back at
-    all — a gateway restart mid-turn leaves exactly this), or it is the
+    Two shapes qualify: the last conversational row is the USER's (nothing came
+    back at all — a gateway restart mid-turn leaves exactly this), or it is the
     ASSISTANT's but an error row follows it (the turn streamed partway then died,
     which is otherwise shape-identical to a clean completion).
 
-    No longer a gate — ``_has_conversation`` authorizes Continue and this only
-    selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
-    ``_MANUAL_CONTINUE_MSG``). A False result therefore means "as far as the
-    transcript shows, the last turn finished", NOT "there is nothing to do":
-    a force-quit or force-exit runs no ``finally``, so the error row that would
-    have proved the interruption was never written.
+    One shape is explicitly excluded: a trailing ``stop_event``. The user pressing
+    Stop is a deliberate ending, not an interruption, and stopping before the
+    reply emitted any text produces the same ``[user, ...]`` tail as a crash.
+
+    Still selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
+    ``_MANUAL_CONTINUE_MSG``), and on the dashboard it now also gates whether the
+    composer offers the control at all — see the ``continuable && interrupted``
+    composition in ``website/src/pages/ChatPage.tsx``. A False result means "as
+    far as the transcript shows, the last turn finished or was ended on purpose",
+    NOT "there is nothing to do": a force-quit runs no ``finally``, so the error
+    row that would have proved an interruption was never written.
 
     Deliberately does not distinguish "produced some output" from "produced
     none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the
@@ -1572,6 +1608,15 @@ def _is_interrupted(slot: _ChatSlot) -> bool:
     for m in reversed(slot.messages):
         role = m.get("role")
         meta = m.get("meta") or {}
+        # A deliberate Stop ENDS the turn; it does not interrupt it. Tested
+        # before the user/assistant branch because stopping before the reply
+        # emitted any text leaves ``[user, stop_event]`` -- shape-identical to
+        # "the gateway died before anything came back". See ``_is_stop_event``
+        # for why the discriminator has to be resolved from three carriers.
+        # Only the NEWEST turn's terminator reaches here -- an older stop card
+        # is never scanned, because a later user/assistant row returns first.
+        if _is_stop_event(m):
+            return False
         if role == "assistant" and meta.get("kind") == "compaction":
             continue
         if role in ("user", "assistant") and m.get("content"):
@@ -2804,7 +2849,7 @@ def _resume_session_identity(state: DashboardState, history_key: str) -> str:
     """
     if is_channel_session_key(history_key) and state.sessions:
         real_key = state.sessions.channel_key_for_stem(channel_slot_name(history_key))
-        if real_key:
+        if isinstance(real_key, str) and is_channel_session_key(real_key):
             return real_key
     return _history_key_for(history_key)
 
@@ -2894,7 +2939,14 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             }
         )
 
-    slot = state.get_or_create_slot(name, app=request.get("app", ""))
+    slot = state.get_or_create_slot(
+        name,
+        app=request.get("app", ""),
+        # Resuming an existing channel transcript from History is an adoption of
+        # that conversation, so the tab is channel-origin even when the session
+        # map can no longer name its session.
+        channel_origin=is_channel_session_key(history_key),
+    )
     title = body.get("title", "")
     if title:
         slot.title = title

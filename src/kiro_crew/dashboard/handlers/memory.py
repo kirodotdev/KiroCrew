@@ -212,7 +212,11 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     entries = []
-    for e in store.get_all_semantic(limit=limit, offset=offset):
+    # Offload: the fetch serializes on the store's _db_lock (#1947), and a
+    # worker holding it (e.g. backfill's locked FAISS rebuild) would otherwise
+    # block the gateway event loop here.
+    rows = await asyncio.to_thread(store.get_all_semantic, limit=limit, offset=offset)
+    for e in rows:
         d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
         entries.append(_redact_memory_field(d))
     return web.json_response({"entries": entries})
@@ -280,7 +284,8 @@ async def api_memory_semantic_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
     store = _get_vector_store(request.app["state"])
     key = request.match_info["key"]
-    ok = store.delete_semantic(key, source="user_explicit")
+    # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
+    ok = await asyncio.to_thread(store.delete_semantic, key, source="user_explicit")
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"ok": True})
@@ -294,7 +299,9 @@ async def api_memory_events(request: web.Request) -> web.Response:
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
-    return web.json_response({"events": store.get_events(limit=limit, offset=offset)})
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    events = await asyncio.to_thread(store.get_events, limit=limit, offset=offset)
+    return web.json_response({"events": events})
 
 
 _embedding_setup_status: dict[str, object] = {"step": "idle", "error": ""}
@@ -742,10 +749,17 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         return True, ""
     except ImportError:
         pass
-    sandboxed_argv, cleanup = wrap_argv(
-        [sys.executable, "-m", "ensurepip", "--upgrade"],
-        mode="standard",
-    )
+    try:
+        sandboxed_argv, cleanup = wrap_argv(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            mode="standard",
+        )
+    except SandboxUnavailableError as exc:
+        # Fail-closed sandbox (any host with no OS backend). Report it as a
+        # normal not-ok result: the caller resets the setup status and returns a
+        # 500, so an escaping exception can never leave the non-terminal
+        # "installing_faiss" latched and 409 every later Enable click.
+        return False, f"pip bootstrap could not run in a sandbox: {exc}"
     sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
     try:
         proc = await create_subprocess_limited(
@@ -871,16 +885,21 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                 # faiss is a pure accelerator; episodic recall still works via
                 # the stdlib cosine fallback (_sqlite_vector_search). On a host
                 # with no sandbox backend the install cannot run, but that must
-                # not wedge setup: reset the non-terminal "installing_faiss"
-                # status (else the 2s poll latches it and every later Enable
-                # click 409s until restart) and continue to the embed_fn wiring
-                # below with faiss absent. `kirocrew doctor` points the user at a
-                # manual `pip install faiss-cpu` if they want the accelerator.
+                # not wedge setup — so fall through to the embed_fn wiring below
+                # with faiss absent, and let the tail set the terminal "done".
+                # `kirocrew doctor` points the user at a manual
+                # `pip install faiss-cpu` if they want the accelerator.
+                #
+                # Deliberately NOT resetting the status to "idle" here: the 409
+                # guard is checked BEFORE _faiss_install_lock, so publishing a
+                # terminal status mid-flight would admit a second concurrent
+                # Enable and duplicate the ~85 lines of unserialized setup that
+                # follow (embed_fn wiring, load_faiss_index, the config
+                # read/write cycle). The tail's "done" is the only terminal write.
                 logger.info(
                     "Skipping on-demand faiss-cpu install: no sandbox backend on "
                     "this host. Episodic recall uses the stdlib cosine fallback."
                 )
-                _embedding_setup_status = {"step": "idle", "error": ""}
                 cleanup = None
                 sandboxed_argv = None
             if sandboxed_argv is not None:
@@ -1004,9 +1023,16 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
         else None
     )
     results = []
-    for e in store.search_episodic(
-        query_embedding=emb, query_text=query, limit=limit, tag_filter=tag_filter
-    ):
+    # Offload: search_episodic serializes on _db_lock (#1947) — see
+    # api_memory_semantic.
+    hits = await asyncio.to_thread(
+        store.search_episodic,
+        query_embedding=emb,
+        query_text=query,
+        limit=limit,
+        tag_filter=tag_filter,
+    )
+    for e in hits:
         d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
         results.append(_redact_memory_field(d))
     return web.json_response({"results": results})
@@ -1021,10 +1047,11 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
-    entries = [
-        _redact_memory_field(dict(e))
-        for e in store.get_episodic_list(limit=limit, offset=offset, tag_filter=tag_filter)
-    ]
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    rows = await asyncio.to_thread(
+        store.get_episodic_list, limit=limit, offset=offset, tag_filter=tag_filter
+    )
+    entries = [_redact_memory_field(dict(e)) for e in rows]
     return web.json_response({"entries": entries})
 
 
@@ -1032,7 +1059,8 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/episodic/{id} — tombstone an episodic memory."""
     store = _get_vector_store(request.app["state"])
     mem_id = request.match_info["id"]
-    ok = store.delete_episodic(mem_id)
+    # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
+    ok = await asyncio.to_thread(store.delete_episodic, mem_id)
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"ok": True})
@@ -1041,7 +1069,8 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
 async def api_memory_stats(request: web.Request) -> web.Response:
     """GET /api/memory/stats — memory system statistics."""
     store = _get_vector_store(request.app["state"])
-    stats = store.memory_stats()
+    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    stats = await asyncio.to_thread(store.memory_stats)
     # Add embedding status
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
@@ -1107,7 +1136,9 @@ async def api_memory_context_preview(request: web.Request) -> web.Response:
     """GET /api/memory/context-preview?q=... — preview what gets injected into prompts."""
     store = _get_vector_store(request.app["state"])
     query = request.query.get("q", "")[:500]
-    semantic_ctx = store.get_semantic_context()
+    # Offload: the fetch serializes on _db_lock (#1947) — see api_memory_semantic.
+    # (No query_text is passed, so this is the recency path — no embed calls.)
+    semantic_ctx = await asyncio.to_thread(store.get_semantic_context)
     # Filter semantic context by query if provided
     if query and semantic_ctx:
         lines = semantic_ctx.split("\n")
@@ -1147,22 +1178,68 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
     if not key:
         return web.json_response({"error": "session key required"}, status=400)
     include_history = body.get("include_history", True)
-    # Fire consolidation in background
+    # Claim the key before the eligibility probe below, which awaits. Testing
+    # membership and adding must happen with no yield between them: the probe
+    # offloads a transcript read, and a check-then-act spanning that await lets
+    # two concurrent POSTs both pass the guard and both dispatch, double-billing
+    # an LLM turn on the same span. The claim is released again on every path
+    # that does not hand the key to _consolidate, which discards it in its own
+    # finally once the task ends.
     if key in state.consolidator._running:
         return web.json_response({"error": "consolidation already running"}, status=409)
     state.consolidator._running.add(key)
-    task = asyncio.create_task(state.consolidator._consolidate(key, include_history))
-    state.consolidator._tasks.add(task)
-    task.add_done_callback(state.consolidator._tasks.discard)
-    return web.json_response({"ok": True, "key": key})
+    dispatched = False
+    try:
+        # The manual trigger honours the same durable retry accounting as the idle
+        # sweep and the expiry sweep. A span whose consolidation keeps failing is in
+        # exponential backoff (or abandoned at the attempt cap), and re-firing it by
+        # hand spends another billed LLM turn on the same failure — so a bypass here
+        # would reopen the unbounded-retry hole from the UI.
+        #
+        # The extent the cap is scoped to needs the transcript's message total, and
+        # reading it is blocking file IO — offload it rather than stalling the loop on
+        # a large transcript.
+        _total = None
+        if include_history:
+            try:
+                _total = (
+                    await asyncio.to_thread(
+                        state.consolidator._log.consolidation_counts, key
+                    )
+                )[0]
+            except Exception:
+                # No count means the extent test is skipped and the cap stands, which
+                # only ever refuses a turn — never spends one on an unverified premise.
+                logger.warning("Could not read message count for %s", key, exc_info=True)
+        if include_history and not state.consolidator.retry_eligible(
+            key, message_count=_total
+        ):
+            return web.json_response(
+                {
+                    "error": "consolidation is in retry backoff for this session",
+                    "code": "consolidation_retry_backoff",
+                },
+                status=429,
+            )
+        task = asyncio.create_task(
+            state.consolidator._consolidate(key, include_history)
+        )
+        dispatched = True
+        state.consolidator._tasks.add(task)
+        task.add_done_callback(state.consolidator._tasks.discard)
+        return web.json_response({"ok": True, "key": key})
+    finally:
+        if not dispatched:
+            state.consolidator._running.discard(key)
 
 
 async def api_memory_observability(request: web.Request) -> web.Response:
     """GET /api/memory/observability — memory health metrics and context preview."""
     store = _get_vector_store(request.app["state"])
     query = request.query.get("q", "")[:500]
-    stats = store.memory_stats()
-    rejections = store.get_rejection_stats()
+    # Offload: both serialize on _db_lock (#1947) — see api_memory_semantic.
+    stats = await asyncio.to_thread(store.memory_stats)
+    rejections = await asyncio.to_thread(store.get_rejection_stats)
     # get_context_preview with a query embeds the query AND every non-lesson
     # semantic row (blocking urllib per row) — the worst on-loop amplification
     # in the store; offload so it can't stall the gateway event loop.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from kiro_crew.sel import sel
@@ -18,7 +19,19 @@ from kiro_crew.sel import sel
 logger = logging.getLogger(__name__)
 
 _BUILTINS_DIR = (Path(__file__).resolve().parent / "builtins").resolve()
-_CONFIG_KEY = "agent.apps_allow_third_party"
+_ALLOW_ALL_SETTING_PATH = "agent.apps_allow_third_party"
+_TRUST_SETTING_PATH = "agent.apps_trusted"
+
+# App names admissible as a per-app trust grant. Deliberately the same shape the
+# dashboard's app routes accept, so a grant can only ever name a real app: no
+# wildcard, no separator, no traversal, no empty string. The length cap is a DoS
+# bound, not a naming rule: this set is rebuilt on EVERY execution decision (each
+# hook load, backend spawn, bridge registration and boot-reconcile iteration), so
+# an unbounded entry — or an unbounded list — turns a hand-edited config into a
+# per-decision cost. Real app names are kebab-case and short.
+_MAX_GRANT_NAME_LEN = 128
+_MAX_GRANT_ENTRIES = 512
+APP_NAME_RE = re.compile(rf"[a-z0-9][a-z0-9_-]{{0,{_MAX_GRANT_NAME_LEN - 1}}}")
 
 
 def _builtin_manifest_sources() -> tuple[Path, ...]:
@@ -355,10 +368,59 @@ def third_party_execution_allowed() -> bool:
     except Exception as exc:  # noqa: BLE001 - unreadable policy must fail closed
         logger.error(
             "%s: config load failed (%s); refusing third-party app execution",
-            _CONFIG_KEY,
+            _ALLOW_ALL_SETTING_PATH,
             exc,
         )
         return False
+
+
+def trusted_app_names() -> frozenset[str]:
+    """App names the operator granted third-party execution ONE AT A TIME.
+
+    The narrow counterpart to :func:`third_party_execution_allowed`: a name here
+    admits exactly that app's code and says nothing about any other app, so a
+    user who wants one registry app does not thereby authorise every future one.
+
+    Every failure mode yields the EMPTY set (fail closed): an unreadable config,
+    a non-list value, and a non-string member all deny rather than widening.
+    Entries are matched literally against the app's manifest name — no globbing,
+    no path semantics — and an entry that is not a well-formed app name is
+    dropped, so ``"*"``, ``"../x"`` and ``""`` can never admit anything. Trusting
+    every app is deliberately NOT expressible here; that is what the explicit
+    ``agent.apps_allow_third_party`` boolean is for.
+    """
+    try:
+        # Deferred for the same reason as third_party_execution_allowed().
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        raw = getattr(KiroCrewConfig.load().agent, "apps_trusted", [])
+    except Exception as exc:  # noqa: BLE001 - unreadable policy must fail closed
+        logger.error(
+            "%s: config load failed (%s); refusing per-app trust grants",
+            _TRUST_SETTING_PATH,
+            exc,
+        )
+        return frozenset()
+    if not isinstance(raw, list):
+        logger.error("%s: not a JSON array; ignoring every grant", _TRUST_SETTING_PATH)
+        return frozenset()
+    if len(raw) > _MAX_GRANT_ENTRIES:
+        # Bound the per-decision cost of a pathological config rather than
+        # denying outright: the operator's real grants are at the front of an
+        # append-ordered list, so truncating preserves them while capping work.
+        logger.error(
+            "%s: %d entries exceeds the %d cap; considering only the first %d",
+            _TRUST_SETTING_PATH,
+            len(raw),
+            _MAX_GRANT_ENTRIES,
+            _MAX_GRANT_ENTRIES,
+        )
+        raw = raw[:_MAX_GRANT_ENTRIES]
+    return frozenset(
+        entry
+        for entry in raw
+        if isinstance(entry, str) and APP_NAME_RE.fullmatch(entry)
+    )
 
 
 def app_execution_denied(
@@ -372,36 +434,43 @@ def app_execution_denied(
 
     Shipped package code is exempt only when ``app_root`` resolves inside the
     immutable builtin package registered for ``app_name``.  Every other target
-    requires ``agent.apps_allow_third_party`` to be the JSON boolean ``true``.
-    Allowed and denied decisions are audited best-effort, but audit
-    unavailability never changes the execution decision.
+    requires EITHER a per-app grant in ``agent.apps_trusted`` (the narrow form,
+    admitting this app alone) OR ``agent.apps_allow_third_party`` set to the JSON
+    boolean ``true`` (the blanket form).  Allowed and denied decisions are
+    audited best-effort, but audit unavailability never changes the execution
+    decision.
     """
     builtin = is_builtin_app(app_name=app_name, app_root=app_root)
-    provenance = (
-        "provenance=shipped_builtin" if builtin else "provenance=unverified"
-    )
-    if builtin or third_party_execution_allowed():
+    granted = not builtin and app_name in trusted_app_names()
+    if builtin:
+        provenance = "provenance=shipped_builtin"
+    elif granted:
+        provenance = "provenance=trusted_grant"
+    else:
+        provenance = "provenance=unverified"
+    if builtin or granted or third_party_execution_allowed():
         try:
             sel().log_api_access(
                 caller=caller,
                 operation="app_execution_admission",
                 outcome="allowed",
-                resources=f"app={app_name} action={action} {provenance}",
+                resources=f"app={app_name!r} action={action!r} {provenance}",
             )
         except Exception:  # noqa: BLE001 - admission must survive audit unavailability
             logger.debug("app execution admission audit failed", exc_info=True)
         return None
 
     reason = (
-        "third-party app execution is disabled; explicitly set "
-        f"{_CONFIG_KEY}=true to allow Python, backend, and manifest shell code"
+        "third-party app execution is disabled; trust this app alone by adding "
+        f"{app_name!r} to {_TRUST_SETTING_PATH}, or set {_ALLOW_ALL_SETTING_PATH}=true to allow every "
+        "third-party app's Python, backend, and manifest shell code"
     )
     try:
         sel().log_api_access(
             caller=caller,
             operation="app_execution_admission",
             outcome="denied",
-            resources=f"app={app_name} action={action} {provenance}",
+            resources=f"app={app_name!r} action={action!r} {provenance}",
             error=reason,
         )
     except Exception:  # noqa: BLE001 - denial must survive audit unavailability

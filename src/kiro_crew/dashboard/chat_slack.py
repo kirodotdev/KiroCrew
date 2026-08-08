@@ -17,7 +17,7 @@ from kiro_crew.dashboard.chat_backfill import (
     session_deep_link,
 )
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.state import DashboardState, _log_task_exception
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact_and_truncate
@@ -392,6 +392,24 @@ async def api_chat_slot_handoff(request: web.Request) -> web.Response:
         pass
 
     history_key = effective_session_key(slot)
+    transcript_key = slot_history_key(slot)
+    if transcript_key != history_key:
+        # The tab's conversation is stored somewhere other than the session it
+        # runs on -- an unbound channel tab. Handing off would seed the thread
+        # from the channel transcript while every later reply persisted under
+        # the session's own key, splitting one conversation across two files;
+        # a crash before the next slot flush would drop those replies entirely.
+        # Refuse rather than straddle.
+        return web.json_response(
+            {
+                "error": (
+                    "this tab's conversation lives in a channel transcript, so it "
+                    "cannot be handed off to a new Slack thread"
+                ),
+                "code": "transcript_not_own_session",
+            },
+            status=409,
+        )
     thread_ts = await handoff_to_slack(
         state.slack_client,
         state.owner_id,
@@ -400,6 +418,7 @@ async def api_chat_slot_handoff(request: web.Request) -> web.Response:
         title=slot.title if slot._titled else "",
         channel=channel,
         sessions=state.sessions,
+        transcript_key=transcript_key,
     )
     if not thread_ts:
         return web.json_response({"error": "handoff failed"}, status=500)

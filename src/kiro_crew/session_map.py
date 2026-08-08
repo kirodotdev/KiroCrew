@@ -202,7 +202,7 @@ class SessionMap:
         # Fallback: dashboard history round-trip (dashboard:dashboard_X → dashboard:X)
         matched_key = key
         if not entry and key.startswith("dashboard:dashboard_"):
-            canonical = "dashboard:" + key[len("dashboard:dashboard_"):]
+            canonical = "dashboard:" + key[len("dashboard:dashboard_") :]
             entry = self._data.get(canonical)
             if entry:
                 matched_key = canonical
@@ -307,6 +307,22 @@ class SessionMap:
             self._save()
             logger.info("Pruned %d stale session map entries", len(stale))
         return len(stale)
+
+    def mapped_sids_by_key(self) -> dict[str, str]:
+        """Session key to kiro-cli session ID, for every entry that has one.
+
+        A session ID present here is one Kiro Crew can still resume. Callers that
+        account for or reclaim disk space need both halves of this relation: the
+        IDs to exclude from deletion, and the key each ID belongs to so a
+        session's transcript can be paired with its replay log. Returning the
+        mapping rather than only the ID set is what lets such a caller reclaim a
+        session whole instead of leaving one half behind.
+        """
+        return {
+            key: sid
+            for key, entry in self._data.items()
+            if isinstance(sid := entry.get("sid"), str) and sid
+        }
 
     def set_slack_link(self, key: str, thread_ts: str, channel_id: str | None) -> None:
         """Link a session to a Slack thread. Creates entry if needed."""
@@ -556,7 +572,7 @@ class SessionMap:
         prefix = f"{bucket}:gen"
         for key in self._data:
             if key.startswith(prefix):
-                suffix = key[len(prefix):]
+                suffix = key[len(prefix) :]
                 if suffix.isdigit():
                     best = max(best, int(suffix))
         return best

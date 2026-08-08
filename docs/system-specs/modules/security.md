@@ -148,6 +148,8 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 
 - **Computer-use primary enable (keystone leaf `computer_use.json`)** — the on/off switch for native desktop GUI automation (see [computer-use.md](computer-use.md)) is `~/.kiro/crew/computer_use.json`, added to `_CREW_SECRET_LEAVES` so it is read+write-blocked under every `_CREW_HOME_PREFIXES` entry, on both the tool path (`is_sensitive_path`) and every shell form (`is_sensitive_bash_command` — `cat`, `>`, `tee`, `rm`, plus `tar -C` / `unzip -d` extraction into the trust root via `_EXTRACT_INTO_TRUST_ROOT_RE`). **It is deliberately NOT in `config.json`**, and the precedent is the denied-command opt-out immediately below: `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True`, but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is `None` and `is_denied(...)` is `None` (at the time that precedent was set `_WRITE_PROTECTED_BASH_LEAVES` was `('.data-home-ready',)` only; it now also carries the two Ops Mission Control authorization inputs described below, and `config.json` is still deliberately absent from it), so a `config.json` toggle would be flippable by a prompt-injected agent through any redirect. A primary enable for full desktop observation plus input synthesis is a **security ceiling**, the same class as the deny opt-out, so it lives on the keystone. Reads fail soft to `{}` → **disabled**, and `is_enabled()` is a strict identity test against `True` (a hand-edited `"enabled": "false"` or `1` does not enable desktop control). The only writer is the dashboard PUT handler, which does not route through the agent tool gate; `enable_state.load_state()` opens the file directly, so legitimate reads are unaffected. The file carries no separate pointer opt-in: an earlier revision documented an `allow_pointer_move` flag (plus a `capabilities.computer_use_pointer` governance row) as a second consent gate for the one click path that warps the operator's REAL mouse pointer (`click_method: "global"`), and both were removed by product decision — `PolicyConfig.from_state` reads only `allowed_apps` / `extra_denied_apps`, so writing the flag has no effect and must not be re-documented without being re-implemented. That path is instead contained by requiring the model to NAME the method (`auto` never resolves onto it) and by a dedicated SEL `tool_kind` on every use.
 
+- **Browser Mode enable/engine gate (keystone leaves `browser-mode-enabled`, `browser-engine`)** — Browser Mode's durable on switch is the file `~/.kiro/crew/browser-mode-enabled`; while it is present the backend registers the Playwright MCP proxy in kiro's `mcp.json`, which mounts the `browser_*` tools into the agent's tool list and thereby authorizes it to operate a real browser (and in attach mode, the operator's own running, logged-in browser); removing the flag deregisters the proxy so the tools disappear. Presence alone is the authorization — there is no per-message marker — so it is the same class of security ceiling as `computer_use.json` above and lives on the read+write keystone floor rather than in the agent-writable `config.json` — otherwise a prompt-injected, auto-approved shell could `touch` it to self-grant browser operation. Both it and the sibling `browser-engine` leaf (which selects the browser Playwright launches) are read+write-blocked on the tool path (`is_sensitive_path`) and every shell form (`touch`, `>`, `tee`, extraction verbs). The dashboard PUT handler is the only writer and opens the paths directly; `browser.setup` reads them via direct `config_dir()` path ops, not through the gate, so the Settings toggle and the launch path are unaffected.
+
 **Write-only config protection** (`is_sensitive_write_path` in `security.py` + `hooks.py`) — runtime config files are protected against *modification* by agent tools while staying *readable*:
 - `~/.kiro/crew/config.json` and `~/.kiro/crew/config.local.json` are in a write-only tier (`_WRITE_PROTECTED_HOME_PATHS`, expanded under every `_CREW_HOME_PREFIXES` entry so the pre-move legacy copy is covered too), deliberately NOT in the read+write `_SENSITIVE_HOME_DIRS` list above — the dashboard file viewer, `cat`, and knowledge indexing legitimately read config.
 - `is_sensitive_write_path(path)` is a superset of `is_sensitive_path(path)`, sharing the same `_path_in_home_dirs` resolve/casefold core so the two gates can't drift. `hooks.on_tool_call` denies a file-EDIT tool call (ACP `edit` kind) whose `path`/`file_path` resolves to a config file.
@@ -271,13 +273,13 @@ exact-match exception behavior without network access.
 
 ### GitHub AI Review Human Overrides (`.github/workflows/`)
 
-Human judgment is the final authority over the Fable 5, GPT 5.6, and Arbiter
+Human judgment is the final authority over the Fable 5 and GPT 5.6
 AI-review results. A repository member with `write`, `maintain`, or `admin`
 permission can record a false-positive, not-applicable, or accepted-risk
 decision with:
 
 ```text
-/ai-review override <fable|gpt|arbiter|all> <current-sha>: <reason>
+/ai-review override <fable|gpt|all> <current-sha>: <reason>
 ```
 
 The decision is intentionally explicit and commit-scoped. The handler resolves
@@ -307,22 +309,15 @@ GitHub Actions installation token.
 For Fable 5 and GPT 5.6, the handler re-runs the existing PR workflow. The
 re-run resolves the trusted marker before acquiring AWS credentials, skips the
 model invocation, updates the existing summary with a human-override banner,
-and exits its original gate successfully. Arbiter's gating check is created via
-the Checks API, so the handler updates that check and its marker-keyed PR
-comment directly; later Arbiter runs also resolve the same trusted marker before
-calling the model. Arbiter also re-reads the trusted marker immediately after
-creating its check and patches that exact check plus its summary comment when an
-override arrived during model execution. If the override arrives after that
-read, the handler sees and patches the newly created check instead; either event
-ordering leaves the SHA-scoped human decision authoritative. The broader
-`defer-longterm` label remains an accepted-risk override for Arbiter.
+and exits its original gate successfully. Either event ordering — an override
+recorded before a reviewer starts, or one arriving during model execution —
+leaves the SHA-scoped human decision authoritative.
 
-All three marker-keyed comments expose the override command to repository
-writers. GPT 5.6 and Arbiter also normalize each current-commit result into a
+The marker-keyed comments expose the override command to repository
+writers. GPT 5.6 also normalizes each current-commit result into a
 top verdict plus one sentence: `✅ no blocking findings`,
 `🔴 changes requested (blocking)`, an incomplete state, or a human-override
-state. Arbiter refreshes its comment while waiting for new-commit reviewer
-inputs, so a green verdict from the previous commit is never left looking
+state, so a green verdict from the previous commit is never left looking
 current.
 
 When no current-SHA override is active, GPT 5.6 captures convergence context
@@ -358,39 +353,38 @@ the automated lanes passed for that SHA; it does not represent human approval.
 Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
-For same-repository PRs, the aggregate covers the latest PR run for CI, Build,
+The aggregate covers the latest PR run for CI, Build,
 Code Review, Opus 5 Review, GPT 5.6 Review (the reconciled result of its three
-calls), and Design Review, plus the managed dynamic CodeQL workflow conclusion
-and the API-owned `Arbiter — judge from comments` check. Grading the CodeQL
+calls), and Design Review, plus the managed dynamic CodeQL workflow conclusion.
+Grading the CodeQL
 workflow conclusion, rather than its neutral summary check, preserves failures
 from any managed Analyze job. Fork PRs cannot receive repository secrets or
 OIDC credentials, and this repository's managed default-setup CodeQL workflow
-is not scheduled for fork heads. CodeQL, the three secret-backed AI workflows,
-and Arbiter are therefore explicitly ineligible for forks; CI, Build, and Code
-Review still determine their readiness. Missing or running eligible lanes
+is not scheduled for fork heads. The secret-backed AI reviews therefore run for
+forks from the trusted base branch via the `fork-*` pipeline and are graded from
+the head SHA's check-runs, leaving CodeQL as the only lane explicitly ineligible
+for a fork. Missing or running eligible lanes
 produce `checking`; blocking workflow/check failures produce
 `action required`; drafts remain `checking`.
-Design Review completion is required as Arbiter input, but its verdict and
+Design Review completion is required, but its verdict and
 infrastructure conclusion are advisory. It emits one `PASS | CONCERNS | BLOCK`
-verdict and no separate blast-radius rating. Mergeability, behind-base state,
+verdict and no separate blast-radius rating, and it owns the long-term
+reversibility (one-way-door) lens. Mergeability, behind-base state,
 and human review decisions are not part of this event-driven aggregate because
 they can change without an aggregate refresh event; branch protection and the
 live `prepare-pr` status check own them.
 
-Every event resolves the PR's current head through the GitHub API. An event or
-explicit Arbiter refresh carrying an older expected SHA is ignored, so a late
+Every event resolves the PR's current head through the GitHub API. An event
+carrying an older expected SHA is ignored, so a late
 run cannot relabel the new revision. A code-free `pull_request_target` handler
 updates same-repository and fork PRs from the trusted base workflow. Actions
 that start or restart validation for the same SHA, including a PR description
 edit that re-runs Code Review, force the aggregate to `checking` before run
 lookup so an older successful same-SHA run cannot keep readiness green. Trusted
-base-repository `workflow_run` events refresh it as eligible lanes finish.
-Arbiter dispatches an explicit refresh after replacing its API-owned check
-because its own `workflow_run` completion is not associated with the source PR.
-The dispatch capability lives in a separate non-model job and runs only after
-the check publication succeeds. Readiness-label events cannot recursively
-rerun or cancel Arbiter: its label path accepts only `defer-longterm`, and
-ignored label events use a per-run concurrency key, so they cannot cancel an
+base-repository `workflow_run` events refresh it as eligible lanes finish,
+including the `fork-*` reviewer completions that carry a fork's verdicts.
+Readiness-label events cannot recursively rerun or cancel a review: ignored label
+events use a per-run concurrency key, so they cannot cancel an
 active review or replace a pending authoritative reviewer event.
 
 The bundled `prepare-pr` skill front-loads the same review contract before the
@@ -400,8 +394,8 @@ read-only subagents over the finished base-to-head diff: one owns correctness,
 security, and platform compatibility; the other owns contracts, tests, error
 paths, and the user workflow. Both use the canonical severity and output rules
 from `.github/workflows/codex-review.yml`. Legitimate Critical/High findings are
-fixed before publication; Medium/Low findings remain advisory unless Arbiter
-or a human escalates them. If a blocker fix changes code, one focused verifier
+fixed before publication; Medium/Low findings remain advisory unless a human
+escalates them. If a blocker fix changes code, one focused verifier
 checks that fix. The skill records the verifier-cleared SHA and fails closed if
 HEAD changes before push; it does not start an unbounded local review loop.
 During a post-submit round, it records one concise, marker-keyed GPT disposition
@@ -1092,7 +1086,7 @@ server route set.
 - **Trust-grant audit (`registries.host_trust_granted` SEL event + `newlyTrustedHosts`)** — admitting a new registry host is a genuine **trust grant** (its hosts feed the clone-trust set above and its apps become installable with gateway privileges), not a mere config edit, and the generic `registries.update` event does not record *which* host gained trust — leaving an unreconstructable, one-way-door audit gap. The `PUT /api/apps/registries` handler (`apps/routes.py`) diffs the incoming hosts against the **prior on-disk** config and emits a distinct per-host SEL `registries.host_trust_granted` (`resources=host=<h> repo=<url>`) for each genuinely new host; re-saving an unchanged list — or adding a second path on an already-trusted host — emits nothing, so the audit log records exactly the trust transitions. The response returns `newlyTrustedHosts` so a client can surface the grant (e.g. a UI heads-up) without another round-trip.
 
 **Response security headers** (`server.py:_apply_security_headers`):
-- All dashboard responses receive `Cache-Control: no-store`, `Content-Security-Policy` (default-src 'self' plus curated exceptions for tailwind/jsdelivr/WebSocket loopback), and `Permissions-Policy: clipboard-write=(self), clipboard-read=(self)`
+- All dashboard responses receive `Cache-Control: no-store`, `Content-Security-Policy` (default-src 'self' plus curated exceptions for tailwind/jsdelivr/esm.sh, `fonts.googleapis.com` in `style-src` + `fonts.gstatic.com` in `font-src` for the dashboard's two brand webfonts, and WebSocket loopback), and `Permissions-Policy: clipboard-write=(self), clipboard-read=(self)`
 - The Permissions-Policy grant is required by Chrome 143+, which changed the default policy to DENY `clipboard-write` even on secure contexts (crbug.com/414348233). Without it, `navigator.clipboard.writeText` throws a permissions-policy violation and the Copy-link button on published artifacts fails
 - `frame-src` always admits loopback preview origins — http+https on `127.0.0.1`, `localhost`, `[::1]`, `0.0.0.0` (`_LOOPBACK_FRAME_SRC`) — so the chat side-panel **Web Preview** tab (`WebPreviewPanel`) can frame a local dev/static server in the packaged app, not only when the instances feature is enabled. The framed preview cannot read the dashboard's host-scoped session cookie: `WebPreviewPanel.isolatePreviewHost` rewrites a preview whose host equals the dashboard's (both loopback, incl. `*.localhost`) to a distinct loopback alias, so no `mc_token_<port>` cookie is ever sent to the previewed server. When the instances feature is additionally enabled, `frame-src` is extended with the `http://*.localhost:*` tunnel wildcard so dynamically-connected tunnel ports can be framed
 - Defense-in-depth framing/sniffing/referrer/transport headers are set uniformly (all via `setdefault`): CSP `frame-ancestors` (clickjacking) — `'self'` by default plus any **exact operator-trusted origins** (never a wildcard, never a hardcoded port); `X-Frame-Options: SAMEORIGIN` as a legacy backstop set **only** in the default `'self'`-only posture (omitted when an extra ancestor is trusted, since it is origin-exact and cannot express the allowlist); `X-Content-Type-Options: nosniff` (MIME confusion), `Referrer-Policy: strict-origin-when-cross-origin` (avoids leaking the token-bearing dashboard URL cross-origin), and `Strict-Transport-Security: max-age=31536000; includeSubDomains` (inert over the loopback HTTP bind, protects HTTPS tunnel/desktop access). Cross-port embedding of remote dashboards in the Instances viewport is enabled **only** via exact trusted-origin embedding carried in the signed token: at connect the local (embedding) gateway mints the remote token with an `embed_parent_port` claim equal to its own `KIROCREW_PORT`; that claim is carried through the link→session token exchange into the `mc_token_<port>` session cookie (`token_auth_middleware` — the exchange re-mints a fresh session token and must propagate the claim), and the middleware also stashes the validated port on the request **before** it revokes the link nonce. The embedded remote's `_extra_frame_ancestors` reads it in that order — the request-stashed value first (so the FIRST `?token=` framed document, whose link nonce the exchange revokes, still carries the origin), then the query token, then the session cookie (`token_embed_parent_port`) — and adds the parent's loopback origins (all loopback hosts at that port) to `frame-ancestors`. Exact origins only — never a wildcard, never a hardcoded port — and gated on a signed token, so a local page with no token can never inject an ancestor. Neither a loopback-wildcard nor the CSRF `allowed_origins` set is used for framing: both would let a local origin (any port, or a CORS/`dashboard.url`/dev `localhost:3000` entry) frame the authenticated dashboard and receive the `SameSite=Lax` session cookie (clickjacking, per input-validation guidance). Any request without such a token keeps the default `frame-ancestors 'self'` + `X-Frame-Options: SAMEORIGIN` posture

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import sys
 import time
 import types
 from collections import deque
@@ -35,6 +36,21 @@ from kiro_crew.acp.liveness import (
     LivenessOracle,
 )
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpPromptStats
+
+# Windows lacks os.killpg and POSIX process-tree APIs (ps, /proc).
+# Tests that exercise these paths are skipped on Windows.
+_POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process tree APIs only")
+
+# Separate from _POSIX_ONLY because the reason differs: these tests assert POSIX
+# EXECUTABLE-RESOLUTION semantics, not process-tree APIs. They build fixtures that
+# have no Windows equivalent — extensionless binaries made runnable with
+# chmod(0o755), which `shutil.which` cannot find on Windows because it resolves
+# candidates through PATHEXT, and `/`-rooted paths, which os.path.realpath()
+# anchors to the current drive (`/home/u/x` -> `D:\home\u\x`). The production
+# resolvers are correct on Windows; only these fixtures are POSIX-shaped.
+_POSIX_EXEC_PATHS_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX executable-resolution semantics only"
+)
 
 
 class TestVendoredClaudeAcp:
@@ -829,6 +845,7 @@ class TestResolveClaudeAcpBin:
         assert result is not None
         assert str(bin_path) in result
 
+    @_POSIX_EXEC_PATHS_ONLY
     def test_path_lookup(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
 
@@ -850,6 +867,7 @@ class TestResolveClaudeAcpBin:
         assert result is not None
         assert str(bin_path) in result
 
+    @_POSIX_EXEC_PATHS_ONLY
     def test_mise_which_preferred(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
 
@@ -871,6 +889,7 @@ class TestResolveClaudeAcpBin:
         result = client_mod._resolve_claude_acp_bin()
         assert result == [str(script)]
 
+    @_POSIX_EXEC_PATHS_ONLY
     def test_mise_installed_script_resolves_node(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
         from kiro_crew.acp.client import _resolve_claude_acp_bin
@@ -926,6 +945,7 @@ class TestResolveClaudeAcpBin:
         result = client_mod._resolve_claude_acp_bin()
         assert result == [str(node_bin), str(script.resolve())]
 
+    @_POSIX_EXEC_PATHS_ONLY
     def test_mise_glob_fallback(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
 
@@ -997,6 +1017,7 @@ class TestResolveClaudeCodeExecutable:
         monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: "/usr/bin/claude")
         assert client_mod._resolve_claude_code_executable() == "/mise/bin/claude"
 
+    @_POSIX_EXEC_PATHS_ONLY
     def test_path_lookup(self, monkeypatch):
         from kiro_crew.acp import client as client_mod
 
@@ -1354,27 +1375,59 @@ class TestAcpClientReadMessage:
         assert msg is None
 
     @pytest.mark.asyncio
-    async def test_read_buffer_overrun_raises_process_died(self, tmp_path):
-        """A line exceeding the stdout buffer must surface as AcpProcessDied.
+    async def test_read_buffer_overrun_drops_frame_and_keeps_reading(self, tmp_path):
+        """A line exceeding the stdout buffer costs that ONE frame, not the turn.
 
-        asyncio's StreamReader.readline() raises ValueError when a single
-        line exceeds its limit; the stream is corrupted afterward. The read
-        loop must convert that into AcpProcessDied so session recovery
-        respawns the process instead of the session freezing.
+        The stream is NOT corrupted afterwards, contrary to what this call site
+        used to assume: readline() removes the oversize line through its
+        terminating newline (or clears the buffer when the newline has not
+        arrived yet) and resumes the transport before raising ValueError. So the
+        overrun joins the blank-line and non-JSON paths in returning None, and
+        the caller's next read gets the following frame. Raising AcpProcessDied
+        here killed a healthy live turn over one unreadably large frame.
+
+        Driven through a REAL StreamReader so the recovery claim is asserted
+        against asyncio's actual behaviour rather than a mock's side_effect.
         """
         client = AcpClient(work_dir=tmp_path)
 
+        reader = asyncio.StreamReader(limit=256)
         mock_process = MagicMock()
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(
-            side_effect=ValueError("Separator is not found, and chunk exceed the limit")
-        )
-        mock_process.stdout = mock_stdout
+        mock_process.stdout = reader
         mock_process.returncode = None
         client._process = mock_process
 
-        with pytest.raises(AcpProcessDied):
-            await client._read_message(timeout=1.0)
+        reader.feed_data(b"X" * 1024 + b"\n")  # oversize frame
+        reader.feed_data(b'{"jsonrpc":"2.0","method":"session/update","params":{}}\n')
+
+        assert await client._read_message(timeout=1.0) is None  # frame dropped
+        msg = await client._read_message(timeout=1.0)
+        assert msg is not None and msg.method == "session/update"
+
+    @pytest.mark.asyncio
+    async def test_repeated_buffer_overruns_never_kill_the_process(self, tmp_path):
+        """Oversize frames must not accumulate into a kill here.
+
+        This reader carries no drain budget on purpose (see the asymmetry note in
+        `_read_message`): every call is bounded by the caller's timeout, so a run
+        of oversize frames costs only those frames. A frame-count cap would
+        reintroduce exactly the defect this PR removes — death from a replay of
+        properly-terminated but oversize frames."""
+        client = AcpClient(work_dir=tmp_path)
+
+        reader = asyncio.StreamReader(limit=256)
+        mock_process = MagicMock()
+        mock_process.stdout = reader
+        mock_process.returncode = None
+        client._process = mock_process
+
+        for _ in range(40):
+            reader.feed_data(b"X" * 1024 + b"\n")  # oversize, terminated
+            assert await client._read_message(timeout=1.0) is None
+
+        reader.feed_data(b'{"jsonrpc":"2.0","method":"session/update","params":{}}\n')
+        msg = await client._read_message(timeout=1.0)
+        assert msg is not None and msg.method == "session/update"
 
 
 class TestAcpClientExtractChunk:
@@ -1682,6 +1735,7 @@ class TestGetChildPids:
         assert _get_child_pids(1000) == [2000, 4000, 3000, 5000]
 
 
+@_POSIX_ONLY
 class TestIsOurChild:
     def test_nonexistent_pid(self):
         from kiro_crew.acp.client import _is_our_child
@@ -1781,6 +1835,7 @@ class TestIsOurChild:
         assert _is_our_child(999, expected_start=42, expected_basename=None) is False
 
 
+@_POSIX_ONLY
 class TestKillEscapedChildren:
     def test_empty_dict(self):
         from kiro_crew.acp.client import _kill_escaped_children
@@ -1826,6 +1881,7 @@ class TestChildPidsField:
         assert client._child_pids == {}
 
 
+@_POSIX_ONLY
 class TestReadBasename:
     def test_reads_basename_from_ps(self, monkeypatch):
         import sys
@@ -3210,6 +3266,7 @@ class TestSendPipeErrors:
 # ── Coverage push: process lifecycle ──
 
 
+@_POSIX_ONLY
 class TestKillProcess:
     """Tests for _kill_process covering SIGTERM, SIGKILL, and edge cases."""
 
@@ -5656,6 +5713,7 @@ class TestSendMessageStreamBranches:
         assert client._turn_done.is_set()
 
 
+@_POSIX_ONLY
 class TestKillProcessPipeClose:
     """Test pipe closing in _kill_process."""
 
@@ -6813,6 +6871,86 @@ class TestFormatAcpError:
         assert "transient error" not in out.lower()
         assert "ValidationException: input contains an unsupported field 'foo'" in out
 
+    def test_session_expired_rewrite(self):
+        """An expired session gets actionable sign-in guidance rather than the
+        misleading transient-5xx retry advice."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "DispatchFailure: session expired",
+        }
+        out = _format_acp_error(err)
+        assert "session has expired" in out.lower() or "session expired" in out.lower()
+        assert "kiro-cli login" in out.lower()
+        assert "retry" in out.lower() and "will not help" in out.lower()
+        # Must NOT show the misleading 5xx message.
+        assert "transient error" not in out.lower()
+        assert "retry in a moment" not in out.lower()
+
+    def test_session_expired_by_http_status(self):
+        """A bare 401/403 is the shape an expired session actually arrives in:
+        the rejection carries no explanatory wording, so status alone must
+        drive the classification."""
+        for status in ("HTTP 401", "HTTP 403", "status code 401", "status 403"):
+            err = {"code": -32603, "message": "Internal error", "data": status}
+            out = _format_acp_error(err)
+            assert "kiro-cli login" in out.lower(), f"No sign-in guidance for: {status!r}"
+            assert "transient error" not in out.lower(), f"Misclassified: {status!r}"
+
+    def test_session_expired_401_with_transport_error(self):
+        """The reported failure mode: an aborted request leaves a transport
+        error alongside the 401, and the 5xx family used to win and tell the
+        user to retry."""
+        err = {
+            "code": -32603,
+            "message": "Encountered an error in the response stream",
+            "data": "DispatchFailure ConnectionResetError: HTTP 401",
+        }
+        out = _format_acp_error(err)
+        assert "kiro-cli login" in out.lower()
+        assert "transient error" not in out.lower()
+        assert "retry in a moment" not in out.lower()
+
+    def test_genuine_5xx_still_transient_with_auth_absent(self):
+        """The new auth-status branch must not swallow real 5xx errors."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "ServiceUnavailableException: HTTP 503",
+        }
+        out = _format_acp_error(err)
+        assert "transient" in out.lower()
+        assert "kiro-cli login" not in out.lower()
+
+    def test_session_expired_variants(self):
+        """Various kiro-cli session-expiry error shapes are all classified."""
+        variants = [
+            "not logged in",
+            "session has expired",
+            "login expired",
+            "authentication required",
+            "session timed out",
+            "not authenticated",
+            "login required",
+        ]
+        for text in variants:
+            err = {"code": -32603, "message": "Internal error", "data": text}
+            out = _format_acp_error(err)
+            assert "transient error" not in out.lower(), f"Failed for: {text!r}"
+            assert "kiro-cli login" in out.lower(), f"No login guidance for: {text!r}"
+
+    def test_session_expired_with_5xx_token_wins(self):
+        """Session expiry checked before 5xx: a DispatchFailure wrapping a
+        session-expired message must surface as auth, not transient."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "DispatchFailure ConnectionResetError: session expired",
+        }
+        out = _format_acp_error(err)
+        assert "transient error" not in out.lower()
+        assert "kiro-cli login" in out.lower()
+
 
 class TestIsTransientRawError:
     """_is_transient_raw_error classifies retryability from the RAW JSON-RPC
@@ -6881,6 +7019,54 @@ class TestIsTransientRawError:
         )
         assert _is_transient_raw_error(None) is False
         assert _is_transient_raw_error("boom") is False
+
+    def test_session_expired_is_not_transient(self):
+        """Regression test: kiro-cli session expiry must be terminal.
+
+        These error shapes previously fell through to the 5xx branch (when they
+        also carried DispatchFailure/ConnectionResetError), telling the user to
+        retry when re-authentication was required.
+        """
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # Direct session-expired wording from kiro-cli.
+        assert _is_transient_raw_error({"data": "session expired"}) is False
+        assert _is_transient_raw_error({"data": "session has expired"}) is False
+        assert _is_transient_raw_error({"data": "not logged in"}) is False
+        assert _is_transient_raw_error({"data": "not authenticated"}) is False
+        assert _is_transient_raw_error({"data": "login required"}) is False
+        assert _is_transient_raw_error({"data": "authentication required"}) is False
+        assert _is_transient_raw_error({"data": "re-authenticate"}) is False
+        assert _is_transient_raw_error({"message": "session timed out", "data": ""}) is False
+        # Session expiry with a co-occurring 5xx token: the session-expiry
+        # branch must win (checked first).
+        assert (
+            _is_transient_raw_error(
+                {"data": "DispatchFailure: session expired", "message": ""}
+            )
+            is False
+        )
+        assert (
+            _is_transient_raw_error(
+                {"data": "ConnectionResetError: not logged in", "message": ""}
+            )
+            is False
+        )
+        # A bare 401/403 — the shape an expired session actually arrives in.
+        assert _is_transient_raw_error({"data": "HTTP 401"}) is False
+        assert _is_transient_raw_error({"data": "HTTP 403"}) is False
+        assert _is_transient_raw_error({"data": "status code 401"}) is False
+        # 401 alongside the transport error left by the aborted request: the
+        # 5xx family must not reclaim it and re-arm the retry ladder.
+        assert (
+            _is_transient_raw_error(
+                {"data": "DispatchFailure ConnectionResetError: HTTP 401", "message": ""}
+            )
+            is False
+        )
+        # Real 5xx stays retryable — the auth-status branch must not overreach.
+        assert _is_transient_raw_error({"data": "ServiceUnavailableException"}) is True
+        assert _is_transient_raw_error({"data": "HTTP 503"}) is True
 
     def test_kiro_generic_generation_failure_is_transient(self):
         from kiro_crew.acp.client import _is_transient_raw_error
@@ -8976,6 +9162,15 @@ class TestModelEntitlementPreflight:
         # The actionable part: what they CAN pick.
         assert "claude-sonnet-4.6" in msg
         assert "claude-haiku-4.5" in msg
+        # The identity hint stays CONDITIONAL and read-only. This error also
+        # reaches users who really are on a free tier and for whom picking an
+        # advertised model is the whole fix, so it must not read as an
+        # instruction to re-authenticate: `whoami` only reports which tier is
+        # signed in, and no destructive step is ever named.
+        assert "if you expected" in msg.lower()
+        assert "kiro-cli whoami" in msg
+        assert "logout" not in msg.lower()
+        assert "kiro-cli login" not in msg
         # Terminal, and EXPLICITLY so -- None would send the retry layer back to
         # string-matching, which is what produced the retry rows.
         assert excinfo.value.transient is False

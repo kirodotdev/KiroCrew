@@ -1,15 +1,23 @@
 /**
- * Pure logic for the web terminal's inline path completion.
+ * Pure logic for the web terminal's inline completion.
  *
  * Everything here operates on plain strings so it can be unit-tested without an
  * xterm instance: the caller reads the cursor's screen row out of xterm and
  * hands it in. See `TerminalCompletion.tsx` for the DOM/menu side and
- * `POST /api/terminal/complete` for the directory listing.
+ * `POST /api/terminal/complete` for the data.
  *
- * Deliberate V1 scope: PATH completion only. No per-CLI subcommand/flag specs,
- * no history mode, no fuzzy search. The trigger rules below are tuned so the
- * menu appears exactly where a path is plausible and stays out of the way
- * everywhere else.
+ * Two tiers, kept disjoint and selected here by `completionMode`:
+ *
+ *  - **path** — directory listings for a word that could name a file. The
+ *    original scope, unchanged.
+ *  - **command** — subcommands and flags for an allowlisted CLI, so `gh pr cre⎸`
+ *    offers `create` instead of nothing. The data comes from the tool itself
+ *    (see `dashboard/terminal_commands.py`); this module only decides WHEN to
+ *    ask and how to type the answer back into the shell.
+ *
+ * Still out of scope: completing the command NAME itself, history search, and
+ * fuzzy matching. The trigger rules below are tuned so the menu appears exactly
+ * where a completion is plausible and stays out of the way everywhere else.
  */
 
 /** Commands whose arguments are paths — completion triggers for these even on
@@ -155,17 +163,58 @@ export function commandStart(line: string, tokenStart: number, markerX?: number)
 }
 
 /**
+ * A command segment split into shell words, NOT breaking at an escaped space.
+ *
+ * `extractToken` already keeps `my\ dir` together for the word under the cursor;
+ * this applies the same rule to the words BEFORE it, so `gh pr view my\ branch ⎸`
+ * yields four words rather than five. Escapes are left in place — the caller
+ * decides whether it wants the on-screen form or the decoded one.
+ */
+function splitWords(segment: string): string[] {
+  const words: string[] = []
+  let cur = ''
+  for (let i = 0; i < segment.length; i += 1) {
+    const c = segment[i]
+    if (c === '\\' && i + 1 < segment.length) {
+      cur += c + segment[i + 1]
+      i += 1
+      continue
+    }
+    if (WORD_BREAK.test(c)) {
+      if (cur) { words.push(cur); cur = '' }
+      continue
+    }
+    cur += c
+  }
+  if (cur) words.push(cur)
+  return words
+}
+
+/**
+ * The words of the command governing the token at `tokenStart`, still escaped,
+ * with leading wrappers dropped so the real tool is first.
+ *
+ * `commandWord` and `commandArgv` are both views of this one answer, which is
+ * what keeps them from disagreeing about where the command starts — a
+ * disagreement would send the backend an argv whose head is not the command the
+ * trigger rules were evaluated against.
+ */
+function commandWords(line: string, tokenStart: number, markerX?: number): string[] {
+  const segment = line.slice(commandStart(line, tokenStart, markerX), tokenStart)
+  const lastCmd = segment.split(CMD_SEP).pop() ?? ''
+  const words = splitWords(lastCmd)
+  // `sudo cp x` / `env FOO=1 ls` — step past wrappers so the real command wins.
+  let i = 0
+  while (i < words.length - 1 && (WRAPPERS.has(words[i]) || words[i].includes('='))) i += 1
+  return words.slice(i)
+}
+
+/**
  * The command word governing the token at `tokenStart` — `''` when the token IS
  * the command word (nothing to complete a path against yet).
  */
 export function commandWord(line: string, tokenStart: number, markerX?: number): string {
-  const segment = line.slice(commandStart(line, tokenStart, markerX), tokenStart)
-  const lastCmd = segment.split(CMD_SEP).pop() ?? ''
-  const words = lastCmd.trim().split(/\s+/).filter(Boolean)
-  // `sudo cp x` / `env FOO=1 ls` — step past wrappers so the real command wins.
-  let i = 0
-  while (i < words.length - 1 && (WRAPPERS.has(words[i]) || words[i].includes('='))) i += 1
-  return words[i] ?? ''
+  return commandWords(line, tokenStart, markerX)[0] ?? ''
 }
 
 const WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'env', 'time', 'nohup', 'command', 'exec'])
@@ -179,12 +228,72 @@ const WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'env', 'time', 'nohup', '
  *  - the command is a known path command, so even a bare token lists the cwd.
  *
  * Flags (`-x`, `--long`) and variable/substitution starts never trigger.
+ *
+ * This governs the PATH tier only; `completionMode` layers the command tier on
+ * top for the words this refuses.
  */
 export function shouldComplete(token: string, command: string): boolean {
   if (token.startsWith('-') || token.startsWith('$') || token.startsWith('`')) return false
   if (command === '') return false // still typing the command name itself
   if (token.includes('/') || token.startsWith('~') || token.startsWith('.')) return true
   return PATH_COMMANDS.has(command)
+}
+
+/** Whether a word could name a file — i.e. whether the PATH tier owns it. */
+function looksLikePath(token: string): boolean {
+  return token.includes('/') || token.startsWith('~')
+}
+
+/** Which tier answers this word, or `none` when the menu stays shut. */
+export type CompletionMode = 'path' | 'command' | 'none'
+
+/**
+ * The tier that owns the word at the cursor.
+ *
+ * The two tiers are kept DISJOINT, and the client is what separates them — only
+ * the client can see the screen row. Path wins wherever it applied before, so
+ * this cannot regress any word that already produced a menu:
+ *
+ *  - `path`    — `shouldComplete` says so (path-shaped word, or a known path
+ *                command). Unchanged behaviour.
+ *  - `command` — a word that cannot be a path (no `/`, not `~`-rooted), under a
+ *                command that is not a known path command. This is the case that
+ *                previously produced nothing at all: `gh pr cre⎸`, `git ⎸`,
+ *                `docker --⎸`.
+ *  - `none`    — no command word yet (completing the command NAME is out of
+ *                scope; that needs a PATH-wide executable scan), or a shell
+ *                expansion the tokenizer must not touch.
+ *
+ * A flag word reaches `command` but never `path`: a path listing for `-` is
+ * meaningless, which is why `shouldComplete` rejects it and why that rejection is
+ * NOT inherited here.
+ */
+export function completionMode(token: string, command: string): CompletionMode {
+  if (shouldComplete(token, command)) return 'path'
+  if (command === '') return 'none'
+  if (token.startsWith('$') || token.startsWith('`')) return 'none'
+  // A path command's bare word belongs to the path tier even when the tier
+  // returns nothing — `python ⎸` must keep listing the cwd, not start probing a
+  // tool that has no completion protocol.
+  if (PATH_COMMANDS.has(command)) return 'none'
+  if (looksLikePath(token)) return 'none'
+  return 'command'
+}
+
+/**
+ * The command line before the cursor's word, as an argv the backend can probe.
+ *
+ * `["gh", "pr"]` for `gh pr cre⎸`. Words are DECODED (`unescapeWord`) because
+ * argv entries are literal — they are handed to `execve`, not to a shell — and a
+ * backslash that survived would become part of the value.
+ *
+ * Wrapper words are stripped so the real tool lands at argv[0] (`sudo docker ps⎸`
+ * probes `docker`), matching what `commandWord` already reports. Flag words are
+ * KEPT: cobra's position in its own command tree depends on them, and dropping
+ * `--namespace kube-system` would change the answer.
+ */
+export function commandArgv(line: string, tokenStart: number, markerX?: number): string[] {
+  return commandWords(line, tokenStart, markerX).map(unescapeWord)
 }
 
 /** Whether the listing should be restricted to directories. */
@@ -254,6 +363,35 @@ const UNSAFE_NAME = /[\p{Cc}\p{Cs}]/u
 /** Whether a filesystem name may be typed into the shell at all. */
 export function isSafeName(name: string): boolean {
   return !UNSAFE_NAME.test(name)
+}
+
+/**
+ * A subcommand name (`pr`, `dry-run`, `run:build`, `v2.0`).
+ *
+ * `:` is allowed: a subcommand is argv[1], never a path, so the `host:path`
+ * ambiguity that the path guard exists for cannot arise — and script-runner
+ * subcommands really are spelled that way.
+ */
+const SUBCOMMAND_NAME = /^[\p{L}\p{N}][\p{L}\p{N}._+:@-]*$/u
+
+/** A flag (`-v`, `--repo`, `--dry-run`, `--message=`). */
+const FLAG_NAME = /^--?[\p{L}\p{N}][\p{L}\p{N}._-]*=?$/u
+
+/**
+ * Whether a command-tier value is one this module will type into the shell.
+ *
+ * The path tier ESCAPES what it types, because a filename is arbitrary bytes the
+ * user chose and escaping is the only way to make it a single shell word. A
+ * subcommand or flag is the opposite: it is a token the TOOL defined, drawn from
+ * a closed vocabulary, and it is already a plain shell word or it is not a real
+ * flag at all. So the command tier validates instead of escaping — which is both
+ * safer (an unexpected value is refused outright rather than smuggled through as
+ * an escaped literal) and correct on screen: escaping would put `--message\=` on
+ * the line where the tool asked for `--message=`.
+ */
+export function isCommandToken(name: string, isFlag: boolean): boolean {
+  if (!isSafeName(name)) return false
+  return isFlag ? FLAG_NAME.test(name) : SUBCOMMAND_NAME.test(name)
 }
 
 /**
@@ -335,18 +473,31 @@ function lastSeparator(word: string): number {
  */
 const NOT_A_PLAIN_PATH = /^[-+]|:/
 
-export function buildInsertion(word: string, replacement: string, suffix = ''): Insertion {
+export function buildInsertion(
+  word: string, replacement: string, suffix = '', isPath = true,
+): Insertion {
   const sep = lastSeparator(word)
   // Only the last segment is rewritten; any directory part stays on screen.
   const onScreen = word.slice(sep + 1)
-  let text = shellEscape(replacement)
+  // Escaped only in path mode. A command token has been through
+  // `isCommandToken`, so it is already a plain shell word — escaping it would
+  // only corrupt it (`--message\=` for the tool's `--message=`), and a token that
+  // WOULD need escaping was refused rather than offered.
+  let text = isPath ? shellEscape(replacement) : replacement
   // A name starting with `-` or `+` is an OPTION to whatever runs next, not a
   // path, and no escaping changes that: `\-c` is still `-c`, so `vim -c:!sh evil`
   // would run a command, and `+` is vim's own command prefix, so `vim +:!id` runs
   // `id`. `./` makes either unambiguously a path. Needed only when the word has
   // no directory part — with one (`sub/-x`) the argument already cannot parse as
   // an option.
-  if (NOT_A_PLAIN_PATH.test(replacement) && sep < 0) text = './' + text
+  //
+  // `isPath` is what keeps the guard from firing on the completion that is
+  // SUPPOSED to be an option. A filesystem entry called `--force` must be typed
+  // as `./--force` or it silently becomes a flag; the flag `--force` offered by
+  // the command tier must be typed verbatim, and `./--force` would be a path that
+  // does not exist. Same characters, opposite correct answers — so the guard is a
+  // property of the entry's KIND, not of its spelling.
+  if (isPath && NOT_A_PLAIN_PATH.test(replacement) && sep < 0) text = './' + text
   // Compared against the ESCAPED on-screen text, not the decoded name: after an
   // accepted `my dir/` the screen reads `my\ dir/`, so a decoded comparison
   // would mis-measure what is already typed.
@@ -361,4 +512,16 @@ export function buildInsertion(word: string, replacement: string, suffix = ''): 
 /** Trailing character appended when a completion is accepted outright. */
 export function acceptSuffix(isDir: boolean): string {
   return isDir ? '/' : ' '
+}
+
+/**
+ * Trailing character for an accepted SUBCOMMAND or FLAG.
+ *
+ * A space, so the next word starts and the menu can re-trigger one level deeper
+ * (`gh` → `gh pr ` → `gh pr create `) — except when the protocol said the value
+ * is incomplete (cobra's `NoSpace` directive, git's `--message=` form), where a
+ * separator would strand the cursor after a flag that still needs its value.
+ */
+export function commandSuffix(nospace: boolean): string {
+  return nospace ? '' : ' '
 }

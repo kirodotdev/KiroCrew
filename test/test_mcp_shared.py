@@ -876,9 +876,7 @@ class TestPerSessionToolPolicy:
 
             return _Resp(body)
 
-        import urllib.request
-
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(mcp_shared, "loopback_urlopen", fake_urlopen)
         monkeypatch.setattr(
             mcp_shared.KiroCrewConfig,
             "load",

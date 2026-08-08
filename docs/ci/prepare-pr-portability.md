@@ -45,9 +45,9 @@ So the executable core already runs anywhere `git` + `gh` are present. Decisions
 Everything project-specific is prose the agent reads, not code:
 
 - **Local gates** hardcoded to Kiro Crew's stack: `pytest / isort / flake8 / mypy` + `tsc -b / vitest`.
-- **Reviewers** hardcoded to mirror named workflows: `.github/workflows/{codex,claude,code}-review.yml`, `longterm-arbiter.yml` (no way to add a repo's own reviewers).
+- **Reviewers** hardcoded to mirror named workflows: `.github/workflows/{codex,claude,code}-review.yml` (no way to add a repo's own reviewers).
 - **Rule sources:** `AUTOSDE.yaml` + `website/AUTOSDE.yaml`, `CLAUDE.md`, `AGENTS.md`.
-- **Conventions:** the single-commit-per-PR invariant; the `readiness: passed` / `readiness: action required` status + labels; the `defer-longterm` label; base branch `main`.
+- **Conventions:** the single-commit-per-PR invariant; the `readiness: passed` / `readiness: action required` status + labels; base branch `main`.
 - A hard reference to the `kirocrew-worktree-dev` skill's Rule 2 gate.
 
 **Conclusion:** portability is a *content* refactor (split the prose), not a *distribution* change (demote to local) and not a *rewrite* (the scripts stay).
@@ -75,7 +75,7 @@ The profile is the single home for everything that varies per repo. The review b
 
 1. **Local gates** — the test/lint/type commands the Phase-2 local gate runs (Kiro Crew: `pytest`, `isort`, `flake8`, `mypy`, `tsc -b`, `vitest`).
 2. **Local reviewers** — a list of local review subagents, **one spawned per entry** (each pinned to a concrete `spawn_run` **model id**, with a `model_tier` fallback). A reviewer is either **contract-backed** (it mirrors a specific CI gate by reading that workflow's contract, e.g. `codex-review.yml`) or **standalone** (it reviews against an inline `rubric` with no CI counterpart). Reviewers do **not** have to bind to CI — a repo can add local-only reviewers (security, performance, a11y, house style) that no server gate mirrors, and a repo with no CI reviewers at all can still define reviewers by rubric. All reviewers inherit the shared `rule_files` (AUTOSDE / AGENTS.md).
-3. **Conventions** — single-commit rule (on/off), the readiness status context name + managed labels, the `defer-longterm` (or equivalent) label, and the base branch override.
+3. **Conventions** — single-commit rule (on/off), the readiness status context name + managed labels, an optional long-term-defer label, and the base branch override.
 
 ### 5.2 Resolution order (fail-safe, most-specific-wins)
 
@@ -164,7 +164,7 @@ rubric = "Flag WCAG 2.2 AA regressions in changed UI: missing labels, low contra
 
 [readiness]
 status_context = "PR Readiness"   # optional override; else pr_status.py falls back to full rollup
-defer_label = "defer-longterm"    # label that clears the long-term arbiter gate
+defer_label = ""                  # optional: a label that formally defers a gate
 ```
 
 The bundled `profiles/kirocrew.json` encodes exactly this Kiro Crew configuration as a machine-readable profile the resolver loads directly, so Kiro Crew needs no in-repo `.prepare-pr.toml`.

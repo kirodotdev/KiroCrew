@@ -758,6 +758,44 @@ class TestRefSummary(unittest.TestCase):
         api.assert_not_called()
 
 
+class TestMrTimelineNotesFetch(unittest.TestCase):
+    """The MR timeline reads the notes endpoint ONCE.
+
+    GitLab keeps inline (diff) comments in the same notes stream, so the MR
+    timeline both assembles the notes AND promotes the positioned ones. It used to
+    fetch ``{base}/notes`` twice per PR-detail load; ``_assemble_timeline`` now
+    returns the notes it fetched so the promotion reuses that one read."""
+
+    def test_notes_endpoint_is_hit_once(self):
+        note = {
+            "id": 1, "system": False, "body": "inline!", "created_at": "2024-01-01T00:00:00Z",
+            "author": {"username": "alice"},
+            "position": {"new_path": "a.py", "new_line": 3},
+        }
+        calls: list[str] = []
+
+        def fake_api(path, **kwargs):
+            calls.append(path)
+            # The notes path carries a query string (?order_by=…&sort=asc), so match
+            # on the endpoint before the query rather than the whole path.
+            if path.split("?")[0].endswith("/notes"):
+                return [note]
+            # resource_label_events / resource_state_events — empty is fine.
+            return []
+
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake_api), \
+                mock.patch.object(gitlab_client, "list_repo_labels", return_value=[]):
+            events = gitlab_client.list_pr_timeline("g", "p", 7, host="gitlab.com")
+
+        notes_calls = [p for p in calls if p.split("?")[0].endswith("/notes")]
+        self.assertEqual(len(notes_calls), 1, f"notes fetched {len(notes_calls)}x: {calls}")
+        # The positioned note is promoted to a single inline review_comment and the
+        # plain-comment copy of it is dropped, so it shows once.
+        kinds = [e["kind"] for e in events]
+        self.assertEqual(kinds.count("review_comment"), 1)
+        self.assertNotIn("comment", kinds)
+
+
 class TestInvestigationNamespace(unittest.TestCase):
     """Investigation records must not collide across GitLab's two sequences.
 
@@ -983,10 +1021,12 @@ class TestClientParity(unittest.TestCase):
 
     # Every function the routes reach through the dispatch.
     SURFACE = (
-        "verify_repo_access", "get_repo_permissions", "list_open_issues", "list_closed_issues",
+        "verify_repo_access", "get_repo_permissions", "list_open_issues",
+        "list_open_issues_first_page", "list_closed_issues",
         "list_recent_open_issues", "list_repo_labels", "list_repo_collaborators",
         "derive_members", "get_current_login", "list_contributed_repos", "get_issue_detail",
-        "list_issue_timeline", "list_pr_timeline", "list_open_pulls", "list_closed_pulls",
+        "list_issue_timeline", "list_pr_timeline", "list_open_pulls",
+        "list_open_pulls_first_page", "list_closed_pulls",
         "get_pr_detail", "list_pr_checks", "summarize_checks", "enrich_pulls",
         "enrich_pulls_by_number", "enrichment_complete", "search_pulls", "add_issue_labels",
         "remove_issue_label", "set_issue_state", "create_label", "probe_open_list",

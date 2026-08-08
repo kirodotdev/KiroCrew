@@ -128,7 +128,13 @@ describe('SkillsTab', () => {
     ])
     renderWithQuery()
     // Both rows render; package skills have a section header.
-    await waitFor(() => expect(screen.getByText('X')).toBeInTheDocument())
+    //
+    // Query the ROW by its aria-label, not the bare name: the tab auto-selects the
+    // first skill, so the detail pane renders the same display name in its header and
+    // a getByText('X') has two matches as soon as both are mounted. It passed only
+    // while the assertion happened to run in the gap between the list painting and
+    // that effect firing -- a gap any change to catalog load timing closes.
+    await waitFor(() => expect(screen.getByLabelText('Select X')).toBeInTheDocument())
     expect(screen.getByText('Aim Only')).toBeInTheDocument()
     expect(screen.getByText(/PACKAGES/)).toBeInTheDocument()
   })

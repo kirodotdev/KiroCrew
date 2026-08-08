@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -39,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     SandboxUnavailableError,
@@ -341,7 +341,7 @@ class ScriptContext:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with loopback_urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
         except Exception as exc:
             logger.warning("ScriptContext._post(%s) failed: %s", path, exc)
@@ -695,18 +695,6 @@ _MAX_COMMAND_OUTPUT = 65536  # 64KB cap
 # carries verbatim.
 _SANDBOX_UNAVAILABLE_PREFIX = "❌ Cron could not run in an OS sandbox: "
 
-# Git-for-Windows ships sh/bash under these dirs but only Git Bash itself puts
-# them on PATH — a gateway launched from PowerShell / a shortcut / the desktop
-# app inherits a registry PATH that has Git\cmd (git.exe) but no shell. Probe
-# the standard install roots so a command cron works regardless of how the
-# gateway was started.
-_WINDOWS_GIT_SHELL_DIRS = (
-    r"C:\Program Files\Git\bin",
-    r"C:\Program Files\Git\usr\bin",
-    r"C:\Program Files (x86)\Git\bin",
-    r"C:\Program Files (x86)\Git\usr\bin",
-)
-
 
 def _resolve_command_shell() -> str | None:
     """Return an absolute path to a POSIX shell for ``sh -c`` command crons.
@@ -714,22 +702,99 @@ def _resolve_command_shell() -> str | None:
     Command crons are authored as POSIX shell one-liners (and vetted by
     ``mcp_cron._vet_shell_command`` under POSIX quoting), so cmd.exe is NOT a
     substitute — a missing shell must fail loudly rather than silently changing
-    the command language. On POSIX ``sh`` is always present; on Windows it is
-    absent from a normal (non-Git-Bash) PATH, so also probe the Git-for-Windows
-    install roots. Returns ``None`` when no POSIX shell can be found.
+    the command language. Returns ``None`` when no POSIX-strict shell can be
+    found, which makes the caller refuse the job with a legible error.
+
+    Windows always returns ``None``: neither shipped option preserves the
+    language the vet gate assumed. Verified on a Git-for-Windows install —
+    ``sh.exe -c 'echo test.a{w,w}s'`` prints ``test.aws test.aws``, i.e. it IS
+    bash and performs brace expansion, which is exactly how
+    ``cat ~/.a{w,w}s/credentials`` hides a credential path from a gate that
+    tokenizes the stored string once. Command crons are therefore unavailable on
+    Windows by design; ``script`` crons (whose body is scanned in full) are the
+    supported path there.
     """
 
-    for name in ("bash", "sh"):
-        found = shutil.which(name)
-        if found:
-            return found
+    # On Windows there is no shipped shell whose language matches what
+    # mcp_cron._vet_shell_command was written against: cmd.exe is not POSIX at
+    # all, and Git-for-Windows's sh.exe IS bash. Refuse rather than route the
+    # vetted string through a shell that widens its language.
     if platform_compat.IS_WINDOWS:
-        for directory in _WINDOWS_GIT_SHELL_DIRS:
-            for name in ("bash.exe", "sh.exe"):
-                candidate = Path(directory) / name
-                if candidate.is_file():
-                    return str(candidate)
+        return None
+    # POSIX: NEVER consult PATH (shutil.which("sh")). PATH may contain an
+    # agent-writable directory that precedes /bin — an agent can plant
+    # ``~/.local/bin/sh`` that fingerprints the probe input, passes the strict
+    # test, then does something different when called with the real cron. Even
+    # inside `cc`-mode isolation the agent-planted binary runs, and `cc` leaves
+    # ``.ssh`` reachable, so this is a private-key-exposure vector. Instead,
+    # walk a small fixed list of trusted system shell paths (never a bash
+    # fallback: bash brace expansion hides `cat ~/.a{w,w}s/credentials` from
+    # the tokenizer). Some hosts (macOS /bin/sh is bash-in-POSIX-mode) still
+    # perform brace expansion under the `sh` name, so PROBE the candidate:
+    # dash / ash / a real POSIX sh preserve the literal; bash-in-any-mode fails.
+    for candidate in ("/bin/sh", "/usr/bin/sh"):
+        if os.path.isfile(candidate) and _shell_is_posix_strict(candidate):
+            return candidate
     return None
+
+
+# Per-shell-path memoization for the POSIX-strict probe. The probe itself
+# spawns a child, so caching it means each candidate is fingerprinted at most
+# once per gateway process; a subsequent command cron with the same resolved
+# shell does no extra work.
+_POSIX_STRICT_CACHE: dict[str, bool] = {}
+
+
+def _shell_is_posix_strict(shell: str) -> bool:
+    """Return True iff *shell* refuses brace expansion (POSIX-sh semantics).
+
+    Runs ``<shell> -c 'echo x.{a,a}'`` in an OS sandbox (strict tier, cron env)
+    and requires the OUTPUT to be the literal ``x.{a,a}``. dash / ash / a real
+    POSIX sh preserve it; bash (including macOS's ``/bin/sh`` which is
+    bash-in-POSIX-mode) expands to ``x.a x.a``. Refusing an expanding shell is
+    the only reliable defense: the vet gate (``mcp_cron._vet_shell_command``)
+    tokenizes the stored string once, so any downstream re-expansion silently
+    widens what a legitimate deny-list can see.
+
+    The probe is SANDBOX-ROUTED as a defense-in-depth belt on the fixed
+    trusted-path lookup in ``_resolve_command_shell``. If a future change ever
+    widens that resolver to consult PATH again, the sandbox wrap here still
+    denies an agent-planted shim the un-isolated execution it would need.
+    """
+
+    cached = _POSIX_STRICT_CACHE.get(shell)
+    if cached is not None:
+        return cached
+    sandbox_cleanup: str | None = None
+    try:
+        argv, sandbox_cleanup = wrap_argv(
+            [shell, "-c", "echo x.{a,a}"], mode="strict"
+        )
+        # Same discipline as every other sandbox-routed spawn in this module
+        # (test_every_routed_spawn_applies_resource_limits / _cgroup_scope): the
+        # probe is a child process, so it observes the same fork-bomb / RSS
+        # ceilings as a real command cron. resource_limit_preexec is POSIX-only
+        # and returns None on Windows (harmless).
+        argv = cgroup_scope_argv(argv)
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=_clean_cron_env(),
+            preexec_fn=resource_limit_preexec() if platform_compat.IS_POSIX else None,
+        )
+        result = proc.returncode == 0 and proc.stdout.strip() == "x.{a,a}"
+    except (OSError, subprocess.SubprocessError, SandboxUnavailableError):
+        result = False
+    finally:
+        if sandbox_cleanup:
+            try:
+                os.unlink(sandbox_cleanup)
+            except OSError:
+                pass
+    _POSIX_STRICT_CACHE[shell] = result
+    return result
 
 
 def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None = None) -> dict:
@@ -743,8 +808,11 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             "status": "error",
             "output": (
                 "❌ No POSIX shell available to run this command cron. Command "
-                "crons are executed with `sh -c`; install Git for Windows (which "
-                "ships bash) or put sh/bash on PATH, then retry."
+                "crons execute with `sh -c` under POSIX-sh semantics (what the "
+                "storage-time vet gate assumes); Windows ships no such shell "
+                "(Git for Windows's sh.exe is bash and would widen the language "
+                "past the vet). Use a script cron or an LLM `message` cron on "
+                "this platform, or run the gateway under POSIX."
             ),
             "exit_code": -1,
         }

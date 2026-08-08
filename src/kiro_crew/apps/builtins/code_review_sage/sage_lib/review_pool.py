@@ -438,7 +438,8 @@ class ReviewPool:
         """Close a review batch — kills the runtime once the last batch drains."""
         await self._holder.end_batch()
 
-    async def send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT) -> str:
+    async def send(self, task: str, timeout: float = DEFAULT_TASK_TIMEOUT,
+                   on_activity: Callable[[str, int], None] | None = None) -> str:
         """Run one review task on its own session of the shared runtime and return
         the final assistant text. Auto-approves every tool permission (the reviewer
         runs the `gh` CLI + shell) and emits a per-tool SEL audit. The session is
@@ -455,6 +456,7 @@ class ReviewPool:
                 gen = handle.prompt(task, timeout=timeout)
                 parts: list[str] = []
                 stop_reason = ""
+                steps = 0
                 try:
                     async for ev in gen:
                         kind = getattr(ev, "kind", None)
@@ -462,6 +464,14 @@ class ReviewPool:
                             parts.append(getattr(ev, "text", "") or "")
                         elif kind == EVENT_TOOL_CALL:
                             await self._audit_tool(handle, ev)
+                            steps += 1
+                            if on_activity is not None:
+                                try:
+                                    on_activity(
+                                        str(getattr(ev, "title", "") or ""), steps)
+                                except Exception:
+                                    logger.debug("activity callback failed",
+                                                 exc_info=True)
                         elif kind == EVENT_PERMISSION_REQUEST:
                             # Auto-approve (the reviewer needs `gh` + shell) AND record
                             # the permission DECISION in the security ledger, tagged with
@@ -594,8 +604,9 @@ def pool_stats() -> dict:
     return _POOL.stats()
 
 
-# Bridge type the driver expects: a sync callable (task, timeout) -> result dict.
-DispatchFn = Callable[[str, float], dict]
+# Bridge type the driver expects: a sync callable (task, timeout) -> result dict,
+# optionally taking an ``on_activity`` reporter for the reviewer's tool stream.
+DispatchFn = Callable[..., dict]
 
 
 def make_sync_dispatch(
@@ -612,10 +623,14 @@ def make_sync_dispatch(
     Never raises — failures come back in the ``error`` field so the driver's phase
     switch can react deterministically."""
 
-    def dispatch(task: str, timeout: float = default_timeout) -> dict:
+    def dispatch(task: str, timeout: float = default_timeout,
+                 on_activity: Callable[[str, int], None] | None = None) -> dict:
         try:
+            # The callback fires on the gateway loop's thread while the driver's
+            # worker thread blocks here; the progress writer it feeds is lock-
+            # guarded and copy-on-write, so that crossing is safe.
             fut = asyncio.run_coroutine_threadsafe(
-                pool.send(task, timeout=timeout), loop)
+                pool.send(task, timeout=timeout, on_activity=on_activity), loop)
             # Give the bridge a little headroom past the task timeout so the
             # pool's own timeout fires first with a cleaner error.
             out = fut.result(timeout=timeout + 60)

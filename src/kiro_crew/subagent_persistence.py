@@ -62,8 +62,19 @@ def create_agent_folder(
     agent: str = "",
     parent_session: str = "",
     max_turns: int = 0,
+    context_groups: str = "",
 ) -> Path:
-    """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``."""
+    """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``.
+
+    ``context_groups`` is the run's injected-context scope, as a comma-joined
+    list of the switchable groups it KEEPS. It is recorded here, at folder
+    creation, because that is the first moment it is known: a continuation
+    resolves an evicted run's scope from this file, and deferring the write to a
+    later read-modify-write would let a failed update silently widen the scope
+    of the follow-up turn. An empty string means every switchable group was
+    withheld — distinct from the key being absent, which marks a run from before
+    the field existed and resolves to all-on.
+    """
     d = _agent_dir(agent_id)
     d.mkdir(parents=True, exist_ok=True)
     state = {
@@ -77,6 +88,7 @@ def create_agent_folder(
         "pid": None,
         "turns": 0,
         "last_tool": "",
+        "context_groups": context_groups,
         "updated_at": time.time(),
     }
     _atomic_write(d / "state.json", state)

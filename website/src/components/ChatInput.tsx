@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, Play, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Globe, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
-import { Toggle } from './ui'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, FolderOpen, FileText, ChevronDown, Check } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import VoiceStatusBar from './VoiceStatusBar'
@@ -77,11 +76,16 @@ import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
+import SessionRefStrip from './SessionRefStrip'
+import type { SessionRef } from '../utils/sessionRefs'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
 const INPUT_DRAG_MIN_H = 93
 const FILE_PREVIEW_H = 81 // h-16 (64px) + py-2 (16px) + border-t (1px)
+/** Height of the staged-session-reference strip: one chip row (py-1 + 12px text
+ *  ≈ 26px) + py-2 (16px) + border-t (1px). Keep in sync with SessionRefStrip. */
+const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
 
@@ -245,6 +249,12 @@ interface ChatInputProps {
   resizedInfo?: Record<string, ResizeInfo>
   /** Remove a pending file by path */
   onRemoveFile?: (path: string) => void
+  /** Session references staged by dragging a session onto the chat pane.
+   *  Rendered as chips above the textarea, the same treatment as attachments.
+   *  Serialized as links (never transcripts) when the message is sent. */
+  pendingSessions?: SessionRef[]
+  /** Unstage a session reference by its session key */
+  onRemoveSessionRef?: (key: string) => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */
@@ -309,9 +319,12 @@ interface ChatInputProps {
   continuable?: boolean
   /**
    * True when the transcript SHOWS the last turn ending badly (unanswered user
-   * row, or a trailing error). Copy only: it picks between "the last turn was
-   * interrupted" and the neutral "keep going" wording, so the button never
-   * asserts a breakage it cannot see.
+   * row, or a trailing error). Picks between "the last turn was interrupted" and
+   * the neutral "keep going" wording, so the button never asserts a breakage it
+   * cannot see. NOT copy-only any more: `ChatPage` composes this into the
+   * `continuable` it passes, so on the dashboard it also decides whether the
+   * control appears at all. A caller may still pass `continuable` alone — the
+   * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
   onContinue?: () => void
@@ -361,9 +374,6 @@ interface ChatInputProps {
   knowledgeChip?: React.ReactNode
   /** When this key changes, focus the textarea (e.g. on chat session switch). */
   autoFocusKey?: string | null
-  /** Browse mode — when true, [BROWSE] prefix is prepended to sent messages */
-  browseMode?: boolean
-  onBrowseToggle?: () => void
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
    *  don't track connectivity (e.g. tests, embedded previews) keep working. */
@@ -477,6 +487,8 @@ function ChatInput({
   pendingFiles = [],
   resizedInfo,
   onRemoveFile,
+  pendingSessions = [],
+  onRemoveSessionRef,
   isMac = false,
   onDrop,
   dragOver = false,
@@ -544,8 +556,6 @@ function ChatInput({
   onPasteBlocksChange,
   knowledgeChip,
   autoFocusKey,
-  browseMode = false,
-  onBrowseToggle,
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
@@ -983,12 +993,12 @@ function ChatInput({
   //
   // But ONLY when the transcript actually shows a broken turn. The default
   // placeholder is not dead space: it is the only surface that teaches the three
-  // sigils (`/command · @file · $skill`). Continue is now offered on EVERY idle
-  // slot holding a conversation, so overriding unconditionally would delete that
-  // hint permanently for any returning chat and leave it visible only in a
-  // brand-new one. A visibly-interrupted turn is rare and genuinely needs the
-  // explanation more than the hint; the steady state does not, and gets the ▶
-  // button plus its label instead.
+  // sigils (`/command · @file · $skill`), so overriding it unconditionally would
+  // delete that hint for every returning chat and leave it visible only in a
+  // brand-new one. On the dashboard the two conditions now coincide — ChatPage
+  // gates the control on the interruption itself — but this component is still
+  // callable with `continuable` alone, and in that case the hint survives and
+  // the labeled Resume button carries the affordance on its own.
   const continuePlaceholder = continuable && onContinue && continueIsRecovery
     ? i18nT('components.chatInput.turn_interrupted_press_continue')
     : ''
@@ -1227,7 +1237,7 @@ function ChatInput({
       wrapperRef.current.style.height = ''
       wrapperRef.current.style.maxHeight = ''
     }
-  }, [manualHeight, pendingFiles.length])
+  }, [manualHeight, pendingFiles.length, pendingSessions.length])
 
   // Auto-resize textarea to fit content
   useEffect(() => {
@@ -2010,25 +2020,31 @@ function ChatInput({
   }, [onUploadFiles])
 
   const hasFiles = pendingFiles.length > 0
-  const prevHadFiles = useRef(hasFiles)
-  const dragMinH = hasFiles ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H
+  const hasSessionRefs = pendingSessions.length > 0
+  /** Combined height of every strip currently stacked above the textarea. The
+   *  manual-resize floor and the transient height adjustment below both work off
+   *  this total, so adding a strip can never leave one of them counting only
+   *  attachments. */
+  const stripH = (hasFiles ? FILE_PREVIEW_H : 0) + (hasSessionRefs ? SESSION_REF_STRIP_H : 0)
+  const prevStripH = useRef(stripH)
+  const dragMinH = INPUT_DRAG_MIN_H + stripH
   const dragMinHRef = useRef(dragMinH)
   dragMinHRef.current = dragMinH
-  // Adjust height transiently when file strip appears/disappears (not persisted — files are session-only)
+  // Adjust height transiently when a strip appears/disappears (not persisted —
+  // staged files and session refs are both session-scoped). Diffing the TOTAL
+  // rather than a per-strip boolean keeps the arithmetic correct when both
+  // strips change in the same commit (e.g. send clears files and refs at once).
   useLayoutEffect(() => {
-    const wasShowingFiles = prevHadFiles.current
-    prevHadFiles.current = hasFiles
-    if (wasShowingFiles && !hasFiles) {
-      setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h - FILE_PREVIEW_H) : h)
-    } else if (!wasShowingFiles && hasFiles) {
-      setManualHeight(h => h !== null ? h + FILE_PREVIEW_H : h)
-    }
-  }, [hasFiles])
+    const prev = prevStripH.current
+    prevStripH.current = stripH
+    if (prev === stripH) return
+    setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h + (stripH - prev)) : h)
+  }, [stripH])
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
     <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
-      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (pendingFiles.length > 0 ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H) + 'px' } : {}) }}>
+      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
 
       {aboveComposer}
 
@@ -2329,6 +2345,7 @@ function ChatInput({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} />
         <FilePreviewStrip files={pendingFiles} resizedInfo={resizedInfo} onRemove={onRemoveFile} />
 
         {showDictation ? (
@@ -2469,15 +2486,6 @@ function ChatInput({
                         </div>
                       </button>
                     </div>
-                    {onBrowseToggle && (
-                      <div className="flex items-start justify-between gap-2 mt-2 pt-2.5 border-t border-border">
-                        <div className="min-w-0">
-                          <div className="text-[12px] font-medium text-text flex items-center gap-1.5"><Globe size={13} className="text-muted shrink-0" />{i18nT('components.chatInput.let_the_agent_use_the_browser')}</div>
-                          <div className="text-[11px] text-muted mt-0.5 leading-snug">{i18nT('components.chatInput.it_can_click_type_and_navigate_pages_not_just_re')}</div>
-                        </div>
-                        <div className="pt-0.5"><Toggle checked={browseMode} onChange={() => onBrowseToggle()} label={i18nT('components.chatInput.let_the_agent_use_the_browser')} /></div>
-                      </div>
-                    )}
                   </div>,
                   document.body
                 )}
@@ -2556,7 +2564,17 @@ function ChatInput({
                 <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onStop} title={i18nT('components.chatInput.stopping')} aria-label={i18nT('components.chatInput.stopping_2')}>
                   <Loader2 size={18} className="animate-spin" />
                 </button>
-              ) : value.trim() || pendingFiles.length ? (
+              ) :
+              // Deliberately NOT gated on hasSessionRefs, unlike the idle send
+              // button below. This branch is the mid-turn split button, whose
+              // steer mode refuses a payload of refs alone (ChatPage's steer()
+              // bails on `!raw && !files.length`, because a failed steer cannot
+              // restore what it cleared). Including refs here would enable a
+              // primary button whose press does nothing — and that state was
+              // unreachable before session refs existed, since an empty composer
+              // mid-turn rendered the stop button instead. A bare ref therefore
+              // waits for the turn to end and rides the idle send button.
+              value.trim() || pendingFiles.length ? (
                 canSteer && onSteer ? (
                   /* Split send button (mock: [ action | ▾ ]) — main area fires the
                    * selected busy-send mode (steer by default, same as Enter);
@@ -2650,29 +2668,45 @@ function ChatInput({
               {/*
                 Sixth state of this button. The first five are send / stop /
                 queue / steer / disabled; this one claims the ONE state that was
-                previously dead weight — an empty composer on an idle slot that
-                already holds a conversation. Pressing it hands the thread back
-                to the agent instead of sending nothing. The moment the user
-                types a character the arrow and the send action come back, so the
-                control never carries two meanings at once.
+                previously dead weight — an empty composer on a slot whose last
+                turn was cut off. Pressing it hands the thread back to the agent
+                instead of sending nothing. The moment the user types a character
+                the arrow and the send action come back, so the control never
+                carries two meanings at once.
+
+                Labeled, not an icon: this is the only control in the row whose
+                action a first-time user cannot infer from its glyph. A bare ▶
+                reads as "resume paused media", which is the wrong model — the
+                agent is not paused, it is being asked for another turn — and an
+                icon-only button puts that correction in a tooltip, which does
+                not exist on touch. The word carries it instead, and RotateCw
+                replaces Play so the glyph stops promising playback. Widening to
+                a pill is deliberate: at 32px round it was pixel-identical to
+                Send, so the two most consequential buttons in the composer
+                differed only by the symbol inside them.
+
+                The visible text is also the accessible name — no aria-label,
+                which would override the label a sighted user reads and break
+                WCAG 2.5.3 (Label in Name). `title` carries the longer
+                explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs ? (
                 <button
-                  className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
                   disabled={continuing || disabled || optimizing || !connected}
-                  aria-label={continueLabel}
                   title={continueLabel}
                   data-testid="composer-continue"
                   {...offlineProps(connected, 'continue', continueLabel)}
                 >
-                  {continuing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                  {continuing ? <Loader2 size={14} className="animate-spin" /> : <RotateCw size={14} />}
+                  {i18nT('components.chatInput.resume')}
                 </button>
               ) : (
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >

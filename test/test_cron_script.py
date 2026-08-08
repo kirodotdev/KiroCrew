@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.cron_script import (
     Done,
     Report,
@@ -94,11 +95,18 @@ class TestResolveScriptPath:
         crons_dir.mkdir(parents=True)
         script = crons_dir / "monitor.py"
         script.write_text("def check(ctx): pass")
+        # ``os.path.expanduser`` reads $HOME on POSIX but %USERPROFILE% (then
+        # %HOMEDRIVE%+%HOMEPATH%) on Windows, so both must be redirected or the
+        # tilde resolves to the real profile dir and the file is not found.
         with patch("pathlib.Path.home", return_value=tmp_path), patch.dict(
-            os.environ, {"HOME": str(tmp_path)}
+            os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
         ):
             file_path, func_name = resolve_script_path("~/.kirocrew/crons/monitor.py:check")
         assert func_name == "check"
+        # The tilde must actually have expanded to the patched home, not been
+        # left literal — otherwise the assertion above would pass on a path that
+        # never resolved.
+        assert Path(file_path) == script.resolve()
 
 
 class TestRunCommandSandboxed:
@@ -117,6 +125,10 @@ class TestRunCommandSandboxed:
         monkeypatch.setattr(
             "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
         )
+        # Bypass the runtime shell probe (which itself spawns a child): these
+        # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
+        # Return "sh" so Popen mocks that assert on argv[0] still see it.
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
 
     def test_basic_echo(self):
         result = run_command_sandboxed("echo hello")
@@ -166,6 +178,11 @@ class TestCronSandboxUnavailableIsStructuredNotRaised:
             )
 
         monkeypatch.setattr("kiro_crew.cron_script.wrap_argv", _raise)
+        # The runtime shell probe itself routes through wrap_argv now, so a
+        # sandbox-refusing test would surface the "No POSIX shell" error before
+        # ever reaching the wrap_argv call this test is about. Skip the probe
+        # to isolate what's under test.
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
 
     def test_command_cron_returns_error_with_remedy(self, _sandbox_refuses):
         result = run_command_sandboxed("echo hello")
@@ -192,34 +209,107 @@ class TestCommandCronShellResolution:
     """Command crons run `sh -c`; a POSIX shell must be resolved before spawn,
     with a legible error (not a bare WinError 2) when none exists on Windows."""
 
-    def test_posix_shell_is_found_on_path(self, monkeypatch):
+    def test_posix_strict_sh_is_accepted(self, monkeypatch):
+        """A `sh` that refuses brace expansion (dash / ash / POSIX-strict) is
+        accepted — the language matches what mcp_cron._vet_shell_command was
+        written against."""
         from kiro_crew import cron_script
 
-        monkeypatch.setattr(cron_script.shutil, "which", lambda name: f"/usr/bin/{name}")
-        assert cron_script._resolve_command_shell() == "/usr/bin/bash"
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
+        # Resolver walks a FIXED trusted-path list (never $PATH). /bin/sh exists
+        # and passes the strict probe.
+        monkeypatch.setattr(cron_script.os.path, "isfile", lambda p: p == "/bin/sh")
+        monkeypatch.setattr(cron_script, "_shell_is_posix_strict", lambda s: True)
+        assert cron_script._resolve_command_shell() == "/bin/sh"
 
-    def test_windows_falls_back_to_git_bash_when_not_on_path(self, monkeypatch, tmp_path):
+    def test_brace_expanding_sh_is_rejected(self, monkeypatch):
+        """macOS /bin/sh is bash-in-POSIX-mode and STILL performs brace
+        expansion, so the runtime probe MUST reject it — otherwise
+        `cat ~/.a{w,w}s/credentials` hides from the vet the same way a `bash -c`
+        candidate would. No fallback: the caller then fails-closed with a
+        legible error, matching the Windows path."""
         from kiro_crew import cron_script
 
-        git_bin = tmp_path / "Git" / "bin"
-        git_bin.mkdir(parents=True)
-        bash = git_bin / "bash.exe"
-        bash.write_text("")
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
+        # Both trusted candidates exist on disk, but neither survives the
+        # probe (bash-in-sh-mode expands the brace).
+        monkeypatch.setattr(cron_script.os.path, "isfile", lambda p: True)
+        monkeypatch.setattr(cron_script, "_shell_is_posix_strict", lambda s: False)
+        assert cron_script._resolve_command_shell() is None
+
+    def test_resolver_never_consults_path(self, monkeypatch):
+        """PATH may include agent-writable directories (e.g. ~/.local/bin),
+        which is a private-key exposure vector if the resolver honors it: an
+        agent-planted `sh` shim would be probed under `cc` isolation but `cc`
+        leaves ~/.ssh reachable, so a probe-passing shim can then read it.
+        The resolver MUST NOT touch PATH — regression-locking here."""
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
+
+        # No trusted-path shell available. If the resolver falls back to PATH
+        # it would find this planted shim; the test asserts it does not.
+        monkeypatch.setattr(cron_script.os.path, "isfile", lambda p: False)
+        called = {"probe": False}
+
+        def _probe(_shell: str) -> bool:
+            called["probe"] = True
+            return True
+
+        monkeypatch.setattr(cron_script, "_shell_is_posix_strict", _probe)
+        assert cron_script._resolve_command_shell() is None
+        assert called["probe"] is False, (
+            "Resolver invoked the probe with a non-trusted-path shell — "
+            "regression: it must not consult $PATH."
+        )
+
+    def test_shell_probe_detects_brace_expansion(self, monkeypatch):
+        """The probe distinguishes POSIX-strict `sh` from a bash-in-sh-mode by
+        the OUTPUT of `sh -c 'echo x.{a,a}'`: literal `x.{a,a}` (POSIX) vs
+        `x.a x.a` (bash expanded)."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew import cron_script
+
+        # Bypass the sandbox wrap the probe now routes through (so this test
+        # exercises the DECISION LOGIC, not the sandbox backend availability).
+        monkeypatch.setattr(
+            "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (argv, None)
+        )
+        # Fresh cache per test (the probe memoizes per shell path).
+        cron_script._POSIX_STRICT_CACHE.clear()
+
+        strict = MagicMock(returncode=0, stdout="x.{a,a}\n", stderr="")
+        expanding = MagicMock(returncode=0, stdout="x.a x.a\n", stderr="")
+        with patch.object(cron_script.subprocess, "run", return_value=strict):
+            assert cron_script._shell_is_posix_strict("/bin/dash") is True
+        cron_script._POSIX_STRICT_CACHE.clear()
+        with patch.object(cron_script.subprocess, "run", return_value=expanding):
+            assert cron_script._shell_is_posix_strict("/bin/sh-is-really-bash") is False
+
+    def test_windows_refuses_command_cron_shell(self, monkeypatch):
+        """Windows ships no shell whose language matches what
+        mcp_cron._vet_shell_command was written against: cmd.exe is not POSIX,
+        and Git-for-Windows's sh.exe IS bash and performs brace expansion (a
+        `cat ~/.a{w,w}s/credentials` payload hides from the vet the same way
+        under bash or Git-sh). Returning ``None`` on Windows makes command crons
+        fail-closed with the legible error rather than route a vetted string
+        through a shell that widens its language."""
+        from kiro_crew import cron_script
+
         monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(cron_script.shutil, "which", lambda name: None)
-        monkeypatch.setattr(cron_script, "_WINDOWS_GIT_SHELL_DIRS", (str(git_bin),))
-        assert cron_script._resolve_command_shell() == str(bash)
+        # Even if a `sh.exe` were reachable (Git for Windows ships one), Windows
+        # returns None unconditionally because that shell IS bash. The resolver
+        # short-circuits on IS_WINDOWS before it ever looks at the filesystem.
+        assert cron_script._resolve_command_shell() is None
 
     def test_no_shell_returns_legible_error_not_winerror(self, monkeypatch):
         from kiro_crew import cron_script
 
         monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(cron_script.shutil, "which", lambda name: None)
-        monkeypatch.setattr(cron_script, "_WINDOWS_GIT_SHELL_DIRS", ())
         result = cron_script.run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "error"
         assert "No POSIX shell" in result["output"]
-        assert "Git for Windows" in result["output"]
 
 
 class TestRunScriptSandboxed:
@@ -243,6 +333,10 @@ class TestRunScriptSandboxed:
         monkeypatch.setattr(
             "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
         )
+        # Bypass the runtime shell probe (which itself spawns a child): these
+        # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
+        # Return "sh" so Popen mocks that assert on argv[0] still see it.
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
 
     def _write_script(self, tmp_path, code):
         crons_dir = tmp_path / ".kirocrew" / "crons"
@@ -507,7 +601,7 @@ class TestScriptContextNotify:
         mock_response.read.return_value = b'{"ok": true}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("kiro_crew.cron_script.loopback_urlopen", return_value=mock_response):
             result = ctx.notify("hello")
         assert result == {"ok": True}
 
@@ -518,7 +612,7 @@ class TestScriptContextNotify:
         mock_response.read.return_value = b'{"error": "forbidden"}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("kiro_crew.cron_script.loopback_urlopen", return_value=mock_response):
             with pytest.raises(RuntimeError, match="forbidden"):
                 ctx.notify("hello")
 
@@ -529,7 +623,9 @@ class TestScriptContextNotify:
         mock_response.read.return_value = b'{"ok": true}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
+        ) as mock_urlopen:
             ctx.notify("secret AKIA1234567890123456 text")
             # Verify the request was made (redaction happens internally)
             mock_urlopen.assert_called_once()
@@ -556,6 +652,10 @@ class TestRunCommandSandboxedEdgeCases:
         monkeypatch.setattr(
             "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
         )
+        # Bypass the runtime shell probe (which itself spawns a child): these
+        # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
+        # Return "sh" so Popen mocks that assert on argv[0] still see it.
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
 
     def test_command_with_env_vars(self):
         result = run_command_sandboxed("echo $HOME")
@@ -588,6 +688,10 @@ class TestRunScriptSandboxedEdgeCases:
         monkeypatch.setattr(
             "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
         )
+        # Bypass the runtime shell probe (which itself spawns a child): these
+        # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
+        # Return "sh" so Popen mocks that assert on argv[0] still see it.
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
 
     def _write_script(self, tmp_path, code):
         crons_dir = tmp_path / ".kirocrew" / "crons"
@@ -899,14 +1003,16 @@ class TestScriptContextPost:
         mock_response.read.return_value = b'{"status": "delivered"}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=mock_response):
+        with patch("kiro_crew.cron_script.loopback_urlopen", return_value=mock_response):
             result = ctx._post("/api/deliver", {"text": "hello"})
         assert result == {"status": "delivered"}
 
     def test_post_failure_returns_error(self):
         job = SimpleNamespace(id="j1", message="test")
         ctx = ScriptContext(job=job)
-        with patch("urllib.request.urlopen", side_effect=Exception("connection refused")):
+        with patch(
+            "kiro_crew.cron_script.loopback_urlopen", side_effect=Exception("connection refused")
+        ):
             result = ctx._post("/api/deliver", {"text": "hello"})
         assert "error" in result
         assert "connection refused" in result["error"]
@@ -921,6 +1027,10 @@ class TestRunCommandSandboxedExceptions:
         monkeypatch.setattr(
             "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
         )
+        # Bypass the runtime shell probe (which itself spawns a child): these
+        # tests exercise the run_command_sandboxed plumbing, not shell fingerprinting.
+        # Return "sh" so Popen mocks that assert on argv[0] still see it.
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
 
     def test_timeout_returns_error(self):
         # Real subprocess: communicate(timeout=1) fires and the child is killed.
@@ -1178,8 +1288,7 @@ class TestRunScriptSandboxedTimeout:
         mock_proc = MagicMock()
         # CRITICAL: a bare MagicMock pid coerces to 1 via __index__, and the
         # timeout cleanup path would then run os.killpg(1, SIGKILL) ==
-        # kill(-1, SIGKILL) — SIGKILLing every process this uid owns
-        # (it repeatedly killed the whole login session on 2026-07-15).
+        # kill(-1, SIGKILL) — SIGKILLing every process this uid owns.
         # Always give mocked Popen objects a real, nonexistent int pid.
         mock_proc.pid = 2**22 + 12345  # > PID_MAX default, never a real pid
         mock_proc.communicate.side_effect = [sp.TimeoutExpired("cmd", 30), ("", "")]
@@ -1188,12 +1297,34 @@ class TestRunScriptSandboxedTimeout:
         ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
             "subprocess.Popen", return_value=mock_proc
         ), patch(
+            # Stub the reap at the shim, NOT via the global subprocess.Popen
+            # patch above. On Windows _kill_proc_group reaps through
+            # platform_compat.kill_process_tree, which shells out to `taskkill
+            # /T /F` with subprocess.run — and subprocess.run builds its child
+            # from subprocess.Popen, so the patch aimed at the launcher spawn
+            # also hijacks taskkill's, handing subprocess.run a MagicMock whose
+            # communicate() returns a mock instead of a 2-tuple (ValueError:
+            # not enough values to unpack). The timeout HANDLER is what is under
+            # test; the kill mechanism has its own coverage in
+            # TestKillBroadcastGuard.
+            "kiro_crew.platform_compat.kill_process_tree",
+            return_value=True,
+        ) as mock_tree, patch(
             "pathlib.Path.unlink"
         ):
             result = run_script_sandboxed("/f.py:run", "j1", "", timeout=30)
         assert result["status"] == "error"
         assert "timed out" in result["error"]
         assert "30s" in result["error"]
+        # communicate() does not kill the child on timeout, so the handler MUST
+        # reap it — otherwise a timed-out cron leaks a live subprocess tree.
+        if pc.IS_POSIX:
+            # POSIX takes the os.killpg branch when a pgid resolves; the mocked
+            # pid does not exist, so _resolve_safe_pgid returns None and the
+            # shim is the fallback. Either way the process must be signalled.
+            assert mock_tree.called or mock_proc.kill.called
+        else:
+            mock_tree.assert_called_once_with(mock_proc.pid, pc.SIGKILL)
 
 
 class TestKillBroadcastGuard:
@@ -1230,13 +1361,30 @@ class TestKillBroadcastGuard:
         assert _resolve_safe_pgid(proc) is None
 
     def test_kill_proc_group_never_calls_killpg_for_mock(self):
+        """A bare-mock pid must never reach a group kill — the original footgun.
+
+        ``os.killpg`` does not exist on Windows, so patching it by name raises
+        AttributeError there. Use ``create=True``: the assertion we care about
+        is that the attribute is never *called*, which holds on both platforms
+        (on Windows ``_resolve_safe_pgid`` returns None so the killpg branch is
+        unreachable, and ``kill_process_tree`` takes the taskkill path).
+        """
         from kiro_crew.cron_script import _kill_proc_group
         proc = MagicMock()  # bare mock pid — the original footgun
-        with patch("os.killpg") as mock_killpg:
+        with patch("os.killpg", create=True) as mock_killpg, patch(
+            # Windows: _kill_proc_group reaps via taskkill before the
+            # single-process fallback. Stub it so the test never shells out.
+            "kiro_crew.platform_compat.kill_process_tree",
+            side_effect=OSError("stubbed"),
+        ):
             _kill_proc_group(proc)
         mock_killpg.assert_not_called()
         proc.kill.assert_called_once()
 
+    @pytest.mark.skipif(
+        not pc.IS_POSIX,
+        reason="POSIX broadcast guard (killpg/getpgid); Windows takes the taskkill path",
+    )
     def test_shim_kill_process_tree_refuses_mock_pid(self):
         """platform_compat.kill_process_tree: non-int pid must raise, never killpg."""
         import pytest as _pytest
@@ -1248,6 +1396,10 @@ class TestKillBroadcastGuard:
         mock_killpg.assert_not_called()
         mock_kill.assert_not_called()
 
+    @pytest.mark.skipif(
+        not pc.IS_POSIX,
+        reason="POSIX broadcast guard (killpg/getpgid); Windows takes the taskkill path",
+    )
     def test_shim_kill_process_tree_broadcast_pgid_degrades_to_pid_kill(self):
         """platform_compat.kill_process_tree: pgid<=1 degrades to scoped os.kill."""
         from kiro_crew import platform_compat
@@ -1258,6 +1410,31 @@ class TestKillBroadcastGuard:
             assert platform_compat.kill_process_tree(target, platform_compat.SIGKILL) is True
         mock_killpg.assert_not_called()
         mock_kill.assert_called_once_with(target, platform_compat.SIGKILL)
+
+    @pytest.mark.skipif(
+        pc.IS_POSIX, reason="Windows taskkill /T branch of kill_process_tree"
+    )
+    def test_shim_kill_process_tree_uses_taskkill_on_windows(self):
+        """Windows has no process groups: the shim must reap via ``taskkill /T``.
+
+        This is the Windows counterpart to the two POSIX broadcast-guard tests
+        above — same invariant (kill the whole tree, never broadcast), different
+        mechanism, so it needs its own coverage rather than a bare skip.
+        """
+        import ntpath
+
+        from kiro_crew import platform_compat
+        target = 2**22 + 31337
+        completed = MagicMock(returncode=0, stdout=b"", stderr=b"")
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            assert platform_compat.kill_process_tree(target, platform_compat.SIGKILL) is True
+        argv = mock_run.call_args.args[0]
+        # argv[0] may be a bare name or an absolute trusted-system path
+        # (kill_process_tree resolves taskkill from GetSystemDirectoryW rather
+        # than trusting %PATH%), so match on the basename and its .exe suffix.
+        assert ntpath.basename(argv[0]).lower() in ("taskkill", "taskkill.exe")
+        assert "/T" in argv and "/F" in argv  # whole tree, forced
+        assert str(target) in argv
 
     def test_cancel_flag_cleared_when_terminate_fails(self):
         """kill_running_process: signal never delivered -> flag must not leak.

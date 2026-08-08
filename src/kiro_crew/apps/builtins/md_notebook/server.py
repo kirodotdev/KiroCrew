@@ -900,6 +900,23 @@ _HTTP_ERRORS: dict[int, type[web.HTTPException]] = {
 }
 
 
+def _safe_error(exc: BaseException) -> str:
+    """Exception text with credentials, exfiltration URLs and host paths stripped.
+
+    Handlers here drive git and filesystem work over caller-supplied vault URLs,
+    ids and note paths, so a raw message routinely carries absolute paths and git
+    stderr. Both branches of ``error_middleware`` send their text to the browser.
+
+    The path pass is the load-bearing one: the dominant shape here is an OS error
+    like ``[Errno 2] No such file or directory: '/home/<user>/.kiro/crew/...'``,
+    which the credential and URL passes do not match at all.
+    """
+    text, _ = security.redact_credentials(str(exc))
+    text, _ = security.redact_exfiltration_urls(text)
+    text, _ = security.redact_local_paths(text)
+    return text
+
+
 @web.middleware
 async def error_middleware(request: web.Request, handler: Callable) -> web.StreamResponse:
     """Turn handler exceptions into the JSON error shape the UI expects."""
@@ -908,14 +925,14 @@ async def error_middleware(request: web.Request, handler: Callable) -> web.Strea
     except web.HTTPException:
         raise
     except (ApiError, git_ops.AttachError, git_ops.GitError, OSError) as exc:
-        payload: dict[str, Any] = {"error": str(exc), "code": _error_code(exc)}
+        payload: dict[str, Any] = {"error": _safe_error(exc), "code": _error_code(exc)}
         if isinstance(exc, ApiError):
             payload.update(exc.extra)
         cls = _HTTP_ERRORS.get(_error_status(exc), web.HTTPInternalServerError)
         raise cls(text=json.dumps(payload), content_type="application/json") from exc
     except Exception as exc:  # noqa: BLE001 — never leak a traceback to the UI
         logger.exception("md-notebook: unhandled error on %s", request.path)
-        return web.json_response({"error": str(exc), "code": "internal_error"}, status=500)
+        return web.json_response({"error": _safe_error(exc), "code": "internal_error"}, status=500)
 
 
 # ---------------------------------------------------------------------------

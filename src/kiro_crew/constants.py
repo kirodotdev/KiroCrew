@@ -159,6 +159,17 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     return text[:suffix_start], text[suffix_start:]
 
 
+# Wire markers opening an injected sub-agent completion turn. They live in this
+# leaf module rather than beside the dashboard's other transcript prefixes so a
+# CORE module can import them at module scope: `subagent.py` composes them too,
+# and a core module must not import the dashboard layer at import time.
+#
+# The batch marker is a SIBLING of the per-agent one, not an extension of it, so
+# a `startswith` written against one silently misses the other.
+SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
+SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
+
+
 # The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
 # it into cli.py and cli_chat.py risks a rename leaving a stale product name in
 # the two most-seen surfaces (bare `kirocrew`, the chat REPL). Import it; never

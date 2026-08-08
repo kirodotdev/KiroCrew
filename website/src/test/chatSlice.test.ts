@@ -30,6 +30,9 @@ import reducer, {
   sseChatMessageUpdate,
   sseContextUsage,
   toggleActivity,
+  openActivityPanel,
+  openActivityToTab,
+  switchSlot,
   resolveByApprovalId,
   sseSideResult,
   sideClose,
@@ -38,6 +41,7 @@ import reducer, {
   cancelQueuedMessage,
   selectSlotSubagentsActive,
   selectSlotPendingSpawnApprovals,
+  selectSlotPendingApproval,
   selectComposerBusy,
 } from '../store/chatSlice'
 import './mockApiClient'
@@ -938,6 +942,25 @@ describe('activity viewer reducers', () => {
     const state = reducer(initial, toggleActivity())
     expect(state.activityOpen).toBe(true)
     expect(reducer(state, toggleActivity()).activityOpen).toBe(false)
+  })
+
+  it('counts a view request only when one is actually made', () => {
+    // The counter is what tells the side panel's tab strip "focus this view".
+    // A chat switch restores the incoming chat's cached activityTab, and that
+    // restore must NOT read as a request — otherwise reopening a chat drags
+    // focus off the tab the user left it on.
+    expect(initial.activityTabRequest).toBe(0)
+    const requested = reducer(withSlot, openActivityToTab('subagents'))
+    expect(requested.activityTabRequest).toBe(1)
+    // Same view asked for twice is two requests: the user may have clicked away
+    // in the strip in between, and the second ask must still pull focus back.
+    expect(reducer(requested, openActivityToTab('subagents')).activityTabRequest).toBe(2)
+
+    const switched = reducer(requested, switchSlot.pending('req-1', 'slot-2'))
+    expect(switched.activityTab).toBe('files')
+    expect(switched.activityTabRequest).toBe(1)
+    // Opening the panel without naming a view is not a request either.
+    expect(reducer(switched, openActivityPanel()).activityTabRequest).toBe(1)
   })
 
   it('sseToolActivity adds to toolLog', () => {
@@ -2032,5 +2055,127 @@ describe('selectSlotPendingSpawnApprovals', () => {
     const pending = selectSlotPendingSpawnApprovals(wrap(state), 'bg-slot')
     expect(pending).toHaveLength(1)
     expect(pending[0].id).toBe('a2')
+  })
+})
+
+
+describe('steer does not deadlock pending approval (#1667)', () => {
+  const slot = 'slot-1'
+  const initial = reducer(undefined, { type: '@@INIT' })
+  const wrap = (chat: ReturnType<typeof reducer>) => ({ chat }) as never
+
+  // Builds a state with an active slot, a pending permission row, and a toolLog entry.
+  const withPendingApproval = () => {
+    let state = { ...initial, activeSlot: slot }
+    // Inject a permission row (active-slot path via sseChatMessage)
+    const cls = JSON.stringify({ request_id: 'req-1', tool_input: 'rm -rf /', is_read_only: '' })
+    state = reducer(state, sseChatMessage({ slot, role: 'permission', content: 'approve rm?', cls }))
+    // Add a tool activity entry so toolLog is non-empty
+    state = reducer(state, sseToolActivity({ slot, tool: 'bash', kind: 'write', purpose: 'delete', input_preview: 'rm -rf' }))
+    return state
+  }
+
+  describe('sseChatMessage (active-slot path)', () => {
+    it('steered user message does NOT auto-resolve pending permission rows', () => {
+      let state = withPendingApproval()
+      expect(state.messages.find(m => m.role === 'permission')?.meta?.resolved).toBeUndefined()
+      state = reducer(state, sseChatMessage({ slot, role: 'user', content: 'also check /tmp', meta: { steer: true } }))
+      // Permission must remain unresolved
+      expect(state.messages.find(m => m.role === 'permission')?.meta?.resolved).toBeUndefined()
+    })
+
+    it('steered user message does NOT clear the toolLog', () => {
+      let state = withPendingApproval()
+      expect(state.toolLog.length).toBeGreaterThan(0)
+      state = reducer(state, sseChatMessage({ slot, role: 'user', content: 'also check /tmp', meta: { steer: true } }))
+      expect(state.toolLog.length).toBeGreaterThan(0)
+    })
+
+    it('normal user message STILL auto-resolves pending permissions (existing behavior)', () => {
+      let state = withPendingApproval()
+      state = reducer(state, sseChatMessage({ slot, role: 'user', content: 'new turn' }))
+      expect(state.messages.find(m => m.role === 'permission')?.meta?.resolved).toBe('rejected')
+    })
+
+    it('normal user message STILL clears the toolLog (existing behavior)', () => {
+      let state = withPendingApproval()
+      state = reducer(state, sseChatMessage({ slot, role: 'user', content: 'new turn' }))
+      expect(state.toolLog).toHaveLength(0)
+    })
+  })
+
+  describe('applyNonActiveFrame (background-slot path)', () => {
+    const bgSlot = 'bg-slot'
+
+    const withBgPendingApproval = () => {
+      // Active slot is different from bgSlot so bgSlot hits applyNonActiveFrame
+      let state = { ...initial, activeSlot: slot }
+      const cls = JSON.stringify({ request_id: 'req-bg', tool_input: 'drop db', is_read_only: '' })
+      state = reducer(state, sseChatMessage({ slot: bgSlot, role: 'permission', content: 'approve drop?', cls }))
+      return state
+    }
+
+    it('steered user message does NOT auto-resolve permission rows in background slot', () => {
+      let state = withBgPendingApproval()
+      const bgMsgs = () => state.slotMessages[bgSlot] ?? []
+      expect(bgMsgs().find(m => m.role === 'permission')?.meta?.resolved).toBeUndefined()
+      state = reducer(state, sseChatMessage({ slot: bgSlot, role: 'user', content: 'steer correction', meta: { steer: true } }))
+      expect(bgMsgs().find(m => m.role === 'permission')?.meta?.resolved).toBeUndefined()
+    })
+
+    it('steered user message does NOT clear the background slot toolLog', () => {
+      let state = withBgPendingApproval()
+      // Add a tool log entry in the background slot
+      state = reducer(state, sseToolActivity({ slot: bgSlot, tool: 'grep', kind: 'read', purpose: '', input_preview: '' }))
+      expect(state.slotActivity[bgSlot]?.toolLog.length).toBeGreaterThan(0)
+      state = reducer(state, sseChatMessage({ slot: bgSlot, role: 'user', content: 'steer', meta: { steer: true } }))
+      expect(state.slotActivity[bgSlot]?.toolLog.length).toBeGreaterThan(0)
+    })
+
+    it('normal user message STILL auto-resolves permissions in background slot', () => {
+      let state = withBgPendingApproval()
+      state = reducer(state, sseChatMessage({ slot: bgSlot, role: 'user', content: 'new turn' }))
+      const bgMsgs = state.slotMessages[bgSlot] ?? []
+      expect(bgMsgs.find(m => m.role === 'permission')?.meta?.resolved).toBe('rejected')
+    })
+
+    it('normal user message STILL clears the background slot toolLog', () => {
+      let state = withBgPendingApproval()
+      state = reducer(state, sseToolActivity({ slot: bgSlot, tool: 'grep', kind: 'read', purpose: '', input_preview: '' }))
+      expect(state.slotActivity[bgSlot]?.toolLog.length).toBeGreaterThan(0)
+      state = reducer(state, sseChatMessage({ slot: bgSlot, role: 'user', content: 'new turn' }))
+      expect(state.slotActivity[bgSlot]?.toolLog).toHaveLength(0)
+    })
+  })
+
+  describe('selectSlotPendingApproval ignores steered user messages', () => {
+    it('returns the pending approval even after a steered user message is appended', () => {
+      let state = withPendingApproval()
+      // Selector should find the permission row
+      expect(selectSlotPendingApproval(wrap(state), slot)).not.toBeNull()
+      expect(selectSlotPendingApproval(wrap(state), slot)?.meta?.approval_id).toBe('req-1')
+      // Append a steered user message
+      state = reducer(state, sseChatMessage({ slot, role: 'user', content: 'also try X', meta: { steer: true } }))
+      // Selector must STILL find the pending permission
+      expect(selectSlotPendingApproval(wrap(state), slot)).not.toBeNull()
+      expect(selectSlotPendingApproval(wrap(state), slot)?.meta?.approval_id).toBe('req-1')
+    })
+
+    it('a normal user message hides the pending approval (existing behavior)', () => {
+      let state = withPendingApproval()
+      expect(selectSlotPendingApproval(wrap(state), slot)).not.toBeNull()
+      state = reducer(state, sseChatMessage({ slot, role: 'user', content: 'new turn' }))
+      // The permission gets resolved AND is now before the last user msg
+      expect(selectSlotPendingApproval(wrap(state), slot)).toBeNull()
+    })
+
+    it('works with appendSlotMessage (optimistic steer bubble)', () => {
+      let state = withPendingApproval()
+      expect(selectSlotPendingApproval(wrap(state), slot)).not.toBeNull()
+      state = reducer(state, appendSlotMessage({ slot, message: { role: 'user', content: 'steer text', cls: 'msg msg-u', meta: { steer: true, optimistic: true } } }))
+      // Approval must still be visible
+      expect(selectSlotPendingApproval(wrap(state), slot)).not.toBeNull()
+      expect(selectSlotPendingApproval(wrap(state), slot)?.meta?.approval_id).toBe('req-1')
+    })
   })
 })

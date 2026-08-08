@@ -309,8 +309,9 @@ class TestWatcherDiscovery:
         assert w._folder_watcher.scan_source.await_args.kwargs["chunk_budget"] == 77
 
     @pytest.mark.asyncio
-    async def test_hand_added_folder_is_never_budgeted(self, store, tmp_path):
-        # A folder the user added by hand is a folder they asked for in full.
+    async def test_hand_added_folder_gets_the_folder_budget(self, store, tmp_path):
+        # A hand-added folder is paced too: it is still ingested in full, but
+        # across sweeps rather than as one unbounded burst.
         root = _repo(tmp_path)
         store.add_source(name="Mine", source_type="local_folder", uri=str(root),
                          properties={"sync_status": "active"})
@@ -318,9 +319,11 @@ class TestWatcherDiscovery:
         w._discover_drop_folder = AsyncMock()
         w._discover_project_docs = AsyncMock()
         w._maybe_dedup_sweep = AsyncMock()
-        with patch.object(KnowledgeWatcher, "_chunk_budget", staticmethod(lambda: 77)):
+        with patch.object(KnowledgeWatcher, "_chunk_budget", staticmethod(lambda: 77)), \
+                patch("kiro_crew.knowledge.watcher.folder_chunk_budget",
+                      return_value=42):
             await w._scan()
-        assert w._folder_watcher.scan_source.await_args.kwargs["chunk_budget"] is None
+        assert w._folder_watcher.scan_source.await_args.kwargs["chunk_budget"] == 42
 
 
 class TestWatcherResolverWiring:

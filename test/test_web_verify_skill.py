@@ -58,8 +58,12 @@ def test_prompt_drops_the_screenshot_prohibition() -> None:
 
 
 def test_prompt_authorizes_view_only_self_verification() -> None:
+    # Browsing is gated by tool availability and the agent decides when to use
+    # it; the prompt names visual verification as a reason to reach for the
+    # browser tools and points at web-verify, so front-end self-verification is
+    # permitted rather than a policy violation.
     prompt = PROMPT.read_text(encoding="utf-8")
-    assert "**View-only** use is self-authorizing" in prompt
+    assert "visual verification" in prompt
     assert "web-verify" in prompt, "prompt.md must name the skill for it to be reachable"
 
 

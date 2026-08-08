@@ -1180,7 +1180,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         vs = getattr(orch, "vector_memory", None)
         if vs is not None and callable(getattr(vs, "get_lessons", None)):
             try:
-                all_vs = vs.get_lessons()
+                all_vs = await asyncio.to_thread(vs.get_lessons)
             except Exception:
                 all_vs = None
                 logger.debug("Vector store lesson read failed, trying JSONL", exc_info=True)

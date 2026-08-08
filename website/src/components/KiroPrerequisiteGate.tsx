@@ -783,16 +783,44 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 current={status.installed && !status.authenticated}
               />
             </div>
-            {/* Rendered VERBATIM from the backend constant, never a catalog
-                value: a translated command cannot be typed. Shown only once a CLI
+            {/* Rendered VERBATIM from the backend constants, never catalog
+                values: a translated command cannot be typed. Shown only once a CLI
                 exists to sign into — before that the step above owns the screen.
-                Kiro Crew does not run it; the footer's Check again reads the
-                result. */}
+                Kiro Crew does not run them; the footer's Check again reads the
+                result.
+
+                BOTH tiers are offered, because the sign-in page the bare command
+                opens presents a free Builder ID as a peer of organization SSO:
+                a user on an SSO plan who picks the wrong one authenticates
+                successfully and only discovers the mismatch later, as missing
+                models. Naming the tier here makes it a decision instead of a
+                guess. Kiro Crew does not detect which one applies — that would
+                mean inspecting the host's identity configuration — so the copy
+                describes the choice and lets the user make it. */}
             {status.installed && !status.authenticated && (
-              <div className="mt-4">
-                <code className="inline-block rounded-lg border border-border bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text">
-                  {status.login_command}
-                </code>
+              <div className="mt-4 space-y-4">
+                <div>
+                  <p className="text-[13px] font-medium text-text">
+                    {i18nT('components.kiroPrerequisiteGate.sign_in_personal_label')}
+                  </p>
+                  <code className="mt-1.5 inline-block rounded-lg border border-border bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text">
+                    {status.login_command}
+                  </code>
+                </div>
+                <div>
+                  <p className="text-[13px] font-medium text-text">
+                    {i18nT('components.kiroPrerequisiteGate.sign_in_sso_label')}
+                  </p>
+                  <code className="mt-1.5 inline-block rounded-lg border border-border bg-bg px-2.5 py-1.5 font-mono text-[13px] text-text">
+                    {status.sso_login_command}
+                  </code>
+                  <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+                    {i18nT('components.kiroPrerequisiteGate.sign_in_sso_hint')}
+                  </p>
+                </div>
+                <p className="text-[12px] leading-relaxed text-muted">
+                  {i18nT('components.kiroPrerequisiteGate.sign_in_method_note')}
+                </p>
               </div>
             )}
           </Card>

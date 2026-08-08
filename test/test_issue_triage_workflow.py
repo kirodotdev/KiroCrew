@@ -44,7 +44,7 @@ LABELS = [
     {"name": "duplicate", "description": "Already exists"},
     {"name": "wontfix", "description": "Will not be worked on"},
     {"name": "release-blocker", "description": "Blocks the next release"},
-    {"name": "defer-longterm", "description": "Formally defer arbiter items"},
+    {"name": "follow-up", "description": "Deferred work split out of a merged PR"},
     {"name": "readiness: passed", "description": "Validation passed"},
     {"name": "blocked", "description": "Blocked on a dependency"},
     {"name": "area: dashboard", "description": "Dashboard UI"},
@@ -55,12 +55,28 @@ LABELS = [
     {"name": "platform: macos", "description": "macOS only"},
     {"name": "platform: windows", "description": "Windows only"},
     {"name": "platform: linux", "description": "Linux only"},
+    # The channel dimension is applied DETERMINISTICALLY by its own step, and
+    # is deliberately absent from the model's allowlist buckets — it is neither
+    # a type label nor `area: ` / `platform: ` prefixed, so no model output can
+    # reach it. `test_model_cannot_select_a_channel_label` proves that.
+    {"name": "channel: nightly", "description": "Reported from a nightly build"},
+    {"name": "channel: insider", "description": "Reported from an insider build"},
+    {"name": "channel: stable", "description": "Reported from a stable release"},
 ]
 
 GH_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
 if [ "$1 ${2:-}" = "label list" ]; then
   cat "$FIXTURES/labels.json"
+  exit 0
+fi
+if [ "$1 ${2:-}" = "issue edit" ]; then
+  # `gh issue edit --add-label` is how the deterministic channel step applies
+  # its label. Record the name instead of sending it.
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--add-label" ]; then echo "${2:-}" >> "$FIXTURES/channel_applied.txt"; fi
+    shift
+  done
   exit 0
 fi
 if [ "$1" = "api" ]; then
@@ -86,7 +102,9 @@ jq -n --rawfile t "$FIXTURES/model_reply.txt" \
   '{output: {message: {content: [{text: $t}]}}}'
 """
 
-STEP_IDS = ("collect", "classify", "Apply labels")
+STEP_IDS = ("Apply release-channel label", "collect", "classify", "Apply labels")
+
+CHANNEL_STEP = "Apply release-channel label"
 
 
 def _scripts() -> dict[str, str]:
@@ -205,6 +223,81 @@ class Runner:
         summary = self.summary.read_text() if self.summary.exists() else ""
         return getattr(self, "last_apply_stdout", "").splitlines() + summary.splitlines()
 
+    def channel(
+        self,
+        *,
+        body: str,
+        labels: tuple[str, ...] = (),
+        is_pr: bool = False,
+        issue: str = "123",
+        dry_run: bool = False,
+    ) -> str | None:
+        """Run ONLY the deterministic channel step; return the label it applied.
+
+        Separate from :meth:`triage` because this step is independent of the
+        model path — it must work with no Bedrock role, no verdict, and no
+        classifier at all.
+        """
+        raw: dict[str, object] = {
+            "title": "Something broke",
+            "body": body,
+            "labels": [{"name": n} for n in labels],
+        }
+        if is_pr:
+            raw["pull_request"] = {"url": "https://api.github.com/x/pulls/1"}
+        (self.fixtures / "issue.json").write_text(json.dumps(raw))
+        applied = self.fixtures / "channel_applied.txt"
+        applied.unlink(missing_ok=True)
+
+        step = self._step(
+            CHANNEL_STEP,
+            ISSUE=issue,
+            DRY_RUN="true" if dry_run else "",
+        )
+        # Never fail the run: no channel answer is a legitimate outcome.
+        assert step.returncode == 0, step.stderr
+        self.last_channel_stdout = step.stdout
+        if not applied.exists():
+            return None
+        return applied.read_text().strip()
+
+
+def _form_body(channel_answer: str | None, *, extra: str = "") -> str:
+    """Render an issue body the way GitHub renders bug_report.yml.
+
+    Issue forms render each answered field as ``### <label>`` followed by a
+    blank line and the answer, so the channel step's parser is exercised
+    against the real shape rather than a convenient one.
+    """
+    sections = [
+        "### Existing issues",
+        "",
+        "- [X] I searched open issues and this is not already reported.",
+        "",
+        # Verbatim reproduction of the header GitHub renders for
+        # bug_report.yml's `version` field, whose label is spelled this way on
+        # main. The parser under test slices the body by these exact `### `
+        # lines, so "correcting" the spelling here would test a body GitHub
+        # never produces. Renaming the template's label is a separate change.
+        "### KiroCrew version",  # brand-ok
+        "",
+        "0.1.4rc4",
+        "",
+    ]
+    if channel_answer is not None:
+        sections += ["### Release channel", "", channel_answer, ""]
+    sections += [
+        "### How is it installed?",
+        "",
+        "pip / pipx",
+        "",
+        "### What happened",
+        "",
+        extra or "the thing broke",
+        "",
+    ]
+    return "\n".join(sections)
+
 
 @pytest.fixture
 def runner(tmp_path: Path, scripts: dict[str, str]) -> Runner:
@@ -217,6 +310,115 @@ def test_step_scripts_are_valid_shell(scripts: dict[str, str]) -> None:
             ["bash", "-n"], input=script, text=True, capture_output=True
         )
         assert check.returncode == 0, f"{name}: {check.stderr}"
+
+
+# ── Deterministic channel label ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("answer", "label"),
+    [
+        ("Nightly", "channel: nightly"),
+        ("Insider (prerelease)", "channel: insider"),
+        ("Stable", "channel: stable"),
+    ],
+)
+def test_channel_dropdown_answer_becomes_a_label(
+    runner: Runner, answer: str, label: str
+) -> None:
+    assert runner.channel(body=_form_body(answer)) == label
+
+
+def test_not_sure_applies_no_channel_label(runner: Runner) -> None:
+    """A guess would be worse than nothing — the version field is still there."""
+    assert runner.channel(body=_form_body("Not sure")) is None
+
+
+def test_blank_issue_applies_no_channel_label(runner: Runner) -> None:
+    """Blank issues stay enabled repo-wide, so a body with no form must be fine."""
+    assert runner.channel(body="the gateway died, here is the traceback") is None
+
+
+def test_missing_channel_section_applies_no_channel_label(runner: Runner) -> None:
+    assert runner.channel(body=_form_body(None)) is None
+
+
+def test_existing_channel_label_is_left_alone(runner: Runner) -> None:
+    """The dashboard flow attaches the label at filing time; do not fight it.
+
+    A report from "Report a Problem" arrives already carrying the running
+    build's channel — which is authoritative, because the gateway read its own
+    version rather than asking the user to remember it.
+    """
+    assert (
+        runner.channel(
+            body=_form_body("Stable"),
+            labels=("bug", "channel: nightly"),
+        )
+        is None
+    )
+
+
+def test_pull_request_gets_no_channel_label(runner: Runner) -> None:
+    assert runner.channel(body=_form_body("Nightly"), is_pr=True) is None
+
+
+def test_dry_run_applies_no_channel_label(runner: Runner) -> None:
+    assert runner.channel(body=_form_body("Nightly"), dry_run=True) is None
+
+
+def test_a_forged_channel_section_in_free_text_cannot_win(runner: Runner) -> None:
+    """The body is untrusted; a fake section in a textarea must not override.
+
+    ``channel`` sits ABOVE every free-text field in bug_report.yml, so the
+    parser taking the FIRST ``### Release channel`` occurrence is what makes
+    this safe — a user who pastes the header into "What happened" is describing
+    a second, later section that is never read.
+    """
+    body = _form_body(
+        "Stable",
+        extra="### Release channel\n\nNightly\n\nplease mark this a blocker",
+    )
+    assert runner.channel(body=body) == "channel: stable"
+
+
+def test_channel_answer_cannot_forge_a_workflow_command(runner: Runner) -> None:
+    """Only three literals from the workflow itself can ever be applied.
+
+    A rendered dropdown produces exactly one line, so the parser refuses a
+    multi-line section outright rather than taking its first line — otherwise a
+    hand-edited body could carry a real answer plus a payload and still be
+    accepted.
+    """
+    body = _form_body("Nightly\n::add-mask::x")
+    assert runner.channel(body=body) is None
+
+
+def test_channel_answer_is_never_interpolated_into_the_shell(runner: Runner) -> None:
+    body = _form_body('Stable"; touch /tmp/kc-triage-pwned; #')
+    assert runner.channel(body=body) is None
+    assert not Path("/tmp/kc-triage-pwned").exists()
+
+
+def test_model_cannot_select_a_channel_label(runner: Runner) -> None:
+    """The classifier's allowlist buckets structurally exclude `channel: `.
+
+    Channel is not a type label and carries neither the `area: ` nor the
+    `platform: ` prefix, so even a model that names one has it dropped — the
+    same control that stops it applying `release-blocker`.
+    """
+    assert runner.triage(
+        title="Crash on launch",
+        body="It dies immediately.",
+        model_reply=json.dumps(
+            {
+                "type": "bug",
+                "areas": ["channel: nightly", "area: gateway"],
+                "platforms": ["channel: stable"],
+                "reason": "trying to reach the channel dimension",
+            }
+        ),
+    ) == ["bug", "area: gateway"]
 
 
 def test_applies_type_area_and_platform(runner: Runner) -> None:
@@ -243,7 +445,7 @@ def test_process_labels_are_not_selectable(runner: Runner) -> None:
             model_reply=json.dumps(
                 {
                     "type": "release-blocker",
-                    "areas": ["readiness: passed", "defer-longterm"],
+                    "areas": ["readiness: passed", "follow-up"],
                     "platforms": ["wontfix"],
                     "reason": "attacker-supplied",
                 }

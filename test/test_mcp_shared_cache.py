@@ -93,11 +93,11 @@ class TestSuccessCaching:
     ):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(return_value=_make_http_response({"exclude": ["foo", "bar"]}))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == {"foo", "bar"}
         # Second call must NOT hit the gateway again.
         urlopen.reset_mock()
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == {"foo", "bar"}
         assert urlopen.call_count == 0
 
@@ -106,7 +106,7 @@ class TestSuccessCaching:
     ):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(return_value=_make_http_response({"exclude": "not-a-list"}))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
 
     def test_filters_non_string_entries(
@@ -116,7 +116,7 @@ class TestSuccessCaching:
         urlopen = MagicMock(
             return_value=_make_http_response({"exclude": ["foo", 42, None, "bar"]})
         )
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == {"foo", "bar"}
 
 
@@ -132,7 +132,7 @@ class TestShortCacheStartupRace:
         # No session_pid file in cfg_dir → resolver can't find a key.
         # urlopen should never be called.
         urlopen = MagicMock()
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         assert urlopen.call_count == 0
         # Audit event recorded.
@@ -147,7 +147,7 @@ class TestShortCacheStartupRace:
     ):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(404))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.agent_not_resolved" in ops
@@ -160,12 +160,12 @@ class TestShortCacheStartupRace:
         # Trip the short cache, then ensure the next call doesn't re-query.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(404))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_excluded_tools()
         urlopen.reset_mock()
         # A second call inside the cache window is silent — should hit the
         # negative-cache short-circuit and never call urlopen again.
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         assert urlopen.call_count == 0
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
@@ -177,7 +177,7 @@ class TestShortCacheStartupRace:
         # Simulate the short TTL expiry by advancing monotonic.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(404))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_excluded_tools()
         # Move time past the short TTL.
         with patch.object(
@@ -188,7 +188,7 @@ class TestShortCacheStartupRace:
             + 1,
         ):
             urlopen.reset_mock()
-            with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+            with patch.object(mcp_shared, "loopback_urlopen", urlopen):
                 mcp_shared._resolve_excluded_tools()
             # Cache window expired → resolver retried (urlopen called once).
             assert urlopen.call_count == 1
@@ -202,7 +202,7 @@ class TestLongCacheFailures:
     def test_500_uses_long_cache(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(500))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.resolution_failed" in ops
@@ -214,7 +214,7 @@ class TestLongCacheFailures:
     def test_url_error_uses_long_cache(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=urllib.error.URLError("connection refused"))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         assert mcp_shared._last_failure_time > 0
 
@@ -223,10 +223,10 @@ class TestLongCacheFailures:
     ):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(500))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_excluded_tools()
         urlopen.reset_mock()
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_excluded_tools()
         assert urlopen.call_count == 0
 
@@ -245,7 +245,7 @@ class TestWarningSuppression:
             mcp_shared._last_failure_time = 0.0
             mcp_shared._last_startup_race_time = 0.0
             mcp_shared._excluded_tools_by_session.clear()
-            with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+            with patch.object(mcp_shared, "loopback_urlopen", urlopen):
                 mcp_shared._resolve_excluded_tools()
 
     def test_first_failures_emit_warnings(
@@ -304,7 +304,7 @@ class TestCachesAreIndependent:
         mcp_shared._last_startup_race_time = mcp_shared.time.monotonic()
         mcp_shared._last_failure_time = 0.0
         urlopen = MagicMock()
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         assert urlopen.call_count == 0
 
@@ -317,7 +317,7 @@ class TestCachesAreIndependent:
         mcp_shared._last_failure_time = mcp_shared.time.monotonic()
         mcp_shared._last_startup_race_time = 0.0
         urlopen = MagicMock()
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             assert mcp_shared._resolve_excluded_tools() == set()
         assert urlopen.call_count == 0
 
@@ -327,6 +327,6 @@ class TestCachesAreIndependent:
         # Both caches expired (or never set) → resolver MUST query.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(return_value=_make_http_response({"exclude": []}))
-        with patch.object(mcp_shared.urllib.request, "urlopen", urlopen):
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_excluded_tools()
         assert urlopen.call_count == 1

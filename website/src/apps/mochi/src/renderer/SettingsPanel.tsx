@@ -104,6 +104,11 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   // scrolling past every unrelated one.
   const [active, setActive] = useState<SettingsSectionId>('general')
   const [shortcutRefused, setShortcutRefused] = useState<string[]>([])
+  // A switch the shell refused, or one attempted with no shell at all. Kept out
+  // of `shortcutRefused` so the two failures can say different things -- clearing
+  // dirty state on a refused switch is what made the panel read "saved" while the
+  // pet never moved.
+  const [instanceSwitchFailed, setInstanceSwitchFailed] = useState(false)
   const [trustMode, setTrustMode] = useState<'normal' | 'trust_reads' | 'trust' | 'yolo'>('normal')
   const [origTrust, setOrigTrust] = useState<'normal' | 'trust_reads' | 'trust' | 'yolo'>('normal')
   const [showUnsaved, setShowUnsaved] = useState(false)
@@ -183,18 +188,16 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     // seam does a fetch FROM THIS WINDOW, so closing it cancelled the in-flight
     // request and the save was silently lost.
     await api?.updateConfig?.(finalConfig)
-    // Same reasoning as applyShortcuts below: the shell only notices petInstance
-    // on its next reconcile pass, so without this the pet keeps showing the old
-    // instance for a few seconds after the user picked a new one — long enough to
-    // read as "the switch didn't work" and invite a second click. Awaited so the
-    // panel does not close before the windows have actually moved. AFTER the
-    // config write, because the shell re-reads the setting from the gateway.
-    if (config.mochi.petInstance !== original?.mochi?.petInstance) {
-      await api?.applyInstanceNow?.()
-    }
-    // Bind NOW and report a refusal. globalShortcut.register is the only place
-    // "is this key free?" can be answered, and without this call the rebind was
-    // picked up only by the shell's next drift tick -- with a taken key
+    // SHORTCUTS BEFORE THE INSTANCE SWITCH, and that order is load-bearing.
+    // `setPetInstance` reconciles inline, and a reconcile that sees a changed
+    // target calls closeSettingsWindow() — destroying THIS window while
+    // handleSave is still awaiting, so anything after it never runs. Since the
+    // shell's store is now the only place the accelerators are persisted (they
+    // are stripped from the settings POST above), running this second would lose
+    // the whole shortcut change, not merely its immediate binding.
+    //
+    // Bind NOW and report a refusal: globalShortcut.register is the only place
+    // "is this key free?" can be answered, and without this call a taken key is
     // silently shown as bound, which reads as "the shortcut just doesn't work".
     const bindResult = (await api?.applyShortcuts?.(config.shortcuts)) ?? {}
     const refused = Object.entries(bindResult)
@@ -202,9 +205,54 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       .map(([action]) => action)
     if (refused.length > 0) {
       setShortcutRefused(refused)
+      // Reveal the section that RENDERS the message. Save is global but this
+      // refusal only renders under 'shortcuts', so saving from any other
+      // section would hold the panel open with no visible reason for it.
+      setActive('shortcuts')
       return // keep the panel open so the message is seen
     }
     setShortcutRefused([])
+
+    // The shell only notices petInstance on its next reconcile pass, so without
+    // an explicit apply the pet keeps showing the old instance for a few seconds
+    // after the user picked a new one — long enough to read as "the switch didn't
+    // work" and invite a second click.
+    if (config.mochi.petInstance !== original?.mochi?.petInstance) {
+      // Through the SHELL, not the same-origin settings POST. The pointer is a
+      // per-MACHINE choice and the shell's store owns it; posting it here would
+      // write it onto whichever gateway served this window, where nothing reads
+      // it — the one-way door that stranded a pet on a remote with no way back.
+      // One call stores AND moves, so the two cannot half-happen.
+      //
+      // The result is CHECKED: a refused or shell-less switch must not clear the
+      // dirty state and read as "saved" while the pet never moved.
+      const moved = api?.setPetInstance
+        ? await api.setPetInstance(config.mochi.petInstance as string)
+        : false
+      if (!moved) {
+        setInstanceSwitchFailed(true)
+        // Same reason as the shortcut refusal above: this message lives under
+        // 'instances', and a save started from elsewhere must not strand the
+        // user in a panel that refuses to close and does not say why.
+        setActive('instances')
+        // COMMIT THE BASELINE even though the switch did not land. The shell
+        // stores the pointer BEFORE the reconcile that failed, so the choice is
+        // already persisted and its retry loop will apply it — there is nothing
+        // here to revert. Leaving the old baseline in place would offer a Discard
+        // that resets these fields on screen while the pet still moves minutes
+        // later, which is the one thing worse than reporting the failure.
+        //
+        // Everything else on this path has landed too: trust, `updateConfig` and
+        // the accelerators all ran before this point. The refused-shortcut branch
+        // above deliberately does NOT do this — a refused key really was not
+        // stored, so it must stay dirty for the user to fix, and no watcher will
+        // apply it behind their back.
+        setOriginal(JSON.parse(JSON.stringify(config)))
+        setOrigTrust(trustMode)
+        return // keep the panel open, same as a refused shortcut
+      }
+      setInstanceSwitchFailed(false)
+    }
     setOriginal(JSON.parse(JSON.stringify(config)))
     setOrigTrust(trustMode)
     onClose()
@@ -405,11 +453,26 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       </>)}
       {active === 'instances' && (<>
       <Section title={i18nT('apps.mochi.settingsPanel.instances')}>
-        <MochiInstancesList
-
-          value={(config.mochi as { petInstance?: string }).petInstance || 'self'}
-          onChange={(petInstance) => editMochi({ petInstance })}
-        />
+        {/* No shell means no IPC, and the pointer lives in the shell's store --
+            so picking a row here could store nothing and move nothing. Say that
+            instead of rendering a control that silently does nothing. */}
+        {!api.hasShell ? (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            {i18nT('apps.mochi.instances.desktop_only')}
+          </div>
+        ) : (<>
+          {instanceSwitchFailed && (
+            <div role="alert" style={{
+              fontSize: 10, color: 'var(--danger)', marginBottom: 6, lineHeight: 1.4,
+            }}>
+              {i18nT('apps.mochi.instances.switch_failed')}
+            </div>
+          )}
+          <MochiInstancesList
+            value={(config.mochi as { petInstance?: string }).petInstance || 'self'}
+            onChange={(petInstance) => editMochi({ petInstance })}
+          />
+        </>)}
       </Section>
       </>)}
 
@@ -435,8 +498,19 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
 
       {active === 'shortcuts' && (<>
       <Section title={i18nT('apps.mochi.settingsPanel.shortcuts')}>
+        {/* No shell means no way to register an OS global accelerator AND no
+            store to persist one in: the shell's store is the only copy, and
+            `flattenConfig` deliberately does not post these to the gateway. So
+            without it, editing here would report success and change nothing.
+            Same call as the instances pane above — say so rather than render a
+            control that cannot deliver. */}
+        {!api.hasShell ? (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            {i18nT('apps.mochi.settingsPanel.shortcuts_desktop_only')}
+          </div>
+        ) : (<>
         {shortcutRefused.length > 0 && (
-          <div style={{
+          <div role="alert" style={{
             fontSize: 10, color: 'var(--danger)', marginBottom: 6, lineHeight: 1.4,
           }}>
             {i18nT('apps.mochi.settingsPanel.shortcut_taken', { actions: shortcutRefused.join(', ') })}
@@ -451,6 +525,7 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
         <ShortcutField label={i18nT('apps.mochi.settingsPanel.hide_all')} desc={i18nT('apps.mochi.settingsPanel.hide_all_desc')}
           value={config.shortcuts.hideAll}
           onChange={(v) => edit({ shortcuts: { ...config.shortcuts, hideAll: v } })} />
+        </>)}
       </Section>
       </>)}
 

@@ -32,6 +32,7 @@ from kiro_crew.apps.manager import (
     get_app,
     install_app,
     list_apps,
+    trust_grant_removal_blocked,
     uninstall_app,
 )
 from kiro_crew.apps.scaffold import scaffold_app
@@ -53,6 +54,7 @@ from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.security import (
     BUILTIN_DENY_PATTERNS,
     is_sensitive_path,
@@ -172,7 +174,7 @@ def _spawn(args: argparse.Namespace) -> None:
             headers={"X-Internal-Secret": _internal_secret()},
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with loopback_urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             try:
@@ -212,7 +214,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             result = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         try:
@@ -240,7 +242,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         _time.sleep(2)
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with urllib.request.urlopen(poll_req, timeout=5) as resp:
+            with loopback_urlopen(poll_req, timeout=5) as resp:
                 status = json.loads(resp.read())
         except Exception:
             print("Error: lost connection to gateway", file=sys.stderr)
@@ -609,6 +611,21 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif action == "uninstall":
+        # Precondition before anything destructive: the same reason the dashboard
+        # handler checks here rather than inside uninstall_app. deregister_app()
+        # below is irreversible, so a grant that cannot be dropped has to abort
+        # while the app is still whole.
+        blocked = trust_grant_removal_blocked(args.name)
+        if blocked:
+            print(
+                f"❌ not uninstalling {args.name!r}: its third-party execution "
+                f"grant could not be removed ({blocked}). The grant is keyed on "
+                f"the name, so removing the app while it stands would let any "
+                f"future app installed under this name run code without asking. "
+                f"Nothing has been changed — clear the cause and retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _cleanup_app_crons_from_scheduler(args.name)
         deregister_app(args.name)
         keep_data = not getattr(args, "purge_data", False)
@@ -1463,7 +1480,7 @@ def _artifact(args: argparse.Namespace) -> None:
             h["Content-Type"] = "application/json"
         req = urllib.request.Request(f"{base}{path}", data=data, headers=h, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with loopback_urlopen(req, timeout=30) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:

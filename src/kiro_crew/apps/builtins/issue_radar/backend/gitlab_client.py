@@ -64,6 +64,7 @@ from .errors import (
     ProviderSetupError,
     PrSearchError,
     RepoUrlError,
+    sanitize_cli_stderr,
 )
 
 # Historical aliases, mirroring github_client so provider-agnostic callers can
@@ -412,7 +413,7 @@ def _raise_if_auth_failure(stderr_tail: str, host: str) -> None:
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
-    return " ".join((proc.stderr or "").strip().splitlines()[-3:])
+    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
 
 
 def _is_forbidden(tail: str) -> bool:
@@ -767,6 +768,18 @@ def list_open_issues(
 ) -> list[dict]:
     """Every OPEN issue (all pages) — the triage view's working set."""
     return _list_issues(owner, repo, "open", host=host, timeout=timeout, paginate=True)
+
+
+def list_open_issues_first_page(
+    owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest single page of OPEN issues, in ONE request (no pagination).
+
+    The progressive first paint on a cold cache — the same first page (full issue
+    shape, most-recently-updated first) that ``list_open_issues`` returns, so the
+    full paginated set appends behind it with no reordering. Mirrors
+    ``github_client.list_open_issues_first_page``."""
+    return _list_issues(owner, repo, "open", host=host, timeout=timeout, paginate=False)
 
 
 def list_closed_issues(
@@ -1129,14 +1142,20 @@ def _norm_state_event(event: dict) -> dict | None:
 
 
 def _assemble_timeline(
-    owner: str, repo: str, kind: str, number: int, *, host: str, timeout: float
-) -> list[dict]:
+    owner: str, repo: str, kind: str, number: int, *, host: str, timeout: float,
+) -> tuple[list[dict], list[dict]]:
     """Merge notes + label events + state events into one sorted timeline.
 
     ``kind`` is ``"issues"`` or ``"merge_requests"``. A failure on a SECONDARY
     stream (label/state events) degrades to omitting those entries rather than
     failing the whole pane: the comments are the substance, and an older GitLab
     may not serve the resource-event endpoints at all.
+
+    Returns ``(events, notes)`` — the sorted timeline AND the raw ``notes`` it
+    fetched. The MR timeline needs those same notes a second time to promote
+    positioned (inline) ones, and re-reading ``{base}/notes`` there was a duplicate
+    paginated round-trip on every PR-detail load; returning them reuses the one
+    fetch. The issue timeline ignores the second element.
     """
     base = f"projects/{project_path(owner, repo)}/{kind}/{int(number)}"
     notes = _rows(_glab_api(f"{base}/notes?order_by=created_at&sort=asc", host=host, timeout=timeout, paginate=True))
@@ -1157,14 +1176,15 @@ def _assemble_timeline(
         events.extend(e for e in (normalizer(item) for item in raw) if e is not None)
 
     events.sort(key=lambda e: e.get("created_at") or "")
-    return events
+    return events, notes
 
 
 def list_issue_timeline(
     owner: str, repo: str, number: int, *, host: str = "", timeout: float = GL_PAGINATE_TIMEOUT_SEC
 ) -> list[dict]:
     """Normalized, chronological timeline for one issue."""
-    return _assemble_timeline(owner, repo, "issues", number, host=host, timeout=timeout)
+    events, _notes = _assemble_timeline(owner, repo, "issues", number, host=host, timeout=timeout)
+    return events
 
 
 def list_pr_timeline(
@@ -1175,17 +1195,14 @@ def list_pr_timeline(
     GitLab keeps inline (diff) comments in the SAME notes stream as discussion
     comments, distinguished by a ``position`` object — unlike GitHub, where they
     live on a separate endpoint. So the MR timeline is the shared assembly plus a
-    re-read that promotes positioned notes to ``review_comment`` entries carrying
-    their file and line, which is what makes a review's substance visible.
+    promotion of positioned notes to ``review_comment`` entries carrying their file
+    and line, which is what makes a review's substance visible. The assembly already
+    fetched the notes, so it hands them back rather than us re-reading ``{base}/
+    notes`` — that re-read was a duplicate paginated round-trip on every load.
     """
-    events = _assemble_timeline(owner, repo, "merge_requests", number, host=host, timeout=timeout)
-    base = f"projects/{project_path(owner, repo)}/merge_requests/{int(number)}"
-    try:
-        notes = _rows(
-            _glab_api(f"{base}/notes?order_by=created_at&sort=asc", host=host, timeout=timeout, paginate=True)
-        )
-    except ProviderCliError:
-        return events
+    events, notes = _assemble_timeline(
+        owner, repo, "merge_requests", number, host=host, timeout=timeout
+    )
     inline: list[dict] = []
     positioned_bodies: set[tuple[str, str]] = set()
     for note in notes:
@@ -1434,12 +1451,28 @@ def list_open_pulls(owner: str, repo: str, *, host: str = "", timeout: float = G
     return _list_pulls(owner, repo, "open", host=host, timeout=timeout, paginate=True)
 
 
+def list_open_pulls_first_page(
+    owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest single page of OPEN MRs, in ONE request (no pagination).
+
+    The progressive first paint on a cold cache — the same first page (full MR
+    shape, most-recently-updated first) that ``list_open_pulls`` returns, so the
+    full paginated set appends behind it with no reordering. GitLab already
+    inlines each MR's ``head_pipeline`` (so ``_norm_pull`` writes the card
+    enrichment eagerly and ``enrich_pulls`` is a no-op), meaning this page is
+    already card-complete. Mirrors ``github_client.list_open_pulls_first_page``.
+    """
+    return _list_pulls(owner, repo, "open", host=host, timeout=timeout, paginate=False)
+
+
 def list_closed_pulls(owner: str, repo: str, *, host: str = "", timeout: float = GL_TIMEOUT_SEC) -> list[dict]:
     return _list_pulls(owner, repo, "closed", host=host, timeout=timeout, paginate=False)
 
 
 def get_pr_detail(
-    owner: str, repo: str, number: int, *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+    owner: str, repo: str, number: int, *, host: str = "", timeout: float = GL_TIMEOUT_SEC,
+    resolve_mergeable: bool = True,
 ) -> dict:
     """Full detail for one merge request, in ``_PR_DETAIL_JQ``'s shape.
 
@@ -1448,7 +1481,12 @@ def get_pr_detail(
     ``additions``/``deletions`` are ``None`` — reading real line counts would
     require pulling the whole diff on every detail view. The UI already treats
     those as optional.
+
+    ``resolve_mergeable`` is accepted for signature parity with the GitHub client
+    (see its docstring) and is a no-op here: GitLab reports mergeability in the one
+    detail response, so there is no lazy retry to skip.
     """
+    _ = resolve_mergeable  # parity-only; GitLab has no lazy-mergeability retry
     iid = int(number)
     raw = _obj(
         _glab_api(

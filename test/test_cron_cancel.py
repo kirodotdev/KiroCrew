@@ -237,6 +237,10 @@ class TestSubprocessRegistry:
             "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
         ), patch(
             "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
+        ), patch(
+            # Bypass the runtime shell probe (which itself spawns a child) — the
+            # test is about the registry, not shell fingerprinting.
+            "kiro_crew.cron_script._resolve_command_shell", return_value="sh"
         ):
             result = run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "ok"

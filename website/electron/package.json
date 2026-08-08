@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js mochi/test/*.test.js",
+    "test": "node --test test/*.test.js mochi/test/*.test.js crew-companion/test/*.test.js",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
@@ -21,7 +21,7 @@
   },
   "overrides": {
     "fast-uri": "3.1.5",
-    "js-yaml": "4.3.0"
+    "js-yaml": "4.3.1"
   },
   "build": {
     "appId": "com.amazon.kiro.crew",
@@ -68,6 +68,7 @@
       "auto-update.js",
       "bundle-location.js",
       "gateway-auth-hint.js",
+      "blocking-prompt.js",
       "gateway-stop.js",
       "gateway-wait.js",
       "sandbox-profile.js",
@@ -80,6 +81,7 @@
       "perf-metrics.js",
       "host-config.js",
       "remote-token.js",
+      "token-acquire.js",
       "token-retry.js",
       "display-media.js",
       "permission-handler.js",
@@ -101,6 +103,14 @@
       "mochi/shortcuts.js",
       "mochi/pageUrl.js",
       "mochi/instanceGate.js",
+      "mochi/machineStore.js",
+      "crew-companion/index.js",
+      "crew-companion/petOverlay.js",
+      "crew-companion/pageUrl.js",
+      "crew-companion/pet-preload.js",
+      "crew-companion/panelWindow.js",
+      "crew-companion/panelPlacement.js",
+      "crew-companion/galleryWindow.js",
       "anime.global.js",
       "loading.html",
       "token-prompt.html",

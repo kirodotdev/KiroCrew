@@ -14,7 +14,7 @@ from kiro_crew.context import ui_language_tag
 from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
 from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
-    effective_session_key,
+    slot_history_key,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -454,8 +454,6 @@ def _title_text(
     """
     source_was_truncated = len(content) > _TITLE_SOURCE_SCAN_LIMIT
     content = content[:_TITLE_SOURCE_SCAN_LIMIT]
-    if content.startswith("[BROWSE] "):
-        content = content[len("[BROWSE] ") :]
     content = _strip_markdown_images(content, drop_trailing_partial=source_was_truncated)
     content = _strip_attached_file_tokens(
         content,
@@ -682,7 +680,7 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> None:
     """
 
     if state.conversation_log:
-        history_key = effective_session_key(slot)
+        history_key = slot_history_key(slot)
         try:
             await asyncio.to_thread(
                 state.conversation_log.set_title, history_key, slot.title

@@ -45,6 +45,10 @@ export interface IssuesResponse {
   state?: string
   issues: Issue[]
   from_cache: boolean
+  /** Set by the `first_page=1` fast path: `true` when these are only the newest
+   * page (a cold-cache first paint, the full set still loading), `false`/absent
+   * when they are the complete list (served from a warm cache). */
+  partial?: boolean
 }
 
 /** One pull-request list row. A PR-native shape (from the `pulls` endpoint, not
@@ -124,6 +128,10 @@ export interface PullsResponse {
   state?: string
   pulls: PullRequest[]
   from_cache: boolean
+  /** Set by the `first_page=1` fast path: `true` when these are only the newest
+   * page (un-enriched) while the full enriched list loads behind them; absent or
+   * `false` when the set is complete. Mirrors `IssuesResponse.partial`. */
+  partial?: boolean
   /** Set by /pulls/search when the result hit the server's cap, so the UI can say
    * "newest N" instead of implying it listed every match. */
   truncated?: boolean
@@ -882,6 +890,20 @@ export const issueRadarApi = {
     return r.json()
   },
 
+  /** The newest single page of OPEN issues, for the progressive first paint on a
+   * cold cache — one round-trip, versus the tens of paginated requests the full
+   * `issues()` fetch needs on a large repo. A warm cache is returned whole
+   * (`partial: false`); a cold one returns just the first page (`partial: true`)
+   * WITHOUT writing the server cache, so the authoritative full fetch below still
+   * owns it. Open state only. */
+  issuesFirstPage: async (ref: RepoRef): Promise<IssuesResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
+    q.set('first_page', '1')
+    const r = await fetch(`${API}/issues?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
   issueDetail: async (ref: RepoRef, number: number, opts?: { refresh?: boolean }): Promise<IssueDetailResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number) })
     if (opts?.refresh) q.set('refresh', '1')
@@ -897,6 +919,20 @@ export const issueRadarApi = {
     if (opts?.state) q.set('state', opts.state)
     if (opts?.refresh) q.set('refresh', '1')
     if (opts?.poll) q.set('poll', '1')
+    const r = await fetch(`${API}/pulls?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** The newest single page of OPEN PRs, for the progressive first paint on a
+   * cold cache — one round-trip, versus the full pagination PLUS GraphQL
+   * enrichment the `pulls()` fetch runs before it can return. A warm cache is
+   * returned whole (`partial: false`); a cold one returns just the first page,
+   * un-enriched, (`partial: true`) WITHOUT writing the server cache, so the
+   * authoritative fetch still owns it. Open state only. Mirrors `issuesFirstPage`. */
+  pullsFirstPage: async (ref: RepoRef): Promise<PullsResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
+    q.set('first_page', '1')
     const r = await fetch(`${API}/pulls?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

@@ -26,6 +26,7 @@
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": false,
+        "apps_trusted": [],
         "jail": "auto",
         "dangerously_skip_permissions": false,
         "yolo_duration": "6h",
@@ -269,10 +270,38 @@
       "sensitive": false,
       "tags": [],
       "label": "Allow Third-Party Apps",
-      "help": "Explicitly allow executable code from third-party (non-builtin) apps. Defaults to false. Only the JSON boolean true admits in-process Python hooks, backend processes, lifecycle/install scripts, and openCommand. App code can access the filesystem, network, and in-memory credentials; enable this only for apps you trust (CSE SEC-012).",
+      "help": "Explicitly allow executable code from third-party (non-builtin) apps. Defaults to false. Only the JSON boolean true admits in-process Python hooks, backend processes, lifecycle/install scripts, and openCommand. App code can access the filesystem, network, and in-memory credentials; enable this only for apps you trust (CSE SEC-012). Prefer apps_trusted, which grants the same admission to ONE named app.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.apps_trusted",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Trusted Apps",
+      "help": "Per-app grants for third-party execution — the narrow form of apps_allow_third_party. An app whose manifest name appears here is admitted to run Python hooks, its backend, lifecycle scripts, and openCommand; every other third-party app stays blocked. Only a JSON array of app-name strings is honoured, and no wildcard entry is accepted (use apps_allow_third_party to trust all).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "agent.apps_trusted.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.jail",
@@ -1362,6 +1391,7 @@
         "auto_add_documents": true,
         "auto_register_project_docs": true,
         "auto_ingest_chunk_budget": 150,
+        "folder_ingest_chunk_budget": 300,
         "dedup_every_n_sweeps": 12,
         "doc_ingest_hosts": [],
         "auto_discover_folder": false,
@@ -1508,10 +1538,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto-Ingest Chunk Budget",
-      "help": "Chunks an automatically-registered source may ingest per watcher sweep. Each chunk costs one LLM extraction call, so this is what actually bounds the cost of auto-registration -- file filters bound pollution, not spend. Newest documents land first and the rest trickle in on later sweeps, so a new project never arrives as a burst. 0 removes the bound. Folders you add by hand are never budgeted: you asked for the whole folder.",
+      "help": "Chunks an automatically-registered source may ingest per watcher sweep. Each chunk costs one LLM extraction call, so this is what actually bounds the cost of auto-registration -- file filters bound pollution, not spend. Newest documents land first and the rest trickle in on later sweeps, so a new project never arrives as a burst. 0 removes the bound.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 150
+    },
+    {
+      "path": "knowledge.folder_ingest_chunk_budget",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Folder Ingest Chunk Budget",
+      "help": "Chunks a folder you add by hand may ingest per watcher sweep. Adding a source-code repository discovers thousands of files, and each chunk costs an LLM extraction call on a pool of billed sessions, so an unpaced first scan can spend a large amount unattended. Nothing is skipped: newest files land first and the rest continue on later sweeps. Higher than the auto-ingest budget because you asked for the folder explicitly. 0 removes the bound; a per-source chunk_budget property overrides it for one folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 300
     },
     {
       "path": "knowledge.dedup_every_n_sweeps",
@@ -1596,7 +1640,7 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "max_triggered": 3,
+        "max_triggered": 0,
         "lazy_load": false,
         "auto_create_from_sessions": false,
         "auto_refine_on_deviation": false,
@@ -1621,10 +1665,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Triggered",
-      "help": "Maximum number of skills a single message may flag as relevant (≥0). Each match injects that skill's full content, unless the skill sets inject_on_trigger: false in its frontmatter, in which case it contributes a one-line pointer naming it and its path and the agent reads the file if the skill applies. Set to 0 to stop flagging entirely and rely only on the Available Skills index, $skillname, and skill_search.",
+      "help": "Maximum number of skills a single message may flag as relevant (≥0). Each match injects that skill's full content, unless the skill sets inject_on_trigger: false (pointer-only; requires max_triggered > 0 to have any effect). Defaults to 0 (disabled): the agent discovers skills from the Available Skills index and reads them on demand via cat, $skillname, or skill_search. Set to a positive integer to re-enable per-turn word-overlap trigger matching.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 3
+      "defaultValue": 0
     },
     {
       "path": "skills.lazy_load",
@@ -3951,6 +3995,9 @@
       "enumValues": null,
       "defaultValue": {
         "url": "",
+        "tailscale": {
+          "enabled": false
+        },
         "restore_sessions": false,
         "restore_window_minutes": 30,
         "surface_channel_sessions": true,
@@ -3962,6 +4009,7 @@
         "widget_density": "more",
         "verbosity": "default",
         "link_previews": false,
+        "usage_text_scrape_enabled": false,
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "prevent_sleep": false,
@@ -4006,6 +4054,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "dashboard.tailscale",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailscale",
+      "help": "Reach the dashboard over your tailnet via `tailscale serve`.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false
+      }
+    },
+    {
+      "path": "dashboard.tailscale.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tailnet Access",
+      "help": "Accept this machine's own MagicDNS name as a dashboard origin, so `tailscale serve` works without hand-writing dashboard.url. Reads the local Tailscale daemon once at startup; contributes nothing if Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the network bind and does NOT change authentication — every request still needs a dashboard session.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.restore_sessions",
@@ -4145,11 +4223,12 @@
       "sensitive": false,
       "tags": [],
       "label": "Response Verbosity",
-      "help": "Controls how terse the agent's prose is. 'default' is normal; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim) while preserving full detail for security warnings, irreversible-action confirmations, and ordered multi-step instructions.",
+      "help": "Controls how terse the agent's prose is. 'default' is normal; 'concise' injects brevity guidelines (lead with the answer, cut filler, keep code/errors verbatim); 'ultra' writes for an ADHD reader — the answer lands in a 3-sentence opening, and any detail after it must be scannable bullets rather than prose. Both levels preserve full detail for security warnings, irreversible-action confirmations, and ordered multi-step instructions.",
       "hasChildren": false,
       "enumValues": [
         "default",
-        "concise"
+        "concise",
+        "ultra"
       ],
       "defaultValue": "default"
     },
@@ -4163,6 +4242,20 @@
       "tags": [],
       "label": "Link Previews",
       "help": "Render http(s) links in assistant messages as favicon + page title instead of a raw URL. Off by default because it is a network decision, not a display one: this machine fetches every link the model outputs, so each linked site sees a request from your IP address. When false the /api/link-meta endpoint fetches nothing and returns 403.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.usage_text_scrape_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Spend Credits To Read The Credit Meter",
+      "help": "Let the credit pill fall back to a `kiro-cli /usage` chat turn when the free usage API returns no plan. That fallback is a REAL billed LLM turn on whichever model the lite agent resolves, and it repeats on every refresh interval for as long as any dashboard tab is open, so it is off by default: a meter that reports spending must not itself spend. While it is off the pill shows whatever the free API returned and hides when the API has nothing to show.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

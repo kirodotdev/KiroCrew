@@ -15,6 +15,42 @@ a GitLab failure, and every GitLab error would escape as a 500 instead of the
 
 from __future__ import annotations
 
+import re
+
+from kiro_crew.security import redact_local_paths
+
+# Public provider endpoints are not host topology: the user is talking to them on
+# purpose, and seeing the URL is often the point of the message. Any OTHER host in
+# the text can identify a self-hosted enterprise instance.
+_PUBLIC_HOSTS = ("github.com", "api.github.com", "gitlab.com")
+_URL_RE = re.compile(r"https?://([^/\s'\"]+)[^\s'\"]*")
+_REDACTED = "[redacted]"
+
+
+def sanitize_cli_stderr(text: str) -> str:
+    """Provider CLI stderr with host paths and private hosts removed.
+
+    Provider CLI stderr reaches the browser verbatim through the routes' error
+    bodies, so host topology is stripped first (CWE-209). Credentials are not a
+    vector here -- both CLIs take their token from the environment, never argv, and
+    neither echoes it -- so the goal is host detail, not secrets.
+
+    Deliberately preserves the phrasing a user needs in order to fix the problem
+    themselves -- ``gh auth login``, ``not found`` / ``Could not resolve to a
+    Repository``, ``HTTP 403``, ``connection refused``, ``timeout`` -- because the
+    frontend renders this text directly and a generic "upstream error" would leave
+    the user unable to tell an auth problem from a typo'd repo name.
+    """
+    if not text:
+        return ""
+    out, _ = redact_local_paths(text)
+
+    def _host(match: re.Match[str]) -> str:
+        host = match.group(1).split("@")[-1].split(":")[0].lower()
+        return match.group(0) if host in _PUBLIC_HOSTS else _REDACTED
+
+    return _URL_RE.sub(_host, out)
+
 
 class RepoUrlError(ValueError):
     """Raised when a repo URL is not a well-formed, supported provider URL.

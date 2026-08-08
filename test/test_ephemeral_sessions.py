@@ -569,7 +569,7 @@ class TestLessonsGate:
 class TestMcpCoreSessionKeyPassthrough:
     def test_learn_add_sends_session_key_header(self):
         with (
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "dashboard:e1"}),
         ):
             mock_resp = MagicMock()
@@ -586,7 +586,7 @@ class TestMcpCoreSessionKeyPassthrough:
 
     def test_learn_add_no_session_key_header_when_unset(self):
         with (
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch("kiro_crew.mcp_core._resolve_session_key", return_value=""),
         ):
             mock_resp = MagicMock()
@@ -612,7 +612,7 @@ class TestMcpCoreSessionKeyPassthrough:
         import urllib.error
 
         with (
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch("kiro_crew.mcp_core._resolve_session_key", return_value="1781215864.487849"),
         ):
             mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -632,7 +632,7 @@ class TestMcpCoreSessionKeyPassthrough:
         import urllib.error
 
         with (
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch("kiro_crew.mcp_core._resolve_session_key", return_value=""),
         ):
             mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -654,7 +654,7 @@ class TestMcpCoreSessionKeyPassthrough:
         import urllib.error
 
         with (
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch("kiro_crew.mcp_core._resolve_session_key", return_value=""),
         ):
             mock_urlopen.side_effect = urllib.error.HTTPError(
@@ -677,7 +677,7 @@ class TestMcpCoreSessionKeyPassthrough:
         import urllib.error
 
         with (
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch("kiro_crew.mcp_core._resolve_session_key", return_value="1781215864.487849"),
         ):
             mock_urlopen.side_effect = urllib.error.HTTPError(

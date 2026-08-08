@@ -187,6 +187,89 @@ def session_key(channel_type: str, conversation_id: str) -> str:
     return f"{channel_type}:{conversation_id}"
 
 
+# ── Canonical address parsing (RFC §9 rule 4: exactly ONE parser module) ──
+
+
+@dataclass(frozen=True)
+class ParsedSessionKey:
+    """A conversational session key decomposed per the RFC §9 grammar.
+
+    ``{surface}:{agent}:{chat_type}:{scope…}[:genN]`` — the first segment is
+    the surface and is the routing authority (``ChannelTurn.channel_type``
+    MUST equal it; the contract tests pin this). ``scope`` is one or more
+    segments carrying the transport's own topology; ``gen`` is the rotating
+    generation (0 = bare bucket, no suffix).
+    """
+
+    surface: str
+    agent: str
+    chat_type: str
+    scope: tuple[str, ...]
+    gen: int = 0
+
+    @property
+    def bucket(self) -> str:
+        """The durable bucket — the key with any generation suffix removed."""
+        parts = [self.surface, self.agent, self.chat_type, *self.scope]
+        return ":".join(parts)
+
+
+_GEN_SUFFIX_RE = re.compile(r"^gen(\d+)$")
+
+
+def parse_session_key(key: str) -> ParsedSessionKey | None:
+    """Parse a canonical conversational key; ``None`` for anything else.
+
+    Deliberately STRICT: only the §9 grammar parses. Legacy shapes — bare
+    Slack ``thread_ts``, two-segment ``slack:<ts>``, ``dashboard:`` keys, the
+    app-platform ``channel:{id}:{agent}`` prefix — return ``None`` rather than
+    a wrong decomposition; they predate the grammar and their migration is
+    explicitly out of scope (§9 accepted debts). Callers that must handle
+    legacy keys keep using the prefix classifiers above.
+
+    Consumers must treat a ``None`` as "not addressable by grammar", never as
+    an error: the dispatch pipeline itself stays address-agnostic and does not
+    call this (pinned in ``dispatch.py`` docstrings).
+    """
+    if not key:
+        return None
+    segments = key.split(":")
+    if len(segments) < 4:
+        return None
+    surface = segments[0]
+    if surface not in CHANNEL_SESSION_NAMESPACES:
+        return None
+    gen = 0
+    tail = segments[-1]
+    m = _GEN_SUFFIX_RE.match(tail)
+    if m is not None:
+        gen = int(m.group(1))
+        segments = segments[:-1]
+        if len(segments) < 4:
+            return None
+    if any(not s for s in segments):
+        return None  # an empty segment means a malformed key, not an address
+    return ParsedSessionKey(
+        surface=surface,
+        agent=segments[1],
+        chat_type=segments[2],
+        scope=tuple(segments[3:]),
+        gen=gen,
+    )
+
+
+def assert_colon_free(segment: str, *, what: str) -> str:
+    """Enforce §9 rule 4 at BUILD time: segments must not contain ``:``.
+
+    A colon inside a segment silently shifts every later segment during
+    parsing — the address becomes wrong, not invalid. Builders call this so
+    the corruption is impossible to construct rather than detected later.
+    """
+    if ":" in segment:
+        raise ValueError(f"session-key {what} must not contain ':': {segment!r}")
+    return segment
+
+
 def is_legacy_slack_key(key: str) -> bool:
     """True iff ``key`` is a bare Slack ``thread_ts`` (un-namespaced)."""
     return bool(_SLACK_TS_RE.fullmatch(key))
@@ -267,9 +350,22 @@ def build_dm_session_key(
     keep their compatibility shim (see ``canonical_key``) untouched.
     """
     if dm_scope == DM_SCOPE_UNIFIED and chat_type == CHAT_TYPE_DIRECT:
-        bucket = f"{DM_SCOPE_UNIFIED}:{agent}"
+        bucket = f"{DM_SCOPE_UNIFIED}:{assert_colon_free(agent, what='agent')}"
     else:
-        bucket = f"{channel}:{agent}:{chat_type}:{user}"
+        # ``user`` is a SCOPE PATH, not a single segment: telegram forum routes
+        # pass "{chat_id}:{thread}" here, which §9 rule 2 blesses as two scope
+        # segments (hierarchy depth lives in the scope). So the colon-free rule
+        # applies to its SUB-segments (none may be empty), not to the whole.
+        if ":" in user and any(not s for s in user.split(":")):
+            raise ValueError(f"session-key scope path has an empty segment: {user!r}")
+        bucket = ":".join(
+            (
+                assert_colon_free(channel, what="channel"),
+                assert_colon_free(agent, what="agent"),
+                assert_colon_free(chat_type, what="chat_type"),
+                user,
+            )
+        )
     return f"{bucket}:gen{gen}" if gen else bucket
 
 

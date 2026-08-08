@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { Loader2, Check, AlertTriangle } from 'lucide-react'
 import Modal from '../../components/Modal'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
@@ -13,7 +12,6 @@ type Phase = 'idle' | 'confirm' | 'applying' | 'done' | 'failed'
 
 export function SharedMcpGatewayToggle() {
   const qc = useQueryClient()
-  const navigate = useNavigate()
   const statusQ = useQuery<GatewayStatus>({ queryKey: ['mcpGatewayStatus'], queryFn: () => api.mcpGatewayStatus() })
   const enabled = statusQ.data?.enabled ?? false
   const pingOk = statusQ.data?.ping_ok ?? false
@@ -28,6 +26,13 @@ export function SharedMcpGatewayToggle() {
   // In-process apply: the POST starts/stops the broker, drops + relinks all
   // agent sessions, and verifies connectivity — no gateway restart, so this
   // dashboard session stays logged in.  The response is the verified state.
+  //
+  // Stays on this page on success. It used to navigate to Developer > System,
+  // which was wrong twice over: enabling the pool is the FIRST half of the job
+  // (the user then picks which servers to pool, on this very page), and the
+  // destination did not even carry the `plane` the metrics card lives on, so it
+  // landed on the Sessions table instead. Reporting the verified state here and
+  // letting the user choose where to go next is the honest shape.
   const run = async (next: boolean) => {
     setTarget(next)
     setPhase('applying')
@@ -35,9 +40,6 @@ export function SharedMcpGatewayToggle() {
       const r = await api.mcpGatewayEnable(next)
       const ok = next ? r.ping_ok : !r.running
       if (ok) qc.invalidateQueries({ queryKey: ['mcpGatewayStatus'] })
-      // Land on the live gateway metrics — the McpGatewayCard renders on
-      // Developer > System, not Settings Overview.
-      if (ok && next) { setPhase('idle'); navigate('/developer?tab=system'); return }
       setPhase(ok ? 'done' : 'failed')
     } catch {
       setPhase('failed')

@@ -19,6 +19,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_path
+from kiro_crew.dashboard import terminal_commands
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
@@ -701,9 +702,14 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                 break
     finally:
-        # WS disconnected — mark for orphan reaper, but keep PTY alive
-        sess.ws = None
-        sess.last_ws_disconnect = time.monotonic()
+        # WS disconnected — mark for orphan reaper, but keep PTY alive.
+        # Identity-guarded: a reconnect (e.g. the terminal panel popping out to
+        # its own window) REPLACES sess.ws while this displaced handler is
+        # still draining; unconditionally clearing it here would silence PTY
+        # output to the freshly attached socket.
+        if sess.ws is ws:
+            sess.ws = None
+            sess.last_ws_disconnect = time.monotonic()
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.disconnect",
@@ -1100,7 +1106,14 @@ def _log_complete(caller: str, outcome: str, reason: str) -> None:
     reason word only. This route fires per keystroke, and the token, the prefix,
     the resolved directory and the entry names are all user filesystem contents;
     recording them would turn the audit log into a continuous transcript of what
-    the user types and what their disk contains."""
+    the user types and what their disk contains.
+
+    The command tier obeys the same rule and is why it needs its own words rather
+    than reusing ``listed``: a reason that named the command or the flag being
+    completed would put the user's command line in the audit trail, which is
+    exactly what this coarseness exists to prevent. ``cmd_unknown`` covers both
+    "not allowlisted" and "not on PATH" for the same reason — distinguishing them
+    would disclose which tools are installed."""
     _sel().log_api_access(
         caller=caller,
         operation="terminal.complete",
@@ -1111,23 +1124,37 @@ def _log_complete(caller: str, outcome: str, reason: str) -> None:
 
 
 async def api_terminal_complete(request: web.Request) -> web.Response:
-    """POST /api/terminal/complete — path completions for a terminal session.
+    """POST /api/terminal/complete — completions for the word under a terminal cursor.
 
-    Body: ``{session_id, token, folders_only?}`` where ``token`` is the DEQUOTED
-    literal path the cursor sits in (``"../Kiro"``, ``"src/"``, ``""``) — the
-    client decodes backslash escapes before asking, so an on-screen ``my\\ dir/``
-    arrives here as ``my dir/``.
+    Two mutually exclusive tiers, chosen by the CLIENT because only the client can
+    see the screen row:
 
-    Authority note: this lists a directory on behalf of an authenticated caller
-    who already owns a LIVE PTY in this gateway — i.e. an interactive shell with
-    the gateway user's full filesystem access. Requiring an existing session id
-    is what keeps it from being a general filesystem-enumeration endpoint; it
-    grants nothing the session's own `ls` does not. Paths are therefore resolved
-    without a root restriction, exactly like the shell would — with one carve-out:
-    the governance trust-root and credential dirs (``is_sensitive_path``) are
-    never enumerated, and no individual ENTRY inside an allowed directory is
-    returned if it (or its symlink target) is itself protected, so the panel
-    cannot be used to harvest protected metadata names."""
+    * **path** (no ``argv`` in the body) — the historical behaviour. Body
+      ``{session_id, token, folders_only?}`` where ``token`` is the DEQUOTED
+      literal path the cursor sits in (``"../Kiro"``, ``"src/"``, ``""``); the
+      client decodes backslash escapes before asking, so an on-screen ``my\\ dir/``
+      arrives here as ``my dir/``.
+    * **command** (``argv`` present) — subcommands and flags for an allowlisted
+      CLI, e.g. ``argv: ["gh", "pr"]`` with ``token: "cre"``. See
+      ``dashboard/terminal_commands.py`` for the protocols and the authority
+      argument.
+
+    The tiers do not fall back into one another. The client sends ``argv`` only for
+    a word that cannot be a path (no separator, not ``~``-rooted) under a command
+    that is not a known path command, so the two never both apply — and keeping
+    them disjoint means the path tier's response shape is untouched by this
+    addition.
+
+    Authority note (path tier): this lists a directory on behalf of an
+    authenticated caller who already owns a LIVE PTY in this gateway — i.e. an
+    interactive shell with the gateway user's full filesystem access. Requiring an
+    existing session id is what keeps it from being a general filesystem-
+    enumeration endpoint; it grants nothing the session's own `ls` does not. Paths
+    are therefore resolved without a root restriction, exactly like the shell
+    would — with one carve-out: the governance trust-root and credential dirs
+    (``is_sensitive_path``) are never enumerated, and no individual ENTRY inside an
+    allowed directory is returned if it (or its symlink target) is itself
+    protected, so the panel cannot be used to harvest protected metadata names."""
     caller = request.get("user")
     if not caller:
         _sel().log_api_access(
@@ -1159,7 +1186,8 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
         _log_complete(caller, "denied", "invalid_body")
         return web.json_response(
             {"error": "expected JSON body "
-                      "{session_id: string, token?: string, folders_only?: boolean}"},
+                      "{session_id: string, token?: string, folders_only?: boolean, "
+                      "argv?: string[]}"},
             status=400,
         )
     if len(token) > _COMPLETE_TOKEN_MAX:
@@ -1173,6 +1201,66 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
 
     cwd = await _session_cwd_cached(sess)
     dir_part, prefix = _split_path_token(token)
+
+    # ── Command tier ──
+    # Ordered before the unknown-cwd branch: a subcommand list does not depend on
+    # the working directory (a cobra probe answers without one), so a session whose
+    # cwd cannot be read still gets `gh pr` completions even though it can get no
+    # path ones.
+    raw_argv = body.get("argv")
+    if raw_argv is not None:
+        argv = terminal_commands.parse_argv(raw_argv)
+        if argv is None:
+            _log_complete(caller, "denied", "invalid_argv")
+            return web.json_response(
+                {
+                    "error": "argv must be a non-empty list of plain words whose first "
+                             "entry is a bare command name",
+                    "code": "terminal_invalid_argv",
+                },
+                status=400,
+            )
+        # `completion` is read defensively AND off the event loop: `_get_config`
+        # does a synchronous `read_text()` of config.json, and this route fires per
+        # keystroke, so on a slow home filesystem (NFS, a stalled mount) an inline
+        # read would stall every gateway task. It is also hand-edited, so
+        # `"completion": false` would make a chained `.get` raise on a boolean — an
+        # HTTP 500 from a typo. A non-object value means "no operator additions",
+        # which is also the default.
+        # Read off the event loop (a synchronous `read_text` per keystroke would
+        # stall the gateway on a slow home filesystem) AND type-checked at BOTH
+        # levels: config.json is hand-edited, so `"terminal": false` would make
+        # `.get("completion")` raise on a boolean and `"completion": false` would
+        # make the next `.get` raise — each an HTTP 500 from a typo. A non-object at
+        # either level means "no operator additions", which is also the default.
+
+        def _completion_cfg() -> dict:
+            cfg = _get_config(request)
+            if not isinstance(cfg, dict):
+                return {}
+            inner = cfg.get("completion")
+            return inner if isinstance(inner, dict) else {}
+
+        completion_cfg = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _completion_cfg,
+        )
+        cmd_entries, reason = await terminal_commands.complete(
+            argv, token, cwd, completion_cfg.get("commands"),
+        )
+        _log_complete(caller, "denied" if reason == "sensitive_path" else "ok", reason)
+        # `dir: null` — the same "nothing was resolved on the filesystem" signal
+        # the path tier uses for an unknown cwd, so the client needs no new
+        # top-level field to tell a command answer from a path one; the per-entry
+        # `kind` carries that.
+        return web.json_response(
+            {
+                "dir": None,
+                "prefix": prefix,
+                "entries": [e.to_json() for e in cmd_entries],
+                "truncated": False,
+            }
+        )
+
     if not cwd:
         # cwd is unknowable (Windows, or the probe failed) — no completions
         # rather than an error the frontend would have to special-case. A null

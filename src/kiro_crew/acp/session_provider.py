@@ -307,6 +307,11 @@ class AcpSessionProvider(LLMProvider):
         """Return last known context usage percentage."""
         return self._handle.last_prompt_stats.context_pct
 
+    def context_usage_unknown(self) -> bool:
+        """True when the 0% reading is a post-compaction unknown, not an empty
+        transcript."""
+        return self._handle.last_prompt_stats.context_pct_unknown
+
     def context_window_tokens(self) -> int:
         """Return the context window size in tokens."""
         return self._handle.last_prompt_stats.context_window_tokens

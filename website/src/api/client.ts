@@ -8,6 +8,8 @@ import type {
   PullRequestStatusBatch,
   PublishProviderDescriptor,
   SessionDoc,
+  SessionStorageCleanup,
+  SessionStorageReport,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
@@ -69,6 +71,14 @@ export interface PlanStepInput {
 export interface InstallStreamResult {
   ok?: boolean
   error?: string
+  /**
+   * Machine-readable failure code. The registry install path checks the
+   * execution gate BEFORE cloning, so a third-party install can be refused with
+   * `app_execution_denied` — and because the stream RESOLVES that refusal (SSE
+   * `done`) instead of rejecting, the code has to travel on the result for the
+   * consent modal to open at all.
+   */
+  code?: string
   needsClientInstall?: boolean
   clientInstall?: { shell?: string; postInstall?: string }
 }
@@ -436,6 +446,67 @@ export interface SecurityPostureData {
   controls: PostureControl[]
   /** Flat `key → count` map for callers that only need the pill values. */
   counts: Record<string, number | null>
+}
+
+/**
+ * GET /api/tailnet/status — whether this machine's Tailscale MagicDNS name is in
+ * the dashboard's Origin allow-list.
+ *
+ * `state` is derived SERVER-SIDE and the UI must render off it directly rather
+ * than recomputing it from the other fields: one owner for the state machine
+ * means the two layers cannot disagree about what "active" means. Precedence is
+ * `pinned` > `off` > `unresolved` > `active`.
+ *
+ * `host` / `origin` / `resolved_at` describe the STARTUP resolution — the value
+ * that actually went into `build_allowed_origins` — not a fresh probe. A live
+ * probe could report a name the running origin set does not contain (daemon came
+ * up after the gateway), and rendering that as trusted is the same
+ * checked-but-never-ran defect the posture registry guards against.
+ */
+export interface TailnetStatusData {
+  /** `dashboard.tailscale.enabled` as actually loaded, post-hydration. */
+  enabled: boolean
+  /** `capabilities.tailnet_origin` pinned off at the POLICY layer. */
+  governance_pinned: boolean
+  /** MagicDNS name resolved at startup; `''` when none was. */
+  host: string
+  /** `https://<host>`; `''` when `host` is `''`. */
+  origin: string
+  /** Epoch seconds of that startup resolution; `0` when it never resolved. */
+  resolved_at: number
+  state: 'pinned' | 'off' | 'unresolved' | 'active'
+}
+
+/**
+ * GET /api/security/trusted-apps — per-app grants that let a third-party app
+ * run its own code (Python in-process, its own backend, manifest shell
+ * commands).  Third-party app code is refused by default; a grant is made for
+ * ONE app at a time from the trust-consent modal, so `apps` is the explicit
+ * allow list and `allowAll` is the separate blanket escape hatch.
+ */
+export interface TrustedAppsData {
+  /** Grants the execution gate ACTUALLY enforces (valid app names, sorted). */
+  apps: string[]
+  /**
+   * Entries stored in `config.json` that the gate IGNORES because they fail the
+   * app-name charset — a hand-edited config can hold `LD-App`, `ld-app ` with a
+   * trailing space, a fullwidth homoglyph, `..` or `*`. They must render
+   * separately from `apps`: folded in, the panel claims trust that does not
+   * exist and the user cannot tell why their app is still blocked.
+   */
+  ineffective: string[]
+  /** Blanket grant — trusts every third-party app, present or future. */
+  allowAll: boolean
+}
+
+/**
+ * DELETE /api/security/trusted-apps/{name} — the refreshed snapshot PLUS whether
+ * the revoke also had to DISABLE the app. Revoking trust has to stop the app's
+ * code from running, so the backend disables a currently-enabled app in the same
+ * transaction; the UI must say so, otherwise an app silently stops working.
+ */
+export interface TrustedAppsRevokeResult extends TrustedAppsData {
+  disabled: boolean
 }
 
 let _sessionExpiredShown = false
@@ -839,6 +910,7 @@ export interface KiroPrerequisiteStatus {
    * a translated command cannot be typed.
    */
   login_command: string
+  sso_login_command: string
   setup_allowed: boolean
   /**
    * True when the CLI binary is present and executable but could not be
@@ -1034,6 +1106,15 @@ export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
+  sessionStorage: () => get('/api/system/session-storage').then(j) as Promise<SessionStorageReport>,
+  sessionStorageCleanup: (olderThanDays: number, dryRun = false) =>
+    post('/api/system/session-storage/cleanup', { older_than_days: olderThanDays, dry_run: dryRun })
+      .then(j) as Promise<SessionStorageCleanup>,
+  sessionStorageRestore: (batchId: string, uids?: string[]) =>
+    post('/api/system/session-storage/restore', uids ? { batch_id: batchId, uids } : { batch_id: batchId })
+      .then(j) as Promise<{ restored: number }>,
+  sessionStorageEmpty: (batchIds: string[]) =>
+    post('/api/system/session-storage/empty', { batch_ids: batchIds }).then(j) as Promise<{ freed_bytes: number }>,
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   // Per-turn context injection breakdown for one session. Independent of the
   // telemetry main switch: the usage rows it reads are always written.
@@ -1076,6 +1157,11 @@ export const api = {
   // means "temporarily unresolvable", never "zero".
   securityStats: () => get('/api/security/stats').then(j) as Promise<{ denied_commands: number | null; suspicious_patterns: number | null; tool_schemas: number | null; redaction_paths: number | null }>,
   securityPosture: () => get('/api/security/posture').then(j) as Promise<SecurityPostureData>,
+  // Tailnet origin (Settings → Security). READ ONLY here: the toggle writes
+  // `dashboard.tailscale.enabled` through the generic config PATCH, because the
+  // setting IS a config value and the status endpoint only reports what the
+  // running server resolved from it at startup.
+  tailnetStatus: () => get('/api/tailnet/status').then(j) as Promise<TailnetStatusData>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.
   deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,
@@ -1089,6 +1175,18 @@ export const api = {
     patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
   deleteUserDeniedCommand: (id: string) =>
     del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
+  // Third-party app trust (Settings → Security). Like denied-commands, every
+  // endpoint returns the full refreshed snapshot so callers can seed the query
+  // cache from the mutation response instead of re-fetching.
+  listTrustedApps: () => get('/api/security/trusted-apps').then(j) as Promise<TrustedAppsData>,
+  trustApp: (name: string) =>
+    post('/api/security/trusted-apps/' + encodeURIComponent(name)).then(j) as Promise<TrustedAppsData>,
+  // Returns the snapshot PLUS `disabled` — revoking trust also disables an app
+  // that is currently enabled, so its code stops running immediately.
+  untrustApp: (name: string) =>
+    del('/api/security/trusted-apps/' + encodeURIComponent(name)).then(j) as Promise<TrustedAppsRevokeResult>,
+  setTrustAllApps: (value: boolean) =>
+    put('/api/security/trusted-apps/allow-all', { value }).then(j) as Promise<TrustedAppsData>,
   // Read-only governance policy viewer (Settings → Security). No write path —
   // the enterprise ceiling is file-authored and un-editable via the UI.
   governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,
@@ -1159,8 +1257,10 @@ export const api = {
     sessions: {
       key: string; title: string; slot_key: string; untitled: boolean
       agent: string; pid: number | null; owns_runtime: boolean; prompts: number
+      channel: string
       rss_mb: number | null; procs: number | null; mcp: number | null
       cpu_cores: number | null; uptime_s: number | null
+      credits: number | null; turns: number | null
     }[]
     tasks: {
       id: string; task: string; agent: string; parent: string
@@ -1171,6 +1271,9 @@ export const api = {
       rss_mb: number; runtimes: number; host_mb: number | null
       host_pct: number | null; rss_is_upper_bound: boolean
     }
+    unattributed: {
+      procs: number; rss_mb: number | null; oldest_uptime_s: number | null
+    } | null
     history: { t: number; mb: number }[]
   }>,
   sessionsUsage: () => fetch('/api/sessions/usage').then(j),
@@ -1258,6 +1361,13 @@ export const api = {
     return fetch('/api/crons/history' + (p.toString() ? '?' + p : ''), { headers: { ..._sk } }).then(j)
   },
 
+  // Cron Folders
+  cronFolders: () => fetch('/api/cron-folders').then(j),
+  createCronFolder: (name: string) => post('/api/cron-folders', { name }).then(j),
+  updateCronFolder: (id: string, body: { name?: string }) =>
+    fetch('/api/cron-folders/' + id, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
+  deleteCronFolder: (id: string) => del('/api/cron-folders/' + id).then(j),
+
   // Lessons
   lessons: () => fetch('/api/lessons').then(j),
   createLesson: (rule: string, category: string) => post('/api/lessons', { rule, category }).then(j),
@@ -1318,6 +1428,8 @@ export const api = {
    *  `inject: false` reduces the skill to a one-line pointer on a match. */
   setSkillInjectOnTrigger: (name: string, inject: boolean) =>
     post('/api/skills/-/inject-on-trigger', { name, inject }).then(j),
+  /** Context budget: cost data for the skill control plane. */
+  skillsBudget: () => get('/api/skills/-/budget').then(j) as Promise<import('../types').SkillBudgetResponse>,
   /** Multi-provider skill discovery (skills.sh, etc.) */
   discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
     get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../types').DiscoverSkillsResponse>,
@@ -1374,7 +1486,7 @@ export const api = {
   defaultAgent: () => fetch('/api/config/default-agent').then(j),
   setDefaultAgent: (agent: string) => put('/api/config/default-agent', { agent }).then(j),
   kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
-  saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j),
+  saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
   patchConfig: (path: string, value: unknown) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value }) }).then(j),
   // Optional integrations — backend endpoints are graceful no-ops on a public
   // install (AIM / kiro usage are stubbed). Kept so the UI compiles and
@@ -1418,8 +1530,16 @@ export const api = {
   pullRequestChecks: (url: string) => post('/api/source/pull-request/checks', { url }).then(j) as Promise<{ checks: PullRequestCheck[] }>,
   pullRequestStatuses: (urls: string[]) => post('/api/source/pull-request/status', { urls }).then(j) as Promise<PullRequestStatusBatch>,
   resolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/resolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
+  unresolvePullRequestThread: (url: string, threadId: string) => post('/api/source/pull-request/unresolve', { url, threadId }).then(j) as Promise<{ resolved: boolean }>,
+  /** Reply into an existing review thread. Owner-only on the gateway. */
+  replyToPullRequestThread: (url: string, threadId: string, body: string) => post('/api/source/pull-request/reply', { url, threadId, body }).then(j) as Promise<{ posted: boolean }>,
+  /** Top-level comment on the pull request conversation. */
+  commentOnPullRequest: (url: string, body: string) => post('/api/source/pull-request/comment', { url, body }).then(j) as Promise<{ posted: boolean }>,
   enablePullRequestAutoMerge: (url: string, confirmImmediateMerge = false) => post('/api/source/pull-request/auto-merge', { url, confirmImmediateMerge }).then(j) as Promise<{ autoMerge: boolean; mergeMethod: string }>,
   markPullRequestReady: (url: string) => post('/api/source/pull-request/ready', { url }).then(j) as Promise<{ ready: boolean }>,
+  pullRequestPendingReview: (url: string) => post('/api/source/pull-request/pending-review', { url }).then(j) as Promise<{ reviewId: string; body: string; comments?: { path: string; line: number | null; body: string }[]; commitId: string; headSha: string; stale: boolean; contentRedacted: boolean; autoMergeArmed: boolean; contentDigest: string; staleDismissalEnabled: boolean }>,
+  submitPullRequestReview: (url: string, reviewId: string, event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT', contentDigest: string) =>
+    post('/api/source/pull-request/submit-review', { url, reviewId, event, contentDigest }).then(j) as Promise<{ submitted: boolean; event: string }>,
   // Issue sources. `refresh` bypasses the server's cached payload; the panel
   // never polls, so a refresh is always an explicit user action.
   fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
@@ -1497,15 +1617,19 @@ export const api = {
   updateTagColumn: (id: string, body: { name?: string; tag_ids?: string[]; mode?: 'any' | 'all' | 'none'; order?: number; include_untagged?: boolean }) => patch('/api/chat/tag-columns/' + encodeURIComponent(id), body).then(j),
   deleteTagColumn: (id: string) => del('/api/chat/tag-columns/' + encodeURIComponent(id)).then(j),
   reorderTagColumns: (ids: string[]) => fetch('/api/chat/tag-columns/order', { method: 'PUT', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ ids }) }).then(j),
-  sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, browse?: boolean) => {
+  sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>) => {
     // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
     // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
     // content-binding, injecting the persona only when this token equals sha256
     // of the persona.md it reads. Omitted for a built-in theme, no grant, or a
     // legacy '1'/'' token (must re-prompt). The legacy `theme_consent` boolean
     // is intentionally NOT sent: gating is content-bound server-side.
+    //
+    // Browse mode is no longer sent per message: it is default-on server-side
+    // whenever Browser Mode is enabled in Settings (a durable capability),
+    // gated there rather than per turn.
     const themeConsent = themeConsentSha(colorTheme)
-    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(browse ? { browse: true } : {}) }), signal })
+    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}) }), signal })
   },
   // Mid-turn steer: inject into the RUNNING turn instead of queueing. Fire-and-forget
   // JSON response ({ok, steered}); the backend falls back to queue if steer is
@@ -1567,7 +1691,12 @@ export const api = {
   renameTaskRun: (taskId: string, name: string) => fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/name', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).then(j),
   updateTask: (taskId: string, index: number, updates: { title?: string; description?: string; depends_on?: number[]; requires_approval?: boolean; force_approval?: boolean }) => fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/tasks/' + index, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }).then(j),
   taskRunToChat: (taskId: string) => post('/api/taskrunner/' + encodeURIComponent(taskId) + '/to-chat').then(j),
-  revealPath: (path: string) => post('/api/reveal', { path }).then(j).then((r: { copy?: string }) => {
+  // `action` mirrors the backend's own two modes: 'reveal' selects the path in
+  // the OS file manager (the default every existing caller relies on), 'open'
+  // hands a regular file to its default application. Headless hosts have
+  // neither, so the backend answers with `copy` and the path goes to the
+  // clipboard instead of the call silently doing nothing.
+  revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') => post('/api/reveal', { path, action }).then(j).then((r: { copy?: string }) => {
     if (r.copy) copyToClipboard(r.copy)
     return r
   }),
@@ -1965,8 +2094,8 @@ export const api = {
   editArtifactComment: (slug: string, commentId: string, body: { text: string }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/comments/${encodeURIComponent(commentId)}`, body).then(j),
   browserAuthRetry: () => post('/api/browser-auth-retry', {}).then(j),
-  getBrowserConfig: () => get('/api/browser/config').then(j) as Promise<{extension_mode: boolean; token: boolean}>,
-  saveBrowserConfig: (body: {extension_mode: boolean; token: string}) => put('/api/browser/config', body).then(j),
+  getBrowserConfig: () => get('/api/browser/config').then(j) as Promise<{enabled: boolean; engine: string; engines: string[]; extension_mode: boolean; token: boolean; installed: boolean}>,
+  saveBrowserConfig: (body: {enabled: boolean; engine: string; extension_mode: boolean; token: string}) => put('/api/browser/config', body).then(j) as Promise<{ok: boolean; mcp_status?: string; enabled?: boolean; engine?: string; install?: {ok: boolean; step: string; detail: string; engine: string}}>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,

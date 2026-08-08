@@ -2005,8 +2005,15 @@ class TestUserAgentEditsSurviveRefresh:
         # Keys a user is MEANT to be able to pin by hand. `welcomeMessage` is
         # user-facing copy with no containment role, so a reworded greeting must
         # survive a template refresh — the same reasoning as `description`.
+        #
+        # `skills` belongs here too, not in `_FRAMEWORK_OWNED_AGENT_KEYS`: it is a live field
+        # (`agent_discovery.py` reads `row.get("skills")` into `AgentInfo.skills`) naming which
+        # skills an agent loads, which is exactly the kind of choice an operator should be able
+        # to change and keep across a refresh — same category as `model`. Framework ownership is
+        # reserved for identity and CONTAINMENT keys, which this is not. Added when the
+        # auto-improvement builtin became the first template to declare it.
         preferences = {
-            "description", "model", "toolsSettings", "$schema", "welcomeMessage",
+            "description", "model", "toolsSettings", "$schema", "welcomeMessage", "skills",
         }
         root = Path("src/kiro_crew/apps/builtins")
         templates = sorted(root.glob("*/agents/*.json"))

@@ -650,8 +650,14 @@ read-your-writes should add it deliberately, with its own tests.
   is authoritative; KiroCrew does not regenerate `~/.kiro/agents/*.json`.
 - **Plane C — out-of-band executors**: the cron `command` (runs via `sh -c`
   outside the ACP flow) is gated in `mcp_cron._vet_command_governance`; the
-  cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`
-  (at `cron_add`); the sandbox ordinal floor is clamped in `sandbox.wrap_argv`;
+  cron *capability* on/off gate in `mcp_cron._vet_cron_capability_governance`.
+  Both run at `cron_add` (authoring) AND again at fire time, in
+  `slack.gateway._cron_callback`, immediately before the sandboxed subprocess
+  is spawned — a policy tightened after a job was scheduled denies that job's
+  next run instead of only affecting jobs authored after the change. Denial at
+  fire time marks the run `last_status="error"` and does not delete or pause
+  the job, so a later policy loosening lets it resume on its own; the sandbox
+  ordinal floor is clamped in `sandbox.wrap_argv`;
   spawn in `subagent._vet_spawn_governance`; outbound messaging in
   `mcp_core._vet_messaging_governance` plus the per-transport `channels` check
   in `mcp_core._vet_channel_governance`; dashboard cross-surface mirror creation
@@ -935,6 +941,22 @@ denials leave the same forensic trail.
   relevant `commands` patterns. This is the same plane split the rest of the
   model uses (a shell command is a `commands` item, never re-parsed into its
   sub-effects).
+  [`docs/guides/assets/security-policy.example.json`](../../guides/assets/security-policy.example.json)
+  shows both scopes set together, but read it as **egress defense-in-depth,
+  not a bounded egress guarantee**: a `commands` deny list is a finite set of
+  known patterns, not an allow-shaped ceiling, so it cannot enumerate every
+  network-capable tool (`python`, `ssh`, `git`, `pip`, `openssl s_client`, a
+  `curl` invocation with no `://` in it, or a piped/absolute-path
+  invocation of any of the above), and it says nothing about the web terminal
+  PTY, which is an ungoverned plane by design (see below). A deployment that
+  needs an actual bound on where the host can reach should treat the example
+  as a starting point for defense-in-depth, not as sufficient on its own.
+  Separately: once a `commands` deny pattern is adopted into policy, it
+  becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
+  pins, union not override) — a user cannot locally opt out of a pinned rule
+  the way they can an unpinned one, so an operator copying the example should
+  expect its deny rows to be effectively permanent for anyone bound by that
+  policy, not something end users can narrow per-rule.
 - **Per-app profile binding via MCP chokepoints is best-effort.** The managed
   `kirocrew-core` MCP server is spawned by kiro-cli, not by an app backend, so
   `KIROCREW_APP_NAME` is absent there — `learn_add`/`send_message` resolve the
@@ -1246,6 +1268,74 @@ The Security panel picks the row up automatically — `api_governance_policy` it
 `SCOPE_CATALOG` — and labels it **"Anonymous telemetry"** rather than the leaf's
 bare "Telemetry", because this scope governs only the outbound heartbeat and NOT the
 unrelated local-only `telemetry.enabled` OTEL collection.
+
+### Tailnet origin derivation — `capabilities.tailnet_origin`
+
+`dashboard.tailscale.enabled` lets the gateway ask the local Tailscale daemon for
+this machine's MagicDNS name at startup and add `https://<name>` to the CSRF origin
+allowlist and the DNS-rebinding `Host` barrier, so `tailscale serve` reaches the
+dashboard without a hand-written `dashboard.url` (`dashboard/tailnet.py`; RFC
+`request-for-change/rfc-tailnet-dashboard-access.md`). Governed by the
+`capabilities.tailnet_origin` `SCOPE_CATALOG` capability row
+(`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the telemetry and theme rows above).
+
+**Why a governance row.** The config switch is an *operator* control that the agent
+can reach through the generic config setter. What a managed fleet objects to is not
+a preference but two effects it may forbid outright: **running the tailnet CLI on a
+managed host**, and **widening the set of origins the gateway accepts
+authenticated, state-changing requests from**. Read from the trust-root
+`security_policy.json` (inside `security._SENSITIVE_HOME_DIRS`, so the agent can
+neither read nor rewrite its own ceiling), the row is a control the running app
+cannot undo.
+
+Consulted at **three** chokepoints — the derivation itself plus every write path to
+`dashboard.tailscale.enabled`; any one alone would be a half-control:
+
+| Chokepoint | Pinned-off behavior |
+|---|---|
+| `tailnet.resolve_tailnet_host()` | Contributes no origin **and does not spawn the CLI**, so the pin closes both halves an administrator objects to. Checked ahead of the daemon call |
+| `PATCH /api/config/kirocrew` (`handlers/core.py`) | **403** on `dashboard.tailscale.enabled=true` |
+| `kirocrew config set [--local] …` (`cli_config.py`) | Exits **1** without writing. The generic setter reaches the same key, and `--local` writes the overlay that takes PRECEDENCE over the base file |
+
+Writing `false` is **always** permitted, for the reason the telemetry row gives:
+the ceiling is a floor, so a narrower local choice composes with it and refusing it
+would strand a user who wants to record a stricter preference already in effect.
+
+The write refusals exist so a pinned host cannot sit storing `enabled: true` behind
+a switch that does nothing — the derivation is already suppressed, so without them
+the config file and the Security panel card would both claim "on" while no origin is
+trusted and `tailscale serve` still fails the Origin check.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.telemetry` /
+`theme_install` / `publish`. The two dispositions are not symmetric: a wrong-DENY
+costs a convenience and leaves the explicit-`dashboard.url` path exactly as it is
+today, while a wrong-PERMIT **widens a security boundary on a fleet that forbade
+it**. `fail_closed` also promotes the degrade to a critical SEL event, so an
+unevaluable ceiling is visible rather than silently permissive.
+
+**Audited at the enforcement call, not on the probe** — the same disposition
+telemetry documents, for the same reason. `resolve_tailnet_host` and both write
+chokepoints pass an `audit_tool`, so a suppressed derivation and a refused write
+each leave a `governance_decision` SEL record. `GET /api/tailnet/status`, which the
+Security panel's card refetches, passes none: auditing an *inspection* would append
+HMAC-chained rows for a question rather than a decision.
+
+**POLICY LAYER ONLY**, and the probe reads **three** outcomes rather than two, both
+exactly as the telemetry row above spells out: a policy-layer deny is a pin, a
+degrade (`reason` prefixed `GOVERNANCE_ERROR_REASON`) is a pin, and a profile-layer
+deny is **not** — because `resolve_active_scope` returns a synthetic deny-all
+profile during an unprimed-store race, and reading that as a pin would make the
+startup warning, the 403 and the CLI refusal all blame an administrator who does not
+exist. The probe also runs once at gateway startup carrying no session, so a
+per-surface Level-2 ceiling is not the question it asks.
+
+The Security panel picks the row up automatically (`api_governance_policy` iterates
+`SCOPE_CATALOG`), and the tailnet card additionally renders `governance_pinned` as a
+distinct `pinned` state — the card must separate "off because the operator left the
+switch off" (flippable) from "off because an administrator pinned it" (a config
+write returns 403), since offering a working-looking toggle for the second is the
+half-control this row exists to avoid.
 
 ### Computer use is NOT governed (deliberately)
 

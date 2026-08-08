@@ -577,9 +577,10 @@ export const deleteHistoryInPanel = fwd('deleteHistoryInPanel')
  *
  * A REQUEST, not a fire-and-forget forward: whether a combination is available is
  * only knowable at register() time, so the Settings UI has to get an answer to
- * tell the user their key is taken. Absent shell (a plain browser tab) resolves
- * to `{}` — the save still stands and the reconcile loop binds it inside the
- * desktop app.
+ * tell the user their key is taken. Absent shell resolves to `{}` — and there the
+ * accelerators are not editable at all, because this store is their only copy and
+ * `flattenConfig` does not post them to the gateway. The Settings pane gates the
+ * editor on `hasShell` for exactly that reason.
  */
 export async function applyShortcuts(
   accelerators: Record<string, string>,
@@ -594,6 +595,97 @@ export async function applyShortcuts(
     >
   } catch {
     return {}
+  }
+}
+
+/**
+ * The per-MACHINE prefs (`petInstance`, `shortcuts`) from the SHELL's own store.
+ *
+ * NOT over HTTP, and that is the point. Every Mochi window is loaded FROM the
+ * gateway it shows, and this app's HTTP calls are same-origin — so a pet showing a
+ * REMOTE read and wrote that remote's copy of a choice that belongs to this
+ * computer, while the shell kept reading this machine's. That is what made the
+ * instance switch a one-way door: the write landed where nothing reads it, the UI
+ * read its own write back and looked successful, and no surface was left that
+ * could move the pet home.
+ *
+ * `null` when there is no shell (a plain browser tab), which tells the caller to
+ * fall back to the gateway's copy rather than to invent defaults.
+ */
+export async function machinePrefs(): Promise<{
+  petInstance: string
+  shortcuts: Record<string, string> | null
+} | null> {
+  const shell = (window as unknown as { mochi?: Record<string, unknown> }).mochi
+  const fn = shell?.machinePrefs
+  if (typeof fn !== 'function') return null
+  try {
+    const out = await (fn as () => Promise<unknown>)()
+    return (out ?? null) as { petInstance: string; shortcuts: Record<string, string> | null } | null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Point the pet at an instance AND move it, in one shell call.
+ *
+ * One call, not "POST the setting then ask the shell to apply it": those were two
+ * steps that could hit two different gateways, which is how a stored choice ended
+ * up with nothing acting on it.
+ */
+export async function setPetInstance(instanceId: string): Promise<boolean> {
+  const shell = (window as unknown as { mochi?: Record<string, unknown> }).mochi
+  const fn = shell?.setPetInstance
+  if (typeof fn !== 'function') return false
+  try {
+    const out = (await (fn as (id: string) => Promise<unknown>)(instanceId)) as
+      | { ok?: boolean }
+      | undefined
+    return out?.ok === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Core's instance list for THIS MACHINE's host gateway, as a full `InstancesView`.
+ *
+ * Carries the SAME four states the same-origin path produces. An earlier version
+ * returned only `{known, instances}` and the caller rebuilt the view from it,
+ * which silently erased `disabled` (multi-instance off) and `inactive` (needs
+ * restart) — so every desktop user with the feature off saw just "This computer"
+ * and none of the guidance that tells them what to do about it.
+ *
+ * `null` when there is no shell, so the caller can fall back to the same-origin
+ * `/api/instances`. That fallback is correct in a browser tab (the tab IS the
+ * host) and wrong only inside a pet already showing a remote — which is exactly
+ * the case the shell path covers.
+ */
+export async function instancesList(): Promise<InstancesView | null> {
+  const shell = (window as unknown as { mochi?: Record<string, unknown> }).mochi
+  const fn = shell?.instancesList
+  if (typeof fn !== 'function') return null
+  try {
+    const out = (await (fn as () => Promise<unknown>)()) as
+      | { known?: boolean; state?: string; instances?: unknown[] }
+      | undefined
+    if (!out) return null
+    const instances = (out.instances ?? []) as CoreInstance[]
+    switch (out.state) {
+      case 'disabled':
+        return { state: 'disabled' }
+      case 'inactive':
+        return { state: 'inactive', instances }
+      case 'ready':
+        return { state: 'ready', instances }
+      default:
+        // Anything unrecognised is a non-answer, not an empty list — same
+        // discipline as the same-origin path's catch.
+        return { state: 'error' }
+    }
+  } catch {
+    return null
   }
 }
 
@@ -622,6 +714,7 @@ export {
 // Aliased on import: the pet's exported onColorMapChanged reshapes this raw
 // settings payload into the {packId, colorMap} the renderer expects.
 import { onColorMapChanged as onColorMapSettings } from '../panel/panelBridge'
+import type { CoreInstance, InstancesView } from '../panel/panelBridge'
 import type { PackManifest } from '../src/shared/appearanceTypes'
 import {
   BUILTIN_MOCHI_ID,

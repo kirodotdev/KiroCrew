@@ -125,6 +125,84 @@ class TestTriggerCronJob:
         assert "Invalid job ID format" in msg
 
 
+# ── Proxy-Leak Regression ──
+
+
+class _MockProxyHandler(BaseHTTPRequestHandler):
+    """Stand-in proxy that records anything urllib routes to it."""
+
+    hits: list[dict] = []
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        _MockProxyHandler.hits.append(
+            {"requestline": self.requestline, "secret": self.headers.get("X-Internal-Secret")}
+        )
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format, *args):
+        pass
+
+
+_PROXY_ENV_KEYS = (
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    # getproxies_environment ignores uppercase HTTP_PROXY when REQUEST_METHOD is
+    # set (the httpoxy CGI guard). Clear it so the spelling set below takes
+    # effect regardless of how the developer's shell is configured.
+    "REQUEST_METHOD",
+)
+
+
+@pytest.fixture()
+def mock_proxy():
+    """Start a second real listener standing in for an env-configured proxy."""
+    _MockProxyHandler.hits = []
+    server = HTTPServer(("127.0.0.1", 0), _MockProxyHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server.server_address[1], _MockProxyHandler.hits
+    server.shutdown()
+
+
+class TestSecretNeverReachesAProxy:
+    """The trigger secret must reach the gateway and never a configured proxy.
+
+    urllib has no implicit loopback exemption, so with ``http_proxy`` set this
+    POST is otherwise sent to the proxy in absolute form with the secret header
+    attached. Both listeners bind port 0, so the kernel hands out free ports and
+    no ``xdist_group`` marker is needed.
+    """
+
+    def test_proxy_listener_never_sees_the_secret(self, mock_dashboard, mock_proxy, monkeypatch):
+        port, cfg_dir = mock_dashboard
+        proxy_port, proxy_hits = mock_proxy
+        for key in _PROXY_ENV_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
+        _MockDashboardHandler.last_request_headers = {}
+
+        ok, msg = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+
+        assert ok is True, msg
+        assert proxy_hits == [], f"secret reached the proxy: {proxy_hits}"
+        assert (
+            _MockDashboardHandler.last_request_headers.get("X-Internal-Secret")
+            == _MockDashboardHandler.secret
+        )
+
+
 # ── MCP Tool Tests ──
 
 

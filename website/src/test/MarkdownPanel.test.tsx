@@ -10,6 +10,7 @@ vi.mock('../api/client', () => ({
     artifacts: vi.fn(),
     artifact: vi.fn(),
     createArtifact: vi.fn(),
+    revealPath: vi.fn(),
   },
 }))
 
@@ -29,10 +30,13 @@ beforeEach(() => {
   // Default: no existing artifact for any path. Tests can override.
   vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
   vi.mocked(api).createArtifact = vi.fn().mockResolvedValue({ slug: 'test-doc-md', version: 1 })
+  // Desktop present by default: the backend acted, nothing to copy back.
+  vi.mocked(api).revealPath = vi.fn().mockResolvedValue({ ok: true })
+  vi.spyOn(window, 'alert').mockImplementation(() => {})
 })
 
 function openMenu() {
-  render(<OverflowMenu filePath="/tmp/hello.txt" content={'line one\nline two\n'} revealOrCopy={vi.fn()} />, { wrapper })
+  render(<OverflowMenu filePath="/tmp/hello.txt" content={'line one\nline two\n'} />, { wrapper })
   fireEvent.click(screen.getAllByRole('button')[0])
 }
 
@@ -63,10 +67,55 @@ describe('MarkdownPanel OverflowMenu', () => {
   })
 
   it('Copy content copies an empty string for an empty file without throwing', () => {
-    render(<OverflowMenu filePath="/tmp/empty.txt" content="" revealOrCopy={vi.fn()} />, { wrapper })
+    render(<OverflowMenu filePath="/tmp/empty.txt" content="" />, { wrapper })
     fireEvent.click(screen.getAllByRole('button')[0])
     fireEvent.click(screen.getByText('Copy content'))
     expect(writeText).toHaveBeenCalledExactlyOnceWith('')
+  })
+
+  // The two desktop hand-off entries were dropped by the side-panel/artifacts
+  // reconciliation (79a448b6, PR #1083) while the backend endpoint stayed
+  // live, so the panel had no way to leave the browser. These lock the pair
+  // back in — including the ACTION each one sends, which is the only thing
+  // distinguishing them at the API.
+  it('exposes both desktop hand-off entries', () => {
+    openMenu()
+    expect(screen.getByText('Open with default app')).toBeInTheDocument()
+    expect(screen.getByText('Show in file manager')).toBeInTheDocument()
+  })
+
+  it('Open with default app asks the backend for the open action', () => {
+    openMenu()
+    fireEvent.click(screen.getByText('Open with default app'))
+    expect(api.revealPath).toHaveBeenCalledExactlyOnceWith('/tmp/hello.txt', 'open')
+  })
+
+  it('Show in file manager asks the backend for the reveal action', () => {
+    openMenu()
+    fireEvent.click(screen.getByText('Show in file manager'))
+    expect(api.revealPath).toHaveBeenCalledExactlyOnceWith('/tmp/hello.txt', 'reveal')
+  })
+
+  it('closes the overflow menu after a desktop hand-off is clicked', () => {
+    openMenu()
+    fireEvent.click(screen.getByText('Show in file manager'))
+    expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
+  })
+
+  it('tells the user the path was copied when the host has no desktop', async () => {
+    vi.mocked(api).revealPath = vi.fn().mockResolvedValue({ ok: true, copy: '/tmp/hello.txt' })
+    openMenu()
+    fireEvent.click(screen.getByText('Show in file manager'))
+    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(
+      'Path copied to clipboard (no desktop available)',
+    ))
+  })
+
+  it('surfaces the server message when the reveal is refused', async () => {
+    vi.mocked(api).revealPath = vi.fn().mockRejectedValue(new Error('access denied'))
+    openMenu()
+    fireEvent.click(screen.getByText('Open with default app'))
+    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('access denied'))
   })
 })
 

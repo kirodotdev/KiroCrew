@@ -5,8 +5,7 @@
   "description": "A desktop companion for Kiro Crew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",
   "author": "kirocrew",
   "license": "MIT",
-  "repo": "crew-companion",
-  "openCommand": "open \"$HOME/Applications/Crew Companion.app\"",
+  "defaultEnabled": false,
   "highlights": [
     "Gentle break nudges — water, stretch, look away — on an interval you choose",
     "Reminders you set in plain language, like “drink water in 20 minutes”",
@@ -14,17 +13,15 @@
     "Tells you when a session finishes, fails, or needs your OK",
     "Floats on your desktop with a swappable avatar"
   ],
-  "defaultEnabled": false,
-  "hidden": true,
-  "mcpServers": {
-    "crew-companion": {
-      "url": "http://127.0.0.1:7778/mcp",
-      "autoApprove": [
-        "notify_user",
-        "move_ghost",
-        "get_daily_briefing"
-      ]
-    }
+  "backend": {
+    "hooks": {
+      "on_startup": "hooks:on_startup",
+      "on_shutdown": "hooks:on_shutdown"
+    },
+    "routes": "backend.routes:register_routes"
+  },
+  "platform": {
+    "requiresDesktopApp": true
   },
   "ui": {
     "pages": [
@@ -35,45 +32,24 @@
       }
     ]
   },
-  "setup": {
-    "onEnable": "open \"$HOME/Applications/Crew Companion.app\""
-  },
-  "platform": {
-    "os": [
-      "macos"
-    ],
-    "installMode": "client",
-    "clientInstall": {
-      "postInstall": "open \"$HOME/Applications/Crew Companion.app\""
-    }
-  },
   "permissions": {
     "api": [
-      "/apps/crew-companion/api",
-      "/api/notifications",
-      "/api/status",
-      "/api/apps/crew-companion/open",
-      "/api/apps/crew-companion/update",
-      "/api/apps/crew-companion/disable",
-      "/api/apps/crew-companion/uninstall"
-    ],
-    "events": [
-      "notification"
-    ],
-    "mcpTools": [
-      "notify_user",
-      "move_ghost",
-      "get_daily_briefing"
+      "/api/apps/crew-companion",
+      "/api/apps/crew-companion/*"
     ],
     "storage": true,
     "cron": false,
-    "network": false
+    "network": true,
+    "events": [
+      "crew-companion:fire"
+    ]
   },
   "tags": [
-    "desktop-companion",
     "companion",
-    "notifications",
-    "macos"
+    "desktop-companion",
+    "reminders",
+    "breaks",
+    "wellbeing"
   ],
   "iconUrl": "/app-assets/crew-companion/icon.svg",
   "heroImage": "/app-assets/crew-companion/hero-light.svg",

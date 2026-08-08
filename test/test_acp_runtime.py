@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from spawn_test_helpers import strip_spawn_shim
 
+from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.runtime import (
     _TERMINATE_TIMEOUT,
     AcpRuntime,
@@ -466,6 +467,169 @@ async def test_non_object_json_line_does_not_crash_reader():
         assert not rt._dead  # reader never marked the runtime dead
     finally:
         await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_oversize_stdout_frame_is_dropped_not_fatal():
+    """A single JSON-RPC line over the stdout buffer must cost ONE frame, not
+    the whole runtime.
+
+    Regression: the reader used to _mark_dead on overrun, which poisons every
+    multiplexed session's queue and fails every pending future — users saw
+    "process exited / chat failure" mid-turn after one huge tool result.
+
+    Driven through a REAL StreamReader so this asserts asyncio's actual
+    behaviour, not a mock's.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        reader.feed_data(b"X" * 1024 + b"\n")  # oversize, newline present
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_unterminated_oversize_stdout_recovers_at_next_frame():
+    """The shape actually observed in the field: an oversize line whose newline
+    has NOT arrived yet, so the reader drains prefix after prefix before the
+    stream is back in sync. It must ride through every step and route the next
+    real frame.
+
+    Asserts the outcome (recovery), not the step count: how many buffer-fulls
+    the reader sees depends on how the feeds interleave with its task.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        for _ in range(4):
+            reader.feed_data(b"Y" * 512)  # no newline anywhere
+            await asyncio.sleep(0)
+        reader.feed_data(b"TAIL-OF-OVERSIZE-LINE\n")  # line finally terminates
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_oversize_frame_split_mid_multibyte_does_not_kill_demux():
+    """The drained remainder must never reach json.loads.
+
+    Regression for a defect in the second cut of this fix: the drain consumed only
+    the buffered prefix and let the recovered tail through as a line. That tail is
+    a byte-slice cut at an arbitrary offset, so an oversize frame carrying
+    multibyte UTF-8 (CJK, emoji — ordinary in tool output) splits a character;
+    `json.loads` then raises UnicodeDecodeError, which is NOT a
+    json.JSONDecodeError, so it escaped the non-JSON guard into the loop's crash
+    handler and killed EVERY multiplexed session.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        # Two conditions make the tail reach the parser, and both are ordinary:
+        #  - the discard boundary must fall mid-character, which the UNTERMINATED
+        #    branch does by construction (it reports `consumed = len(buffer)`, an
+        #    arbitrary byte offset; a newline-terminated overrun instead reports
+        #    the newline's offset, already a character boundary), and
+        #  - the remainder after the last discard must be UNDER the reader limit,
+        #    so readuntil returns it as a normal-looking line instead of
+        #    overrunning again.
+        # Dense CJK, fed in 500-byte slices that are not multiples of 3.
+        blob = ("苹" * 400).encode() + b"\n"  # 1201 bytes
+        assert len(blob) % 3 != 0
+        for off in range(0, 1000, 500):
+            reader.feed_data(blob[off : off + 500])
+            await asyncio.sleep(0)
+        reader.feed_data(blob[1000:])  # 201 bytes < limit → returned as a line
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_many_terminated_oversize_frames_never_exhaust_the_budget():
+    """A run of oversize-but-properly-terminated frames must stay survivable.
+
+    Regression for a defect in the first cut of this fix: the guard counted
+    oversize *frames* rather than bytes-without-a-boundary, so a replay of N
+    newline-terminated >limit frames walked straight into runtime death even
+    though every one of them recovered a frame boundary. The budget is now scoped
+    to a single drain call, each of which provably ends on a boundary.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    rounds = 40
+    try:
+        for i in range(rounds):
+            reader.feed_data(b"X" * 4096 + b"\n")
+            _feed(reader, {"method": "session/update", "params": {"sessionId": "sA", "n": i}})
+        for i in range(rounds):
+            msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+            assert msg.params["n"] == i
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_unterminated_blob_past_the_byte_budget_marks_runtime_dead():
+    """The escape hatch: a stream that never yields a frame boundary would have
+    the reader draining forever, so exceeding the byte budget must still reach the
+    terminal state.
+
+    The liveness oracle cannot cover this case — it reads CPU/IO movement, and a
+    garbage-spewing stream moves both, so it would be judged WORKING.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        fed = 0
+        while fed <= _OVERSIZE_DRAIN_MAX_BYTES and not rt._dead:
+            reader.feed_data(b"Z" * 65536)  # never a newline
+            fed += 65536
+            await asyncio.sleep(0)
+        await asyncio.wait_for(task, timeout=5.0)
+    except Exception:
+        pass
+    finally:
+        await _stop_reader(task)
+    assert rt._dead
+
+
+def test_runtime_reuses_clients_oversize_drain_helper():
+    """The consume-prefix-and-retry drain must have ONE definition. A second copy
+    is how two read paths drift apart (they already disagreed once, when only one
+    of them killed the process)."""
+    import kiro_crew.acp.client as client_mod
+    import kiro_crew.acp.runtime as runtime_mod
+
+    assert runtime_mod._drain_oversize_line is client_mod._drain_oversize_line
+    assert runtime_mod.OversizeLineUnrecoverable is client_mod.OversizeLineUnrecoverable
 
 
 def test_runtime_uses_clients_augmented_kiro_bin_resolver():

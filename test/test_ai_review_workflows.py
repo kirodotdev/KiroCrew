@@ -222,7 +222,8 @@ class TestPrReadiness:
         workflow = _workflow("pr-readiness.yml")
 
         assert (
-            "--json number,state,isDraft,isCrossRepository,headRefName,"
+            "--json number,state,isDraft,isCrossRepository,baseRefName,"
+            "headRefName,"
             "headRefOid,headRepository,headRepositoryOwner,url)"
         ) in workflow
         assert "mergeStateStatus" not in workflow
@@ -333,7 +334,7 @@ class TestPreparePrPreSubmitReview:
         findings = PREPARE_PR_FINDINGS.read_text(encoding="utf-8")
 
         assert "fix all legitimate Critical/High" in skill
-        assert "advisory unless Arbiter escalates them" in skill
+        assert "advisory unless a human escalates them" in skill
         assert "one focused verifier" in skill
         assert "fix every legitimate Critical/High finding + failing check" in findings
         assert "fix every legitimate High/Medium" not in findings

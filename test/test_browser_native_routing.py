@@ -58,7 +58,7 @@ def _call(op_name="browser_navigate", args=None, req_id=7):
 
 
 class _Resp:
-    """Minimal context-manager stand-in for ``urllib.request.urlopen``."""
+    """Minimal context-manager stand-in for ``loopback_urlopen``."""
 
     def __init__(self, payload: bytes):
         self._payload = payload
@@ -119,7 +119,7 @@ def test_every_mapped_op_routes_native() -> None:
             seen["body"] = json.loads(req.data.decode())
             return _ok("done")
 
-        with _session(), patch.object(proxy.urllib.request, "urlopen", side_effect=_capture):
+        with _session(), patch.object(proxy, "loopback_urlopen", side_effect=_capture):
             out = proxy._try_native_tool_call(_call(tool, args_for[tool]))
         assert out is not None, f"{tool} must be intercepted, not forwarded"
         assert "result" in out, f"{tool} should return an MCP result"
@@ -127,7 +127,7 @@ def test_every_mapped_op_routes_native() -> None:
 
 
 def test_success_is_returned_as_an_mcp_result() -> None:
-    with _session(), patch.object(proxy.urllib.request, "urlopen", return_value=_ok("navigated")):
+    with _session(), patch.object(proxy, "loopback_urlopen", return_value=_ok("navigated")):
         out = proxy._try_native_tool_call(_call())
     assert out is not None
     assert out["result"]["isError"] is False
@@ -144,7 +144,7 @@ def test_unmapped_browser_tool_errors_and_does_not_fall_back() -> None:
     Precondition: a panel has already answered, so a native page IS being driven.
     """
     assert "browser_drag" not in proxy._NATIVE_OPS
-    with _session(), _panel_seen(), patch.object(proxy.urllib.request, "urlopen") as urlopen:
+    with _session(), _panel_seen(), patch.object(proxy, "loopback_urlopen") as urlopen:
         out = proxy._try_native_tool_call(_call("browser_drag", {"startElement": "a"}))
     assert out is not None, "an unmapped browser_* tool must NOT fall through to Playwright"
     assert "error" in out and "result" not in out
@@ -168,7 +168,7 @@ def test_unmapped_browser_tool_falls_back_when_no_panel_has_answered() -> None:
 def test_a_panel_answer_marks_presence_and_arms_the_refusal() -> None:
     """One answered native op flips presence, which then arms the refusal."""
     with _session(), _panel_seen(False):
-        with patch.object(proxy.urllib.request, "urlopen", return_value=_ok({"url": "x"})):
+        with patch.object(proxy, "loopback_urlopen", return_value=_ok({"url": "x"})):
             assert proxy._try_native_tool_call(_call()) is not None
         assert proxy._native_panel_seen is True
         # Now that a native page is proven, an unmapped tool is refused.
@@ -179,7 +179,7 @@ def test_a_panel_answer_marks_presence_and_arms_the_refusal() -> None:
 def test_transport_failure_does_not_mark_presence() -> None:
     """A 503/timeout must NOT arm the refusal -- that is the remote-host case."""
     with _session(), _panel_seen(False):
-        with patch.object(proxy.urllib.request, "urlopen", side_effect=OSError("no panel")):
+        with patch.object(proxy, "loopback_urlopen", side_effect=OSError("no panel")):
             assert proxy._try_native_tool_call(_call()) is None
         assert proxy._native_panel_seen is False
 
@@ -201,7 +201,7 @@ def test_refusal_returns_an_mcp_error_and_does_not_fall_back() -> None:
     payload = json.dumps(
         {"id": "c1", "ok": False, "error": "browser control refused: agent-act-not-authorized"}
     ).encode()
-    with _session(), patch.object(proxy.urllib.request, "urlopen", return_value=_Resp(payload)):
+    with _session(), patch.object(proxy, "loopback_urlopen", return_value=_Resp(payload)):
         out = proxy._try_native_tool_call(_call())
     assert out is not None, "a refusal must NOT fall through to Playwright"
     assert "error" in out and "result" not in out
@@ -225,11 +225,11 @@ def test_only_no_panel_http_statuses_fall_back() -> None:
         )
 
     for code in (503, 504):
-        with _session(), patch.object(proxy.urllib.request, "urlopen", side_effect=_http(code)):
+        with _session(), patch.object(proxy, "loopback_urlopen", side_effect=_http(code)):
             assert proxy._try_native_tool_call(_call()) is None, f"{code} must fall back"
 
     for code in (403, 429, 500):
-        with _session(), patch.object(proxy.urllib.request, "urlopen", side_effect=_http(code)):
+        with _session(), patch.object(proxy, "loopback_urlopen", side_effect=_http(code)):
             out = proxy._try_native_tool_call(_call())
         assert out is not None, f"HTTP {code} must NOT fall back to Playwright"
         assert "error" in out and "result" not in out
@@ -238,7 +238,7 @@ def test_only_no_panel_http_statuses_fall_back() -> None:
 
 def test_undecodable_panel_response_does_not_fall_back() -> None:
     """The panel is reachable but answered garbage -- surface it, never re-route."""
-    with _session(), patch.object(proxy.urllib.request, "urlopen", return_value=_Resp(b"not json")):
+    with _session(), patch.object(proxy, "loopback_urlopen", return_value=_Resp(b"not json")):
         out = proxy._try_native_tool_call(_call())
     assert out is not None and "error" in out
 
@@ -246,15 +246,70 @@ def test_undecodable_panel_response_does_not_fall_back() -> None:
 def test_transport_failure_does_fall_back() -> None:
     """No panel / timeout / connection error -> Playwright is the right target."""
     with _session(), patch.object(
-        proxy.urllib.request, "urlopen", side_effect=OSError("no panel")
+        proxy, "loopback_urlopen", side_effect=OSError("no panel")
     ):
         assert proxy._try_native_tool_call(_call()) is None
 
 
-def test_missing_session_key_falls_back_rather_than_guessing() -> None:
-    with patch.object(proxy, "_SESSION_KEY", ""):
-        # Mapped and unmapped alike fall back when native routing is inactive.
+def test_empty_session_key_delegates_resolution_to_gateway_via_host_pid() -> None:
+    """Warm pool: the frozen-env key is empty, so the proxy does NOT bail. It
+    sends its ``host_pid`` and lets the GATEWAY resolve the authoritative session
+    key (signed session_pid sidecar) -- the same mechanism the frame path uses.
+    A mapped op therefore still ATTEMPTS the native POST; only a transport gap
+    (503 / timeout) sends it to Playwright."""
+    import os as _os
+
+    seen: dict = {}
+
+    def _capture(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode())
+        return _ok("navigated")
+
+    with patch.object(proxy, "_SESSION_KEY", ""), patch.object(
+        proxy, "loopback_urlopen", side_effect=_capture
+    ):
+        out = proxy._try_native_tool_call(_call())
+    assert out is not None and "result" in out, "an empty key must not short-circuit to Playwright"
+    assert seen["body"]["host_pid"] == _os.getpid(), "the proxy's pid is sent for gateway resolution"
+    assert seen["body"]["session_key"] == "", "the frozen-env key rides along as an empty fallback"
+
+
+def test_host_pid_is_sent_even_when_session_key_is_known() -> None:
+    """Per-session spawns also carry host_pid, so the gateway can prefer the
+    authoritative resolution and the two paths behave identically."""
+    seen: dict = {}
+
+    def _capture(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode())
+        return _ok("navigated")
+
+    with _session("dashboard:chat-1"), patch.object(
+        proxy, "loopback_urlopen", side_effect=_capture
+    ):
+        assert proxy._try_native_tool_call(_call()) is not None
+    assert "host_pid" in seen["body"] and isinstance(seen["body"]["host_pid"], int)
+    assert seen["body"]["session_key"] == "dashboard:chat-1"
+
+
+def test_empty_session_key_still_falls_back_on_no_panel() -> None:
+    """When the gateway cannot resolve a panel it answers 503, and THAT (a
+    transport gap) is what routes the op to Playwright -- never a client guess."""
+    import urllib.error
+
+    err = urllib.error.HTTPError(
+        "http://127.0.0.1/api/browser/command", 503, "no-native-panel", {}, None  # type: ignore[arg-type]
+    )
+    with patch.object(proxy, "_SESSION_KEY", ""), patch.object(
+        proxy, "loopback_urlopen", side_effect=err
+    ):
         assert proxy._try_native_tool_call(_call()) is None
+
+
+def test_unmapped_tool_falls_back_until_a_panel_is_proven() -> None:
+    """An unmapped ``browser_*`` tool still falls back while no native panel has
+    answered, regardless of the session key -- the split-brain refusal only
+    engages once a panel is proven live."""
+    with patch.object(proxy, "_SESSION_KEY", ""), _panel_seen(False):
         assert proxy._try_native_tool_call(_call("browser_drag", {})) is None
 
 
@@ -268,7 +323,7 @@ def test_ref_target_is_translated_to_ref_wire_field() -> None:
         seen["body"] = json.loads(req.data.decode())
         return _ok("clicked")
 
-    with _session(), patch.object(proxy.urllib.request, "urlopen", side_effect=_capture):
+    with _session(), patch.object(proxy, "loopback_urlopen", side_effect=_capture):
         out = proxy._try_native_tool_call(
             _call("browser_click", {"target": "e12", "element": "the Submit button"})
         )
@@ -279,7 +334,7 @@ def test_ref_target_is_translated_to_ref_wire_field() -> None:
 
 
 def test_selector_target_is_refused_not_mis_targeted() -> None:
-    with _session(), patch.object(proxy.urllib.request, "urlopen") as urlopen:
+    with _session(), patch.object(proxy, "loopback_urlopen") as urlopen:
         out = proxy._try_native_tool_call(_call("browser_click", {"target": "#submit-btn"}))
     assert out is not None and "error" in out
     assert "e5" in out["error"]["message"] or "ref" in out["error"]["message"].lower()
@@ -287,14 +342,14 @@ def test_selector_target_is_refused_not_mis_targeted() -> None:
 
 
 def test_missing_required_target_is_refused() -> None:
-    with _session(), patch.object(proxy.urllib.request, "urlopen") as urlopen:
+    with _session(), patch.object(proxy, "loopback_urlopen") as urlopen:
         out = proxy._try_native_tool_call(_call("browser_type", {"text": "hi"}))
     assert out is not None and "error" in out
     urlopen.assert_not_called()
 
 
 def test_stray_target_on_non_element_op_is_refused() -> None:
-    with _session(), patch.object(proxy.urllib.request, "urlopen") as urlopen:
+    with _session(), patch.object(proxy, "loopback_urlopen") as urlopen:
         out = proxy._try_native_tool_call(_call("browser_navigate", {"url": "x", "target": "e1"}))
     assert out is not None and "error" in out
     urlopen.assert_not_called()
@@ -307,7 +362,7 @@ def test_screenshot_result_is_saved_to_a_path() -> None:
     data = base64.b64encode(b"\x89PNGfakebytes").decode()
     payload = _ok({"data": data, "mimeType": "image/png"})
     with _session(), patch.object(
-        proxy.urllib.request, "urlopen", return_value=payload
+        proxy, "loopback_urlopen", return_value=payload
     ), patch.object(proxy, "_save_screenshot", return_value="/tmp/kirocrew-screenshots/s.png") as save:
         out = proxy._try_native_tool_call(_call("browser_take_screenshot", {"type": "png", "scale": "css"}))
     save.assert_called_once()

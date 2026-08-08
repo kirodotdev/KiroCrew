@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.knowledge import folder_watcher
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
-from kiro_crew.knowledge.folder_watcher import FolderWatcher
+from kiro_crew.knowledge.folder_watcher import MAX_SCAN_ATTEMPTS, FolderWatcher
+from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.store import KnowledgeStore
 
 
@@ -158,6 +163,92 @@ class TestFolderWatcherWalk:
         text, meta = reader.read(str(org_file))
         assert "Body text" in text
         assert meta["extension"] == ".org"
+
+
+#: Real-world capitalisation, so the case-insensitive basename match is exercised.
+LOCK_FILES = (
+    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+    "bun.lockb", "bun.lock", "poetry.lock", "uv.lock", "Pipfile.lock",
+    "Cargo.lock", "Gemfile.lock", "composer.lock", "packages.lock.json",
+    "gradle.lockfile", "flake.lock",
+)
+
+
+class TestGeneratedArtifactDefaults:
+    """Generated build output and dependency locks must not reach the embedder.
+
+    They ingest fine, which is what makes them expensive: each is regenerated on
+    every build, so a sweep re-chunks them and pays an extraction call per chunk
+    for content that answers no question.
+    """
+
+    def _names(self, store, pipeline, root):
+        fw = FolderWatcher(store, pipeline)
+        return {Path(p).name for p, _ in fw._walk(str(root), [], set())}
+
+    def _cdk_tree(self, tmp_path):
+        root = tmp_path / "repo"
+        (root / "cdk.out" / "asset.9f3c").mkdir(parents=True)
+        (root / "cdk.out" / "tree.json").write_text('{"tree": {}}')
+        (root / "cdk.out" / "asset.9f3c" / "manifest.json").write_text("{}")
+        (root / "notes.md").write_text("# real doc")
+        return root
+
+    def _lock_tree(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "notes.md").write_text("# real doc")
+        for name in LOCK_FILES:
+            (root / name).write_text("generated resolution output")
+        return root
+
+    def test_cdk_out_is_pruned(self, store, pipeline, tmp_path):
+        root = self._cdk_tree(tmp_path)
+        names = self._names(store, pipeline, root)
+        assert "notes.md" in names
+        assert "tree.json" not in names
+        assert "manifest.json" not in names
+
+    def test_cdk_out_entry_is_load_bearing(self, store, pipeline, tmp_path, monkeypatch):
+        # Nothing else keeps synth output out: the name only CONTAINS a dot so the
+        # dot-prefix rule skips it, the bare "out" entry does not match it, and
+        # .json is reader-supported.
+        monkeypatch.setattr(folder_watcher, "HARD_SKIP_DIRS",
+                            folder_watcher.HARD_SKIP_DIRS - {"cdk.out"})
+        names = self._names(store, pipeline, self._cdk_tree(tmp_path))
+        assert "tree.json" in names
+        assert "manifest.json" in names
+
+    def test_dependency_lock_files_are_never_discovered(self, store, pipeline, tmp_path):
+        names = self._names(store, pipeline, self._lock_tree(tmp_path))
+        assert "notes.md" in names
+        assert names.isdisjoint(LOCK_FILES)
+
+    def test_lock_files_stay_out_when_their_extension_is_readable(
+            self, store, pipeline, tmp_path, monkeypatch):
+        # ``.lock``/``.lockb``/``.lockfile`` are not reader-supported today, so the
+        # extension filter would mask a missing glob. Widening SUPPORTED isolates
+        # the globs as the thing under test.
+        monkeypatch.setattr(FileReader, "SUPPORTED",
+                            FileReader.SUPPORTED | {".lock", ".lockb", ".lockfile"})
+        names = self._names(store, pipeline, self._lock_tree(tmp_path))
+        assert "notes.md" in names
+        assert names.isdisjoint(LOCK_FILES)
+
+    def test_lock_globs_are_load_bearing(self, store, pipeline, tmp_path, monkeypatch):
+        lock_globs = {n.lower() for n in LOCK_FILES}
+        monkeypatch.setattr(FileReader, "SUPPORTED",
+                            FileReader.SUPPORTED | {".lock", ".lockb", ".lockfile"})
+        monkeypatch.setattr(folder_watcher, "DEFAULT_IGNORE_GLOBS", tuple(
+            g for g in folder_watcher.DEFAULT_IGNORE_GLOBS if g not in lock_globs))
+        names = self._names(store, pipeline, self._lock_tree(tmp_path))
+        assert set(LOCK_FILES) <= names
+
+    def test_every_lock_glob_is_registered_lowercase(self):
+        # The match runs against a lowercased basename, so an entry carrying any
+        # uppercase character can never fire.
+        for name in LOCK_FILES:
+            assert name.lower() in folder_watcher.DEFAULT_IGNORE_GLOBS, name
 
 
 class TestFolderWatcherScan:
@@ -617,3 +708,356 @@ class TestIngestTimeConfinement:
             watcher.pipeline.ingest_file.assert_not_awaited()
         finally:
             store.db.close()
+
+
+class TestFailedIngestLeavesNoRetryLoop:
+    """A file whose ingest fails must reach a terminal status, not keep the marker.
+
+    ``scanning`` matches no skip gate, so a row that keeps it is re-chunked and
+    re-extracted -- at full model cost -- on every sweep of the watcher.
+    """
+
+    @pytest.mark.asyncio
+    async def test_failed_ingest_is_terminal_and_skipped_next_sweep(
+            self, store, pipeline, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "bad.md").write_text("# Bad")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        fw = FolderWatcher(store, pipeline)
+
+        # A failure path that returns the documented (None, "failed") without
+        # persisting anything itself: _do_scan owns the state transition.
+        calls = []
+
+        async def failing_ingest(file_path, *a, **kw):
+            calls.append(file_path)
+            return None, "failed"
+        fw._ingest_file = failing_ingest
+
+        stats = await fw.scan_source(source)
+        assert stats["failed"] == 1
+        row = store.db.execute(
+            "SELECT status FROM folder_file_state WHERE source_id = ?",
+            (source_id,)).fetchone()
+        assert row["status"] == "failed"
+
+        stats2 = await fw.scan_source(source)
+        assert stats2["skipped"] == 1
+        assert stats2["failed"] == 0
+        assert len(calls) == 1, "a failed file must not be re-ingested"
+
+    @pytest.mark.asyncio
+    async def test_failed_row_keeps_the_version_that_failed(
+            self, store, pipeline, tmp_path):
+        """The failed row keeps the content hash / mtime the marker carried, and the
+        reason recorded by the ingest path, so the failure is attributable."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "bad.md").write_text("# Bad")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+
+        async def boom(path, **kw):
+            raise RuntimeError("reader exploded")
+        pipeline.ingest_file = boom
+
+        fw = FolderWatcher(store, pipeline)
+        await fw.scan_source(source)
+
+        row = store.db.execute(
+            "SELECT status, content_hash, mtime, error_message FROM folder_file_state "
+            "WHERE source_id = ?", (source_id,)).fetchone()
+        assert row["status"] == "failed"
+        assert row["content_hash"], "the hash of the version that failed is retained"
+        assert row["mtime"] > 0
+        assert "reader exploded" in (row["error_message"] or "")
+
+
+class TestInterruptedScanRetryCap:
+    """Crash recovery retries a 'scanning' row, but not without bound."""
+
+    @pytest.mark.asyncio
+    async def test_interrupted_row_is_retried_then_retired(
+            self, store, pipeline, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "hangs.md").write_text("# Hangs")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        calls = []
+
+        async def interrupted(path, **kw):
+            calls.append(path)
+            # CancelledError is a BaseException: it escapes the scan without any
+            # terminal write, which is exactly how a real interruption looks.
+            raise asyncio.CancelledError()
+        pipeline.ingest_file = interrupted
+
+        fw = FolderWatcher(store, pipeline)
+        for _ in range(MAX_SCAN_ATTEMPTS + 3):
+            with contextlib.suppress(asyncio.CancelledError):
+                await fw.scan_source(source)
+
+        assert len(calls) == MAX_SCAN_ATTEMPTS, (
+            f"expected at most {MAX_SCAN_ATTEMPTS} billed attempts, got {len(calls)}")
+        row = store.db.execute(
+            "SELECT status, attempts, error_message FROM folder_file_state "
+            "WHERE source_id = ?", (source_id,)).fetchone()
+        assert row["status"] == "failed"
+        # Retirement is a terminal write, so it clears the count like every other
+        # one. What holds the file out of later sweeps is the 'failed' status.
+        assert row["attempts"] == 0
+        assert str(MAX_SCAN_ATTEMPTS) in (row["error_message"] or "")
+
+    @pytest.mark.asyncio
+    async def test_row_already_stuck_scanning_converges(
+            self, store, pipeline, tmp_path):
+        """An install that already carries a stuck row spends the same budget and
+        retires it, rather than re-ingesting it on every sweep indefinitely."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "stuck.md").write_text("# Stuck")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        stuck = str(vault / "stuck.md")
+        store.db.execute(
+            "INSERT INTO folder_file_state (source_id, file_path, content_hash, mtime, "
+            "item_ids, last_seen, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (source_id, stuck, "oldhash", 1.0, "[]", "2026-01-01", "scanning"))
+        store.db.commit()
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        calls = []
+
+        async def interrupted(path, **kw):
+            calls.append(path)
+            raise asyncio.CancelledError()
+        pipeline.ingest_file = interrupted
+
+        fw = FolderWatcher(store, pipeline)
+        for _ in range(MAX_SCAN_ATTEMPTS + 3):
+            with contextlib.suppress(asyncio.CancelledError):
+                await fw.scan_source(source)
+
+        assert len(calls) == MAX_SCAN_ATTEMPTS
+        row = store.db.execute(
+            "SELECT status FROM folder_file_state WHERE source_id = ? AND file_path = ?",
+            (source_id, stuck)).fetchone()
+        assert row["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_successful_ingest_clears_the_retry_budget(
+            self, store, pipeline, tmp_path):
+        """A completed ingest resets attempts, so a transient interruption does not
+        permanently eat a file's budget."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "ok.md").write_text("# Ok")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        ok = str(vault / "ok.md")
+        store.db.execute(
+            "INSERT INTO folder_file_state (source_id, file_path, content_hash, mtime, "
+            "item_ids, last_seen, status, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, ok, "oldhash", 1.0, "[]", "2026-01-01", "scanning",
+             MAX_SCAN_ATTEMPTS - 1))
+        store.db.commit()
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+
+        async def fake_ingest(path, **kw):
+            store.add_item("title", "content", "doc", source_id=source_id)
+            return "job1"
+        pipeline.ingest_file = fake_ingest
+
+        fw = FolderWatcher(store, pipeline)
+        await fw.scan_source(source)
+
+        row = store.db.execute(
+            "SELECT status, attempts FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, ok)).fetchone()
+        assert row["status"] == "done"
+        assert row["attempts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_editing_a_capped_file_resets_its_budget_and_ingests(
+            self, store, pipeline, tmp_path):
+        """The budget belongs to the version that failed, not to the path.
+
+        A file the user edits after the cap was spent is new content that has never
+        been attempted, so it must be ingested rather than retired on the strength of
+        a retirement its previous version earned.
+        """
+        import os
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        doc = vault / "edited.md"
+        doc.write_text("# Original")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        calls = []
+
+        async def interrupted(path, **kw):
+            calls.append(path)
+            raise asyncio.CancelledError()
+        pipeline.ingest_file = interrupted
+
+        fw = FolderWatcher(store, pipeline)
+        for _ in range(MAX_SCAN_ATTEMPTS):
+            with contextlib.suppress(asyncio.CancelledError):
+                await fw.scan_source(source)
+        row = store.db.execute(
+            "SELECT status, attempts FROM folder_file_state WHERE source_id = ?",
+            (source_id,)).fetchone()
+        assert (row["status"], row["attempts"]) == ("scanning", MAX_SCAN_ATTEMPTS)
+
+        # The user edits the file. Explicit future mtime avoids 1s granularity.
+        doc.write_text("# Rewritten after the cap was spent")
+        os.utime(doc, (9999999999, 9999999999))
+
+        async def fake_ingest(path, **kw):
+            store.add_item("title", "content", "doc", source_id=source_id)
+            return "job1"
+        pipeline.ingest_file = fake_ingest
+
+        await fw.scan_source(source)
+
+        row = store.db.execute(
+            "SELECT status, attempts FROM folder_file_state WHERE source_id = ?",
+            (source_id,)).fetchone()
+        assert row["status"] == "done", "edited content must be ingested, not retired"
+        assert row["attempts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_capped_file_stays_retired(
+            self, store, pipeline, tmp_path):
+        """The reset is keyed on the hash, so an untouched capped file still retires."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "same.md").write_text("# Unchanged")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        calls = []
+
+        async def interrupted(path, **kw):
+            calls.append(path)
+            raise asyncio.CancelledError()
+        pipeline.ingest_file = interrupted
+
+        fw = FolderWatcher(store, pipeline)
+        for _ in range(MAX_SCAN_ATTEMPTS + 3):
+            with contextlib.suppress(asyncio.CancelledError):
+                await fw.scan_source(source)
+
+        assert len(calls) == MAX_SCAN_ATTEMPTS
+        row = store.db.execute(
+            "SELECT status FROM folder_file_state WHERE source_id = ?",
+            (source_id,)).fetchone()
+        assert row["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_a_retried_capped_file_gets_a_working_budget(
+            self, store, pipeline, tmp_path):
+        """Clearing the status the way the dashboard's Retry does hands the file a
+        full budget again.
+
+        Retry clears ``status`` and ``error_message`` and nothing else, so a
+        retirement that left the spent count on the row would put the file back into
+        the scan already over budget: one interrupted attempt and the next sweep
+        retires it again, making Retry a no-op the user cannot escape.
+        """
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "capped.md").write_text("# Capped")
+        source_id = store.add_source("test", "local_folder", str(vault))
+        capped = str(vault / "capped.md")
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": "{}"}
+        calls = []
+
+        async def interrupted(path, **kw):
+            calls.append(path)
+            raise asyncio.CancelledError()
+        pipeline.ingest_file = interrupted
+
+        fw = FolderWatcher(store, pipeline)
+        for _ in range(MAX_SCAN_ATTEMPTS + 1):
+            with contextlib.suppress(asyncio.CancelledError):
+                await fw.scan_source(source)
+        row = store.db.execute(
+            "SELECT status FROM folder_file_state WHERE source_id = ? AND file_path = ?",
+            (source_id, capped)).fetchone()
+        assert row["status"] == "failed", "precondition: the cap has retired the file"
+        billed_when_capped = len(calls)
+
+        # Exactly what POST /api/knowledge/sources/{id}/files/retry writes.
+        store.db.execute(
+            "UPDATE folder_file_state SET status = 'pending', error_message = NULL "
+            "WHERE source_id = ? AND file_path = ?", (source_id, capped))
+        store.db.commit()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await fw.scan_source(source)
+        row = store.db.execute(
+            "SELECT status, attempts FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, capped)).fetchone()
+        assert len(calls) == billed_when_capped + 1, "the retry is actually attempted"
+        assert (row["status"], row["attempts"]) == ("scanning", 1), (
+            "the retry starts from a fresh budget, not from the spent one")
+
+        # The budget is genuinely spendable: the sweep after the interruption retries
+        # rather than retiring on a count inherited from before the retry.
+        with contextlib.suppress(asyncio.CancelledError):
+            await fw.scan_source(source)
+        row = store.db.execute(
+            "SELECT status, attempts FROM folder_file_state "
+            "WHERE source_id = ? AND file_path = ?", (source_id, capped)).fetchone()
+        assert len(calls) == billed_when_capped + 2
+        assert (row["status"], row["attempts"]) == ("scanning", 2)
+
+
+class TestFolderFileStateAttemptsMigration:
+    def test_migration_adds_attempts_to_a_preexisting_db(self, tmp_path):
+        """A database created before the retry cap gains the column, keeps its rows,
+        and starts them on a full budget."""
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE folder_file_state (
+                source_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                content_hash TEXT,
+                text_hash TEXT,
+                mtime REAL,
+                item_ids TEXT DEFAULT '[]',
+                last_seen TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                error_message TEXT,
+                merged_into_source_id TEXT,
+                PRIMARY KEY (source_id, file_path)
+            )
+        """)
+        conn.execute(
+            "INSERT INTO folder_file_state (source_id, file_path, content_hash, mtime, "
+            "item_ids, last_seen, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("src-legacy", "/legacy/doc.md", "h", 1.0, "[]", "2026-01-01", "scanning"))
+        conn.commit()
+        conn.close()
+
+        store = KnowledgeStore(str(db_path))
+        try:
+            cols = {r[1] for r in store.db.execute(
+                "PRAGMA table_info(folder_file_state)").fetchall()}
+            assert "attempts" in cols
+            row = store.db.execute(
+                "SELECT status, attempts FROM folder_file_state WHERE file_path = ?",
+                ("/legacy/doc.md",)).fetchone()
+            assert row["status"] == "scanning"
+            assert row["attempts"] == 0
+        finally:
+            store.close()

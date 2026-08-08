@@ -14,7 +14,7 @@ same thing you did.
 
 This is the **self-verification** path: the screenshot is evidence, not
 decoration. It is view-only (navigate + screenshot); clicking and typing through
-a flow still needs the **Globe** toggle ("Let the agent use the browser"). Keep the frame count
+a flow uses the `browser_*` tools directly. Keep the frame count
 bounded (see below) — restraint here is about context cost, not permission.
 
 ## Three ways to capture — name the one you used
@@ -30,6 +30,29 @@ backend produced the screenshots** — "streamed into the Browser panel via Play
 MCP", "captured with agent-browser", "scripted Playwright via pod-e2e" — so the user
 knows whether they could have watched it happen, and never imply a panel stream that
 didn't occur.
+
+> **Keep every frame you read under 2000px on both edges.** A single image past
+> that wedges the session permanently: the provider rejects the WHOLE request once
+> a conversation carries many images, kiro-cli replays the full history every
+> turn, and the offending block sits at a fixed history index that nothing can
+> evict — the same error re-fires on every later turn no matter what you do next.
+> So capture at `deviceScaleFactor: 1` (a 1400-1500px viewport reads fine), and
+> prefer an element screenshot over `fullPage` on a long page. If a file is
+> already oversized, downscale it BEFORE reading it:
+>
+> ```bash
+> python3 "${KIROCREW_HOME:-$HOME/.kiro/crew}/skills/web-verify/scripts/downscale_image.py" "/abs/path/shot.png"
+> ```
+>
+> On native Windows, run the same script with that machine's launcher
+> (`py` or `python`) — the script itself is OS-agnostic. It takes paths as
+> arguments (so a path with an apostrophe or a space is the shell's problem, not
+> the script's), rewrites only files actually over the cap, and re-execs itself
+> under Kiro Crew's own venv interpreter when the Python you invoked has no
+> Pillow.
+>
+> The error is asymmetric, which is why the cap is not a nicety: downscaling only
+> costs detail, while one oversized read costs the rest of the conversation.
 
 ## Precondition — a browser must actually be available (the guard)
 
@@ -119,7 +142,6 @@ constraint against committing binaries). Capture once, use twice.
 - **Showing the user an external page** → `web-browse` (Playwright, public URL).
 - **Just giving the user a live preview to click** with no verification of your
   own → `web-preview` (loopback iframe, no screenshot).
-- **Driving a multi-step flow** (click, type, submit) → that needs the
-  **Globe** toggle ("Let the agent use the browser"); ask the user to turn it
-  on, then drive it.
+- **Driving a multi-step flow** (click, type, submit) → use the `browser_*`
+  tools directly; they are present whenever Browser Mode is on.
 - **Backend-only changes** → tests are the evidence; don't invent a screenshot.

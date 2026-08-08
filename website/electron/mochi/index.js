@@ -13,7 +13,29 @@
 
 const http = require("http");
 const { app, ipcMain } = require("electron");
-const { parseMochiEnabled, enabledOrTrust } = require("./instanceGate");
+const Store = require("electron-store");
+const { parseMochiEnabled, enabledOrTrust, hostDisabledMeansTeardown } = require("./instanceGate");
+const {
+  SELF_INSTANCE,
+  MACHINE_STORE_DEFAULTS,
+  MIGRATED_KEY,
+  petInstanceOf,
+  setPetInstanceIn,
+  shortcutsOf,
+  setShortcutsIn,
+  mergeAcceptedShortcuts,
+  migrateMachinePrefs,
+} = require("./machineStore");
+
+/**
+ * Mochi's own per-machine store, SEPARATE from the shell's main one.
+ *
+ * A distinct electron-store file (`mochi-machine.json`) rather than a few more
+ * keys in main.js's store: this folder is Mochi's, so its state stays inside it
+ * and removing the app stays "delete this folder and the two calls in main.js",
+ * exactly as this module's header promises.
+ */
+const machineStore = new Store({ name: "mochi-machine", defaults: MACHINE_STORE_DEFAULTS });
 
 // Injected by initMochi(); placeholders keep every function definable at load.
 let BACKEND_URL = "";
@@ -280,6 +302,19 @@ async function probeAllLiveInstancesEnabled() {
  * READ-ONLY and side-effect free, which is why it comes first: `connect` opens a
  * tunnel, so it must never be the thing that discovers whether one is up.
  */
+/**
+ * Core's instance list, read from the LOCAL gateway (it owns the registry).
+ *
+ * READ-ONLY and side-effect free, which is why it comes first: `connect` opens a
+ * tunnel, so it must never be the thing that discovers whether one is up.
+ *
+ * `state` mirrors the renderer's `InstancesView` discriminant so the switcher can
+ * render the SAME four outcomes it renders on the same-origin path. Collapsing
+ * 403 and `active:false` into "an empty ready list" costs the user the only
+ * guidance they get: `disabled` says "enable multi-instance in Settings" and
+ * `inactive` says "restart the gateway", and without them a user with the feature
+ * off just sees "This computer" and no way forward.
+ */
 function fetchInstances(token) {
   return new Promise((resolve) => {
     const req = http.request(
@@ -288,22 +323,29 @@ function fetchInstances(token) {
       (res) => {
         // 403 is an ANSWER: instances.enabled is off, so there are genuinely no
         // remotes to point at. Every other non-200 is a NON-answer.
-        if (res.statusCode === 403) { res.resume(); return resolve({ known: true, instances: [] }); }
-        if (res.statusCode !== 200) { res.resume(); return resolve({ known: false }); }
+        if (res.statusCode === 403) {
+          res.resume();
+          return resolve({ known: true, state: "disabled", instances: [] });
+        }
+        if (res.statusCode !== 200) { res.resume(); return resolve({ known: false, state: "error" }); }
         let data = "";
         res.on("data", (c) => { data += c; });
         res.on("end", () => {
           try {
             const body = JSON.parse(data);
             const list = Array.isArray(body) ? body : body && body.instances;
-            resolve(Array.isArray(list) ? { known: true, instances: list } : { known: false });
-          } catch { resolve({ known: false }); }
+            if (!Array.isArray(list)) return resolve({ known: false, state: "error" });
+            // `active:false` = the registry is configured but the manager is not
+            // running, i.e. "needs restart" — a distinct, actionable state.
+            const state = body && body.active === false ? "inactive" : "ready";
+            return resolve({ known: true, state, instances: list });
+          } catch { resolve({ known: false, state: "error" }); }
         });
-        res.on("error", () => resolve({ known: false }));
+        res.on("error", () => resolve({ known: false, state: "error" }));
       },
     );
-    req.on("error", () => resolve({ known: false }));
-    req.on("timeout", () => { req.destroy(); resolve({ known: false }); });
+    req.on("error", () => resolve({ known: false, state: "error" }));
+    req.on("timeout", () => { req.destroy(); resolve({ known: false, state: "error" }); });
     req.end();
   });
 }
@@ -345,21 +387,13 @@ function instanceIsLive(inst) {
  * same `localhost:<port>` A had. Comparing origins alone would then read as "no
  * change" and leave windows showing A's content under B's identity.
  */
-async function resolveMochiTarget(settings) {
-  const self = { baseUrl: BACKEND_URL, token: "", instanceId: "self" };
-  // A NON-ANSWER about the settings themselves, handled before reading them.
-  // `mochiSettings()` returns null for a timeout, a non-200, a lost token and
-  // malformed JSON — none of which mean "the user chose self". Collapsing null to
-  // `choice = ""` fell through to `return self`, i.e. the exact mistake the block
-  // comment above forbids: one 5s tick that timed out flipped the target and tore
-  // down the panel with the user's unsent draft in it. An OBJECT with no
-  // `petInstance` still falls through to self below, because that IS an answer.
-  if (settings === null || settings === undefined) {
-    mochiInstanceLog("could not read settings — leaving Mochi where it is");
-    return { keep: true };
-  }
-  const choice = typeof settings.petInstance === "string" ? settings.petInstance : "";
-  if (!choice || choice === "self") {
+async function resolveMochiTarget(choice) {
+  const self = { baseUrl: BACKEND_URL, token: "", instanceId: SELF_INSTANCE };
+  // The pointer comes from the SHELL's own store now, so there is no
+  // "could not read the setting" case left to handle here — it is always
+  // readable, including while the host gateway's Mochi is disabled, which is
+  // precisely what lets a remote pet outlive a local disable.
+  if (!choice || choice === SELF_INSTANCE) {
     mochiInstanceLog("showing this computer's Mochi");
     return self;
   }
@@ -551,16 +585,6 @@ function mochiAvatarOf(settings) {
 }
 
 /**
- * The user's accelerators, or `undefined` to let the shortcuts module use its own
- * defaults. Undefined (not `{}`) on a failed read: an empty object would read as
- * "the user unbound everything" and silently leave the app with no shortcuts.
- */
-function mochiShortcutsOf(settings) {
-  const s = settings && settings.shortcuts;
-  return s && typeof s === "object" ? s : undefined;
-}
-
-/**
  * Bind the global accelerators, and rebind when the stored ones change.
  *
  * The reconcile loop is the fallback path (up to one tick of lag): the Settings
@@ -689,7 +713,32 @@ async function reconcileMochi() {
   // Could not tell: leave every window exactly as it is. Tearing down on a
   // failed probe is what made the pet appear to crash every few seconds.
   if (state === "unknown") return;
-  if (state === "disabled") {
+
+  // ONE-SHOT migration of the per-machine prefs out of the host's Mochi
+  // settings, so an existing choice is not reset by the upgrade that moves it.
+  // Only while the host is ENABLED (the settings route 403s otherwise) and only
+  // until it succeeds, so the steady state costs no request at all. Runs BEFORE
+  // the resolve so a migrated pointer takes effect on this same tick.
+  if (state === "enabled" && machineStore.get(MIGRATED_KEY) !== true) {
+    migrateMachinePrefs(machineStore, await mochiSettings());
+  }
+
+  // RESOLVE BEFORE DECIDING. Every route the resolve needs — core's
+  // /api/instances on the host, the remote's own /api/apps — sits outside the
+  // host's Mochi gate, and the pointer now comes from the shell's store, so this
+  // answer is available even while the host has Mochi switched off. Deciding on
+  // teardown first and resolving second is exactly what made a local disable
+  // take a remote pet with it.
+  const target = await resolveMochiTarget(petInstanceOf(machineStore));
+  // `keep` = we could not tell. Whatever is on screen stays, so the id that
+  // matters for the teardown decision is the one already showing.
+  const shownInstanceId = target.keep ? mochiPetInstanceId : target.instanceId;
+  // On `keep` we do not know, and not-knowing must never destroy anything — the
+  // same discipline as enabledState's "unknown". A definite resolve onto self
+  // means the remote is gone, and `hostDisabledMeansTeardown` handles self.
+  const shownStillUsable = target.keep ? true : target.instanceId !== SELF_INSTANCE;
+
+  if (state === "disabled" && hostDisabledMeansTeardown(shownInstanceId, shownStillUsable)) {
     closePetWindow();
     // Hide the panel rather than orphan an opaque always-on-top rectangle over
     // the desktop; re-enable restores it if it was visible.
@@ -712,15 +761,13 @@ async function reconcileMochi() {
     return;
   }
 
-  // ONE settings read per tick, shared by the avatar gate and the accelerators.
-  // Read from SELF deliberately: `petInstance` and the accelerators are
-  // per-MACHINE choices (one pet, one keyboard), so they live on the local
-  // gateway and are not taken from whichever instance the pet is showing.
-  const settings = await mochiSettings();
+  // Past here the pet is alive: either the host's Mochi is on, or it is off and
+  // the pet is being served by a remote that is still live and still has Mochi
+  // enabled. Everything below addresses the SHOWN gateway, so both cases take
+  // the identical path — a disabled host simply stops doing its own backend work
+  // (its on_shutdown cancels the pollers, watchlist guard and stats), which is
+  // what the user asked for by switching it off.
 
-  // Resolve which instance's Mochi the pet shows, and cache it for the
-  // synchronous accelerator handlers below.
-  const target = await resolveMochiTarget(settings);
   // `keep` = we could not tell. Change NOTHING: falling back would flip the
   // target, and a flipped target rebuilds every window (twice — once now and
   // again when the link recovers). Same discipline as enabledState's "unknown".
@@ -777,10 +824,13 @@ async function reconcileMochi() {
       panel.openPanelWindow(mochiPetBaseUrl, mochiPetToken);
     }
   }
-  // Bind (or rebind) the user's accelerators. applyMochiShortcuts no-ops when
-  // they already match, so the 5s loop does not unregister+re-register every
-  // tick — which would briefly drop the key.
-  applyMochiShortcuts(mochiShortcutsOf(settings));
+  // Bind (or rebind) the user's accelerators from the SHELL's store — one
+  // keyboard is a property of this machine, not of whichever gateway the pet
+  // happens to show, and holding them here is also what keeps them bound when
+  // the host's Mochi is switched off. applyMochiShortcuts no-ops when they
+  // already match, so the 5s loop does not unregister+re-register every tick —
+  // which would briefly drop the key.
+  applyMochiShortcuts(shortcutsOf(machineStore));
 }
 
 // ── Mochi global-shortcut handlers ─────────────────────────────────────────
@@ -861,17 +911,13 @@ function startMochiWatcher() {
   });
 
   /**
-   * Apply a just-saved `petInstance` now instead of on the next tick.
+   * Apply the CURRENT pointer now instead of on the next tick.
    *
-   * Settings only WRITES the setting; the shell notices on its reconcile pass, so
-   * without this the pet keeps showing the old instance for up to 5s after the
-   * user picked a new one — long enough to read as "the switch didn't work" and
-   * to invite a second click.
-   *
+   * Kept alongside `mochi-instances:set` for the surfaces that only need "act on
+   * what is stored" — a Settings save that changed other things, for instance.
    * Runs the ordinary reconcile rather than a special switch path: it already
-   * resolves, rebuilds on change, and is idempotent, so there is exactly one
-   * code path for switching and no second one to drift. Awaited so the renderer
-   * can leave its row busy until the windows have actually moved.
+   * resolves, rebuilds on change, and is idempotent, so there is exactly one code
+   * path for switching and no second one to drift.
    */
   ipcMain.handle("mochi-instances:apply-now", async () => {
     try {
@@ -983,19 +1029,136 @@ function startMochiWatcher() {
 
   ipcMain.handle("mochi-shortcuts:apply", (_e, accelerators) => {
     // Trust nothing from the renderer: only the two known actions, only strings.
+    const { MOCHI_SHORTCUT_ACTIONS } = require("./shortcuts");
     const desired = {};
     if (accelerators && typeof accelerators === "object") {
-      const { MOCHI_SHORTCUT_ACTIONS } = require("./shortcuts");
       for (const [action] of MOCHI_SHORTCUT_ACTIONS) {
         const value = accelerators[action];
         if (typeof value === "string") desired[action] = value;
       }
     }
     try {
-      return applyMochiShortcuts(desired) || {};
+      // BIND FIRST, then persist only what the OS actually accepted.
+      //
+      // Registration is the only way to learn whether a combination is free, and
+      // storing a refused one would leave that action with no working key while
+      // the store claims it has one — the user closes Settings and the accelerator
+      // is simply dead. Keeping the previous value instead means the next drift
+      // check rebinds something that works.
+      //
+      // Ordering is safe because this handler is SYNCHRONOUS: the 5s reconcile
+      // tick cannot interleave between the bind and the write, so the "bound but
+      // not persisted, then undone by the next tick" hazard does not arise here.
+      const prev = shortcutsOf(machineStore);
+      const result = applyMochiShortcuts({ ...prev, ...desired }) || {};
+      // Tolerates `prev` being undefined, which is `shortcutsOf`'s documented
+      // answer for "nothing stored yet" — see mergeAcceptedShortcuts.
+      const keep = mergeAcceptedShortcuts(
+        prev,
+        desired,
+        result,
+        MOCHI_SHORTCUT_ACTIONS.map(([action]) => action),
+      );
+      // `byUser` records the intent, so a migration that lands later cannot
+      // import the stale gateway copy over this rebind.
+      setShortcutsIn(machineStore, keep, { byUser: true });
+      return result;
     } catch (err) {
       glog(`Mochi shortcuts apply failed: ${err && err.message}`);
       return {};
+    }
+  });
+
+  /**
+   * The per-MACHINE prefs, read from the shell's own store.
+   *
+   * WHY THIS EXISTS AT ALL: every Mochi window is loaded FROM the gateway it
+   * shows (pageUrl.js) and the renderer's API seam is same-origin, so a switcher
+   * inside a pet that is showing a REMOTE would read and write that remote's
+   * copy — while the shell reads this machine's. That mismatch is what made the
+   * instance switch a one-way door. Routing both prefs through IPC gives every
+   * window the same single copy regardless of who served it.
+   */
+  ipcMain.handle("mochi-machine:get", () => ({
+    petInstance: petInstanceOf(machineStore),
+    shortcuts: shortcutsOf(machineStore) || null,
+  }));
+
+  /**
+   * Point the pet at an instance, and move it now rather than on the next tick.
+   *
+   * Write and apply in ONE call, deliberately: they were two (a same-origin
+   * settings POST plus `apply-now`), and a renderer that did the first without
+   * the second — or did them against different gateways — produced a stored
+   * choice nothing acted on. One handler cannot half-happen.
+   *
+   * The id is stored OPAQUELY, not validated against the live list: instances
+   * come and go, and a saved choice must survive one being briefly away.
+   * Resolution is where the fallback to self lives.
+   */
+  ipcMain.handle("mochi-instances:set", async (_e, instanceId) => {
+    try {
+      // The STORE WRITE COMES FIRST, and it cannot be ordered the other way:
+      // reconcile reads the store to learn which instance to build for, so
+      // there is nothing to reconcile until the pointer is set.
+      //
+      // A reconcile that then throws therefore leaves a stored choice the 5s
+      // loop keeps retrying — the switch is deferred, not lost. The renderer's
+      // failure copy promises exactly that instead of claiming nothing was
+      // saved, which would contradict the pet moving on a later tick. Rolling
+      // the pointer back here would be the alternative, but it would discard a
+      // deliberate pick over what is usually a transient link failure.
+      const saved = setPetInstanceIn(machineStore, instanceId, { byUser: true });
+      // A run that STARTS now: joining an in-flight tick could re-apply the
+      // value that tick already read, from before this write landed.
+      await reconcileMochiAfterCurrent();
+      // REPORT WHERE THE PET ACTUALLY IS, not merely that reconcile did not
+      // throw. Most ways a switch fails are silent, non-throwing returns:
+      // reconcileMochi bails out entirely when the host's enabled-state probe
+      // is unreadable, and resolveMochiTarget falls back to this computer when
+      // the chosen instance is listed-but-down, no longer listed, unusable, or
+      // has Mochi turned off. Returning ok:true on any of those closed Settings
+      // over a pet that never moved.
+      //
+      // Compared against the shell's own record rather than a second predicate
+      // over the same conditions — one source of truth cannot disagree with
+      // itself. `mochiPetInstanceId` is SELF_INSTANCE exactly when the pet is on
+      // this computer, so a 'self' pick compares equal without special-casing.
+      //
+      // Not covered: a host-disable teardown in the same pass that the pet was
+      // already showing `saved` reports success although the windows are gone.
+      // The next tick corrects it, and the reported value is still the truth
+      // about the pointer.
+      return { ok: mochiPetInstanceId === saved, petInstance: saved };
+    } catch (err) {
+      glog(`mochi instance: set failed — ${err && err.message}`);
+      return { ok: false };
+    }
+  });
+
+  /**
+   * Core's instance list for THIS MACHINE's host gateway.
+   *
+   * The switcher used to fetch `/api/instances` same-origin, which meant that
+   * once the pet was on a remote it listed the REMOTE's registry — a different
+   * set of crews, or none at all if that gateway has the feature off, so the crew
+   * the user wanted to return to could be missing from the list entirely. The
+   * host owns the registry that the pointer's ids refer to, so the shell answers
+   * from there.
+   */
+  ipcMain.handle("mochi-instances:list", async () => {
+    try {
+      const token = await gatewayToken();
+      if (!token) return { known: false, state: "error", instances: [] };
+      const listed = await fetchInstances(token);
+      return {
+        known: !!listed.known,
+        state: listed.state || (listed.known ? "ready" : "error"),
+        instances: listed.instances || [],
+      };
+    } catch (err) {
+      glog(`mochi instance: list failed — ${err && err.message}`);
+      return { known: false, state: "error", instances: [] };
     }
   });
 

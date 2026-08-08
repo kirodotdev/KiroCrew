@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlparse
 
@@ -30,6 +31,7 @@ from .errors import (
     ProviderSetupError,
     PrSearchError,
     RepoUrlError,
+    sanitize_cli_stderr,
 )
 
 # ── exception aliases ────────────────────────────────────────────────────────
@@ -203,6 +205,16 @@ def _gh_env() -> dict[str, str]:
     return minimal_env(**{k: os.environ[k] for k in _GH_ENV_PASSTHROUGH if k in os.environ})
 
 
+def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
+    """Last few stderr lines, sanitized for display.
+
+    These strings travel to the browser through the routes' error bodies, so host
+    paths and private hosts are stripped while the actionable phrasing (auth,
+    not-found, 403, timeout) is preserved.
+    """
+    return sanitize_cli_stderr(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
+
+
 def _gh_run(argv: list[str], *, timeout: float, input_text: str | None = None) -> subprocess.CompletedProcess:
     """Single spawn chokepoint for every ``gh`` call — replaces argv[0] with the
     trusted canonical gh and passes the minimal env (see the hardening note
@@ -260,7 +272,7 @@ def _run_gh_api(path: str, jq_filter: str, *, timeout: float = GH_TIMEOUT_SEC, p
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         _raise_if_auth_failure(tail)
         raise GhCliError(f"gh api {path} failed (exit {proc.returncode}): {tail}")
 
@@ -323,7 +335,7 @@ def verify_repo_access(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"could not read {owner}/{repo} (exit {proc.returncode}): {tail}")
 
     try:
@@ -365,6 +377,22 @@ def list_open_issues(owner: str, repo: str, *, timeout: float = GH_PAGINATE_TIME
     body}]``.
     """
     return _list_issues(owner, repo, "open", timeout=timeout, paginate=True)
+
+
+def list_open_issues_first_page(
+    owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest ``per_page=100`` open issues in ONE request (no pagination).
+
+    Serves the progressive first paint on a COLD cache: ``list_open_issues``
+    paginates every page (tens of requests on a large repo, all before anything
+    can render), so the first open of such a repo blocks for seconds. This is the
+    same first page that fetch would return anyway — issues are sorted
+    most-recently-updated first and both use it — so the full set appends behind
+    it with no reordering. Uses the ordinary ``GH_TIMEOUT_SEC``, not the paginate
+    budget: it is a single page by construction.
+    """
+    return _list_issues(owner, repo, "open", timeout=timeout, paginate=False)
 
 
 def list_closed_issues(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> list[dict]:
@@ -588,7 +616,7 @@ def get_current_login(*, timeout: float = GH_TIMEOUT_SEC) -> str | None:
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         _raise_if_auth_failure(tail)
         raise GhCliError(f"gh api user failed (exit {proc.returncode}): {tail}")
 
@@ -710,7 +738,7 @@ def get_issue_detail(owner: str, repo: str, number: int, *, timeout: float = GH_
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"could not read {owner}/{repo}#{int(number)} (exit {proc.returncode}): {tail}")
 
     try:
@@ -753,7 +781,7 @@ def get_ref_summary(owner: str, repo: str, number: int, *, timeout: float = GH_T
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(
             f"could not read {owner}/{repo}#{int(number)} (exit {proc.returncode}): {tail}"
         )
@@ -981,7 +1009,7 @@ def _run_gh_write(
 
     if proc.returncode != 0:
         stderr = proc.stderr or ""
-        tail = " ".join(stderr.strip().splitlines()[-3:])
+        tail = sanitize_cli_stderr(" ".join(stderr.strip().splitlines()[-3:]))
         if "HTTP 403" in stderr or "HTTP 401" in stderr:
             raise GhPermissionError(
                 f"GitHub refused the write ({method} {path}) — your `gh` session "
@@ -1172,6 +1200,25 @@ def list_open_pulls(owner: str, repo: str, *, timeout: float = GH_PAGINATE_TIMEO
     return _list_pulls(owner, repo, "open", timeout=timeout, paginate=True)
 
 
+def list_open_pulls_first_page(
+    owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> list[dict]:
+    """The newest ``per_page=100`` open PRs in ONE request (no pagination).
+
+    Serves the progressive first paint on a COLD cache, exactly as
+    ``list_open_issues_first_page`` does for issues: ``list_open_pulls``
+    paginates every page (tens of requests on a large repo) AND the route then
+    runs the GraphQL enrichment before a single byte can render, so the first
+    open of a busy repo blocks for seconds. This is the same first page the full
+    fetch would return anyway — PRs are sorted most-recently-updated first — so
+    the full set appends behind it with no reordering. Uses the ordinary
+    ``GH_TIMEOUT_SEC``, not the paginate budget: it is a single page by
+    construction. The rows are UN-enriched (no diff size / check state); the
+    first-paint route returns them as-is and the authoritative fetch enriches.
+    """
+    return _list_pulls(owner, repo, "open", timeout=timeout, paginate=False)
+
+
 def list_closed_pulls(owner: str, repo: str, *, timeout: float = GH_TIMEOUT_SEC) -> list[dict]:
     """The 100 most-recently-updated CLOSED pull requests (bounded — includes
     both merged and closed-unmerged; the frontend splits them on ``merged_at``)."""
@@ -1204,7 +1251,10 @@ _PR_DETAIL_JQ = (
 )
 
 
-def get_pr_detail(owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC) -> dict:
+def get_pr_detail(
+    owner: str, repo: str, number: int, *, timeout: float = GH_TIMEOUT_SEC,
+    resolve_mergeable: bool = True,
+) -> dict:
     """Full detail for one pull request via ``gh api repos/{o}/{r}/pulls/{n}``.
 
     Returns the richer field set the detail pane needs but the list view omits
@@ -1220,8 +1270,17 @@ def get_pr_detail(owner: str, repo: str, number: int, *, timeout: float = GH_TIM
     ``unknown`` first, then ``true`` / ``blocked`` a moment later). So when the
     first answer is unknown we wait briefly and ask once more — otherwise the
     detail pane would permanently read "Unknown", and the cache would store it.
+
+    ``resolve_mergeable=False`` skips that retry+sleep. A caller that reads only a
+    field GitHub returns EAGERLY (``head_sha`` for the head-moved verdict check)
+    does not need the lazy merge state, and paying the 1.5s sleep + second call per
+    row of a bulk approve is pure waste — ``head_sha`` is stable in the first
+    response. It never WEAKENS anything: the first read is still a live read of the
+    current head, which is all the pin requires.
     """
     detail = _fetch_pr_detail_once(owner, repo, number, timeout=timeout)
+    if not resolve_mergeable:
+        return detail
     if detail.get("mergeable") is None or detail.get("mergeable_state") in (None, "unknown"):
         time.sleep(_MERGEABLE_RETRY_DELAY_SEC)
         try:
@@ -1255,7 +1314,7 @@ def _fetch_pr_detail_once(
     proc = _gh_run(argv, timeout=timeout)
 
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"could not read {owner}/{repo} PR #{int(number)} (exit {proc.returncode}): {tail}")
 
     try:
@@ -1605,7 +1664,7 @@ def fetch_pr_summaries(
     ]
     proc = _gh_run(argv, timeout=timeout)
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"gh api graphql (pr summaries) failed (exit {proc.returncode}): {tail}")
 
     return _parse_summary_rows(proc.stdout or "")
@@ -1644,7 +1703,7 @@ def fetch_pr_readiness(
     ]
     proc = _gh_run(argv, timeout=timeout)
     if proc.returncode != 0:
-        tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+        tail = _stderr_tail(proc)
         raise GhCliError(f"gh api graphql (pr readiness) failed (exit {proc.returncode}): {tail}")
     return _parse_readiness_rows(proc.stdout or "")
 
@@ -1678,7 +1737,7 @@ def fetch_pr_readiness_by_number(
         ]
         proc = _gh_run(argv, timeout=timeout)
         if proc.returncode != 0:
-            tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+            tail = _stderr_tail(proc)
             raise GhCliError(
                 f"gh api graphql (pr readiness by number) failed "
                 f"(exit {proc.returncode}): {tail}"
@@ -1746,7 +1805,7 @@ def fetch_pr_summaries_by_number(
         ]
         proc = _gh_run(argv, timeout=timeout)
         if proc.returncode != 0:
-            tail = " ".join((proc.stderr or "").strip().splitlines()[-3:])
+            tail = _stderr_tail(proc)
             raise GhCliError(
                 f"gh api graphql (pr summaries by number) failed (exit {proc.returncode}): {tail}"
             )
@@ -1908,20 +1967,16 @@ def summarize_checks(checks: list[dict]) -> dict:
     return {"checks_counts": counts, "checks_state": state, "checks_truncated": False}
 
 
-def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[dict]:
-    """Merge :func:`fetch_pr_summaries` into REST list rows, in place-ish.
+def _enrich_summaries(owner: str, repo: str, pulls: list[dict], state: str) -> dict[int, dict]:
+    """The card-summary family: the state-scoped query plus its by-number top-up.
 
     The state-scoped GraphQL query returns at most 100 PRs while the REST list
     paginates ALL of them, so any row beyond that window is topped up by a
     by-number lookup. Without it those rows would report ``0`` additions and no
     checks — unavailable data rendered as a confident "no diff, no checks".
 
-    BOTH calls are topped up that way, the card summaries and the separate merge
-    readiness, since both are capped at the same window while the list is not.
-
-    Best effort by design: on any failure the affected rows report ``None`` for
-    diff size and check state (unknown, not "nothing"), so the list still renders
-    and the route declines to cache the incomplete rows.
+    Best effort: on failure the affected rows are simply absent from the map and
+    :func:`_apply_summaries` records them as ``None`` (unknown, not "nothing").
     """
     try:
         summaries = fetch_pr_summaries(owner, repo, state)
@@ -1936,24 +1991,34 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
             summaries.update(fetch_pr_summaries_by_number(owner, repo, missing))
         except GhCliError:
             pass
-    # Merge readiness is a SECOND, lean call — it cannot ride on the card selection
-    # without 502ing it (see `_PR_READINESS_SELECTION`). Independently failable: losing
-    # it costs the bulk bar's arm/merge split, not the whole card payload.
+    return summaries
+
+
+def _enrich_readiness(owner: str, repo: str, pulls: list[dict], state: str) -> dict[int, str | None]:
+    """The merge-readiness family: the state-scoped query plus its by-number top-up.
+
+    A SECOND, lean call — it cannot ride on the card selection without 502ing it
+    (see ``_PR_READINESS_SELECTION``). Independently failable: losing it costs the
+    bulk bar's arm/merge split, not the whole card payload.
+
+    Topped up by number for the same reason the summaries are: the state-scoped
+    query is capped at ``first:100`` while the REST list paginates ALL open PRs, so
+    on a repo with more than 100 the tail came back with no readiness at all.
+    Unknown readiness is offered NEITHER merge verb, so those rows were silently
+    unactionable in the bulk bar, precisely on the large repos bulk actions exist
+    for.
+
+    Membership, NOT truthiness. ``UNKNOWN`` is a legitimate ANSWER, not an absent
+    one: GitHub computes mergeability asynchronously and roughly half a cold page
+    comes back that way, and ``_parse_readiness_rows`` records it as the string
+    ``'unknown'``. So the key IS present, and testing the value instead would
+    re-request every such row on every fetch: a guaranteed extra query per list
+    load that answers ``UNKNOWN`` again.
+    """
     try:
         readiness = fetch_pr_readiness(owner, repo, state)
     except GhCliError:
         readiness = {}
-    # Topped up by number for the same reason the summaries are: the state-scoped query
-    # is capped at `first:100` while the REST list paginates ALL open PRs, so on a repo
-    # with more than 100 the tail came back with no readiness at all. Unknown readiness
-    # is offered NEITHER merge verb, so those rows were silently unactionable in the
-    # bulk bar, precisely on the large repos bulk actions exist for.
-    #
-    # Membership, NOT truthiness. `UNKNOWN` is a legitimate ANSWER, not an absent one:
-    # GitHub computes mergeability asynchronously and roughly half a cold page comes back
-    # that way, and `_parse_readiness_rows` records it as the string `'unknown'`. So the
-    # key IS present, and testing the value instead would re-request every such row on
-    # every fetch: a guaranteed extra query per list load that answers `UNKNOWN` again.
     missing_readiness = [
         n for n in (pr.get("number") for pr in pulls)
         if isinstance(n, int) and n not in readiness
@@ -1963,6 +2028,29 @@ def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[d
             readiness.update(fetch_pr_readiness_by_number(owner, repo, missing_readiness))
         except GhCliError:
             pass
+    return readiness
+
+
+def enrich_pulls(owner: str, repo: str, pulls: list[dict], state: str) -> list[dict]:
+    """Merge :func:`fetch_pr_summaries` into REST list rows, in place-ish.
+
+    The card summaries and the separate merge readiness are two INDEPENDENT
+    GraphQL families (they must stay two calls — readiness cannot ride on the
+    card selection without 502ing it), and neither derives from the other, so
+    they run CONCURRENTLY on two threads rather than back-to-back. Each family is
+    blocking ``gh`` subprocess I/O, so a thread apiece overlaps the two round
+    trips and the enrichment leg costs the slower family instead of their sum.
+
+    Best effort by design: on any failure the affected rows report ``None`` for
+    diff size and check state (unknown, not "nothing"), so the list still renders
+    and the route declines to cache the incomplete rows. Each family swallows its
+    own ``GhCliError`` internally, so one failing does not sink the other.
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        summaries_f = pool.submit(_enrich_summaries, owner, repo, pulls, state)
+        readiness_f = pool.submit(_enrich_readiness, owner, repo, pulls, state)
+        summaries = summaries_f.result()
+        readiness = readiness_f.result()
     return _apply_summaries(pulls, summaries, readiness)
 
 
@@ -2397,7 +2485,7 @@ def _run_gh_graphql_mutation(
     proc = _gh_run(argv, timeout=timeout)
     combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
     if proc.returncode != 0 or '"errors"' in (proc.stdout or ""):
-        tail = " ".join(combined.strip().splitlines()[-3:])
+        tail = sanitize_cli_stderr(" ".join(combined.strip().splitlines()[-3:]))
         lowered = combined.lower()
         if (
             "HTTP 403" in combined

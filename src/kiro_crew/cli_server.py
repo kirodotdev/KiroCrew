@@ -48,6 +48,7 @@ from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
 from kiro_crew.learn import LessonStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.memory import MemoryStore
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.sel import sel
@@ -56,6 +57,7 @@ from kiro_crew.service import linux as svc_linux
 from kiro_crew.service import macos as svc_macos
 from kiro_crew.service.common import SERVICE_NAME, Platform, current_platform
 from kiro_crew.session import SessionManager
+from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.gateway import run_gateway
 from kiro_crew.taskrunner import TaskRunner
@@ -271,7 +273,7 @@ def _probe_dashboard_health(port: int) -> None:
     """
     try:
         req = urllib.request.Request(f"http://{_CLI_LOOPBACK}:{port}/", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:  # nosemgrep
+        with loopback_urlopen(req, timeout=2) as resp:  # nosemgrep
             body = resp.read(8192).decode("utf-8", errors="replace")
             if DASHBOARD_HTML_NOT_FOUND_MARKER.lower() in body.lower():
                 print(
@@ -319,7 +321,7 @@ def _token(args: argparse.Namespace) -> None:
         url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
     except Exception as exc:
@@ -363,7 +365,7 @@ def _logout(port: int) -> None:
         data=b"{}",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
                 print("✅ All dashboard sessions revoked.")
@@ -882,7 +884,7 @@ def _probe_gateway_ready(port: int, timeout: int = 3) -> int:
         # Loopback-only probe to our own gateway on 127.0.0.1; the URL is
         # internally derived (never attacker-supplied), so the dynamic-URL SSRF
         # audit rule is a false positive here.
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosemgrep
+        with loopback_urlopen(url, timeout=timeout) as resp:  # nosemgrep
             return int(resp.status)
     except urllib.error.HTTPError as e:
         return int(e.code)
@@ -989,7 +991,7 @@ def _print_token_url(port: int) -> None:
             secret = secret_path.read_text().strip()
             url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
             req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with loopback_urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
                 token = data.get("token", "")
             if token:
@@ -1157,19 +1159,53 @@ def _restart(cli_port: int | None = None) -> None:
 
 
 def _update() -> None:
-    """Update KiroCrew via git fetch + reset --hard + rebuild."""
+    """Update Kiro Crew — dispatches based on install layout.
+
+    Three install layouts, three update paths:
+
+    * **git checkout** — fetch + reset --hard + rebuild (existing path).
+    * **wheel / cli.sh** — fetch the release feed, compare versions, and
+      re-run the installer if newer. This is the path that was missing and
+      caused the ``KIROCREW_PROJECT_DIR not set`` error for cli.sh installs.
+    * **externally managed** (desktop app, Docker) — print guidance on how
+      to update via the correct surface instead of failing with an opaque error.
+    """
+    from kiro_crew.platform.update_layout import (
+        EXTERNALLY_MANAGED,
+        InstallLayout,
+    )
+
     print("👻 Updating Kiro Crew…\n")
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-    if not proj:
-        print("❌ KIROCREW_PROJECT_DIR not set — cannot locate source tree")
-        print("   Run from the project directory or run `kirocrew setup` first.")
-        sys.exit(1)
+    proj_path = Path(proj) if proj else None
+    is_git = proj_path is not None and (proj_path / ".git").exists()
 
-    proj_path = Path(proj)
+    if not is_git:
+        # Not a git checkout — check if externally managed or wheel install.
+        from kiro_crew.beacon import distribution
+
+        dist = distribution()
+        if dist in EXTERNALLY_MANAGED:
+            print(f"  ℹ️  This install ({dist}) is managed externally.")
+            print(f"  {EXTERNALLY_MANAGED[dist]}")
+            return
+
+        # Wheel / cli.sh install path.
+        layout = InstallLayout(
+            kind=dist or "wheel",
+            proj=proj,
+            is_git=False,
+            is_externally_managed=False,
+            guidance="",
+        )
+        _update_wheel(layout)
+        return
+
     # A git worktree or submodule stores ``.git`` as a FILE (a ``gitdir:``
     # pointer), not a directory, so accept both — otherwise `kirocrew update`
     # run from a worktree wrongly refuses with "No git repo".
+    assert proj_path is not None  # narrowing: is_git=True implies proj_path was set
     if not (proj_path / ".git").exists():
         print(f"❌ No git repo at {proj}")
         sys.exit(1)
@@ -1301,12 +1337,145 @@ def _update() -> None:
         print("  ⚠️  Agent config refresh failed — run: kirocrew setup --agent-only")
 
 
+def _update_wheel(layout) -> None:
+    """Update a wheel/cli.sh install by checking the release feed and re-running the installer.
+
+    This is the path taken when KIROCREW_PROJECT_DIR is unset or has no .git —
+    the standard state for ``curl | sh`` installs where the venv at
+    ``~/.kiro/crew-venv`` has no source tree.
+    """
+    import json
+    import re
+    import urllib.request
+
+    from kiro_crew import __version__ as local_version
+    from kiro_crew.platform.update_governance import update_blocked_reason
+    from kiro_crew.platform.update_layout import cdn_bases, release_channel, wheel_update_command
+
+    channel = release_channel()
+    feed_base, artifact_base = cdn_bases()
+    feed_url = f"{feed_base}/feed/{channel}/latest-cli.json"
+
+    # Source-pin governance check: same seam the git path uses, applied to the
+    # feed URL so a pinned fleet's wheel installs cannot bypass the ceiling.
+    blocked = update_blocked_reason(feed_base)
+    if not blocked:
+        blocked = update_blocked_reason(artifact_base)
+    if blocked:
+        print(f"  🛡️  Update blocked by security policy: {blocked}")
+        sys.exit(1)
+
+    # Shell safety: cdn_bases() reads KIROCREW_CDN_BASE which is operator-set.
+    # Reject metacharacters that could enable command injection when the URL
+    # flows through wheel_update_command() into ``sh -c``.
+    _SAFE_URL_RE = re.compile(r"^https://[A-Za-z0-9._/:%@~+\-]+$")
+    if not _SAFE_URL_RE.match(feed_base) or not _SAFE_URL_RE.match(artifact_base):
+        print("  ❌ CDN base URL contains disallowed characters")
+        sys.exit(1)
+
+    print(f"  📦 Install type: {layout.kind} (channel: {channel})")
+    print(f"  📡 Checking {feed_url}…")
+
+    # Fetch the release feed (scheme-validated to satisfy SAST — cdn_bases()
+    # already enforces https but Semgrep cannot see through the indirection).
+    if not feed_url.startswith("https://"):
+        print(f"  ❌ Refusing non-HTTPS feed URL: {feed_url}")
+        sys.exit(1)
+    try:
+        req = urllib.request.Request(feed_url, headers={"User-Agent": "kirocrew-update/1"})
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep: dynamic-urllib-use-detected
+            raw = resp.read(65536 + 1)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print(f"  ❌ Could not reach release feed: {e}")
+        print("\n  To update manually, run:")
+        print(f"    {wheel_update_command(channel)}")
+        sys.exit(1)
+
+    if len(raw) > 65536:
+        print("  ❌ Release feed response too large — may be corrupted")
+        sys.exit(1)
+
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        print("  ❌ Release feed is not valid JSON")
+        sys.exit(1)
+
+    if not isinstance(manifest, dict):
+        print("  ❌ Release feed has unexpected format")
+        sys.exit(1)
+
+    if manifest.get("schema") != "kirocrew-cli-artifact-manifest-v1":
+        print("  ❌ Release feed schema mismatch — update the installer first")
+        print(f"    {wheel_update_command(channel)}")
+        sys.exit(1)
+
+    if manifest.get("channel") != channel:
+        print(f"  ❌ Feed channel mismatch (expected {channel}, got {manifest.get('channel')})")
+        sys.exit(1)
+
+    remote_version = manifest.get("version", "")
+    if not remote_version:
+        print("  ❌ No version in release feed")
+        sys.exit(1)
+
+    print(f"  📋 Current: {local_version}")
+    print(f"  📋 Latest:  {remote_version}")
+
+    # Compare versions using the same logic as the dashboard
+    from kiro_crew.dashboard.handlers.updates import _is_newer
+
+    newer = _is_newer(remote_version, local_version)
+    if newer is None:
+        print("  ⚠️  Could not compare versions — updating anyway to be safe")
+    elif not newer:
+        print("\n✅ Already on the latest version!")
+        return
+
+    # Run the installer
+    cmd = wheel_update_command(channel)
+    print("\n  🔄 Running installer…")
+    print(f"     {cmd}\n")
+
+    # Platform guard: cli.sh is a POSIX shell script; on Windows there is no sh.
+    if sys.platform == "win32":
+        print("  ❌ Wheel self-update is not supported on Windows.")
+        print("  To update manually, run in PowerShell:")
+        print(f"    {cmd}")
+        sys.exit(1)
+
+    try:
+        result = subprocess.run(
+            ["sh", "-c", cmd],
+            timeout=300,
+        )
+    except FileNotFoundError:
+        print("  ❌ 'sh' not found — cannot run the installer.")
+        print("  To update manually, run:")
+        print(f"    {cmd}")
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("\n  ❌ Installer timed out (5 min)")
+        print("  Try running manually:")
+        print(f"    {cmd}")
+        sys.exit(1)
+    if result.returncode != 0:
+        print(f"\n  ❌ Installer exited with code {result.returncode}")
+        print("  Try running manually:")
+        print(f"    {cmd}")
+        sys.exit(1)
+
+    print(f"\n✅ Kiro Crew updated to {remote_version}!")
+    print("\n  Restart the gateway to use the new version:")
+    print("    kirocrew restart")
+
+
 def _status(args: argparse.Namespace) -> None:
     """Query the running gateway for stats, or print offline message."""
     port = resolve_client_port(getattr(args, "port", None))
     url = f"http://127.0.0.1:{port}/api/status"
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with loopback_urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -1355,11 +1524,7 @@ def _should_reconcile_launchd_launcher() -> bool:
     ``__pycache__`` inside the app and invalidate its signature. The packaged app
     has no business owning this artifact at all.
     """
-    return (
-        sys.platform == "darwin"
-        and not getattr(sys, "frozen", False)
-        and is_default_home()
-    )
+    return sys.platform == "darwin" and not getattr(sys, "frozen", False) and is_default_home()
 
 
 async def _gateway(
@@ -1525,7 +1690,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     ctx = ContextBuilder(
         memory=memory, skills=skills, hooks=hooks, lessons=lessons, bot_name=cfg.agent.bot_name
     )
-
+    register_skill_read_observer(ctx)
     runner = TaskRunner(
         sessions=sessions,
         context_builder=ctx,

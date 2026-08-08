@@ -14,6 +14,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -412,8 +413,33 @@ class TestResourceShims:
     def test_proc_rss_bytes_for_pid_none_for_unused_pid(self):
         assert pc.proc_rss_bytes_for_pid(2_000_000_000) is None
 
+    def test_proc_rss_tree_mb_for_pid_windows_only(self):
+        # Windows-only: the lineage-validated tree walk. On POSIX it returns None
+        # (callers keep their /proc or ps route), and it must never raise.
+        result = pc.proc_rss_tree_mb_for_pid(os.getpid())
+        if not pc.IS_WINDOWS:
+            assert result is None
+            return
+        # On Windows self (no children spawned by this test) reads a positive
+        # tree total that is at least the single-process RSS.
+        assert result is not None and result > 0
+        single = pc.proc_rss_bytes_for_pid(os.getpid())
+        assert single is not None
+        assert result >= single / (1024 * 1024) - 1  # -1: sampled microseconds apart
+
+    def test_proc_rss_tree_mb_for_pid_rejects_reserved_pid(self):
+        # A reserved/non-int pid must not anchor a tree walk (recycled-root risk).
+        assert pc.proc_rss_tree_mb_for_pid(1) is None
+        assert pc.proc_rss_tree_mb_for_pid(0) is None
+
     def test_proc_cpu_seconds_nonnegative(self):
         assert pc.proc_cpu_seconds() >= 0.0
+
+    def test_proc_cpu_seconds_is_positive_for_a_running_process(self):
+        # A running interpreter has always consumed some CPU. This must be > 0
+        # on every supported platform: on Windows GetCurrentProcess's handle was
+        # truncated without argtypes, so GetProcessTimes failed and this read 0.0.
+        assert pc.proc_cpu_seconds() > 0.0
 
     def test_raise_nofile_soft_limit_is_safe(self):
         # No-op on Windows; best-effort raise on POSIX. Must never raise.
@@ -434,6 +460,180 @@ class TestChmodShims:
             pc.fchmod_safe(fd, 0o600)   # applies on POSIX, no-op on Windows
         finally:
             os.close(fd)
+
+
+class TestDirLinkShims:
+    """``symlink_or_junction`` / ``is_link_or_junction`` / ``unlink_link_or_junction``.
+
+    These run on every platform: the contract is the same everywhere (a name
+    that means another directory), only the mechanism differs — a symlink on
+    POSIX, a directory junction on Windows, where an ordinary account holds no
+    ``SeCreateSymbolicLinkPrivilege`` and ``os.symlink`` fails with
+    ``WinError 1314``.
+    """
+
+    def test_link_is_created_and_transparent(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "index.html").write_text("hi")
+        link = tmp_path / "link"
+
+        pc.symlink_or_junction(target, link)
+
+        assert pc.is_link_or_junction(link)
+        assert link.is_dir()
+        assert link.resolve() == target.resolve()
+        # Reads go through, and later writes to the target are visible via the
+        # link — the property the dist resolver relies on for rebuild pickup.
+        assert (link / "index.html").read_text(encoding="utf-8") == "hi"
+        (target / "later.txt").write_text("fresh")
+        assert (link / "later.txt").read_text(encoding="utf-8") == "fresh"
+
+    def test_plain_dir_and_file_are_not_links(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        regular = tmp_path / "f.txt"
+        regular.write_text("x")
+
+        assert not pc.is_link_or_junction(plain)
+        assert not pc.is_link_or_junction(regular)
+        assert not pc.is_link_or_junction(tmp_path / "does-not-exist")
+
+    def test_dangling_link_is_still_reported_as_a_link(self, tmp_path):
+        """A link whose target is gone must still answer True.
+
+        The dist resolver's replace path keys off exactly this: ``exists()``
+        follows the link and is already False, so only the link-ness test can
+        tell "stale link to clean up" from "nothing here".
+        """
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        pc.symlink_or_junction(target, link)
+        shutil.rmtree(target)
+
+        assert pc.is_link_or_junction(link)
+        assert not link.exists()
+
+    def test_unlink_removes_the_link_and_spares_the_target(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "keep.txt").write_text("keep")
+        link = tmp_path / "link"
+        pc.symlink_or_junction(target, link)
+
+        pc.unlink_link_or_junction(link)
+
+        assert not pc.is_link_or_junction(link)
+        assert not os.path.lexists(str(link))
+        assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+    def test_unlink_removes_a_dangling_link(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        pc.symlink_or_junction(target, link)
+        shutil.rmtree(target)
+
+        pc.unlink_link_or_junction(link)
+
+        assert not os.path.lexists(str(link))
+
+    def test_unlink_refuses_a_real_directory(self, tmp_path):
+        """A non-link must raise on both platforms, empty or not.
+
+        POSIX ``os.unlink`` refuses a directory outright, so the Windows
+        ``rmdir`` fallback has to be fenced to reparse points: unfenced it
+        DELETES a real empty directory, so a caller that mis-detects link-ness
+        loses data on Windows only while POSIX raises.
+        """
+        empty = tmp_path / "real-empty"
+        empty.mkdir()
+        full = tmp_path / "real-full"
+        full.mkdir()
+        (full / "keep.txt").write_text("keep")
+
+        with pytest.raises(OSError):
+            pc.unlink_link_or_junction(empty)
+        with pytest.raises(OSError):
+            pc.unlink_link_or_junction(full)
+
+        assert empty.is_dir()
+        assert (full / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="junctions exist only on Windows")
+    def test_windows_link_is_usable_without_elevation(self, tmp_path):
+        """Windows gets a working directory link either way it is made.
+
+        ``symlink_or_junction`` tries ``os.symlink`` FIRST and only falls back to
+        a junction, so which mechanism lands depends on whether the host holds
+        ``SeCreateSymbolicLinkPrivilege`` — GitHub's runners do, an ordinary
+        account does not. Asserting "junction, never symlink" would therefore
+        pin the unprivileged host as if it were universal, and fail on CI.
+
+        What matters to every caller is the same on both paths, so that is what
+        is asserted: the name is a reparse point that ``is_link_or_junction``
+        recognises (an ``is_symlink()``-only test does NOT see a junction, which
+        is the bug this shim exists for), it is transparent to path operations,
+        and ``rmtree`` refuses it — which is why ``unlink_link_or_junction``
+        exists. The junction branch specifically is covered by
+        ``test_junction_is_recognised_and_removable`` below.
+        """
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "f.txt").write_text("hi", encoding="utf-8")
+        link = tmp_path / "link"
+
+        pc.symlink_or_junction(target, link)
+
+        assert pc.is_link_or_junction(link)
+        assert link.is_dir()  # transparent to path operations
+        assert (link / "f.txt").read_text(encoding="utf-8") == "hi"
+        # rmtree refuses any directory link, which is why unlink_link_or_junction exists.
+        with pytest.raises(OSError):
+            shutil.rmtree(str(link))
+        pc.unlink_link_or_junction(link)
+        assert not link.exists()
+        assert target.is_dir(), "removing the link must spare the target"
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="junctions exist only on Windows")
+    def test_junction_is_recognised_and_removable(self, tmp_path):
+        """A JUNCTION specifically — the form an unprivileged Windows user gets.
+
+        Created directly via ``_winapi.CreateJunction`` rather than through the
+        shim, so this covers the unprivileged branch even on a runner that holds
+        the symlink privilege and would otherwise take the symlink path.
+        """
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "junction"
+        _winapi.CreateJunction(str(target), str(link))
+
+        # A junction reports is_symlink() False — the whole reason the shim's
+        # detector cannot be an is_symlink() test.
+        assert not link.is_symlink()
+        assert pc.is_link_or_junction(link)
+        # 0xA0000003 = IO_REPARSE_TAG_MOUNT_POINT, spelled literally rather than
+        # read from the module under test (so the assertion is independent of it)
+        # and rather than via os.path.isjunction (3.12+ only; this project
+        # supports 3.10).
+        assert os.lstat(str(link)).st_reparse_tag == 0xA0000003
+        pc.unlink_link_or_junction(link)
+        assert not link.exists()
+        assert target.is_dir()
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="POSIX symlink mechanism")
+    def test_posix_link_is_a_symlink(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+
+        pc.symlink_or_junction(target, link)
+
+        assert link.is_symlink()
+        assert os.readlink(str(link)) == str(target)
 
 
 # ---------------------------------------------------------------------------
@@ -1808,6 +2008,88 @@ class TestProcessTokenSid:
     @pytest.mark.skipif(pc.IS_WINDOWS, reason="the off-Windows guard")
     def test_returns_none_off_windows(self) -> None:
         assert pc._process_token_sid() is None
+
+
+class TestWin32StructsAreModuleScoped:
+    """``ctypes.POINTER(T)`` memoises T -> POINTER(T) forever.
+
+    ctypes keeps that memo in a module-level dict with no eviction, so a
+    Structure subclass declared inside a function body pins a fresh pair of type
+    objects on EVERY call. The Windows metrics/enumeration helpers are polled
+    (the dashboard's system-metrics endpoint, the RSS-recycle watchdog, the
+    tree-kill parent-map walk, the MCP pipe's per-connection peer check), which
+    turned that into unbounded growth in a long-running gateway -- measured at
+    ~8 KiB per ``proc_rss_bytes`` call, never reclaimed.
+
+    Asserting on the source keeps this enforceable from the POSIX fleet, where
+    the Windows branches never execute.
+    """
+
+    #: Helpers whose Win32 struct layouts must come from module scope.
+    _WIN32_STRUCT_USERS = (
+        "get_ppid",
+        "_windows_process_parent_map",
+        "_win_process_image_name",
+        "_process_token_sid_unguarded",
+        "proc_rss_bytes",
+        "proc_rss_bytes_for_pid",
+        "system_memory",
+    )
+
+    def test_the_shared_layouts_are_defined_once_at_module_scope(self) -> None:
+        import ctypes
+
+        for name in (
+            "_ProcessEntry32",
+            "_ProcessMemoryCounters",
+            "_MemoryStatusEx",
+            "_SidAndAttributes",
+            "_TokenUser",
+        ):
+            assert issubclass(getattr(pc, name), ctypes.Structure), name
+
+    @pytest.mark.parametrize("func_name", _WIN32_STRUCT_USERS)
+    def test_no_helper_declares_a_structure_in_its_body(self, func_name: str) -> None:
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(pc, func_name))))
+        local_structs = [
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            and any(
+                isinstance(base, ast.Attribute) and base.attr in ("Structure", "Union")
+                for base in node.bases
+            )
+        ]
+        assert not local_structs, (
+            f"{func_name} declares {local_structs} in its body; each call would pin a new "
+            "type in ctypes' pointer-type memo. Hoist the layout to module scope."
+        )
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Win32 metrics paths")
+    def test_repeated_metrics_calls_add_no_pointer_memo_entries(self) -> None:
+        """The behavioural half: polling must not grow ctypes' memo at all."""
+        import ctypes
+
+        memo = ctypes._pointer_type_cache  # type: ignore[attr-defined]
+        pid = os.getpid()
+        probes = (
+            pc.proc_rss_bytes,
+            lambda: pc.proc_rss_bytes_for_pid(pid),
+            pc.system_memory,
+            lambda: pc.get_ppid(pid),
+            lambda: pc.process_owner_sid(pid),
+        )
+        for probe in probes:
+            probe()  # a first call may legitimately populate the memo once
+        before = len(memo)
+        for _ in range(25):
+            for probe in probes:
+                probe()
+        assert len(memo) == before
 
 
 class TestLocalUserId:

@@ -66,6 +66,24 @@ class TestContextOccupancyBasics:
         assert out["p50_pct"] == 50.0
         assert out["max_pct"] == 90.0
 
+    @pytest.mark.parametrize(
+        ("occupancies", "field", "expected"),
+        [
+            ([10, 20, 30, 40], "p50_pct", 20.0),
+            ([10, 20, 30, 40, 50, 60], "p90_pct", 60.0),
+        ],
+    )
+    def test_percentiles_use_nearest_rank(
+        self, _isolated_shards, occupancies, field, expected
+    ):
+        """Select the value at ceil(percentile * sample count), 1-indexed."""
+        _write(
+            _isolated_shards,
+            [_row("chat-1", pct * 10_000) for pct in occupancies],
+        )
+
+        assert usage_mod.context_occupancy(14)[field] == expected
+
     def test_peak_is_per_session_not_global(self, _isolated_shards):
         _write(_isolated_shards, [
             _row("chat-hot", 950_000),
@@ -115,6 +133,42 @@ class TestContextOccupancySkips:
         out = usage_mod.context_occupancy(14)
         assert out["turns"] == 1
         assert [s["slot"] for s in out["sessions"]] == ["recent"]
+
+    def test_an_unattributed_subagent_reaches_neither_the_list_nor_the_spread(
+        self, _isolated_shards
+    ):
+        """A subagent row carrying no parent identity leaves before the sample.
+
+        ``is_session_slot`` is applied ahead of the percentile sample rather than
+        at the grouping step, so the spread and the session list describe one
+        population. Asserting only the session list would pass on a filter moved
+        after the sample, which is exactly the arrangement that lets ``p90``
+        disagree with every row beneath it.
+
+        Scoped to rows with no parent field, which is every row written so far.
+        This fixes the treatment of THOSE rows, not the rule for a row that can
+        name the session it belongs to.
+
+        The cost path pins the same rule for the same row shape in
+        ``test_cost_breakdown.py::test_a_subagent_is_not_a_session_and_reaches_no_figure``;
+        this is the context half, so a change has to face both.
+        """
+        _write(_isolated_shards, [
+            _row("chat-1-1", 100_000),
+            # No parent field: the shape every subagent row on disk has today.
+            _row("subagent:0000000a", 900_000),
+            _row("subagent:0000000b", 950_000),
+        ])
+        out = usage_mod.context_occupancy(14)
+
+        assert [s["slot"] for s in out["sessions"]] == ["chat-1-1"]
+        assert out["turns"] == 1, "a subagent turn reached the turn count"
+        # 10.0 is chat-1-1 alone. Were the subagents in the sample, every
+        # percentile would sit up near their 90-95%.
+        assert out["p50_pct"] == 10.0
+        assert out["p90_pct"] == 10.0
+        assert out["max_pct"] == 10.0
+        assert json.dumps(out).count("subagent") == 0
 
 
 class TestContextOccupancyLatestWins:

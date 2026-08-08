@@ -38,8 +38,8 @@ Two structural facts explain most of the rest:
 - **The real merge gate is human approval plus armed auto-merge.** `PR Readiness`
   is the one status worth watching; individual red checks are strong signals a
   human can weigh.
-- **Fork PRs cannot reach a passing readiness state, by construction.** See
-  [Fork PRs](#fork-prs).
+- **A fork PR is aggregated like any other and can reach a passing readiness
+  state**; CodeQL is the one lane it cannot run. See [Fork PRs](#fork-prs).
 
 Out-of-band lanes that never gate a PR:
 
@@ -62,7 +62,13 @@ Out-of-band lanes that never gate a PR:
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
   live label set, because keyword rules mislabel often enough to be worse than no
   label), `pr-merge-conflict-label.yml` and `fork-pr-label.yml` (both mirror a fact
-  GitHub does not surface in the `/pulls` list onto a label).
+  GitHub does not surface in the `/pulls` list onto a label), and
+  `add-contributor.yml` (a daily cron, plus manual dispatch, adds each merged
+  PR's author to the README Contributors block via
+  `scripts/update_contributors.py`; because the default branch is protected it
+  opens a rolling PR rather than committing directly, like `test-durations.yml`.
+  A login in `.github/contributors-optout.txt` is never added, which keeps the
+  README's removal promise enforceable against the full-rebuild collector).
 
 ## `ci.yml`: correctness
 
@@ -76,7 +82,7 @@ Every job here is blocking.
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The two suites the sharded matrix deselects because they need unprivileged user namespaces: `test_script_hooks.py` and `test_cron_script.py` |
-| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces backend >= 70% and frontend >= 60% on the raw line-rate |
+| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces backend >= 80% and frontend >= 60% on the raw line-rate (floors live in the job's `env:` block) |
 | `frontend-lint` | `tsc -b`, `eslint --max-warnings 1116`, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
@@ -99,7 +105,7 @@ Details worth knowing:
 - **`coverage-gate` is fail-closed.** It runs `if: always()` and its first step
   converts any non-success upstream result into an explicit failure, because GitHub
   treats a **skipped** required check as satisfied. It also compares the raw
-  line-rate and rounds only for display, so 69.95% cannot pass a 70% floor.
+  line-rate and rounds only for display, so 79.95% cannot pass an 80% floor.
 - **`eslint --max-warnings 1116` is a ratchet baseline.** Burn it down, never raise
   it.
 - **The i18n gates split into three tiers,** and only two can fail: diff-scoped
@@ -357,8 +363,7 @@ commit status plus one `readiness:` label**.
   resolved by `path == "dynamic/github-code-scanning/codeql"`. `skipped` counts as
   passed for it.
 - **Labels:** `readiness: checking` (pending), `readiness: action required` (a
-  blocker), `readiness: maintainer review` (fork), `readiness: passed`. Exactly one
-  is ever present.
+  blocker), `readiness: passed`. Exactly one is ever present.
 
 Two subtleties:
 
@@ -402,13 +407,14 @@ Two subtleties:
 A fork PR gets no repository OIDC credentials or secrets, and this repository's
 managed CodeQL workflow is not scheduled for fork heads. Two consequences.
 
-**Fork PRs cannot reach `readiness: passed`.** Passing public CI, Build and Code
-Review is not full validation, so `pr-readiness.yml` emits a dedicated **red**
-terminal verdict instead: `readiness: maintainer review` with `PR Readiness =
-failure`. It is unmistakable in the merge box and, as a required status check, blocks
-an accidental merge of code the AI reviewers never saw. A maintainer must review
-manually, or re-run validation from a trusted in-repo branch, before merge. This is
-the intended end state for a fork PR, not a bug to route around.
+**A fork PR can still reach `readiness: passed`.** The `fork-*` pipeline below runs
+the AI reviews from the trusted base branch and posts them as check-runs under the
+same names the same-repo lanes use, so `pr-readiness.yml` evaluates a fork from
+those check-runs and a fully green fork is fully validated. CodeQL is the single
+ineligible lane, reported as a non-blocking "Not eligible" note rather than a
+blocker. Readiness therefore says the same thing on a fork as anywhere else: the
+eligible automated validation passed for this revision. Human approval and branch
+protection remain separate gates.
 
 **The `fork-*` pipeline gives fork PRs AI review anyway, in two stages.**
 `fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml` and

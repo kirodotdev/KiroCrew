@@ -1458,13 +1458,53 @@ async def test_discover_worktrees_sandbox_error_is_still_bounded():
 
 
 @pytest.mark.asyncio
-async def test_discover_worktrees_normal_failure_returns_empty():
-    """Non-sandbox git failures return empty list (existing behavior)."""
-    with patch.object(mod, "_run_cmd", new=AsyncMock(
-        return_value=(128, "", "fatal: not a git repository")
-    )):
-        result = await mod._discover_worktrees()
-        assert result == []
+async def test_discover_worktrees_missing_repo_raises_actionable_error(tmp_path):
+    """A missing/non-git MAIN_REPO raises with the path and the remedy.
+
+    This used to return a silent [] — which the UI renders as the
+    "No worktrees found" empty state. On packaged installs (where
+    KIROCREW_PROJECT_DIR points at the app bundle and discovery falls through
+    to the hardcoded ~/kirocrew) that empty state told users they had no
+    worktrees when the app was simply looking at a path that does not exist.
+    """
+    missing = tmp_path / "does-not-exist"
+    with patch.object(mod, "MAIN_REPO", str(missing)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", f"fatal: cannot change to '{missing}'")
+         )):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    msg = str(exc.value)
+    assert str(missing) in msg  # names the path it tried
+    assert "KIROCREW_DEVFLEET_REPO" in msg  # names the remedy
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_git_failure_raises_with_stderr(tmp_path):
+    """When the repo exists but git fails, git's own message is surfaced."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", "fatal: index file corrupt")
+         )):
+        with pytest.raises(RuntimeError, match="index file corrupt"):
+            await mod._discover_worktrees()
+
+
+@pytest.mark.asyncio
+async def test_discover_worktrees_git_failure_is_bounded(tmp_path):
+    """An unbounded git stderr is clipped before reaching the UI."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with patch.object(mod, "MAIN_REPO", str(repo)), \
+         patch.object(mod, "_run_cmd", new=AsyncMock(
+             return_value=(128, "", "fatal: " + "x" * 5000)
+         )):
+        with pytest.raises(RuntimeError) as exc:
+            await mod._discover_worktrees()
+    # bounded: the git portion is clipped to _GIT_ERR_MAX plus the fixed prefix
+    assert len(str(exc.value)) <= mod._GIT_ERR_MAX + 200
 
 
 # =============================================================================
@@ -1582,6 +1622,31 @@ async def test_fleet_handler_sandbox_error_returns_error_payload():
             body = await resp.json()
             assert body["worktrees"] == []
             assert "sandbox unavailable" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_handler_missing_repo_returns_error_payload():
+    """The missing-repo RuntimeError reaches the client as the error payload
+    (the frontend renders it as the Discovery Error banner), not a silent
+    empty fleet."""
+    async def boom():
+        raise RuntimeError(
+            "main checkout not found: /nope/kirocrew is missing or not a git "
+            "checkout. Set KIROCREW_DEVFLEET_REPO to your Kiro Crew checkout, "
+            "or clone it to ~/kirocrew."
+        )
+
+    with patch.object(mod, "_fleet_refresh", new=boom), \
+         patch.object(mod, "_fleet_cached", new=boom):
+        app = web.Application()
+        app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/fleet")
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["worktrees"] == []
+            assert "main checkout not found" in body["error"]
+            assert "KIROCREW_DEVFLEET_REPO" in body["error"]
 
 
 # =============================================================================
@@ -2534,7 +2599,14 @@ async def test_make_live_unsafe_path_returns_code(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
-    """macOS restart asks launchd for a bounded SIGTERM-first stop."""
+    """macOS restart asks launchd for a bounded SIGTERM-first stop.
+
+    Pinned as a DOMAIN-TARGETED ``kill TERM``, not launchctl's legacy label-only
+    ``stop``: Dev Fleet spawns every command inside ``sandbox-exec``, and launchd
+    refuses the legacy stop routine for a sandboxed caller ("Not privileged to
+    stop service.") whatever the seatbelt profile allows. A regression to the
+    legacy form makes Restart fail on every Mac, so the shape is asserted here.
+    """
     monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
     monkeypatch.setattr(
         mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
@@ -2561,8 +2633,15 @@ async def test_restart_gateway_darwin_requests_graceful_stop(monkeypatch):
     # The PID stands in for systemd's monotonic start stamp: it changes on every
     # respawn, which is the edge the frontend handshake waits for.
     assert res["start_id"] == "4242"
-    assert ["launchctl", "stop", mod._gateway_label()] in calls
+    # Addressed via the backend's own domain helper rather than a second copy of
+    # the uid logic (which would also break on Windows, where getuid is absent).
+    domain = mod.gateway_service.LaunchdBackend.domain()
+    assert ["launchctl", "kill", "TERM", f"{domain}/{mod._gateway_label()}"] in calls
+    # `kickstart -k` would restart it too, but as a hard kill rather than the
+    # graceful SIGTERM the ExitTimeOut budget is sized for.
     assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
+    # The legacy verb is what the sandbox blocks — it must not reappear.
+    assert not any(c[:2] == ["launchctl", "stop"] for c in calls)
 
 
 @pytest.mark.asyncio
@@ -2587,7 +2666,7 @@ async def test_restart_gateway_darwin_refuses_stale_loaded_contract(monkeypatch)
     res = await mod._restart_gateway()
     assert res["ok"] is False
     assert "loaded launchd restart contract is outdated" in res["error"]
-    assert not any(c[:2] == ["launchctl", "stop"] for c in calls)
+    assert not any(c[:3] == ["launchctl", "kill", "TERM"] for c in calls)
 
 
 @pytest.mark.asyncio
@@ -2647,7 +2726,7 @@ async def test_make_live_darwin_writes_pointer_and_stops_agent(monkeypatch, tmp_
     import json as _json
     data = _json.loads(ptr_file.read_text())
     assert Path(data["checkout"]).resolve() == wt.resolve()
-    assert any(c[:2] == ["launchctl", "stop"] for c in calls)
+    assert any(c[:3] == ["launchctl", "kill", "TERM"] for c in calls)
     assert not any(c[:2] == ["launchctl", "kickstart"] for c in calls)
     assert not any("bootout" in c or "bootstrap" in c for c in calls)
 
@@ -2670,8 +2749,8 @@ async def test_make_live_darwin_rolls_back_pointer_on_restart_failure(
     async def fake_run_cmd(cmd, **kw):
         if cmd[:2] == ["launchctl", "print"]:
             return (0, "  pid = 99\n", "")
-        if cmd[:2] == ["launchctl", "stop"]:
-            return (1, "", "stop refused")
+        if cmd[:3] == ["launchctl", "kill", "TERM"]:
+            return (1, "", "restart refused")
         return (0, "", "")
 
     monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
@@ -3357,11 +3436,69 @@ async def test_fleet_includes_gateway_service_active(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_service_active_non_linux(monkeypatch):
-    """On non-linux, _gateway_service_active returns False without spawning."""
+async def test_gateway_service_active_no_manager(monkeypatch):
+    """A platform with neither systemd nor launchd -> False, and NO spawn.
+
+    Was previously asserted with ``platform="darwin"``; darwin is now a
+    SUPPORTED backend, so the "no manager at all" case has to be expressed with
+    a platform that really has none -- mirroring
+    ``test_live_user_unit_status_no_manager``. Asserting darwin here made the
+    verdict depend on whether the *host* happened to have the agent loaded,
+    because neither ``shutil`` nor ``_run_cmd`` was faked.
+    """
     monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None)
     monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
-    monkeypatch.setattr(mod.sys, "platform", "darwin")
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="win32"))
+    run = AsyncMock(return_value=(0, "", ""))
+    monkeypatch.setattr(mod, "_run_cmd", run)
+    assert await mod._gateway_service_active() is False
+    # The "without spawning" half of the original intent, now actually verified:
+    # backend() returns None for win32, so nothing may be probed.
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_service_active_darwin_live_agent(monkeypatch):
+    """macOS with a loaded agent reporting a live pid -> True.
+
+    The darwin-True path had no *direct* assertion: the only ``is True`` case in
+    this area runs under ``platform="linux"``. It was covered indirectly via
+    ``test_restart_gateway_darwin_requests_graceful_stop``.
+    """
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None)
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    calls: list = []
+
+    async def fake_run_cmd(cmd, **kw):
+        calls.append(cmd)
+        return 0, "  pid = 4242\n", ""
+
+    monkeypatch.setattr(mod, "_run_cmd", fake_run_cmd)
+    assert await mod._gateway_service_active() is True
+    assert calls and calls[0][:2] == ["launchctl", "print"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_service_active_darwin_loaded_without_pid(monkeypatch):
+    """macOS agent loaded but not running (no pid line) -> False.
+
+    ``LaunchdBackend.active`` treats only a live pid as active, mirroring
+    ``systemctl is-active``; a zero exit from ``launchctl print`` alone is not
+    enough.
+    """
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_ACTIVE", None)
+    monkeypatch.setattr(mod, "_GATEWAY_SERVICE_CHECK_AT", 0.0)
+    monkeypatch.setattr(mod, "sys", MagicMock(platform="darwin"))
+    monkeypatch.setattr(
+        mod, "shutil", MagicMock(which=MagicMock(return_value="/bin/launchctl"))
+    )
+    monkeypatch.setattr(
+        mod, "_run_cmd", AsyncMock(return_value=(0, "  state = waiting\n", ""))
+    )
     assert await mod._gateway_service_active() is False
 
 
@@ -4917,12 +5054,15 @@ def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypat
     # The stale bundled copy must stay deleted — the shipped catalog owns it.
     assert not (app_root / "skills" / "kirocrew-worktree-dev").exists()
 
+    # is_link_or_junction, not is_symlink: registration links with a directory junction
+    # on Windows (an unprivileged account holds no SeCreateSymbolicLinkPrivilege)
+    # and a junction reports is_symlink() False.
     for skill_name in expected_skills:
         link = namespaced_dir / skill_name
-        assert link.is_symlink(), f"Namespaced link missing: {link}"
+        assert platform_compat.is_link_or_junction(link), f"Namespaced link missing: {link}"
         assert link.resolve().is_dir()
         flat = skills_dir / skill_name
-        assert flat.is_symlink(), f"Flat link missing: {flat}"
+        assert platform_compat.is_link_or_junction(flat), f"Flat link missing: {flat}"
         assert flat.resolve().is_dir()
 
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // --- Mocks -----------------------------------------------------------------
 const getApp = vi.fn()
@@ -28,13 +29,19 @@ vi.mock('../components/AppIcon', () => ({
 import AppDetailPage from '../pages/AppDetailPage'
 
 function renderDetail(name = 'agent-worlds') {
+  // `useTrustGate` invalidates the ['trusted-apps'] / ['apps'] queries after a
+  // grant, so it needs a QueryClient in scope. The app root always provides
+  // one; the harness has to as well.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[`/apps/detail/${name}`]}>
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/apps/detail/${name}`]}>
       <Routes>
         <Route path="/apps/detail/:name" element={<AppDetailPage />} />
         <Route path="/apps" element={<div>apps list</div>} />
-      </Routes>
-    </MemoryRouter>,
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 

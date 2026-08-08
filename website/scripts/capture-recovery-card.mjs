@@ -13,16 +13,17 @@
  *
  * Usage: node scripts/capture-recovery-card.mjs [outDir]
  */
-import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
-import { serveDist } from './lib/serve-dist.mjs'
-import { json, makeFixedApi, handleBootRoute } from './lib/boot-api.mjs'
+import { openTranscriptHarness } from './lib/transcript-harness.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/recovery-card'
 const SLOT = 'chat-recovery'
 const PROJECT = '/home/user/workspace/KiroCrew'
 
 mkdirSync(OUT, { recursive: true })
+
+/** The card is what the shots are of, so every load waits for one to mount. */
+const RECOVERY_WAIT = { selector: '[data-testid="recovery-card"]' }
 
 const REFUSAL = '[Tool refusal — automatic recovery]'
 const STALLED = '[Stalled turn — automatic recovery]'
@@ -70,45 +71,13 @@ const detail = {
   ],
 }
 
-const FIXED_API = makeFixedApi(PROJECT)
-
 async function main() {
-  const { srv, base } = await serveDist()
-  const browser = await chromium.launch()
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
-    // The card is dense small type (11–13px); a 1x shot renders it soft.
-    deviceScaleFactor: 2,
+  const { page, load, close } = await openTranscriptHarness({
+    slot: SLOT,
+    project: PROJECT,
+    slots,
+    detail,
   })
-  const page = await context.newPage()
-  await page.routeWebSocket(/\/api\/ws/, () => {})
-
-  const scene = { theme: 'dark' }
-
-  await page.route('**/api/**', async route => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/chat/slots') return json(route, slots)
-    if (path.startsWith('/api/chat/slots/')) return json(route, detail)
-    return handleBootRoute(route, path, { project: PROJECT, theme: scene.theme, fixedApi: FIXED_API })
-  })
-
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
-  page.on('console', msg => {
-    if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300))
-  })
-
-  async function load(theme = 'dark') {
-    scene.theme = theme
-    await page.addInitScript(([t, slot]) => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', t)
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-active-slot-chat', slot)
-    }, [theme, SLOT])
-    await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-testid="recovery-card"]', { timeout: 20000 })
-    await page.waitForTimeout(600)
-  }
 
   /**
    * Expand the turn's reasoning pane.
@@ -148,7 +117,7 @@ async function main() {
     await page.waitForTimeout(500)
   }
 
-  await load('dark')
+  await load('dark', RECOVERY_WAIT)
   const cards = page.getByTestId('recovery-card')
   console.log('cards rendered:', await cards.count())
   console.log('kinds:', await cards.evaluateAll(els => els.map(e => e.dataset.kind)))
@@ -159,14 +128,13 @@ async function main() {
   await toggleFirstCard()
   await shot('expanded-dark')
 
-  await load('light')
+  await load('light', RECOVERY_WAIT)
   await expandTurn()
   await shot('collapsed-light')
   await toggleFirstCard()
   await shot('expanded-light')
 
-  await browser.close()
-  srv.close()
+  await close()
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

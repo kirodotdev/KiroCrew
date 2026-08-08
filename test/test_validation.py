@@ -258,6 +258,31 @@ class TestValidateToolArgs:
         with pytest.raises(ValidationError, match=">="):
             validate_tool_args({"task": "x", "max_turns": -1}, SPAWN_RUN_SCHEMA)
 
+    def test_spawn_run_context_groups_accepted(self):
+        result = validate_tool_args(
+            {
+                "task": "x",
+                "include_memory": False,
+                "include_lessons": True,
+                "include_project": False,
+            },
+            SPAWN_RUN_SCHEMA,
+        )
+        assert result["include_memory"] is False
+        assert result["include_lessons"] is True
+        assert result["include_project"] is False
+
+    def test_spawn_run_context_groups_omitted(self):
+        """Absent flags must not materialize as False — omitted means all groups on."""
+        result = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
+        assert result.get("include_memory") is not False
+        assert result.get("include_lessons") is not False
+        assert result.get("include_project") is not False
+
+    def test_spawn_run_context_group_non_bool_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_tool_args({"task": "x", "include_memory": "no"}, SPAWN_RUN_SCHEMA)
+
     def test_learn_add_valid(self):
         result = validate_tool_args(
             {"rule": "use dark mode", "category": "preference"},
@@ -363,6 +388,25 @@ class TestValidateToolArgs:
                 {"name": "x", "script": "C:\\crons\\job.py", "every": 300},
                 CRON_ADD_SCHEMA,
             )
+
+    def test_cron_add_accepts_windows_path_with_spaces(self):
+        # "First Last" is the DEFAULT Windows account-name shape, and
+        # config_dir() is rooted at %USERPROFILE%, so rejecting spaces made a
+        # script cron impossible for a typical Windows user.
+        spaced = "C:\\Users\\John Smith\\.kiro\\crew\\crons\\job.py:run"
+        result = validate_tool_args(
+            {"name": "s", "script": spaced, "every": 300}, CRON_ADD_SCHEMA
+        )
+        assert result["script"] == spaced
+
+    def test_cron_add_rejects_unc_script_path(self):
+        # A UNC path is not a local script, and resolving one triggers an
+        # outbound SMB/DNS probe before the crons-root check can reject it.
+        for unc in ("\\\\host\\share\\job.py:run", "//host/share/job.py:run"):
+            with pytest.raises(ValidationError, match="invalid format"):
+                validate_tool_args(
+                    {"name": "x", "script": unc, "every": 300}, CRON_ADD_SCHEMA
+                )
 
     def test_task_run_valid(self):
         result = validate_tool_args({"spec": "do things"}, TASK_RUN_SCHEMA)

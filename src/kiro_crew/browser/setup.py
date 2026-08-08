@@ -13,10 +13,12 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
+import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +27,82 @@ from kiro_crew.agent_files import OWNED_CC_AGENT_FILES, OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.auth import parse_netscape_cookies
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
-from kiro_crew.mcp_playwright_proxy import _resolve_playwright_cmd
+from kiro_crew.env import ensure_node, find_node_tool, node_augmented_path
+from kiro_crew.mcp_playwright_proxy import (
+    PUBLIC_NPM_REGISTRY,
+    _is_npx_launcher,
+    _resolve_playwright_cmd,
+)
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
+
+# Browse engines Playwright can LAUNCH (its own browser build). "chromium" is
+# the default and the only engine attach/extension mode supports; "firefox" and
+# "webkit" are Playwright's own patched builds (not the user's Firefox/Safari)
+# and are launch-only. Anything outside this set falls back to "chromium" — the
+# value threads through generate_playwright_config() into Playwright's
+# ``browserName``/``--browser``, and an unknown engine there would break launch.
+BROWSER_ENGINES = ("chromium", "firefox", "webkit")
+_DEFAULT_ENGINE = "chromium"
+
+# Durable enable flag for Browser Mode, co-located with the extension-mode flag
+# file so it survives a restart/update the same way (the prior per-session chat
+# toggle did not persist at all). Presence = enabled.
+_BROWSER_ENABLED_FLAG = "browser-mode-enabled"
+# Durable record of the selected launch engine (one of BROWSER_ENGINES). Absent
+# or unrecognized reads back as the chromium default.
+_BROWSER_ENGINE_FILE = "browser-engine"
+# Durable record of the exact ``@playwright/mcp`` version the enable-time prime
+# resolved, so the runtime proxy launches that pinned version instead of the
+# floating ``@latest`` (deterministic offline, no revision drift). Absent → the
+# proxy falls back to ``@latest``. A plain semver string (validated on read).
+_BROWSER_MCP_VERSION_FILE = "playwright-mcp-version"
+
+
+def browser_mode_enabled() -> bool:
+    """True when the operator has turned Browser Mode on in Settings.
+
+    Durable across restart/update: the flag is a file under the data home, not
+    per-session React state. This is the capability gate the chat send path and
+    the agent's browse affordance key off — distinct from ``has_playwright_extension``
+    (which only chooses the transport once Browser Mode is on).
+    """
+    return (config_dir() / _BROWSER_ENABLED_FLAG).exists()
+
+
+def set_browser_mode_enabled(enabled: bool) -> None:
+    """Persist the Browser Mode enable flag (durably, off any React state)."""
+    flag = config_dir() / _BROWSER_ENABLED_FLAG
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    if enabled:
+        flag.touch()
+    else:
+        flag.unlink(missing_ok=True)
+
+
+def get_browser_engine() -> str:
+    """Return the selected launch engine, defaulting to chromium.
+
+    An absent file or a value outside :data:`BROWSER_ENGINES` reads back as
+    ``"chromium"`` so a hand-edited or stale file can never select an engine
+    Playwright would reject at launch.
+    """
+    try:
+        raw = (config_dir() / _BROWSER_ENGINE_FILE).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return _DEFAULT_ENGINE
+    return raw if raw in BROWSER_ENGINES else _DEFAULT_ENGINE
+
+
+def set_browser_engine(engine: str) -> None:
+    """Persist the launch engine after validating it against BROWSER_ENGINES."""
+    if engine not in BROWSER_ENGINES:
+        raise ValueError(f"unknown browser engine: {engine!r}")
+    path = config_dir() / _BROWSER_ENGINE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, engine)
+
 
 # Optional test/override hook. Left ``None`` at import — NOT a
 # ``config_dir()`` capture — so importing this module never triggers the
@@ -96,22 +170,513 @@ _OWNED_CC_AGENT_FILES = OWNED_CC_AGENT_FILES
 
 
 def is_playwright_installed() -> bool:
-    """Check whether the Playwright MCP package is resolvable on PATH (OSS stub).
+    """True when a ``@playwright/mcp`` launcher is resolvable on this host.
 
-    The managed package manager that originally backed this check is not
-    available in the open-source build, so this returns False gracefully.
+    Reuses the proxy's own resolution order via :func:`check_playwright_launchable`
+    so this agrees with what the proxy would actually spawn (a
+    ``mcp-server-playwright``/``playwright-mcp`` binary, a
+    ``KIROCREW_PLAYWRIGHT_CMD`` override, or ``npx`` on PATH). Note ``npx`` being
+    present means the package can be fetched on first use, not that it is already
+    on disk; :func:`ensure_playwright_installed` performs the real install.
     """
-    return False
+    ok, _ = check_playwright_launchable()
+    return ok
 
 
-def ensure_playwright_installed() -> None:
-    """Browser setup is not available in the open-source build (no-op stub).
+#: npm registry package name installed globally as the Playwright MCP launcher.
+_PLAYWRIGHT_MCP_NPM = "@playwright/mcp@latest"
 
-    The upstream flow installed Playwright MCP via a managed package manager and
-    wired enterprise-SSO cookie injection. Neither is shipped in OSS, so this is
-    a no-op rather than raising.
+
+def _playwright_binary_present(base_path: str) -> bool:
+    """True when a STANDALONE @playwright/mcp launcher binary resolves on PATH.
+
+    Distinct from :func:`is_playwright_installed`, which also counts a bare
+    ``npx`` (the on-demand fetcher) as resolvable. The installer's package step
+    needs the stricter test: an npx-only host has NOT installed the package, so
+    the global install must still run. An explicit ``KIROCREW_PLAYWRIGHT_CMD``
+    override also counts as present (the operator pointed us at a real launcher).
     """
+    if os.environ.get("KIROCREW_PLAYWRIGHT_CMD"):
+        return True
+    return any(
+        find_node_tool(binary, base_path) for binary in ("mcp-server-playwright", "playwright-mcp")
+    )
+
+
+#: How long the npm install / browser provisioning subprocesses may run. Browser
+#: binaries are large and fetched over the network, so this is generous.
+_INSTALL_TIMEOUT_SECS = 600.0
+
+#: The ONE canonical "browser not yet on disk, but that is fine" message. Every
+#: not-yet-ready outcome (deferred here, the dashboard handler's exception
+#: fallback) uses it verbatim so the operator never sees three different recovery
+#: stories for the same underlying state.
+BROWSER_FIRST_USE_NOTE = (
+    "Browser Mode is on. The browser downloads automatically the first time the "
+    "agent browses — that first visit may take a moment."
+)
+
+#: Copy-pasteable manual fallback surfaced when automatic provisioning fails.
+#: Installs ONLY the launcher package (``@playwright/mcp``); it does NOT tack on a
+#: ``playwright install`` browser fetch. Two reasons: (1) ``@playwright/mcp``
+#: downloads the matching browser on first browse through its OWN bundled
+#: ``playwright-core``, so a separate step is redundant; (2) a floating
+#: ``npx playwright install`` is on an independent release cadence from the
+#: launcher's bundled core, so it could fetch a browser revision the just-installed
+#: launcher rejects ("Executable doesn't exist") — the exact drift the runtime
+#: version pin exists to close. Uses the ``--registry=`` FLAG (not a ``VAR=value``
+#: prefix, which native Windows cmd/PowerShell treats as an executable name) so the
+#: copy-paste works on every OS from a shell whose ``.npmrc`` points at a private mirror.
+MANUAL_INSTALL_CMD = (
+    "npm install -g @playwright/mcp@latest --registry=https://registry.npmjs.org/"
+)
+
+
+#: Recognized npm/node/playwright failure codes → a short, human cause. This is
+#: an ALLOWLIST by design: surfacing the actual reason must never risk leaking a
+#: credential or URL that a free-form stderr line could carry, so we map to a
+#: fixed label rather than echo arbitrary subprocess output. Ordered most-specific
+#: first (E401 before the generic offline codes).
+_KNOWN_INSTALL_ERRORS: tuple[tuple[str, str], ...] = (
+    ("E401", "the npm registry rejected the request (E401 — auth/token invalid)"),
+    ("E403", "the npm registry forbade the request (E403)"),
+    ("EAI_AGAIN", "the network/DNS is unreachable (EAI_AGAIN — likely offline)"),
+    ("ENOTFOUND", "the npm registry host could not be resolved (ENOTFOUND — likely offline)"),
+    ("ETIMEDOUT", "the connection to the npm registry timed out (ETIMEDOUT)"),
+    ("ECONNREFUSED", "the connection to the npm registry was refused (ECONNREFUSED)"),
+    ("ENOSPC", "the disk is full (ENOSPC)"),
+    ("EACCES", "a permission was denied writing the browser cache (EACCES)"),
+    ("ERR_PNPM", "the package manager reported an error"),
+)
+
+
+def _sanitize_reason(stderr: str) -> str:
+    """Map a subprocess's stderr to ONE short, SAFE cause label for the operator.
+
+    Surfacing the actual cause is the point — an operator hitting a 401 or an
+    offline error should see WHY, not just "it failed". But raw stderr is untrusted
+    subprocess output that can carry credentials, tokens, or private-registry URLs
+    on ANY line (npm prints `_authToken=`, `https://user:pass@mirror`, etc.), and
+    the credential redactor does not catch every such shape. So this does NOT echo
+    stderr text: it matches against a fixed ALLOWLIST of known npm/network/disk
+    error codes and returns a hardcoded human label. An unrecognized failure
+    returns ``""`` (the caller then shows the generic advisory + manual command
+    without a specific cause) — never free-form subprocess output.
+    """
+    if not stderr:
+        return ""
+    for code, label in _KNOWN_INSTALL_ERRORS:
+        if code in stderr:
+            return label
+    return ""
+
+
+def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]:
+    """Provision the public ``@playwright/mcp`` launcher and the engine's browser.
+
+    Best-effort and never raises — returns a structured
+    ``{"ok": bool, "step": str, "detail": str, "engine": str}`` so a caller (the
+    Browser settings save handler) can report progress or an actionable failure
+    in its JSON body rather than 500-ing. Steps, in order:
+
+    1. **node** — ensure a usable Node via :func:`kiro_crew.env.ensure_node`
+       (bootstraps it through the bundled ``ensure-node.sh`` when absent). Without
+       Node nothing else can run, so this returns ``ok=False, step="node"`` with
+       an install hint.
+    2. **package** — make ``@playwright/mcp`` launchable the SAME way the proxy
+       runs it, matching the ecosystem: no ``npm install -g``. Every MCP client
+       (Claude Code, Codex, VS Code) launches it via ``npx @playwright/mcp`` — a
+       machine-global install is neither recommended nor needed. So:
+         - If a launcher already resolves (a standalone binary, ``npx``, or a
+           ``KIROCREW_PLAYWRIGHT_CMD`` override), SKIP entirely — nothing to fetch.
+         - Otherwise prime the ``npx`` cache with one pinned fetch so first use is
+           fast and offline-safe. If neither ``npx`` nor a binary exists (npm-free
+           host), FAIL SOFT: the mode still enables and the detail names the Docker
+           image and ``KIROCREW_PLAYWRIGHT_CMD`` escape hatches, because a missing
+           npm must not block a capability the operator can wire up another way.
+    3. **browser** — ``playwright install <engine>`` to fetch the OS/arch browser
+       binary; ``chromium`` is always safe, ``firefox``/``webkit`` pull
+       Playwright's own builds. Skipped when the package step failed soft (there is
+       no resolved launcher/core to provision against yet).
+
+    Blocking (subprocess + network + disk) — MUST run off the event loop
+    (``asyncio.to_thread``). Every spawned command inherits a Node-augmented PATH
+    so a version-manager Node the daemon did not inherit is still found, and pins
+    the public npm registry so a private/stale-token ``.npmrc`` can't 401 this
+    public package.
+    """
+    if engine not in BROWSER_ENGINES:
+        engine = _DEFAULT_ENGINE
+
+    node = ensure_node()
+    if not node:
+        # Browser Mode is still ON (the proxy is registered); the browser tools
+        # just can't run until Node is present. Calm, actionable note — never a
+        # raw "install failed" error.
+        return {
+            "ok": False,
+            "step": "node",
+            "detail": (
+                "Browser Mode is on. To finish setup, install Node.js "
+                "(https://nodejs.org) — the agent's browser tools start working "
+                "once it is available."
+            ),
+            "engine": engine,
+        }
+
+    aug_path = node_augmented_path(os.environ.get("PATH", ""))
+    # Pin the public registry in every child (npm/npx shell out to fetch): a user's
+    # default ``.npmrc`` may point at a private mirror with an expiring token, and
+    # ``npm_config_registry`` is honored by npm and npx on every OS, so the fetch of
+    # this PUBLIC package skips the private default and never 401s.
+    run_env = {**os.environ, "PATH": aug_path, "npm_config_registry": PUBLIC_NPM_REGISTRY}
+
+    def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        # capture_output keeps npm/playwright chatter off the gateway's stdout;
+        # the tail is surfaced only in the failure detail. text mode for logging.
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=_INSTALL_TIMEOUT_SECS,
+            env=run_env,
+        )
+
+    # Step 2 — make the launcher available WITHOUT a machine-global install, the
+    # way the whole MCP ecosystem runs it (`npx @playwright/mcp`). Detect FIRST: if
+    # the proxy can already resolve a launcher (standalone binary, npx, or the
+    # KIROCREW_PLAYWRIGHT_CMD override), there is nothing to fetch — a re-enable or
+    # a host that already has npx is a fast no-op, and this is the branch that skips
+    # the download entirely on the common case that broke before. Resolve on the
+    # AUGMENTED path (not the daemon's raw PATH) so a marker-bootstrapped Node
+    # toolchain — npx alongside a Node the gateway did not inherit — is seen here
+    # too, matching ensure_node / find_node_tool; otherwise this falsely reports
+    # "no launcher" on exactly the host node_augmented_path exists to serve.
+    launch_cmd = _resolve_playwright_cmd(aug_path)
+    if launch_cmd is None:
+        # Node is present but neither a launcher binary nor npx resolves (an
+        # npm-free Node). Browser Mode stays ON (the proxy is registered); the
+        # note offers the npm-free paths. Calm and actionable — never an error.
+        return {
+            "ok": False,
+            "step": "package",
+            "detail": (
+                "Browser Mode is on. To finish setup, install npm (it ships with "
+                "Node.js) so the browser tools can download, run the official "
+                "Docker image (mcr.microsoft.com/playwright/mcp), or point "
+                "KIROCREW_PLAYWRIGHT_CMD at your own launcher."
+            ),
+            "engine": engine,
+        }
+    npx_only = _is_npx_launcher(launch_cmd) and not _playwright_binary_present(aug_path)
+    if npx_only:
+        # Only npx resolves. Prime its cache with one pinned, public-registry fetch
+        # so the package (and its bundled playwright-core, needed by step 3) is on
+        # disk — the first real browse is then not a cold download, and it works
+        # offline afterward. ``--help`` forces the fetch without starting the
+        # long-lived server. A failure is NON-fatal: npx still fetches lazily at
+        # launch, so fall through and let step 3 report if the browser is missing.
+        try:
+            _run([launch_cmd, "--yes", _PLAYWRIGHT_MCP_NPM, "--help"])
+        except (subprocess.SubprocessError, OSError):
+            pass
+        # Pin the EXACT version the prime landed, so the runtime proxy launches
+        # ``@playwright/mcp@<that version>`` instead of ``@latest``. Two failure
+        # modes this closes, both flagged in review: (1) ``@latest`` re-resolves
+        # against the registry on every launch, so an offline launch of a
+        # supposedly-primed host fails; a pinned version resolves from the cache
+        # with no round-trip. (2) When ``latest`` advances past what was primed,
+        # the newer launcher's playwright-core can outrun the browser revision
+        # provisioned here ("Executable doesn't exist"); a pinned version can't
+        # drift. Best-effort — absent pin falls back to ``@latest`` at launch.
+        _record_primed_playwright_version(run_env)
+
+    # Step 3 — the OS/arch browser binary for the selected engine. Provision it
+    # through the SAME playwright-core that ``@playwright/mcp`` bundles: Playwright
+    # keys its browser cache by a per-version build REVISION, so a floating
+    # ``npx playwright@latest`` could fetch a revision the bundled
+    # ``playwright-core`` launcher rejects ("Executable doesn't exist") — a false
+    # success. Resolving playwright-core relative to the resolved ``@playwright/mcp``
+    # (global root OR the npx cache primed above) guarantees the downloaded revision
+    # matches the launcher. ``install <engine>`` is idempotent; a present browser is
+    # a fast no-op.
+    node = find_node_tool("node", aug_path)
+    core_cli = _resolve_playwright_core_cli(node, run_env) if node else None
+    if not (node and core_cli):
+        # The launcher resolves (step 2 passed) but its bundled core is not yet on
+        # disk — an npx host where the prime is still warming. This is "not yet
+        # fetched", NOT a failed fetch: defer softly (ok=True). A subsequent
+        # re-save, once the cache is warm, runs the real install below.
+        return _browser_deferred(engine)
+    browser_argv = [node, core_cli, "install", engine]
+    try:
+        proc = _run(browser_argv)
+    except (subprocess.SubprocessError, OSError) as exc:
+        # The browser install was ATTEMPTED and failed (unwritable/full cache,
+        # network drop). Do NOT report this as usable: without the executable a
+        # headless browse errors, so a false ok=True would mislead. Surface a calm
+        # ok=false advisory + the manual command; the full raw exception stays in
+        # the log. The reason is an allowlisted code if the message carries one,
+        # else EMPTY — never str(exc) (an OSError can embed a local path) and never
+        # the raw exception class name (e.g. "TimeoutExpired" is dev jargon, not
+        # operator guidance); an empty reason just omits the parenthetical.
+        logger.warning("playwright browser install failed (%s)", exc)
+        return _browser_incomplete(engine, reason=_sanitize_reason(str(exc)))
+    if proc.returncode != 0:
+        logger.warning(
+            "playwright install %s exited %s: %s",
+            engine, proc.returncode, proc.stderr.strip()[-300:],
+        )
+        return _browser_incomplete(engine, reason=_sanitize_reason(proc.stderr))
+
+    return {"ok": True, "step": "done", "detail": "", "engine": engine}
+
+
+def _browser_deferred(engine: str) -> dict[str, Any]:
+    """Soft, usable outcome: the launcher works and the browser is not yet fetched.
+
+    Returned when the browser was NOT attempted at enable time (the npx cache is
+    still warming). ``ok=True``: the launcher resolves and the browser downloads on
+    first use, so the UI shows a calm advisory. Copy is the ONE canonical
+    "downloads on first use" line shared with the handler's exception fallback, so
+    every not-yet-ready state tells the operator the same thing.
+    """
+    return {
+        "ok": True,
+        "step": "browser-deferred",
+        "detail": BROWSER_FIRST_USE_NOTE,
+        "engine": engine,
+    }
+
+
+def _browser_incomplete(engine: str, reason: str = "") -> dict[str, Any]:
+    """Calm not-yet-usable outcome: the browser download was tried and did not finish.
+
+    ``ok=False`` because, without the browser executable, a headless browse would
+    fail — reporting it usable would mislead. The message is still calm, but it now
+    surfaces the ACTUAL cause and a manual fallback so a determined failure (locked
+    network, private-registry-only egress, broken npm) is not a dead end:
+
+    - ``reason`` is a SAFE one-line cause from :func:`_sanitize_reason` (an
+      allowlisted error-code label, never echoed stderr) or a short exception type
+      — shown inline so the operator sees *why*, not a bare "it failed". Empty when
+      the failure is unrecognized, in which case the reason clause is omitted.
+    - ``manual_command`` is the copy-pasteable command to install it by hand, with
+      the public registry pinned so it works from a shell whose ``.npmrc`` points at
+      a private mirror. It is a STRUCTURED field (not embedded in the prose) so the
+      dashboard renders it as its own ``<code>`` block; the prose just points at it.
+
+    The full raw stderr stays in the log; only the allowlisted label reaches the UI.
+    """
+    detail = (
+        "Browser Mode is on, but the browser download did not finish. It normally "
+        "downloads automatically on the first browse; if it keeps failing, install "
+        "it by hand with the command below."
+    )
+    if reason:
+        detail = f"{detail}  (Reason: {reason}.)"
+    return {
+        "ok": False,
+        "step": "browser",
+        "detail": detail,
+        "reason": reason,
+        "manual_command": MANUAL_INSTALL_CMD,
+        "engine": engine,
+    }
+
+
+#: Accept only a plain semver-ish token as a pinned version, so a corrupted or
+#: hand-edited file can never inject shell/argv content into the launch spec.
+_SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+
+
+def _record_primed_playwright_version(run_env: dict[str, str]) -> None:
+    """Persist the exact ``@playwright/mcp`` version the npx prime just landed.
+
+    Reads the version from the newest primed cache's ``package.json`` and writes
+    it to the ``playwright-mcp-version`` flag. Best-effort: any failure leaves no
+    pin, and the proxy falls back to ``@latest`` — so this can only make launches
+    MORE deterministic, never break one.
+    """
+    roots = _npx_cache_playwright_roots(run_env)  # newest-first
+    for nm in roots:
+        pkg = Path(nm) / "@playwright" / "mcp" / "package.json"
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        # A cached package.json may parse to a non-object; guard before ``.get``.
+        version = data.get("version", "") if isinstance(data, dict) else ""
+        if isinstance(version, str) and _SEMVER_RE.match(version):
+            try:
+                atomic_write(config_dir() / _BROWSER_MCP_VERSION_FILE, version)
+            except OSError:
+                pass
+            return
+
+
+def get_pinned_playwright_version() -> str | None:
+    """Return the pinned ``@playwright/mcp`` version, or ``None`` to use ``@latest``.
+
+    Read by the proxy to build the launch spec. TWO gates, because the flag file is
+    agent-writable (it is deliberately NOT a keystone — a wrong value only slows a
+    fetch, it grants nothing):
+
+    1. Strict semver on read, so a tampered value can never reach an npx argv as
+       injection — a non-semver string degrades to ``None`` (→ ``@latest``).
+    2. The version must ACTUALLY be present in a real npx/global cache on disk. A
+       prompt-injected shell could write a valid-but-nonexistent semver (e.g.
+       ``99.99.99``); launching ``@playwright/mcp@99.99.99`` would fail to fetch
+       and break browsing persistently. Gating on on-disk presence neutralizes that
+       DoS — a bogus version matches no cache, so we fall back to ``@latest`` and
+       the feature keeps working. This is also the pin's whole point: it is only
+       useful when that exact version is cached, so the guard and the optimization
+       are the same check. The agent cannot fake a cache dir it did not fetch.
+    """
+    try:
+        raw = (config_dir() / _BROWSER_MCP_VERSION_FILE).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    if not _SEMVER_RE.match(raw):
+        return None
+    aug_path = node_augmented_path(os.environ.get("PATH", ""))
+    run_env = {**os.environ, "PATH": aug_path}
+    for nm in _npx_cache_playwright_roots(run_env):
+        try:
+            pkg = Path(nm) / "@playwright" / "mcp" / "package.json"
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+            # A cached package.json is untrusted: it may parse to valid JSON that
+            # is NOT an object (``[]``, ``"x"``, ``12``), on which ``.get`` raises
+            # AttributeError — which OSError/ValueError would not catch, crashing
+            # proxy startup. Guard the type; a non-dict just isn't a match.
+            if isinstance(data, dict) and data.get("version") == raw:
+                return raw
+        except (OSError, ValueError):
+            continue
     return None
+
+
+def _npx_cache_playwright_roots(run_env: dict[str, str]) -> list[str]:
+    """Node-module roots under the ``npx`` cache that hold a primed ``@playwright/mcp``.
+
+    ``npx`` installs an on-demand package under ``<npm cache>/_npx/<hash>/
+    node_modules``. That path is NEITHER ``npm root -g`` nor the gateway cwd, so
+    a require.resolve that only searches those two misses an npx-primed copy —
+    which is EXACTLY the npx-only host this rework targets. Return each such
+    ``node_modules`` dir so the core resolver can find the package the prime
+    fetched. Ordered NEWEST-FIRST by mtime: a host can accumulate several npx
+    caches across versions, and the resolver takes the first match — so the most
+    recently primed one (the one the just-run prime and the runtime ``@latest``
+    launch agree on) must win over a stale older revision, else the browser
+    install would fetch a revision the launcher then rejects. Best-effort:
+    returns ``[]`` when the cache can't be located.
+    """
+    npm = find_node_tool("npm", run_env.get("PATH", ""))
+    cache = ""
+    if npm:
+        try:
+            cp = subprocess.run(
+                [npm, "config", "get", "cache"],
+                capture_output=True, text=True, timeout=30, env=run_env,
+            )
+            if cp.returncode == 0:
+                cache = cp.stdout.strip()
+        except (subprocess.SubprocessError, OSError):
+            cache = ""
+    if not cache or cache == "undefined":
+        # npm's default cache: ~/.npm on POSIX, %LocalAppData%/npm-cache on Windows.
+        cache = os.path.expanduser("~/.npm")
+    npx_dir = Path(cache) / "_npx"
+    # (node_modules dir, mtime) pairs, so the newest primed cache resolves first.
+    # Wrapped in try/except so a permission-denied or vanishing cache dir returns
+    # [] rather than propagating — ensure_playwright_installed never raises.
+    found: list[tuple[float, str]] = []
+    try:
+        for hash_dir in npx_dir.iterdir():
+            nm = hash_dir / "node_modules"
+            pkg = nm / "@playwright" / "mcp" / "package.json"
+            if pkg.is_file():
+                try:
+                    mtime = pkg.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                found.append((mtime, str(nm)))
+    except OSError:
+        return []
+    # Newest first: the most recently primed cache is the one the runtime launch
+    # (@latest) will resolve, so its core revision matches.
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    return [nm for _, nm in found]
+
+
+def _resolve_playwright_core_cli(node: str, run_env: dict[str, str]) -> str | None:
+    """Resolve the ``playwright-core`` CLI bundled with the installed ``@playwright/mcp``.
+
+    Asks Node to resolve ``playwright-core/cli`` from the location of the
+    resolved ``@playwright/mcp`` package, so the browser install runs through the
+    exact core the proxy launcher uses (matching build revisions). Returns the
+    absolute ``cli.js`` path, or ``None`` when it cannot be resolved.
+
+    Three resolution roots are searched, covering every way the package reaches
+    disk: ``npm root -g`` (a global install, e.g. a user's own
+    ``npm i -g @playwright/mcp``), the ``npx`` cache dirs
+    (:func:`_npx_cache_playwright_roots` — the npx-only host this rework primes),
+    and the local/default module path (a project-local copy).
+    """
+    roots: list[str] = []
+    npm = find_node_tool("npm", run_env.get("PATH", ""))
+    if npm:
+        try:
+            gr = subprocess.run(
+                [npm, "root", "-g"], capture_output=True, text=True, timeout=30, env=run_env
+            )
+            if gr.returncode == 0 and gr.stdout.strip():
+                roots.append(gr.stdout.strip())
+        except (subprocess.SubprocessError, OSError):
+            pass
+    roots.extend(_npx_cache_playwright_roots(run_env))
+
+    # From @playwright/mcp's package dir (resolved with the roots on the search
+    # path), locate its playwright-core dependency's CLI entry. Stdout is the path
+    # or empty. Roots are passed in via argv (JSON), not interpolated into the
+    # script, so no path can break the JS string.
+    #
+    # Two correctness points:
+    # 1. Resolve playwright-core's package.json and JOIN ``cli.js`` to its dir,
+    #    rather than ``require.resolve('playwright-core/cli.js')`` directly:
+    #    playwright-core ships an ``exports`` map that does NOT list ``./cli.js``,
+    #    so a direct subpath resolve throws ERR_PACKAGE_PATH_NOT_EXPORTED under
+    #    Node's exports enforcement even though the file is right there.
+    #    ``./package.json`` is always exported, so resolving it and joining works.
+    # 2. Node's ``paths`` option resolves each entry as ``<entry>/node_modules/…``.
+    #    Our roots ARE the ``node_modules`` dirs (npm root -g, npx cache), so the
+    #    script also adds each root's PARENT — covering both Node's strict
+    #    "<parent>/node_modules" contract (needed on Windows) and its lenient
+    #    direct-dir lookup (POSIX), so resolution is identical on every OS.
+    script = (
+        "const path=require('path');"
+        "const raw=JSON.parse(process.argv[1]||'[]');"
+        "const roots=[];"
+        "for(const r of raw){roots.push(r);roots.push(path.dirname(r));}"
+        "try{"
+        "const mcp=require.resolve('@playwright/mcp/package.json',{paths:[...roots,process.cwd()]});"
+        "const pc=require.resolve('playwright-core/package.json',"
+        "{paths:[path.dirname(mcp),...roots]});"
+        "process.stdout.write(path.join(path.dirname(pc),'cli.js'));"
+        "}catch(e){process.stdout.write('');}"
+    )
+    try:
+        proc = subprocess.run(
+            [node, "-e", script, json.dumps(roots)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=run_env,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    out = proc.stdout.strip()
+    return out if out and os.path.isfile(out) else None
 
 
 def is_headed() -> bool:
@@ -154,31 +719,39 @@ def get_playwright_mcp_env() -> dict[str, str]:
     return env
 
 
-def generate_playwright_config() -> Path:
+def generate_playwright_config(engine: str | None = None) -> Path:
     """Generate ``<config_dir>/playwright-config.json`` with absolute paths.
 
-    The open-source build ships a generic Chromium config with no
-    enterprise auth-server allowlist.
+    The open-source build ships a generic config with no enterprise
+    auth-server allowlist. ``engine`` selects which browser Playwright LAUNCHES
+    (one of :data:`BROWSER_ENGINES`); ``None`` reads the persisted selection via
+    :func:`get_browser_engine` (default chromium). Only chromium sets a
+    ``channel`` — firefox/webkit are Playwright's own builds with no channel.
     """
+    engine = engine if engine in BROWSER_ENGINES else get_browser_engine()
     config_path = config_dir() / "playwright-config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     storage_state = str(config_dir() / "playwright-storage-state.json")
 
+    launch_options: dict[str, Any] = {
+        # Run headless: the live mirror in the dashboard Browser panel is the
+        # intended view surface, so a separate visible OS window is redundant
+        # (and breaks on display-less Linux hosts). Auth is seeded via
+        # ``storageState`` below, so no interactive SSO window is needed.
+        "headless": True,
+        "args": [],
+    }
+    # ``channel`` selects a branded Chromium distribution and is only meaningful
+    # for the chromium engine; firefox/webkit reject it.
+    if engine == "chromium":
+        launch_options["channel"] = "chromium"
+
     config = {
         "browser": {
-            "browserName": "chromium",
+            "browserName": engine,
             "isolated": True,
-            "launchOptions": {
-                "channel": "chromium",
-                # Run headless: the live mirror in the dashboard Browser panel is
-                # the intended view surface, so a separate visible OS window is
-                # redundant (and breaks on display-less Linux hosts). Auth is
-                # seeded via ``storageState`` below, so no interactive SSO window
-                # is needed.
-                "headless": True,
-                "args": [],
-            },
+            "launchOptions": launch_options,
             "contextOptions": {
                 "storageState": storage_state,
             },
@@ -320,7 +893,18 @@ def migrate_owned_playwright_registration() -> None:
     server, and never mutates the user-owned discovery sources
     (``~/.claude.json``) — those converge for *display* on read (discovery
     canonicalization) and at launch (pool dedupe), not by mutating files.
+
+    When Browser Mode is OFF, this instead REMOVES the proxy from every Kiro Crew
+    surface: registration is the authorization, so a stale proxy left by a prior
+    enable (or a pre-upgrade install) must not survive a restart into a mounted
+    ``browser_*`` tool set while the durable toggle is off.
     """
+    if not browser_mode_enabled():
+        _remove_playwright_from_kirocrew_mcp_json()
+        _remove_playwright_from_agent_files()
+        with contextlib.suppress(OSError):
+            deregister_playwright_proxy()
+        return
     _migrate_owned_kiro_registration()
     _converge_kirocrew_mcp_json()
     _converge_playwright_agent_files()
@@ -417,6 +1001,35 @@ def _converge_kirocrew_mcp_json() -> None:
         atomic_write(path, json.dumps(data, indent=2), mode=prev_mode)
     except OSError:
         pass
+
+
+def _remove_playwright_from_kirocrew_mcp_json() -> bool:
+    """Remove the Playwright proxy from Kiro Crew's own ``<data-home>/mcp.json``.
+
+    The inverse of :func:`_converge_kirocrew_mcp_json`, for the Browser-Mode-off
+    path: since ``rebuild_agent_config`` merges this source into the agent config,
+    leaving the proxy here would re-mount the ``browser_*`` tools on the next
+    rebuild. Mode-preserving atomic write; returns ``True`` iff it changed the
+    file. Silently skips an unreadable/non-dict/absent file.
+    """
+    path = config_dir() / "mcp.json"
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or not remove_playwright_servers(data):
+        return False
+    try:
+        prev_mode: int | None = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        prev_mode = None
+    try:
+        atomic_write(path, json.dumps(data, indent=2), mode=prev_mode)
+    except OSError:
+        return False
+    return True
 
 
 def _entry_is_playwright_proxy(name: str, spec: Any, canonical: str) -> bool:
@@ -547,66 +1160,118 @@ def converge_playwright_servers(config: dict) -> bool:
     return True
 
 
-def _converge_playwright_agent_files() -> None:
-    """Sweep KiroCrew-generated agent configs, converging Playwright to one
-    canonical server. Runs on gateway init so an existing machine self-heals on
-    a plain restart. Only KiroCrew-OWNED agent-config files are touched — the
-    EXACT filenames in ``_OWNED_KIRO_AGENT_FILES`` under ``~/.kiro/agents/`` and
-    ``_OWNED_CC_AGENT_FILES`` under ``~/.claude/agents/``, an explicit allowlist
-    (not a ``kirocrew*`` prefix glob). A user's OWN agents — even one they name
-    ``kirocrew-custom.json`` — live in the same dirs and may carry intentionally
-    distinct Playwright entries; matching exact generated filenames is what keeps
-    a restart from rewriting configs KiroCrew did not author. Silently skips
-    unreadable/non-dict/absent files.
+def remove_playwright_servers(config: dict) -> bool:
+    """Remove EVERY Kiro Crew Playwright-proxy server from ``config`` and scrub its
+    ``@<name>`` references out of ``tools``/``allowedTools``. Mutates in place;
+    returns ``True`` iff anything changed.
+
+    The inverse of :func:`converge_playwright_servers`, used when Browser Mode is
+    turned OFF: a merged agent config that still carries the proxy would keep the
+    ``browser_*`` tools mounted after the ACP loop reloads it via ``--agent``,
+    even though the proxy was dropped from kiro's ``mcp.json``. Identity is by
+    launch target (:func:`_spec_is_proxy`), so a user's own hand-authored *direct*
+    ``@playwright/mcp`` server is left untouched.
     """
-    agent_files: list[Path] = []
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
+    proxy_names = [n for n, s in servers.items() if _entry_is_playwright_proxy(n, s, canonical)]
+    if not proxy_names:
+        return False
+    for n in proxy_names:
+        servers.pop(n, None)
+    drop_refs = {f"@{n}" for n in proxy_names}
+    for key in ("tools", "allowedTools"):
+        lst = config.get(key)
+        if isinstance(lst, list):
+            config[key] = [t for t in lst if t not in drop_refs]
+    logger.info("Removed Playwright proxy entries %s (Browser Mode disabled)", proxy_names)
+    return True
+
+
+def _owned_agent_config_files() -> list[Path]:
+    """The EXACT agent-config files Kiro Crew generates that exist on disk.
+
+    An explicit allowlist (``_OWNED_KIRO_AGENT_FILES`` under ``~/.kiro/agents/``,
+    ``_OWNED_CC_AGENT_FILES`` under ``~/.claude/agents/``), never a ``kirocrew*``
+    prefix glob: a user's OWN agents live in the same dirs and may carry
+    intentionally distinct Playwright entries, so matching exact generated
+    filenames is what keeps a rewrite from touching configs Kiro Crew did not
+    author.
+    """
+    files: list[Path] = []
     kiro_dir = kiro_agents_dir()
     for name in _OWNED_KIRO_AGENT_FILES:
         p = kiro_dir / name
         if p.is_file():
-            agent_files.append(p)
+            files.append(p)
     cc_dir = Path.home() / ".claude" / "agents"
     for name in _OWNED_CC_AGENT_FILES:
         p = cc_dir / name
         if p.is_file():
-            agent_files.append(p)
-    for path in agent_files:
+            files.append(p)
+    return files
+
+
+def _apply_to_owned_agent_files(transform: "Callable[[dict], bool]") -> None:
+    """Apply ``transform`` (mutates in place, returns changed?) to each owned
+    agent config, persisting only when it reports a change. Shared by the
+    converge (Browser Mode on) and remove (Browser Mode off) sweeps so both get
+    the same governance-sanitize + mode-preserving atomic write. Silently skips
+    unreadable/non-dict/absent files.
+    """
+    for path in _owned_agent_config_files():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
-        if converge_playwright_servers(data):
+        if not transform(data):
+            continue
+        try:
+            # Governance floor: this rewrites allowedTools, so run the whole map
+            # through the shared filter before persisting — a ceiling-governed
+            # grant/autoApprove must not survive a sweep of an agent config that
+            # Kiro Crew owns. No-op on an ungoverned host.
             try:
-                # Governance floor: this rewrites allowedTools while converging
-                # Playwright refs, so run the whole map through the shared filter
-                # before persisting — a ceiling-governed grant/autoApprove must not
-                # survive a convergence sweep of a KiroCrew-owned agent config.
-                # No-op on an ungoverned host.
-                try:
-                    from kiro_crew.platform.governance import (
-                        sanitize_agent_config_governance,
-                    )
+                from kiro_crew.platform.governance import sanitize_agent_config_governance
 
-                    sanitize_agent_config_governance(data)
-                except Exception:  # noqa: BLE001 — never break convergence on this
-                    logger.debug("governance sanitize unavailable during converge", exc_info=True)
-                # Preserve the file's existing permission bits: an agent config
-                # may hold MCP ``env`` credentials and be mode 0600 — atomic_write
-                # would otherwise recreate it with the umask default (commonly
-                # 0644), exposing secrets to other local users after startup.
-                try:
-                    prev_mode: int | None = stat.S_IMODE(path.stat().st_mode)
-                except OSError:
-                    prev_mode = None
-                # Atomic write: a live kiro-cli session reads kirocrew.json
-                # through the agent-config path, so a torn write (truncated
-                # mid-flush) could be parsed as a corrupt config. Rename-based
-                # replace makes the swap all-or-nothing.
-                atomic_write(path, json.dumps(data, indent=2), mode=prev_mode)
+                sanitize_agent_config_governance(data)
+            except Exception:  # noqa: BLE001 — never break the sweep on this
+                logger.debug("governance sanitize unavailable during sweep", exc_info=True)
+            # Preserve the file's existing permission bits: an agent config may
+            # hold MCP ``env`` credentials and be mode 0600 — atomic_write would
+            # otherwise recreate it with the umask default (commonly 0644),
+            # exposing secrets to other local users after startup.
+            try:
+                prev_mode: int | None = stat.S_IMODE(path.stat().st_mode)
             except OSError:
-                pass
+                prev_mode = None
+            # Atomic write: a live kiro-cli session reads kirocrew.json through
+            # the agent-config path, so a torn write could be parsed as a corrupt
+            # config. Rename-based replace makes the swap all-or-nothing.
+            atomic_write(path, json.dumps(data, indent=2), mode=prev_mode)
+        except OSError:
+            pass
+
+
+def _converge_playwright_agent_files() -> None:
+    """Sweep the agent configs Kiro Crew generates, converging Playwright to one
+    canonical server. Runs on gateway init so an existing machine self-heals on
+    a plain restart.
+    """
+    _apply_to_owned_agent_files(converge_playwright_servers)
+
+
+def _remove_playwright_from_agent_files() -> None:
+    """Sweep the agent configs Kiro Crew generates, removing the Playwright proxy
+    and its tool references. Runs when Browser Mode is disabled so the ``browser_*``
+    tools do not stay mounted when the ACP loop reloads a merged ``--agent``
+    config that still carried the proxy.
+    """
+    _apply_to_owned_agent_files(remove_playwright_servers)
 
 
 # Sidecar manifest recording the MCP server keys KiroCrew itself has written.
@@ -820,6 +1485,15 @@ def register_playwright_proxy() -> tuple[Path, str]:
     by launch target, not key name, mirroring the boot-time migration guard).
     """
     mcp_json = _kiro_mcp_json_path()
+    # Registration is the AUTHORIZATION: once the proxy is in mcp.json the
+    # browser_* tools appear in the agent's tool list and it may operate a
+    # browser. With no per-message marker, that must never happen while Browser
+    # Mode is off — otherwise a setup/CLI path that registers unconditionally
+    # would let ordinary chat operate a browser despite the durable toggle being
+    # off. So this single chokepoint refuses to register when disabled; every
+    # caller (dashboard save, `browse setup`, `kirocrew setup`) inherits the gate.
+    if not browser_mode_enabled():
+        return mcp_json, "mode-disabled"
     canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
     # Serialize with the other writers of this SAME file — see _kiro_mcp_locked.
     # The lock spans our read + create + write so a concurrent gateway/bridge
@@ -841,6 +1515,76 @@ def register_playwright_proxy() -> tuple[Path, str]:
             mcp_json.write_text(json.dumps({"mcpServers": {}}, indent=2), encoding="utf-8")
         _patch_mcp_for_mode_unlocked()
     return mcp_json, "registered"
+
+
+def deregister_playwright_proxy() -> tuple[Path, str]:
+    """Remove the Kiro Crew Playwright proxy from kiro's ``mcp.json``.
+
+    The inverse of :func:`register_playwright_proxy`, called when the operator
+    turns Browser Mode OFF. With no per-message marker, tool AVAILABILITY is the
+    gate: dropping the proxy entry makes the ``browser_*`` tools disappear from
+    the agent's tool list, so "off" actually prevents browser operation. Removes
+    ONLY a proxy entry authored by Kiro Crew (identified by launch target via
+    :func:`_spec_is_proxy`, plus the superseded legacy keys); a user's own
+    hand-authored direct server under the canonical key is left untouched.
+
+    Also removes the proxy (and its ``@playwright-mcp`` tool references) from the
+    Kiro Crew ``<data-home>/mcp.json`` source and the generated agent-config
+    files, so a restarted ACP loop cannot reload a merged ``--agent`` config that
+    still mounts the ``browser_*`` tools.
+
+    Returns ``(mcp_json_path, status)`` where ``status`` is ``"deregistered"``
+    (an entry was removed somewhere), ``"absent"`` (nothing anywhere to remove),
+    or ``"kept-user-entry"`` (the canonical key in kiro's mcp.json holds a user's
+    non-proxy server, left untouched). Takes the shared lock; blocking, so keep
+    it off the event loop.
+    """
+    mcp_json = _kiro_mcp_json_path()
+    canonical = mcp_server_alias(_PLAYWRIGHT_MCP_PACKAGE)
+    status = "absent"
+    kept_user_entry = False
+    with _kiro_mcp_locked():
+        if mcp_json.is_file():
+            try:
+                data = json.loads(mcp_json.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                data = None
+            servers = data.get("mcpServers") if isinstance(data, dict) else None
+            if isinstance(servers, dict):
+                canon = servers.get(canonical)
+                # A user's own DIRECT server under the canonical key is left
+                # untouched, but we must NOT abort here: a Kiro Crew proxy can
+                # still sit under a superseded key in this file, and — regardless
+                # of this file — in the data-home source and the generated agent
+                # configs, all of which must still be swept below. Authorship is
+                # by launch target, so the sweeps never touch the user's entry.
+                user_owns_canonical = canon is not None and not _spec_is_proxy(canon)
+                kept_user_entry = user_owns_canonical
+                removed = False
+                if _spec_is_proxy(canon):
+                    del servers[canonical]
+                    removed = True
+                before = len(servers)
+                _drop_superseded_playwright(servers, canonical)
+                if removed or len(servers) != before:
+                    try:
+                        prev_mode: int | None = stat.S_IMODE(mcp_json.stat().st_mode)
+                    except OSError:
+                        prev_mode = None
+                    atomic_write(mcp_json, json.dumps(data, indent=2), mode=prev_mode)
+                    status = "deregistered"
+    # Sweep the Kiro Crew mcp.json SOURCE and the generated agent configs too:
+    # rebuild_agent_config merges the source proxy into the agent config, and the
+    # ACP loop loads that via --agent, so a stale proxy there would keep the
+    # tools mounted after a restart even once kiro's mcp.json is clean.
+    if _remove_playwright_from_kirocrew_mcp_json():
+        status = "deregistered"
+    _remove_playwright_from_agent_files()
+    # Report the user-entry carve-out only when it was the sole finding — a real
+    # Kiro Crew proxy removed anywhere else takes precedence in the status.
+    if status == "absent" and kept_user_entry:
+        return mcp_json, "kept-user-entry"
+    return mcp_json, status
 
 
 def inject_cookies_via_playwright(cookie_file: str | None = None) -> dict[str, Any]:

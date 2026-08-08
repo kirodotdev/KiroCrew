@@ -29,7 +29,9 @@ Or with compose: copy [`docker/compose.yaml`](../../docker/compose.yaml) and run
 
 `linux/amd64` and `linux/arm64` are published under every tag. Version tags
 are never repointed once published; pin a version tag (or a digest) for
-reproducible deployments. Every published manifest carries SLSA build
+reproducible deployments. See
+[Release channels](../../README.md#release-channels) for who each channel is
+for. Every published manifest carries SLSA build
 provenance — verify with:
 
 ```

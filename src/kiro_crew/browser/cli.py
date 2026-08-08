@@ -74,10 +74,14 @@ Commands:
   extension off        Disable extension mode (use separate headless Chromium)
 
 Modes:
-  Extension mode (recommended for macOS): Playwright controls your real Chrome
-    with all existing auth — no cookie injection needed. Requires the Playwright
-    Chrome extension: https://chromewebstore.google.com/detail/mmlmfjhmonkocbjadbfplnigmagldckm
-  Headless mode (default on Linux): Launches separate Chromium.
+  Attach mode (recommended for macOS): Playwright drives your real running
+    Chromium-based browser (Chrome, Edge, Brave, Arc, Opera) and its existing
+    logins. Requires the Playwright Extension (one Chrome Web Store listing
+    covers the whole family):
+      https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm
+  Headless mode (default on Linux): Playwright launches its own browser. The
+    engine (chromium/firefox/webkit) is chosen in Settings → Browser; firefox
+    and webkit are Playwright's own builds, not your installed Firefox/Safari.
 """
     )
 
@@ -93,6 +97,14 @@ def _cmd_setup() -> None:
     is resolvable and gives the exact install command when it is not.
     """
     print("Setting up Playwright MCP for the Browser panel...\n")
+
+    # Deliberately does NOT enable Browser Mode: the durable enable flag is a
+    # keystone the agent cannot write, and this CLI is reachable from an
+    # auto-approved agent shell, so self-enabling here would be a consent bypass.
+    # The dashboard Settings API is the SOLE enabler. register_playwright_proxy
+    # therefore no-ops with "mode-disabled" until the operator flips the toggle;
+    # this command still writes the config + reports launcher status so setup is
+    # otherwise ready.
 
     cfg = _setup.generate_playwright_config()
     print(f"  \u2713 Playwright config (headless)   {cfg}")
@@ -119,9 +131,9 @@ def _cmd_setup() -> None:
         print("Action needed — install the Playwright MCP package, then re-run this:")
         print("  npm install -g @playwright/mcp        # or: npx @playwright/mcp\n")
     print("Restart the gateway to apply:   kirocrew stop && kirocrew gateway\n")
-    print("The Browser panel is a read-only live mirror (view-only). Toggle")
-    print('the Globe ("Let the agent use the browser") to let the agent operate')
-    print("the page.")
+    print("Turn on Browser Mode in Settings → Browser (or the dashboard prompt).")
+    print("Once it is on, the agent operates the browser directly — the Browser")
+    print("panel shows a read-only live mirror of what it is doing.")
 
 
 def _cmd_extension(action: str) -> None:
@@ -132,29 +144,37 @@ def _cmd_extension(action: str) -> None:
     token_file = kirocrew_dir / "playwright-extension-token"
 
     if action == "on":
-        print("Playwright Chrome Extension Setup")
+        print("Attach to your running browser (Playwright Extension)")
         print("=" * 40)
         print()
-        print("1. Install the extension from Chrome Web Store:")
-        print("   https://chromewebstore.google.com/detail/mmlmfjhmonkocbjadbfplnigmagldckm")
+        print("1. Install the Playwright Extension for your Chromium-based browser")
+        print("   (Chrome, Edge, Brave, Arc, Opera):")
+        print("   https://chromewebstore.google.com/detail/"
+              "playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm")
         print()
-        print("2. Click the extension icon in Chrome to see your connection token.")
-        print("   It looks like: PLAYWRIGHT_MCP_EXTENSION_TOKEN=xxxxx...")
+        print("2. When the agent connects, pick the browser tab it should drive.")
         print()
-        token = input("3. Paste your extension token here: ").strip()
+        print("The connection token is OPTIONAL — it only skips the per-connection")
+        print("approval prompt. Click the extension icon to copy the")
+        print("PLAYWRIGHT_MCP_EXTENSION_TOKEN value, or press Enter to skip.")
+        token = input("3. Paste your extension token (optional): ").strip()
         if token.startswith("PLAYWRIGHT_MCP_EXTENSION_TOKEN="):
             token = token.split("=", 1)[1]
-        if not token:
-            print("No token provided. Aborting.", file=sys.stderr)
-            sys.exit(1)
-        fd = os.open(str(token_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(token)
+        if token:
+            fd = os.open(str(token_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(token)
         flag_file.touch()
+        # Does NOT enable Browser Mode: that durable flag is a keystone the agent
+        # cannot write, and enabling it here (a CLI reachable from an
+        # auto-approved shell) would be a consent bypass. The dashboard Settings
+        # toggle is the sole enabler; this only records the attach preference +
+        # token so it is ready once the operator turns Browser Mode on.
         _reregister_proxy()
         print()
-        print("Extension mode enabled.")
-        print("Restart gateway to apply: kirocrew stop && kirocrew gateway")
+        print("Attach preference saved.")
+        print("Turn on Browser Mode in Settings -> Browser to activate it, then")
+        print("restart the gateway: kirocrew stop && kirocrew gateway")
     elif action == "off":
         flag_file.unlink(missing_ok=True)
         token_file.unlink(missing_ok=True)

@@ -783,9 +783,28 @@ export function useWebSocket() {
             }
             break
           }
-          case 'activity_event':
-            dispatch(sseActivityEvent(data as { slot: string; kind: string; text: string }))
+          case 'activity_event': {
+            const ev = data as { slot: string; kind: string; text: string; spawned?: boolean }
+            // A session was just created or resumed, which is the ONLY moment the
+            // backend learns what this account is entitled to run (it comes from
+            // session/new's advertised list). /api/models narrows its catalog to
+            // that set, so refetch it then — a cold gateway answered the first
+            // fetch from the unnarrowed catalog and, being a live 200, stopped
+            // the self-heal poll, leaving the picker offering models no turn can
+            // use for the rest of the page's life.
+            //
+            // Gated on `spawned`, not on the frame's presence: this frame is also
+            // emitted on warm turns, where nothing was respawned and the
+            // advertised list cannot have changed. /api/models SPAWNS
+            // `kiro chat --list-models`, so refetching per prompt would run a
+            // subprocess on every message. An absent flag is treated as "not
+            // spawned" so an unexpected emitter cannot reintroduce that.
+            if (ev.kind === 'session' && ev.spawned === true) {
+              queryClient.invalidateQueries({ queryKey: ['available-models'] })
+            }
+            dispatch(sseActivityEvent(ev))
             break
+          }
           case 'subagent_spawn':
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string }))
             break

@@ -226,6 +226,21 @@ function linksInMessage(
   return [...found.values()]
 }
 
+/** Parse ONE url into a source link, or null when it is not a pull request /
+ *  merge request / issue on a permitted host.
+ *
+ *  Exposed for callers that hold a url but no transcript — the sidebar chips,
+ *  whose links the BACKEND scanned out of the slot's messages. Going through the
+ *  same parser as the transcript extractor means such a caller gets the identical
+ *  canonical shape (canonicalised url, provider, number, repo, kind) instead of a
+ *  second, drifting hand-rolled one. */
+export function parseSourceLinkUrl(
+  url: string,
+  gitlabHosts: readonly string[] = [],
+): PullRequestLink | null {
+  return parseCandidate(url, gitlabHostSet(gitlabHosts))
+}
+
 function roleCount(found: Map<string, AttributedLink>, role: MentionRole): number {
   let n = 0
   for (const link of found.values()) if (link.mentionedBy === role) n += 1
@@ -383,6 +398,156 @@ export function recordNewPullRequestLinks(
   seenBySlot.delete(slot)
   seenBySlot.set(slot, seen)
   return hasNew
+}
+
+/** Per-slot, per-kind links a sidebar chip explicitly revealed into the panel. */
+export type RevealedSources = Record<string, Partial<Record<SourceLinkKind, PullRequestLink>>>
+
+const REVEALED_SOURCE_PREFIX = 'mc-pr-source-revealed:'
+
+/** `mc-pr-source-revealed:<kind>:<slot>` — kind first so the slot is the whole
+ *  remainder and needs no escaping, exactly like `selectionStorageKey`. */
+function revealedStorageKey(slot: string, kind: SourceLinkKind): string {
+  return `${REVEALED_SOURCE_PREFIX}${kind}:${slot}`
+}
+
+function parseRevealedStorageKey(key: string): { slot: string; kind: SourceLinkKind } | null {
+  if (!key.startsWith(REVEALED_SOURCE_PREFIX)) return null
+  const rest = key.slice(REVEALED_SOURCE_PREFIX.length)
+  const split = rest.indexOf(':')
+  if (split <= 0) return null
+  const kind = rest.slice(0, split)
+  const slot = rest.slice(split + 1)
+  if (!slot || slot.length > MAX_PERSISTED_SLOT_LENGTH) return null
+  if (kind !== 'change' && kind !== 'issue') return null
+  return { slot, kind }
+}
+
+interface StoredRevealed {
+  slot: string
+  kind: SourceLinkKind
+  link: PullRequestLink
+  at: number
+}
+
+/** Largest raw entry worth handing to JSON.parse — a url plus its `{u,t}` wrapper
+ *  with room to spare. Bounds the parse itself rather than only rejecting the url
+ *  afterwards. */
+const MAX_STORED_REVEALED_BYTES = MAX_PERSISTED_SOURCE_URL_LENGTH + 128
+/** Upper bound on a plausible recency stamp (2100-01-01Z). Storage is untrusted
+ *  and `Number.isFinite` alone admits `Number.MAX_VALUE`; because
+ *  `MAX_VALUE + 1 === MAX_VALUE`, such an entry could tie a genuine write and —
+ *  being earlier in a stable sort — cap the genuine one out. An absolute bound is
+ *  used rather than "not in the future" because a clock stepping BACKWARD is a
+ *  real scenario (`commitRevealedSource` guards it), and a future-relative rule
+ *  would make every previously-written real stamp look crafted. */
+const MAX_PLAUSIBLE_STAMP_MS = 4102444800000
+/** Highest stamp a genuine write may take. Strictly below the trusted ceiling so a
+ *  crafted entry sitting AT the ceiling is demoted rather than tying — otherwise 32
+ *  entries stamped exactly `MAX_PLAUSIBLE_STAMP_MS` would tie a clamped genuine
+ *  write and, being earlier in a stable sort, keep it out of the read cap. */
+const MAX_WRITABLE_STAMP_MS = MAX_PLAUSIBLE_STAMP_MS - 1
+
+/**
+ * Enumerate and validate every stored revealed link.
+ *
+ * ONE KEY PER FIELD, for the same reason the selection store next door uses one:
+ * a popped-out session shares this localStorage, and a whole-map write publishes
+ * this window's stale view of the slots it is not looking at — so the later write
+ * would delete a sibling window's reveal, and the reload it was meant to survive
+ * would silently swap the panel after all.
+ *
+ * Only the URL is stored, never the parsed shape: localStorage is untrusted, so
+ * every entry is re-derived by the same parser that built it. The host allowlist
+ * is deliberately NOT applied (same reasoning as `isCanonicalStoredUrl`): whether
+ * a host may be loaded was decided at reveal time and is re-validated by the
+ * backend, and applying it here would drop every self-hosted link because the
+ * allowlist arrives asynchronously from dashboard config.
+ */
+function readStoredRevealed(): StoredRevealed[] {
+  if (typeof localStorage === 'undefined') return []
+  const out: StoredRevealed[] = []
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key) continue
+      const parsedKey = parseRevealedStorageKey(key)
+      if (!parsedKey) continue
+      const raw = localStorage.getItem(key)
+      // Bound the parse, not just its result: an oversized value is rejected
+      // before JSON.parse rather than after the url check.
+      if (!raw || raw.length > MAX_STORED_REVEALED_BYTES) continue
+      let value: unknown
+      try {
+        value = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const { u, t } = value as { u?: unknown; t?: unknown }
+      if (typeof u !== 'string' || !u || u.length > MAX_PERSISTED_SOURCE_URL_LENGTH) continue
+      const link = parseCandidate(u, NO_GITLAB_HOSTS, true)
+      // Re-derived, canonical, and its own parsed kind must agree with the key it
+      // was filed under — a 'change' key holding an issue url would inject into
+      // the panel the other kind owns.
+      if (!link || link.url !== u || link.kind !== parsedKey.kind) continue
+      // A stamp is trusted for RECENCY only within a plausible range; outside it
+      // the entry keeps its link but forfeits recency and sorts oldest, so a
+      // crafted stamp cannot displace a genuine reveal from the read cap.
+      const trusted = typeof t === 'number'
+        && Number.isFinite(t)
+        && t >= 0
+        && t < MAX_PLAUSIBLE_STAMP_MS
+      out.push({ ...parsedKey, link, at: trusted ? (t as number) : 0 })
+    }
+  } catch {
+    // Enumerating storage can throw in locked-down environments.
+    return out
+  }
+  return out
+}
+
+/** Restore revealed links, capped on READ to the most recently written slots.
+ *
+ *  The cap is applied here and nothing deletes another slot's key, for the reason
+ *  `loadSourceSelections` documents at length: a prune pass computes its doomed
+ *  set from a walk, and a sibling window can refresh one of those slots before the
+ *  removals run. */
+export function loadRevealedSources(): RevealedSources {
+  const stored = readStoredRevealed()
+  const newest = new Map<string, number>()
+  for (const entry of stored) {
+    newest.set(entry.slot, Math.max(newest.get(entry.slot) ?? 0, entry.at))
+  }
+  const keep = new Set(
+    [...newest.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_PERSISTED_SOURCE_SLOTS).map(([slot]) => slot),
+  )
+  const out: RevealedSources = {}
+  for (const entry of stored) {
+    if (!keep.has(entry.slot)) continue
+    out[entry.slot] = { ...out[entry.slot], [entry.kind]: entry.link }
+  }
+  return out
+}
+
+/** Persist ONE revealed link. Never touches another slot's or kind's key. */
+export function commitRevealedSource(
+  slot: string | null,
+  kind: SourceLinkKind,
+  url: string,
+): boolean {
+  if (!slot || slot.length > MAX_PERSISTED_SLOT_LENGTH) return false
+  if (typeof localStorage === 'undefined') return false
+  if (url.length > MAX_PERSISTED_SOURCE_URL_LENGTH || !isCanonicalStoredUrl(url)) return false
+  // Never stamp below what is already stored: a clock stepping BACKWARD (an NTP
+  // correction, a resumed VM) would otherwise sort a brand-new reveal below the
+  // read cap. Mirrors `commitSourceSelection`.
+  const newestAt = readStoredRevealed().reduce((max, entry) => Math.max(max, entry.at), 0)
+  // Clamped BELOW the reader's trusted ceiling, so a write can never produce a
+  // stamp its own reader would discard, and a crafted at-the-ceiling entry cannot
+  // tie it.
+  const at = Math.min(Math.max(Date.now(), newestAt + 1), MAX_WRITABLE_STAMP_MS)
+  return safeSetItem(revealedStorageKey(slot, kind), JSON.stringify({ u: url, t: at }))
 }
 
 /**

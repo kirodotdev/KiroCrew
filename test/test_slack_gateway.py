@@ -868,7 +868,13 @@ class TestCheckForUpdates:
 
         orig = _h._update_info.copy()
         try:
-            _h._update_info.update({"available": False})
+            # A git checkout (self_updatable) below the floor: the git auto-apply
+            # is the correct mandatory action. `_do_update_check` sets this key
+            # per layout in the real flow; it is mocked here, so the fixture
+            # states the layout explicitly. The wheel layout (self_updatable
+            # False) takes the notify path instead — see
+            # TestMandatoryUpdateOnWheelInstall.
+            _h._update_info.update({"available": False, "self_updatable": True})
             with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
                 with patch(
                     "kiro_crew.platform.update_governance.update_required", return_value=True
@@ -1061,6 +1067,324 @@ class TestInitCron:
 
         assert result == "cron result"
         assert job.last_result == "cron result"
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_publishes_turn_identity(self):
+        """Regression: the cron turn must publish session_pid_<pid>.txt.
+
+        The cron path was the one turn-running surface that never called
+        publish_turn_identity. Under session sharing the runtime env carries
+        no KIROCREW_SESSION_KEY and macOS sets no KIROCREW_HOST_PID, so the
+        ancestor PID-walk over session_pid files is the ONLY parent-identity
+        source for spawn_run — without the publish, sub-agents spawned from a
+        cron turn resolved an empty parent ('notification only (parent=)')
+        unless an unrelated surface happened to be mid-turn."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.script = ""
+        job.command = ""
+        job.id = "j1"
+        job.name = "test-job"
+        job.persistent_session = True
+        job.agent_sequence = []
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = "U1"
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+
+        publish_events: list[str] = []
+
+        async def _publish(sessions, key):
+            publish_events.append(f"publish:{key}")
+
+        async def _stream(*a, **k):
+            # Identity must already be published when the model turn starts —
+            # spawn_run can fire at any point inside it.
+            publish_events.append("stream")
+            return "cron result"
+
+        with patch("kiro_crew.slack.gateway.publish_turn_identity", side_effect=_publish):
+            with patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=_stream):
+                with patch(
+                    "kiro_crew.slack.gateway.build_cron_session_context",
+                    return_value=("cron:j1", "run task"),
+                ):
+                    await callback(job)
+
+        # Ordering is the contract: the publish must precede the model turn.
+        assert publish_events == ["publish:cron:j1", "stream"]
+
+    @pytest.mark.asyncio
+    async def test_cron_callback_publishes_identity_per_sequence_agent(self):
+        """Each agent in an agent_sequence runs on its own per-agent session
+        key (cron:<job>:<agent>) — identity must be re-published for each."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.script = ""
+        job.command = ""
+        job.id = "j1"
+        job.name = "test-job"
+        job.persistent_session = True
+        job.agent_sequence = ["planner", "worker"]
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = "U1"
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+
+        publish = AsyncMock()
+        with patch("kiro_crew.slack.gateway.publish_turn_identity", publish):
+            with patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="cron result",
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway.build_cron_session_context",
+                    return_value=("cron:j1", "run task"),
+                ):
+                    await callback(job)
+
+        assert publish.await_count == 2
+        published_keys = [c.args[1] for c in publish.await_args_list]
+        assert published_keys == ["cron:j1:planner", "cron:j1:worker"]
+
+    @pytest.mark.asyncio
+    async def test_sequence_agent_reset_deferred_while_subagents_pending(self):
+        """The sequential finally must mirror the single-agent deferral.
+
+        Now that the sequence path publishes turn identity, a non-final
+        agent's spawn_run resolves a REAL parent key. An unconditional reset
+        at the end of that agent's turn would tear down the session a pending
+        sub-agent completion is about to inject into (cold-starting a
+        context-free replacement) and strip the reaper registration for the
+        NEXT agent's still-in-flight turn."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.sessions.reset = AsyncMock()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        # A sub-agent of the FIRST sequence agent is still running when its
+        # turn ends; the second agent has no pending sub-agents.
+        pending = MagicMock()
+        pending.parent_session_key = "cron:j1:planner"
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = [pending]
+        # Real predicate semantics: pending work == a running agent with this
+        # parent (no queued spawns in this scenario).
+        orch.subagent_mgr.queued_count_for = MagicMock(return_value=0)
+        orch.subagent_mgr.has_pending_work_for = MagicMock(
+            side_effect=lambda key: any(
+                a.parent_session_key == key for a in orch.subagent_mgr.running
+            )
+        )
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.script = ""
+        job.command = ""
+        job.id = "j1"
+        job.name = "test-job"
+        job.persistent_session = True
+        job.agent_sequence = ["planner", "worker"]
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = "U1"
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+
+        with patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock):
+            with patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="cron result",
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway.build_cron_session_context",
+                    return_value=("cron:j1", "run task"),
+                ):
+                    await callback(job)
+
+        # planner's reset deferred (sub-agent pending); worker's reset ran.
+        reset_keys = [c.args[0] for c in orch.sessions.reset.await_args_list]
+        assert "cron:j1:planner" not in reset_keys
+        assert "cron:j1:worker" in reset_keys
+        # The reaper registration is cleared only by the agent that actually
+        # reset — one clear, not two.
+        assert mock_cs_inst.clear_active_session_key.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_sequence_agent_reset_deferred_while_subagents_queued(self):
+        """A spawn accepted behind the concurrency/stagger gate is in the
+        manager's QUEUE, not `running` — the deferral must see it anyway.
+        A `running`-only guard reads "no pending work" during exactly the
+        window a wave is ramping, and the reset strands the queued agent's
+        completion on a cold-started, context-free replacement session."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
+        orch.sessions = _mock_sessions()
+        orch.sessions.reset = AsyncMock()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D_U1")
+        orch.slack.post_blocks = AsyncMock(return_value="ts1")
+        orch.slack.post_message = AsyncMock()
+
+        # Nothing RUNNING for planner — but one spawn is QUEUED for it.
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.running = []
+        orch.subagent_mgr.queued_count_for = MagicMock(
+            side_effect=lambda key: 1 if key == "cron:j1:planner" else 0
+        )
+        orch.subagent_mgr.has_pending_work_for = MagicMock(
+            side_effect=lambda key: key == "cron:j1:planner"
+        )
+
+        with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
+            mock_cs_inst = MagicMock()
+            mock_cs_inst.start = AsyncMock()
+            mock_cs_inst.start_reaper = MagicMock()
+            mock_cs_inst.register_active_session_key = MagicMock()
+            mock_cs_inst.clear_active_session_key = MagicMock()
+            mock_cs.return_value = mock_cs_inst
+            mock_cs.create = AsyncMock(return_value=mock_cs_inst)
+            await orch._init_cron()
+
+        callback = mock_cs.create.call_args[1]["on_job"]
+
+        job = MagicMock()
+        job.script = ""
+        job.command = ""
+        job.id = "j1"
+        job.name = "test-job"
+        job.persistent_session = True
+        job.agent_sequence = ["planner", "worker"]
+        job.agent_id = None
+        job.channel = ""
+        job.created_by = "U1"
+        job.approval_mode = "auto"
+        job.env = None
+        job.acked_items = []
+        job.silent = False
+        job.thread_ts = None
+        job.last_posted_hash = ""
+        job.consecutive_dupes = 0
+        job.last_posted_at = 0.0
+        job.last_failure_hash = ""
+        job.last_failure_at = 0.0
+        job.consecutive_failures = 0
+
+        with patch("kiro_crew.slack.gateway.publish_turn_identity", new_callable=AsyncMock):
+            with patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="cron result",
+            ):
+                with patch(
+                    "kiro_crew.slack.gateway.build_cron_session_context",
+                    return_value=("cron:j1", "run task"),
+                ):
+                    await callback(job)
+
+        reset_keys = [c.args[0] for c in orch.sessions.reset.await_args_list]
+        assert "cron:j1:planner" not in reset_keys
+        assert "cron:j1:worker" in reset_keys
 
     @pytest.mark.asyncio
     async def test_cron_name_is_redacted_before_delivery(self):
@@ -2265,6 +2589,8 @@ class TestSubagentDone:
                 mock_sm_inst = MagicMock()
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
+                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -2767,6 +3093,8 @@ class TestSubagentSlackInjection:
                 mock_sm_inst = MagicMock()
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
+                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -3334,6 +3662,8 @@ class TestInjectWithRetry:
                 mock_sm_inst = MagicMock()
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
+                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -3420,6 +3750,8 @@ class TestOrchestrationGuard:
                 mock_sm_inst = MagicMock()
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
+                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -3786,6 +4118,8 @@ class TestRetriggerRecovery:
                 mock_sm_inst = MagicMock()
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
+                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -4230,6 +4564,8 @@ class TestSlackSubagentCompletionPersistence:
                 mock_sm_inst = MagicMock()
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
+                mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -4589,24 +4925,22 @@ class TestChannelTransportStartGate:
         import contextlib as _cl  # local import; keeps module import block untouched
 
         assert isinstance(stack, _cl.ExitStack)  # documents the contract
-        # slack.gateway imports the four maybe_start_* at module top (hoisted; no
-        # cycle), so patch the names bound IN the gateway module, not their source
-        # modules — patching the source would not affect the already-bound refs.
-        mocks = {}
-        mocks["wecom"] = stack.enter_context(
-            patch("kiro_crew.slack.gateway.maybe_start_wecom", new=AsyncMock())
-        )
-        mocks["telegram"] = stack.enter_context(
-            patch("kiro_crew.slack.gateway.maybe_start_telegram", new=AsyncMock())
-        )
-        mocks["discord"] = stack.enter_context(
-            patch(
-                "kiro_crew.slack.gateway.maybe_start_discord",
-                new=AsyncMock(return_value=discord_ret),
-            )
-        )
-        mocks["webex"] = stack.enter_context(
-            patch("kiro_crew.slack.gateway.maybe_start_webex", new=AsyncMock())
+        # The registry rewrite (PR ③) removed the module-level maybe_start_*
+        # bindings from slack.gateway — the roster now comes from
+        # kiro_crew.channels. Tests inject a descriptor tuple through
+        # _start_channel_transports(descriptors=...) instead of patching names;
+        # the mocks and every assertion below are unchanged.
+        from kiro_crew.messaging.registry import ChannelDescriptor
+
+        mocks = {
+            "wecom": AsyncMock(),
+            "telegram": AsyncMock(),
+            "discord": AsyncMock(return_value=discord_ret),
+            "webex": AsyncMock(),
+        }
+        self._descriptors = tuple(
+            ChannelDescriptor(channel_type=name, start=mock)
+            for name, mock in mocks.items()
         )
         return mocks
 
@@ -4634,7 +4968,7 @@ class TestChannelTransportStartGate:
         discord_client = MagicMock(name="discord_client")
         with contextlib.ExitStack() as stack:
             mocks = self._patch_starts(stack, discord_ret=discord_client)
-            await orch._start_channel_transports()
+            await orch._start_channel_transports(descriptors=self._descriptors)
 
         # Denied members: maybe_start_* never invoked, clients stay None.
         mocks["wecom"].assert_not_awaited()
@@ -4658,7 +4992,7 @@ class TestChannelTransportStartGate:
         self._enable_all_transports(orch)
         with contextlib.ExitStack() as stack:
             mocks = self._patch_starts(stack)
-            await orch._start_channel_transports()
+            await orch._start_channel_transports(descriptors=self._descriptors)
 
         mocks["wecom"].assert_awaited_once()
         mocks["telegram"].assert_awaited_once()
@@ -4704,7 +5038,7 @@ class TestChannelTransportStartGate:
         discord_client = MagicMock(name="discord_client")
         with contextlib.ExitStack() as stack:
             mocks = self._patch_starts(stack, discord_ret=discord_client)
-            await orch._start_channel_transports()
+            await orch._start_channel_transports(descriptors=self._descriptors)
 
         # Host profile narrows telegram out even though the policy allowed it.
         mocks["telegram"].assert_not_awaited()
@@ -4740,7 +5074,7 @@ class TestChannelTransportStartGate:
         monkeypatch.setattr(gw, "_channel_transport_permitted", _spy)
         with contextlib.ExitStack() as stack:
             mocks = self._patch_starts(stack)
-            await orch._start_channel_transports()
+            await orch._start_channel_transports(descriptors=self._descriptors)
 
         # Only the enabled transport was evaluated + started.
         assert queried == ["telegram"]
@@ -4788,3 +5122,114 @@ class TestChannelTransportStartGate:
         assert connected is True
         socket_client.connect.assert_awaited_once()
         assert orch._socket_client is socket_client
+
+
+class TestMandatoryUpdateOnWheelInstall:
+    """A policy min-version makes an update mandatory. On a wheel/cli.sh install
+    the git-based auto-apply cannot run, so the mandatory branch must NOTIFY
+    (warn + light the dashboard badge) instead of silently returning — which is
+    what it did before, leaving the host below the floor with no signal."""
+
+    @pytest.mark.asyncio
+    async def test_mandatory_update_on_wheel_notifies_not_silent(self, monkeypatch):
+        import kiro_crew.dashboard.handlers as handlers
+        import kiro_crew.platform.update_governance as gov
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+
+        async def _noop_check():
+            return None
+
+        # Wheel install below a policy floor: a feed-checkable layout reports
+        # self_updatable False, and the check can leave available False (a
+        # pre-release remote reads as not-newer) even though the floor mandates
+        # the update. Start from available False to prove the branch lights it.
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "available": False,
+                "self_updatable": False,
+                "install_kind": "wheel",
+                # A feed-checkable wheel carries an installer command; that is
+                # what distinguishes it from an externally-managed install.
+                "update_command": "curl -fsSL … | sh",
+            }
+        )
+        monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
+        monkeypatch.setattr(gov, "update_required", lambda _v: True)
+        monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+
+        apply_called = AsyncMock()
+        monkeypatch.setattr(orch, "_auto_apply_update", apply_called)
+
+        await orch._check_for_updates()
+
+        # Must NOT attempt the git apply on a non-git tree, and must surface it.
+        apply_called.assert_not_awaited()
+        ds.push_refresh.assert_called_once_with("update_available")
+        # The dashboard badge reads _update_info["available"]; a mandatory
+        # update must light it even though the check left it False.
+        assert handlers._update_info.get("available") is True
+
+    @pytest.mark.asyncio
+    async def test_mandatory_update_on_externally_managed_does_not_badge(self, monkeypatch):
+        """A dmg/appimage/docker install below the floor is not self_updatable
+        AND has no installer update_command — it updates via its own surface, so
+        the CLI 'run kirocrew update' badge must NOT light."""
+        import kiro_crew.dashboard.handlers as handlers
+        import kiro_crew.platform.update_governance as gov
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+
+        async def _noop_check():
+            return None
+
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "available": False,
+                "self_updatable": False,
+                "install_kind": "docker",
+                "update_command": "",  # externally managed: no CLI update path
+            }
+        )
+        monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
+        monkeypatch.setattr(gov, "update_required", lambda _v: True)
+        monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+        apply_called = AsyncMock()
+        monkeypatch.setattr(orch, "_auto_apply_update", apply_called)
+
+        await orch._check_for_updates()
+
+        apply_called.assert_not_awaited()
+        ds.push_refresh.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mandatory_update_on_git_still_auto_applies(self, monkeypatch):
+        import kiro_crew.dashboard.handlers as handlers
+        import kiro_crew.platform.update_governance as gov
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        async def _noop_check():
+            return None
+
+        # Git checkout: self_updatable True, so the mandatory git apply runs.
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {"available": True, "self_updatable": True, "install_kind": "git"}
+        )
+        monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
+        monkeypatch.setattr(gov, "update_required", lambda _v: True)
+        monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+
+        apply_called = AsyncMock()
+        monkeypatch.setattr(orch, "_auto_apply_update", apply_called)
+
+        await orch._check_for_updates()
+        apply_called.assert_awaited_once()

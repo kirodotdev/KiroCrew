@@ -1157,6 +1157,7 @@ class TestMmrRerankNegativeScores:
         assert len(out) == 2
 
 
+@pytest.mark.xdist_group("vector_memory_concurrency")
 class TestVectorStoreConcurrency:
     """Writes are offloaded to worker threads (consolidation, dashboard) while
     reads (search_episodic via context assembly) run on the event loop thread.
@@ -1283,6 +1284,156 @@ class TestVectorStoreConcurrency:
         ), f"store broken after stress (transient errors seen: {transient!r})"
         lessons = store.get_lessons()
         assert any("zeta functionality" in str(ls.get("value_json", "")) for ls in lessons)
+
+    def test_concurrent_semantic_write_and_context_no_errors(self, tmp_path) -> None:
+        """get_semantic_context runs on executor threads (subagent context builds
+        via run_in_embed_pool) concurrent with set_semantic writers on worker
+        threads. Its SELECTs used to hit the shared connection WITHOUT _db_lock,
+        racing writers' implicit transactions and the per-connection statement
+        cache — observed in production as sqlite3.InterfaceError ("bad parameter
+        or other API misuse") from get_semantic_context, which propagates
+        unguarded through memory.get_context -> context.build_session_context
+        and kills the whole subagent run.
+
+        Unlike the lesson stress above, readers here must raise NOTHING: with
+        the fetches locked, every db access on this path is serialized, and the
+        production caller has no try/except to absorb a transient.
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        # Seed rows so the reader's scoring loop has real work between fetches.
+        for i in range(20):
+            store.set_semantic(f"project.seed.k{i:02d}", f"alpha beta value {i}", 1.0, "tool")
+
+        start_barrier = threading.Barrier(4)
+        errors: list[BaseException] = []
+
+        def _writer(n: int, tag: str) -> None:
+            start_barrier.wait()
+            try:
+                for i in range(n):
+                    store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
+            except BaseException as exc:  # noqa: BLE001 - capture any thread crash
+                errors.append(exc)
+
+        def _context_reader(n: int) -> None:
+            start_barrier.wait()
+            try:
+                for i in range(n):
+                    # Alternate branches: query-scored path and recency path.
+                    if i % 2:
+                        store.get_semantic_context(query_text="alpha beta gamma")
+                    else:
+                        store.get_semantic_context()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_writer, args=(60, "a")),
+            threading.Thread(target=_writer, args=(60, "b")),
+            threading.Thread(target=_context_reader, args=(80,)),
+            threading.Thread(target=_context_reader, args=(80,)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "stress threads deadlocked"
+        assert not errors, f"concurrent set_semantic/get_semantic_context raised: {errors!r}"
+
+        # Coherence: a post-stress read returns the seeded entries intact.
+        ctx = store.get_semantic_context(query_text="alpha beta")
+        assert "project.seed.k00" in ctx
+
+    def test_concurrent_lesson_write_and_get_lessons_context_no_reader_errors(
+        self, tmp_path
+    ) -> None:
+        """get_lessons_context feeds the same unguarded context-injection path
+        (context.py calls it with no try/except), so with get_lessons' fetch
+        now serialized the READERS must not raise. Writer-side transients are
+        tolerated as in the lesson stress above — write_lesson still has
+        unlocked segments outside the fetch (embed, dedup logic).
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        for i in range(10):
+            store.write_lesson(
+                rule=f"seed lesson number {i} about distinct topic {i}",
+                category="tool",
+                source="consolidation",
+            )
+
+        start_barrier = threading.Barrier(4)
+        reader_errors: list[BaseException] = []
+
+        def _lesson_writer(n: int, tag: str) -> None:
+            start_barrier.wait()
+            for i in range(n):
+                try:
+                    store.write_lesson(
+                        rule=f"stress lesson {tag}{i:03d} about unique subject {tag}{i}",
+                        category="tool",
+                        source="consolidation",
+                    )
+                except Exception:  # noqa: BLE001 - writer transients tolerated
+                    pass
+
+        def _lesson_reader(n: int) -> None:
+            start_barrier.wait()
+            try:
+                for _ in range(n):
+                    store.get_lessons_context()
+            except BaseException as exc:  # noqa: BLE001
+                reader_errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_lesson_writer, args=(30, "a")),
+            threading.Thread(target=_lesson_writer, args=(30, "b")),
+            threading.Thread(target=_lesson_reader, args=(80,)),
+            threading.Thread(target=_lesson_reader, args=(80,)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "stress threads deadlocked"
+        assert not reader_errors, f"get_lessons_context raised: {reader_errors!r}"
+
+    def test_stem_words_thread_safe(self) -> None:
+        """_stem_words used to share ONE module-level snowballstemmer instance.
+        The pure-Python stemmer keeps the word under stem as mutable instance
+        state (set_current -> _stem -> get_current), so concurrent
+        get_semantic_context calls (parallel subagent context builds)
+        interleaved that cursor and raised IndexError("string index out of
+        range") — or silently produced wrong stems. Now one instance per
+        thread: hammering _stem_words from many threads must neither raise nor
+        diverge from the single-threaded result.
+        """
+        vocab = [
+            f"word{i} running jumped happily nationalization {i}" for i in range(50)
+        ]
+        word_sets = [set(v.split()) for v in vocab]
+        expected = [_stem_words(ws) for ws in word_sets]
+
+        start_barrier = threading.Barrier(8)
+        errors: list[BaseException] = []
+
+        def _stemmer_worker() -> None:
+            start_barrier.wait()
+            try:
+                for _ in range(40):
+                    for ws, exp in zip(word_sets, expected):
+                        assert _stem_words(ws) == exp
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_stemmer_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "stemmer threads deadlocked"
+        assert not errors, f"concurrent _stem_words raised/diverged: {errors!r}"
 
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")
@@ -2187,3 +2338,439 @@ class TestSharedConnectionLockDiscipline:
         entry = store.get_semantic("pref.editor")
         assert entry is not None
         assert entry["value_json"] == '"emacs"'
+
+
+class TestLockedFetchHelpers:
+    """The locked fetch helpers (#1947) — the single route for plain SELECTs."""
+
+    def test_fetch_all_locked_returns_materialized_rows(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.set_semantic("pref.editor", "vim", 0.9, "user_explicit")
+        store.set_semantic("pref.shell", "zsh", 0.9, "user_explicit")
+        rows = store._fetch_all_locked(
+            "SELECT key FROM semantic_memory WHERE key LIKE ? AND is_deleted = 0 ORDER BY key",
+            ("pref.%",),
+        )
+        # A materialized list (not a live cursor), safe to iterate unlocked.
+        assert isinstance(rows, list)
+        assert [r["key"] for r in rows] == ["pref.editor", "pref.shell"]
+
+    def test_fetch_one_locked_hit_and_miss(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.set_semantic("pref.editor", "vim", 0.9, "user_explicit")
+        row = store._fetch_one_locked(
+            "SELECT value_json FROM semantic_memory WHERE key = ?", ("pref.editor",)
+        )
+        assert row is not None and row["value_json"] == '"vim"'
+        assert (
+            store._fetch_one_locked(
+                "SELECT value_json FROM semantic_memory WHERE key = ?", ("pref.nope",)
+            )
+            is None
+        )
+
+    def test_helpers_are_reentrant_under_held_lock(self, tmp_path: Path) -> None:
+        """_db_lock is an RLock: locked write sections may call readers that
+        route through the helpers (e.g. search_episodic -> _get_episodic_batch)
+        without deadlocking."""
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.set_semantic("pref.editor", "vim", 0.9, "user_explicit")
+        with store._db_lock:
+            rows = store._fetch_all_locked("SELECT key FROM semantic_memory")
+        assert len(rows) == 1
+
+
+class TestDbLockGuard:
+    """AST guard for the #1947 invariant: EVERY statement on the shared
+    ``check_same_thread=False`` connection must be serialized on ``_db_lock``.
+
+    The contract used to be enforced by convention only and failed twice
+    (the _sqlite_vector_search locked-fetch fix, then #1859's
+    get_semantic_context/get_lessons production InterfaceError). This test
+    makes a raw unlocked ``self.db.execute(...)`` in vector_memory.py a CI
+    failure instead of a code-review catch: new fetches must route through
+    ``_fetch_all_locked``/``_fetch_one_locked`` (which lock internally) or sit
+    inside an explicit ``with self._db_lock:`` read-modify-write section.
+    """
+
+    #: Methods allowed to touch the raw ``self._db`` attribute unlocked:
+    #: they run before/after the store is shared across threads.
+    _RAW_DB_ALLOWED = {"init", "close", "db"}
+
+    @staticmethod
+    def _is_self_attr(node: object, attr: str) -> bool:
+        import ast
+
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == attr
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        )
+
+    @classmethod
+    def _find_unserialized_statements(cls, tree) -> list[str]:
+        """Return a violation string per sqlite statement not serialized on
+        ``_db_lock``. Shared by the real guard and its self-test below."""
+        import ast
+
+        violations: list[str] = []
+        guard = cls
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.lock_depth = 0
+                self.func_stack: list[str] = []
+
+            def visit_With(self, node: ast.With) -> None:
+                locked = any(
+                    guard._is_self_attr(item.context_expr, "_db_lock") for item in node.items
+                )
+                self.lock_depth += 1 if locked else 0
+                self.generic_visit(node)
+                self.lock_depth -= 1 if locked else 0
+
+            def visit_ClassDef(self, node) -> None:
+                self.func_stack.append(node.name)
+                self.generic_visit(node)
+                self.func_stack.pop()
+
+            def _visit_func(self, node) -> None:
+                self.func_stack.append(node.name)
+                saved = self.lock_depth
+                self.lock_depth = 0  # function body runs at call time, not here
+                self.generic_visit(node)
+                self.lock_depth = saved
+                self.func_stack.pop()
+
+            visit_FunctionDef = _visit_func
+            visit_AsyncFunctionDef = _visit_func
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr in (
+                    "execute",
+                    "executemany",
+                    "executescript",
+                ):
+                    where = ".".join(self.func_stack) or "<module>"
+                    if guard._is_self_attr(func.value, "db") and self.lock_depth == 0:
+                        violations.append(
+                            f"line {node.lineno} ({where}): self.db.{func.attr}() outside "
+                            "`with self._db_lock:` — use _fetch_all_locked/_fetch_one_locked "
+                            "for reads or take the lock explicitly for writes"
+                        )
+                    elif guard._is_self_attr(func.value, "_db") and not (
+                        self.func_stack and self.func_stack[-1] in guard._RAW_DB_ALLOWED
+                    ):
+                        violations.append(
+                            f"line {node.lineno} ({where}): raw self._db.{func.attr}() outside "
+                            f"{sorted(guard._RAW_DB_ALLOWED)} — go through self.db under _db_lock"
+                        )
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        return violations
+
+    def test_every_db_statement_is_lock_serialized(self) -> None:
+        import ast
+        import inspect
+
+        from kiro_crew import vector_memory
+
+        source = inspect.getsource(vector_memory)
+        tree = ast.parse(source)
+        violations = self._find_unserialized_statements(tree)
+        assert not violations, "unserialized sqlite statement(s):\n" + "\n".join(violations)
+
+    def test_guard_catches_a_seeded_violation(self) -> None:
+        """The guard itself must fail on an unlocked fetch — otherwise a refactor
+        that breaks its With/function tracking would silently disarm it."""
+        import ast
+
+        seeded = ast.parse(
+            "class S:\n"
+            "    def bad(self):\n"
+            "        return self.db.execute('SELECT 1').fetchone()\n"
+            "    def good(self):\n"
+            "        with self._db_lock:\n"
+            "            return self.db.execute('SELECT 1').fetchone()\n"
+            "    def sneaky(self):\n"
+            "        with self._db_lock:\n"
+            "            def inner():\n"
+            "                return self.db.execute('SELECT 1').fetchone()\n"
+            "            return inner\n"
+            "    def raw(self):\n"
+            "        return self._db.execute('SELECT 1').fetchone()\n"
+        )
+        violations = self._find_unserialized_statements(seeded)
+        # `bad` is a plain unlocked fetch; `sneaky`'s inner function is defined
+        # under the lock but runs at call time; `raw` bypasses the property
+        # outside the allowed lifecycle methods. `good` must not be flagged.
+        assert len(violations) == 3
+        flagged = "\n".join(violations)
+        assert "(S.bad)" in flagged
+        assert "(S.sneaky.inner)" in flagged
+        assert "(S.raw)" in flagged
+        assert "S.good" not in flagged
+
+
+@pytest.mark.xdist_group("vector_memory_concurrency")
+class TestReaderConcurrency1947:
+    """Stress the readers that ran UNLOCKED on the shared connection before
+    #1947 (get_semantic, get_all_semantic, search_semantic, get_events,
+    get_episodic_list, memory_stats, _get_episodic, get_rejection_stats)
+    against concurrent writers.
+
+    Same defect class as #1859: an unserialized statement racing a writer's
+    implicit transaction corrupts the per-connection statement cache
+    (sqlite3.InterfaceError "bad parameter or other API misuse") or silently
+    corrupts row iteration. With every fetch routed through the locked helper,
+    readers must raise NOTHING — dashboard/API callers surface any exception
+    as a 500.
+    """
+
+    def test_previously_unlocked_readers_survive_concurrent_writes(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        # Seed both tables plus the event log so every reader has real rows.
+        seeded_episodic_ids: list[str] = []
+        for i in range(10):
+            store.set_semantic(f"project.seed.k{i:02d}", f"alpha value {i}", 1.0, "tool")
+            store.write_episodic(f"seeded episodic memory {i} about alpha beta topics")
+        seeded_episodic_ids = [m["id"] for m in store.get_episodic_list(limit=10)]
+
+        start_barrier = threading.Barrier(4)
+        errors: list[BaseException] = []
+
+        def _writer(n: int, tag: str) -> None:
+            start_barrier.wait()
+            try:
+                for i in range(n):
+                    store.set_semantic(f"project.stress.{tag}{i:03d}", f"gamma {i}", 1.0, "tool")
+                    store.write_episodic(f"stress episodic {tag}{i:03d} gamma delta {i}")
+            except BaseException as exc:  # noqa: BLE001 - capture any thread crash
+                errors.append(exc)
+
+        def _reader(n: int) -> None:
+            start_barrier.wait()
+            try:
+                for i in range(n):
+                    store.get_semantic("project.seed.k00")
+                    store.get_all_semantic(limit=20)
+                    store.search_semantic("project.")
+                    store.get_events(limit=20)
+                    store.get_episodic_list(limit=20)
+                    store.memory_stats()
+                    store._get_episodic(seeded_episodic_ids[i % len(seeded_episodic_ids)])
+                    store.get_rejection_stats()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_writer, args=(40, "a")),
+            threading.Thread(target=_writer, args=(40, "b")),
+            threading.Thread(target=_reader, args=(30,)),
+            threading.Thread(target=_reader, args=(30,)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+        assert not any(t.is_alive() for t in threads), "stress threads deadlocked"
+        assert not errors, f"concurrent reader/writer stress raised: {errors!r}"
+
+        # Post-stress coherence: counts add up and a fresh read round-trips.
+        stats = store.memory_stats()
+        assert stats["semantic_active"] >= 90  # 10 seed + 2×40 stress writers
+        assert store.get_semantic("project.stress.a000") is not None
+
+
+class TestHandlerOffload1947:
+    """Async code must not call lock-serialized store methods inline on the
+    event loop.
+
+    #1947 made every plain fetch serialize on ``_db_lock``. A worker thread can
+    hold that lock for seconds (backfill's locked FAISS rebuild, reconcile's
+    bulk UPDATEs), so an async function that calls a locked method inline would
+    freeze the whole gateway event loop — chat, heartbeats, every request — for
+    the duration (GPT fork-review P1 on PR #1971). Async callers must offload
+    via ``asyncio.to_thread`` / ``run_in_executor`` / ``run_in_embed_pool``.
+
+    Both the method set and the caller set are DERIVED, not hand-listed
+    (design review on PR #1971 — a hand-maintained list re-introduces
+    enforcement-by-convention one level up): the methods come from
+    ``vector_memory.py``'s AST (public methods that reach
+    ``with self._db_lock:`` directly or transitively through other ``self``
+    calls), and the scan covers every module in the ``kiro_crew`` package.
+    """
+
+    #: Lock-reaching methods exempt from the inline-call scan. ``init`` is the
+    #: one-time lifecycle call made before the store is shared across threads
+    #: (startup paths call it inline by design), and its name collides with
+    #: unrelated ``.init()`` methods across the package.
+    _EXEMPT = {"init"}
+
+    @staticmethod
+    def _package_root() -> Path:
+        import kiro_crew
+
+        return Path(kiro_crew.__file__).resolve().parent
+
+    @classmethod
+    def _derive_locked_methods(cls) -> set[str]:
+        """Public ``VectorMemoryStore`` methods that acquire ``_db_lock``,
+        directly or transitively through other ``self`` method calls."""
+        import ast
+
+        source = (cls._package_root() / "vector_memory.py").read_text(encoding="utf-8")
+        klass = next(
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ClassDef) and node.name == "VectorMemoryStore"
+        )
+
+        callees: dict[str, set[str]] = {}
+        direct: set[str] = set()
+        for node in klass.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            called: set[str] = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.withitem) and TestDbLockGuard._is_self_attr(
+                    sub.context_expr, "_db_lock"
+                ):
+                    direct.add(node.name)
+                if isinstance(sub, ast.Call):
+                    func = sub.func
+                    if (
+                        isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "self"
+                    ):
+                        called.add(func.attr)
+            callees[node.name] = called
+
+        # Fixpoint over the self-call graph: a method that calls a
+        # lock-reaching method is itself lock-reaching.
+        reaching = set(direct)
+        changed = True
+        while changed:
+            changed = False
+            for name, called in callees.items():
+                if name not in reaching and called & reaching:
+                    reaching.add(name)
+                    changed = True
+
+        return {name for name in reaching if not name.startswith("_")} - cls._EXEMPT
+
+    @classmethod
+    def _find_inline_calls(cls, tree, locked: set[str], label: str) -> list[str]:
+        """Violation string per inline call of a locked method inside an
+        ``async def``. Shared by the real guard and its seeded self-test."""
+        import ast
+
+        violations: list[str] = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.async_stack: list[str] = []
+
+            def visit_AsyncFunctionDef(self, node) -> None:
+                self.async_stack.append(node.name)
+                self.generic_visit(node)
+                self.async_stack.pop()
+
+            def visit_FunctionDef(self, node) -> None:
+                # A sync def's body runs wherever it is CALLED from; handlers
+                # that offload a sync helper (run_in_executor on
+                # _build_memory_graph) are the compliant pattern, so sync
+                # bodies are out of scope here.
+                saved, self.async_stack = self.async_stack, []
+                self.generic_visit(node)
+                self.async_stack = saved
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                # Direct attribute call: <expr>.<method>(...) — inline execution.
+                # Offloaded forms pass the method as an OBJECT
+                # (asyncio.to_thread(store.get_events, ...)), which is an
+                # Attribute argument, not a Call, so they do not match here.
+                if (
+                    self.async_stack
+                    and isinstance(func, ast.Attribute)
+                    and func.attr in locked
+                ):
+                    violations.append(
+                        f"{label} line {node.lineno} "
+                        f"(async {self.async_stack[-1]}): inline .{func.attr}() call — "
+                        "offload with asyncio.to_thread to keep a contended _db_lock "
+                        "from blocking the event loop"
+                    )
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        return violations
+
+    def test_derived_method_set_is_sound(self) -> None:
+        """The derivation must stay non-vacuous: known lock-takers present
+        (direct AND transitive), known lock-free methods absent."""
+        locked = self._derive_locked_methods()
+        # Direct: write_episodic takes the lock in its own body. Transitive:
+        # build_faiss_index and delete_semantic reach it only through other
+        # self calls (get_all_semantic / get_semantic locked fetches).
+        assert {
+            "get_lessons",
+            "write_episodic",
+            "build_faiss_index",
+            "delete_semantic",
+            "memory_stats",
+        } <= locked
+        # Lock-free public methods must not be flagged, or the guard would
+        # force pointless offloads.
+        assert not {"embed_lesson", "validate_semantic", "close"} & locked
+        assert "init" not in locked  # exempt lifecycle call
+
+    def test_guard_catches_seeded_violation(self) -> None:
+        """The scanner must flag a known-bad inline call, so a visitor
+        regression cannot silently turn the guard vacuous."""
+        import ast
+        import textwrap
+
+        seeded = textwrap.dedent(
+            """
+            async def handler(store):
+                return store.get_lessons()
+
+            def sync_helper(store):
+                return store.get_lessons()  # sync def: out of scope
+
+            async def compliant(store):
+                import asyncio
+                return await asyncio.to_thread(store.get_lessons)
+            """
+        )
+        violations = self._find_inline_calls(
+            ast.parse(seeded), {"get_lessons"}, "<seeded>"
+        )
+        assert len(violations) == 1
+        assert "async handler" in violations[0]
+        assert ".get_lessons()" in violations[0]
+
+    def test_async_callers_offload_locked_methods(self) -> None:
+        import ast
+
+        locked = self._derive_locked_methods()
+        root = self._package_root()
+        violations: list[str] = []
+        for path in sorted(root.rglob("*.py")):
+            if path.name == "vector_memory.py":
+                continue  # the store may call its own methods inline
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            violations.extend(
+                self._find_inline_calls(tree, locked, str(path.relative_to(root)))
+            )
+        assert not violations, "\n".join(violations)

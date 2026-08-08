@@ -6,19 +6,27 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
-    "id": "browser.chrome-extension-mode",
-    "label": "Chrome Extension Mode",
-    "description": "Attach to your running Chrome with all existing logins and sessions. Recommended for macOS.",
+    "id": "browser.attach-to-my-running-browser",
+    "label": "Attach to my running browser",
+    "description": "Use my running Chromium browser (Chrome, Edge, Brave, Arc, Opera) with its existing logins and sessions. Recommended for macOS.",
     "tab": "browser",
     "type": "toggle",
     "occurrence": 1
   },
   {
-    "id": "browser.connection-token",
-    "label": "Connection Token",
+    "id": "browser.connection-token-optional",
+    "label": "Connection Token (optional)",
     "description": "Paste PLAYWRIGHT_MCP_EXTENSION_TOKEN value from the extension popup",
     "tab": "browser",
     "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "browser.enable-browser-mode",
+    "label": "Enable Browser Mode",
+    "description": "Let the agent read and operate web pages: click, type, and navigate, not just read. Enabling this downloads the browser tools.",
+    "tab": "browser",
+    "type": "toggle",
     "occurrence": 1
   },
   {
@@ -131,14 +139,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them.",
     "tab": "chat",
     "type": "select",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.concise-responses",
-    "label": "Concise Responses",
-    "description": "Trim filler and over-narration: lead with the answer, keep progress notes high-level. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail.",
-    "tab": "chat",
-    "type": "toggle",
     "occurrence": 1
   },
   {
@@ -273,6 +273,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Quick Send",
     "tab": "chat",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.response-verbosity",
+    "label": "Response Verbosity",
+    "description": "How terse the agent's prose is. Ultra-concise writes for an ADHD reader: the answer lands in an opening of at most three sentences, and any detail after it must be scannable bullets rather than prose. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail at every level.",
+    "tab": "chat",
+    "type": "select",
     "occurrence": 1
   },
   {
@@ -545,6 +553,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "security.trust-every-third-party-app",
+    "label": "Trust every third-party app",
+    "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first.",
+    "tab": "security",
     "type": "toggle",
     "occurrence": 1
   },

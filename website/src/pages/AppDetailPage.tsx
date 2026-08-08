@@ -17,6 +17,7 @@ import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
+import TrustAppModal, { APP_EXECUTION_DENIED, isTrustDeniedError, useTrustGate } from '../components/appstore/TrustAppModal'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import AskAgentButton from '../components/AskAgentButton'
@@ -79,33 +80,6 @@ interface AppPermissions {
   network?: boolean
   memory?: boolean | string
   [key: string]: unknown
-}
-
-/** True when a failure is the third-party-app execution gate refusing.
- *
- *  The repo's wire contract (test_error_code_contract.py) is that `code` is
- *  machine-readable and `error` is advisory prose, so this keys off `code` only
- *  — never off the sentence, which is English, unlocalizable, and free to be
- *  reworded by the backend at any time.
- *
- *  Two shapes reach us, because the two call paths fail differently:
- *   - the registry install resolves a payload object carrying `code`;
- *   - `enableApp` REJECTS with an `ApiError`, which keeps the payload as a raw
- *     JSON *string* on `.body` rather than as own properties — reading
- *     `err.code` finds nothing, so `.body` has to be parsed first (same
- *     approach as `embedModelErrorMessage`).
- */
-function isExecutionDenied(source: unknown): boolean {
-  if (source == null || typeof source !== 'object') return false
-  let obj = source as Record<string, unknown>
-  const raw = obj.body
-  if (typeof raw === 'string' && raw.trim()) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object') obj = { ...obj, ...parsed }
-    } catch { /* not JSON — fall through to whatever fields are already there */ }
-  }
-  return obj.code === 'app_execution_denied'
 }
 
 /** A registry app entry from /api/apps/registry — a superset of the fields we
@@ -222,20 +196,8 @@ export default function AppDetailPage() {
   const [app, setApp] = useState<AppInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  // Tracked separately from `error` because it changes what the banner OFFERS,
-  // not just what it says: this is the one failure the user can act on from
-  // here, and until now they were handed an English sentence naming a config
-  // key with nothing to click.
-  const [deniedByPolicy, setDeniedByPolicy] = useState(false)
-  /** Clear BOTH error fields together.
-   *
-   *  Resetting only `error` would leave `deniedByPolicy` set, so the next
-   *  unrelated failure would render the third-party-gate copy and an
-   *  "open security settings" button for something that has nothing to do with
-   *  it. Routing every reset through here is what keeps the two in step. */
   const clearError = useCallback(() => {
     setError('')
-    setDeniedByPolicy(false)
   }, [])
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [installLog, setInstallLog] = useState('')
@@ -356,8 +318,21 @@ export default function AppDetailPage() {
     handleInstall()
   }, [app, location]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleInstall = async () => {
-    if (!app) return
+  /**
+   * The registry install itself. Resolves `'trust-required'` when the gateway
+   * refused it for missing execution trust instead of failing it, so the CALLER
+   * owns the consent modal — which is what lets this same function BE the retry
+   * the modal re-runs once the grant lands.
+   *
+   * `'failed'` is reported separately from `'done'` for every unsuccessful
+   * install. The distinction is load-bearing rather than cosmetic: when this
+   * function runs AS the trust retry, the modal rolls its fresh grant back only if
+   * the retry rejects, and collapsing an ordinary `{ok:false}` failure into
+   * `'done'` therefore left a grant standing over a name no app occupies — a
+   * consent bypass for whatever gets installed under that name next.
+   */
+  const runInstall = async (): Promise<'done' | 'trust-required' | 'failed' | 'aborted'> => {
+    if (!app) return 'done'
     setActionLoading('install')
     setInstallLog('')
     setInstallDone(false)
@@ -382,11 +357,30 @@ export default function AppDetailPage() {
         controller.signal,
       )
       // Server says this app needs client-side installation
+      //
+      // Deliberately `'done'` and NOT a non-terminal outcome, unlike the abort and
+      // failure paths below. Nothing is on disk yet, so the rollback probe would
+      // 404 and withdraw the grant — but the grant is exactly what the user just
+      // consented to so they can complete the client-side install being shown to
+      // them. Withdrawing it here would break the flow it was granted for. The
+      // residual window (user consents, then abandons the client install, leaving
+      // a grant with no owner) is real but is a product question about that flow,
+      // not a defect in this one: revoking is available in Settings, and the
+      // uninstall path refuses to leave the grant behind if they finish later.
       if (result.needsClientInstall) {
         setClientInstall(result.clientInstall || app.platform?.clientInstall || {})
         setShowInstallLog(false)
         setActionLoading(null)
-        return
+        return 'done'
+      }
+      // A refused install is a consent prompt, not an error. The gate runs
+      // BEFORE the clone, so nothing landed on disk and the log holds nothing
+      // the user needs to read — drop the log panel and hand the refusal back.
+      // The stream RESOLVES this refusal (SSE `done` carries the code), so it is
+      // checked on the result, not only in the catch below.
+      if (isTrustDeniedError(result)) {
+        setShowInstallLog(false)
+        return 'trust-required'
       }
       setInstallDone(true)
       if (result.ok) {
@@ -394,14 +388,28 @@ export default function AppDetailPage() {
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
-        setDeniedByPolicy(isExecutionDenied(result))
         setError(result.error || i18nT('pages.appDetailPage.install_failed'))
+        return 'failed'
       }
     } catch (e: unknown) {
-      if (e instanceof Error && e.name === 'AbortError') return
+      // An ABORT is not a completed install, and reporting it as `'done'` was the
+      // third way a grant could be orphaned (after an ordinary `{ok:false}` and
+      // after a second trust refusal). Navigating away aborts the stream, so:
+      // confirm trust -> navigate -> the install never lands -> the retry resolved
+      // -> nothing rejected -> the fresh grant stayed over a name no app occupies.
+      // Reported as its own outcome so the retry rejects and the rollback probe
+      // decides from what is ACTUALLY installed: if the abort raced a completed
+      // install the app is there and the grant is rightly kept, and if it did not
+      // land the 404 withdraws it.
+      if (e instanceof Error && e.name === 'AbortError') return 'aborted'
+      // The non-streaming install route answers 403 with the same code.
+      if (isTrustDeniedError(e)) {
+        setShowInstallLog(false)
+        return 'trust-required'
+      }
       setInstallDone(true)
-      setDeniedByPolicy(isExecutionDenied(e))
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.install_failed'))
+      return 'failed'
     } finally {
       // Only clear loading if this is still the active install —
       // compare by identity to avoid the race where a second invocation
@@ -410,6 +418,45 @@ export default function AppDetailPage() {
         setActionLoading(null)
       }
     }
+    return 'done'
+  }
+
+  /** The single enable path — shared by the action buttons and the trust retry. */
+  const runEnable = useCallback(async (name: string) => {
+    await api.enableApp(name)
+    recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
+    await load()
+    window.dispatchEvent(new Event('mc:apps-changed'))
+  }, [app, load])
+
+  const trust = useTrustGate(runEnable)
+
+  /**
+   * Get / Install / Update entry point — owns the consent modal.
+   *
+   * Every install surface funnels here (the Get button, the two Update buttons,
+   * and the `autoAction` navigation the App Store's Get uses), so the refusal is
+   * handled once no matter which one triggered it. The retry re-runs the INSTALL,
+   * not the enable: this refusal came from the registry-install gate and there is
+   * nothing installed yet to enable.
+   */
+  const handleInstall = async () => {
+    if (!app) return
+    if (await runInstall() !== 'trust-required') return
+    trust.open(
+      { name: app.name, displayName: app.displayName, repo: app.repo, origin: app.origin },
+      async () => {
+        // ANY unsuccessful retry must REJECT, not resolve. `useTrustGate` rolls the
+        // fresh grant back on rejection (and only then), so resolving here on an
+        // ordinary install failure left the grant orphaned over a name no app
+        // occupies. A second trust refusal additionally means the grant did not
+        // take effect, which the modal reports inline rather than closing on a
+        // silent no-op.
+        const outcome = await runInstall()
+        if (outcome === 'trust-required') throw new Error(APP_EXECUTION_DENIED)
+        if (outcome !== 'done') throw new Error(i18nT('pages.appDetailPage.install_failed'))
+      },
+    )
   }
 
   const handleAction = async (action: 'enable' | 'disable' | 'uninstall' | 'update') => {
@@ -423,17 +470,24 @@ export default function AppDetailPage() {
     setActionLoading(action)
     clearError()
     try {
-      if (action === 'enable') await api.enableApp(app.name)
-      else if (action === 'disable') await api.disableApp(app.name)
+      if (action === 'enable') { await runEnable(app.name); return }
+      if (action === 'disable') await api.disableApp(app.name)
       else if (action === 'update') await api.updateApp(app.name)
-      if (action === 'enable' || action === 'disable') {
-        recordEvent(`app_${action}`, { app: app.name, version: app.installedVersion || app.version })
+      if (action === 'disable') {
+        recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
       await load()
       window.dispatchEvent(new Event('mc:apps-changed'))
     } catch (e: unknown) {
-      setDeniedByPolicy(isExecutionDenied(e))
-      setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
+      // A third-party app that has not been granted execution trust yet is a
+      // consent prompt, not an error — branch on the machine-readable code, and
+      // let the modal grant it inline instead of sending the user to a blanket
+      // switch. Every OTHER failure still renders its own prose.
+      if (action === 'enable' && isTrustDeniedError(e)) {
+        trust.open({ name: app.name, displayName: app.displayName, repo: app.repo, origin: app.origin })
+      } else {
+        setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
+      }
     } finally {
       setActionLoading(null)
     }
@@ -520,34 +574,34 @@ export default function AppDetailPage() {
         {error && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <div className="flex-1 min-w-0">
-              {/* An execution-policy denial is the one failure here the user can
-                  actually resolve, so it gets localized copy plus the switch —
-                  not the backend's English sentence naming a config key. Every
-                  other failure still renders the prose, which is better than
-                  swallowing an unrecognized backend error. */}
-              <span className="text-danger text-sm block">
-                {deniedByPolicy
-                  ? i18nT('pages.appDetailPage.third_party_blocked')
-                  : error}
-              </span>
-              {deniedByPolicy ? (
-                <div className="mt-2">
-                  <Btn danger onClick={() => navigate('/settings?tab=security&section=apps')}>
-                    {i18nT('pages.appDetailPage.open_security_settings')}
-                  </Btn>
-                </div>
-              ) : (
-                // The unrecognized-failure branch above renders raw backend prose
-                // and is otherwise a dead end — hand it to the agent with the
-                // status/endpoint/code the journal captured at the transport.
-                <div className="mt-2">
-                  <AskAgentButton message={error} />
-                </div>
-              )}
+              {/* No special execution-policy branch here any more: an untrusted
+                  third-party app is refused with `app_execution_denied`, and that
+                  refusal is now resolved INLINE by the consent modal (granting
+                  this one app) rather than by sending the user off to flip a
+                  blanket switch. Everything that still reaches this box is an
+                  unrecognized backend failure, so it renders the prose — better
+                  than swallowing it — plus a hand-off to the agent, since raw
+                  backend prose is otherwise a dead end. */}
+              <span className="text-danger text-sm block">{error}</span>
+              <div className="mt-2">
+                <AskAgentButton message={error} />
+              </div>
             </div>
             <button aria-label={i18nT('pages.appDetailPage.dismiss_error')} className="text-danger/60 hover:text-danger text-sm shrink-0" onClick={clearError}><X className="lucide-inline" /></button>
           </div>
         )}
+
+        {/* Third-party execution-trust consent. Opened when an enable OR a
+            registry install is refused with code `app_execution_denied`, instead
+            of surfacing the raw backend string in the error card above. */}
+        <TrustAppModal
+          app={trust.target}
+          pending={trust.pending}
+          failed={trust.failed}
+          granted={trust.granted}
+          onCancel={trust.cancel}
+          onConfirm={trust.confirm}
+        />
 
         {/* Uninstall confirmation modal */}
         {showUninstallConfirm && app && (

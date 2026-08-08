@@ -151,6 +151,71 @@ _PROGRESS_EVERY_BYTES = 16 << 20
 # ── Vendored runtime loading ──
 
 _VENDOR_DIR = Path(__file__).resolve().parent / "_vendor"
+_LIBS_DIR_NAME = "llama_cpp_libs"
+# Upstream-supported override naming the directory ctypes loads the native libs
+# from (see _vendor/llama_cpp/llama_cpp.py). An operator-set value wins, which
+# is the escape hatch for a GPU build or a hand-assembled lib dir.
+_LIB_PATH_ENV = "LLAMA_CPP_LIB_PATH"
+
+# The native-library closure every supported platform MUST ship, keyed by the
+# `llama_cpp_libs/<dir>` name. `libllama` is the entry point ctypes opens by
+# base name; the `libggml*` files are its NEEDED/@rpath dependencies, so a
+# missing one fails the SAME way as a missing libllama — an unusable runtime.
+#
+# This is the single source of truth for "is the vendored payload complete",
+# consumed by `verify_vendored_libs()` and asserted per packaging lane. It is
+# deliberately CODE rather than a build-time glob: a glob over whatever is on
+# disk can only prove the files present are shippable, never that a file that
+# should exist was silently dropped by a packaging rule — which is exactly the
+# failure mode `MANIFEST.in`'s `global-exclude *.so` produced (it stripped
+# precisely `libllama.so`, since every other Linux lib ends `.so.0` and the
+# macOS/Windows libs are `.dylib`/`.dll`). `python -m build` builds the wheel
+# FROM the sdist, so that one glob shipped a Linux wheel whose vendored
+# llama_cpp could not load its own shared library, silently degrading vector
+# memory to keyword search on every pip-installed Linux host.
+#
+# No BLAS entry on Linux is intentional, not an omission: upstream publishes no
+# BLAS backend in its Linux CPU wheels (macOS gets `libggml-blas` only because
+# it links the system Accelerate framework). The Linux `libggml-cpu` carries the
+# optimized GEMM/repack kernels instead, so the CPU path is complete without it.
+_REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
+    "linux_x86_64": (
+        "libllama.so",
+        "libggml.so.0",
+        "libggml-base.so.0",
+        "libggml-cpu.so.0",
+        "libgomp-a34b3233.so.1.0.0",
+    ),
+    "linux_aarch64": (
+        "libllama.so",
+        "libggml.so.0",
+        "libggml-base.so.0",
+        "libggml-cpu.so.0",
+        "libgomp-d22c30c5.so.1.0.0",
+    ),
+    "macos_arm64": (
+        "libllama.dylib",
+        "libggml.0.dylib",
+        "libggml-base.0.dylib",
+        "libggml-blas.0.dylib",
+        "libggml-cpu.0.dylib",
+        "libggml-metal.0.dylib",
+    ),
+    "macos_x86_64": (
+        "libllama.dylib",
+        "libggml.0.dylib",
+        "libggml-base.0.dylib",
+        "libggml-blas.0.dylib",
+        "libggml-cpu.0.dylib",
+        "libggml-metal.0.dylib",
+    ),
+    "win_amd64": (
+        "llama.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+    ),
+}
 
 
 def _platform_libs_dirname() -> str | None:
@@ -170,6 +235,30 @@ def _platform_libs_dirname() -> str | None:
         if machine in ("amd64", "x86_64"):
             return "win_amd64"
     return None
+
+
+def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
+    """Report vendored native libs that :data:`_REQUIRED_VENDORED_LIBS` expects but are absent.
+
+    Returns a mapping of platform dir -> sorted missing filenames; an empty
+    mapping means the payload is complete for EVERY platform, not just the
+    running one. ``root`` defaults to the installed ``_vendor`` directory, so
+    the same check runs against a source tree, an unpacked sdist, or an
+    installed wheel — that cross-lane reuse is the point, since each packaging
+    lane (sdist rules, wheel package_data, PyInstaller spec) selects these
+    files by a different mechanism and can therefore drop them independently.
+
+    A platform dir that is entirely absent is reported as missing all of its
+    libs rather than skipped: "the directory vanished" is the more severe
+    version of the bug this guards, not an exemption from it.
+    """
+    base = (root or _VENDOR_DIR) / _LIBS_DIR_NAME
+    missing: dict[str, list[str]] = {}
+    for plat, required in _REQUIRED_VENDORED_LIBS.items():
+        absent = sorted(name for name in required if not (base / plat / name).is_file())
+        if absent:
+            missing[plat] = absent
+    return missing
 
 
 def _install_diskcache_stub() -> None:
@@ -214,12 +303,42 @@ def _load_llama_class():
             platform.machine(),
         )
         return None
-    libs_dir = _VENDOR_DIR / "llama_cpp_libs" / libs_dirname
+    libs_dir = _VENDOR_DIR / _LIBS_DIR_NAME / libs_dirname
     if not libs_dir.is_dir():
         logger.warning("Vendored llama.cpp libs missing at %s", libs_dir)
         return None
+    # Name the missing FILES before ctypes reports only the base name it could
+    # not find. The upstream loader raises "Shared library with base name
+    # 'llama' not found", which reads as a broken platform rather than an
+    # incomplete install and sent the real-world diagnosis of this bug chasing
+    # a Graviton/architecture problem instead of the packaging rule that
+    # dropped the file on every architecture.
+    #
+    # Skipped when the operator set LLAMA_CPP_LIB_PATH: the libs then load from
+    # THEIR directory, so the bundled tree's contents no longer decide whether
+    # the runtime works, and refusing on it would disable the documented escape
+    # hatch (a GPU build, or a hand-restored lib dir) for precisely the users an
+    # incomplete wheel stranded. Their directory is the loader's to validate.
+    if _LIB_PATH_ENV not in os.environ:
+        absent = [
+            name
+            for name in _REQUIRED_VENDORED_LIBS.get(libs_dirname, ())
+            if not (libs_dir / name).is_file()
+        ]
+        if absent:
+            logger.warning(
+                "Vendored llama.cpp install for %s is incomplete — missing %s in %s. "
+                "This is a packaging defect, not an unsupported platform; reinstall "
+                "Kiro Crew from a current release, or point %s at a complete lib "
+                "directory. Memory falls back to keyword search.",
+                libs_dirname,
+                ", ".join(absent),
+                libs_dir,
+                _LIB_PATH_ENV,
+            )
+            return None
     # setdefault so an operator-provided override (e.g. a GPU build) wins.
-    os.environ.setdefault("LLAMA_CPP_LIB_PATH", str(libs_dir))
+    os.environ.setdefault(_LIB_PATH_ENV, str(libs_dir))
     _install_diskcache_stub()
     vendor_str = str(_VENDOR_DIR)
     if vendor_str not in sys.path:
@@ -325,9 +444,7 @@ def _is_sensitive_model_path(path: Path) -> bool:
         return True
 
 
-def validate_custom_model_path(
-    raw: str, origin: str = "embed_model_path"
-) -> tuple[Path, str, str]:
+def validate_custom_model_path(raw: str, origin: str = "embed_model_path") -> tuple[Path, str, str]:
     """Validate a candidate model path. Returns ``(resolved_path, error, code)``.
 
     ``error`` is empty when the path is usable; ``code`` is a stable
@@ -1220,7 +1337,8 @@ def default_embedding_backend() -> EmbeddingBackend:
         # non-bundled) but give it a path that cannot resolve to a real file.
         logger.error(
             "Custom embedding model rejected (%s) — embeddings unavailable, "
-            "memory falls back to keyword search", spec.error,
+            "memory falls back to keyword search",
+            spec.error,
         )
         return LlamaCppEmbedder(
             model_path=models_dir() / _REJECTED_MODEL_SENTINEL,
@@ -1338,8 +1456,8 @@ def _resolve_model_url() -> str:
         if env_url.lower().startswith("https://"):
             return env_url
         logger.warning(
-            "%s must be an https:// URL — ignoring the override and using "
-            "the CDN default", _MODEL_URL_ENV,
+            "%s must be an https:// URL — ignoring the override and using " "the CDN default",
+            _MODEL_URL_ENV,
         )
     cfg_url = str(_read_memory_config().get("embed_model_url", "") or "").strip()
     if cfg_url:
@@ -1540,7 +1658,11 @@ class ModelDownloadManager:
                                 "bytes_total": total,
                             }
             # Verify inline (we computed sha256 while streaming).
-            self.status = {"step": "verifying", "error": "", "attempt": self.status.get("attempt", 0)}
+            self.status = {
+                "step": "verifying",
+                "error": "",
+                "attempt": self.status.get("attempt", 0),
+            }
             digest = h.hexdigest()
             if digest != _GGUF_SHA256:
                 staging.unlink(missing_ok=True)
@@ -1610,9 +1732,7 @@ def start_background_model_download() -> "asyncio.Task[bool] | None":
     """
     global _download_task
     if embedding_model_is_custom():
-        logger.info(
-            "Custom embedding model configured — skipping the default model download"
-        )
+        logger.info("Custom embedding model configured — skipping the default model download")
         return None
     mgr = model_download_manager()
     if mgr.model_ready():

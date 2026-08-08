@@ -803,6 +803,16 @@ sensitive-path check and the governance ceiling — would never be reached.
   predicates are required — `is_sensitive_path` covers the directory and its
   descendants, `path_contains_sensitive` covers a root (bare `~`) that would make
   every deck a sibling of `.ssh`/`.aws`.
+- **An embedded NUL is refused by an EXPLICIT check on the raw string**, not by
+  catching `Path.resolve()`. `resolve()` raises `ValueError` for a NUL on POSIX,
+  but on Windows `ntpath` does the work in pure Python and never reaches the OS
+  for a non-existent path, so it returns successfully — the `try/except` alone let
+  the value through and `iterdir`/`mkdir` were the first calls to raise, one layer
+  past the refusal. Accepting it wedges the app: the endpoint answers 200 and every
+  later `GET /config` and deck route 500s out of `deck_root()`, including the
+  settings page needed to correct it. The check is on the raw string because
+  expansion can neither introduce nor remove a NUL. Pinned by
+  `test_pptx_maker_routes.py::TestConfigRoutes::test_put_refuses_a_path_that_cannot_be_resolved`.
 
 ## Frontend
 

@@ -1,5 +1,11 @@
-# Issue triage: when an issue is opened, classify it with a Bedrock model and
-# apply the matching type / area / platform labels.
+# Issue triage: when an issue is opened, apply the release-channel label
+# deterministically, then classify the issue with a Bedrock model and apply the
+# matching type / area / platform labels.
+#
+# TWO MECHANISMS, ON PURPOSE. The `channel:` label comes from a REQUIRED
+# dropdown in bug_report.yml and is applied by a plain lookup (see the first
+# step) — a model can only add error to a question the form already answered
+# exactly. Everything else is a semantic judgement and goes to the model.
 #
 # WHY A MODEL: label choice here is a semantic judgement ("is this a dashboard
 # bug or a gateway bug?") that keyword rules get wrong often enough to be worse
@@ -18,8 +24,8 @@
 #   2. Labels are an ALLOWLIST BY CONSTRUCTION, not a denylist: the applicable
 #      set is (a fixed list of type labels) + (live `area:` labels) + (live
 #      `platform:` labels). Process labels the automation must never touch —
-#      `readiness: *`, `release-blocker`, `defer-longterm`, `blocked`,
-#      `duplicate`, `wontfix`, ... — are simply not in any of those buckets, so
+#      `readiness: *`, `blocked`, `follow-up`, `decision`,
+#      `merge conflict`, ... — are simply not in any of those buckets, so
 #      no model output can select them.
 #   3. Untrusted text never reaches a `run:` block through `${{ }}`, and never
 #      reaches the shell at all: title and body are fetched with `gh api` and
@@ -107,6 +113,95 @@ jobs:
       ROLE_ARN: ${{ secrets.ISSUE_TRIAGE_BEDROCK_ROLE_ARN != '' && secrets.ISSUE_TRIAGE_BEDROCK_ROLE_ARN || secrets.SHIP_REPORT_BEDROCK_ROLE_ARN }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || '' }}
     steps:
+      # ── Deterministic, model-free: the release channel ──────────────────────
+      # Runs BEFORE the classifier and is deliberately not one of its
+      # dimensions. Channel is not a semantic judgement — bug_report.yml asks
+      # for it as a REQUIRED dropdown, so the answer is one of four exact
+      # strings and the mapping to a label is a lookup. Handing that to a model
+      # could only make it wrong, and a wrong `channel:` label is worse than
+      # none: prerelease triage exists to find release blockers, so a blocker
+      # mislabelled `channel: stable` is a blocker that misses its release.
+      #
+      # The model still cannot reach these labels: its allowlist is built from
+      # the fixed type list plus live `area: ` / `platform: ` prefixes, and
+      # `channel: ` is in none of those buckets.
+      #
+      # Reports filed through the dashboard's "Report a Problem" flow already
+      # arrive with the label attached (diagnostics.py puts the running build's
+      # channel in the new-issue URL's `labels=`), so this step is the path for
+      # someone who fills the form on github.com. It leaves an existing
+      # `channel:` label alone for exactly that reason.
+      #
+      # Only `issues: opened` triggers this workflow, which is sufficient
+      # BECAUSE the field is required: the answer cannot arrive later than the
+      # issue itself. A blank issue (no form) simply has no answer to read.
+      - name: Apply release-channel label
+        run: |
+          set -euo pipefail
+
+          case "$ISSUE" in
+            ''|*[!0-9]*) echo "::error::issue must be a positive integer, got '$ISSUE'"; exit 1 ;;
+          esac
+
+          gh api "repos/$REPO/issues/$ISSUE" \
+            --jq '{body: (.body // ""), labels: [.labels[].name], is_pr: (.pull_request != null)}' \
+            > channel-issue.json
+
+          if [ "$(jq -r '.is_pr' channel-issue.json)" = "true" ]; then
+            echo "::notice::#$ISSUE is a pull request; no channel label."
+            exit 0
+          fi
+
+          if [ "$(jq '[.labels[] | select(startswith("channel: "))] | length' channel-issue.json)" != "0" ]; then
+            echo "::notice::#$ISSUE already carries a channel label; leaving it alone."
+            exit 0
+          fi
+
+          # The body is UNTRUSTED. It is read with `gh api` and sliced entirely
+          # inside jq, so it never becomes shell words; the value that lands in
+          # ANSWER is only ever COMPARED against fixed strings below, and the
+          # label that gets applied is a literal from this file.
+          #
+          # STRICT: the section must hold EXACTLY ONE non-empty line, because
+          # that is all a rendered dropdown can ever produce. A multi-line
+          # section means the body was hand-edited, and accepting its first
+          # line would let an edit smuggle an answer past the form.
+          ANSWER="$(jq -r '
+            (.body | split("\n") | map(sub("\r$"; ""))) as $lines
+            | ($lines | index("### Release channel")) as $i
+            | if $i == null then "" else
+                ($lines[$i+1:]) as $rest
+                | ($rest | map(startswith("### ")) | index(true)) as $end
+                | (if $end == null then $rest else $rest[0:$end] end)
+                  | map(gsub("^\\s+|\\s+$"; ""))
+                  | map(select(length > 0))
+                  | (if length == 1 then .[0] else "" end)
+              end
+          ' channel-issue.json)"
+
+          case "$ANSWER" in
+            "Nightly")              LABEL="channel: nightly" ;;
+            "Insider (prerelease)") LABEL="channel: insider" ;;
+            "Stable")               LABEL="channel: stable" ;;
+            *)                      LABEL="" ;;
+          esac
+
+          if [ -z "$LABEL" ]; then
+            # "Not sure", a blank issue, or a form whose section was edited
+            # away. No label is the right answer — a maintainer can still read
+            # the version field.
+            echo "::notice::#$ISSUE has no usable release-channel answer; no channel label."
+            exit 0
+          fi
+
+          if [ -n "$DRY_RUN" ]; then
+            echo "::notice::[dry run] would add '$LABEL' to #$ISSUE"
+            exit 0
+          fi
+
+          gh issue edit "$ISSUE" --repo "$REPO" --add-label "$LABEL"
+          echo "Applied '$LABEL' to #$ISSUE"
+
       - name: Collect issue and label catalog
         id: collect
         run: |

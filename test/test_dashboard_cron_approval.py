@@ -237,6 +237,7 @@ class TestCronListFields:
         mock_job.command = ""
         mock_job.last_error = ""
         mock_job.model = ""
+        mock_job.folder_id = ""
 
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False

@@ -829,14 +829,17 @@ class AgentConfig:
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
     )
     sandbox: str = field(
-        default="off",
+        default="auto",
         metadata=_meta(
             "Sandbox",
-            "Sandbox mode for ACP provider. Default 'off' defers isolation to "
-            "kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' "
-            "to re-enable Kiro Crew's OS-level sandbox (namespace on Linux, "
-            "sandbox-exec on macOS). The two layers are mutually exclusive on "
-            "macOS (nested seatbelt causes EPERM).",
+            "Sandbox mode for ACP provider. Default 'auto' engages OS-level "
+            "isolation (namespace on Linux, sandbox-exec on macOS) and "
+            "automatically defers to kiro-cli's internal sandbox on macOS when "
+            "it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). "
+            "Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation "
+            "to kiro-cli's internal sandbox still fires on macOS if it is "
+            "enabled, and a SECURITY warning is logged when neither layer is "
+            "active.",
             enum=["auto", "off"],
         ),
     )
@@ -876,7 +879,20 @@ class AgentConfig:
             "Defaults to false. Only the JSON boolean true admits in-process Python "
             "hooks, backend processes, lifecycle/install scripts, and openCommand. "
             "App code can access the filesystem, network, and in-memory credentials; "
-            "enable this only for apps you trust (CSE SEC-012).",
+            "enable this only for apps you trust (CSE SEC-012). Prefer "
+            "apps_trusted, which grants the same admission to ONE named app.",
+        ),
+    )
+    apps_trusted: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Trusted Apps",
+            "Per-app grants for third-party execution — the narrow form of "
+            "apps_allow_third_party. An app whose manifest name appears here is "
+            "admitted to run Python hooks, its backend, lifecycle scripts, and "
+            "openCommand; every other third-party app stays blocked. Only a JSON "
+            "array of app-name strings is honoured, and no wildcard entry is "
+            "accepted (use apps_allow_third_party to trust all).",
         ),
     )
     jail: str = field(
@@ -1584,8 +1600,21 @@ class KnowledgeConfig:
             "actually bounds the cost of auto-registration -- file filters bound "
             "pollution, not spend. Newest documents land first and the rest "
             "trickle in on later sweeps, so a new project never arrives as a "
-            "burst. 0 removes the bound. Folders you add by hand are never "
-            "budgeted: you asked for the whole folder.",
+            "burst. 0 removes the bound.",
+        ),
+    )
+    folder_ingest_chunk_budget: int = field(
+        default=300,
+        metadata=_meta(
+            "Folder Ingest Chunk Budget",
+            "Chunks a folder you add by hand may ingest per watcher sweep. Adding "
+            "a source-code repository discovers thousands of files, and each "
+            "chunk costs an LLM extraction call on a pool of billed sessions, so "
+            "an unpaced first scan can spend a large amount unattended. Nothing "
+            "is skipped: newest files land first and the rest continue on later "
+            "sweeps. Higher than the auto-ingest budget because you asked for the "
+            "folder explicitly. 0 removes the bound; a per-source chunk_budget "
+            "property overrides it for one folder.",
         ),
     )
     dedup_every_n_sweeps: int = field(
@@ -1804,12 +1833,37 @@ class PublishConfig:
 
 
 @dataclass
+class TailscaleConfig:
+    """Tailnet access for the dashboard (RFC: rfc-tailnet-dashboard-access)."""
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Tailnet Access",
+            "Accept this machine's own MagicDNS name as a dashboard origin, so "
+            "`tailscale serve` works without hand-writing dashboard.url. Reads "
+            "the local Tailscale daemon once at startup; contributes nothing if "
+            "Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the "
+            "network bind and does NOT change authentication — every request "
+            "still needs a dashboard session.",
+        ),
+    )
+
+
+@dataclass
 class DashboardConfig:
     url: str = field(
         default="",
         metadata=_meta(
             "Dashboard URL",
             "Public URL for the dashboard (used in Slack links).",
+        ),
+    )
+    tailscale: TailscaleConfig = field(
+        default_factory=TailscaleConfig,
+        metadata=_meta(
+            "Tailscale",
+            "Reach the dashboard over your tailnet via `tailscale serve`.",
         ),
     )
     restore_sessions: bool = field(
@@ -1894,10 +1948,12 @@ class DashboardConfig:
             "Response Verbosity",
             "Controls how terse the agent's prose is. 'default' is normal; "
             "'concise' injects brevity guidelines (lead with the answer, cut "
-            "filler, keep code/errors verbatim) while preserving full detail for "
-            "security warnings, irreversible-action confirmations, and ordered "
-            "multi-step instructions.",
-            enum=["default", "concise"],
+            "filler, keep code/errors verbatim); 'ultra' writes for an ADHD "
+            "reader — the answer lands in a 3-sentence opening, and any detail "
+            "after it must be scannable bullets rather than prose. Both levels "
+            "preserve full detail for security warnings, irreversible-action "
+            "confirmations, and ordered multi-step instructions.",
+            enum=["default", "concise", "ultra"],
         ),
     )
     link_previews: bool = field(
@@ -1910,6 +1966,19 @@ class DashboardConfig:
             "model outputs, so each linked site sees a request from your IP "
             "address. When false the /api/link-meta endpoint fetches nothing and "
             "returns 403.",
+        ),
+    )
+    usage_text_scrape_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Spend Credits To Read The Credit Meter",
+            "Let the credit pill fall back to a `kiro-cli /usage` chat turn when "
+            "the free usage API returns no plan. That fallback is a REAL billed "
+            "LLM turn on whichever model the lite agent resolves, and it repeats "
+            "on every refresh interval for as long as any dashboard tab is open, "
+            "so it is off by default: a meter that reports spending must not "
+            "itself spend. While it is off the pill shows whatever the free API "
+            "returned and hides when the API has nothing to show.",
         ),
     )
     tail_fork_enabled: bool = field(
@@ -2234,16 +2303,16 @@ class ExternalRegistryConfig:
 @dataclass
 class SkillsConfig:
     max_triggered: int = field(
-        default=3,
+        default=0,
         metadata=_meta(
             "Max Triggered",
             "Maximum number of skills a single message may flag as relevant (≥0). "
             "Each match injects that skill's full content, unless the skill sets "
-            "inject_on_trigger: false in its frontmatter, in which case it "
-            "contributes a one-line pointer naming it and its path and the agent "
-            "reads the file if the skill applies. Set to 0 to stop flagging "
-            "entirely and rely only on the Available Skills index, $skillname, "
-            "and skill_search.",
+            "inject_on_trigger: false (pointer-only; requires max_triggered > 0 to "
+            "have any effect). Defaults to 0 (disabled): the agent discovers skills "
+            "from the Available Skills index and reads them on demand via cat, "
+            "$skillname, or skill_search. Set to a positive integer to re-enable "
+            "per-turn word-overlap trigger matching.",
         ),
     )
     # ── Lazy skill injection (opt-in, like MCP prewarm) ──
@@ -4519,7 +4588,7 @@ class KiroCrewConfig:
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
                 default_agent=agent_data.get("default_agent", ""),
-                sandbox=agent_data.get("sandbox", "off"),
+                sandbox=agent_data.get("sandbox", "auto"),
                 sandbox_allow_no_isolation=bool(
                     agent_data.get("sandbox_allow_no_isolation", False)
                 ),
@@ -4528,6 +4597,11 @@ class KiroCrewConfig:
                 ),
                 apps_allow_third_party=_safe_bool(
                     agent_data.get("apps_allow_third_party", False), False
+                ),
+                apps_trusted=(
+                    [a for a in _trusted if isinstance(a, str) and a]
+                    if isinstance(_trusted := agent_data.get("apps_trusted"), list)
+                    else []
                 ),
                 jail=_normalize_jail(agent_data.get("jail", "auto")),
                 dangerously_skip_permissions=_read_skip_permissions(agent_data),
@@ -4719,6 +4793,8 @@ class KiroCrewConfig:
                     knowledge_data.get("auto_register_project_docs", True)),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
                     knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
+                folder_ingest_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("folder_ingest_chunk_budget", 300), 300),
                 dedup_every_n_sweeps=_safe_nonnegative_int(
                     knowledge_data.get("dedup_every_n_sweeps", 12), 12),
                 doc_ingest_hosts=[
@@ -4853,6 +4929,11 @@ class KiroCrewConfig:
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
+                tailscale=TailscaleConfig(
+                    enabled=_safe_bool(
+                        _safe_dict(dashboard_data.get("tailscale")).get("enabled"), False
+                    ),
+                ),
                 restore_sessions=dashboard_data.get("restore_sessions", False),
                 restore_window_minutes=dashboard_data.get("restore_window_minutes", 30),
                 surface_channel_sessions=dashboard_data.get("surface_channel_sessions", True),
@@ -4876,6 +4957,9 @@ class KiroCrewConfig:
                 widget_density=dashboard_data.get("widget_density", "more"),
                 verbosity=dashboard_data.get("verbosity", "default"),
                 link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
+                usage_text_scrape_enabled=_safe_bool(
+                    dashboard_data.get("usage_text_scrape_enabled"), False
+                ),
                 tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
                 terminal=dashboard_data.get("terminal", {"enabled": True}),
                 default_project=dashboard_data.get("default_project", ""),
@@ -5096,7 +5180,7 @@ class KiroCrewConfig:
             ),
             heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
             skills=SkillsConfig(
-                max_triggered=_safe_int(skills_data.get("max_triggered", 3), 3),
+                max_triggered=_safe_int(skills_data.get("max_triggered", 0), 0),
                 lazy_load=bool(skills_data.get("lazy_load", False)),
                 auto_create_from_sessions=bool(skills_data.get("auto_create_from_sessions", False)),
                 auto_refine_on_deviation=bool(skills_data.get("auto_refine_on_deviation", False)),

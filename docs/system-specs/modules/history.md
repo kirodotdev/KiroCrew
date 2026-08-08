@@ -351,7 +351,10 @@ no longer destroy older turns.
 Lines that ARE intentionally dropped (rotation, compaction, history edits) are
 archived instead of being permanently deleted:
 
-- **Archive location**: `~/.kiro/crew/sessions/archive/{key}__{YYYYMMDD-HHMMSS}.jsonl`
+- **Archive location**: `~/.kiro/crew/sessions/archive/{key}__{YYYYMMDD-HHMMSS}.jsonl`,
+  where the separator is `ARCHIVE_SEGMENT_DELIMITER`. It is `__` rather than a dot
+  because session keys legitimately contain dots (a Slack `thread_ts`), which a
+  right-most-dot parse would attribute to the wrong session.
 - **Triggers**: `_rotate()` (>2MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default
@@ -362,6 +365,16 @@ archived instead of being permanently deleted:
   `_cleanup_old_archives()` reads the value from config when called with no
   explicit `retention_days`, and is rate-limited to once per hour.
 - **API**: `GET /api/session/archive` (list), `GET /api/session/archive/{name}` (read with path traversal protection)
+
+### Pairing a session key with its files
+
+`transcript_stem(key)` returns the filename stem a key's transcript and archive
+segments share — the sanitized key (`dashboard:chat-1` → `dashboard_chat-1`). It is
+public so callers that account for or reclaim a session's disk usage
+([session-storage](session-storage.md)) resolve the pairing here instead of
+re-deriving the sanitization. A second copy of that rule would drift the moment
+this one changed, and the failure is silent and destructive: the pairing misses,
+and a caller deleting "the session" removes one half and leaves the other behind.
 
 - `set_title(key, title)` — persists a title into the session's metadata line (first line of JSONL)
 

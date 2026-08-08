@@ -71,13 +71,20 @@ describe('ChatInput continue affordance', () => {
 
   it('keeps the sigil hint in the placeholder when nothing proves an interruption', () => {
     // The default placeholder teaches `/command · @file · $skill` and is the only
-    // surface that does. Continue is offered on every idle slot with history, so
-    // overriding it unconditionally would delete that hint for every returning
-    // chat. The ▶ button plus its label carries the affordance instead.
+    // surface that does, so it is not overridden unless there is something more
+    // urgent to say. This case is now reachable only by a caller that passes
+    // `continuable` without `continueIsRecovery`; ChatPage no longer does, since
+    // it gates the composer's button on the interruption itself. The labeled
+    // Resume button carries the affordance without spending the hint.
     renderWithProviders(<ChatInput {...defaultProps} continuable onContinue={vi.fn()} />)
     expect(screen.getByPlaceholderText(/\/command/)).toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/interrupted/i)).toBeNull()
-    expect(screen.getByLabelText('Ask the agent to continue')).toBeInTheDocument()
+    // The button is labeled, so the accessible name comes from its own visible
+    // text — asserting via the role's name proves both at once, and would fail
+    // if an aria-label were reintroduced to override what a sighted user reads
+    // (WCAG 2.5.3). The longer explanation moved to `title`.
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
+    expect(screen.getByTestId('composer-continue')).toHaveAttribute('title', 'Ask the agent to continue')
   })
 
   it('names the interruption only when the transcript actually showed one', () => {
@@ -87,7 +94,11 @@ describe('ChatInput continue affordance', () => {
       <ChatInput {...defaultProps} continuable continueIsRecovery onContinue={vi.fn()} />,
     )
     expect(screen.getByPlaceholderText(/interrupted/i)).toBeInTheDocument()
-    expect(screen.getByLabelText('Continue the interrupted turn')).toBeInTheDocument()
+    // Same visible word in both cases — the recovery wording differentiates in
+    // the tooltip, not in the label, so the control never renames itself under
+    // the user between two states that both mean "hand it back to the agent".
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
+    expect(screen.getByTestId('composer-continue')).toHaveAttribute('title', 'Continue the interrupted turn')
   })
 
   it('keeps the ordinary placeholder when the turn is not resumable', () => {

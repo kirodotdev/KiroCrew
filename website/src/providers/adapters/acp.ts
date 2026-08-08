@@ -1,6 +1,7 @@
 import { api } from '../../api/client'
 import modelTokensRaw from '../../model_tokens.json'
 import { markModelsDegraded } from '../modelListHealth'
+import { isPricedMultiplier } from '../modelList'
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -142,6 +143,10 @@ interface RawModel {
    *  predating either field still works (we fall back to the map). */
   context_window?: number
   context_window_tokens?: number
+  /** Relative credit cost of a turn on this model, Auto = 1.0. Optional: a
+   *  gateway/kiro-cli predating the field simply omits it, and we render no
+   *  badge rather than inventing a price (see ModelInfo.rateMultiplier). */
+  rate_multiplier?: number
 }
 
 /** The window a /api/models row reports, or 0 when it reports none. */
@@ -150,6 +155,13 @@ function rowWindow(m: RawModel): number {
     if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
   }
   return 0
+}
+
+/** The credit multiplier a /api/models row reports, or undefined when it
+ *  reports none (or reports something that is not a price — see
+ *  isPricedMultiplier). */
+function rowMultiplier(m: RawModel): number | undefined {
+  return isPricedMultiplier(m.rate_multiplier) ? m.rate_multiplier : undefined
 }
 
 export class AcpAdapter implements ProviderAdapter {
@@ -345,6 +357,7 @@ export class AcpAdapter implements ProviderAdapter {
           name: m.model_name,
           description: m.description || '',
           contextWindow: reported || MODEL_TOKENS[m.model_name] || DEFAULT_CONTEXT,
+          rateMultiplier: rowMultiplier(m),
         }
       })
       writeCachedModels(result) // remember this good live list for next hiccup

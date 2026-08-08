@@ -129,12 +129,16 @@ the remedy rather than failing obscurely.
 
 | Feature | Status on Windows |
 |---------|-------------------|
-| Core gateway / chat / cron / dashboard | works |
+| Core gateway / chat / dashboard | works — a source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
+| LLM cron jobs (the `message` kind) | works |
+| Script cron jobs | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above — they run through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it the job fails with a message naming that setting (it no longer raises an uncaught error) |
+| Command cron jobs (`sh -c "…"`) | not supported on Windows — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. The job fails-closed with an explanation. Use a **script cron** or an LLM `message` cron on this platform |
+| Script hooks (Settings → Hooks) | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above (like script crons — the hook command routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists; without it the hook returns that message as its `error`). With the opt-in they run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
 | Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
 | STT (whisper / optional cloud transcription) | works |
-| Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present |
+| Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present **and** the `agent.sandbox_allow_unsandboxed_exec` opt-in above is set — the `aws polly` spawn routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it synthesis returns no audio and the log names that setting |
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP gateway (opt-in, OFF by default) | works — a named-pipe transport replaces the AF_UNIX socket, and the peer check uses `GetNamedPipeClientProcessId` + a SID comparison in place of `SO_PEERCRED`. Still opt-in: set `mcp_gateway.enabled` to turn it on |
 | Papyrus (LaTeX editor, opt-in builtin) | works, **but compiling and git need the `agent.sandbox_allow_unsandboxed_exec` opt-in above** — like chat, its spawns route through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it, compile and clone/commit/push/pull answer a clear 422 (`compiler_sandbox_unavailable` / `git_sandbox_unavailable`) naming the remedy rather than a bare "internal error". The managed Tectonic compiler is Windows-pinned (`x86_64-pc-windows-msvc`); Windows-on-ARM has no upstream asset and keeps the manual install path |
@@ -174,6 +178,49 @@ the lock cannot be taken the acquire **fails closed**: it raises rather than
 entering the critical section unserialized, since proceeding lock-less is the
 exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
+
+## Win32 struct layouts live at module scope
+
+Every `ctypes.Structure` subclass the Win32 helpers need is declared **once at
+module scope** — `_ProcessEntry32`, `_ProcessMemoryCounters`, `_MemoryStatusEx`,
+`_SidAndAttributes` and `_TokenUser` in `platform_compat`, plus
+`_SecurityAttributes` in `mcp_gateway/transport.py` and `_VMStatistics64` in
+`subagent.py`. Declaring one inside the function that uses it is a **memory
+leak**, not a style question: `ctypes.POINTER(T)` memoises `T -> POINTER(T)` in a
+module-level dict inside ctypes that is never evicted, so a locally-declared
+Structure pins a brand-new pair of type objects on every call. The affected
+helpers are all polled — the dashboard's system-metrics endpoint, the RSS-recycle
+watchdog, the process-tree walk behind `kill_process_tree`, and the MCP pipe's
+per-connection peer check — so the gateway grew unboundedly on Windows alone
+(measured at ~8 KiB per `proc_rss_bytes` call, ~15 MiB per 2,000 calls, never
+reclaimed). POSIX is unaffected because those branches read `/proc`, `sysctl` or
+`resource` instead of calling Win32.
+
+Taking `ctypes.POINTER()` is what pins the type, so a struct that is only ever
+instantiated (never pointed at) does not leak — but the distinction is too subtle
+to rely on, and `test_platform_compat.py::TestWin32StructsAreModuleScoped`
+enforces the blanket rule by parsing each helper's source. That check runs on the
+POSIX fleet too, where the Windows branches never execute.
+
+## The RSS-recycle ceiling measures real trees on Windows
+
+`session.watchdog_rss_max_mb` (opt-in, `0`/disabled by default) recycles a
+non-busy session whose process tree exceeds the ceiling. Its measurement is
+`/proc`-based, so `get_session_rss_mb` measured every tree as 0 MiB on Windows:
+the ceiling an operator had configured could never be reached and no session was
+ever recycled — a silent no-op rather than a visible failure. It now delegates
+there to `platform_compat.proc_rss_tree_mb_for_pid`.
+
+That helper, **not** a Toolhelp parent->child walk, is the only safe route.
+`th32ParentProcessID` is never cleared when a parent exits and Windows recycles
+PIDs aggressively, so a raw walk can attach an unrelated subtree to a recycled
+PID — which for this watchdog means recycling a *healthy* session. The helper
+validates every parent->child edge against exact creation/exit times across two
+snapshots, and treats an unreadable tree as `None` → 0 MiB so the ceiling never
+fires on a guess. The cost is one enumeration per candidate instead of the single
+shared `/proc` scan the POSIX sweep does per tick; `_build_child_map` therefore
+deliberately has no Windows branch. macOS still has no ctypes-only per-pid RSS
+path and keeps returning 0.
 
 ## Directory links on Windows
 

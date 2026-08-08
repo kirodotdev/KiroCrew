@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from './types'
+import { isSubagentCompletionMessage } from './subagentCompletion'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT
  *  here: it carries real content and renders as its own standalone block (a
@@ -38,8 +39,10 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   for (let i = 0; i < messages.length; i++) {
     // Permission messages handled by pinned ApprovalBar — skip entirely
     if (messages[i].role === 'permission') continue
-    // Subagent completions are internal — LLM sees them but user doesn't need to
-    if (messages[i].role === 'subagent') continue
+    // A sub-agent completion the card cannot parse stays internal: the LLM sees
+    // it, the user does not. One it CAN parse renders as a compact outcome row,
+    // which is the only scrollback record that a wave's results arrived.
+    if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
     if (GROUPABLE.has(messages[i].role)) {
       if (!group.length) groupStart = i
       group.push(messages[i])
@@ -68,8 +71,10 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   for (const item of raw) {
     // A nudge opens a new turn exactly like a user message does — it IS the
     // turn's prompt. Without this it gets swallowed into the previous turn's
-    // collapsed step group and the cycle chip disappears.
-    if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'nudge')) {
+    // collapsed step group and the cycle chip disappears. A sub-agent
+    // completion is the same case: the gateway injects it as the next turn's
+    // input, so the agent's reply belongs BELOW the card, not beside it.
+    if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'nudge' || item.msg.role === 'subagent')) {
       if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
       turns.push(item)
     } else {

@@ -60,10 +60,57 @@ const CLOSE_GRACE_MS = 8_000
  */
 const DISPATCH_RETRY_DELAYS_MS = [400, 1_200, 3_000]
 
+/**
+ * How much of the transcript the live caption may carry, in characters.
+ *
+ * The caption element is two lines tall, so this only has to be the right order
+ * of magnitude — the hard bound on the rendered height is the `line-clamp-2` in
+ * `BroadcastBar.tsx`. What this constant guarantees is that the text inside
+ * those lines stays RECENT.
+ */
+export const CAPTION_WINDOW_CHARS = 240
+
+/**
+ * The recent tail of the transcript, for the "Heard: …" caption.
+ *
+ * Trimming from the FRONT is the entire point. The finals array accumulates for
+ * the whole meeting, and the caption used to receive all of it — which read as a
+ * caption that froze on the meeting's opening sentence and never updated again,
+ * because the element clipped its overflow with `text-overflow: ellipsis` and
+ * that shows a string's HEAD. A live caption has to show the newest speech, so
+ * the oldest is what gets dropped.
+ *
+ * Whole segments are kept wherever possible so the caption never begins
+ * mid-sentence; only a single over-long segment is cut, and then at a word
+ * boundary.
+ */
+export function captionWindow(finals: readonly string[], partial = ''): string {
+  const segments = [...finals, partial].map((s) => s.trim()).filter(Boolean)
+  if (segments.length === 0) return ''
+
+  const kept: string[] = []
+  let length = 0
+  for (let i = segments.length - 1; i >= 0; i--) {
+    // +1 for the space this segment would be joined with.
+    const cost = segments[i].length + (kept.length === 0 ? 0 : 1)
+    if (length + cost > CAPTION_WINDOW_CHARS) break
+    kept.unshift(segments[i])
+    length += cost
+  }
+  if (kept.length > 0) return kept.join(' ')
+
+  // Even the newest segment alone overflows the window: keep its tail, cut at a
+  // word boundary so no word is split mid-token. A segment with no spaces at all
+  // is returned as-is rather than mangled.
+  const tail = segments[segments.length - 1].slice(-CAPTION_WINDOW_CHARS)
+  const firstSpace = tail.indexOf(' ')
+  return firstSpace === -1 ? tail : tail.slice(firstSpace + 1)
+}
+
 interface Options {
   /** The meeting whose dispatch endpoint receives each final segment. */
   meetingId: string
-  /** Called with the live caption (accumulated finals + the current partial). */
+  /** Called with the recent tail of the transcript (see `captionWindow`). */
   onCaption: (text: string) => void
   /**
    * Called once per committed final segment, BEFORE it is dispatched.
@@ -232,8 +279,7 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
       }
       if (msg.type === 'partial') {
         lastPartial = msg.text || ''
-        const prefix = finalsRef.current.join(' ')
-        onCaptionRef.current(prefix ? `${prefix} ${lastPartial}`.trim() : lastPartial)
+        onCaptionRef.current(captionWindow(finalsRef.current, lastPartial))
         return
       }
       if (msg.type === 'final') {
@@ -241,7 +287,7 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
         lastPartial = ''
         if (!text) return
         finalsRef.current.push(text)
-        onCaptionRef.current(finalsRef.current.join(' '))
+        onCaptionRef.current(captionWindow(finalsRef.current))
         // The caller's duplicate check gates the dispatch: an overlapping final
         // still belongs in the caption (above), but must not be sent to the
         // agents a second time.

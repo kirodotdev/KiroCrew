@@ -21,13 +21,13 @@ import os
 import platform
 import re
 import shutil
-import signal
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.cloud import aws
 
 logger = logging.getLogger(__name__)
@@ -298,12 +298,13 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
     dashboard tunnel (``connect``) and the login callback tunnel (``login``) go
     through this so neither leaves an orphaned plugin/port behind.
 
-    WINDOWS has no ``os.killpg``/``os.getpgid``, so the group signal is not merely
-    unavailable there -- it can never succeed, and the fallback
-    ``proc.terminate()`` kills ONLY the wrapper, leaving the plugin holding the
-    forwarded port exactly as this function exists to prevent. Windows therefore
-    gets its own tree kill via ``taskkill /T``, which walks the child chain the
-    way a process group does on POSIX.
+    WINDOWS has no ``os.killpg``/``os.getpgid`` (and silently ignores
+    ``start_new_session``), so the group signal is not merely unavailable there --
+    it can never succeed, and the fallback ``proc.terminate()`` kills ONLY the
+    wrapper, leaving the plugin holding the forwarded port exactly as this
+    function exists to prevent. Windows therefore gets its own tree kill via
+    ``taskkill /T``, which walks the child chain the way a process group does on
+    POSIX.
     """
     if proc is None or proc.poll() is not None:
         return
@@ -354,12 +355,18 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
         # Fall through: better a parent-only kill than nothing.
 
     try:
-        if not _signal_group(signal.SIGTERM):
+        if not _signal_group(platform_compat.SIGTERM):
             proc.terminate()
         proc.wait(timeout=5)
-    except Exception:  # pragma: no cover - best effort escalation
+    except Exception:
+        # Signal numbers come from platform_compat, not `signal`: Windows has no
+        # `signal.SIGKILL`, so naming it here raises AttributeError while
+        # evaluating the call argument — inside this handler's own try, which
+        # swallows it — and `proc.kill()` would never run. That silently turns
+        # the escalation into a no-op on the one platform that reaches it via
+        # the taskkill fall-through, leaving the plugin holding the port.
         try:
-            if not _signal_group(signal.SIGKILL):
+            if not _signal_group(platform_compat.SIGKILL):
                 proc.kill()
         except Exception:
             pass

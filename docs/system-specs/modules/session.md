@@ -341,6 +341,14 @@ stored and new provider names for observability.
 no longer exists. `SessionMap.prune()` bulk-removes all stale entries at
 startup.
 
+**Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session
+key → kiro-cli session ID for every entry that has one. Disk accounting
+([session-storage](session-storage.md)) needs both halves of that relation: the IDs
+to exclude from reclaiming (a mapped session is resumable), and the key each ID
+belongs to so a session's transcript can be paired with its replay log. Returning
+the mapping rather than only the ID set is what lets a caller reclaim a session
+whole instead of leaving one half behind.
+
 **Dashboard history key round-trip:** Session keys use `:` (e.g.
 `dashboard:chat-1-xxx`) but JSONL filenames use `_safe_key()` which replaces
 `:` with `_`. When a session is resumed from history, the slot name comes from

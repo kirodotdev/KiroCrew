@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect, memo, useMemo, useCallback, Fragment } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns2, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import FolderGlyph from '../components/FolderGlyph'
@@ -9,7 +9,6 @@ import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { modelListRefetchInterval } from '../providers/modelListHealth'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
@@ -25,11 +24,12 @@ import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
+import { sessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
-import { useProvider } from '../providers'
 import ModelDropdownList from '../components/ModelDropdownList'
+import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
@@ -38,6 +38,7 @@ import { useLanguage } from '../i18n/LanguageProvider'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
+import { platformShortcut } from '../utils/platform'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -147,7 +148,135 @@ const sidebarCollision: CollisionDetection = (args) => {
     return closestCenter({ ...args, droppableContainers: folderContainers })
   }
   const within = pointerWithin(args)
-  return within.length ? within : closestCenter(args)
+  if (within.length) return within
+  // Session drag that is inside no droppable: fall back to the nearest one, but
+  // NEVER to the chat-pane zone. That zone is a pane-sized rect living outside
+  // the sidebar, so by center-distance it would routinely beat the folder row
+  // the user was actually aiming at and steal near-miss drops. A pointer
+  // genuinely inside it still wins above, via `within`.
+  const fallback = args.droppableContainers.filter(
+    c => (c.data?.current as { type?: string } | undefined)?.type !== CHAT_PANE_DROP_TYPE
+  )
+  return closestCenter({ ...args, droppableContainers: fallback })
+}
+
+/** Droppable `type` for the chat-pane target that stages a session reference in
+ *  the composer. Lives outside the sidebar's DOM (portaled into ChatPage's pane)
+ *  but inside its DndContext, so React context reaches it while `useDroppable`
+ *  measures its real on-screen rect. */
+const CHAT_PANE_DROP_TYPE = 'chat-pane-ref'
+
+/**
+ * Full-pane drop affordance for "drag a session into the open chat".
+ *
+ * The HIT AREA is the whole pane — it is ~10x the composer's area and a shorter
+ * travel from the session list, and a release over the transcript that silently
+ * did nothing would read as a broken feature rather than a near-miss. But the
+ * CUE is anchored on the composer, because that is where the chip actually
+ * lands; a label floating mid-transcript taught the wrong mental model (that the
+ * session drops into the conversation itself).
+ *
+ * Rendered only while a session drag is live, so it never sits invisibly over
+ * the transcript at rest. `pointer-events-none` is safe *and* required: dnd-kit
+ * resolves collisions from measured rects, not DOM hit-testing, so the zone
+ * still receives the drop while the chat underneath stays fully interactive.
+ *
+ * When the dragged session is incognito/temporary the zone renders a refusal
+ * state instead of an invitation. Explaining the block beats silently ignoring
+ * the drop — and the drop handler refuses independently, so this is the visible
+ * half of a guard that does not depend on the UI being reached.
+ */
+function ChatPaneDropZone({ refused }: { refused: boolean }) {
+  const { setNodeRef, isOver } = useDroppable({ id: 'chat-pane-ref', data: { type: CHAT_PANE_DROP_TYPE } })
+  const zoneRef = useRef<HTMLDivElement | null>(null)
+  /** The composer's box in zone-local coordinates (plus the zone's own height, so
+   *  the pill's offset is plain arithmetic rather than a `calc()` string — a CSS
+   *  template literal here is exactly the shape the i18n gate flags). */
+  const [target, setTarget] = useState<
+    { left: number; top: number; width: number; height: number; zoneH: number } | null
+  >(null)
+  const attach = useCallback((el: HTMLDivElement | null) => {
+    zoneRef.current = el
+    setNodeRef(el)
+  }, [setNodeRef])
+  // Measured ONCE at mount rather than hardcoded as an offset from the bottom:
+  // the composer band's height moves with the attachment strip, the session-ref
+  // strip, and the approval bar, so any constant would drift. The zone exists
+  // only for the duration of one drag and the pointer is held down throughout,
+  // so a single read cannot go stale.
+  useLayoutEffect(() => {
+    const el = zoneRef.current
+    const composer = el?.parentElement?.querySelector('[data-testid="input-wrapper"]')
+    if (!el || !composer) return
+    const z = el.getBoundingClientRect()
+    const c = composer.getBoundingClientRect()
+    setTarget({
+      left: c.left - z.left,
+      top: c.top - z.top,
+      width: c.width,
+      height: c.height,
+      zoneH: z.height,
+    })
+  }, [])
+  const active = isOver && !refused
+  const tone = refused
+    ? 'border-warn bg-bg-elevated/90 text-warn'
+    : active
+      ? 'border-accent bg-bg-elevated/90 text-accent ring-2 ring-accent'
+      : 'border-border bg-bg-elevated/90 text-muted'
+  const pill = (
+    <div className={`inline-flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[12px] shadow-lg backdrop-blur-sm ${tone}`}>
+      {refused ? <EyeOff size={14} className="shrink-0" /> : <MessagesSquare size={14} className="shrink-0" />}
+      <span>
+        {refused
+          ? i18nT('pages.chatSidebar.private_session_cannot_be_referenced')
+          : i18nT('pages.chatSidebar.drop_to_reference_session')}
+      </span>
+    </div>
+  )
+  return (
+    <div
+      ref={attach}
+      data-testid="chat-pane-drop-zone"
+      data-refused={refused ? '' : undefined}
+      aria-hidden="true"
+      className={`absolute inset-0 z-30 pointer-events-none transition-colors ${
+        active ? 'bg-accent/[0.06]' : isOver && refused ? 'bg-warn/[0.06]' : 'bg-transparent'
+      }`}
+    >
+      {target ? (
+        <>
+          {/* Outline the destination itself, matching the treatment the existing
+              file drop puts on the composer, so both drags land the same way.
+              Suppressed when refused: outlining a destination while the label
+              says the drop is not allowed contradicts itself — a refusal has no
+              destination. The pill still sits over the composer, because that is
+              the context of what was refused. */}
+          {!refused && (
+            <div
+              data-testid="chat-pane-drop-target"
+              className={`absolute rounded-2xl border-2 border-dashed transition-colors ${
+                active ? 'border-accent' : 'border-border-strong'
+              }`}
+              style={{ left: target.left, top: target.top, width: target.width, height: target.height }}
+            />
+          )}
+          {/* Pill sits directly above the composer, pointing at where the chip
+              will appear. 10px of air between the two. */}
+          <div
+            className="absolute flex justify-center"
+            style={{ left: target.left, width: target.width, bottom: target.zoneH - target.top + 10 }}
+          >
+            {pill}
+          </div>
+        </>
+      ) : (
+        // Measurement unavailable (no composer on screen — e.g. an empty state).
+        // Fall back to a centered pill rather than rendering no affordance at all.
+        <div className="absolute inset-0 flex items-center justify-center">{pill}</div>
+      )}
+    </div>
+  )
 }
 
 /** Approximate height (px) of a folder header row. For root folder drags the
@@ -236,6 +365,10 @@ interface Slot {
   mode?: string
   agent?: string
   model?: string  // '' / absent = provider-default ("auto")
+  // Message count from the slot payload. Already carried by every ChatSlot
+  // (redux seeds it in addSlotOptimistic and SessionGridView renders it); it was
+  // simply never declared on this local view of the type.
+  messages?: number
   workspace?: string
   created?: string
   last_ts?: string
@@ -270,6 +403,8 @@ interface Slot {
 }
 
 type SourceLinkState = NonNullable<NonNullable<Slot['source_links']>[number]['state']>
+/** One sidebar chip's payload, as the slot serializer sends it. */
+type SidebarSourceLink = NonNullable<Slot['source_links']>[number]
 
 /** Lifecycle states after which a pull request can never merge, so its CI
  * rollup carries no actionable information and the lifecycle glyph is the only
@@ -492,6 +627,15 @@ interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
+  /** Reveal a session's pull request / issue in the side panel instead of
+   *  leaving for the provider's website.
+   *
+   *  Fires AFTER the row's own switchSlot dispatch, so the consumer can address
+   *  the panel of the session the chip belongs to. Returns whether the panel took
+   *  the link: FALSE (or an omitted callback) falls back to plain link
+   *  navigation, which is the correct behaviour both on a surface with no side
+   *  panel (the `/embed/sessions` list) and for a url the panel cannot resolve. */
+  onOpenSource?: (slotKey: string, link: { url: string; kind: 'change' | 'issue' }) => boolean
   /** When true, ChatPage floats a hide-sidebar button over this header's
    *  top-left (open state), so the header reserves left space for it.
    *  Omitted in embed/sessions mode where the sidebar is the whole view. */
@@ -502,6 +646,16 @@ interface ChatSidebarProps {
   splitEnabled?: boolean
   splitActive?: boolean
   onOpenSplit?: () => void
+  /** Element to portal the "drag a session into the chat" drop zone into —
+   *  ChatPage's chat-pane wrapper. The zone renders inside this component's
+   *  DndContext (so dnd-kit sees it) but measures against the pane's rect, which
+   *  is what makes the whole pane a valid target rather than just the composer.
+   *  Omit to disable the gesture (embed/sessions mode has no chat pane). */
+  chatDropTarget?: HTMLElement | null
+  /** Called when a session is dropped on the chat pane. Receives a snapshot,
+   *  not a live slot, because the composer stages it until send. Never fired for
+   *  incognito/temporary sessions or for the already-active session. */
+  onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
 }
 
 /** Sort options, in menu order. The label lives in `SORT_LABEL_KEY`. */
@@ -532,7 +686,8 @@ const SIDEBAR_LS_KEY = 'mc-sidebar-width'
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, collapsible, splitEnabled, splitActive, onOpenSplit,
+  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSource, collapsible, splitEnabled, splitActive, onOpenSplit,
+  chatDropTarget, onDropSessionRef,
 }: ChatSidebarProps) {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -1004,21 +1159,11 @@ function ChatSidebar({
   })
 
   // Bulk model switch — apply one model to every live session at once.
-  const provider = useProvider()
   const [bulkModelOpen, setBulkModelOpen] = useState(false)
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
-  const { data: bulkModelOptions = [] } = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => {
-      const models = await provider.fetchAvailableModels()
-      return [{ name: 'auto', description: 'Default' }, ...models.filter(m => m.name && m.name !== 'auto')]
-    },
-    enabled: bulkModelOpen,
-    staleTime: 60_000,
-    refetchInterval: modelListRefetchInterval,
-  })
+  const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
   const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
   // Count only slots that would actually change: model differs from the target
   // (the backend leaves already-on-target slots as `unchanged`), minus running
@@ -1647,12 +1792,26 @@ function ChatSidebar({
     }
     if (a?.type === 'session' && a.key) {
       // Drop targets, innermost-first via pointerWithin:
+      //  chat-pane-ref → stage a LINK to this session in the open chat's composer
       //  folder-drop  → assign to that folder (folderId may be null for root lane)
       //  folder       → sortable folder container (whole block) → assign to its id
+      if (o?.type === CHAT_PANE_DROP_TYPE) {
+        const src = slots.find(x => x.key === a.key)
+        // Re-decide at drop time rather than trusting the drag-start snapshot:
+        // the refusal must not depend on the affordance having been rendered,
+        // and memory_mode can change mid-drag. Same function the zone uses.
+        if (sessionRefBlockReason({ key: a.key, activeSlot, memoryMode: src?.memory_mode })) return
+        onDropSessionRef?.({
+          key: a.key,
+          title: src?.title && src.title !== src.key ? src.title : a.key,
+          messages: src?.messages,
+        })
+        return
+      }
       if (o?.type === 'folder-drop') assignToFolder(a.key, o.folderId ?? null)
       else if (o?.type === 'folder') assignToFolder(a.key, over.id as string)
     }
-  }, [reorderFolders, assignToFolder, moveFolderTo])
+  }, [reorderFolders, assignToFolder, moveFolderTo, slots, activeSlot, onDropSessionRef])
   const handleSidebarDragCancel = useCallback(() => { setActiveDrag(null); if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null } }, [])
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -1834,7 +1993,7 @@ function ChatSidebar({
           onClick={() => toggleCollapse(folder.id)}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(folder.id) } }}
         >
-          <FolderGlyph color={folder.color} size={15} open={!folder.collapsed} />
+          <FolderGlyph color={folder.color} size={11} open={!folder.collapsed} />
           {editingId === folder.id && editScope === columnId ? (
             /* Inline rename input — board-view parity with renderFolderHeader.
              *  Without this branch the ⋯-menu "Rename" set editingId but no
@@ -2243,25 +2402,62 @@ function ChatSidebar({
               const overflowTitle = issueLinks.length
                 ? i18nT('pages.chatSidebar.more_pull_request_or_issue_in_this_session', { count: hidden })
                 : i18nT('pages.chatSidebar.more_pull_request_in_this_session', { count: hidden })
+              /** Chip tooltip. A plain click now reveals in-panel, so a bare
+               *  "Open <url>" would promise the browser and mislead; naming the
+               *  modifier is also the only way that escape hatch is discoverable
+               *  rather than found by accident. */
+              const chipTitle = (link: SidebarSourceLink) => i18nT('pages.chatSidebar.open_source_link_in_side_panel', {
+                url: link.url,
+                modifier: platformShortcut('Cmd+click'),
+              })
+              /** Chip click: switch to the session the chip belongs to and reveal
+               *  its pull request / issue in that session's side panel, rather
+               *  than sending the user out to the provider's website.
+               *
+               *  The chip stays a real anchor with a real href, so four cases
+               *  deliberately fall through to plain link navigation instead:
+               *    - `onOpenSource` unset — the surface has no side panel to
+               *      reveal into (the `/embed/sessions` list).
+               *    - a modifier click — the user asked for a new tab/window
+               *      explicitly, and "Copy link address" still yields the PR url.
+               *    - offline — the panel loads a PR through the LOCAL provider
+               *      CLI, so with the gateway down the provider's own page is the
+               *      only thing that can answer at all.
+               *    - `onOpenSource` returning false — the panel could not resolve
+               *      this url, so the provider's page is better than a dead click.
+               *  Middle-click never reaches a click handler (it fires auxclick),
+               *  so it opens a background tab natively without a case here.
+               *
+               *  `preventDefault` comes LAST on purpose: the default action runs
+               *  only after every handler returns, so suppressing navigation
+               *  after the reveal is still effective — and it means the reveal
+               *  decides, rather than being assumed to succeed. */
+              const revealInPanel = (link: SidebarSourceLink) => (e: React.MouseEvent<HTMLAnchorElement>) => {
+                // The row is a click-to-switch button; never let a chip click
+                // reach it, whichever branch we take below.
+                e.stopPropagation()
+                if (!onOpenSource || !connected || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                if (!isActive) { dispatch(switchSlot(s.key)); onSelectSlot?.(s.key) }
+                if (!onOpenSource(s.key, { url: link.url, kind: link.kind ?? 'change' })) return
+                e.preventDefault()
+              }
               return (
                 <div className="flex flex-wrap gap-1.5 mt-1">
                   {changeLinks.map(link => (
-                    // The chip is a real link to the PR/MR. `link.url` is always
-                    // an `https://` URL on an allowlisted host (state.py scans for
-                    // the literal "https://" then validates via parse_source_url),
-                    // so no scheme sanitising is needed here.
+                    // `link.url` is always an `https://` URL on an allowlisted
+                    // host (state.py scans for the literal "https://" then
+                    // validates via parse_source_url), so no scheme sanitising is
+                    // needed for the href.
                     //
-                    // The row itself is a click-to-switch button AND a dnd-kit
-                    // draggable, so the anchor has to opt out of both: stop the
-                    // click from bubbling into the row's switchSlot handler, and
-                    // disable the anchor's own native HTML5 drag, which would
+                    // The row is a dnd-kit draggable as well as a button, so the
+                    // anchor also disables its own native HTML5 drag — that would
                     // otherwise put the URL on the dataTransfer instead of the
                     // slot key in the board/flat scopes that use native drag.
                     <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
                       draggable={false}
-                      onClick={e => e.stopPropagation()}
+                      onClick={revealInPanel(link)}
                       className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
-                      title={`Open ${link.url}`}>
+                      title={chipTitle(link)}>
                       {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
                       {link.provider === 'github' ? `#${link.number}` : `!${link.number}`}
                       {link.state === 'merged' && (
@@ -2278,7 +2474,7 @@ function ChatSidebar({
                     </a>
                   ))}
                   {issueLinks.map(link => (
-                    // Issue chip: the same anchor discipline (stop propagation,
+                    // Issue chip: the same anchor discipline (reveal in panel,
                     // no native drag) but deliberately NO ci / state / merge
                     // decoration — the chip-status cache is pull-request-only in
                     // this phase, so an issue chip has nothing truthful to colour
@@ -2287,9 +2483,9 @@ function ChatSidebar({
                     <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
                       data-testid={`session-issue-chip-${link.number}`}
                       draggable={false}
-                      onClick={e => e.stopPropagation()}
+                      onClick={revealInPanel(link)}
                       className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
-                      title={`Open ${link.url}`}>
+                      title={chipTitle(link)}>
                       {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
                       <CircleDot className="lucide-inline shrink-0" aria-hidden="true" />
                       {`#${link.number}`}
@@ -2392,14 +2588,17 @@ function ChatSidebar({
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
         className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        // 9px left pad + 19px glyph + 7px gap lands the folder NAME on the
-        // 35px text x of the sessions INSIDE it (the 19px indent step guide).
-        // The glyph box outdents 7px left of sibling session text
-        // (Finder-style: bigger icons hang left, text stays on the guide).
-        style={{ paddingLeft: '9px' }}>
+        // 16px left pad puts the folder GLYPH on the same x as the text of the
+        // session rows at the folder's OWN level (both `px-4`), so a folder and
+        // its siblings start the same column. The 5px glyph→name gap is chosen
+        // (not cosmetic) so glyph 14px + 5px == the 19px indent step of the
+        // nested body, which lands the folder NAME on the text x of the sessions
+        // INSIDE it. Both guides hold at once; changing either breaks one.
+        // Measured: glyph == sibling session text, name == child session text.
+        style={{ paddingLeft: '16px' }}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <FolderGlyph color={folder.color} size={17} open={!folder.collapsed} />
+            <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
@@ -2409,11 +2608,11 @@ function ChatSidebar({
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
-              className="flex items-center gap-[7px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
               onClick={() => toggleCollapse(folder.id)}>
-              <FolderGlyph color={folder.color} size={17} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
+              <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
@@ -2590,6 +2789,14 @@ function ChatSidebar({
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
   const draggingFolderedSession = activeDrag?.type === 'session' && !!slotFolders[activeDrag.id]
+  // Whether the session being dragged may not be referenced into the open chat
+  // (incognito/temporary, or the session already on screen). Drives the drop
+  // zone's refusal state; the drop handler re-decides with the same function.
+  const draggingRefBlocked = activeDrag?.type === 'session' && !!sessionRefBlockReason({
+    key: activeDrag.id,
+    activeSlot,
+    memoryMode: slots.find(x => x.key === activeDrag.id)?.memory_mode,
+  })
   // True while dragging a folder that currently has a parent — the only case
   // where "drop on the root lane to move to top level" applies.
   const draggingNestedFolder = activeDrag?.type === 'folder' && !!folders.find(f => f.id === activeDrag.id)?.parent_id
@@ -3025,7 +3232,7 @@ function ChatSidebar({
                       <span className="flex-1">
                         {i18nT('pages.chatSidebar.folders')}
                         {filterHiddenFolders.size > 0 && (
-                          <span className="normal-case tracking-normal"> · {filterHiddenFolders.size} hidden</span>
+                          <span className="normal-case tracking-normal"> · {filterHiddenFolders.size} {i18nT('pages.chatSidebar.hidden')}</span>
                         )}
                       </span>
                     </DropdownMenuItem>
@@ -3170,6 +3377,17 @@ function ChatSidebar({
                 ? { droppable: { strategy: MeasuringStrategy.Always, frequency: 100 } }
                 : { droppable: { strategy: MeasuringStrategy.Always } }}
               onDragStart={handleSidebarDragStart} onDragOver={handleSidebarDragOver} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
+              {/* "Drag a session into the open chat" target. Portaled into
+               *  ChatPage's pane so it covers the WHOLE conversation area (not
+               *  just the composer), while staying inside this DndContext —
+               *  React portals preserve context, and useDroppable measures the
+               *  node where it actually renders. Mounted only during a session
+               *  drag, and only when a pane and a handler exist. */}
+              {chatDropTarget && onDropSessionRef && activeDrag?.type === 'session'
+                && createPortal(
+                  <ChatPaneDropZone refused={draggingRefBlocked} />,
+                  chatDropTarget,
+                )}
               {/* Root lane is the fallback drop target: dropping a session on
                *  empty space (not over a folder) ungroups it (folderId: null). */}
               <DndDroppable id="root-lane" data={{ type: 'folder-drop', folderId: null }}>

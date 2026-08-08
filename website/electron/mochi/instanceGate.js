@@ -6,6 +6,8 @@
  * main.js; only the judgement lives here.
  */
 
+const { SELF_INSTANCE } = require("./machineStore");
+
 /**
  * Read `/api/apps` and answer whether Mochi is enabled.
  *
@@ -47,4 +49,34 @@ function enabledOrTrust(probe) {
   return probe === null ? true : probe;
 }
 
-module.exports = { parseMochiEnabled, enabledOrTrust };
+/**
+ * A tick found the HOST gateway's Mochi disabled. Does that mean tear the pet
+ * down?
+ *
+ * Only when the pet has nowhere else to be. "Should there be a pet" and "whose
+ * Mochi does it show" are two different questions, and the host gateway only
+ * owns the first one FOR ITSELF: when the pet is showing instance X, everything
+ * it needs is served by X — the page, the token, and every
+ * `/api/apps/mochi/*` call. X having Mochi on is what makes the pet work, so the
+ * host being switched off says nothing about whether that pet can continue.
+ *
+ * This is the whole point of the fix: a user who runs Mochi on a remote crew and
+ * turns it off locally is telling us to stop MOCHI'S BACKEND WORK HERE (which
+ * `on_shutdown` duly does — pollers, watchlist guard, stats), not to take away a
+ * pet that is being served from somewhere else entirely.
+ *
+ * `self` still tears down, because then the host IS the thing being shown.
+ *
+ * @param {string} shownInstanceId what the pet is currently showing
+ * @param {boolean} remoteStillUsable did this tick resolve that instance as live
+ *   AND Mochi-enabled? A definite no falls back to self, which is disabled — so
+ *   there is genuinely no pet to keep.
+ * @returns {boolean}
+ */
+function hostDisabledMeansTeardown(shownInstanceId, remoteStillUsable) {
+  if (typeof shownInstanceId !== "string" || !shownInstanceId.trim()) return true;
+  if (shownInstanceId === SELF_INSTANCE) return true;
+  return !remoteStillUsable;
+}
+
+module.exports = { parseMochiEnabled, enabledOrTrust, hostDisabledMeansTeardown };

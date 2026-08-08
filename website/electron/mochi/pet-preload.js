@@ -346,6 +346,37 @@ exposePetApi({
   instancesEnabledMap: () => ipcRenderer.invoke("mochi-instances:enabled-map"),
 
   /**
+   * The per-MACHINE prefs — `{petInstance, shortcuts}` — from the SHELL's store.
+   *
+   * NOT read over HTTP, and that is the whole point. Every Mochi window is loaded
+   * FROM the gateway it shows, and this seam's HTTP calls are same-origin, so a
+   * pet showing a REMOTE would read and write that remote's copy of a choice that
+   * belongs to this computer. That mismatch made the instance switch a one-way
+   * door: the write landed where nothing reads it, and no surface was left that
+   * could move the pet back.
+   */
+  machinePrefs: () => ipcRenderer.invoke("mochi-machine:get"),
+
+  /**
+   * Point the pet at an instance AND move it, in one call.
+   *
+   * One handler rather than "POST the setting, then ask the shell to apply it":
+   * those were two steps against two different gateways, which is how a saved
+   * choice ended up with nothing acting on it.
+   */
+  setPetInstance: (instanceId) => ipcRenderer.invoke("mochi-instances:set", instanceId),
+
+  /**
+   * Core's instance list for THIS MACHINE's host gateway.
+   *
+   * The switcher's own `fetch('/api/instances')` is same-origin, so on a remote
+   * pet it listed the REMOTE's registry — possibly empty, possibly a different
+   * set of crews, and missing the one the user wanted to go back to. The host owns
+   * the registry the stored ids refer to.
+   */
+  instancesList: () => ipcRenderer.invoke("mochi-instances:list"),
+
+  /**
    * Apply a just-saved `petInstance` immediately rather than on the shell's next
    * reconcile pass (up to 5s later, which reads as "the switch didn't work").
    * Resolves once the windows have actually been rebuilt, so the caller can keep

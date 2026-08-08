@@ -247,6 +247,35 @@ class NudgeLoop:
     last_fire_ts: float = 0.0
     created_ts: float = 0.0
     stop_sentinel_path: str = ""  # optional absolute path; if present loop halts
+    # Wall-clock budget in seconds, measured from ``created_ts`` (0 = unlimited).
+    # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
+    # idle gap is long can run for days within its cycle budget. Anchoring on
+    # the persisted ``created_ts`` (not arm time) makes the budget restart-proof
+    # — a gateway restart re-arms the loop but never resets its clock.
+    max_runtime_secs: int = 0
+    # WHY the loop was last deactivated: "" (active / never stopped),
+    # "manual" (user pause / any caller that didn't say otherwise),
+    # "cycle_cap", or "runtime_budget" (set by _timer's terminal bounds).
+    # Persisted so revival logic can distinguish a manual pause from a bound
+    # expiry — elapsed wall-clock keeps growing after a manual pause, so
+    # WITHOUT this record a paused loop whose budget has since elapsed is
+    # indistinguishable from a budget-stopped one, and a budget raise would
+    # resume unattended execution against the user's explicit pause.
+    stopped_reason: str = ""
+
+
+def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:
+    """True when *loop* has a wall-clock budget and it is spent.
+
+    Single source of truth shared by ``_timer`` (enforcement) and the expiry
+    notifier (wording), so the two can never disagree on WHY a loop stopped.
+    A loop with no ``created_ts`` (a malformed/legacy store entry) never
+    trips the budget — there is no anchor to measure from, and guessing one
+    could kill a healthy loop on its first cycle after an upgrade.
+    """
+    if not loop.max_runtime_secs or not loop.created_ts:
+        return False
+    return (now if now is not None else time.time()) - loop.created_ts >= loop.max_runtime_secs
 
 
 @contextmanager
@@ -447,6 +476,7 @@ class AutoNudgeService:
         idle_secs: int = 60,
         max_cycles: int = 0,
         stop_sentinel_path: str = "",
+        max_runtime_secs: int = 0,
     ) -> NudgeLoop:
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
@@ -467,6 +497,7 @@ class AutoNudgeService:
                 idle_secs=idle_secs,
                 max_cycles=max_cycles,
                 stop_sentinel_path=stop_sentinel_path,
+                max_runtime_secs=max_runtime_secs,
             )
         )
         self._inflight_adds.add(inner)
@@ -487,6 +518,7 @@ class AutoNudgeService:
         idle_secs: int,
         max_cycles: int,
         stop_sentinel_path: str,
+        max_runtime_secs: int = 0,
     ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
@@ -504,6 +536,7 @@ class AutoNudgeService:
                 max_cycles=max(0, int(max_cycles)),
                 created_ts=time.time(),
                 stop_sentinel_path=stop_sentinel_path,
+                max_runtime_secs=max(0, int(max_runtime_secs)),
             )
             self._loops[loop.id] = loop
             # Persist WITHOUT blocking the event loop (no-blocking-call rule:
@@ -547,6 +580,8 @@ class AutoNudgeService:
         idle_secs: int | None = None,
         max_cycles: int | None = None,
         active: bool | None = None,
+        max_runtime_secs: int | None = None,
+        stopped_reason: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -560,6 +595,8 @@ class AutoNudgeService:
                 idle_secs=idle_secs,
                 max_cycles=max_cycles,
                 active=active,
+                max_runtime_secs=max_runtime_secs,
+                stopped_reason=stopped_reason,
             )
         )
         self._inflight_adds.add(inner)
@@ -580,6 +617,8 @@ class AutoNudgeService:
         idle_secs: int | None = None,
         max_cycles: int | None = None,
         active: bool | None = None,
+        max_runtime_secs: int | None = None,
+        stopped_reason: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -591,8 +630,42 @@ class AutoNudgeService:
                 loop.idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
             if max_cycles is not None:
                 loop.max_cycles = max(0, int(max_cycles))
+            if max_runtime_secs is not None:
+                loop.max_runtime_secs = max(0, int(max_runtime_secs))
             if active is not None:
-                loop.active = bool(active)
+                # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
+                # (stopped_reason supplied — the _timer's cycle_cap /
+                # runtime_budget paths) must never OVERWRITE a deactivation
+                # that landed first. The race: user pauses right after the
+                # timer detects expiry — the pause persists "manual" and
+                # cancels the timer, but the timer's already-inflight shielded
+                # update would stamp "runtime_budget" over it, making the loop
+                # budget-revivable against an explicit pause. Both transitions
+                # serialize on _lock, so re-checking here closes the race: the
+                # bound's deactivation degrades to a no-op when the loop is
+                # already inactive. The reverse order is already safe — a
+                # manual pause overwriting a bound tag only ever NARROWS
+                # revivability ("manual" never auto-revives).
+                if stopped_reason and not active and not loop.active:
+                    logger.info(
+                        "AutoNudge: loop %s already deactivated (%s) — %s bound "
+                        "not overwriting it",
+                        loop.id,
+                        loop.stopped_reason or "manual",
+                        stopped_reason,
+                    )
+                else:
+                    loop.active = bool(active)
+                    # Record WHY on every deactivation and clear it on every
+                    # revival, so the store always reflects the LAST transition.
+                    # ``stopped_reason`` is an internal caller parameter (_timer's
+                    # terminal bounds pass "cycle_cap"/"runtime_budget"); external
+                    # deactivations (REST pause, deactivate-mid-fire) default to
+                    # "manual", which the revive logic never auto-resumes.
+                    if loop.active:
+                        loop.stopped_reason = ""
+                    else:
+                        loop.stopped_reason = stopped_reason or "manual"
             # Persist WITHOUT blocking the event loop — _write_state fsyncs, and
             # a wedged disk must not freeze chat/heartbeat/liveness. Snapshot
             # under THIS lock hold (mutation safety + serialization vs the
@@ -765,7 +838,7 @@ class AutoNudgeService:
         # Cycle cap reached?
         if loop.max_cycles and loop.cycle_count >= loop.max_cycles:
             logger.info("AutoNudge: loop %s reached max_cycles — deactivating", loop.id)
-            await self.update(loop.id, active=False)
+            await self.update(loop.id, active=False, stopped_reason="cycle_cap")
             # Signal the cap. Reaching max_cycles is NOT a successful finish —
             # the loop ran out of cycles with its goal possibly unmet — yet the
             # only trace used to be this log line plus an ``updated`` event
@@ -779,6 +852,22 @@ class AutoNudgeService:
             # observes the loop in its final deactivated state. Deliberately a
             # NEW event kind rather than overloading ``updated``: the many
             # benign updates (message edits, manual pause) must not notify.
+            self._emit("expired", loop)
+            return
+        # Wall-clock budget spent? Checked AFTER the cycle cap (both exhausted
+        # → the cap wins, keeping historical wording) and BEFORE the fire, so
+        # a spent budget never buys one more unattended turn. Same terminal
+        # treatment as the cap: deactivate (inspectable/restartable, not
+        # removed) and emit ``expired`` so the existing observer raises a
+        # user-visible notification — a budget that stops a loop silently
+        # would be indistinguishable from the agent stopping on its own.
+        if runtime_budget_exceeded(loop):
+            logger.info(
+                "AutoNudge: loop %s exceeded max_runtime_secs=%d — deactivating",
+                loop.id,
+                loop.max_runtime_secs,
+            )
+            await self.update(loop.id, active=False, stopped_reason="runtime_budget")
             self._emit("expired", loop)
             return
         # Fire. Update state only if the callback reports actual delivery —
@@ -878,6 +967,24 @@ class AutoNudgeService:
         # fsync stays off the event loop).
         await self._persist_locked()
         self._emit("fired", loop)
+        # POST-DELIVERY budget check: the budget gates when turns START, so a
+        # slow in-flight turn can overshoot it (bounded by the transport's
+        # per-turn ceiling, constants.CHAT_TURN_TIMEOUT — this service must
+        # not cancel a running turn; see the mid-fire contracts above). But
+        # once the turn HAS finished, a spent budget must take effect NOW —
+        # deactivating here instead of on the next idle timer closes the
+        # window where notify_turn_complete arms another full idle cycle for
+        # a loop that is already over budget.
+        if runtime_budget_exceeded(loop) and loop.active and loop.id in self._loops:
+            logger.info(
+                "AutoNudge: loop %s exceeded max_runtime_secs=%d during its turn "
+                "— deactivating post-delivery",
+                loop.id,
+                loop.max_runtime_secs,
+            )
+            await self.update(loop.id, active=False, stopped_reason="runtime_budget")
+            self._emit("expired", loop)
+            return
         # Channel-bound loops (Slack/Discord/...) have no dashboard
         # turn-lifecycle hook to re-arm them (notify_turn_complete never fires
         # for these keys), so they self-re-arm on a fixed interval. The fire

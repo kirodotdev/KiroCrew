@@ -30,7 +30,14 @@ if TYPE_CHECKING:
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.context import ContextBuilder, window_for_provider_client
+from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX
+from kiro_crew.context import (
+    CONTEXT_GROUP_LESSONS,
+    CONTEXT_GROUP_MEMORY,
+    CONTEXT_GROUP_PROJECT,
+    ContextBuilder,
+    window_for_provider_client,
+)
 from kiro_crew.context_management import (
     COMPLETION_KEEP_DEFAULT_CHARS,
     apply_completion_keep,
@@ -498,6 +505,50 @@ def _available_memory_gb() -> float:
     return -1.0
 
 
+_NATURAL_T = ctypes.c_uint  # natural_t is 32-bit on macOS
+
+
+class _VMStatistics64(ctypes.Structure):
+    """Leading fields of ``vm_statistics64_data_t`` (``<mach/vm_statistics.h>``).
+
+    Declared in kernel order so the byte layout matches what the kernel fills.
+    Only free/inactive/speculative/purgeable are read, but the full struct is
+    declared so the element count handed to ``host_statistics64`` is exact.
+
+    Module scope is load-bearing: ``ctypes.POINTER(T)`` memoises T in a
+    module-level dict inside ctypes that is never evicted, so declaring this in
+    the probe's body would pin a fresh pair of type objects on every call and
+    grow the gateway without bound -- the auto-sizing probe runs per task group.
+    """
+
+    _fields_ = [
+        ("free_count", _NATURAL_T),
+        ("active_count", _NATURAL_T),
+        ("inactive_count", _NATURAL_T),
+        ("wire_count", _NATURAL_T),
+        ("zero_fill_count", ctypes.c_uint64),
+        ("reactivations", ctypes.c_uint64),
+        ("pageins", ctypes.c_uint64),
+        ("pageouts", ctypes.c_uint64),
+        ("faults", ctypes.c_uint64),
+        ("cow_faults", ctypes.c_uint64),
+        ("lookups", ctypes.c_uint64),
+        ("hits", ctypes.c_uint64),
+        ("purges", ctypes.c_uint64),
+        ("purgeable_count", _NATURAL_T),
+        ("speculative_count", _NATURAL_T),
+        ("decompressions", ctypes.c_uint64),
+        ("compressions", ctypes.c_uint64),
+        ("swapins", ctypes.c_uint64),
+        ("swapouts", ctypes.c_uint64),
+        ("compressor_page_count", _NATURAL_T),
+        ("throttled_count", _NATURAL_T),
+        ("external_page_count", _NATURAL_T),
+        ("internal_page_count", _NATURAL_T),
+        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+    ]
+
+
 def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
     """Reclaimable memory in **pages** via Mach ``host_statistics64``, or ``None``.
 
@@ -517,41 +568,6 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
         libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
     except OSError:
         return None  # not macOS / libSystem unavailable
-
-    natural_t = ctypes.c_uint  # natural_t is 32-bit on macOS
-    u64 = ctypes.c_uint64
-
-    # Leading fields of vm_statistics64_data_t (<mach/vm_statistics.h>) in
-    # declaration order, so the byte layout matches what the kernel fills. Only
-    # free/inactive/speculative/purgeable are read, but the full struct is
-    # declared so the element count handed to host_statistics64 is exact.
-    class _VMStatistics64(ctypes.Structure):
-        _fields_ = [
-            ("free_count", natural_t),
-            ("active_count", natural_t),
-            ("inactive_count", natural_t),
-            ("wire_count", natural_t),
-            ("zero_fill_count", u64),
-            ("reactivations", u64),
-            ("pageins", u64),
-            ("pageouts", u64),
-            ("faults", u64),
-            ("cow_faults", u64),
-            ("lookups", u64),
-            ("hits", u64),
-            ("purges", u64),
-            ("purgeable_count", natural_t),
-            ("speculative_count", natural_t),
-            ("decompressions", u64),
-            ("compressions", u64),
-            ("swapins", u64),
-            ("swapouts", u64),
-            ("compressor_page_count", natural_t),
-            ("throttled_count", natural_t),
-            ("external_page_count", natural_t),
-            ("internal_page_count", natural_t),
-            ("total_uncompressed_pages_in_compressor", u64),
-        ]
 
     HOST_VM_INFO64 = 4  # flavor selector for host_statistics64
 
@@ -882,6 +898,14 @@ class SubagentInfo:
     stalled: bool = (
         False  # True while the reaper has flagged this subagent as idle/stalled (UI signal)
     )
+    # follow_up delivery mode (spawn_steer mode="follow_up"): messages queued
+    # here are NOT injected into the running turn — they are dispatched as ONE
+    # continuation on this run's conversation after the run completes, so a
+    # correction can wait for the current turn instead of interrupting it
+    # mid-execution. Drained by the per-run watcher (_deliver_followups).
+    pending_followups: list = field(default_factory=list)
+    # True once a followup watcher task is armed for this run (one per run).
+    _followup_watcher: bool = False
     _stall_suspect_at: float = (
         0.0  # first reaper sweep that saw the idle threshold exceeded; 2-sweep confirmation (scale dampening)
     )
@@ -930,6 +954,16 @@ class SubagentInfo:
     # SessionManager.mark_continuable, and skips session-file deletion at
     # teardown so the conversation can be resumed by a later run.
     keep: bool = False
+    # Which switchable context groups this sub-agent inherits from the injected
+    # session context. All True ⇒ byte-identical to a non-sub-agent session. A
+    # parent opts one out when it can name why this task cannot need it; the
+    # sub-agent is told by name what was withheld so it reports the gap instead
+    # of guessing. Resolved once at spawn and carried through the queue and
+    # retry paths, so a drained or retried run sees the same scope as the run
+    # its caller asked for.
+    include_memory: bool = True
+    include_lessons: bool = True
+    include_project: bool = True
     # Session key override for continuation runs: a spawn_continue run reuses
     # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
     # finds the persisted sid and arms session/load. Empty ⇒ the default
@@ -1022,6 +1056,29 @@ AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
 SubagentEventCallback = Callable[[str, "SubagentInfo", dict], Awaitable[None]]
 
 
+def _context_groups_of(info: "SubagentInfo") -> frozenset[str]:
+    """The switchable context groups this run KEEPS.
+
+    One source of truth for the run's scope, shared by the ``build_message``
+    call that applies it and the ``state.json`` record a continuation reads it
+    back from, so the two cannot drift.
+    """
+    return frozenset(
+        group
+        for group, on in (
+            (CONTEXT_GROUP_MEMORY, info.include_memory),
+            (CONTEXT_GROUP_LESSONS, info.include_lessons),
+            (CONTEXT_GROUP_PROJECT, info.include_project),
+        )
+        if on
+    )
+
+
+def _context_groups_field(info: "SubagentInfo") -> str:
+    """``state.json`` encoding of the run's scope: comma-joined, sorted."""
+    return ",".join(sorted(_context_groups_of(info)))
+
+
 class ToolApprovalCallback(Protocol):
     async def __call__(self, event: LLMEvent, parent_session_key: str = "") -> bool:
         pass
@@ -1086,6 +1143,13 @@ class SubagentManager:
         # Strong refs to in-flight shielded terminal reports (see
         # `_spawn_terminal_report`); drained in `cancel_all`.
         self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # follow_up watchers (spawn_steer mode="follow_up"), keyed by run id.
+        # Manager-OWNED on purpose: these tasks can spawn a brand-new run
+        # (continue_conversation), so per this module's containment contract
+        # (see _schedule_cancel_recovery) they must be reachable by
+        # cancel_all() — a watcher parked in the global _safe_fire set would
+        # survive shutdown and dispatch against a closing SessionManager.
+        self._followup_watchers: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         # task -> the agent whose terminal report it is delivering
         self._report_owners: dict[asyncio.Task, SubagentInfo] = {}  # type: ignore[type-arg]
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
@@ -1379,12 +1443,11 @@ class SubagentManager:
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-
         result_path = str(_agent_dir(agent_id) / "result.txt")
 
         if has_result:
             msg = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ⚠️ orphaned by gateway restart\n"
                 f"Task: {task_preview}\n"
                 f"Result saved at: `{result_path}`\n"
@@ -1392,7 +1455,7 @@ class SubagentManager:
             )
         else:
             msg = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ❌ lost to gateway restart\n"
                 f"Task: {task_preview}\n"
                 f"No result was captured before the restart."
@@ -2326,7 +2389,7 @@ class SubagentManager:
                     + "\nUse the read tool to retrieve it if needed."
                 )
             failure_msg = (
-                f"[Subagent completion event]\n"
+                f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
                 f"The agent finished but result delivery timed out.{result_hint}"
@@ -2436,6 +2499,9 @@ class SubagentManager:
         keep: bool = False,
         conversation_key: str = "",
         app: str = "",
+        include_memory: bool = True,
+        include_lessons: bool = True,
+        include_project: bool = True,
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
@@ -2700,6 +2766,9 @@ class SubagentManager:
                     "keep": keep,
                     "conversation_key": conversation_key,
                     "app": app,
+                    "include_memory": include_memory,
+                    "include_lessons": include_lessons,
+                    "include_project": include_project,
                     "_agent_prevalidated": _agent_prevalidated,
                     "_preassigned_id": agent_id,
                 }
@@ -2731,6 +2800,9 @@ class SubagentManager:
                 queued=True,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
+                include_memory=include_memory,
+                include_lessons=include_lessons,
+                include_project=include_project,
             )
             return info
 
@@ -2772,6 +2844,9 @@ class SubagentManager:
             batch_total=max(0, int(batch_total)),
             keep=keep,
             conversation_key=conversation_key,
+            include_memory=include_memory,
+            include_lessons=include_lessons,
+            include_project=include_project,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         self._agents[agent_id] = info
@@ -3153,6 +3228,7 @@ class SubagentManager:
         # the SessionManager continuable cache, and the TTL registry entry.
         # The conversation TTL sweep / spawn_release owns deletion from here.
         self._promote_conversation(conv_id, conv_key)
+        inc_memory, inc_lessons, inc_project = self._inherited_context_groups(conv_id)
         return self.spawn(
             task,
             parent_session_key=parent_session_key,
@@ -3161,6 +3237,37 @@ class SubagentManager:
             max_turns=max_turns,
             keep=True,
             conversation_key=conv_key,
+            include_memory=inc_memory,
+            include_lessons=inc_lessons,
+            include_project=inc_project,
+        )
+
+    def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
+        """Recover the context scope of the run being continued.
+
+        A continuation DOES rebuild session context: ``get_or_create`` reports
+        ``is_new=True`` even when it restores the session via ``session/load``
+        (``resumed`` is the separate flag, and it gates only thread history), so
+        ``build_message`` runs the full session-context path for the follow-up
+        turn. Without inheriting the scope here, a run the parent deliberately
+        spawned without memory would silently regain it on continuation.
+
+        Prefers the live record; falls back to the scope persisted in the run's
+        ``state.json``. A run that predates the field records no scope at all,
+        which is distinguishable from "every group withheld" (an empty string)
+        and defaults to all-on.
+        """
+        live = self._agents.get(conv_id)
+        if live is not None:
+            return live.include_memory, live.include_lessons, live.include_project
+        raw = (read_state(conv_id) or {}).get("context_groups")
+        if raw is None:
+            return True, True, True
+        groups = {g for g in str(raw).split(",") if g}
+        return (
+            CONTEXT_GROUP_MEMORY in groups,
+            CONTEXT_GROUP_LESSONS in groups,
+            CONTEXT_GROUP_PROJECT in groups,
         )
 
     async def steer_run(self, agent_id: str, message: str) -> tuple[bool, str]:
@@ -3226,6 +3333,266 @@ class SubagentManager:
             except Exception:
                 logger.debug("steer_run: SEL audit failed", exc_info=True)
         return ok, "ok" if ok else "steer rejected by provider"
+
+    # Bounds for the follow_up watcher: poll cadence, post-done busy retries
+    # (finalization may briefly hold the conversation), and a hard deadline so
+    # a wedged run can never leave an immortal watcher behind.
+    _FOLLOWUP_POLL_SECS = 2.0
+    _FOLLOWUP_BUSY_RETRIES = 10
+    _FOLLOWUP_BUSY_RETRY_SECS = 3.0
+
+    async def follow_up_run(self, agent_id: str, message: str) -> tuple[bool, str]:
+        """Queue *message* for delivery AFTER run *agent_id*'s turn completes.
+
+        The non-interrupting sibling of :meth:`steer_run` (spawn_steer
+        ``mode="follow_up"``): instead of injecting into the running turn —
+        which can derail critical work mid-execution — the message waits for
+        the run to finish and is then dispatched as a CONTINUATION on the
+        run's own conversation (``continue_conversation``), executing with its
+        accumulated context. The continuation is a new run whose result
+        arrives as a normal completion event on the same parent session.
+
+        Multiple queued follow-ups drain as ONE continuation (joined in
+        arrival order), so three corrections cost one run, not three.
+
+        Returns ``(ok, detail)``. Typed refusals mirror ``steer_run``:
+        ``not_found`` (unknown id) and ``not_running`` (already finished —
+        ``spawn_continue`` is the direct tool for that case). Queued
+        follow-ups are best-effort by design: if the conversation is gone by
+        the time the run ends, the failure is logged and audited, not raised.
+        """
+        info = self._agents.get(agent_id)
+        if info is None:
+            return False, "not_found"
+        if info.done:
+            return False, "not_running: run finished — use spawn_continue"
+        if self._shutting_down:
+            # Refuse rather than accept-and-drop: an accepted follow-up
+            # promises a completion event, and a shutting-down gateway can
+            # keep neither the watcher nor the continuation alive.
+            return False, "shutting_down: the gateway is stopping — re-send after restart"
+        info.pending_followups.append(message)
+        if not info._followup_watcher:
+            self._arm_followup_watcher(info)
+        try:
+            sel().log_tool_invocation(
+                session_key=info.parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_steer",
+                outcome="followup_queued",
+                metadata={"subagent_id": agent_id, "queued": len(info.pending_followups)},
+            )
+        except Exception:
+            logger.debug("follow_up_run: SEL audit failed", exc_info=True)
+        return True, "queued"
+
+    def _arm_followup_watcher(self, info: SubagentInfo) -> None:
+        """Arm the (single) follow-up watcher for *info*'s run.
+
+        The done-callback resets the one-watcher latch AND re-arms when
+        messages are still pending: a follow-up can be accepted while the
+        previous watcher is inside its final awaits (announcing an expiry) —
+        it sees the latch still true and arms nothing, so without the re-arm
+        that accepted message would be stranded with no dispatch and no event
+        (GPT review). Not re-armed during shutdown or once the run record is
+        gone (removal drops any leftovers deliberately).
+        """
+        info._followup_watcher = True
+        run_id = info.id
+        run_info = info  # narrowed local: mypy loses the None-narrow in closure defaults
+        task = asyncio.create_task(self._deliver_followups(info))
+        self._followup_watchers[run_id] = task
+
+        def _done(
+            t: "asyncio.Task", _id: str = run_id, _info: SubagentInfo = run_info
+        ) -> None:
+            self._followup_watchers.pop(_id, None)
+            _info._followup_watcher = False
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning(
+                    "follow_up watcher for %s failed", _id, exc_info=t.exception()
+                )
+                return
+            if (
+                not t.cancelled()
+                and _info.pending_followups
+                and not self._shutting_down
+                and _id in self._agents
+            ):
+                self._arm_followup_watcher(_info)
+
+        task.add_done_callback(_done)
+
+    async def _deliver_followups(self, info: SubagentInfo) -> None:
+        """Watch run *info* until its turn completes, then dispatch the queue.
+
+        DELIBERATELY a per-run poller rather than a hook in ``_run``'s
+        finalization: completion is reached from many terminal paths (normal,
+        error, timeout, cancel-recovery, reaper), all guarded by a carefully
+        ordered 3-guard finally — a watcher observes the outcome without
+        adding a new obligation to any of them. Waits for the run's task to be
+        popped from ``self._tasks`` too, so teardown (session release) has
+        finished before the continuation tries to reuse the conversation; any
+        residual ``conversation_busy`` gets a bounded retry.
+
+        OUTCOME-AWARE: a run the user explicitly STOPPED does not get its
+        follow-ups dispatched — resurrecting work the user killed is the
+        opposite of "the correction can wait" (``followup_suppressed`` audit).
+        Other non-success terminals (error, timeout) still dispatch: the
+        continuation runs with the conversation's context, so "fix what just
+        broke" is a legitimate follow-up.
+
+        NEVER SILENT: the spawn_steer reply promised the parent a completion
+        event, so every path that cannot deliver one from a real continuation
+        (suppressed, expired, dispatch failure) announces a SYNTHETIC failure
+        completion event through the normal ``_on_done`` path — the parent
+        must not wait forever on an event that is not coming.
+
+        Hard-bounded and manager-owned: gives up at the manager's run timeout
+        plus a margin, and the task is registered in ``_followup_watchers`` so
+        ``cancel_all()`` cancels it — a watcher must never dispatch a fresh
+        run into a shutting-down gateway.
+        """
+        deadline = time.monotonic() + self._default_timeout + 300
+        while time.monotonic() < deadline:
+            if info.done and info.id not in self._tasks:
+                break
+            await asyncio.sleep(self._FOLLOWUP_POLL_SECS)
+        else:
+            dropped = list(info.pending_followups)
+            logger.warning(
+                "follow_up watcher for %s timed out before the run completed — "
+                "%d queued message(s) dropped",
+                info.id,
+                len(dropped),
+            )
+            self._audit_followup(info, "followup_expired")
+            await self._announce_followup_failure(
+                info,
+                "follow_up expired: the run never completed within its timeout "
+                "window; the queued follow-up message(s) were dropped",
+                messages=dropped,
+            )
+            # Drop ONLY what was just reported dropped, and only AFTER the
+            # announce settled — clearing first meant a shutdown cancelling
+            # this task mid-announce left the queue empty for cancel_all()'s
+            # sweep, so the messages vanished with no event. The slice keeps
+            # anything queued while we were announcing (the done-callback
+            # re-arms for it).
+            info.pending_followups = info.pending_followups[len(dropped):]
+            return
+        # SNAPSHOT, do not drain: messages stay in ``pending_followups`` until
+        # their outcome is SETTLED (dispatched, or their failure announced).
+        # An eager drain lost messages when shutdown landed mid-await — e.g.
+        # during a conversation_busy retry sleep — because cancel_all() saw an
+        # empty queue, cancelled this task, and nothing was ever announced.
+        # Appends only ever happen at the tail, so removing the first
+        # ``len(messages)`` entries at settlement drops exactly this snapshot
+        # and preserves anything queued while we were dispatching.
+        messages = list(info.pending_followups)
+        if not messages:
+            return
+
+        def _settle() -> None:
+            info.pending_followups = info.pending_followups[len(messages):]
+
+        if info.user_stopped:
+            logger.info(
+                "follow_up for %s suppressed — the user stopped the run", info.id
+            )
+            self._audit_followup(info, "followup_suppressed")
+            _settle()
+            await self._announce_followup_failure(
+                info,
+                "follow_up suppressed: the user stopped this run, so its queued "
+                "follow-up message(s) were NOT dispatched",
+                messages=messages,
+            )
+            return
+        if self._shutting_down:
+            # Leave the queue intact: cancel_all()'s shutdown sweep owns the
+            # announce-and-drop for pending messages.
+            return
+        task = "\n\n---\n\n".join(messages)
+        # Finalization may hold the conversation for a beat after the task is
+        # popped (shielded report); retry a bounded number of times.
+        for _attempt in range(self._FOLLOWUP_BUSY_RETRIES):
+            child = self.continue_conversation(
+                info.id,
+                task,
+                parent_session_key=info.parent_session_key,
+                agent=info.agent,
+            )
+            err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
+            if not err.startswith("conversation_busy"):
+                break
+            await asyncio.sleep(self._FOLLOWUP_BUSY_RETRY_SECS)
+        if err:
+            logger.warning(
+                "follow_up delivery for %s failed: %s", info.id, err.split(":", 1)[0]
+            )
+            self._audit_followup(info, "followup_failed")
+            _settle()
+            # continue_conversation's typed failures are already done
+            # SubagentInfo records — announce the real one when we have it.
+            if child is not None:
+                await self._announce_followup_failure(info, "", failure_info=child)
+            else:
+                await self._announce_followup_failure(
+                    info, f"follow_up dispatch failed: {err}"
+                )
+        else:
+            self._audit_followup(info, "followup_dispatched")
+            _settle()
+
+    async def _announce_followup_failure(
+        self,
+        info: SubagentInfo,
+        reason: str,
+        failure_info: SubagentInfo | None = None,
+        messages: list | None = None,
+    ) -> None:
+        """Deliver a SYNTHETIC failure completion event for an undeliverable
+        follow-up, through the same ``_on_done`` path as real completions.
+
+        Best-effort by design (a notification about a failure must not itself
+        take anything down), but never silent-by-default: without this the
+        parent — told by spawn_steer that a completion event would arrive —
+        blocks its plan on an event that only ever existed in SEL logs.
+        ``messages`` labels the synthetic event when the queue was already
+        drained by the caller (the expiry path clears before announcing so a
+        later watcher cannot resurrect messages reported dead).
+        """
+        if self._on_done is None:
+            return
+        label_msgs = messages if messages is not None else info.pending_followups
+        synthetic = failure_info or SubagentInfo(
+            id=uuid.uuid4().hex[:8],
+            task=f"[follow_up of run {info.id}] " + _redact(
+                "; ".join(m[:120] for m in label_msgs) or "queued follow-up"
+            ),
+            done=True,
+            parent_session_key=info.parent_session_key,
+            error=reason,
+        )
+        try:
+            await self._on_done(synthetic)
+        except Exception:
+            logger.warning(
+                "follow_up failure announce for %s failed", info.id, exc_info=True
+            )
+
+    def _audit_followup(self, info: SubagentInfo, outcome: str) -> None:
+        try:
+            sel().log_tool_invocation(
+                session_key=info.parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_steer",
+                outcome=outcome,
+                metadata={"subagent_id": info.id},
+            )
+        except Exception:
+            logger.debug("follow_up audit failed", exc_info=True)
 
     def release_conversation(self, conv_id: str) -> tuple[bool, str]:
         """Release conversation *conv_id*: forget the sid and delete files.
@@ -3392,6 +3759,7 @@ class SubagentManager:
                 agent=info.agent,
                 parent_session=info.parent_session_key,
                 max_turns=info.max_turns,
+                context_groups=_context_groups_field(info),
             )
         except Exception:
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
@@ -3955,6 +4323,28 @@ class SubagentManager:
         behind the concurrency cap / stagger gate, not yet started)."""
         return sum(1 for q in self._queue if q.get("parent_session_key", "") == parent_session_key)
 
+    def queued_count_for(self, parent_session_key: str) -> int:
+        """Public queued-spawn count for *parent_session_key*.
+
+        Spawns accepted behind the concurrency cap / stagger gate sit in
+        ``_queue`` with no ``SubagentInfo`` yet, so ``running``-based checks
+        read "no pending work" during exactly the window a wave is ramping.
+        Reset-deferral guards must consult this alongside ``running``.
+        """
+        return self._queued_depth(parent_session_key)
+
+    def has_pending_work_for(self, parent_session_key: str) -> bool:
+        """True while *parent_session_key* has sub-agents RUNNING or QUEUED.
+
+        The reset-deferral guards must consult this, not ``running`` alone —
+        see :meth:`queued_count_for` for why. A parent session reset while a
+        spawn is still queued strands that agent's completion on a
+        cold-started, context-free replacement session.
+        """
+        if self._queued_depth(parent_session_key) > 0:
+            return True
+        return any(a.parent_session_key == parent_session_key for a in self.running)
+
     def _emit_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
         """Emit the current queued depth for *parent_session_key* as a
         ``subagent_queued`` lifecycle event.
@@ -4196,6 +4586,9 @@ class SubagentManager:
         # subagent can be pinned to a smaller model). Resolved from the live
         # client; None ⇒ 1M reference.
         _sub_window = window_for_provider_client(client)
+        # Context scope this run was spawned with. Passed even when every group
+        # is on, so build_message applies one code path for sub-agents.
+        _groups = _context_groups_of(info)
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             self._ctx_builder.build_message,
@@ -4204,6 +4597,15 @@ class SubagentManager:
             session_key,
             provider_type="claude_code" if is_cc else "acp",
             model_window=_sub_window,
+            context_groups=_groups,
+        )
+        # The one place the resolved scope and its cost are both known — without
+        # this, "the sub-agent didn't know X" is undebuggable after the fact.
+        logger.info(
+            "Subagent %s context: groups=%s, %d chars",
+            info.id,
+            ",".join(sorted(_groups)) or "conduct-only",
+            len(full_message),
         )
 
         result_text = ""
@@ -4785,6 +5187,45 @@ class SubagentManager:
         if self._reaper_task and not self._reaper_task.done():
             self._reaper_task.cancel()
             self._reaper_task = None
+        # follow_up watchers: CANCEL AND GATHER FIRST, announce after (GPT
+        # review). The announce awaits — _on_done injection can be slow — and
+        # a busy-retry watcher waking during that await could dispatch a
+        # continuation into the shutting-down gateway, so every watcher task
+        # must be DEAD before anything here yields. Announcing afterwards is
+        # safe: the settle-after-outcome protocol leaves undelivered messages
+        # in their queues, so each is still present to be reported. An
+        # ACCEPTED follow-up must not die silently: the spawn_steer reply
+        # promised the parent a completion event, so each non-empty queue is
+        # announced as a synthetic failure — the parent learns the message was
+        # dropped instead of waiting forever.
+        # Snapshot ids BEFORE cancelling: each watcher's done-callback pops it
+        # from the dict as the gather completes it, so a post-gather snapshot
+        # is already empty.
+        watcher_ids = list(self._followup_watchers)
+        followup_watchers = [t for t in self._followup_watchers.values() if not t.done()]
+        for followup_watcher in followup_watchers:
+            followup_watcher.cancel()
+        if followup_watchers:
+            await asyncio.gather(*followup_watchers, return_exceptions=True)
+        self._followup_watchers.clear()
+        for agent_id in watcher_ids:
+            watcher_info = self._agents.get(agent_id)
+            if watcher_info is not None and watcher_info.pending_followups:
+                dropped = list(watcher_info.pending_followups)
+                watcher_info.pending_followups = []
+                self._audit_followup(watcher_info, "followup_expired")
+                try:
+                    await self._announce_followup_failure(
+                        watcher_info,
+                        "follow_up dropped: the gateway is shutting down before "
+                        "the run completed; the queued message(s) were not "
+                        "dispatched",
+                        messages=dropped,
+                    )
+                except Exception:  # noqa: BLE001 - shutdown must not wedge here
+                    logger.debug(
+                        "shutdown follow_up announce failed for %s", agent_id, exc_info=True
+                    )
         tasks_to_await: list[asyncio.Task] = []  # type: ignore[type-arg]
         for agent_id, task in list(self._tasks.items()):
             if not task.done():

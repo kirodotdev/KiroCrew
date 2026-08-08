@@ -923,6 +923,14 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # Switchable context groups the sub-agent inherits. Explicit
+        # ``default=True`` rather than the implicit ``None``: the semantic
+        # default is "on", and without it an explicit JSON ``null`` cleans to
+        # ``None``, which a consumer coercing with ``bool()`` would read as a
+        # withheld group — the opposite of what the caller asked for.
+        FieldSpec("include_memory", bool, default=True),
+        FieldSpec("include_lessons", bool, default=True),
+        FieldSpec("include_project", bool, default=True),
     ],
 )
 
@@ -942,6 +950,7 @@ SPAWN_STEER_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("agent_id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("mode", str, pattern=re.compile(r"^(interrupt|follow_up)$")),
     ],
 )
 
@@ -960,6 +969,10 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         # enforced in handler (no item_schema support in FieldSpec).
         FieldSpec("agents", list, required=True, item_type=dict),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # Context groups, as on spawn_run: batch-wide, all default True.
+        FieldSpec("include_memory", bool, default=True),
+        FieldSpec("include_lessons", bool, default=True),
+        FieldSpec("include_project", bool, default=True),
     ],
 )
 
@@ -1025,13 +1038,16 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
 # monitor_start creates an AutoNudge loop bound to the calling session (the
 # agent-facing "babysit this PR" primitive). message caps match the REST
 # endpoint's 8000-char limit; interval bounds mirror autonudge's
-# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp.
+# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. max_runtime_secs is the wall-clock
+# budget (0 = unlimited); the 7-day ceiling keeps a typo like 6e9 from arming
+# an effectively-unbounded loop while still covering week-long babysits.
 MONITOR_START_SCHEMA = ToolSchema(
     tool_name="monitor_start",
     fields=[
         FieldSpec("message", str, required=True, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
     ],
 )
 
@@ -1045,6 +1061,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("message", str, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
     ],
 )
 
@@ -1799,20 +1816,23 @@ CRON_ADD_SCHEMA = ToolSchema(
         #                                  + _clean_cron_env() env scrubbing
         # Do not treat these regexes as the guard, and do not relax them assuming
         # downstream code re-validates the value as safe.
-        # The shape is "<path>:<func>". The path allows backslash and an
+        # The shape is "<path>:<func>". The path allows backslash, spaces and an
         # OPTIONAL leading "<letter>:" Windows drive prefix, so a real Windows
-        # absolute path (C:\Users\...\job.py:run) validates — the old class
-        # omitted "\" and ":", rejecting every path Explorer/a file picker
-        # produces. The trailing ":<func>" is still required and unambiguous:
-        # the drive colon is at index 1 followed by a separator, the func colon
-        # is last and followed by an identifier. resolve_script_path splits on
-        # that last colon drive-aware.
+        # absolute path validates — the old class omitted "\", ":" and " ", which
+        # rejected every path Explorer produces AND made a script cron
+        # impossible for the default "First Last" Windows account (config_dir()
+        # is rooted at %USERPROFILE%, so the only legal crons dir was
+        # unrepresentable). A leading "\\" (UNC) is excluded: it is not a local
+        # path, and resolving one triggers an outbound SMB/DNS probe.
+        # The trailing ":<func>" is still required and unambiguous — the drive
+        # colon is at index 1 followed by a separator, the func colon is last and
+        # followed by an identifier; resolve_script_path splits drive-aware.
         FieldSpec(
             "script",
             str,
             max_len=200,
             pattern=re.compile(
-                r"^(?:[a-zA-Z]:)?[a-zA-Z0-9_.~/\\-]+:[a-zA-Z_][a-zA-Z0-9_]*$"
+                r"^(?![\\/]{2})(?:[a-zA-Z]:)?[a-zA-Z0-9 _.~/\\-]+:[a-zA-Z_][a-zA-Z0-9_]*$"
             ),
         ),
         FieldSpec("command", str, max_len=5000, pattern=re.compile(r"^[^\x00-\x1f\x7f]*$")),

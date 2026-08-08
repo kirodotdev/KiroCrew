@@ -421,6 +421,11 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'happy-dom',
+    // Pin TZ so date/time assertions are deterministic regardless of the
+    // contributor's system timezone. CI runs in UTC; without this, tests that
+    // compare Intl.DateTimeFormat output against toLocale*() defaults diverge
+    // on single-digit hours visible only outside UTC (e.g. Pacific/Kiritimati).
+    env: { TZ: 'UTC' },
     // happy-dom (unlike jsdom) actively NAVIGATES iframes and LOADS <script src>.
     // WidgetFrame renders a live <iframe src={blobUrl}> whose page carries a
     // same-origin <script src=".../tailwindcss-browser.js">, which happy-dom

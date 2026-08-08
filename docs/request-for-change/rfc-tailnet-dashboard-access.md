@@ -1,10 +1,10 @@
 ---
 title: Tailnet-native dashboard access
-status: draft
+status: partial
 author: zezhexu
 created: 2026-08-06
 last-audited: 2026-08-06
-audited-at: caa0dca7
+audited-at: 429cbad8
 doc-pr: 1748
 implementation-prs: [1761]
 tracking-issues: [1762]
@@ -13,13 +13,12 @@ superseded-by: []
 ---
 # RFC: Tailnet-native dashboard access
 
-- Status: draft — **Phase 1 is in review as PR #1761**; Phases 2–4 have no
-  implementation. There is otherwise no Tailscale-aware code on `main`: the only
-  occurrences of the word are a comment in `src/kiro_crew/link_unfurl.py:179`,
-  its mirrored test rationale in `test/test_link_unfurl.py:139`, and two prose
-  mentions in `docs/guides/remote-and-mobile.md:263` and `:289` (both corrected
-  by #1761). The Problem 1 repair — the part that actually fixes the pin rather
-  than reporting it — is tracked as issue #1762.
+- Status: partial — **Phase 1 landed** as PR #1761 (merged commit `f8afcff7`):
+  `is_proxied_request()`, the per-binding `proxied` flag, the tri-state Security
+  Posture row, and the guide correction across all three tunnel providers.
+  Phases 2–4 have no implementation. Phase 1 reports the pin's real scope; it
+  does **not** repair the pin, which is Phase 3 and is tracked as issue #1762.
+  Pin scope was settled after review: configurable, defaulting to `node` (§3.1).
 - Author: zezhexu
 - Created: 2026-08-06
 - Related: `docs/guides/remote-and-mobile.md` (the guide this RFC corrects and
@@ -218,7 +217,7 @@ Operational constraints, all fail-closed:
 Session pinning generalises from an address to a **peer key**:
 
 - today, and unchanged when no peer resolves: `ip:<request.remote>`
-- when a peer resolves: `ts:<login>@<node>`
+- when a peer resolves: `ts:<login>@<node>` (default) or `ts:<login>`, per §3.1
 
 `check_token_ip` / `bind_token_ip` become `check_token_peer` /
 `bind_token_peer` over that key. The IP branch is byte-for-byte the current
@@ -239,7 +238,8 @@ dashboard. So:
     "tailscale": {
       "enabled": true,
       "trust_identity": true,
-      "allowed_logins": ["you@example.com"]
+      "allowed_logins": ["you@example.com"],
+      "pin_scope": "node"
     }
   }
 }
@@ -250,6 +250,43 @@ error**: it is refused at load with a logged reason and identity trust stays
 off. This must not be a silently-permissive default. `KIROCREW_OWNER_ID` cannot
 supply the default — it is a chat-platform user id, a different namespace from a
 Tailscale login.
+
+### §3.1 Pin scope is configurable; the default is `node`
+
+`pin_scope` selects what a resolved session is pinned to. It is **not** the
+control that decides who may connect — that is `allowed_logins`. `pin_scope`
+only decides what happens *after* a session cookie leaks.
+
+| Value | Peer key | A leaked cookie is usable from | Costs |
+|---|---|---|---|
+| `node` (**default**) | `ts:<login>@<node>` | only the original device | a device whose node identity changes (Tailscale reinstall, `logout` + re-login) loses its session |
+| `login` | `ts:<login>` | any device carrying that Tailscale identity | lateral movement across one user's own devices is free |
+
+**`node` is the default** because the flow it costs does not work today either:
+the current IP pin already refuses a link opened on a laptop and then forwarded
+to a phone. Defaulting to `node` therefore takes no working behaviour away,
+while `login` would be a deliberate relaxation. `login` exists for operators who
+would rather re-issue nothing when a device is re-enrolled.
+
+**A tagged node is always pinned to `node`, whatever `pin_scope` says.** This is
+a hard override, not a preference. An ACL tag *replaces* the user identity on a
+device, so `tailscale whois` reports the login of every tagged device as the
+literal `tagged-devices` (tailscale/tailscale#4605). Under `pin_scope: "login"`
+that single value would be the peer key for the **entire tagged fleet** — one
+leaked CI-runner session would be replayable from any other tagged node, and an
+`allowed_logins` entry of `tagged-devices` would admit all of them. Node scope
+is unaffected, because node identity stays unique for tagged devices. So: when
+the resolved login is `tagged-devices`, force node scope and log that the
+configured scope was overridden.
+
+An unrecognised `pin_scope` value falls back to `node` with a logged warning —
+the same direction as `KIROCREW_BIND`'s invalid-value handling, where a typo can
+only ever narrow exposure, never widen it.
+
+`pin_scope` is nested under `tailscale` because a resolved peer identity is
+Tailscale-specific today. If a second identity-bearing proxy is ever added
+(§2, "Alternatives"), the key moves up a level; that rename is cheap while there
+is one provider and no persisted format depends on it.
 
 ### §4 Origin auto-derivation
 
@@ -303,9 +340,9 @@ Each phase is independently shippable and independently abandonable.
 | Phase | Content | Touches auth? | Touches egress? | Blocked on |
 |---|---|---|---|---|
 | 1 | Docs correction, posture visibility | no | no | — |
-| 2 | Origin auto-derivation (§4) | no | no | OQ2 (for the inferred signal only) |
-| 3 | Forwarded-peer resolution + identity pinning + allowlist (§2, §3) | **yes** | no | OQ1, OQ5 |
-| 4 | Tailnet unfurl (§6) | no | **yes** | OQ4 — may be refused outright |
+| 2 | Origin auto-derivation (§4) | no | no | OQ1 (for the inferred signal only) |
+| 3 | Forwarded-peer resolution + identity pinning + allowlist (§2, §3) | **yes** | no | OQ4 |
+| 4 | Tailnet unfurl (§6) | no | **yes** | OQ3 — may be refused outright |
 
 ### Phase 1 — Documentation and visibility
 
@@ -346,7 +383,7 @@ Exit criteria:
 - A test asserts the inferred signal (§4 signal 2) does not fire when the Serve
   target is a port other than the dashboard's.
 
-Entry depends on OQ2 only for the inferred opt-in; the explicit
+Entry depends on OQ1 only for the inferred opt-in; the explicit
 `dashboard.tailscale.enabled` flag can ship without it.
 
 **Ordering dependency on Phase 3.** This phase increases how many users reach
@@ -354,7 +391,7 @@ the inert-pin condition of Problem 1, so it may not ship silently. **The default
 is: Phase 2 ships with the guide warning from Phase 1 already in place, and Phase
 3 tracked as owed work.** Landing the two together is better and is preferred
 when Phase 3 is ready — but it is not a precondition. Phase 3 needs adversarial
-review and may stall on OQ1 or OQ5, and an origin fix held hostage to an auth
+review and may stall on OQ4, and an origin fix held hostage to an auth
 redesign tends to ship as neither. The warning is the mechanism that makes
 shipping Phase 2 alone honest rather than silent.
 
@@ -371,6 +408,17 @@ Exit criteria:
   `Tailscale-User-Login` header disagreeing with the resolved login.
 - A session bound to `ts:<login>@<node>` is rejected when replayed from a
   different node in the same tailnet.
+- Under `pin_scope: "login"` that same replay is **accepted**, and a replay
+  carrying a different login is rejected — the two scopes are separately pinned,
+  so neither can silently become the other.
+- A **tagged** node is pinned to `ts:<login>@<node>` even with
+  `pin_scope: "login"` configured, and the override is logged. Asserted against a
+  `whois` result whose login is `tagged-devices`.
+- An unrecognised `pin_scope` value falls back to `node` with a logged warning,
+  never to `login`.
+- A node-scope rejection carries a reason naming device identity, distinct from
+  the address-mismatch reason, so a re-enrolled device does not surface as an
+  unexplained `IP mismatch`.
 - `trust_identity: true` with empty `allowed_logins` is refused at config load
   with a logged reason, and identity trust remains off.
 - A login outside `allowed_logins` is rejected even when `whois` resolves it.
@@ -383,12 +431,13 @@ Exit criteria:
   path resolves once at upgrade rather than per frame.
 - Every gate green with `tailscaled` absent from the CI host.
 
-Entry depends on OQ1 (pin scope) and OQ5 (Windows behaviour). If OQ5 resolves
-negatively, this phase is POSIX-only and degrades to token auth elsewhere.
+Entry depends on OQ4 (Windows behaviour) — pin scope is settled (§3.1). If OQ4
+resolves negatively, this phase is POSIX-only and degrades to token auth
+elsewhere.
 
 ### Phase 4 — Tailnet unfurl
 
-Blocked on OQ4 and may be refused outright without affecting Phases 1–3.
+Blocked on OQ3 and may be refused outright without affecting Phases 1–3.
 
 Exit criteria, if pursued:
 
@@ -460,22 +509,29 @@ IP pin as a mitigation that does not hold.
 
 ## Open questions
 
-1. **Pin scope: node or login?** §3 proposes node, which is strictly stronger
-   than today. Login-scope would let one user move a session between their own
-   devices — a flow that does not work today either. Offer both?
-2. **Is inferring auto-origin from `tailscale serve status` (§4) acceptable**, or
+1. **Is inferring auto-origin from `tailscale serve status` (§4) acceptable**, or
    must every widening of the origin allowlist be explicit config?
-3. **Session TTL under per-request identity verification.** The 20-hour ceiling
+2. **Session TTL under per-request identity verification.** The 20-hour ceiling
    exists because a bearer token is all that stands between a leak and access.
    If identity is re-verified from the daemon on every request, is the ceiling
    still the right instrument?
-4. **Should §6 exist at all?** It is the only phase that widens egress.
-5. **Windows.** The `tailscale` CLI location and the daemon's local API on
+3. **Should §6 exist at all?** It is the only phase that widens egress.
+4. **Windows.** The `tailscale` CLI location and the daemon's local API on
    Windows are unverified. If resolution is not reliable there, Phase 3 is
    POSIX-only and must degrade to token auth rather than break.
 
 ## Resolved during review of this document
 
+- **Pin scope: node or login** (was OQ1). **Resolved: configurable, defaulting to
+  `node`** — see §3.1. `node` is the default because the flow it costs (one link,
+  two devices) does not work under today's IP pin either, so it takes no working
+  behaviour away, whereas defaulting to `login` would be a relaxation. `login`
+  stays available for operators who re-enroll devices often. One hazard surfaced
+  while settling this and became a hard rule rather than a caveat: an ACL tag
+  replaces the user identity on a device, so every tagged node reports the login
+  `tagged-devices`, which would make `login` scope collapse the pin across an
+  entire tagged fleet — a tagged node is therefore always pinned to `node`
+  regardless of configuration.
 - **Scope of the guide correction** (was OQ6). Asked whether Phase 1 should
   correct the inert-pin claim only for the Tailscale rows or for every tunnel the
   guide recommends. **Resolved: every tunnel.** The claim is equally false for
@@ -484,8 +540,8 @@ IP pin as a mitigation that does not hold.
   criteria were widened accordingly.
 - **Whether the Phase 2 → Phase 3 coupling should be a hard precondition.**
   **Resolved: no.** Phase 2 ships with Phase 1's warning in place and Phase 3
-  tracked; landing together is preferred, not required. Phase 3 can stall on OQ1
-  or OQ5, and an origin fix gated on an auth redesign tends to ship as neither.
+  tracked; landing together is preferred, not required. Phase 3 can stall on OQ4
+  (Windows), and an origin fix gated on an auth redesign tends to ship as neither.
 
 ## Provenance
 

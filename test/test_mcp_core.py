@@ -276,7 +276,7 @@ class TestSessionKeyHeaderError:
         with (
             patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:A — B"),
             patch.object(mcp_core, "_internal_secret", return_value="secret"),
-            patch("urllib.request.urlopen") as mock_urlopen,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
         ):
             result = mcp_core._post("/api/lessons", {"text": "x"})
         assert "error" in result

@@ -31,6 +31,41 @@ _HAS_GIT = shutil.which("git") is not None
 
 requires_git = pytest.mark.skipif(not _HAS_GIT, reason="git not available")
 
+
+def _can_create_symlink() -> bool:
+    """PROBE, never a platform guess: can this process create a real symlink?
+
+    Creating one on Windows needs ``SeCreateSymbolicLinkPrivilege``, held by an
+    elevated or Developer-Mode account (GitHub's Windows runners do) and not by
+    an ordinary one. Probing keeps the coverage wherever the privilege exists
+    instead of blanket-skipping every Windows host — a bare
+    ``skipif(IS_WINDOWS)`` would silently drop these assertions on CI, which is
+    exactly where they need to run.
+
+    Reserve this for tests about the SYMLINK MECHANISM itself. A test that only
+    needs "a name meaning another directory" belongs on
+    ``platform_compat.symlink_or_junction`` (junction on Windows, no privilege needed).
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "target")
+        os.mkdir(target)
+        try:
+            os.symlink(target, os.path.join(tmp, "link"))
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return True
+
+
+_HAS_SYMLINKS = _can_create_symlink()
+
+requires_symlinks = pytest.mark.skipif(
+    not _HAS_SYMLINKS,
+    reason="creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows",
+)
+
+
 # ── Windows CI ──────────────────────────────────────────────────────────
 # The backend runs natively on Windows (kiro_crew.platform_compat), but a
 # handful of suites exercise POSIX-only-by-design features (OS-level
@@ -41,32 +76,59 @@ requires_git = pytest.mark.skipif(not _HAS_GIT, reason="git not available")
 from kiro_crew import platform_compat  # noqa: E402
 
 if platform_compat.IS_WINDOWS:
-    collect_ignore = [
-        "test_harness.py",  # spawns real gateways; PGID + socketpair plumbing
-        "test_sandbox_argv.py",  # OS sandbox is POSIX-only
-        "test_sandbox_cc_mode.py",  # OS sandbox is POSIX-only
-        "test_pid_lifecycle.py",  # process-group semantics
-        "test_pid_sweep_helpers.py",  # process-group semantics
-        "test_process_tree_kill.py",  # killpg/getpgid semantics
-        "test_source_providers.py",  # providers require the POSIX sandbox
-        # Feature-parity gaps observed on the first Windows runs -- each is a
-        # POSIX-shaped feature or test suite tracked as a Windows follow-up:
-        "test_terminal_handler.py",  # PTY web terminal is POSIX-only
-        "test_acp_client.py",  # asserts os.killpg/SIGKILL process control
-        "test_stop_kill_cancel.py",  # killpg/getuid kill-path semantics
-        "test_app_backend_stale_reap.py",  # getpgid/killpg reaping semantics
-        "test_env.py",  # krb5 ccache resolver is Linux-only (getuid paths)
-        "test_outbox_notify_broadcast.py",  # hardcoded /tmp outbox paths
-        "test_outbox_binary.py",  # hardcoded /tmp outbox paths
-        "test_deploy_web_handlers.py",  # deploy staging is POSIX-shaped (/tmp, uid)
-        "test_snapshot.py",  # replace-while-open (WinError 32) semantics
-        "test_theme_install.py",  # POSIX readable/mode gate rejects NTFS modes
-        "test_webapp_preview.py",  # preview routes 404 on Windows backends
-        "test_file_raw.py",  # 0o600/0o644 mode-bit assertions
-        "test_file_download.py",  # 0o600/0o644 mode-bit assertions
-        "test_dashboard_file_io.py",  # 0o600/0o644 mode-bit assertions
-        "test_dev_fleet_app.py",  # POSIX app-runner assumptions
-    ]
+    # Read from windows-collect-ignore.txt rather than an inline list: the CI
+    # reduced-scope selector (scripts/ci-surface-tests.py) has to apply the same
+    # exclusion, because naming a file explicitly on the pytest command line
+    # bypasses collect_ignore. One file, two readers, no drift.
+    _ignore_listfile = os.path.join(os.path.dirname(__file__), "windows-collect-ignore.txt")
+    with open(_ignore_listfile, encoding="utf-8") as _fh:
+        collect_ignore = [
+            name
+            for name in (ln.split("#", 1)[0].strip() for ln in _fh)
+            if name
+        ]
+
+
+def make_escaping_link(inside: pathlib.Path, outside: pathlib.Path) -> str:
+    """Create a reparse link inside ``inside`` pointing at ``outside``.
+
+    Returns the ``inside``-relative path of a file reached THROUGH the link, for
+    tests asserting that a canonical-containment check (resolve +
+    is_relative_to) catches a link escaping a sandbox root. ``outside`` must
+    already contain a file named ``secret.py``.
+
+    A file symlink needs SeCreateSymbolicLinkPrivilege on Windows, which an
+    unelevated developer shell lacks (WinError 1314) even though CI runners hold
+    it. A directory junction needs NO privilege and resolves through the same
+    reparse machinery, so the containment assertion stays exercised locally
+    instead of being skipped.
+    """
+    if platform_compat.IS_WINDOWS:
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(inside / "linked"))
+        return "linked/secret.py"
+    (inside / "link.py").symlink_to(outside / "secret.py")
+    return "link.py"
+
+
+def make_dir_link(link: pathlib.Path, target: pathlib.Path) -> None:
+    """Create a reparse point at ``link`` that resolves to the directory ``target``.
+
+    Same privilege reasoning as :func:`make_escaping_link`, for the tests that
+    need a *directory* link rather than a path through one: a directory symlink
+    needs SeCreateSymbolicLinkPrivilege on Windows (WinError 1314 in an
+    unelevated shell), while a junction needs none and is followed by the same
+    reparse machinery — ``rglob``, ``resolve`` and
+    ``GetFinalPathNameByHandleW`` all traverse it identically. So the behaviour
+    under test stays exercised on Windows instead of being skipped.
+    """
+    if platform_compat.IS_WINDOWS:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+        return
+    link.symlink_to(target, target_is_directory=True)
 
 
 def pytest_collection_modifyitems(config, items):

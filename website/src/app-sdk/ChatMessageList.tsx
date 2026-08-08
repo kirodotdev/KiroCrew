@@ -17,13 +17,15 @@ import UserMessage from '../pages/chat/UserMessage'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
+import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
+import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import PastedChip from '../components/PastedChip'
 import { type PasteBlock, findTokenRanges, recollapsePastes } from '../utils/pasteTokens'
 import type { ChatMessage } from '../types'
 import type { TurnItem, DisplayItem } from '../pages/chat/types'
-import { fmtDateFields } from '../i18n/format'
+import { fmtMessageTime, fmtMessageTimeFull } from '../pages/chat/messageTime'
 
 // ── Types ──
 
@@ -82,9 +84,15 @@ function renderUserContent(content: string, meta: Record<string, unknown> | unde
 
 const GROUPABLE = new Set(['thinking', 'permission'])
 
+/**
+ * Delegates to the shared footer formatter so an embedded app's transcript reads
+ * IDENTICALLY to the main chat's. This was a second, hardcoded copy that never
+ * printed a year at all — so an app showing a message from a previous year dated
+ * it to the current one. `fmtMessageTime` elides the year only when it is safe.
+ */
 function formatTs(ts?: string): string | undefined {
   if (!ts) return undefined
-  return fmtDateFields(ts, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return fmtMessageTime(ts) || undefined
 }
 
 function msgKey(m: ChatMessage, i: number): string {
@@ -190,6 +198,9 @@ const ChatMessageList = memo(function ChatMessageList({
     let groupStart = 0
 
     for (let i = 0; i < messages.length; i++) {
+      // A sub-agent completion the card cannot parse stays internal — the model
+      // sees it, the reader does not.
+      if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
       if (GROUPABLE.has(messages[i].role)) {
         if (!group.length) groupStart = i
         group.push(messages[i])
@@ -221,7 +232,9 @@ const ChatMessageList = memo(function ChatMessageList({
     }
 
     for (const item of raw) {
-      if (item.kind === 'single' && item.msg.role === 'user') {
+      // A sub-agent completion is the next turn's input, so it opens a turn the
+      // same way a user message does — the agent's reply belongs below the card.
+      if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'subagent')) {
         flushTurn(true)
         turns.push(item)
       } else {
@@ -271,9 +284,20 @@ const ChatMessageList = memo(function ChatMessageList({
       )
     }
 
+    if (isSubagentCompletionMessage(m)) {
+      return (
+        <SubagentCompletionCard
+          key={key}
+          message={m}
+          onFileOpen={onFileOpen}
+          disclosureKey={key}
+        />
+      )
+    }
+
     if (m.role === 'user') {
       return wrapper(
-        <UserMessage content={m.content} meta={m.meta} timestamp={formatTs(m.ts)} renderContent={renderUserContent} />,
+        <UserMessage content={m.content} meta={m.meta} timestamp={formatTs(m.ts)} timestampTitle={fmtMessageTimeFull(m.ts)} renderContent={renderUserContent} />,
         true
       )
     }
@@ -295,6 +319,7 @@ const ChatMessageList = memo(function ChatMessageList({
             content={m.content}
             isStreaming={isStreaming}
             timestamp={formatTs(m.ts)}
+            timestampTitle={fmtMessageTimeFull(m.ts)}
             showFooter={showFooter}
             slotRunning={running}
             onFileOpen={onFileOpen}

@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '../types'
 import {
   adoptSourceSelections,
   commitSourceSelection,
   extractPullRequestLinks,
   isSourceSelectionKey,
+  commitRevealedSource,
+  loadRevealedSources,
   loadSeenPullRequestLinks,
   loadSourceSelections,
   MAX_PULL_REQUEST_SOURCES,
+  parseSourceLinkUrl,
   persistSeenPullRequestLinks,
   PullRequestLinkIndex,
   recordNewPullRequestLinks,
@@ -307,6 +310,219 @@ describe('extractPullRequestLinks', () => {
     localStorage.setItem('mc-pr-source-seen-v1', JSON.stringify({ slot: ['not-an-array'] }))
     expect(loadSeenPullRequestLinks()).toEqual(new Map())
     localStorage.clear()
+  })
+})
+
+/* ── parseSourceLinkUrl ────────────────────────────────────────────────────
+ * The one-url entry point, for callers holding a url but no transcript: the
+ * sidebar chips, whose links the BACKEND scanned. Its job is to hand back the
+ * SAME canonical shape the transcript extractor produces, so a revealed chip and
+ * a scanned link are interchangeable in the panel's list. */
+/* ── Revealed-source persistence ───────────────────────────────────────────
+ * A revealed link is frequently one the extractor deliberately excludes, while
+ * the SELECTION pointing at it is already durable. Holding the link in memory
+ * only meant a reload remembered the url but could no longer produce it, and the
+ * Changes reconciliation then normalised onto a different pull request. */
+describe('revealed source persistence', () => {
+  const PR = 'https://github.com/acme/widgets/pull/12'
+  const ISSUE = 'https://github.com/acme/widgets/issues/9'
+  const link = (url: string) => parseSourceLinkUrl(url)!
+
+  afterEach(() => { localStorage.clear() })
+
+  it('round-trips a revealed link per slot and per kind', () => {
+    expect(commitRevealedSource('slot-a', 'change', PR)).toBe(true)
+    expect(commitRevealedSource('slot-a', 'issue', ISSUE)).toBe(true)
+    expect(commitRevealedSource('slot-b', 'change', PR)).toBe(true)
+
+    const restored = loadRevealedSources()
+    expect(restored['slot-a'].change).toEqual(link(PR))
+    expect(restored['slot-a'].issue).toEqual(link(ISSUE))
+    expect(restored['slot-b']).toEqual({ change: link(PR) })
+  })
+
+  it('writes ONE key per field so a sibling window cannot delete a reveal', () => {
+    // A popped-out session shares this localStorage. A whole-map write publishes
+    // this window's stale view of the slots it is NOT looking at, so the later
+    // write deleted the other window's reveal and the reload it was meant to
+    // survive swapped the panel anyway.
+    //
+    // Enumerated via key(i), not Object.keys: Storage keys are not own enumerable
+    // properties, which is also why the loader walks it this way.
+    const revealedKeys = () => {
+      const keys: string[] = []
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const k = localStorage.key(i)
+        if (k?.startsWith('mc-pr-source-revealed:')) keys.push(k)
+      }
+      return keys.sort()
+    }
+
+    commitRevealedSource('slot-a', 'change', PR)
+    expect(revealedKeys()).toEqual(['mc-pr-source-revealed:change:slot-a'])
+
+    // Simulate the sibling window: it never saw slot-a, and writing its own
+    // reveal must leave slot-a's key untouched.
+    commitRevealedSource('slot-b', 'issue', ISSUE)
+    expect(revealedKeys()).toEqual([
+      'mc-pr-source-revealed:change:slot-a',
+      'mc-pr-source-revealed:issue:slot-b',
+    ])
+    const restored = loadRevealedSources()
+    expect(restored['slot-a']).toEqual({ change: link(PR) })
+    expect(restored['slot-b']).toEqual({ issue: link(ISSUE) })
+  })
+
+  it('starts empty and tolerates junk instead of injecting it', () => {
+    expect(loadRevealedSources()).toEqual({})
+    const key = 'mc-pr-source-revealed:change:slot-a'
+    for (const junk of ['{not-json', 'null', '[]', '{"u":5}', '{"u":""}', '{}']) {
+      localStorage.setItem(key, junk)
+      expect(loadRevealedSources()).toEqual({})
+    }
+  })
+
+  it('ignores a malformed storage key', () => {
+    localStorage.setItem('mc-pr-source-revealed:bogus:slot-a', JSON.stringify({ u: PR, t: 1 }))
+    localStorage.setItem('mc-pr-source-revealed:change:', JSON.stringify({ u: PR, t: 1 }))
+    localStorage.setItem('mc-pr-source-revealed:change', JSON.stringify({ u: PR, t: 1 }))
+    expect(loadRevealedSources()).toEqual({})
+  })
+
+  it('drops a url that is not a canonical provider link', () => {
+    // Non-canonical and non-provider urls are re-derived, fail, and are skipped;
+    // storage is untrusted so nothing is taken on trust.
+    for (const bad of [
+      'https://github.com/acme/widgets/pull/12?tab=files',
+      'javascript:alert(1)//github.com/a/b/pull/1',
+      'https://github.com/acme/widgets',
+    ]) {
+      localStorage.setItem('mc-pr-source-revealed:change:slot-a', JSON.stringify({ u: bad, t: 1 }))
+      expect(loadRevealedSources()).toEqual({})
+    }
+    // Positive control: the canonical form of the first one DOES restore.
+    localStorage.setItem('mc-pr-source-revealed:change:slot-a', JSON.stringify({ u: PR, t: 1 }))
+    expect(loadRevealedSources()['slot-a'].change?.url).toBe(PR)
+  })
+
+  it('refuses a url filed under the wrong kind', () => {
+    // A 'change' key holding an issue url would inject into the panel the other
+    // kind owns.
+    localStorage.setItem('mc-pr-source-revealed:change:slot-a', JSON.stringify({ u: ISSUE, t: 1 }))
+    localStorage.setItem('mc-pr-source-revealed:issue:slot-b', JSON.stringify({ u: PR, t: 1 }))
+    expect(loadRevealedSources()).toEqual({})
+  })
+
+  it('restores a self-hosted GitLab link without the allowlist', () => {
+    // The allowlist arrives asynchronously from dashboard config, so applying it
+    // here would drop every self-hosted reveal on reload. The host was vetted at
+    // reveal time and the backend re-validates before any provider call.
+    const mr = 'https://gitlab.acme.internal/team/api/-/merge_requests/7'
+    expect(commitRevealedSource('slot-a', 'change', mr)).toBe(true)
+    expect(loadRevealedSources()['slot-a'].change?.url).toBe(mr)
+  })
+
+  it('caps on READ by recency without deleting another slot\'s key', () => {
+    for (let i = 0; i < 40; i += 1) commitRevealedSource(`slot-${i}`, 'change', PR)
+    const restored = Object.keys(loadRevealedSources())
+    expect(restored).toHaveLength(32)
+    // Newest wins the cap...
+    expect(restored).toContain('slot-39')
+    expect(restored).not.toContain('slot-0')
+    // ...but the capped-out key is still on disk: a prune pass computes its doomed
+    // set from a walk, and a sibling window can refresh one of those slots before
+    // the removals run (see loadSourceSelections).
+    expect(localStorage.getItem('mc-pr-source-revealed:change:slot-0')).not.toBeNull()
+  })
+
+  it('never stamps below what is already stored', () => {
+    // A clock stepping backwards would otherwise sort a brand-new reveal below the
+    // read cap.
+    commitRevealedSource('slot-a', 'change', PR)
+    const first = JSON.parse(localStorage.getItem('mc-pr-source-revealed:change:slot-a')!).t
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(0)
+    try {
+      commitRevealedSource('slot-b', 'issue', ISSUE)
+    } finally {
+      spy.mockRestore()
+    }
+    const second = JSON.parse(localStorage.getItem('mc-pr-source-revealed:issue:slot-b')!).t
+    expect(second).toBeGreaterThan(first)
+  })
+
+  it('does not let a crafted future stamp outrank a real reveal', () => {
+    // `Number.isFinite` alone admits Number.MAX_VALUE, and MAX_VALUE + 1 ===
+    // MAX_VALUE, so a crafted entry could tie a genuine write and — being earlier
+    // in a stable sort — cap the genuine one out. Storage is untrusted, so a stamp
+    // that could not have come from a real Date.now() forfeits its recency.
+    // Covers the ceiling exactly, which a clamped genuine write would otherwise
+    // tie, as well as values above it.
+    for (const crafted of [Number.MAX_VALUE, 4102444800000, 4102444800001]) {
+      localStorage.clear()
+      for (let i = 0; i < 32; i += 1) {
+        localStorage.setItem(
+          `mc-pr-source-revealed:change:crafted-${i}`,
+          JSON.stringify({ u: PR, t: crafted }),
+        )
+      }
+      commitRevealedSource('real-slot', 'issue', ISSUE)
+
+      const restored = loadRevealedSources()
+      // The genuine reveal survives the 32-slot cap; a crafted slot is displaced.
+      expect(restored['real-slot'], `crafted t=${crafted}`).toEqual({ issue: link(ISSUE) })
+      expect(Object.keys(restored)).toHaveLength(32)
+      // The crafted entries stay READABLE — a corrupt stamp costs recency, not the
+      // link itself.
+      localStorage.removeItem('mc-pr-source-revealed:issue:real-slot')
+      expect(loadRevealedSources()['crafted-0']).toEqual({ change: link(PR) })
+    }
+  })
+
+  it('rejects an oversized raw entry before parsing it', () => {
+    localStorage.setItem(
+      'mc-pr-source-revealed:change:slot-a',
+      JSON.stringify({ u: PR, pad: 'x'.repeat(4096) }),
+    )
+    expect(loadRevealedSources()).toEqual({})
+  })
+})
+
+describe('parseSourceLinkUrl', () => {
+  it('returns the same canonical shape the extractor produces', () => {
+    const url = 'https://github.com/acme/widgets/pull/12'
+    expect(parseSourceLinkUrl(url)).toEqual(extractPullRequestLinks(messages(url))[0])
+  })
+
+  it('classifies kind from the url, for both providers', () => {
+    expect(parseSourceLinkUrl('https://github.com/acme/widgets/pull/12'))
+      .toMatchObject({ provider: 'github', number: 12, repo: 'widgets', kind: 'change' })
+    expect(parseSourceLinkUrl('https://github.com/acme/widgets/issues/9'))
+      .toMatchObject({ provider: 'github', number: 9, repo: 'widgets', kind: 'issue' })
+    expect(parseSourceLinkUrl('https://gitlab.com/acme/service/-/merge_requests/4'))
+      .toMatchObject({ provider: 'gitlab', number: 4, repo: 'service', kind: 'change' })
+    expect(parseSourceLinkUrl('https://gitlab.com/acme/service/-/issues/8'))
+      .toMatchObject({ provider: 'gitlab', number: 8, repo: 'service', kind: 'issue' })
+  })
+
+  it('canonicalises the url, dropping query, fragment and www', () => {
+    expect(parseSourceLinkUrl('https://www.github.com/acme/widgets/pull/12?tab=files#diff-1')?.url)
+      .toBe('https://github.com/acme/widgets/pull/12')
+  })
+
+  it('rejects anything that is not a permitted pull request / issue url', () => {
+    // Attribution does NOT apply here — this parses one url, it does not decide
+    // whose mention it was — but the host allowlist still does.
+    expect(parseSourceLinkUrl('https://github.com/acme/widgets')).toBeNull()
+    expect(parseSourceLinkUrl('https://github.com.evil.example/acme/widgets/pull/12')).toBeNull()
+    expect(parseSourceLinkUrl('javascript:alert(1)//github.com/a/b/pull/1')).toBeNull()
+    expect(parseSourceLinkUrl('not a url')).toBeNull()
+  })
+
+  it('accepts a self-managed GitLab host only when it is allowlisted', () => {
+    const mr = 'https://gitlab.acme.internal/team/api/-/merge_requests/7'
+    expect(parseSourceLinkUrl(mr)).toBeNull()
+    expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal']))
+      .toMatchObject({ provider: 'gitlab', number: 7, repo: 'api', kind: 'change' })
   })
 })
 

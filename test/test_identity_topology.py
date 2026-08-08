@@ -243,7 +243,7 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     response.__enter__ = MagicMock(return_value=response)
     response.__exit__ = MagicMock(return_value=False)
     urlopen = MagicMock(return_value=response)
-    monkeypatch.setattr(mcp_shared.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
     assert mcp_shared._resolve_excluded_tools() == set()
     # The walk must have RESOLVED a session key and reached the gateway —
@@ -399,7 +399,7 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     _wire_common(monkeypatch, topo, "host")
 
     urlopen = MagicMock()
-    monkeypatch.setattr(mcp_shared.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
     # No key resolvable -> startup-race fail-open WITHOUT a policy call and,
     # crucially, WITHOUT the stolen key ever being read through the symlink.

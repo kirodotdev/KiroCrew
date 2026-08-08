@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Maximize2, Minimize2, Shrink, Expand } from 'lucide-react'
 import { IconButton, IconButtonGroup } from './ui'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { useTheme } from '../hooks/useTheme'
 import { i18nT } from '../i18n/t'
 import {
   buildMcpAppSrcdoc,
@@ -364,6 +365,17 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
   const presentationRef = useRef<Presentation>(presentation)
   presentationRef.current = presentation
 
+  // The app styles itself from `hostContext.theme` alone: this host injects no
+  // CSS into the srcdoc (see mcpAppSrcdoc.ts), so a hardcoded value left every
+  // app dark regardless of the user's theme. `ResolvedMode` is already exactly
+  // 'dark' | 'light', so it maps 1:1 onto the protocol field.
+  //
+  // Mirrored like `presentation` above because the bridge effect below closes
+  // over `[]` — it must not re-subscribe when the theme changes.
+  const { theme } = useTheme()
+  const themeRef = useRef(theme)
+  themeRef.current = theme
+
   // --- `wide`: breaking out of the chat column -------------------------------
   // The frame's width ceiling is not its own: the transcript row wrapper caps it
   // at `--mc-content-width` (default 900px, user-configurable), so on a wide
@@ -529,7 +541,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
                 hostInfo: { name: 'kirocrew', version: '0.1' },
                 hostCapabilities: HOST_CAPABILITIES,
                 hostContext: {
-                  theme: 'dark',
+                  theme: themeRef.current,
                   platform: 'web',
                   displayMode: PROTOCOL_MODE[presentationRef.current],
                   availableDisplayModes: AVAILABLE_DISPLAY_MODES,
@@ -791,6 +803,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           method: N_HOST_CONTEXT_CHANGED,
           // Partial context update — only the changed fields, per spec.
           params: {
+            theme: themeRef.current,
             displayMode: PROTOCOL_MODE[next],
             containerDimensions: dimensionsFor(next, wideWidth),
           },
@@ -799,6 +812,25 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
       )
     } catch { /* frame torn down */ }
   }, [])
+
+  // A theme switch must reach an app that is ALREADY mounted — fixing only the
+  // initialize reply above would leave the bug reachable by toggling the theme
+  // with an app open.
+  //
+  // Routed through `notifyHostContext` rather than its own postMessage so the
+  // frame keeps exactly one outbound post site: that one already carries the
+  // navigated-away guard and the wildcard-origin review annotation, and adding a
+  // second would mean re-auditing a null-origin sandboxed target.
+  //
+  // Compares against the last theme SENT rather than using a first-run flag:
+  // StrictMode remounts effects, and a boolean would post a spurious update on
+  // the second mount.
+  const sentThemeRef = useRef(theme)
+  useEffect(() => {
+    if (sentThemeRef.current === theme) return
+    sentThemeRef.current = theme
+    notifyHostContext(presentationRef.current, wideWidthRef.current)
+  }, [theme, notifyHostContext])
 
   // Host-initiated presentation change (the header controls).
   // The app MUST be told: it may gate an editable surface on the mode, and a

@@ -482,6 +482,37 @@ class AcpPromptStats:
     # Per-turn billing credits summed from kiro's _kiro.dev/metadata
     # meteringUsage (unit="credit"). 0 for providers that bill in tokens.
     credits: float = 0.0
+    # True while ``context_pct`` reads 0.0 only because a compaction dropped the
+    # counts and no fresh telemetry has re-derived them. Distinguishes "the
+    # transcript is empty" from "the transcript's size is unknown" — the two are
+    # indistinguishable by value, and a consumer that reads the second as the
+    # first sees a session that just hit its context ceiling as brand new.
+    # Cleared the moment a real percentage or usage_update lands.
+    context_pct_unknown: bool = False
+
+    def carry_over(self) -> "AcpPromptStats":
+        """Return fresh per-turn stats carrying this turn's context state.
+
+        Event/tool/credit counters are per-turn and start at zero; the context
+        state describes the SESSION and must survive the re-init, or every turn
+        boundary would re-report an empty context.
+        """
+        return AcpPromptStats(
+            context_pct=self.context_pct,
+            context_used_tokens=self.context_used_tokens,
+            context_window_tokens=self.context_window_tokens,
+            context_tokens_from_usage=self.context_tokens_from_usage,
+            context_pct_unknown=self.context_pct_unknown,
+        )
+
+    def note_pct_reported(self) -> None:
+        """Mark ``context_pct`` as backed by real telemetry.
+
+        Called wherever a percentage or usage_update is applied, so a zero that
+        follows a compaction stops reading as "unknown" once the backend says
+        what the compacted transcript actually costs.
+        """
+        self.context_pct_unknown = False
 
     def reset_after_compaction(self) -> None:
         """Drop the usage counts after a successful compaction.
@@ -493,10 +524,16 @@ class AcpPromptStats:
         ``_track_metadata`` / ``_backfill_context_window``, so even a fresh
         post-compaction metadata percentage could never correct it. The window
         is kept: the model did not change, so the served window still holds.
+
+        The zeroed ``context_pct`` is flagged unknown, not empty: a consumer
+        that recycles or compacts on a threshold would otherwise read a session
+        sitting at its ceiling as freshly started and leave it in place, paying
+        the backend's own auto-compaction over and over.
         """
         self.context_tokens_from_usage = False
         self.context_used_tokens = 0
         self.context_pct = 0.0
+        self.context_pct_unknown = True
 
     def rebase_to_window(self, window_tokens: int) -> None:
         """Re-anchor the token stats to a new model's context window.
