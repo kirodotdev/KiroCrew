@@ -5592,11 +5592,6 @@
       "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
       "terminal_pane_coming_in_phase_2": "टर्मिनल पैन — चरण 2 में आ रहा है"
     },
-    "sessionRefStrip": {
-      "n_messages": "{{n}} संदेश",
-      "remove_reference": "संदर्भ हटाएँ",
-      "remove_reference_to": "{{name}} का संदर्भ हटाएँ"
-    },
     "settings": {
       "click_to_reset": "रीसेट करने के लिए क्लिक करें",
       "decrease": "घटाएँ",
@@ -7383,7 +7378,6 @@
       "double_click_to_rename": "नाम बदलने के लिए डबल-क्लिक करें",
       "drag_to_reorder": "क्रम बदलने के लिए खींचें",
       "drop_here_to_remove_from_folder": "फ़ोल्डर से निकालने के लिए यहाँ छोड़ें",
-      "drop_to_reference_session": "इस सेशन का संदर्भ जोड़ने के लिए यहाँ छोड़ें",
       "duplicate": "प्रतिलिपि बनाएँ",
       "expand_folder_name": "फ़ोल्डर {{name}} विस्तृत करें",
       "expand_group_results": "{{group}} के नतीजे विस्तृत करें",
@@ -7460,7 +7454,6 @@
       "pinned": "पिन किए गए",
       "pinned_sessions_are_kept": "पिन किए गए सत्र रखे जाते हैं।",
       "popped_out_to_a_separate_window": "अलग विंडो में पॉप आउट किया गया",
-      "private_session_cannot_be_referenced": "निजी सेशन का संदर्भ नहीं दिया जा सकता",
       "rename": "नाम बदलें",
       "rename_flag_as_status_or_delete_tags_changes_app": "टैग का नाम बदलें, उन्हें स्थिति के रूप में चिह्नित करें, या हटाएं। बदलाव हर उस जगह लागू होते हैं जहाँ टैग दिखते हैं।",
       "resets_its_conversation": "इसकी बातचीत रीसेट कर देता है",

@@ -45,10 +45,6 @@ const BASE_CONFIG = {
 let browserConfig = { ...BASE_CONFIG }
 const scene = (over) => { browserConfig = { ...BASE_CONFIG, ...over } }
 
-// The PUT (save) echo. Default is a plain success; a scene can point it at a
-// failed-install payload to render the failure advisory + manual-command block.
-let putResponse = { ok: true, enabled: true, engine: 'chromium' }
-
 // Chat-composer fixtures: one idle slot with an empty transcript, matching the
 // shape ChatPage expects from /api/chat/slots and /api/chat/slots/<key>.
 const chatSlots = [{
@@ -97,7 +93,7 @@ await page.route('**/api/**', route => {
   // the toggles fire — answered so a click never hangs, though the fixtures are
   // static so the reload (not the PUT echo) is what changes the rendered scene.
   if (path === '/api/browser/config') {
-    if (req.method() === 'PUT') return json(route, putResponse)
+    if (req.method() === 'PUT') return json(route, { ok: true, enabled: true, engine: 'chromium' })
     return json(route, browserConfig)
   }
   if (path === '/api/sessions/restart') return json(route, { ok: true })
@@ -167,37 +163,6 @@ await reloadScene({ enabled: true, extension_mode: false, engine: 'chromium', in
 await heading().waitFor({ timeout: 20000 })
 await page.waitForTimeout(400)
 await page.screenshot({ path: `${OUT}/../browser-install/browser-panel.png` })
-
-// Attempted-and-failed download: the save returns an install-failure carrying the
-// sanitized cause + the copy-pasteable manual command. Start from a disabled scene,
-// point the PUT echo at the failure payload, then flip the enable toggle so the
-// save fires and the failure advisory + <code> block render.
-putResponse = {
-  ok: true,
-  enabled: true,
-  engine: 'chromium',
-  install: {
-    ok: false,
-    step: 'browser',
-    engine: 'chromium',
-    reason: 'the npm registry rejected the request (E401 — auth/token invalid)',
-    manual_command:
-      'npm install -g @playwright/mcp@latest --registry=https://registry.npmjs.org/',
-    detail:
-      'Browser Mode is on, but the browser download did not finish. It normally '
-      + 'downloads automatically on the first browse; if it keeps failing, install '
-      + 'it by hand with the command below.  (Reason: the npm registry rejected the '
-      + 'request (E401 — auth/token invalid).)',
-  },
-}
-await reloadScene({ enabled: false, extension_mode: false, engine: 'chromium', installed: false })
-await heading().waitFor({ timeout: 20000 })
-await page.getByText('Enable Browser Mode').click()
-// Wait for the manual-command <code> block from the failure payload to render.
-await page.getByText('npm install -g @playwright/mcp', { exact: false }).waitFor({ timeout: 20000 })
-await page.waitForTimeout(300)
-await page.screenshot({ path: `${OUT}/../browser-install/browser-install-failed.png` })
-putResponse = { ok: true, enabled: true, engine: 'chromium' }  // reset for later scenes
 
 // ── Chat composer "+" menu (no browse toggle) ──────────────────────────────
 

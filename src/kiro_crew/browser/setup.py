@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import platform
-import re
 import shutil
 import stat
 import subprocess
@@ -53,11 +52,6 @@ _BROWSER_ENABLED_FLAG = "browser-mode-enabled"
 # Durable record of the selected launch engine (one of BROWSER_ENGINES). Absent
 # or unrecognized reads back as the chromium default.
 _BROWSER_ENGINE_FILE = "browser-engine"
-# Durable record of the exact ``@playwright/mcp`` version the enable-time prime
-# resolved, so the runtime proxy launches that pinned version instead of the
-# floating ``@latest`` (deterministic offline, no revision drift). Absent → the
-# proxy falls back to ``@latest``. A plain semver string (validated on read).
-_BROWSER_MCP_VERSION_FILE = "playwright-mcp-version"
 
 
 def browser_mode_enabled() -> bool:
@@ -207,69 +201,6 @@ def _playwright_binary_present(base_path: str) -> bool:
 #: binaries are large and fetched over the network, so this is generous.
 _INSTALL_TIMEOUT_SECS = 600.0
 
-#: The ONE canonical "browser not yet on disk, but that is fine" message. Every
-#: not-yet-ready outcome (deferred here, the dashboard handler's exception
-#: fallback) uses it verbatim so the operator never sees three different recovery
-#: stories for the same underlying state.
-BROWSER_FIRST_USE_NOTE = (
-    "Browser Mode is on. The browser downloads automatically the first time the "
-    "agent browses — that first visit may take a moment."
-)
-
-#: Copy-pasteable manual fallback surfaced when automatic provisioning fails.
-#: Installs ONLY the launcher package (``@playwright/mcp``); it does NOT tack on a
-#: ``playwright install`` browser fetch. Two reasons: (1) ``@playwright/mcp``
-#: downloads the matching browser on first browse through its OWN bundled
-#: ``playwright-core``, so a separate step is redundant; (2) a floating
-#: ``npx playwright install`` is on an independent release cadence from the
-#: launcher's bundled core, so it could fetch a browser revision the just-installed
-#: launcher rejects ("Executable doesn't exist") — the exact drift the runtime
-#: version pin exists to close. Uses the ``--registry=`` FLAG (not a ``VAR=value``
-#: prefix, which native Windows cmd/PowerShell treats as an executable name) so the
-#: copy-paste works on every OS from a shell whose ``.npmrc`` points at a private mirror.
-MANUAL_INSTALL_CMD = (
-    "npm install -g @playwright/mcp@latest --registry=https://registry.npmjs.org/"
-)
-
-
-#: Recognized npm/node/playwright failure codes → a short, human cause. This is
-#: an ALLOWLIST by design: surfacing the actual reason must never risk leaking a
-#: credential or URL that a free-form stderr line could carry, so we map to a
-#: fixed label rather than echo arbitrary subprocess output. Ordered most-specific
-#: first (E401 before the generic offline codes).
-_KNOWN_INSTALL_ERRORS: tuple[tuple[str, str], ...] = (
-    ("E401", "the npm registry rejected the request (E401 — auth/token invalid)"),
-    ("E403", "the npm registry forbade the request (E403)"),
-    ("EAI_AGAIN", "the network/DNS is unreachable (EAI_AGAIN — likely offline)"),
-    ("ENOTFOUND", "the npm registry host could not be resolved (ENOTFOUND — likely offline)"),
-    ("ETIMEDOUT", "the connection to the npm registry timed out (ETIMEDOUT)"),
-    ("ECONNREFUSED", "the connection to the npm registry was refused (ECONNREFUSED)"),
-    ("ENOSPC", "the disk is full (ENOSPC)"),
-    ("EACCES", "a permission was denied writing the browser cache (EACCES)"),
-    ("ERR_PNPM", "the package manager reported an error"),
-)
-
-
-def _sanitize_reason(stderr: str) -> str:
-    """Map a subprocess's stderr to ONE short, SAFE cause label for the operator.
-
-    Surfacing the actual cause is the point — an operator hitting a 401 or an
-    offline error should see WHY, not just "it failed". But raw stderr is untrusted
-    subprocess output that can carry credentials, tokens, or private-registry URLs
-    on ANY line (npm prints `_authToken=`, `https://user:pass@mirror`, etc.), and
-    the credential redactor does not catch every such shape. So this does NOT echo
-    stderr text: it matches against a fixed ALLOWLIST of known npm/network/disk
-    error codes and returns a hardcoded human label. An unrecognized failure
-    returns ``""`` (the caller then shows the generic advisory + manual command
-    without a specific cause) — never free-form subprocess output.
-    """
-    if not stderr:
-        return ""
-    for code, label in _KNOWN_INSTALL_ERRORS:
-        if code in stderr:
-            return label
-    return ""
-
 
 def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]:
     """Provision the public ``@playwright/mcp`` launcher and the engine's browser.
@@ -380,16 +311,6 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
             _run([launch_cmd, "--yes", _PLAYWRIGHT_MCP_NPM, "--help"])
         except (subprocess.SubprocessError, OSError):
             pass
-        # Pin the EXACT version the prime landed, so the runtime proxy launches
-        # ``@playwright/mcp@<that version>`` instead of ``@latest``. Two failure
-        # modes this closes, both flagged in review: (1) ``@latest`` re-resolves
-        # against the registry on every launch, so an offline launch of a
-        # supposedly-primed host fails; a pinned version resolves from the cache
-        # with no round-trip. (2) When ``latest`` advances past what was primed,
-        # the newer launcher's playwright-core can outrun the browser revision
-        # provisioned here ("Executable doesn't exist"); a pinned version can't
-        # drift. Best-effort — absent pin falls back to ``@latest`` at launch.
-        _record_primed_playwright_version(run_env)
 
     # Step 3 — the OS/arch browser binary for the selected engine. Provision it
     # through the SAME playwright-core that ``@playwright/mcp`` bundles: Playwright
@@ -414,20 +335,17 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
     except (subprocess.SubprocessError, OSError) as exc:
         # The browser install was ATTEMPTED and failed (unwritable/full cache,
         # network drop). Do NOT report this as usable: without the executable a
-        # headless browse errors, so a false ok=True would mislead. Surface a calm
-        # ok=false advisory + the manual command; the full raw exception stays in
-        # the log. The reason is an allowlisted code if the message carries one,
-        # else EMPTY — never str(exc) (an OSError can embed a local path) and never
-        # the raw exception class name (e.g. "TimeoutExpired" is dev jargon, not
-        # operator guidance); an empty reason just omits the parenthetical.
+        # headless browse errors, so a false ok=True would mislead. Return a calm
+        # ok=false "incomplete" advisory — the raw cause goes to the log only,
+        # never to the operator (honoring "never surface a raw install error").
         logger.warning("playwright browser install failed (%s)", exc)
-        return _browser_incomplete(engine, reason=_sanitize_reason(str(exc)))
+        return _browser_incomplete(engine)
     if proc.returncode != 0:
         logger.warning(
             "playwright install %s exited %s: %s",
             engine, proc.returncode, proc.stderr.strip()[-300:],
         )
-        return _browser_incomplete(engine, reason=_sanitize_reason(proc.stderr))
+        return _browser_incomplete(engine)
 
     return {"ok": True, "step": "done", "detail": "", "engine": engine}
 
@@ -436,124 +354,37 @@ def _browser_deferred(engine: str) -> dict[str, Any]:
     """Soft, usable outcome: the launcher works and the browser is not yet fetched.
 
     Returned when the browser was NOT attempted at enable time (the npx cache is
-    still warming). ``ok=True``: the launcher resolves and the browser downloads on
-    first use, so the UI shows a calm advisory. Copy is the ONE canonical
-    "downloads on first use" line shared with the handler's exception fallback, so
-    every not-yet-ready state tells the operator the same thing.
+    still warming). ``ok=True``: the launcher resolves and a re-save once the
+    cache is warm completes provisioning, so the UI shows a calm advisory.
     """
     return {
         "ok": True,
         "step": "browser-deferred",
-        "detail": BROWSER_FIRST_USE_NOTE,
+        "detail": (
+            "Browser Mode is on. Finishing browser setup in the background — the "
+            "first visit may take a moment."
+        ),
         "engine": engine,
     }
 
 
-def _browser_incomplete(engine: str, reason: str = "") -> dict[str, Any]:
+def _browser_incomplete(engine: str) -> dict[str, Any]:
     """Calm not-yet-usable outcome: the browser download was tried and did not finish.
 
     ``ok=False`` because, without the browser executable, a headless browse would
-    fail — reporting it usable would mislead. The message is still calm, but it now
-    surfaces the ACTUAL cause and a manual fallback so a determined failure (locked
-    network, private-registry-only egress, broken npm) is not a dead end:
-
-    - ``reason`` is a SAFE one-line cause from :func:`_sanitize_reason` (an
-      allowlisted error-code label, never echoed stderr) or a short exception type
-      — shown inline so the operator sees *why*, not a bare "it failed". Empty when
-      the failure is unrecognized, in which case the reason clause is omitted.
-    - ``manual_command`` is the copy-pasteable command to install it by hand, with
-      the public registry pinned so it works from a shell whose ``.npmrc`` points at
-      a private mirror. It is a STRUCTURED field (not embedded in the prose) so the
-      dashboard renders it as its own ``<code>`` block; the prose just points at it.
-
-    The full raw stderr stays in the log; only the allowlisted label reaches the UI.
+    fail — reporting it usable would mislead. But it is STILL a calm, actionable
+    advisory, never a raw npm/playwright error dump (the cause is logged only):
+    Browser Mode stays on, and toggling it off/on retries the download.
     """
-    detail = (
-        "Browser Mode is on, but the browser download did not finish. It normally "
-        "downloads automatically on the first browse; if it keeps failing, install "
-        "it by hand with the command below."
-    )
-    if reason:
-        detail = f"{detail}  (Reason: {reason}.)"
     return {
         "ok": False,
         "step": "browser",
-        "detail": detail,
-        "reason": reason,
-        "manual_command": MANUAL_INSTALL_CMD,
+        "detail": (
+            "Browser Mode is on, but the browser download didn't finish (you may "
+            "be offline or low on disk). Toggle Browser Mode off and on to retry."
+        ),
         "engine": engine,
     }
-
-
-#: Accept only a plain semver-ish token as a pinned version, so a corrupted or
-#: hand-edited file can never inject shell/argv content into the launch spec.
-_SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-
-
-def _record_primed_playwright_version(run_env: dict[str, str]) -> None:
-    """Persist the exact ``@playwright/mcp`` version the npx prime just landed.
-
-    Reads the version from the newest primed cache's ``package.json`` and writes
-    it to the ``playwright-mcp-version`` flag. Best-effort: any failure leaves no
-    pin, and the proxy falls back to ``@latest`` — so this can only make launches
-    MORE deterministic, never break one.
-    """
-    roots = _npx_cache_playwright_roots(run_env)  # newest-first
-    for nm in roots:
-        pkg = Path(nm) / "@playwright" / "mcp" / "package.json"
-        try:
-            data = json.loads(pkg.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        # A cached package.json may parse to a non-object; guard before ``.get``.
-        version = data.get("version", "") if isinstance(data, dict) else ""
-        if isinstance(version, str) and _SEMVER_RE.match(version):
-            try:
-                atomic_write(config_dir() / _BROWSER_MCP_VERSION_FILE, version)
-            except OSError:
-                pass
-            return
-
-
-def get_pinned_playwright_version() -> str | None:
-    """Return the pinned ``@playwright/mcp`` version, or ``None`` to use ``@latest``.
-
-    Read by the proxy to build the launch spec. TWO gates, because the flag file is
-    agent-writable (it is deliberately NOT a keystone — a wrong value only slows a
-    fetch, it grants nothing):
-
-    1. Strict semver on read, so a tampered value can never reach an npx argv as
-       injection — a non-semver string degrades to ``None`` (→ ``@latest``).
-    2. The version must ACTUALLY be present in a real npx/global cache on disk. A
-       prompt-injected shell could write a valid-but-nonexistent semver (e.g.
-       ``99.99.99``); launching ``@playwright/mcp@99.99.99`` would fail to fetch
-       and break browsing persistently. Gating on on-disk presence neutralizes that
-       DoS — a bogus version matches no cache, so we fall back to ``@latest`` and
-       the feature keeps working. This is also the pin's whole point: it is only
-       useful when that exact version is cached, so the guard and the optimization
-       are the same check. The agent cannot fake a cache dir it did not fetch.
-    """
-    try:
-        raw = (config_dir() / _BROWSER_MCP_VERSION_FILE).read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
-        return None
-    if not _SEMVER_RE.match(raw):
-        return None
-    aug_path = node_augmented_path(os.environ.get("PATH", ""))
-    run_env = {**os.environ, "PATH": aug_path}
-    for nm in _npx_cache_playwright_roots(run_env):
-        try:
-            pkg = Path(nm) / "@playwright" / "mcp" / "package.json"
-            data = json.loads(pkg.read_text(encoding="utf-8"))
-            # A cached package.json is untrusted: it may parse to valid JSON that
-            # is NOT an object (``[]``, ``"x"``, ``12``), on which ``.get`` raises
-            # AttributeError — which OSError/ValueError would not catch, crashing
-            # proxy startup. Guard the type; a non-dict just isn't a match.
-            if isinstance(data, dict) and data.get("version") == raw:
-                return raw
-        except (OSError, ValueError):
-            continue
-    return None
 
 
 def _npx_cache_playwright_roots(run_env: dict[str, str]) -> list[str]:

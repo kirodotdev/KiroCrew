@@ -102,6 +102,48 @@ edition's TypeScript sources, where a rebuild could only produce a stock bundle.
 `frontend.edition_sources_missing()` detects that and the rebuild is **skipped**,
 keeping the shipped dashboard. Covered by `test/test_frontend_edition_build.py`.
 
+## Pre-boot shell branding: `branding.json` and the `public/` overlay
+
+Everything the registry seams brand is rendered by React — which means none of it
+exists before React mounts. Three surfaces are shown earlier: the `<title>` during
+boot (and whenever a PWA-install dialog or bookmark samples it), the
+`<meta name="theme-color">`, and the PWA identity (`manifest.json` plus
+`icon-192.png` / `icon-512.png`). `registerThemeBranding()` cannot reach any of
+them. The edition plugin patches them instead — the HTML fields on every build
+and dev transform, the `public/` overlay at build emit — from two optional
+inputs in the edition dir:
+
+- **`branding.json`** — `{"title": "Acme Crew", "themeColor": "#0055aa"}`. Both
+  keys optional; values are HTML-escaped into the root `index.html` only (app
+  panel pages are untouched). An unknown key, a non-string value, or malformed
+  JSON **fails the build** — a typoed key silently shipping the stock title is
+  the exact silent-degrade class this seam bans. So does a missing target tag:
+  if the core shell drops `<title>` or the theme-color meta, the edition build
+  breaks loudly rather than quietly reverting to stock.
+- **`public/`** — files here overlay the stock copies in the built `dist`,
+  edition-wins, emitted through the bundler (`generateBundle`/`emitFile`, which
+  takes precedence over the `publicDir` copy). Only an allowlist is accepted —
+  `manifest.json`, `icon-192.png`, `icon-512.png` — and any other file or
+  subdirectory in the edition's `public/` fails the build (OS junk dotfiles like
+  `.DS_Store` are skipped). The allowlist is the structural guarantee
+  that an edition cannot overwrite `index.html`, `sw.js`, or `vendor/*`; widen it
+  consciously (`SHELL_OVERLAY_ALLOWLIST` in `scripts/lib/editionShell.mjs`).
+
+Two known edges: the overlay is **build-only** (`generateBundle` never runs in
+the dev server, which keeps serving the stock `public/` files — the branded
+manifest/icons appear in `dist`), and `branding.json` is read eagerly at config
+load, so the dev server needs a restart after editing it.
+
+Both inputs are inert when absent, and the stock build (no `KIROCREW_EDITION_DIR`)
+is byte-identical to a build without this seam.
+
+**Replacing `icon-512.png` obliges you to replace the served logo too.** The
+gateway serves `/logo.png` (sidebar logo, favicon fallback, chat avatar) from its
+own static tree, and core CI pins that file byte-identical to
+`website/public/icon-512.png` so the installed-app icon and the favicon can never
+drift apart. An edition that overlays the PWA icons but leaves the gateway logo
+stock reintroduces exactly that drift — brand one, brand both.
+
 ## Edition peer-dependency rule
 
 An edition dir resolves bare imports from its OWN `node_modules`, so any

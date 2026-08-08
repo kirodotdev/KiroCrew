@@ -76,16 +76,11 @@ import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
-import SessionRefStrip from './SessionRefStrip'
-import type { SessionRef } from '../utils/sessionRefs'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
 const INPUT_DRAG_MIN_H = 93
 const FILE_PREVIEW_H = 81 // h-16 (64px) + py-2 (16px) + border-t (1px)
-/** Height of the staged-session-reference strip: one chip row (py-1 + 12px text
- *  ≈ 26px) + py-2 (16px) + border-t (1px). Keep in sync with SessionRefStrip. */
-const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
 
@@ -249,12 +244,6 @@ interface ChatInputProps {
   resizedInfo?: Record<string, ResizeInfo>
   /** Remove a pending file by path */
   onRemoveFile?: (path: string) => void
-  /** Session references staged by dragging a session onto the chat pane.
-   *  Rendered as chips above the textarea, the same treatment as attachments.
-   *  Serialized as links (never transcripts) when the message is sent. */
-  pendingSessions?: SessionRef[]
-  /** Unstage a session reference by its session key */
-  onRemoveSessionRef?: (key: string) => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */
@@ -487,8 +476,6 @@ function ChatInput({
   pendingFiles = [],
   resizedInfo,
   onRemoveFile,
-  pendingSessions = [],
-  onRemoveSessionRef,
   isMac = false,
   onDrop,
   dragOver = false,
@@ -1237,7 +1224,7 @@ function ChatInput({
       wrapperRef.current.style.height = ''
       wrapperRef.current.style.maxHeight = ''
     }
-  }, [manualHeight, pendingFiles.length, pendingSessions.length])
+  }, [manualHeight, pendingFiles.length])
 
   // Auto-resize textarea to fit content
   useEffect(() => {
@@ -2020,31 +2007,25 @@ function ChatInput({
   }, [onUploadFiles])
 
   const hasFiles = pendingFiles.length > 0
-  const hasSessionRefs = pendingSessions.length > 0
-  /** Combined height of every strip currently stacked above the textarea. The
-   *  manual-resize floor and the transient height adjustment below both work off
-   *  this total, so adding a strip can never leave one of them counting only
-   *  attachments. */
-  const stripH = (hasFiles ? FILE_PREVIEW_H : 0) + (hasSessionRefs ? SESSION_REF_STRIP_H : 0)
-  const prevStripH = useRef(stripH)
-  const dragMinH = INPUT_DRAG_MIN_H + stripH
+  const prevHadFiles = useRef(hasFiles)
+  const dragMinH = hasFiles ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H
   const dragMinHRef = useRef(dragMinH)
   dragMinHRef.current = dragMinH
-  // Adjust height transiently when a strip appears/disappears (not persisted —
-  // staged files and session refs are both session-scoped). Diffing the TOTAL
-  // rather than a per-strip boolean keeps the arithmetic correct when both
-  // strips change in the same commit (e.g. send clears files and refs at once).
+  // Adjust height transiently when file strip appears/disappears (not persisted — files are session-only)
   useLayoutEffect(() => {
-    const prev = prevStripH.current
-    prevStripH.current = stripH
-    if (prev === stripH) return
-    setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h + (stripH - prev)) : h)
-  }, [stripH])
+    const wasShowingFiles = prevHadFiles.current
+    prevHadFiles.current = hasFiles
+    if (wasShowingFiles && !hasFiles) {
+      setManualHeight(h => h !== null ? Math.max(INPUT_DRAG_MIN_H, h - FILE_PREVIEW_H) : h)
+    } else if (!wasShowingFiles && hasFiles) {
+      setManualHeight(h => h !== null ? h + FILE_PREVIEW_H : h)
+    }
+  }, [hasFiles])
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
     <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
-      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
+      style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (pendingFiles.length > 0 ? INPUT_DRAG_MIN_H + FILE_PREVIEW_H : INPUT_DRAG_MIN_H) + 'px' } : {}) }}>
 
       {aboveComposer}
 
@@ -2345,7 +2326,6 @@ function ChatInput({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} />
         <FilePreviewStrip files={pendingFiles} resizedInfo={resizedInfo} onRemove={onRemoveFile} />
 
         {showDictation ? (
@@ -2564,17 +2544,7 @@ function ChatInput({
                 <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 transition-all" onClick={onStop} title={i18nT('components.chatInput.stopping')} aria-label={i18nT('components.chatInput.stopping_2')}>
                   <Loader2 size={18} className="animate-spin" />
                 </button>
-              ) :
-              // Deliberately NOT gated on hasSessionRefs, unlike the idle send
-              // button below. This branch is the mid-turn split button, whose
-              // steer mode refuses a payload of refs alone (ChatPage's steer()
-              // bails on `!raw && !files.length`, because a failed steer cannot
-              // restore what it cleared). Including refs here would enable a
-              // primary button whose press does nothing — and that state was
-              // unreachable before session refs existed, since an empty composer
-              // mid-turn rendered the stop button instead. A bare ref therefore
-              // waits for the turn to end and rides the idle send button.
-              value.trim() || pendingFiles.length ? (
+              ) : value.trim() || pendingFiles.length ? (
                 canSteer && onSteer ? (
                   /* Split send button (mock: [ action | ▾ ]) — main area fires the
                    * selected busy-send mode (steer by default, same as Enter);
@@ -2690,7 +2660,7 @@ function ChatInput({
                 WCAG 2.5.3 (Label in Name). `title` carries the longer
                 explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length ? (
                 <button
                   className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
@@ -2706,7 +2676,7 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >
