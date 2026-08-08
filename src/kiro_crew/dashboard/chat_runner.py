@@ -86,7 +86,9 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     build_recovery_requeue,
     effective_session_key,
+    expire_slack_options,
     is_system_injection_item,
+    remember_slack_options,
     slot_history_key,
 )
 from kiro_crew.dashboard.handlers import (
@@ -178,6 +180,7 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
+from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.validation import ValidationError, infer_use_case, validate_ask_user_question
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
@@ -2889,6 +2892,21 @@ async def _run_chat(
         slot.append("done", "", "done")
         return
 
+    # A new turn supersedes whatever question the previous one ended on, so any
+    # OPTIONS control still live in this session's Slack thread stops being
+    # answerable. Guarded on _prompt_depth so the in-turn re-entry that expands
+    # a /prompts reference does not count as a new turn.
+    #
+    # Placed HERE, below every local-command return and above the turn machinery,
+    # for the same reason the Slack entry points expire here: `/goal`, a
+    # `/prompts` listing or error, and a blocked slash command all return without
+    # starting an agent turn, and spending the control on one of those would
+    # strike a still-valid question through with nothing to answer it. Moved once,
+    # rather than guarded per command, so a new local command inherits the right
+    # behaviour by default.
+    if _prompt_depth == 0:
+        await expire_slack_options(state, session_key)
+
     _acquired = False
     _mirror_stream_ts: str = ""
     _mirror_chan: str | None = ""
@@ -5471,12 +5489,52 @@ async def _run_chat(
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
-                    await state.slack_client.post_blocks(
+                    # Keep the ts this posts: the control has to be spendable
+                    # later, and discarding the ts is what leaves a superseded
+                    # question clickable forever. build_options_blocks already
+                    # redacts each choice through redact_for_display, so nothing
+                    # extra is needed here.
+                    _mirror_blocks = build_options_blocks(_mirror_options)
+                    # The thread's owner BEFORE the post. A relink landing while
+                    # post_blocks is in flight moves the conversation to another
+                    # session, and a control recorded under the key this turn
+                    # started with would be filed where that session's expiry
+                    # never looks -- and clickable into a conversation it does not
+                    # belong to. Same treatment the other two posting paths get.
+                    _pre_owner = (
+                        state.sessions.get_session_for_thread(_mirror_thread) or session_key
+                        if getattr(state, "sessions", None)
+                        else session_key
+                    )
+                    _mirror_ts = await state.slack_client.post_blocks(
                         _mirror_chan,
-                        build_options_blocks(_mirror_options),
+                        _mirror_blocks,
                         "Options",
                         _mirror_thread,
                     )
+                    if _mirror_ts:
+                        _owner = (
+                            state.sessions.get_session_for_thread(_mirror_thread)
+                            or session_key
+                            if getattr(state, "sessions", None)
+                            else session_key
+                        )
+                        remember_slack_options(
+                            state,
+                            _owner,
+                            PostedOptions(
+                                channel=_mirror_chan,
+                                ts=_mirror_ts,
+                                choices=tuple(_mirror_options),
+                                blocks=tuple(_mirror_blocks),
+                            ),
+                        )
+                        if _owner != _pre_owner:
+                            # An owner change IS supersession: the question we just
+                            # posted would be answered into a conversation that has
+                            # moved on. Narrowed to OUR ts so a control the new
+                            # owner recorded meanwhile survives.
+                            await expire_slack_options(state, _owner, ts=_mirror_ts)
             except Exception:
                 logger.debug("Failed to mirror response to Slack", exc_info=True)
 
