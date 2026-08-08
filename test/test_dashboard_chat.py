@@ -11485,6 +11485,10 @@ class TestRunChatTransientRetry:
         # reset is an AsyncMock so we can assert it is NEVER awaited — a
         # transient 5xx must NOT reset the (still-alive) session.
         state.sessions.reset = AsyncMock()
+        # discard_conversation is the poisoned-conversation escalation (clears
+        # the resume sid, keeps the session-map entry with its channel
+        # linkage); mocked so tests can assert exactly when it fires.
+        state.sessions.discard_conversation = AsyncMock()
         state.sessions.get_slack_link = MagicMock(return_value=(None, None))
 
     @staticmethod
@@ -11972,6 +11976,250 @@ class TestRunChatTransientRetry:
         # Completed cycle → budget back to 0 via the happy-path reset.
         assert slot._transient_5xx_retries == 0
         state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_first_exhausted_cycle_never_discards(self, tmp_path, monkeypatch):
+        """A SINGLE cycle that exhausts the pre-stream transient ladder
+        surfaces the terminal ❌ without discarding the native conversation —
+        one exhaustion is still plausibly a momentary outage, and discarding
+        on it would throw away a healthy conversation on every blip that
+        outlasts the ladder."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def _always_fail(msg):
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_always_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        state.sessions.discard_conversation.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        # The exhausted cycle is counted toward the consecutive streak.
+        assert slot._prestream_exhausted_cycles == 1
+        assert slot._poisoned_reset_used is False
+
+    @pytest.mark.asyncio
+    async def test_poisoned_conversation_discarded_on_second_exhausted_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression (poisoned persisted conversation): when TWO consecutive
+        cycles each exhaust the full pre-stream transient ladder with zero
+        output, the backend is deterministically rejecting this session's
+        native conversation — retrying into it can never succeed (observed
+        live: a session/load'ed conversation failing pre-stream identically
+        11 hours apart while a NEW session on the same gateway+model answered
+        instantly). The second exhaustion must escalate: discard the
+        native conversation (discard_conversation() clears the resume sid —
+        reset() would session/load the poison right back — while keeping the
+        session-map entry with its channel linkage) and re-queue the message
+        once, so the recovery cycle cold-starts a fresh conversation and the
+        slot self-heals instead of telling the user to 'retry in a moment'
+        forever."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.llm_helpers import TRANSIENT_RETRIES
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        # Fail every attempt of two full cycles (the "poisoned conversation"),
+        # then succeed — the success models the fresh post-discard conversation.
+        _poisoned_calls = 2 * (TRANSIENT_RETRIES + 1)
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= _poisoned_calls:
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered-after-discard")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            # Cycle 1: ladder exhausts → terminal ❌ (streak = 1, no discard).
+            await _run_chat(state, slot, "first try")
+            await self._drain_bg(state)
+            state.sessions.discard_conversation.assert_not_awaited()
+            # Cycle 2 (the Continue press the ❌ invites): ladder exhausts
+            # again → escalation fires and the re-queued recovery cycle
+            # lands on the fresh session.
+            await _run_chat(state, slot, "continue")
+            await self._drain_bg(state)
+
+        # Escalation discarded the native conversation exactly once; plain
+        # reset (which preserves the poisoned resume sid) was never used.
+        state.sessions.discard_conversation.assert_awaited_once()
+        state.sessions.reset.assert_not_awaited()
+        # Cycle 1 ❌ + cycle 2 escalation notice, then the recovered answer.
+        errs = self._err_texts(slot)
+        assert any(t.startswith("❌") for t in errs)
+        assert any("keeps rejecting" in t for t in errs)
+        assert any("recovered-after-discard" in t for t in self._assistant_texts(slot))
+        # Attempt accounting: two full ladders + the single recovery prompt.
+        assert call_count == _poisoned_calls + 1
+        # The landed recovery turn re-arms the one-shot and breaks the streak.
+        assert slot._poisoned_reset_used is False
+        assert slot._prestream_exhausted_cycles == 0
+
+    @pytest.mark.asyncio
+    async def test_poisoned_discard_is_one_shot_until_a_turn_lands(
+        self, tmp_path, monkeypatch
+    ):
+        """If even the fresh post-discard conversation keeps failing (genuine
+        prolonged outage), no second discard fires: the one-shot is consumed by
+        the first escalation and only a LANDED turn re-arms it, so a discard
+        loop is impossible. Later cycles surface the terminal ❌ as before."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def _always_fail(msg):
+            raise AcpError(self._TRANSIENT)
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_always_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            # Cycle 1: exhausts → ❌ (streak 1).
+            await _run_chat(state, slot, "first try")
+            await self._drain_bg(state)
+            # Cycle 2: exhausts → discard #1 → recovery cycle ALSO exhausts →
+            # terminal ❌ (one-shot consumed, so no discard #2 mid-drain).
+            await _run_chat(state, slot, "continue")
+            await self._drain_bg(state)
+            # Cycle 3: user retries once more — still failing. Streak keeps
+            # counting but the one-shot is spent: ❌ again, NO second discard.
+            await _run_chat(state, slot, "continue again")
+            await self._drain_bg(state)
+
+        state.sessions.discard_conversation.assert_awaited_once()
+        state.sessions.reset.assert_not_awaited()
+        # No turn ever landed: the one-shot stays consumed.
+        assert slot._poisoned_reset_used is True
+        # Terminal ❌ surfaced after the failed recovery and again on cycle 3.
+        assert sum(1 for t in self._err_texts(slot) if t.startswith("❌")) >= 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_turn_does_not_rearm_poisoned_one_shot(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: the poisoned-discard one-shot re-arms only on a LANDED
+        turn. But the STREAK is evidence-based: a cancelled turn that EMITTED
+        output proves the backend accepts this conversation, so it breaks the
+        streak (GPT review finding — without this, exhaustion → stopped-but-
+        streaming turn → exhaustion would discard a healthy conversation),
+        while a cancelled turn with NO output proves nothing and preserves
+        it. In both cases the spent one-shot stays consumed."""
+        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        # ── Cancelled turn with NO output: both guards preserved. ──
+        async def _cancelled_silent(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_cancelled_silent)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        # Arrange: an escalation already consumed the one-shot mid-streak.
+        slot._poisoned_reset_used = True
+        slot._prestream_exhausted_cycles = 3
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "user stops before any output")
+            await self._drain_bg(state)
+
+        assert slot._poisoned_reset_used is True
+        assert slot._prestream_exhausted_cycles == 3
+
+        # ── Cancelled turn WITH output: streak broken, one-shot still spent. ──
+        async def _cancelled_after_output(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial before stop")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)
+
+        client.stream = _cancelled_after_output
+        client.stream_command = _cancelled_after_output
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "recovery attempt the user stops mid-answer")
+            await self._drain_bg(state)
+
+        assert slot._prestream_exhausted_cycles == 0  # output = evidence
+        assert slot._poisoned_reset_used is True  # cancel ≠ landed
+
+        # ── A genuinely LANDED turn re-arms the one-shot too. ──
+        async def _ok(msg):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="landed")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client.stream = _ok
+        client.stream_command = _ok
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "works now")
+            await self._drain_bg(state)
+
+        assert slot._poisoned_reset_used is False
+        assert slot._prestream_exhausted_cycles == 0
+
+    @pytest.mark.asyncio
+    async def test_throttle_exhaustion_never_accrues_toward_discard(
+        self, tmp_path, monkeypatch
+    ):
+        """Design-review narrowing: throttling is transient (the ladder still
+        retries it) but persists across user actions without the conversation
+        being poisoned — and a fresh conversation hits the same throttle. So
+        throttle-classified exhaustion takes the plain ❌ path and breaks the
+        streak instead of accruing toward a discard."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+
+        _throttle_msg = (
+            "Bedrock is throttling requests. Try: (1) wait a few seconds and "
+            "retry, or (2) switch to a different model in the picker."
+        )
+
+        async def _always_throttled(msg):
+            err = AcpError(_throttle_msg)
+            err.transient = True  # ladder-retryable, like the real classifier
+            raise err
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_always_throttled)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            # Two consecutive throttled exhaustions — the pattern that WOULD
+            # discard if throttle counted toward the signature.
+            await _run_chat(state, slot, "first try")
+            await self._drain_bg(state)
+            await _run_chat(state, slot, "continue")
+            await self._drain_bg(state)
+
+        state.sessions.discard_conversation.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        assert slot._prestream_exhausted_cycles == 0  # streak broken, not accrued
+        assert sum(1 for t in self._err_texts(slot) if t.startswith("❌")) >= 2
 
     @pytest.mark.asyncio
     async def test_transient_after_thinking_only_retries(self, tmp_path, monkeypatch):

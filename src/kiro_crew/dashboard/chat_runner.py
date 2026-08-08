@@ -531,6 +531,23 @@ _MAX_SNAPSHOT = 200_000  # cap per-file snapshot to bound message meta size
 # reconstruction declines instead of stalling the loop on a huge file.
 _MAX_RECONSTRUCT_BYTES = 2_000_000
 
+# Poisoned-conversation escalation threshold: number of CONSECUTIVE turn
+# cycles that must each exhaust the full pre-stream transient-5xx ladder
+# (TRANSIENT_RETRIES + 1 attempts, zero output) before the terminal error
+# branch stops advising "retry in a moment" and instead destroys the native
+# session and re-queues once on a fresh conversation. Two cycles ⇒ at least
+# 2×(TRANSIENT_RETRIES+1) consecutive pre-stream failures spanning a user
+# action (Continue / new message), which a momentary capacity blip does not
+# survive but a backend-rejected persisted conversation always does.
+POISONED_SESSION_CYCLES = 2
+
+# Throttle/rate-limit markers in a formatted or raw ACP error. Used to EXCLUDE
+# throttling from the poisoned-conversation signature above: throttles are
+# transient (the ladder still retries them) but they persist across user
+# actions without implying a rejected conversation, and a fresh conversation
+# is throttled identically — so they must never accrue toward a discard.
+_THROTTLE_MARKERS_RE = re.compile(r"throttl|rate.?limit|too.?many.?requests", re.IGNORECASE)
+
 
 def _truncate_snapshot(content: str) -> str:
     """Cap content at _MAX_SNAPSHOT chars, appending a marker if truncated.
@@ -2706,6 +2723,14 @@ async def _run_chat(
     slot._native_subagent_output = _native_card_output
     _native_card_output_len: dict[str, int] = {}
     needs_session_reset = False
+    # Poisoned-conversation escalation: unlike needs_session_reset (which
+    # preserves the resume sid so the next turn session/loads the same native
+    # conversation), discard_conversation CLEARS the sid so the next turn
+    # cold-starts a fresh conversation — while keeping the session-map entry,
+    # whose Slack thread/channel linkage must survive the recovery. Set only
+    # by the consecutive pre-stream-exhaustion branch in the AcpError handler
+    # below.
+    needs_conversation_discard = False
     _auth_required = False
     saw_compaction = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
@@ -5385,6 +5410,22 @@ async def _run_chat(
             slot._stale_recovery_retries = 0
             slot._tool_stall_retries = 0
             slot._transient_5xx_retries = 0
+            # NOTE: the poisoned-conversation streak/one-shot
+            # (_prestream_exhausted_cycles / _poisoned_reset_used) are NOT
+            # unconditionally reset here: this block also runs for CANCELLED
+            # turns, and a user's Stop press by itself proves nothing about
+            # the conversation's health. BUT a turn that EMITTED output
+            # (assistant tokens or a tool call — _turn_emitted) is positive
+            # evidence the backend accepts this conversation, even if the
+            # user then cancelled it — so it breaks the exhaustion streak.
+            # Without this, [exhausted ladder] → [output-producing turn the
+            # user stopped] → [exhausted ladder] would count as consecutive
+            # and discard a demonstrably healthy conversation. The one-shot
+            # itself still re-arms only on a LANDED turn (the record_success
+            # block below): breaking the streak is cheap to be generous
+            # with, re-arming a spent discard is not.
+            if _turn_emitted:
+                slot._prestream_exhausted_cycles = 0
             # NOTE: slot._posttoken_retry_used is intentionally NOT reset here.
             # The one-shot post-token recovery allowance is refreshed at the
             # START of a GENUINE new user turn (see the gated reset near
@@ -5401,6 +5442,14 @@ async def _run_chat(
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
         if _stop_reason != STOP_REASON_CANCELLED and not _retrying_empty:
             state.sessions.record_success(session_key)
+            # A LANDED turn breaks the pre-stream-exhaustion streak and
+            # re-arms the poisoned-conversation one-shot: only a prompt that
+            # actually reached the model and completed proves the (possibly
+            # fresh) conversation works. Deliberately NOT in the cancel-
+            # inclusive budget block above — a Stop press during the recovery
+            # turn must not re-arm a second discard without that evidence.
+            slot._prestream_exhausted_cycles = 0
+            slot._poisoned_reset_used = False
             # This turn landed: the prompt (including any re-injected skills
             # index) reached the model, so the `finally` must NOT restore the
             # one-shot flag.
@@ -5720,7 +5769,9 @@ async def _run_chat(
             # errors are excluded by the classifier and fall through to the bare
             # error below (fail-fast). On budget exhaustion this elif goes false
             # and the bare-error else surfaces a clean ❌ on a still-resumable
-            # session.
+            # session — unless CONSECUTIVE cycles exhaust this way, in which
+            # case the else escalates to a session destroy (poisoned
+            # persisted conversation; see the escalation block there).
             slot._transient_5xx_retries += 1
             _delay = transient_retry_delay(slot._transient_5xx_retries)
             logger.info(
@@ -5850,28 +5901,106 @@ async def _run_chat(
                 _safe, _ = redact_credentials(_safe)
                 slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
                 slot.append("assistant", _safe, "msg msg-a")
-            _err_text, _ = redact_exfiltration_urls(str(exc))
-            _err_text, _ = redact_credentials(_err_text)
-            slot.append(
-                "error",
-                f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
-                "msg msg-err",
+            # ── Poisoned-conversation escalation ────────────────────────────
+            # A transient-classified error that reaches this terminal branch
+            # with ZERO output means a full retry ladder was exhausted
+            # pre-stream (the transient elif above only goes false on budget
+            # exhaustion). ONE such cycle is plausibly a momentary outage; the
+            # SECOND CONSECUTIVE one — ladder exhausted, the user pressed
+            # Continue (or sent a new message), fresh ladder exhausted again —
+            # is the signature of a POISONED persisted conversation: the
+            # backend deterministically rejects this session's native history
+            # while brand-new sessions on the same gateway+model work fine
+            # (observed live: a session/load'ed conversation failing pre-stream
+            # identically 11 hours apart, across separate kiro-cli processes,
+            # while a new session answered instantly). Retrying into that
+            # conversation can never succeed and the ❌ message's own advice
+            # ("retry in a moment") sends the user in circles — the only thing
+            # that recovers is what a manual "start a new chat" does: a fresh
+            # native conversation. So escalate exactly that, in place:
+            # DISCARD the native conversation — sessions.discard_conversation()
+            # clears the resume sid (sessions.reset() would session/load the
+            # same poisoned conversation right back) while KEEPING the
+            # session-map entry, whose Slack thread/channel linkage must
+            # survive — and re-queue the message once. The successor turn
+            # cold-starts a fresh conversation with the slot transcript
+            # re-injected as context, preserving the dashboard session.
+            # ONE-SHOT per landed turn (_poisoned_reset_used): if even the
+            # fresh conversation fails (genuine prolonged outage), the streak
+            # keeps counting but no further discard fires until some turn
+            # actually lands — a discard loop is impossible.
+            _prestream_exhausted = (
+                not _turn_emitted
+                and acp_error_is_transient(exc)
+                # Throttle/rate-limit is the one transient class that
+                # ROUTINELY persists across two user-initiated cycles
+                # without the conversation being poisoned — and a fresh
+                # conversation hits the exact same throttle, so a discard
+                # cannot help. Exclude it from the signature (Design review
+                # narrowing): a throttled exhaustion takes the plain ❌ path
+                # and, being a non-matching terminal error, breaks the streak.
+                and not _THROTTLE_MARKERS_RE.search(str(exc))
             )
-            # This branch ENDS the retry cycle: the error is terminal and
-            # nothing is re-queued. Refresh the transient-5xx budget now so the
-            # NEXT cycle — the Continue press this very error message invites
-            # ("retry in a moment"), or a new user message — gets the designed
-            # TRANSIENT_RETRIES fresh attempts. Without this, the budget
-            # consumed by a failed cycle leaks into every later cycle (the
-            # happy-path reset only runs when a cycle COMPLETES), so after one
-            # exhaustion ❌ a single further 5xx fails instantly with zero
-            # retries until some turn happens to finish cleanly. Loop safety is
-            # unchanged: the reset happens only on a NO-REQUEUE exit, so a new
-            # budget always requires a new user- or system-initiated cycle —
-            # automatic retry chains within a cycle stay bounded at
-            # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
-            # here: it is already refreshed at genuine-turn start.)
-            slot._transient_5xx_retries = 0
+            if _prestream_exhausted:
+                slot._prestream_exhausted_cycles += 1
+            else:
+                # A different terminal error (or one with streamed output)
+                # breaks the streak — consecutive means consecutive.
+                slot._prestream_exhausted_cycles = 0
+            if (
+                _prestream_exhausted
+                and slot._prestream_exhausted_cycles >= POISONED_SESSION_CYCLES
+                and not slot._poisoned_reset_used
+                and _prompt_depth == 0
+                and not _should_suppress_requeue(slot)
+            ):
+                logger.warning(
+                    "Pre-stream transient exhaustion on %d consecutive cycles in "
+                    "slot %s — treating the native conversation as poisoned: "
+                    "discarding conversation for %s and re-queueing once on a "
+                    "fresh one",
+                    slot._prestream_exhausted_cycles,
+                    slot.key,
+                    session_key,
+                )
+                # Consume the one-shot HERE, where the recovery is actually
+                # enqueued (mirrors _posttoken_retry_used accounting).
+                slot._poisoned_reset_used = True
+                needs_conversation_discard = True  # checked in finally block
+                slot.append(
+                    "error",
+                    "⟳ The backend keeps rejecting this conversation — "
+                    "restarting the model session and retrying (this chat's "
+                    "messages are kept; the model rebuilds its working "
+                    "context from them)…",
+                    "msg msg-err",
+                )
+                slot.queue_insert(0, message, kind=SYNTHETIC_RECOVERY_KIND)
+                # Fresh conversation ⇒ fresh ladder for the recovery cycle.
+                slot._transient_5xx_retries = 0
+            else:
+                _err_text, _ = redact_exfiltration_urls(str(exc))
+                _err_text, _ = redact_credentials(_err_text)
+                slot.append(
+                    "error",
+                    f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
+                    "msg msg-err",
+                )
+                # This branch ENDS the retry cycle: the error is terminal and
+                # nothing is re-queued. Refresh the transient-5xx budget now so the
+                # NEXT cycle — the Continue press this very error message invites
+                # ("retry in a moment"), or a new user message — gets the designed
+                # TRANSIENT_RETRIES fresh attempts. Without this, the budget
+                # consumed by a failed cycle leaks into every later cycle (the
+                # happy-path reset only runs when a cycle COMPLETES), so after one
+                # exhaustion ❌ a single further 5xx fails instantly with zero
+                # retries until some turn happens to finish cleanly. Loop safety is
+                # unchanged: the reset happens only on a NO-REQUEUE exit, so a new
+                # budget always requires a new user- or system-initiated cycle —
+                # automatic retry chains within a cycle stay bounded at
+                # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
+                # here: it is already refreshed at genuine-turn start.)
+                slot._transient_5xx_retries = 0
     except Exception as exc:
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))
@@ -5958,9 +6087,18 @@ async def _run_chat(
                     await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
-            if _acquired and needs_session_reset:
+            if _acquired and (needs_session_reset or needs_conversation_discard):
                 try:
-                    await state.sessions.reset(session_key)
+                    if needs_conversation_discard:
+                        # Poisoned-conversation escalation: clear ONLY the
+                        # resume sid (keeping the session-map entry with its
+                        # Slack thread/channel linkage), so the re-queued
+                        # recovery turn cold-starts a fresh native
+                        # conversation instead of session/load-ing the same
+                        # rejected one (which reset() would do).
+                        await state.sessions.discard_conversation(session_key)
+                    else:
+                        await state.sessions.reset(session_key)
                 except Exception:
                     logger.warning("Failed to reset session %s after agent switch", session_key)
         finally:
