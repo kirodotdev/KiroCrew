@@ -125,6 +125,21 @@ same posture as running the tool yourself in a shell. Config is read live, so no
 gateway restart is needed. Without it, the affected paths answer a clear 422 naming
 the remedy rather than failing obscurely.
 
+**The model picker and the credit pill follow chat's posture, not their own.**
+`/api/models`, the credit pill's `whoami` identity fetch and its `/usage` scrape
+spawn the same `kiro-cli` binary chat does, at the same `agent.sandbox` tier — so
+on this platform they succeed and fail together with chat, rather than one working
+while the other 503s. Concretely:
+
+- **Default install** (`agent.sandbox` unset → `"auto"`): Windows has no backend,
+  so chat *and* these reads all need the opt-in above. Without it `/api/models`
+  answers 503 with `code: "model_list_sandbox_unavailable"` and a log line naming
+  the remedy, and the picker falls back to offering only `auto`.
+- **`agent.sandbox` explicitly `"off"`** (isolation deferred to kiro-cli's own
+  internal sandbox): all of them run, and none of them need the opt-in. Note that
+  an explicit `"off"` now logs a one-time `SECURITY` warning where no OS-level
+  isolation ends up active.
+
 ## Per-feature status on Windows
 
 | Feature | Status on Windows |

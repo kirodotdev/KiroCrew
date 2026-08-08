@@ -32,6 +32,14 @@ CATALOG = [
 ]
 
 
+def _stub_wrap_argv(argv: list[str], **kwargs: Any) -> tuple[list[str], None]:
+    """Pass-through stand-in for ``sandbox.wrap_argv`` (twin of the one in
+    ``test_api_models_retry.py``): absorbs the real signature's keyword arguments
+    so an added one cannot masquerade as a degraded response."""
+    del kwargs
+    return argv, None
+
+
 def _provider(models: object, *, getter: bool = True, raises: bool = False) -> MagicMock:
     provider = MagicMock()
     if not getter:
@@ -244,7 +252,7 @@ def test_api_models_returns_only_entitled_rows(tmp_path):
     ), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(

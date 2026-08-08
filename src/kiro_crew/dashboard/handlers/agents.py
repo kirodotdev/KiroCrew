@@ -52,8 +52,14 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.executors import discovery_executor, maintenance_executor
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    cgroup_scope_argv,
+    configured_sandbox_mode,
+    create_subprocess_limited,
+    wrap_argv,
+)
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
@@ -852,6 +858,26 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     return merged
 
 
+def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
+    """Sandbox-wrap the ``--list-models`` argv at the configured tier.
+
+    Runs in an executor, never on the loop: :func:`configured_sandbox_mode` stats
+    (and on a cache miss re-reads and revalidates) ``config.json``, and
+    ``wrap_argv`` -> ``detect_backend`` can cold-probe the sandbox backend with a
+    synchronous ``subprocess.run(..., timeout=5)``. Resolving the mode here rather
+    than passing it in keeps BOTH blocking reads in the worker thread.
+
+    ``is_kiro_cli=True`` is explicit because ``_spawns_kiro_cli``'s basename test
+    only matches a literal ``kiro-cli``: a Windows ``kiro-cli.exe``, a wrapper
+    shim, or a ``KIROCREW_KIRO_BIN`` pointing at a nonstandard launch path all
+    read as "not kiro-cli". On macOS with ``agent.sandbox="off"`` that
+    misclassification skips the delegation branch — and with it the credential-env
+    scrub — so the child would inherit the sensitive environment. Both ACP spawn
+    paths pass this flag for the same reason.
+    """
+    return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — list available models from the live kiro-cli ACP session."""
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
@@ -885,7 +911,29 @@ async def api_models(request: web.Request) -> web.Response:
         # Note: AcpClient._spawn() is for interactive ACP sessions (stdin/stdout
         # pipes); this is a one-shot read-only command, so we replicate the
         # sandbox setup directly.  See the security-controls rule.
-        argv, cleanup = wrap_argv(argv)
+        #
+        # The configured tier is passed EXPLICITLY rather than left to
+        # wrap_argv's "auto" parameter default, so this endpoint can never ask
+        # for stricter isolation than the chat spawn of the same binary. It
+        # matters wherever the operator set agent.sandbox="off" (deferring
+        # isolation to kiro-cli's own internal sandbox) on a host with no backend
+        # — any Windows host, macOS >= 26: chat runs, while the default-mode wrap
+        # here fail-closed and answered 503 on every 8s poll. The frontend reads
+        # that as "degraded" and serves its auto-only fallback list, so the picker
+        # showed exactly one entry. Same fix, same reason as the `_bg` session in
+        # session.py.
+        #
+        # OFF the loop: `configured_sandbox_mode()` stats (and on a cache miss
+        # re-reads + revalidates) config.json, and `wrap_argv` -> `detect_backend`
+        # can cold-probe the backend with a synchronous
+        # `subprocess.run(..., timeout=5)`. This endpoint is polled every 8s while
+        # the model list is degraded, so leaving either on the loop stalls chat,
+        # cron and the liveness heartbeat on exactly the host where the probe is
+        # slowest. Both reads run in the worker, so the mode is resolved there
+        # too rather than passed in.
+        argv, cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _wrap_list_models_argv, argv
+        )
         argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         try:
             env = {**os.environ}
@@ -972,6 +1020,31 @@ async def api_models(request: web.Request) -> web.Response:
         models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
         models = _entitled_kiro_models(request, models)
         return web.json_response(models)
+    except SandboxUnavailableError as exc:
+        # Narrower than the generic clause below, and BEFORE it: this is the one
+        # degraded cause that no amount of retrying fixes, so it must not be
+        # reported as an anonymous "model list unavailable". Reached only when the
+        # tier resolved to "auto" (the shipped default) on a host with no
+        # backend, where a configured "off" passes through
+        # configured_sandbox_mode() above and never lands here.
+        #
+        # Still a 503: the client contract for "degraded, keep the last-good list
+        # and poll" is what keeps the picker from caching an empty result, and a
+        # 4xx here would make the frontend treat a host-capability problem as a
+        # bad request. The `code` is what lets the UI tell this apart from a
+        # timeout, and the log carries the sandbox layer's own remedy text (which
+        # names the agent.sandbox_allow_unsandboxed_exec opt-in).
+        logger.warning(
+            "api_models: sandbox refused the --list-models spawn (kind=%s, detail=%s); "
+            "returning 503. Retrying will not clear this — %s",
+            exc.kind,
+            exc.detail,
+            exc,
+        )
+        return web.json_response(
+            {"error": "model list unavailable", "code": "model_list_sandbox_unavailable"},
+            status=503,
+        )
     except Exception:
         # Spawn failure, JSON parse error, etc. — degraded, not "zero models".
         # 503 so the client retries instead of caching an empty picker.

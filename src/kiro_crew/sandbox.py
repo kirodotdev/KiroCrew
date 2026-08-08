@@ -2040,6 +2040,57 @@ def _allow_unsandboxed_exec() -> bool:
         return False
 
 
+# Fallback tier for configured_sandbox_mode() when the config cannot be read.
+# "auto" (= standard), matching wrap_argv's own default: an unreadable config
+# must not be a way to obtain a LOOSER sandbox than the operator configured.
+_SANDBOX_MODE_FALLBACK = "auto"
+
+
+def configured_sandbox_mode() -> str:
+    """The operator's ``agent.sandbox`` tier, for one-shot kiro-cli spawns.
+
+    ``wrap_argv``'s ``mode`` parameter defaults to ``"auto"``, which coincides
+    with the shipped ``agent.sandbox`` default but ignores what the operator
+    actually configured. Where ``agent.sandbox`` is an explicit ``"off"`` —
+    isolation deferred to kiro-cli's own internal sandbox, which cannot nest
+    inside Kiro Crew's (macOS Seatbelt returns EPERM) — a spawn that takes the
+    parameter default asks for a STRICTER tier than the operator configured, and
+    on a host with no backend at all (any Windows host, macOS >= 26)
+    ``wrap_argv`` fail-closes on that request while the main chat path — which
+    passes this value — runs fine.
+
+    Passing the configured value is what keeps a one-shot read from being
+    stricter than the long-lived session it accompanies; it can never make it
+    looser, because both resolve the same key.
+
+    The interactive ACP spawns already thread the configured mode through their
+    ``sandbox_mode`` constructor argument. The one-shot ``kiro-cli`` reads
+    (``--list-models``, ``whoami``, the ``/usage`` scrape) have no such plumbing,
+    so they call this instead of relying on the parameter default. Use it for a
+    spawn of the SAME binary under the SAME posture as chat; it is deliberately
+    not for spawns that pin their own tier on purpose (the prerequisite probes'
+    ``strict``, the credential-free registry clones).
+
+    Read lazily, like the two opt-in predicates above, to avoid an import cycle
+    with the config loader. Falls back to :data:`_SANDBOX_MODE_FALLBACK` so an
+    unreadable config cannot silently loosen isolation. Governance still clamps
+    the result UP inside ``wrap_argv`` (:func:`_clamp_sandbox_mode`), so an
+    enterprise ``sandbox.min_level`` floor overrides this value as it does any
+    other caller-supplied mode.
+    """
+    try:
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
+        )
+
+        return str(getattr(KiroCrewConfig.load().agent, "sandbox", _SANDBOX_MODE_FALLBACK))
+    except Exception:
+        logger.warning(
+            "Could not read agent.sandbox; using %r for this spawn", _SANDBOX_MODE_FALLBACK
+        )
+        return _SANDBOX_MODE_FALLBACK
+
+
 # The single environment marker that proves this process is already INSIDE a
 # KiroCrew namespace sandbox. Deny-by-default: the gate keys ONLY on the
 # explicit, single-purpose ``KIROCREW_SANDBOX_ACTIVE``, which is exported at

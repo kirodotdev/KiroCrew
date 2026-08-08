@@ -36,7 +36,12 @@ from kiro_crew.mcp_discovery import (
     register_servers_for_cc,
     sync_to_agent_config,
 )
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    configured_sandbox_mode,
+    create_subprocess_limited,
+    wrap_argv,
+)
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
 
@@ -475,6 +480,47 @@ def _cache_transient_failure() -> None:
     _usage_cache_ts = time.time()
 
 
+def _wrap_argv_at_configured_tier(argv: list[str]) -> tuple[list[str], str | None]:
+    """Sandbox-wrap a one-shot ``kiro-cli`` argv at the configured tier.
+
+    BLOCKING on two counts, which is why both callers hand it to an executor
+    rather than calling it inline: :func:`configured_sandbox_mode` stats (and on a
+    cache miss re-reads and revalidates) ``config.json``, and ``wrap_argv`` ->
+    ``detect_backend`` can cold-probe the sandbox backend with a synchronous
+    ``subprocess.run(..., timeout=5)``. Both reads must therefore happen in the
+    worker thread — resolving the mode on the loop and passing it in would leave
+    half the blocking work behind.
+
+    Exists so the mode resolution and the wrap cannot drift apart between the
+    identity fetch and the usage scrape: they spawn the same binary and must take
+    the same tier.
+
+    ``is_kiro_cli=True`` is explicit because ``_spawns_kiro_cli``'s basename test
+    only matches a literal ``kiro-cli``: a Windows ``kiro-cli.exe``, a wrapper
+    shim, or a ``KIROCREW_KIRO_BIN`` pointing at a nonstandard launch path all
+    read as "not kiro-cli". On macOS with ``agent.sandbox="off"`` that
+    misclassification skips the delegation branch — and with it the credential-env
+    scrub — so the child would inherit the sensitive environment. Both callers
+    here spawn kiro-cli by construction, and both ACP spawn paths pass the same
+    flag for the same reason.
+    """
+    return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
+
+
+def _wrap_argv_usage_scrape(kiro_bin: str) -> tuple[list[str], str | None]:
+    """Executor entrypoint for the ``/usage`` scrape's wrap (see
+    :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
+    return _wrap_argv_at_configured_tier(
+        [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"]
+    )
+
+
+def _wrap_argv_whoami(kiro_bin: str) -> tuple[list[str], str | None]:
+    """Executor entrypoint for the ``whoami`` identity fetch's wrap (see
+    :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
+    return _wrap_argv_at_configured_tier([kiro_bin, "whoami", "--format", "json"])
+
+
 async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     """Return the signed-in identity from ``kiro-cli whoami --format json``.
 
@@ -492,7 +538,17 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     proc = None
     cleanup = None
     try:
-        argv, cleanup = wrap_argv([kiro_bin, "whoami", "--format", "json"], mode="standard")
+        # Configured tier, not a hardcoded "standard": this is the same binary
+        # chat spawns, so it must not demand stricter isolation than chat does.
+        # Where the operator set agent.sandbox="off" (isolation deferred to
+        # kiro-cli's own internal sandbox) on a host with no backend, the pinned
+        # "standard" fail-closed and silently dropped the identity this readout
+        # labels the credit numbers with — failure here is non-fatal by design,
+        # so the symptom is a permanently blank email, not an error.
+        # Off the loop: see _wrap_argv_at_configured_tier for the two blocking reads.
+        argv, cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _wrap_argv_whoami, kiro_bin
+        )
         argv = cgroup_scope_argv(argv)
         proc = await create_subprocess_limited(
             *argv,
@@ -678,10 +734,24 @@ async def _fetch_usage_bg() -> None:
             return
         scrape_attempted = True
         # Route through the OS-level sandbox, consistent with how the main agent
-        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv).
-        argv, sandbox_cleanup = wrap_argv(
-            [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"],
-            mode="standard",
+        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv) — including
+        # the TIER. This is a `kiro-cli chat` invocation, so a hardcoded
+        # "standard" asks for stricter isolation than the very same chat binary
+        # gets on the interactive path, and fail-closes wherever no backend
+        # exists. Doubly wasteful here: the scrape is a BILLED turn, so the
+        # refusal also fed the backoff counter that eventually parks it.
+        #
+        # OFF the loop, for two blocking reads: `configured_sandbox_mode()` stats
+        # (and on a cache miss re-reads + revalidates) config.json, and
+        # `wrap_argv` -> `detect_backend` can cold-probe the sandbox backend with
+        # a synchronous `subprocess.run(..., timeout=5)`. The gate above already
+        # offloads its own config read for the same reason; doing one of the two
+        # on the loop would leave the freeze this refresh's timer reintroduces
+        # every interval. Same form and reason as `papyrus/backend/latex._run`.
+        argv, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            _wrap_argv_usage_scrape,
+            kiro_bin,
         )
         argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(

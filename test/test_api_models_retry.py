@@ -15,17 +15,31 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from kiro_crew import sandbox
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 
 async def _no_audit(**kwargs: Any) -> None:
     del kwargs
+
+
+def _stub_wrap_argv(argv: list[str], **kwargs: Any) -> tuple[list[str], None]:
+    """Pass-through stand-in for ``sandbox.wrap_argv``.
+
+    Absorbs the keyword arguments the real signature takes, so a call site adding
+    one — e.g. the explicit ``mode=configured_sandbox_mode()`` that keeps this
+    endpoint on the same tier as chat — cannot become a ``TypeError`` here and be
+    reported as the degraded 503 these tests assert for other reasons.
+    """
+    del kwargs
+    return argv, None
 
 
 def _kiro_request(tmp_path: Path) -> MagicMock:
@@ -95,7 +109,7 @@ def test_list_models_timeout_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -117,7 +131,7 @@ def test_list_models_nonzero_exit_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -139,7 +153,7 @@ def test_list_models_empty_stdout_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -159,7 +173,7 @@ def test_list_models_invalid_json_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -180,7 +194,7 @@ def test_list_models_invalid_payload_returns_503(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -210,7 +224,7 @@ def test_successful_list_returns_200_with_models(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -236,7 +250,7 @@ def test_successful_list_launches_resolved_binary_in_place(tmp_path):
         patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=resolved),
         patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None),
         patch("kiro_crew.env.augmented_path", lambda p: p),
-        patch("kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)),
+        patch("kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv),
         patch("kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv),
         patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
         patch.object(agents.asyncio, "create_subprocess_exec", spawn),
@@ -284,7 +298,7 @@ def test_structured_context_window_seeds_central_authority(tmp_path):
     ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
         "kiro_crew.env.augmented_path", lambda p: p
     ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", lambda argv: (argv, None)
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
     ), patch(
         "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
     ), patch(
@@ -298,3 +312,109 @@ def test_structured_context_window_seeds_central_authority(tmp_path):
     assert resp.status == 200
     # The non-registry GPT window is now resolvable through the central authority.
     assert mr.model_window("gpt-5.6-terra") == 272000
+
+
+# ---------------------------------------------------------------------------
+# The CONFIGURED sandbox tier (agent.sandbox), not wrap_argv's parameter default
+# ---------------------------------------------------------------------------
+
+
+def test_list_models_spawns_at_the_configured_sandbox_tier(tmp_path):
+    """The spawn asks for ``agent.sandbox``, never wrap_argv's ``"auto"`` default.
+
+    ``wrap_argv``'s mode parameter defaults to ``"auto"``, which ignores what the
+    operator configured. Where ``agent.sandbox`` is an explicit ``"off"``
+    (isolation deferred to kiro-cli's own internal sandbox, which cannot nest
+    inside Kiro Crew's), taking that default asked for a STRICTER tier than chat
+    itself runs under — and on a host with no backend at all (every Windows host,
+    macOS >= 26) it fail-closed while chat worked fine.
+    """
+    payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
+    seen: dict[str, Any] = {}
+
+    def _record(argv, **kwargs):
+        seen.update(kwargs)
+        return argv, None
+
+    with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
+    ), patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None), patch(
+        "kiro_crew.env.augmented_path", lambda p: p
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.configured_sandbox_mode", lambda: "off"
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _record
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
+    ), patch(
+        "kiro_crew.sandbox.resource_limit_preexec", lambda: None
+    ), patch.object(
+        agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(payload)
+    ), patch.object(
+        agents.asyncio, "wait_for", return_value=(payload, b"")
+    ):
+        resp = _run(agents.api_models(_kiro_request(tmp_path)))
+
+    assert resp.status == 200
+    # Explicitly passed, and passed the CONFIGURED value — not defaulted.
+    assert seen.get("mode") == "off", seen
+
+
+def test_configured_sandbox_mode_is_the_tier_the_chat_path_uses():
+    """The helper returns ``agent.sandbox`` verbatim.
+
+    This is the whole invariant: a one-shot ``kiro-cli`` read must resolve to the
+    SAME tier the interactive ACP spawn threads through its ``sandbox_mode``
+    constructor argument, so the two can never diverge into "chat works but the
+    model list 503s".
+    """
+    for configured in ("off", "auto"):
+        cfg = SimpleNamespace(agent=SimpleNamespace(sandbox=configured))
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
+            assert sandbox.configured_sandbox_mode() == configured
+
+
+def test_configured_sandbox_mode_fails_secure_when_config_unreadable(caplog):
+    """An unreadable config must not become a way to obtain a LOOSER tier."""
+    with patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("boom")):
+        with caplog.at_level(logging.WARNING, logger=sandbox.logger.name):
+            assert sandbox.configured_sandbox_mode() == sandbox._SANDBOX_MODE_FALLBACK
+    # Never silently: the substituted tier is announced.
+    assert any(r.levelno == logging.WARNING for r in caplog.records), caplog.text
+
+
+def test_sandbox_refusal_is_reported_with_a_machine_readable_code(tmp_path, caplog):
+    """A genuine sandbox refusal is a 503 that NAMES itself.
+
+    Reached only when the operator has actually configured ``agent.sandbox="auto"``
+    on a backendless host. Retrying cannot clear it, so it must not be
+    indistinguishable from the timeout branch: the body carries a ``code`` the UI
+    can branch on, and the log carries the sandbox layer's own remedy text.
+    """
+
+    def _refuse(argv, **kwargs):
+        raise sandbox.SandboxUnavailableError(
+            "Sandbox backend unavailable and allow_unsandboxed_exec is not set.",
+            kind="no_backend",
+            detail="not Linux",
+        )
+
+    with patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()), patch(
+        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
+    ), patch("kiro_crew.env.augmented_path", lambda p: p), patch(
+        "kiro_crew.dashboard.handlers.agents.configured_sandbox_mode", lambda: "auto"
+    ), patch(
+        "kiro_crew.dashboard.handlers.agents.wrap_argv", _refuse
+    ):
+        with caplog.at_level(logging.WARNING, logger=agents.logger.name):
+            resp = _run(agents.api_models(_kiro_request(tmp_path)))
+
+    # 503, not 4xx: the "degraded, keep the last-good list" client contract is
+    # what stops the picker caching an empty result.
+    assert resp.status == 503
+    assert _body(resp) == {
+        "error": "model list unavailable",
+        "code": "model_list_sandbox_unavailable",
+    }
+    # The remedy reaches the operator rather than a bare traceback.
+    assert any("not Linux" in r.getMessage() for r in caplog.records), caplog.text
