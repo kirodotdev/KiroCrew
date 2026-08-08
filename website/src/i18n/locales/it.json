@@ -5641,6 +5641,13 @@
       "undo_remove": "Annulla la rimozione",
       "will_be_removed_on_save": "Verrà rimosso al salvataggio."
     },
+    "sendToInstanceSubmenu": {
+      "failed": "Non riuscito",
+      "not_connected": "non connesso",
+      "send_a_copy_to": "Invia una copia a",
+      "sent": "Inviato",
+      "unknown_error": "Errore sconosciuto"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "Riporta nella finestra principale",
       "close_session": "Chiudi la sessione",

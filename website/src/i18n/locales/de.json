@@ -5557,6 +5557,13 @@
       "undo_remove": "Entfernen rückgängig machen",
       "will_be_removed_on_save": "Wird beim Speichern entfernt."
     },
+    "sendToInstanceSubmenu": {
+      "failed": "Fehlgeschlagen",
+      "not_connected": "nicht verbunden",
+      "send_a_copy_to": "Kopie senden an",
+      "sent": "Gesendet",
+      "unknown_error": "Unbekannter Fehler"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "Zurück ins Hauptfenster holen",
       "close_session": "Sitzung schließen",

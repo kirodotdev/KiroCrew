@@ -5557,6 +5557,13 @@
       "undo_remove": "हटाना पूर्ववत करें",
       "will_be_removed_on_save": "सहेजने पर हटा दिया जाएगा।"
     },
+    "sendToInstanceSubmenu": {
+      "failed": "विफल",
+      "not_connected": "कनेक्ट नहीं है",
+      "send_a_copy_to": "एक प्रतिलिपि भेजें",
+      "sent": "भेजा गया",
+      "unknown_error": "अज्ञात त्रुटि"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "मुख्य विंडो में वापस लाएँ",
       "close_session": "सेशन बंद करें",

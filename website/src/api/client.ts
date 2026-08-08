@@ -1222,6 +1222,15 @@ export const api = {
       ok: boolean
       message: string
     }>,
+  // Copies a session to another instance. The local session is left untouched:
+  // the peer allocates its own key, so this is a copy and never a move.
+  sendSessionToInstance: (id: string, slot: string) =>
+    post('/api/instances/' + encodeURIComponent(id) + '/send-session', { slot }).then(j) as Promise<{
+      ok: boolean
+      instance: string
+      remote_key: string
+      messages: number
+    }>,
   // Memory
   memoryPreferences: () => fetch('/api/memory/preferences').then(j),
   saveMemoryPreferences: (content: string) => put('/api/memory/preferences', { content }),

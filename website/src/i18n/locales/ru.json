@@ -5725,6 +5725,13 @@
       "undo_remove": "Отменить удаление",
       "will_be_removed_on_save": "Будет удалено при сохранении."
     },
+    "sendToInstanceSubmenu": {
+      "failed": "Ошибка",
+      "not_connected": "нет подключения",
+      "send_a_copy_to": "Отправить копию на",
+      "sent": "Отправлено",
+      "unknown_error": "Неизвестная ошибка"
+    },
     "sessionActionsMenu": {
       "bring_back_to_main": "Вернуть в главное окно",
       "close_session": "Закрыть сеанс",

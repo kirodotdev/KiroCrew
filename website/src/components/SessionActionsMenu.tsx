@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2 } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
+import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import SessionColorSwatches from './SessionColorSwatches'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
@@ -175,6 +176,11 @@ export default function SessionActionsMenu({
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
+      // Copy this session to another Kiro Crew instance. Sits in nav/access
+      // rather than the tab-modifier group above because it changes nothing
+      // about this tab — the peer gets its own copy under its own key.
+      // Self-hiding when no instances are configured.
+      <SendToInstanceSubmenu key="send-instance" slotKey={slotKey} variant={variant} />,
       // Channel-neutral link state and actions — connected origins are read-only,
       // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
       // dashboard session retains the existing Slack channel picker.
