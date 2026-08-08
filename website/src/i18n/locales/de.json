@@ -2184,6 +2184,11 @@
       },
       "list": {
         "adHocTitle": "Spontane Besprechung",
+        "deleteConfirm": "„{{title}}“ und alle Notizen, Diagramme und Aufgaben endgültig löschen? Dies kann nicht rückgängig gemacht werden.",
+        "deleteFailed": "Diese Besprechung konnte nicht gelöscht werden.",
+        "deleteMeeting": "{{title}} löschen",
+        "deleteUnavailable": "Beenden Sie diese Besprechung, bevor Sie sie löschen",
+        "deleted": "„{{title}}“ wurde gelöscht",
         "empty": "Keine Besprechungen",
         "emptyHintNoCalendar": "Verbinde in den Einstellungen einen Kalender oder starte eine spontane Besprechung.",
         "emptyHintSynced": "Nichts im Kalender, und noch keine Besprechung bearbeitet.",
