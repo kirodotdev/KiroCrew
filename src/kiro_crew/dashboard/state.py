@@ -826,6 +826,9 @@ class _ChatSlot:
         "_trust_reads",
         "_trusted_patterns",
         "_titled",
+        "_title_origin",
+        "_title_epoch",
+        "_title_refresh_mark",
         "_auto_tagged",
         "_title_in_flight",
         "_title_retry_pending",
@@ -939,6 +942,25 @@ class _ChatSlot:
         self._trust_reads: bool = False  # auto-approve read-only bash commands
         self._trusted_patterns: set[str] = set()  # session-scoped fnmatch globs
         self._titled: bool = False  # True once a title has been assigned
+        # Provenance of the current title: "auto" (LLM auto-titler or its
+        # fallback) or "user" (manual rename). Governs the background title
+        # REFRESH: only "auto" titles are ever refreshed, so a manual rename is
+        # final. Persisted as ``title_origin`` and rehydrated in
+        # chat_persistence; a legacy title with no stored origin rehydrates as
+        # "user" so a possibly-manual name is never rewritten. "" = untitled.
+        self._title_origin: str = ""
+        # Monotonic counter bumped on every EXPLICIT title assignment (manual
+        # rename or the manual generate-title endpoint). Background title tasks
+        # snapshot it before generating and re-check it after each await, so an
+        # explicit title landing mid-generation is never overwritten (see
+        # chat_title._maybe_auto_title / maybe_refresh_title).
+        self._title_epoch: int = 0
+        # User-message count at the last background title refresh ATTEMPT (0 =
+        # never refreshed). Each milestone in chat_title._TITLE_REFRESH_MILESTONES
+        # fires at most once, attempt-counted (a KEEP/SKIP/error consumes it), so
+        # the refresh token budget is hard-bounded. Persisted so a gateway
+        # restart cannot re-spend consumed milestones.
+        self._title_refresh_mark: int = 0
         self._auto_tagged: bool = False  # True once auto-tag has been attempted
         # Guards against concurrent LLM auto-title attempts (on-send trigger vs
         # the end-of-turn chat_done trigger racing on the same slot).

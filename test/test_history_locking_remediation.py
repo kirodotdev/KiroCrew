@@ -963,11 +963,11 @@ class TestUpdateMetadataOffLoop:
 class TestOnLoopCallersOffload:
     """The audited async-path callers (``_persist_title`` behind auto-title /
     manual-title handlers, ``api_session_delete``) enter ``_locked`` via
-    ``set_title`` / ``delete_session``. Running that on the event-loop thread
-    lets a wedged cross-process peer freeze chat/WS/heartbeat. These wiring
-    tests lock in that the ``_locked`` work is dispatched off the loop."""
+    ``update_metadata`` / ``delete_session``. Running that on the event-loop
+    thread lets a wedged cross-process peer freeze chat/WS/heartbeat. These
+    wiring tests lock in that the ``_locked`` work is dispatched off the loop."""
 
-    def test_persist_title_runs_set_title_off_loop(
+    def test_persist_title_runs_update_metadata_off_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import asyncio
@@ -981,13 +981,13 @@ class TestOnLoopCallersOffload:
 
         loop_thread = threading.get_ident()
         seen: dict[str, int] = {}
-        real_set_title = log.set_title
+        real_update_metadata = log.update_metadata
 
         def _spy(*args: object, **kwargs: object) -> None:
             seen["thread"] = threading.get_ident()
-            real_set_title(*args, **kwargs)  # type: ignore[arg-type]
+            real_update_metadata(*args, **kwargs)  # type: ignore[arg-type]
 
-        log.set_title = _spy  # type: ignore[method-assign]
+        log.update_metadata = _spy  # type: ignore[method-assign]
         monkeypatch.setattr(
             chat_title, "slot_history_key", lambda _slot: "dashboard:t"
         )
@@ -997,15 +997,21 @@ class TestOnLoopCallersOffload:
         slot = MagicMock()
         slot.key = "t"
         slot.title = "My Title"
+        slot._title_origin = "auto"
+        slot._title_refresh_mark = 8
+        slot._title_epoch = 0
 
         asyncio.run(chat_title._persist_title(state, slot))
 
         assert seen.get("thread") is not None
-        assert seen["thread"] != loop_thread, "set_title ran on the event loop thread"
-        assert (
-            ConversationLog(base_dir=tmp_path).get_metadata("dashboard:t")["title"]
-            == "My Title"
-        )
+        assert seen["thread"] != loop_thread, "update_metadata ran on the event loop thread"
+        persisted = ConversationLog(base_dir=tmp_path).get_metadata("dashboard:t")
+        assert persisted["title"] == "My Title"
+        # Provenance + consumed refresh milestone are persisted alongside the
+        # title so "a rename is final" and the refresh token budget survive a
+        # reload.
+        assert persisted["title_origin"] == "auto"
+        assert persisted["title_refresh_mark"] == 8
 
     def test_api_session_delete_runs_delete_off_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

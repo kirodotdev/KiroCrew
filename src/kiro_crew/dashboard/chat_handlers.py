@@ -34,6 +34,8 @@ from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _attach_variants,
+    _rehydrate_title_origin,
+    _rehydrate_title_refresh_mark,
     get_reasoning_effort_values,
     save_slot_off_loop,
 )
@@ -957,6 +959,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             title, _ = redact_credentials(title)
             slot.title = title
             slot._titled = True
+            # A pinned title is caller-explicit: record origin "user" so the
+            # background title refresh never rewrites it (this endpoint can
+            # address an ALREADY-auto-titled slot whose origin would otherwise
+            # stay "auto"), and bump the epoch so an in-flight background
+            # attempt stands down instead of clobbering the pin.
+            slot._title_origin = "user"
+            slot._title_epoch += 1
         # Bind to an artifact if provided (companion chat). Validate
         # against the artifact slug grammar so an injection-shaped value can never
         # land on the slot; anything invalid is silently dropped. Uniqueness (≤1
@@ -1008,7 +1017,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # client's slot updates behind one session's file lock. The in-memory slot
     # is the source of truth and was already broadcast at block exit; a failed
     # write re-arms the periodic flush (best_effort).
-    if folder_id:
+    # A pinned title must persist too (not just a folder move): without the
+    # write, a restart rehydrates the previous title with a refreshable "auto"
+    # origin and the background refresh may rewrite the pin.
+    if folder_id or title:
         await save_slot_off_loop(state, slot, force=True)
     return web.json_response(state.serialize_slot(slot))
 
@@ -2936,10 +2948,33 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # map can no longer name its session.
         channel_origin=is_channel_session_key(history_key),
     )
+    # Metadata is needed BEFORE the title decision: the sidebar's resume call
+    # ALWAYS sends a ``title`` (the session's existing name, or the slot key as
+    # a placeholder — see website/src/api/client.ts resumeChatSlot), so a
+    # truthy body title is usually an ECHO, not an override.
+    meta = state.conversation_log.get_metadata(history_key)
+    raw_persisted = meta.get("title") or ""
+    redacted_persisted, _ = redact_exfiltration_urls(raw_persisted)
+    redacted_persisted, _ = redact_credentials(redacted_persisted)
     title = body.get("title", "")
     if title:
         slot.title = title
         slot._titled = True
+        if title not in (name, history_key, raw_persisted, redacted_persisted):
+            # An ACTUAL override — a title matching neither the persisted name
+            # (raw or redacted spelling) nor the key placeholders — is a pin
+            # (mirrors the api_chat_slot_create pin branch): origin "user" +
+            # epoch bump so the background refresh never rewrites it.
+            slot._title_origin = "user"
+            slot._title_epoch += 1
+        else:
+            # Echo of the persisted/placeholder title: rehydrate provenance +
+            # consumed refresh budget instead — classifying echoes as pins
+            # would disable the refresh on every ordinary sidebar resume.
+            slot._title_origin = _rehydrate_title_origin(True, meta.get("title_origin"))
+            slot._title_refresh_mark = _rehydrate_title_refresh_mark(
+                meta.get("title_refresh_mark")
+            )
     else:
         sessions = state.conversation_log.list_sessions()
         for s in sessions:
@@ -2947,8 +2982,16 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 slot.title = s.get("title", history_key)
                 slot._titled = True
                 break
-    # Restore original created_at from history metadata
-    meta = state.conversation_log.get_metadata(history_key)
+        # Rehydrate title provenance + the consumed refresh budget (mirrors the
+        # chat_persistence loaders — resume is the THIRD hydration path).
+        # Without this, `_title_origin` stays "" and the background title
+        # refresh is silently disabled for every session resumed from History.
+        slot._title_origin = _rehydrate_title_origin(
+            slot._titled, meta.get("title_origin")
+        )
+        slot._title_refresh_mark = _rehydrate_title_refresh_mark(
+            meta.get("title_refresh_mark")
+        )
     if meta.get("created_at"):
         slot.created_at = meta["created_at"]
     if meta.get("agent"):
