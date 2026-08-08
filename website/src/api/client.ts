@@ -1680,7 +1680,12 @@ export const api = {
   renameTaskRun: (taskId: string, name: string) => fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/name', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).then(j),
   updateTask: (taskId: string, index: number, updates: { title?: string; description?: string; depends_on?: number[]; requires_approval?: boolean; force_approval?: boolean }) => fetch('/api/taskrunner/' + encodeURIComponent(taskId) + '/tasks/' + index, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }).then(j),
   taskRunToChat: (taskId: string) => post('/api/taskrunner/' + encodeURIComponent(taskId) + '/to-chat').then(j),
-  revealPath: (path: string) => post('/api/reveal', { path }).then(j).then((r: { copy?: string }) => {
+  // `action` mirrors the backend's own two modes: 'reveal' selects the path in
+  // the OS file manager (the default every existing caller relies on), 'open'
+  // hands a regular file to its default application. Headless hosts have
+  // neither, so the backend answers with `copy` and the path goes to the
+  // clipboard instead of the call silently doing nothing.
+  revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') => post('/api/reveal', { path, action }).then(j).then((r: { copy?: string }) => {
     if (r.copy) copyToClipboard(r.copy)
     return r
   }),
