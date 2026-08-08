@@ -4533,10 +4533,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "このドキュメントはセッションアーティファクトとして追跡されており、ソースファイルの変更ではありません"
     },
     "filePickerMenu": {
+      "folder": "フォルダー",
+      "folder_kind": "フォルダー",
       "no_matches": "一致するものがありません",
       "open_in_viewer": "ビューアで開く",
+      "remove_folder": "フォルダーを削除",
       "searching": "検索中…",
-      "type_2_chars_to_search_files": "ファイルを検索するには 2 文字以上入力してください…"
+      "type_2_chars_to_search_files": "ファイルとフォルダーを検索するには 2 文字以上入力してください…"
     },
     "fileRenderers": {
       "empty_file": "空のファイル",

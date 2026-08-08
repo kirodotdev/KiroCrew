@@ -1307,6 +1307,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Restore the incoming slot's staged file attachments (copy so the
     // live state array and the stored draft don't share a reference).
     setPendingFiles(activeSlot ? (fileDrafts.current[activeSlot] ?? []).slice() : [])
+    // Staged folder references are per-message only (no per-slot draft store
+    // yet — that lands with the attachment-metadata change), so a slot switch
+    // clears them: without this a folder staged in slot A renders in slot B
+    // and rides along on slot B's next send.
+    setPendingDirs([])
+    dirTokens.current = {}
     // Restore the incoming slot's collapsed-paste blocks (deep copy so the live
     // state and the stored draft don't share references). Without this the
     // token text rehydrates from the text draft but its backing block is gone,
@@ -1368,6 +1374,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
+  // Staged folder references, kept separate from pendingFiles because a folder
+  // is a path handed to the agent, never an uploaded attachment. Per-message
+  // only for now: the per-slot draft persistence and prompt-marker
+  // serialization land with the attachment-metadata change.
+  const [pendingDirs, setPendingDirs] = useState<string[]>([])
+  // Exact "@rel/" composer token recorded per staged folder at pick time, so
+  // the chip's remove control can strip precisely the token the pick inserted.
+  // A ref, not state: it never drives rendering, only the remove handler reads
+  // it. Cleared alongside pendingDirs (slot switch, send, steer).
+  const dirTokens = useRef<Record<string, string>>({})
   const [snipFrame, setSnipFrame] = useState<HTMLCanvasElement | null>(null)
   // The slot that INITIATED the current snip. getDisplayMedia + cropping is
   // async and the user may switch slots meanwhile, so the cropped image must
@@ -3260,7 +3276,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     setPrefillHint(false)
     if (!optionText) {
-      setInput(''); setPendingFiles([]); setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      setInput(''); setPendingFiles([]); setPendingDirs([]); dirTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
@@ -4628,7 +4644,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would lose a reference the user cannot recover except by dragging again.
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a restore path.
-    setInput(''); setPendingFiles([]); setPasteBlocks([])
+    setInput(''); setPendingFiles([]); setPendingDirs([]); dirTokens.current = {}; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
   }, [activeSlot, steerMutation, saveDrafts, dispatch])
@@ -5804,11 +5820,38 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onUploadFiles={uploadFiles}
               uploading={uploading}
               pendingFiles={pendingFiles}
+              pendingDirs={pendingDirs}
               resizedInfo={resizedInfo}
               onRemoveFile={p => setPendingFiles(prev => prev.filter(x => x !== p))}
+              onRemoveDir={p => {
+                setPendingDirs(prev => prev.filter(x => x !== p))
+                // The folder reference is carried by the "@rel/ " token in the
+                // composer text, so removing the chip must also strip the token —
+                // otherwise the agent still receives the folder and the remove
+                // control lies. The exact inserted token was recorded at pick
+                // time (dirTokens); boundary-checked so "@src/pages/" never eats
+                // a longer "@src/pages/sub/" token. On no match (user already
+                // edited the text) the text is left alone — visible and editable
+                // is the safe fallback.
+                const token = dirTokens.current[p]
+                delete dirTokens.current[p]
+                if (!token) return
+                const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                setInput(prev => prev.replace(new RegExp(`(^|\\s)${esc}(?: |(?=\\s)|$)`, 'g'), '$1'))
+              }}
               pendingSessions={pendingSessions}
               onRemoveSessionRef={unstageSessionRef}
-              onFileSelect={path => setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])}
+              // A folder is a path reference, not an upload — it must never land
+              // in pendingFiles, where the send path would treat it as an
+              // attachable file and try to read it.
+              onFileSelect={(path, kind, token) => {
+                if (kind === 'dir') {
+                  if (token) dirTokens.current[path] = token
+                  setPendingDirs(prev => prev.includes(path) ? prev : [...prev, path])
+                } else {
+                  setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])
+                }
+              }}
               onFileOpen={handleFileOpen}
               project={currentSlot?.project || ''}
               projectBranch={projectBranch}

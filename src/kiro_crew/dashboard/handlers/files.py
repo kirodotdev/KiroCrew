@@ -752,6 +752,16 @@ def _upload_dir() -> Path:
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
 _MAX_UPLOAD_FILES = 20  # max files per request
+
+# Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
+# (anti-starvation); ``_WALK_MAX_DIRS_VISITED`` bounds directories entered and is
+# what guarantees termination -- see ``_walk_file_search``. Not a multiple of the
+# per-kind budget: in a narrow-deep tree directory names grow at the same rate as
+# directories visited, so a derived ceiling is unreachable exactly when it is
+# needed. Module-level so tests can shrink them.
+_WALK_MAX_SCAN_SCOPED = 50_000
+_WALK_MAX_SCAN_UNSCOPED = 5_000
+_WALK_MAX_DIRS_VISITED = 20_000
 _ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _ALLOWED_TEXT_EXT = {
     ".txt",
@@ -1928,6 +1938,14 @@ async def api_file_search(request: web.Request) -> web.Response:
 
     max_results = 15
 
+    # kinds: "all" (default) returns both files and directories; "files" or
+    # "dirs" restricts the result set. Unknown values fall back to "all".
+    kinds = request.query.get("kinds", "all").strip().lower()
+    if kinds not in ("all", "files", "dirs"):
+        kinds = "all"
+    want_files = kinds in ("all", "files")
+    want_dirs = kinds in ("all", "dirs")
+
     # Scope search to project (arbitrary path) or workspace
     project = request.query.get("project", "")
     ws_name = request.query.get("workspace", "")
@@ -1983,9 +2001,9 @@ async def api_file_search(request: web.Request) -> web.Response:
     if scoped and len(safe_roots) == 1:
         idx = state.file_indexes.get(safe_roots[0])
         if idx and idx.is_ready and not idx.truncated:
-            results = await asyncio.to_thread(idx.search, query, _fuzzy_score, max_results)
+            results = await asyncio.to_thread(idx.search, query, _fuzzy_score, max_results, kinds)
             trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results]
-            _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} indexed=true entries={idx.entry_count} results={len(trimmed)}")
+            _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} kinds={kinds} indexed=true entries={idx.entry_count} results={len(trimmed)}")
             return web.json_response({"results": trimmed, "root": safe_roots[0]})
 
     # Fallback: walk filesystem per request
@@ -1995,21 +2013,79 @@ async def api_file_search(request: web.Request) -> web.Response:
         "dist", "build", "env", "out", "target",
     }
 
-    max_scan = 50_000 if scoped else 5_000
+    max_scan = _WALK_MAX_SCAN_SCOPED if scoped else _WALK_MAX_SCAN_UNSCOPED
     max_collect = max_results * 10  # collect enough candidates for good scoring, then stop
 
     def _walk_file_search() -> list[dict]:
-        """Blocking file-system walk — offloaded via asyncio.to_thread."""
-        results: list[dict] = []
-        walked = 0
+        """Blocking file-system walk — offloaded via asyncio.to_thread.
+
+        Files and directories are collected into SEPARATE candidate lists, each
+        with its own ``max_collect`` allowance. A shared list would let a burst
+        of matching directories fill the cap before the files in the same
+        directory are even examined, dropping the likely target before the
+        file-before-dir tie-break ever runs. Files are also scanned first at each
+        level, so under a tight scan budget the file candidates are the ones that
+        survive.
+
+        An independent ``_WALK_MAX_DIRS_VISITED`` ceiling bounds how many
+        directories the walk descends into, so no request can traverse a whole
+        large tree.
+        """
+        found: dict[str, list[dict]] = {"file": [], "dir": []}
+        walked: dict[str, int] = {"file": 0, "dir": 0}
+        dirs_visited = 0
+        wanted = {"file": want_files, "dir": want_dirs}
+
+        def _done(kind: str) -> bool:
+            return (
+                not wanted[kind]
+                or walked[kind] >= max_scan
+                or len(found[kind]) >= max_collect
+            )
+
+        def _full() -> bool:
+            return dirs_visited >= _WALK_MAX_DIRS_VISITED or (_done("file") and _done("dir"))
+
+        def _collect(kind: str, dirpath: str, names: list[str], root_dir: str) -> None:
+            """Score and collect one kind of entry from a single directory level."""
+            for name in names:
+                if _done(kind):
+                    return
+                walked[kind] += 1
+                if kind == "file" and name.startswith("."):
+                    continue
+                full = os.path.join(dirpath, name)
+                score = _fuzzy_score(query, name, os.path.relpath(full, root_dir))
+                if score <= 0:
+                    continue
+                # Resolve symlinks before the sensitivity check so a link into a
+                # sensitive tree cannot slip through.
+                if is_sensitive_path(os.path.realpath(full)):
+                    continue
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                found[kind].append({
+                    "path": full,
+                    "name": name,
+                    "kind": kind,
+                    "size": st.st_size if kind == "file" else 0,
+                    "mtime": int(st.st_mtime),
+                    "_score": score,
+                })
+
         for root_dir in safe_roots:
-            if walked >= max_scan or len(results) >= max_collect:
+            if _full():
                 break
             # macOS: prune the TCC-gated folders. Reaching into them would pop
             # one consent modal PER folder. ``scoped`` means the user NAMED
             # this root (?project= / ?workspace=), so even ``project=$HOME``
             # is deliberate and is searched in full.
             for dirpath, dirnames, filenames in os.walk(root_dir):
+                # Bounds the traversal; the per-kind counters stop advancing once
+                # their kind is done.
+                dirs_visited += 1
                 pruned = [
                     d for d in dirnames
                     if not d.startswith(".") and d not in skip_dirs
@@ -2017,38 +2093,26 @@ async def api_file_search(request: web.Request) -> web.Response:
                 dirnames[:] = pruned if scoped else platform_compat.tcc_prune_walk_dirs(
                     root_dir, dirpath, pruned
                 )
-                for fname in filenames:
-                    if walked >= max_scan or len(results) >= max_collect:
-                        break
-                    walked += 1
-                    if fname.startswith("."):
-                        continue
-                    fpath = os.path.join(dirpath, fname)
-                    rel = os.path.relpath(fpath, root_dir)
-                    sc = _fuzzy_score(query, fname, rel)
-                    if sc <= 0:
-                        continue
-                    if is_sensitive_path(fpath):
-                        continue
-                    try:
-                        st = os.stat(fpath)
-                    except OSError:
-                        continue
-                    results.append({"path": fpath, "name": fname, "size": st.st_size, "mtime": int(st.st_mtime), "_score": sc})
-                if walked >= max_scan or len(results) >= max_collect:
+                # Files first: under a tight scan budget the file candidates are
+                # the ones that survive.
+                _collect("file", dirpath, filenames, root_dir)
+                _collect("dir", dirpath, dirnames, root_dir)
+                if _full():
                     break
-        return results
+        return found["file"] + found["dir"]
 
     results = await asyncio.to_thread(_walk_file_search)
 
-    # Sort by score descending, then shorter name, then recency
+    # Sort by score descending, files before dirs on a tie, then shorter name, then recency
     now = time.time()
-    results.sort(key=lambda r: (-r["_score"], len(r["name"]), now - r["mtime"]))
+    results.sort(key=lambda r: (
+        -r["_score"], r["kind"] == "dir", len(r["name"]), now - r["mtime"],
+    ))
 
     # Strip internal scoring field before response
     trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results[:max_results]]
 
-    _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} roots={len(safe_roots)} results={len(trimmed)}")
+    _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} kinds={kinds} roots={len(safe_roots)} results={len(trimmed)}")
     return web.json_response({
         "results": trimmed,
         "root": safe_roots[0] if scoped and safe_roots else "",

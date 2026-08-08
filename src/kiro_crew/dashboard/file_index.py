@@ -22,6 +22,10 @@ _SKIP_DIRS = frozenset({
 _REFRESH_SECS = 30
 _MAX_ENTRIES = 100_000
 
+# (path, name, relpath, size, mtime, kind) where kind is "file" or "dir".
+# Directory entries carry size 0.
+_Entry = tuple[str, str, str, int, int, str]
+
 
 class FileIndex:
     """In-memory file index for a single project root.
@@ -34,7 +38,7 @@ class FileIndex:
 
     def __init__(self, root: str) -> None:
         self.root = root
-        self._entries: list[tuple[str, str, str, int, int]] = []  # (path, name, relpath, size, mtime)
+        self._entries: list[_Entry] = []
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._ready = asyncio.Event()
         self._truncated = False
@@ -63,25 +67,43 @@ class FileIndex:
     def truncated(self) -> bool:
         return self._truncated
 
-    def search(self, query: str, scorer, max_results: int = 15) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        scorer,
+        max_results: int = 15,
+        kinds: str = "all",
+    ) -> list[dict]:
         """Search the index using the provided scorer function.
 
         Args:
             query: lowercased search query (min 2 chars).
             scorer: callable(query, filename, relpath) -> float. 0 = no match.
             max_results: cap on returned results.
+            kinds: ``"all"`` (default), ``"files"``, or ``"dirs"``.
         """
+        want_files = kinds in ("all", "files")
+        want_dirs = kinds in ("all", "dirs")
         hits: list[dict] = []
-        for fpath, fname, rel, size, mtime in self._entries:
+        for fpath, fname, rel, size, mtime, kind in self._entries:
+            if kind == "dir":
+                if not want_dirs:
+                    continue
+            elif not want_files:
+                continue
             sc = scorer(query, fname, rel)
             if sc <= 0:
                 continue
             hits.append({
-                "path": fpath, "name": fname,
+                "path": fpath, "name": fname, "kind": kind,
                 "size": size, "mtime": mtime, "_score": sc,
             })
         now = time.time()
-        hits.sort(key=lambda r: (-r["_score"], len(r["name"]), now - r["mtime"]))
+        # Files rank above dirs on an otherwise equal score so directory
+        # entries never crowd out the file the user is most likely after.
+        hits.sort(key=lambda r: (
+            -r["_score"], r["kind"] == "dir", len(r["name"]), now - r["mtime"],
+        ))
         return hits[:max_results]
 
     async def _rebuild(self) -> None:
@@ -90,8 +112,8 @@ class FileIndex:
         self._truncated = truncated
         logger.debug("FileIndex rebuilt for %s: %d entries%s", self.root, len(entries), " (truncated)" if truncated else "")
 
-    def _walk(self) -> tuple[list[tuple[str, str, str, int, int]], bool]:
-        entries: list[tuple[str, str, str, int, int]] = []
+    def _walk(self) -> tuple[list[_Entry], bool]:
+        entries: list[_Entry] = []
         truncated = False
         # macOS: if this index is rooted at bare $HOME, prune the TCC-gated
         # folders. This walk re-runs every _REFRESH_SECS, so without the prune
@@ -103,6 +125,25 @@ class FileIndex:
                 dirpath,
                 [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS],
             )
+            for dname in dirnames:
+                if len(entries) >= _MAX_ENTRIES:
+                    truncated = True
+                    break
+                dfull = os.path.join(dirpath, dname)
+                # Resolve symlinks before the sensitivity check so a link
+                # pointing into a sensitive tree cannot slip through.
+                if is_sensitive_path(os.path.realpath(dfull)):
+                    continue
+                try:
+                    st = os.stat(dfull)
+                except OSError:
+                    continue
+                entries.append((
+                    dfull, dname, os.path.relpath(dfull, self.root),
+                    0, int(st.st_mtime), "dir",
+                ))
+            if truncated:
+                break
             for fname in filenames:
                 if len(entries) >= _MAX_ENTRIES:
                     truncated = True
@@ -110,13 +151,16 @@ class FileIndex:
                 if fname.startswith("."):
                     continue
                 fpath = os.path.join(dirpath, fname)
-                if is_sensitive_path(fpath):
+                if is_sensitive_path(os.path.realpath(fpath)):
                     continue
                 try:
                     st = os.stat(fpath)
                 except OSError:
                     continue
-                entries.append((fpath, fname, os.path.relpath(fpath, self.root), st.st_size, int(st.st_mtime)))
+                entries.append((
+                    fpath, fname, os.path.relpath(fpath, self.root),
+                    st.st_size, int(st.st_mtime), "file",
+                ))
             if truncated:
                 break
         return entries, truncated

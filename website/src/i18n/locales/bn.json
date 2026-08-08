@@ -4609,10 +4609,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "এই ডকুমেন্টটি সেশন আর্টিফ্যাক্ট হিসেবে ট্র্যাক করা হয়, সোর্স-ফাইলের পরিবর্তন হিসেবে নয়"
     },
     "filePickerMenu": {
+      "folder": "ফোল্ডার",
+      "folder_kind": "ফোল্ডার",
       "no_matches": "কোনো মিল নেই",
       "open_in_viewer": "ভিউয়ারে খুলুন",
+      "remove_folder": "ফোল্ডার সরান",
       "searching": "খোঁজা হচ্ছে…",
-      "type_2_chars_to_search_files": "ফাইল খুঁজতে 2+ অক্ষর টাইপ করুন…"
+      "type_2_chars_to_search_files": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন…"
     },
     "fileRenderers": {
       "empty_file": "খালি ফাইল",

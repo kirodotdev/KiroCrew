@@ -4761,10 +4761,13 @@
       "this_document_is_tracked_as_a_session_artifact_n": "Этот документ отслеживается как артефакт сессии, а не как изменение исходного файла"
     },
     "filePickerMenu": {
+      "folder": "Папка",
+      "folder_kind": "папка",
       "no_matches": "Совпадений нет",
       "open_in_viewer": "Открыть в просмотрщике",
+      "remove_folder": "Удалить папку",
       "searching": "Поиск…",
-      "type_2_chars_to_search_files": "Введите 2+ символа для поиска файлов…"
+      "type_2_chars_to_search_files": "Введите 2+ символа для поиска файлов и папок…"
     },
     "fileRenderers": {
       "empty_file": "Пустой файл",
