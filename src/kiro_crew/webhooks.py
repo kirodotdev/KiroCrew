@@ -38,9 +38,7 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import secrets
-import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -48,6 +46,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.validation import sanitize_string
 
@@ -197,43 +196,24 @@ def write_json_atomic(path: Path, payload: Any) -> None:
 
     Call inside :func:`locked` so concurrent writers cannot lose updates.
 
-    Permissions go through ``platform_compat``: ``os.fchmod`` is POSIX-only, so
-    calling it directly raises ``AttributeError`` on Windows and breaks every
-    store write there. ``restrict_to_owner`` is applied to the temp file BEFORE
-    ANY PAYLOAD BYTES ARE WRITTEN, not just before the rename — the store holds
-    signing secrets, and on Windows a bare 0600 is a no-op, so locking down
-    after the write left a window where the secrets sat in a file carrying only
-    the parent directory's inherited ACL. Locking an empty file closes that
-    window, and because the temp file is never at its final path unrestricted,
-    the published store is owner-only from the first byte. The descriptor stays
-    open across the call: on Windows ``os.open`` shares read/write/delete, so
-    ``icacls`` can still open the file for WRITE_DAC.
+    ``restrict_to_owner=True`` is the load-bearing argument here and is NOT a
+    synonym for ``mode=0o600``: this store holds signing secrets, and on
+    Windows a bare 0600 is a no-op, so the helper applies the owner-only DACL
+    to the temp file BEFORE ANY PAYLOAD BYTE IS WRITTEN. Locking down after
+    the write left a window where the secrets sat in a file carrying only the
+    parent directory's inherited ACL. That ordering used to be hand-rolled
+    here; it is now :func:`atomic_write`'s documented contract, which also
+    brings the Windows ``os.replace`` sharing-violation retry this copy lacked.
+
+    Content is ``bytes`` rather than ``str`` on purpose: ``indent=2`` embeds
+    newlines, and text mode would translate them to CRLF on Windows.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        platform_compat.restrict_to_owner(tmp)
-        # Wrap the descriptor in a file object rather than calling os.write:
-        # os.write is a single write(2) and may write FEWER bytes than asked
-        # under disk pressure, returning the count with no error. Ignoring that
-        # count would atomically replace a valid token store or run history with
-        # truncated JSON. Python's buffered writer loops until the whole buffer
-        # is out, so the full-payload guarantee comes from the stdlib.
-        with os.fdopen(fd, "wb") as handle:
-            fd = -1  # fdopen owns it now; the finally must not double-close
-            platform_compat.fchmod_safe(handle.fileno(), 0o600)
-            handle.write(json.dumps(payload, indent=2).encode("utf-8"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, str(path))
-    except BaseException:
-        if fd >= 0:
-            os.close(fd)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_write(
+        path,
+        json.dumps(payload, indent=2).encode("utf-8"),
+        fsync=True,
+        restrict_to_owner=True,
+    )
 
 
 def _read_json(path: Path, default: Any) -> Any:

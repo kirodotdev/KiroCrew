@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Mapping
 
-from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard.token_secret import _get_secret
 
@@ -333,35 +333,30 @@ class RefreshStateManager:
             }
             try:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-                payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
-                # Create-empty → tighten-DACL → write pattern (not
-                # write-then-restrict): on Windows restrict_to_owner is a
-                # subprocess (icacls) that takes measurable time, so if we
-                # wrote the payload first the .tmp file would carry the
-                # parent-inherited DACL during that window and a local
-                # co-tenant able to enumerate ~/.kiro/crew could read the
-                # consumed-JTI + revoked-chain state (breaking RFC-6819
-                # §5.2.2.3 reuse-detection secrecy) or, worse, truncate the
-                # .tmp before os.replace and substitute state that un-revokes
-                # a stolen chain. restrict_to_owner (fail-loud) sits BEFORE
-                # os.write; failure logs and continues (POSIX & Windows agree).
-                fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                try:
-                    try:
-                        platform_compat.restrict_to_owner(tmp)
-                    except OSError:
-                        # Logs the file PATH (tmp), never any token/secret value.
-                        logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                            "refresh_tokens: failed to set owner-only permissions on %s; "
-                            "file may be readable by other users",
-                            tmp,
-                            exc_info=True,
-                        )
-                    os.write(fd, payload)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, self._state_path)
+                # Create-empty → tighten-DACL → write, NOT write-then-restrict:
+                # on Windows restrict_to_owner is a subprocess (icacls) that
+                # takes measurable time, so if the payload were written first
+                # the temp would carry the parent-inherited DACL during that
+                # window and a local co-tenant able to enumerate ~/.kiro/crew
+                # could read the consumed-JTI + revoked-chain state (breaking
+                # RFC-6819 §5.2.2.3 reuse-detection secrecy) or, worse,
+                # truncate the temp before the rename and substitute state that
+                # un-revokes a stolen chain. atomic_write applies the lockdown
+                # before any payload byte, and names the temp via mkstemp
+                # (random + O_EXCL) rather than a predictable sibling, so the
+                # substitution above has no name to pre-plant.
+                #
+                # restrict_on_error="warn" preserves this call site's original
+                # policy: publish anyway and log. Escalating to a raise would
+                # hit the outer OSError handler below and drop the
+                # reuse-detection record entirely, which is worse than a state
+                # file another local user can read.
+                atomic_write(
+                    self._state_path,
+                    json.dumps(data, separators=(",", ":")).encode("utf-8"),
+                    restrict_to_owner=True,
+                    restrict_on_error="warn",
+                )
             except OSError as e:
                 logger.warning(
                     "refresh_tokens: failed to persist state to %s (%s)",

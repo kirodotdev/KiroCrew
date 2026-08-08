@@ -582,23 +582,25 @@ def import_template(name: str, data: bytes, description: str = "") -> tuple[int,
     # megabytes, so a mid-write failure (disk full, the upload cut short) is a real
     # outcome — and a direct write leaves a PARTIAL file at the target, which then
     # answers `template_exists` on every retry. The user is stuck with a corrupt
-    # template they cannot replace. Same directory so the replace is a rename within
-    # one filesystem, hence atomic; this is what `atomic_write` does for the text
-    # sibling above, which only takes `str`.
-    tmp = target.with_name(f".{target.name}.{os.getpid()}.part")
+    # template they cannot replace. `atomic_write` takes `bytes` as of the helper
+    # extension, so this is now the shared helper rather than a hand-rolled copy:
+    # it picks a unique `mkstemp` name in the target's own directory (so the
+    # replace is a rename within one filesystem, hence atomic) and carries the
+    # Windows `os.replace` sharing-violation retry this copy lacked. The final
+    # mode is unchanged: the replace already overwrote the 0o600 placeholder with
+    # the temp file's umask-default mode.
     try:
-        tmp.write_bytes(data)
-        os.replace(tmp, target)
+        atomic_write(target, data)
     except OSError as exc:
         logger.warning("pptx-maker: template import failed: %s", exc)
-        for leftover in (tmp, target):
-            # `target` too: we created the zero-byte placeholder that claimed the name,
-            # so leaving it would answer `template_exists` on every retry against a file
-            # holding nothing.
-            try:
-                leftover.unlink(missing_ok=True)
-            except OSError:  # pragma: no cover - best effort
-                logger.debug("pptx-maker: could not remove the partial template")
+        # `atomic_write` removes its own temp file. `target` is ours to clean:
+        # we created the zero-byte placeholder that claimed the name above, so
+        # leaving it would answer `template_exists` on every retry against a
+        # file holding nothing.
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort
+            logger.debug("pptx-maker: could not remove the partial template")
         return 500, {"error": "could not save the template", "code": "template_write_failed"}
     # Analysis is best effort: an un-analyzed template still works, it just has
     # no theme colours / layout count to show, so a failure here must not undo

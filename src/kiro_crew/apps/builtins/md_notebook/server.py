@@ -39,6 +39,7 @@ from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import verify_proxy_request
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sel import sel
@@ -299,28 +300,17 @@ def _write_pat_sync(pat: str) -> None:
     # Write to an owner-only sibling temp, fsync, then atomically replace. A
     # direct O_TRUNC open would empty the existing token before the new bytes
     # land, so a failure partway (a full disk is the realistic one) would lose a
-    # valid credential. The temp is created 0600 so the token is never briefly
-    # world-readable. Written 0600 and never echoed back (only a boolean).
-    tmp = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(pat)
-            fh.flush()
-            os.fsync(fh.fileno())
-        # os.chmod's 0600 is a no-op on Windows (it only toggles read-only),
-        # leaving the token readable by other accounts. restrict_to_owner
-        # applies an owner-only DACL there and chmod 0600 on POSIX. Do it on the
-        # temp BEFORE the replace so the final file is never briefly permissive.
-        try:
-            restrict_to_owner(tmp)
-        except OSError:
-            logger.warning("could not restrict Notes PAT file to owner-only", exc_info=True)
-        os.replace(tmp, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    # valid credential.
+    #
+    # os.chmod's 0600 is a no-op on Windows (it only toggles read-only), leaving
+    # the token readable by other accounts. restrict_to_owner applies an
+    # owner-only DACL there and chmod 0600 on POSIX, and atomic_write applies it
+    # to the temp BEFORE any payload byte — narrower than the previous
+    # write-then-restrict here, which left the token in a parent-inherited-DACL
+    # file for the duration of the icacls subprocess. restrict_on_error="warn"
+    # keeps the original policy: a chmod failure warns rather than losing the
+    # credential. Written 0600 and never echoed back (only a boolean).
+    atomic_write(target, pat, fsync=True, restrict_to_owner=True, restrict_on_error="warn")
 
 
 async def read_vaults() -> list[dict[str, Any]]:
