@@ -157,4 +157,6 @@ class TestLessonsCreateTypeValidation:
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 200
-        request.app["state"].lessons.save.assert_called_once()
+        # save_or_enrich, not save: the route switched so a re-submitted rule can have
+        # a NOT-clause attached instead of being skipped as a duplicate.
+        request.app["state"].lessons.save_or_enrich.assert_called_once()

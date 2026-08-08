@@ -1220,8 +1220,8 @@ class TestLearnCli:
         with _LearnHarness() as h:
             h.vs.write_lesson.return_value = False
             cc._learn(_ns(learn_action="add", rule="do x", category="knowledge", negative=None))
-        h.jsonl.save.assert_called_once()
-        saved = h.jsonl.save.call_args[0][0]
+        h.jsonl.save_or_enrich.assert_called_once()
+        saved = h.jsonl.save_or_enrich.call_args[0][0]
         assert saved.rule == "do x" and saved.category == "knowledge"
         assert "Saved: do x [knowledge]" in capsys.readouterr().out
 
