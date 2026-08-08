@@ -278,7 +278,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.response-verbosity",
     "label": "Response Verbosity",
-    "description": "How terse the agent's prose is. Ultra-concise writes for an ADHD reader: the answer lands in an opening of at most three sentences, and any detail after it must be scannable bullets rather than prose. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail at every level.",
+    "description": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level, and security warnings and multi-step instructions keep full detail.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
