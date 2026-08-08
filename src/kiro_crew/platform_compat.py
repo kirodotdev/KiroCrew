@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes.util
+import errno
 import io
 import logging
 import os
@@ -20,6 +21,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
@@ -467,6 +469,82 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
         return True
     except OSError:
         return False
+
+
+def probe_file_persistence(directory: Path) -> str | None:
+    """Verify that *directory* supports every primitive the Kiro Crew
+    persistence paths depend on: creating a new file (``tempfile.mkstemp``),
+    writing bytes to it, taking an advisory lock (:func:`file_lock`),
+    atomically replacing it (``os.replace``), and removing it — the exact
+    operations ``atomic_write`` and the ``.lock``-file helpers perform.
+
+    Returns ``None`` when all of them work, otherwise a human-readable
+    description of the first failure. A process whose environment breaks any
+    of these primitives cannot save chat history, cron history, or session
+    state — but it CAN still serve traffic and append to already-open log fds,
+    so without this probe it limps along losing writes silently. The known way
+    to get into that state is inheriting a seccomp syscall filter from a
+    sandboxed parent (seccomp survives fork/exec, ``nohup`` included):
+    filtered syscalls fail with ``ENOSYS`` while everything else looks
+    healthy. The returned message names that cause when ``errno`` says so.
+
+    Probe files carry a ``.persistence-probe-`` prefix, and their removal is
+    part of the probed contract: an environment that allows creating files but
+    denies deleting them (delete-scoped ACLs) breaks the atomic
+    rename/replace paths just the same, so a failed cleanup is reported as a
+    preflight failure rather than suppressed. On the failure path probe files
+    are best-effort removed; one may remain only when removal itself is what
+    is broken.
+    """
+    fd: int | None = None
+    path: str | None = None
+    replaced: str | None = None
+    step = "create files in"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, path = tempfile.mkstemp(dir=directory, prefix=".persistence-probe-")
+        step = "write files in"
+        os.write(fd, b"probe")
+        step = "flush files in"
+        os.fsync(fd)
+        step = "lock files in"
+        with file_lock(fd, exclusive=True):
+            pass
+        os.close(fd)
+        fd = None
+        step = "atomically replace files in"
+        replaced = f"{path}.target"
+        # The same replace primitive atomic_write commits with: plain
+        # os.replace on POSIX, bounded retry over the Windows AV/indexer
+        # sharing-violation window — a healthy Windows data home must not fail
+        # the preflight over that transient. Imported lazily because
+        # atomic_write imports this module at top level.
+        from kiro_crew.atomic_write import replace_with_retry
+
+        replace_with_retry(path, replaced)
+        path = None
+        step = "remove files from"
+        os.unlink(replaced)
+        replaced = None
+    except OSError as exc:
+        hint = ""
+        if exc.errno == errno.ENOSYS:
+            hint = (
+                " (ENOSYS from a basic file syscall usually means this process"
+                " inherited a seccomp filter from a sandboxed parent — e.g. a"
+                " gateway spawned from inside an agent session; start it from a"
+                " regular shell or the system service instead)"
+            )
+        return f"cannot {step} {directory}: {exc}{hint}"
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        for leftover in (path, replaced):
+            if leftover is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(leftover)
+    return None
 
 
 # ---------------------------------------------------------------------------

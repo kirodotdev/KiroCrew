@@ -5928,6 +5928,37 @@ class GatewayOrchestrator:
         # No-op on Windows (no per-process descriptor rlimit).
         platform_compat.raise_nofile_soft_limit(10240)
 
+        # Refuse to boot when the data home cannot persist state. Every save
+        # path (chat history, cron history, session PIDs) needs file creation +
+        # advisory locking in the data home; when either is broken (e.g. a
+        # seccomp filter inherited from a sandboxed parent turns flock/mkstemp
+        # into ENOSYS) the gateway would still serve traffic while silently
+        # dropping every write — and the very next call below would crash with
+        # a raw traceback anyway. Failing here is loud, early, and actionable.
+        # Off-loop: the probe does real filesystem I/O (mkstemp + flock), which
+        # on a stalled filesystem would otherwise wedge the event loop.
+        def _probe_persistence() -> str | None:
+            return platform_compat.probe_file_persistence(data_home())
+
+        try:
+            persistence_error = await asyncio.to_thread(_probe_persistence)
+        except RuntimeError as exc:
+            # asyncio.to_thread could not get a worker thread (executor
+            # exhaustion/shutdown). A process that cannot spawn one thread at
+            # boot cannot run session pools either — route through the clean
+            # preflight exit below instead of dying with a raw traceback.
+            persistence_error = f"cannot run the persistence preflight: {exc}"
+        if persistence_error is not None:
+            logger.critical(
+                "Persistence preflight failed — refusing to start: %s",
+                persistence_error,
+            )
+            print(
+                f"❌ Cannot persist state: {persistence_error}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
         # Clean up orphaned kiro-cli processes from previous runs
         from kiro_crew.session import cleanup_orphaned_sessions
 
