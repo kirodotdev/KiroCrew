@@ -36,8 +36,10 @@ class FakeSessions:
         self.created: list[tuple[str, dict]] = []
         self.released: list[str] = []
 
-    async def get_or_create(self, key, *, agent=None, model=None, cwd=None, **kw):
-        self.created.append((key, {"agent": agent, "model": model, "cwd": cwd}))
+    async def get_or_create(self, key, *, agent=None, model=None, cwd=None, extra_env=None, **kw):
+        self.created.append(
+            (key, {"agent": agent, "model": model, "cwd": cwd, "extra_env": extra_env})
+        )
         return FakeProvider(key), True, False
 
     def release(self, key, *, cleanup=False):
@@ -109,10 +111,35 @@ async def test_opts_and_defaults_flow_into_get_or_create() -> None:
     fn = build_agent_fn(sessions, run_id="wf_z", default_agent="researcher", default_model="m1")
 
     await fn("p", {})  # uses defaults
-    assert sessions.created[-1][1] == {"agent": "researcher", "model": "m1", "cwd": None}
+    assert sessions.created[-1][1] == {
+        "agent": "researcher", "model": "m1", "cwd": None, "extra_env": None
+    }
 
     await fn("p", {"agent": "coder", "model": "m2", "cwd": "/tmp/x"})  # opts override
-    assert sessions.created[-1][1] == {"agent": "coder", "model": "m2", "cwd": "/tmp/x"}
+    assert sessions.created[-1][1] == {
+        "agent": "coder", "model": "m2", "cwd": "/tmp/x", "extra_env": None
+    }
+
+
+async def test_extra_env_run_level_pin_flows_into_get_or_create() -> None:
+    """Issue #2207: a run-level extra_env pin reaches every spawned session,
+    just like default_agent/default_model/cwd (WorkflowContext.agent has no
+    per-call env= override, so this is a run-level pin)."""
+    env = {"CORRELATION_ID": "abc123", "MC_ENDPOINT": "https://example.test"}
+    sessions = FakeSessions()
+    fn = build_agent_fn(sessions, run_id="wf_env", extra_env=env)
+
+    await fn("ephemeral step", {})
+    assert sessions.created[-1][1]["extra_env"] == env
+
+    # also on a named (stateful) session
+    await fn("chain step", {"session": "chain-A"})
+    assert sessions.created[-1][1]["extra_env"] == env
+
+    # default (no pin) stays None — no accidental env leakage
+    plain = FakeSessions()
+    await build_agent_fn(plain, run_id="wf_plain")("p", {})
+    assert plain.created[-1][1]["extra_env"] is None
 
 
 async def test_end_to_end_through_runner() -> None:

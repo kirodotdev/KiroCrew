@@ -52,12 +52,18 @@ def build_agent_fn(
     default_agent: Optional[str] = None,
     default_model: Optional[str] = None,
     cwd: Optional[str] = None,
+    extra_env: Optional[dict[str, str]] = None,
 ) -> AgentFn:
     """Return an ``agent_fn`` that runs each workflow agent step through a model.
 
     ``sessions`` is a ``SessionManager``-like object exposing
     ``async get_or_create(key, *, agent, model, cwd, ...) -> (provider, *_)`` and
     ``release(key, *, cleanup=True)``. Injected so tests can pass a fake.
+
+    ``extra_env`` is a run-level environment pin threaded into every spawned
+    session, mirroring ``default_agent``/``default_model``/``cwd``. It is a
+    per-run pin rather than a per-call override because ``WorkflowContext.agent()``
+    exposes no ``env=`` parameter (that Protocol is frozen).
     """
 
     # Per-run, 0-based ephemeral session index (not a module-global, so each run
@@ -75,6 +81,7 @@ def build_agent_fn(
             agent=opts.get("agent") or default_agent,
             model=opts.get("model") or default_model,
             cwd=opts.get("cwd") or cwd,
+            extra_env=extra_env,
         )
         # Wall clock for THIS agent turn only (not the whole workflow run):
         # acp leaves TurnUsage.duration_ms at 0, so without this the row's
