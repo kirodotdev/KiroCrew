@@ -14,37 +14,12 @@
  * Usage: node scripts/capture-agent-skills.mjs [outDir]
  */
 import { chromium } from 'playwright'
-import { mkdirSync, readFileSync, existsSync, statSync } from 'node:fs'
-import { createServer } from 'node:http'
-import { join, extname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { mkdirSync } from 'node:fs'
+import { json, serveDist, stubCommonApi } from './lib/capture-harness.mjs'
 
 const OUT = process.argv[2] || '/tmp/agent-skills-shots'
-// fileURLToPath, not URL.pathname: on Windows .pathname yields "/C:/…", which
-// join() then turns into an invalid "\C:\…" and every read fails with ENOENT.
-const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 
 mkdirSync(OUT, { recursive: true })
-
-const MIME = {
-  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
-  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
-  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon',
-}
-
-/** Static server with index.html fallback so /capabilities deep-links resolve. */
-function serveDist() {
-  return new Promise(resolve => {
-    const srv = createServer((req, res) => {
-      const rel = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/+/, '')
-      let file = join(DIST, rel)
-      if (!rel || !existsSync(file) || statSync(file).isDirectory()) file = join(DIST, 'index.html')
-      res.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' })
-      res.end(readFileSync(file))
-    })
-    srv.listen(0, '127.0.0.1', () => resolve({ srv, base: `http://127.0.0.1:${srv.address().port}` }))
-  })
-}
 
 const SKILLS = [
   { key: 'babysit', name: 'babysit', description: 'Same-session monitoring loop for PRs and CI runs', path: '/home/user/.kiro/crew/skills/babysit/SKILL.md', source: 'kirocrew' },
@@ -102,9 +77,6 @@ function installed() {
   }))
 }
 
-const json = (route, body) =>
-  route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-
 const { srv, base } = await serveDist()
 const browser = await chromium.launch()
 const context = await browser.newContext({
@@ -136,41 +108,8 @@ await page.route('**/api/**', async route => {
   }
   if (path === '/api/agents/installed') return json(route, installed())
   if (path === '/api/skills') return json(route, SKILLS)
-  if (path === '/api/config/default-agent') return json(route, { default_agent: 'kirocrew' })
-  if (path.startsWith('/api/agent-metadata/')) return json(route, { content: '' })
   if (path === '/api/mcp/probe') return json(route, [])
-  if (path === '/api/spawn') return json(route, { agents: [] })
-  if (path === '/api/sessions/context') return json(route, { sessions: [] })
-  if (path === '/api/sessions/usage') return json(route, { usage: null })
-  if (path === '/api/models') {
-    return json(route, [
-      { model_name: 'auto', description: 'Let Kiro choose' },
-      { model_name: 'claude-opus-4.8', description: 'Most capable' },
-      { model_name: 'claude-sonnet-4.5', description: 'Balanced' },
-    ])
-  }
-  // The app shell mounts behind this gate and reads status.operation.status —
-  // a generic object stub crashes it, blanking the whole page.
-  if (path === '/api/kiro-prerequisite') {
-    return json(route, {
-      platform: 'linux', installed: true, authenticated: true, ready: true,
-      initial_setup_complete: true, can_auto_install: false, can_login: false,
-      repair_required: false, docs_url: '', setup_allowed: false,
-      operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-    })
-  }
-  if (path === '/api/chat/slots') return json(route, [])
-  if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-  if (path === '/api/status') return json(route, { sessions: 1, crons: 0, lessons: 0, subagents: 0, uptime: 120, version: 'dev' })
-  if (path === '/api/notifications') return json(route, { notifications: [], unread: 0 })
-  if (path === '/api/auth/me') return json(route, { user: 'owner', app: '' })
-  if (path === '/api/themes') return json(route, { themes: [], installed: [] })
-  if (path === '/api/theme/boot') return json(route, { mode: 'dark', theme: '' })
-  if (path === '/api/dashboard/branding') return json(route, { bot_name: 'Kiro', avatar: '' })
-  if (path === '/api/recent-projects') return json(route, { dirs: [] })
-  if (path === '/api/dashboard/config') return json(route, { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, widget_density: 'more' })
-  const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-  return json(route, objectish ? {} : [])
+  return stubCommonApi(route, path)
 })
 
 page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
