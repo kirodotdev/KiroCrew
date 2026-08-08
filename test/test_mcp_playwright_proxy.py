@@ -209,6 +209,7 @@ class TestResolvePlaywrightCmd:
 
             def __init__(self, cmd, **kw):
                 captured["cmd"] = cmd
+                captured["env"] = kw.get("env") or {}
                 self.stdin = None
                 self.stdout = None
 
@@ -227,7 +228,44 @@ class TestResolvePlaywrightCmd:
             pass
 
         assert captured["cmd"][0] == launcher
-        assert captured["cmd"][1] == "@playwright/mcp"
+        # ``--yes`` (npx flag) precedes the pinned package spec.
+        assert captured["cmd"][1] == "--yes"
+        assert captured["cmd"][2] == "@playwright/mcp@latest"
+        # The public registry is pinned in the child env so a private/stale-token
+        # default .npmrc cannot 401 this public package.
+        assert captured["env"].get("npm_config_registry") == proxy.PUBLIC_NPM_REGISTRY
+
+    def test_run_proxy_does_not_pin_registry_for_binary_launcher(self, monkeypatch):
+        # A standalone binary launcher is not an npm fetch, so no registry pin is
+        # injected — we must not perturb the env for a non-npx launcher.
+        launcher = "/usr/local/bin/mcp-server-playwright"
+        monkeypatch.setattr(proxy, "_resolve_playwright_cmd", lambda: launcher)
+        captured = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            def __init__(self, cmd, **kw):
+                captured["cmd"] = cmd
+                captured["env"] = kw.get("env") or {}
+                self.stdin = None
+                self.stdout = None
+
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr(proxy.subprocess, "Popen", _FakeProc)
+        monkeypatch.setattr(proxy.threading, "Thread", lambda *a, **k: _NoopThread())
+        monkeypatch.setattr(proxy, "_read_message", lambda *a, **k: None)
+        monkeypatch.delenv("npm_config_registry", raising=False)
+
+        try:
+            proxy.run_proxy([])
+        except SystemExit:
+            pass
+
+        assert captured["cmd"] == [launcher]
+        assert "npm_config_registry" not in captured["env"]
 
 
 class _NoopThread:

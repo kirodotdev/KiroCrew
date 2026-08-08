@@ -541,6 +541,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # allowlist before it can reach argv — never free agent input. Mirrors
         # cli.py::_ensure_node / env.py::_run below, which shell the same
         # node/ensure-node toolchain and are benign for the same reason.
+        # ``_npx_cache_playwright_roots`` runs the fixed ``npm config get cache``.
+        "browser/setup.py::_npx_cache_playwright_roots",
         "browser/setup.py::_resolve_playwright_core_cli",
         "browser/setup.py::_run",
         "cli.py::_consolidate_cmd",

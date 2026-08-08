@@ -49,16 +49,54 @@ Playwright MCP handles all browser interaction. KiroCrew only handles enterprise
 - Extension mode: zero auth work — real Chrome session has everything
 - Headless mode: storage state (`~/.kiro/crew/playwright-storage-state.json`) + Kerberos via `--auth-server-allowlist`
 
-**Install on Browser-Mode enable.** Turning Browser Mode on from Settings runs a
-real install: `ensure_playwright_installed(engine)` in `browser/setup.py`
-bootstraps Node when absent (through the bundled `ensure-node.sh`), runs
-`npm install -g @playwright/mcp@latest`, then `playwright install <engine>` to
-fetch the OS/arch browser binary for the selected launch engine. It is
-best-effort and never raises: it returns a structured
-`{ok, step, detail, engine}` so the Browser settings save handler reports
-progress or an actionable failure in its JSON body instead of 500-ing. The npm
-and browser steps are skipped when a launcher already resolves, so re-enabling is
-fast.
+**Provision on Browser-Mode enable.** Turning Browser Mode on from Settings runs
+`ensure_playwright_installed(engine)` in `browser/setup.py`, which bootstraps Node
+when absent (through the bundled `ensure-node.sh`) and then makes `@playwright/mcp`
+launchable the SAME way the proxy runs it and the whole MCP ecosystem installs it
+— **via `npx`, never `npm install -g`**:
+
+- **Detect first.** If a launcher already resolves (a standalone
+  `mcp-server-playwright`/`playwright-mcp` binary, `npx`, or a
+  `KIROCREW_PLAYWRIGHT_CMD` override), there is nothing to fetch — a re-enable, or
+  a host that already has `npx`, downloads nothing.
+- **npx-only host:** prime the `npx` cache with one pinned fetch so the first
+  browse is not cold, then `playwright install <engine>` through the bundled
+  `playwright-core` (revision-matched with the launcher). If the browser can't be
+  provisioned yet it fails **soft** (`step: "browser-deferred"`, `ok: true`):
+  `@playwright/mcp` downloads it on first use.
+- **npm-free host** (Node without `npm`/`npx`): fails **soft** at `step:
+  "package"` with the two npm-free paths — the official Docker image
+  (`mcr.microsoft.com/playwright/mcp`) and the `KIROCREW_PLAYWRIGHT_CMD` override.
+
+**Public-registry pin.** Every npm/npx fetch Kiro Crew triggers — the prime, the
+browser install, and the proxy's own runtime `npx` launch — pins the public
+registry via `npm_config_registry=https://registry.npmjs.org/` in the child env.
+`@playwright/mcp` is a public package, but a user's ambient `.npmrc` may point the
+default registry at a private mirror (corporate proxy, AWS CodeArtifact) whose
+token expires; without the pin a bare fetch 401s. The pin is env-var based (not an
+argv flag) so npm and npx honor it identically on macOS, Linux, and Windows.
+
+**Provisioning is always advisory — enabling never surfaces a raw error.** Turning
+Browser Mode on registers the proxy (the capability is on) BEFORE and independent
+of any download, and no provisioning outcome is ever shown to the operator as a raw
+npm/playwright failure — the raw stderr is logged for debugging, never surfaced.
+The outcome is honest about usability without ever being alarming:
+
+- **`ok: true, step: "done"`** — browser provisioned.
+- **`ok: true, step: "browser-deferred"`** — the launcher resolves but the browser
+  was NOT yet attempted (npx cache still warming); a re-save once warm completes it.
+- **`ok: false, step: "browser"`** — the browser download WAS attempted and failed
+  (offline, unwritable/full cache). Honestly not-yet-usable (a headless browse needs
+  the executable), so NOT reported as usable — but still a calm "toggle off/on to
+  retry" note, never a stderr dump.
+- **`ok: false, step: "node" | "package"`** — no Node, or no npm/npx launcher; calm
+  "Browser Mode is on; to finish setup…" note naming the Docker / `KIROCREW_PLAYWRIGHT_CMD`
+  paths.
+
+The dashboard renders every one of these as a MUTED advisory (info icon), never a
+red error. `ensure_playwright_installed` is best-effort and never raises; the save
+handler also wraps the call so an unexpected exception still returns 200 with a
+deferred note rather than 500-ing. It returns a structured `{ok, step, detail, engine}`.
 
 **Browser Mode is a persistent capability toggle.** The durable
 `browser-mode-enabled` flag file under the data home is the gate. While it is on,

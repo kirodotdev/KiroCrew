@@ -982,7 +982,27 @@ def _drain_pending_with_error() -> None:
     _PENDING_REQUESTS.clear()
 
 
-def _resolve_playwright_cmd() -> str | None:
+# The PUBLIC npm registry. ``@playwright/mcp`` is public, but a user's ambient
+# ``.npmrc`` may point the DEFAULT registry at a private mirror (corporate proxy,
+# AWS CodeArtifact) whose auth token expires — so a bare ``npx @playwright/mcp``
+# 401s on this public package. When we launch via npx we pin this registry (argv
+# ``--registry`` + ``npm_config_registry`` in the child env) so the on-demand
+# fetch never routes through a private/stale-token default. npm and npx honor both
+# forms identically on macOS, Linux, and Windows.
+PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/"
+
+
+def _is_npx_launcher(cmd: str) -> bool:
+    """True when ``cmd`` resolves to npx (``npx`` on POSIX, ``npx.CMD`` on Windows).
+
+    Extension-insensitive: the resolved launcher is ``npx.CMD`` on Windows and
+    bare ``npx`` on POSIX. Matching on the extension-stripped basename keeps the
+    registry-pin and ``@playwright/mcp`` argv logic identical across platforms.
+    """
+    return os.path.splitext(os.path.basename(cmd))[0].lower() == "npx"
+
+
+def _resolve_playwright_cmd(search_path: str | None = None) -> str | None:
     """Find the public ``@playwright/mcp`` CLI, resolving via PATH/npx.
 
     Resolution order:
@@ -991,6 +1011,14 @@ def _resolve_playwright_cmd() -> str | None:
       3. ``npx`` — the public ``@playwright/mcp`` package is launched via
          ``npx @playwright/mcp`` when no standalone binary is installed.
 
+    ``search_path`` overrides the PATH ``shutil.which`` searches. The proxy (a
+    standalone CLI process) passes ``None`` and searches its own inherited PATH.
+    The setup path passes a Node-AUGMENTED PATH so a version-manager /
+    ``ensure-node.sh`` toolchain the gateway daemon did not inherit is still
+    found — without it, a daemon that bootstrapped Node via the ``node-bin-dir``
+    marker (which is NOT written into ``os.environ["PATH"]``) would resolve
+    ``ensure_node()`` yet see no ``npx`` here and wrongly conclude no launcher.
+
     Returns ``None`` when no launcher is resolvable (e.g. Node/npm absent),
     so callers can fail gracefully rather than spawning a missing binary.
     """
@@ -998,14 +1026,14 @@ def _resolve_playwright_cmd() -> str | None:
     if override:
         return override
     for binary in ("mcp-server-playwright", "playwright-mcp"):
-        found = shutil.which(binary)
+        found = shutil.which(binary, path=search_path)
         if found:
             return found
     # Return the RESOLVED path, never the bare name: on Windows npx ships only
     # as ``npx.CMD`` and CreateProcess does not apply PATHEXT, so spawning the
     # literal "npx" raises FileNotFoundError even though PATHEXT-aware
     # shutil.which found it.
-    npx = shutil.which("npx")
+    npx = shutil.which("npx", path=search_path)
     if npx:
         return npx
     return None
@@ -1013,6 +1041,17 @@ def _resolve_playwright_cmd() -> str | None:
 
 def run_proxy(args: list[str]) -> None:
     """Main proxy loop."""
+    # Augment PATH with the Node toolchain dirs BEFORE resolving, and export it to
+    # every child. The gateway spawns this proxy with its own inherited PATH, which
+    # on a marker-bootstrapped host (Node installed by ensure-node.sh, recorded in
+    # the node-bin-dir marker, NOT written into os.environ["PATH"]) lacks npx. Setup
+    # resolves the launcher on exactly this augmented PATH, so without matching it
+    # here setup would detect npx and skip priming while the runtime proxy then
+    # can't find npx to launch — the "setup and runtime resolve from different
+    # PATHs" split. Aligning them is what keeps enable and launch consistent.
+    from kiro_crew.env import node_augmented_path
+
+    os.environ["PATH"] = node_augmented_path(os.environ.get("PATH", ""))
     playwright_cmd = _resolve_playwright_cmd()
     if playwright_cmd is None:
         error_resp = {
@@ -1029,12 +1068,20 @@ def run_proxy(args: list[str]) -> None:
         }
         _write_message(sys.stdout.buffer, error_resp)
         sys.exit(1)
+    spawn_env = dict(os.environ)
     if playwright_cmd.endswith(".js"):
         cmd = ["node", playwright_cmd] + args
-    elif os.path.splitext(os.path.basename(playwright_cmd))[0].lower() == "npx":
-        # Extension-insensitive: the resolved launcher is ``npx.CMD`` on Windows
-        # and bare ``npx`` on POSIX; both must still get the @playwright/mcp arg.
-        cmd = [playwright_cmd, "@playwright/mcp"] + args
+    elif _is_npx_launcher(playwright_cmd):
+        # npx fetches the package on first use. ``--yes`` suppresses the install
+        # prompt (an npx flag, so it precedes the package spec). Pin @latest so the
+        # launched version matches what setup primed. The PUBLIC-registry pin rides
+        # ONLY on ``npm_config_registry`` in the child env — not an argv flag: npx
+        # option support varies by version and any flag after the package spec is
+        # forwarded to @playwright/mcp instead, whereas the env var is honored by
+        # npm/npx on every version and OS. This is what stops a private/stale-token
+        # default ``.npmrc`` from 401-ing this public package.
+        cmd = [playwright_cmd, "--yes", "@playwright/mcp@latest"] + args
+        spawn_env["npm_config_registry"] = PUBLIC_NPM_REGISTRY
     else:
         cmd = [playwright_cmd] + args
 
@@ -1044,7 +1091,7 @@ def run_proxy(args: list[str]) -> None:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,
-            env=os.environ,
+            env=spawn_env,
         )
     except (OSError, FileNotFoundError) as exc:
         error_resp = {

@@ -1215,6 +1215,27 @@ class TestBrowserConfig:
         assert payload["ok"] is True
         assert payload["mcp_status"] == "registration-failed"
 
+    def test_installer_exception_never_500s_defers_softly(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # Enabling Browser Mode must NEVER 500 or surface a raw install error, even
+        # if the (contracted-non-raising) installer raises unexpectedly. The save
+        # returns 200 with a calm browser-deferred advisory; Browser Mode stays on.
+        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(mod, "generate_playwright_config", lambda engine=None: None)
+        monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "registered"))
+
+        def _explode(engine: str) -> dict:
+            raise RuntimeError("unexpected boom deep in the installer")
+
+        monkeypatch.setattr(mod, "ensure_playwright_installed", _explode)
+        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": True, "extension_mode": False}))
+        assert resp.status == 200
+        payload = _payload(resp)
+        assert payload["ok"] is True and payload["enabled"] is True
+        assert payload["install"]["step"] == "browser-deferred"
+        assert "boom" not in payload["install"]["detail"]
+
     def test_app_token_cannot_enable_browser_mode(self, monkeypatch, tmp_path: Path) -> None:
         # Enabling Browser Mode is a keystone-level grant; an app token (truthy
         # request["app"]) must be refused with 403 before any state is written.

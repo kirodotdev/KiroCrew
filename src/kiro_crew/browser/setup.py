@@ -27,7 +27,11 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.auth import parse_netscape_cookies
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.env import ensure_node, find_node_tool, node_augmented_path
-from kiro_crew.mcp_playwright_proxy import _resolve_playwright_cmd
+from kiro_crew.mcp_playwright_proxy import (
+    PUBLIC_NPM_REGISTRY,
+    _is_npx_launcher,
+    _resolve_playwright_cmd,
+)
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
@@ -199,7 +203,7 @@ _INSTALL_TIMEOUT_SECS = 600.0
 
 
 def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]:
-    """Install the public ``@playwright/mcp`` package and the engine's browser.
+    """Provision the public ``@playwright/mcp`` launcher and the engine's browser.
 
     Best-effort and never raises — returns a structured
     ``{"ok": bool, "step": str, "detail": str, "engine": str}`` so a caller (the
@@ -210,34 +214,53 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
        (bootstraps it through the bundled ``ensure-node.sh`` when absent). Without
        Node nothing else can run, so this returns ``ok=False, step="node"`` with
        an install hint.
-    2. **package** — ``npm install -g @playwright/mcp@latest`` (skipped when a
-       launcher already resolves, so a re-enable is fast).
+    2. **package** — make ``@playwright/mcp`` launchable the SAME way the proxy
+       runs it, matching the ecosystem: no ``npm install -g``. Every MCP client
+       (Claude Code, Codex, VS Code) launches it via ``npx @playwright/mcp`` — a
+       machine-global install is neither recommended nor needed. So:
+         - If a launcher already resolves (a standalone binary, ``npx``, or a
+           ``KIROCREW_PLAYWRIGHT_CMD`` override), SKIP entirely — nothing to fetch.
+         - Otherwise prime the ``npx`` cache with one pinned fetch so first use is
+           fast and offline-safe. If neither ``npx`` nor a binary exists (npm-free
+           host), FAIL SOFT: the mode still enables and the detail names the Docker
+           image and ``KIROCREW_PLAYWRIGHT_CMD`` escape hatches, because a missing
+           npm must not block a capability the operator can wire up another way.
     3. **browser** — ``playwright install <engine>`` to fetch the OS/arch browser
        binary; ``chromium`` is always safe, ``firefox``/``webkit`` pull
-       Playwright's own builds.
+       Playwright's own builds. Skipped when the package step failed soft (there is
+       no resolved launcher/core to provision against yet).
 
     Blocking (subprocess + network + disk) — MUST run off the event loop
     (``asyncio.to_thread``). Every spawned command inherits a Node-augmented PATH
-    so a version-manager Node the daemon did not inherit is still found.
+    so a version-manager Node the daemon did not inherit is still found, and pins
+    the public npm registry so a private/stale-token ``.npmrc`` can't 401 this
+    public package.
     """
     if engine not in BROWSER_ENGINES:
         engine = _DEFAULT_ENGINE
 
     node = ensure_node()
     if not node:
+        # Browser Mode is still ON (the proxy is registered); the browser tools
+        # just can't run until Node is present. Calm, actionable note — never a
+        # raw "install failed" error.
         return {
             "ok": False,
             "step": "node",
             "detail": (
-                "Node.js is required to install the browser and could not be "
-                "found or installed automatically. Install Node.js "
-                "(https://nodejs.org) and try again."
+                "Browser Mode is on. To finish setup, install Node.js "
+                "(https://nodejs.org) — the agent's browser tools start working "
+                "once it is available."
             ),
             "engine": engine,
         }
 
     aug_path = node_augmented_path(os.environ.get("PATH", ""))
-    run_env = {**os.environ, "PATH": aug_path}
+    # Pin the public registry in every child (npm/npx shell out to fetch): a user's
+    # default ``.npmrc`` may point at a private mirror with an expiring token, and
+    # ``npm_config_registry`` is honored by npm and npx on every OS, so the fetch of
+    # this PUBLIC package skips the private default and never 401s.
+    run_env = {**os.environ, "PATH": aug_path, "npm_config_registry": PUBLIC_NPM_REGISTRY}
 
     def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
         # capture_output keeps npm/playwright chatter off the gateway's stdout;
@@ -250,130 +273,232 @@ def ensure_playwright_installed(engine: str = _DEFAULT_ENGINE) -> dict[str, Any]
             env=run_env,
         )
 
-    # Step 2 — the npm package. Skip ONLY when @playwright/mcp is actually on
-    # disk as a resolvable standalone binary; a bare `npx` on PATH is NOT proof
-    # the package is installed (npx would fetch it on first use, off the download
-    # step's control and without a pinned global), so treat the npx-only host as
-    # "not installed" and do the global install.
-    if not _playwright_binary_present(aug_path):
-        npm = find_node_tool("npm", aug_path)
-        if not npm:
-            return {
-                "ok": False,
-                "step": "package",
-                "detail": "npm not found alongside Node; cannot install @playwright/mcp.",
-                "engine": engine,
-            }
+    # Step 2 — make the launcher available WITHOUT a machine-global install, the
+    # way the whole MCP ecosystem runs it (`npx @playwright/mcp`). Detect FIRST: if
+    # the proxy can already resolve a launcher (standalone binary, npx, or the
+    # KIROCREW_PLAYWRIGHT_CMD override), there is nothing to fetch — a re-enable or
+    # a host that already has npx is a fast no-op, and this is the branch that skips
+    # the download entirely on the common case that broke before. Resolve on the
+    # AUGMENTED path (not the daemon's raw PATH) so a marker-bootstrapped Node
+    # toolchain — npx alongside a Node the gateway did not inherit — is seen here
+    # too, matching ensure_node / find_node_tool; otherwise this falsely reports
+    # "no launcher" on exactly the host node_augmented_path exists to serve.
+    launch_cmd = _resolve_playwright_cmd(aug_path)
+    if launch_cmd is None:
+        # Node is present but neither a launcher binary nor npx resolves (an
+        # npm-free Node). Browser Mode stays ON (the proxy is registered); the
+        # note offers the npm-free paths. Calm and actionable — never an error.
+        return {
+            "ok": False,
+            "step": "package",
+            "detail": (
+                "Browser Mode is on. To finish setup, install npm (it ships with "
+                "Node.js) so the browser tools can download, run the official "
+                "Docker image (mcr.microsoft.com/playwright/mcp), or point "
+                "KIROCREW_PLAYWRIGHT_CMD at your own launcher."
+            ),
+            "engine": engine,
+        }
+    npx_only = _is_npx_launcher(launch_cmd) and not _playwright_binary_present(aug_path)
+    if npx_only:
+        # Only npx resolves. Prime its cache with one pinned, public-registry fetch
+        # so the package (and its bundled playwright-core, needed by step 3) is on
+        # disk — the first real browse is then not a cold download, and it works
+        # offline afterward. ``--help`` forces the fetch without starting the
+        # long-lived server. A failure is NON-fatal: npx still fetches lazily at
+        # launch, so fall through and let step 3 report if the browser is missing.
         try:
-            proc = _run([npm, "install", "-g", _PLAYWRIGHT_MCP_NPM])
-        except (subprocess.SubprocessError, OSError) as exc:
-            return {
-                "ok": False,
-                "step": "package",
-                "detail": f"npm install of @playwright/mcp failed: {type(exc).__name__}",
-                "engine": engine,
-            }
-        if proc.returncode != 0:
-            return {
-                "ok": False,
-                "step": "package",
-                "detail": f"npm install exited {proc.returncode}: {proc.stderr.strip()[-300:]}",
-                "engine": engine,
-            }
+            _run([launch_cmd, "--yes", _PLAYWRIGHT_MCP_NPM, "--help"])
+        except (subprocess.SubprocessError, OSError):
+            pass
 
     # Step 3 — the OS/arch browser binary for the selected engine. Provision it
     # through the SAME playwright-core that ``@playwright/mcp`` bundles: Playwright
     # keys its browser cache by a per-version build REVISION, so a floating
     # ``npx playwright@latest`` could fetch a revision the bundled
     # ``playwright-core`` launcher rejects ("Executable doesn't exist") — a false
-    # success. Resolving playwright-core relative to the installed
-    # ``@playwright/mcp`` guarantees the downloaded revision matches the launcher.
-    # ``install <engine>`` is idempotent; a present browser is a fast no-op.
-    #
-    # If the bundled core cannot be resolved we FAIL the browser step rather than
-    # fall back to an unversioned ``npx playwright``: a version-mismatched browser
-    # download reports success while the launcher still cannot start, which is a
-    # worse failure mode than an honest "could not provision" the UI can surface.
+    # success. Resolving playwright-core relative to the resolved ``@playwright/mcp``
+    # (global root OR the npx cache primed above) guarantees the downloaded revision
+    # matches the launcher. ``install <engine>`` is idempotent; a present browser is
+    # a fast no-op.
     node = find_node_tool("node", aug_path)
     core_cli = _resolve_playwright_core_cli(node, run_env) if node else None
     if not (node and core_cli):
-        return {
-            "ok": False,
-            "step": "browser",
-            "detail": (
-                "Could not resolve the playwright-core bundled with @playwright/mcp "
-                "to install the browser; try re-running setup after the package "
-                "install completes."
-            ),
-            "engine": engine,
-        }
+        # The launcher resolves (step 2 passed) but its bundled core is not yet on
+        # disk — an npx host where the prime is still warming. This is "not yet
+        # fetched", NOT a failed fetch: defer softly (ok=True). A subsequent
+        # re-save, once the cache is warm, runs the real install below.
+        return _browser_deferred(engine)
     browser_argv = [node, core_cli, "install", engine]
     try:
         proc = _run(browser_argv)
     except (subprocess.SubprocessError, OSError) as exc:
-        return {
-            "ok": False,
-            "step": "browser",
-            "detail": f"playwright install {engine} failed: {type(exc).__name__}",
-            "engine": engine,
-        }
+        # The browser install was ATTEMPTED and failed (unwritable/full cache,
+        # network drop). Do NOT report this as usable: without the executable a
+        # headless browse errors, so a false ok=True would mislead. Return a calm
+        # ok=false "incomplete" advisory — the raw cause goes to the log only,
+        # never to the operator (honoring "never surface a raw install error").
+        logger.warning("playwright browser install failed (%s)", exc)
+        return _browser_incomplete(engine)
     if proc.returncode != 0:
-        return {
-            "ok": False,
-            "step": "browser",
-            "detail": (
-                f"playwright install {engine} exited {proc.returncode}: "
-                f"{proc.stderr.strip()[-300:]}"
-            ),
-            "engine": engine,
-        }
+        logger.warning(
+            "playwright install %s exited %s: %s",
+            engine, proc.returncode, proc.stderr.strip()[-300:],
+        )
+        return _browser_incomplete(engine)
 
     return {"ok": True, "step": "done", "detail": "", "engine": engine}
+
+
+def _browser_deferred(engine: str) -> dict[str, Any]:
+    """Soft, usable outcome: the launcher works and the browser is not yet fetched.
+
+    Returned when the browser was NOT attempted at enable time (the npx cache is
+    still warming). ``ok=True``: the launcher resolves and a re-save once the
+    cache is warm completes provisioning, so the UI shows a calm advisory.
+    """
+    return {
+        "ok": True,
+        "step": "browser-deferred",
+        "detail": (
+            "Browser Mode is on. Finishing browser setup in the background — the "
+            "first visit may take a moment."
+        ),
+        "engine": engine,
+    }
+
+
+def _browser_incomplete(engine: str) -> dict[str, Any]:
+    """Calm not-yet-usable outcome: the browser download was tried and did not finish.
+
+    ``ok=False`` because, without the browser executable, a headless browse would
+    fail — reporting it usable would mislead. But it is STILL a calm, actionable
+    advisory, never a raw npm/playwright error dump (the cause is logged only):
+    Browser Mode stays on, and toggling it off/on retries the download.
+    """
+    return {
+        "ok": False,
+        "step": "browser",
+        "detail": (
+            "Browser Mode is on, but the browser download didn't finish (you may "
+            "be offline or low on disk). Toggle Browser Mode off and on to retry."
+        ),
+        "engine": engine,
+    }
+
+
+def _npx_cache_playwright_roots(run_env: dict[str, str]) -> list[str]:
+    """Node-module roots under the ``npx`` cache that hold a primed ``@playwright/mcp``.
+
+    ``npx`` installs an on-demand package under ``<npm cache>/_npx/<hash>/
+    node_modules``. That path is NEITHER ``npm root -g`` nor the gateway cwd, so
+    a require.resolve that only searches those two misses an npx-primed copy —
+    which is EXACTLY the npx-only host this rework targets. Return each such
+    ``node_modules`` dir so the core resolver can find the package the prime
+    fetched. Ordered NEWEST-FIRST by mtime: a host can accumulate several npx
+    caches across versions, and the resolver takes the first match — so the most
+    recently primed one (the one the just-run prime and the runtime ``@latest``
+    launch agree on) must win over a stale older revision, else the browser
+    install would fetch a revision the launcher then rejects. Best-effort:
+    returns ``[]`` when the cache can't be located.
+    """
+    npm = find_node_tool("npm", run_env.get("PATH", ""))
+    cache = ""
+    if npm:
+        try:
+            cp = subprocess.run(
+                [npm, "config", "get", "cache"],
+                capture_output=True, text=True, timeout=30, env=run_env,
+            )
+            if cp.returncode == 0:
+                cache = cp.stdout.strip()
+        except (subprocess.SubprocessError, OSError):
+            cache = ""
+    if not cache or cache == "undefined":
+        # npm's default cache: ~/.npm on POSIX, %LocalAppData%/npm-cache on Windows.
+        cache = os.path.expanduser("~/.npm")
+    npx_dir = Path(cache) / "_npx"
+    # (node_modules dir, mtime) pairs, so the newest primed cache resolves first.
+    # Wrapped in try/except so a permission-denied or vanishing cache dir returns
+    # [] rather than propagating — ensure_playwright_installed never raises.
+    found: list[tuple[float, str]] = []
+    try:
+        for hash_dir in npx_dir.iterdir():
+            nm = hash_dir / "node_modules"
+            pkg = nm / "@playwright" / "mcp" / "package.json"
+            if pkg.is_file():
+                try:
+                    mtime = pkg.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                found.append((mtime, str(nm)))
+    except OSError:
+        return []
+    # Newest first: the most recently primed cache is the one the runtime launch
+    # (@latest) will resolve, so its core revision matches.
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    return [nm for _, nm in found]
 
 
 def _resolve_playwright_core_cli(node: str, run_env: dict[str, str]) -> str | None:
     """Resolve the ``playwright-core`` CLI bundled with the installed ``@playwright/mcp``.
 
     Asks Node to resolve ``playwright-core/cli`` from the location of the
-    installed ``@playwright/mcp`` package, so the browser install runs through the
+    resolved ``@playwright/mcp`` package, so the browser install runs through the
     exact core the proxy launcher uses (matching build revisions). Returns the
     absolute ``cli.js`` path, or ``None`` when it cannot be resolved.
 
-    A GLOBAL ``npm i -g @playwright/mcp`` (the common path) is NOT on Node's
-    default module search path, so a bare ``require.resolve`` from an arbitrary
-    cwd would miss it. ``npm root -g`` is added to the resolution ``paths`` first
-    so the global install resolves; the local/default lookup still covers an
-    ``npx``-cached or project-local copy.
+    Three resolution roots are searched, covering every way the package reaches
+    disk: ``npm root -g`` (a global install, e.g. a user's own
+    ``npm i -g @playwright/mcp``), the ``npx`` cache dirs
+    (:func:`_npx_cache_playwright_roots` — the npx-only host this rework primes),
+    and the local/default module path (a project-local copy).
     """
-    global_root = ""
+    roots: list[str] = []
     npm = find_node_tool("npm", run_env.get("PATH", ""))
     if npm:
         try:
             gr = subprocess.run(
                 [npm, "root", "-g"], capture_output=True, text=True, timeout=30, env=run_env
             )
-            if gr.returncode == 0:
-                global_root = gr.stdout.strip()
+            if gr.returncode == 0 and gr.stdout.strip():
+                roots.append(gr.stdout.strip())
         except (subprocess.SubprocessError, OSError):
-            global_root = ""
+            pass
+    roots.extend(_npx_cache_playwright_roots(run_env))
 
-    # From @playwright/mcp's package dir (resolved with the global root on the
-    # search path), resolve its playwright-core dependency's CLI entry. Stdout is
-    # the path or empty. The global root is passed in via argv, not interpolated
-    # into the script, so no path can break the JS string.
+    # From @playwright/mcp's package dir (resolved with the roots on the search
+    # path), locate its playwright-core dependency's CLI entry. Stdout is the path
+    # or empty. Roots are passed in via argv (JSON), not interpolated into the
+    # script, so no path can break the JS string.
+    #
+    # Two correctness points:
+    # 1. Resolve playwright-core's package.json and JOIN ``cli.js`` to its dir,
+    #    rather than ``require.resolve('playwright-core/cli.js')`` directly:
+    #    playwright-core ships an ``exports`` map that does NOT list ``./cli.js``,
+    #    so a direct subpath resolve throws ERR_PACKAGE_PATH_NOT_EXPORTED under
+    #    Node's exports enforcement even though the file is right there.
+    #    ``./package.json`` is always exported, so resolving it and joining works.
+    # 2. Node's ``paths`` option resolves each entry as ``<entry>/node_modules/…``.
+    #    Our roots ARE the ``node_modules`` dirs (npm root -g, npx cache), so the
+    #    script also adds each root's PARENT — covering both Node's strict
+    #    "<parent>/node_modules" contract (needed on Windows) and its lenient
+    #    direct-dir lookup (POSIX), so resolution is identical on every OS.
     script = (
         "const path=require('path');"
-        "const roots=process.argv[1]?[process.argv[1]]:[];"
+        "const raw=JSON.parse(process.argv[1]||'[]');"
+        "const roots=[];"
+        "for(const r of raw){roots.push(r);roots.push(path.dirname(r));}"
         "try{"
         "const mcp=require.resolve('@playwright/mcp/package.json',{paths:[...roots,process.cwd()]});"
-        "const cli=require.resolve('playwright-core/cli.js',"
+        "const pc=require.resolve('playwright-core/package.json',"
         "{paths:[path.dirname(mcp),...roots]});"
-        "process.stdout.write(cli);"
+        "process.stdout.write(path.join(path.dirname(pc),'cli.js'));"
         "}catch(e){process.stdout.write('');}"
     )
     try:
         proc = subprocess.run(
-            [node, "-e", script, global_root],
+            [node, "-e", script, json.dumps(roots)],
             capture_output=True,
             text=True,
             timeout=30,

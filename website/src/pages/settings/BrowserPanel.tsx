@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ExternalLink, Check, Loader2, AlertTriangle } from 'lucide-react'
+import { ExternalLink, Check, Loader2, Info } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { api } from '../../api/client'
@@ -72,9 +72,12 @@ export function BrowserPanel() {
       // mask it once it has been persisted (it is write-only server-side and is
       // a credential). An empty field stays empty.
       setToken((t) => (t ? '••••••••' : t))
-      // Surface a failed download inline rather than a bare success tick: the
-      // preference persisted, but the browser is not usable until install works.
-      setInstall(res.install && !res.install.ok ? res.install : null)
+      // Keep any provisioning note (deferred download, or a setup hint) to show as
+      // a MUTED advisory — never an error. Browser Mode is on regardless, so a
+      // note with `ok:true` (e.g. "downloads on first use") still shows the saved
+      // tick alongside; only a genuinely-not-usable note (`ok:false`: no Node/npm)
+      // withholds the tick, but it is still styled as guidance, not a failure.
+      setInstall(res.install && res.install.detail ? res.install : null)
       if (!res.install || res.install.ok) {
         setSaved(true)
         setTimeout(() => setSaved(false), 4000)
@@ -177,22 +180,30 @@ export function BrowserPanel() {
               {i18nT('pages.settings.browserPanel.setting_up_the_browser_this_can_take_a_minute')}
             </p>
           )}
-          {install && !install.ok && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, color: 'var(--danger)' }}>
-              <AlertTriangle size={13} className="lucide-inline" style={{ marginTop: 2 }} />
+          {/*
+            Provisioning is ALWAYS advisory, never an error surface: enabling
+            Browser Mode registers the proxy regardless, and the browser downloads
+            on first use. So any `install.detail` (a soft "downloads on first use"
+            note, or a calm "install Node to finish setup" hint) renders as a muted
+            info line, not a red alert — the user is never shown a raw install
+            failure. Shown whenever the server returned a detail to convey.
+          */}
+          {install && install.detail && (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, color: 'var(--muted)' }}>
+              <Info size={13} className="lucide-inline" style={{ marginTop: 2 }} />
               <span style={{ fontSize: 12 }}>{install.detail}</span>
             </div>
           )}
           {/*
-            Persistent "enabled but not usable" surface, read from the server's
-            durable `installed` flag (not the one-shot mutation result), so a
-            failed download still tells the truth after the user leaves and comes
-            back rather than showing a switch that lies. Suppressed while a save
-            is mid-flight or a fresh install error is already shown above.
+            Persistent "enabled but browser not on disk yet" surface, read from the
+            server's durable `installed` flag (not the one-shot mutation result),
+            so it still tells the truth after the user leaves and comes back.
+            Muted advisory, not an error. Suppressed while a save is mid-flight or
+            a fresh note is already shown above.
           */}
           {enabled && config?.installed === false && !saveMut.isPending && !install && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, color: 'var(--danger)' }}>
-              <AlertTriangle size={13} className="lucide-inline" style={{ marginTop: 2 }} />
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, color: 'var(--muted)' }}>
+              <Info size={13} className="lucide-inline" style={{ marginTop: 2 }} />
               <span style={{ fontSize: 12 }}>{i18nT('pages.settings.browserPanel.browser_not_installed_retry')}</span>
             </div>
           )}

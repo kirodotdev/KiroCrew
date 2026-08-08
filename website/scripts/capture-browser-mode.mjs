@@ -154,6 +154,16 @@ await shoot('browser-mode-firefox-dark.png')
 await reloadScene({ enabled: true, extension_mode: true, token: true })
 await shoot('browser-mode-attach-dark.png')
 
+// Provisioning advisory: enabled but the browser is not on disk yet
+// (installed:false). The note renders as a MUTED info advisory, never a red
+// error — this is the "never error on enable" surface. Written to its own dir so
+// the browser-install PR embeds it directly.
+mkdirSync(`${OUT}/../browser-install`, { recursive: true })
+await reloadScene({ enabled: true, extension_mode: false, engine: 'chromium', installed: false })
+await heading().waitFor({ timeout: 20000 })
+await page.waitForTimeout(400)
+await page.screenshot({ path: `${OUT}/../browser-install/browser-panel.png` })
+
 // ── Chat composer "+" menu (no browse toggle) ──────────────────────────────
 
 let composerShot = null

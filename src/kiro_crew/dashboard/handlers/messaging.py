@@ -2293,9 +2293,26 @@ async def _browser_config_finalize(
     # already resolves and `playwright install` is an idempotent fast no-op when
     # the browser is present, so a re-save stays cheap. Blocking (subprocess +
     # network), so it runs off the event loop.
+    #
+    # ``ensure_playwright_installed`` is contracted never to raise, but enabling
+    # Browser Mode must NEVER 500 or dump a raw install error at the user, so this
+    # is belt-and-suspenders: any unexpected exception becomes a calm advisory in
+    # the payload (Browser Mode stays on; the browser downloads on first use).
     install_result: dict[str, Any] | None = None
     if enabled:
-        install_result = await asyncio.to_thread(ensure_playwright_installed, engine)
+        try:
+            install_result = await asyncio.to_thread(ensure_playwright_installed, engine)
+        except Exception:
+            logger.exception("browser provisioning raised unexpectedly; deferring to first use")
+            install_result = {
+                "ok": True,
+                "step": "browser-deferred",
+                "detail": (
+                    "Browser Mode is on. The browser downloads automatically the "
+                    "first time the agent browses."
+                ),
+                "engine": engine,
+            }
 
     # Tool availability is the gate (there is no per-message marker): enabling
     # REGISTERS the proxy so the browser_* tools appear in the agent's tool list;
