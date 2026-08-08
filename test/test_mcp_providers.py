@@ -384,6 +384,110 @@ class TestOfficialTransport:
 
 
 # ---------------------------------------------------------------------------
+# _fetch_json body read — fakes replace only aiohttp's ClientSession, so the
+# status branches, the chunked EOF read loop, the size cap, and the JSON parse
+# all run for real. Every other class in this file patches _fetch_json itself,
+# which is why the read path needs its own coverage here.
+# ---------------------------------------------------------------------------
+
+
+class _FakeContent:
+    """StreamReader stand-in: returns queued chunks, then b'' (EOF)."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, n: int) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class _FakeResp:
+    def __init__(self, status: int, chunks: list[bytes]) -> None:
+        self.status = status
+        self.content = _FakeContent(chunks)
+
+    async def __aenter__(self) -> "_FakeResp":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeSession:
+    def __init__(self, resp: _FakeResp) -> None:
+        self._resp = resp
+
+    def get(self, url: str, headers: dict | None = None) -> _FakeResp:
+        return self._resp
+
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _patch_session(monkeypatch, resp: _FakeResp) -> None:
+    """Route _fetch_json's ClientSession construction to a canned response."""
+    monkeypatch.setattr(official_mod.aiohttp, "ClientSession", lambda timeout: _FakeSession(resp))
+
+
+class TestFetchJsonRead:
+    @pytest.mark.asyncio
+    async def test_multi_chunk_body_is_read_to_eof(self, monkeypatch):
+        # Split mid-string, mimicking the truncation seen in the field: a
+        # single read(n) returning only the first chunk left an unterminated
+        # JSON string.
+        doc = b'{"servers": [{"name": "io.github.acme/weather"}]}'
+        _patch_session(monkeypatch, _FakeResp(200, [doc[:20], doc[20:]]))
+
+        data = await official_mod._fetch_json("https://registry.example/servers")
+
+        assert data == {"servers": [{"name": "io.github.acme/weather"}]}
+
+    @pytest.mark.asyncio
+    async def test_many_small_chunks(self, monkeypatch):
+        # Chunk-boundary positions must not matter: byte-at-a-time is the
+        # pathological fragmentation.
+        doc = b'{"servers": []}'
+        chunks = [doc[i : i + 1] for i in range(len(doc))]
+        _patch_session(monkeypatch, _FakeResp(200, chunks))
+
+        data = await official_mod._fetch_json("https://registry.example/servers")
+
+        assert data == {"servers": []}
+
+    @pytest.mark.asyncio
+    async def test_size_cap_rejected_mid_stream(self, monkeypatch):
+        # One byte past the cap, delivered across two chunks so the check
+        # fires mid-stream rather than on a single oversized read.
+        over = official_mod._MAX_RESPONSE_BYTES + 1
+        _patch_session(monkeypatch, _FakeResp(200, [b"[", b"1" * (over - 1)]))
+
+        with pytest.raises(ProviderUnavailableError, match="too large"):
+            await official_mod._fetch_json("https://registry.example/servers")
+
+    @pytest.mark.asyncio
+    async def test_size_cap_boundary_allowed(self, monkeypatch):
+        # Exactly _MAX_RESPONSE_BYTES is allowed — the cap rejects only
+        # strictly-larger bodies (same contract as the pre-loop code).
+        cap = official_mod._MAX_RESPONSE_BYTES
+        doc = b'["' + b"x" * (cap - 4) + b'"]'
+        assert len(doc) == cap
+        _patch_session(monkeypatch, _FakeResp(200, [doc[: cap // 2], doc[cap // 2 :]]))
+
+        data = await official_mod._fetch_json("https://registry.example/servers")
+
+        assert isinstance(data, list) and len(data[0]) == cap - 4
+
+    @pytest.mark.asyncio
+    async def test_404_returns_none(self, monkeypatch):
+        _patch_session(monkeypatch, _FakeResp(404, []))
+
+        assert await official_mod._fetch_json("https://registry.example/gone") is None
+
+
+# ---------------------------------------------------------------------------
 # Registry fan-out
 # ---------------------------------------------------------------------------
 
