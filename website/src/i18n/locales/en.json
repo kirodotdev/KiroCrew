@@ -4368,12 +4368,6 @@
     }
   },
   "pages": {
-    "terminalPopoutFrame": {
-      "return": "Return to dock",
-      "return_to_main_window_and_close_this_popout": "Return to main window and close this popout",
-      "terminal": "Terminal",
-      "window_title": "{{label}} — Kiro Crew"
-    },
     "agentsPage": {
       "active_sessions_and_subagent_tasks": "Active sessions and subagent tasks",
       "agent_templates": "Agent Templates",
@@ -6085,6 +6079,9 @@
       "resource_nav": "Resources",
       "resource_network": "Network",
       "sandbox_procs": "Sandbox",
+      "session_storage": "Session storage",
+      "session_storage_detail": "{{sessions}} sessions · {{reclaimable}} reclaimable",
+      "session_storage_measuring": "Measuring…",
       "threads": "Threads",
       "total": "Total",
       "upload": "Upload",
@@ -6265,6 +6262,51 @@
       "no_archives_archives_are_created_when_session_fi": "No archives. Archives are created when session files are rotated (>2MB) or compacted.",
       "reload": "Reload",
       "select_an_archive_to_view_its_contents": "Select an archive to view its contents."
+    },
+    "sessionStorage": {
+      "back_to_disk": "System · Performance › Disk",
+      "batch_detail": "{{sessions}} sessions · {{size}} · moved by {{reason}}",
+      "bucket_30_90d": "30 – 90 days",
+      "bucket_30_90d_hint": "Usually the largest band, and why 90 days reclaims so much less than 30",
+      "bucket_7_30d": "7 – 30 days",
+      "bucket_7_30d_hint": "Reclaimed by the 7-day threshold, kept by the 30-day one",
+      "bucket_over_90d": "Over 90 days",
+      "bucket_over_90d_hint": "Reclaimed by every threshold",
+      "bucket_under_7d": "Under 7 days",
+      "bucket_under_7d_hint": "Includes everything inside the 1-day floor, which no threshold can reclaim",
+      "cancel": "Cancel",
+      "col_last_active": "Last active",
+      "col_sessions": "Sessions",
+      "col_size": "Size",
+      "confirm_delete_forever": "Delete forever",
+      "delete_forever": "Delete forever",
+      "fact_active": "Active sessions",
+      "fact_active_value": "never offered",
+      "fact_floor": "Freshness floor",
+      "fact_floor_value": "1 day",
+      "fact_instant": "Moving to Trash",
+      "fact_instant_copy": "copies — different filesystem",
+      "fact_instant_rename": "instant — a rename on the same filesystem",
+      "fact_total": "On disk in total",
+      "headline_detail": "reclaimable · {{reclaimable}} retired sessions · {{active}} active is never offered",
+      "move_to_trash": "Move {{size}} to Trash",
+      "note_active_excluded": "Active sessions are excluded by construction — a conversation you can still open is never a candidate.",
+      "note_copy": "The Trash is on a different filesystem, so moving copies rather than renames and takes time proportional to the size.",
+      "note_instant": "Moving to Trash is a rename on the same filesystem, so it is instant and every session can be put back.",
+      "note_only_irreversible": "Emptying the Trash is the only irreversible step.",
+      "nothing_to_move": "Nothing to move",
+      "preview_days": "{{days}}d",
+      "restore": "Restore",
+      "retire_older_than": "Retire sessions older than",
+      "threshold_30d": "30 days",
+      "threshold_7d": "7 days",
+      "threshold_90d": "90 days",
+      "threshold_never": "Never",
+      "trash": "Trash",
+      "trash_empty": "empty",
+      "trash_holds": "{{size}} is in the Trash and still on disk",
+      "trash_never_expires": "Kept until you empty it — nothing expires on its own",
+      "trash_still_on_disk": "Free space does not change until the Trash is emptied. That is the point — the bytes stay recoverable."
     },
     "sessionsTab": {
       "agent": "Agent",
@@ -7037,6 +7079,12 @@
       "was_value": "was {{value}}",
       "window_last": "OTEL sections · window: last",
       "window_tokens_col": "Window (tokens)"
+    },
+    "terminalPopoutFrame": {
+      "return": "Return to dock",
+      "return_to_main_window_and_close_this_popout": "Return to main window and close this popout",
+      "terminal": "Terminal",
+      "window_title": "{{label}} — Kiro Crew"
     },
     "webhooksPage": {
       "0_b": "0 B",

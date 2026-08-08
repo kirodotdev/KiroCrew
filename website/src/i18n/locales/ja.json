@@ -6062,12 +6062,6 @@
     "webhooks": "Webhooks"
   },
   "pages": {
-    "terminalPopoutFrame": {
-      "return": "ドックに戻る",
-      "return_to_main_window_and_close_this_popout": "メインウィンドウに戻ってこのポップアウトを閉じる",
-      "terminal": "ターミナル",
-      "window_title": "{{label}} — Kiro Crew"
-    },
     "agentsPage": {
       "active_sessions_and_subagent_tasks": "アクティブなセッションとサブエージェントタスク",
       "agent_templates": "エージェントテンプレート",
@@ -8687,6 +8681,9 @@
       "resource_nav": "リソース",
       "resource_network": "ネットワーク",
       "sandbox_procs": "サンドボックス",
+      "session_storage": "セッションストレージ",
+      "session_storage_detail": "{{sessions}} セッション · {{reclaimable}} 回収可能",
+      "session_storage_measuring": "計測中…",
       "threads": "スレッド",
       "total": "合計",
       "upload": "アップロード",
@@ -9003,6 +9000,51 @@
       "reload": "再読み込み",
       "select_an_archive_to_view_its_contents": "アーカイブを選択してその内容を表示",
       "truncated_showing_first_200kb": "… 切り詰め（最初の 200KB を表示）…"
+    },
+    "sessionStorage": {
+      "back_to_disk": "システム · パフォーマンス › ディスク",
+      "batch_detail": "{{sessions}} セッション · {{size}} · 移動理由: {{reason}}",
+      "bucket_30_90d": "30 – 90 日",
+      "bucket_30_90d_hint": "多くの場合最大の帯で、90 日の回収量が 30 日よりずっと少ない理由です",
+      "bucket_7_30d": "7 – 30 日",
+      "bucket_7_30d_hint": "7 日のしきい値では回収され、30 日では保持されます",
+      "bucket_over_90d": "90 日超",
+      "bucket_over_90d_hint": "どのしきい値でも回収されます",
+      "bucket_under_7d": "7 日未満",
+      "bucket_under_7d_hint": "どのしきい値でも回収できない 1 日の下限内のものを含みます",
+      "cancel": "キャンセル",
+      "col_last_active": "最終利用",
+      "col_sessions": "セッション",
+      "col_size": "サイズ",
+      "confirm_delete_forever": "完全に削除",
+      "delete_forever": "完全に削除",
+      "fact_active": "アクティブなセッション",
+      "fact_active_value": "対象になりません",
+      "fact_floor": "最小経過日数",
+      "fact_floor_value": "1 日",
+      "fact_instant": "ゴミ箱への移動",
+      "fact_instant_copy": "コピー — ファイルシステムが異なります",
+      "fact_instant_rename": "即時 — 同一ファイルシステム上の名前変更",
+      "fact_total": "ディスク上の合計",
+      "headline_detail": "回収可能 · 終了済み {{reclaimable}} セッション · アクティブな {{active}} は対象外",
+      "move_to_trash": "{{size}} をゴミ箱へ移動",
+      "note_active_excluded": "アクティブなセッションは構造上除外されます。まだ開ける会話が候補になることはありません。",
+      "note_copy": "ゴミ箱が別のファイルシステム上にあるため、名前変更ではなくコピーになり、サイズに応じた時間がかかります。",
+      "note_instant": "ゴミ箱への移動は同一ファイルシステム上の名前変更なので即時で、どのセッションも元に戻せます。",
+      "note_only_irreversible": "ゴミ箱を空にする操作だけが取り消せません。",
+      "nothing_to_move": "移動するものはありません",
+      "preview_days": "{{days}} 日",
+      "restore": "元に戻す",
+      "retire_older_than": "次より古いセッションを終了",
+      "threshold_30d": "30 日",
+      "threshold_7d": "7 日",
+      "threshold_90d": "90 日",
+      "threshold_never": "しない",
+      "trash": "ゴミ箱",
+      "trash_empty": "空",
+      "trash_holds": "{{size}} がゴミ箱にあり、まだディスクを占有しています",
+      "trash_never_expires": "空にするまで保持されます — 自動で消えることはありません",
+      "trash_still_on_disk": "ゴミ箱を空にするまで空き容量は変わりません。それが目的で、バイトは復元可能なまま残ります。"
     },
     "sessionsTab": {
       "agent": "エージェント",
@@ -10289,6 +10331,12 @@
       "was_value": "前回 {{value}}",
       "window_last": "OTELセクション · ウィンドウ: 直近",
       "window_tokens_col": "ウィンドウ (トークン)"
+    },
+    "terminalPopoutFrame": {
+      "return": "ドックに戻る",
+      "return_to_main_window_and_close_this_popout": "メインウィンドウに戻ってこのポップアウトを閉じる",
+      "terminal": "ターミナル",
+      "window_title": "{{label}} — Kiro Crew"
     },
     "webhooksPage": {
       "0_b": "0 B",

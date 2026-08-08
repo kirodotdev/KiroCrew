@@ -8,6 +8,8 @@ import type {
   PullRequestStatusBatch,
   PublishProviderDescriptor,
   SessionDoc,
+  SessionStorageCleanup,
+  SessionStorageReport,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
@@ -1064,6 +1066,15 @@ export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
   system: () => fetch('/api/system').then(j),
+  sessionStorage: () => get('/api/system/session-storage').then(j) as Promise<SessionStorageReport>,
+  sessionStorageCleanup: (olderThanDays: number, dryRun = false) =>
+    post('/api/system/session-storage/cleanup', { older_than_days: olderThanDays, dry_run: dryRun })
+      .then(j) as Promise<SessionStorageCleanup>,
+  sessionStorageRestore: (batchId: string, uids?: string[]) =>
+    post('/api/system/session-storage/restore', uids ? { batch_id: batchId, uids } : { batch_id: batchId })
+      .then(j) as Promise<{ restored: number }>,
+  sessionStorageEmpty: (batchIds: string[]) =>
+    post('/api/system/session-storage/empty', { batch_ids: batchIds }).then(j) as Promise<{ freed_bytes: number }>,
   telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
   // Per-turn context injection breakdown for one session. Independent of the
   // telemetry main switch: the usage rows it reads are always written.
