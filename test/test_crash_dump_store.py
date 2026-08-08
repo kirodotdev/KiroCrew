@@ -21,6 +21,7 @@ from kiro_crew.dashboard.crash_dump_store import (
     newest_dump_with_stacks,
     open_dump_file,
     rotate_dumps,
+    sweep_stale_dumps,
 )
 
 
@@ -430,3 +431,118 @@ def test_startup_crash_dump_replay_logs_stacks(dumps_dir: Path, caplog: pytest.L
 
     assert "Thread" in caplog.text
     assert "socket.py" in caplog.text
+
+
+# ── Stale header-only dump sweep ──
+
+
+def _dead_pid(pid: int) -> bool:
+    return False
+
+
+def _live_pid(pid: int) -> bool:
+    return True
+
+
+def test_sweep_removes_header_only_dump_of_dead_pid(dumps_dir: Path) -> None:
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 1
+    assert not p.exists()
+
+
+def test_sweep_keeps_header_only_dump_of_live_pid(dumps_dir: Path) -> None:
+    # A live PID means another gateway on this data home still owns the file
+    # (concurrent pod / overlapping restart) — must not be touched.
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_never_touches_dumps_with_stacks(dumps_dir: Path) -> None:
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_keeps_own_pid_file(dumps_dir: Path) -> None:
+    # The current process's own pre-created file must survive even if the
+    # injected liveness check lies about it.
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T030000Z\n"
+        f"# PID: {os.getpid()}\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_keeps_header_only_dump_without_pid_line(dumps_dir: Path) -> None:
+    # No parseable PID — cannot attribute the file, so leave it alone.
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T040000Z{DUMP_SUFFIX}"
+    p.write_text("# KiroCrew loop-stall crash dump — opened 20260717T040000Z\n\n")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_empty_dir(dumps_dir: Path) -> None:
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid) == 0
+
+
+def test_sweep_mixed_directory(dumps_dir: Path) -> None:
+    stale1 = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    real = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}")
+    stale2 = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 2
+    assert not stale1.exists()
+    assert not stale2.exists()
+    assert real.exists()
+
+
+# ── Stack-aware rotation ──
+
+
+def test_rotate_sacrifices_header_only_before_stacked(dumps_dir: Path) -> None:
+    # Oldest file has REAL stacks; three newer header-only files follow.
+    # With max_dumps=3 the rotation must delete header-only files (oldest
+    # first) and keep the stall evidence, even though it is the oldest file.
+    real = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260710T000000Z{DUMP_SUFFIX}")
+    os.utime(real, (1000, 1000))
+    empties = []
+    for i in range(1, 4):
+        p = _create_header_only_dump(
+            dumps_dir, f"{DUMP_PREFIX}2026071{i}T000000Z{DUMP_SUFFIX}"
+        )
+        os.utime(p, (1000 + i, 1000 + i))
+        empties.append(p)
+
+    removed = rotate_dumps(max_dumps=3, dumps_dir=dumps_dir)
+    assert removed == 2
+    assert real.exists()
+    # The two OLDEST header-only files are gone; the newest survives.
+    assert not empties[0].exists()
+    assert not empties[1].exists()
+    assert empties[2].exists()
+
+
+def test_rotate_removes_stacked_when_no_header_only_left(dumps_dir: Path) -> None:
+    paths = []
+    for i in range(4):
+        p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}2026071{i}T000000Z{DUMP_SUFFIX}")
+        os.utime(p, (1000 + i, 1000 + i))
+        paths.append(p)
+
+    removed = rotate_dumps(max_dumps=3, dumps_dir=dumps_dir)
+    assert removed == 2
+    # Oldest two stacked dumps removed, newest two kept.
+    assert not paths[0].exists()
+    assert not paths[1].exists()
+    assert paths[2].exists()
+    assert paths[3].exists()

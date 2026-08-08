@@ -51,6 +51,7 @@ from kiro_crew.dashboard.crash_dump_store import (
     newest_dump_with_stacks,
     open_dump_file,
     rotate_dumps,
+    sweep_stale_dumps,
 )
 from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_comments,
@@ -3148,6 +3149,11 @@ async def start_dashboard(
     # Crash-dump discoverability: route dumps to a dedicated file under
     # ~/.kiro/crew/logs/crash-dumps/ so they are findable via `kirocrew doctor`
     # and startup warnings, rather than buried in interleaved stderr/journal.
+    # Crash-dump hygiene: sweep header-only dumps left by prior sessions that
+    # exited without ever wedging (every startup pre-creates one for
+    # faulthandler's fd), THEN rotate. Sweeping first keeps empty startup files
+    # from aging real stall dumps out of the rotation window.
+    await asyncio.to_thread(sweep_stale_dumps)
     await asyncio.to_thread(rotate_dumps)
     _dump_file = await asyncio.to_thread(open_dump_file)
     # exit_after is configurable because the right budget is host-dependent: a
