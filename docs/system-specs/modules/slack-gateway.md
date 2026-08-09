@@ -386,6 +386,8 @@ Bidirectional sync: Slack ack → resolves dashboard approval future + broadcast
 
 When a subagent with a Slack parent session completes, the synthesized LLM response is posted to the owner's DM thread. Long replies are split into multiple messages using `_split_message()` from `handler.py` (3900 chars per chunk, split on newline boundaries), matching the behavior of final chat messages.
 
+A parent session born on any other channel (Telegram, Discord, `unified:` DM buckets, …) delivers the same synthesized reply through the governed cross-surface transport ladder instead (`_deliver_channel_reply` in `gateway.py`): the conversation is resolved via origin link (recorded by Discord's inbound dispatch) → non-Slack mirror link (e.g. a Telegram `/link` binding) → for direct (1:1) sessions only, the stored `"{namespace}:{user_id}"` channel value resolved through `transport.resolve_configured_target`; the target is vetted by `_resolve_channel_target` (SEL-audited, fail-closed, capability-gated on `supports_proactive_send`), then redacted and chunked to the transport's `max_message_chars`. Delivery is best-effort and fail-closed on ambiguity — group/forum sessions without an origin or mirror link, dispatchers that record neither, and denied egress all degrade to the dashboard notification (never a cross-conversation send), and the injected ACP turn still keeps the parent session aware of the result.
+
 ## Tool Approval via Slack
 
 Background task approvals (subagent/cron/taskrunner) post approval buttons to Slack DM via `_interactive_approval()`, racing with dashboard approval:
