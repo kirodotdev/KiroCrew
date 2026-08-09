@@ -10,6 +10,7 @@ No test here runs a real `gh`/`git`; the protocol parsers are fed captured outpu
 import asyncio
 import contextlib
 import os
+import stat
 import sys
 import threading
 from unittest.mock import AsyncMock, patch
@@ -38,6 +39,37 @@ def _stat_as_root_with_mode(mode: int):
         return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, 0, 0,
                                st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
     return fake
+
+
+def _stat_chain(own: int, hostile: dict[str, tuple[int, int, int]] | None = None):
+    """`os.stat` reporting a fully trusted chain owned by *own*, except for the paths
+    named in *hostile*, which report their given ``(uid, gid, permission bits)``.
+
+    Ownership of the WHOLE chain has to be fabricated for a trust assertion to be
+    deterministic: a real temp path runs up through `/tmp`, which is world-writable
+    on Linux and per-user on macOS, so asserting against it would test the host
+    rather than the predicate.
+
+    Only the permission bits are substituted — the real file-TYPE bits are kept,
+    because `shutil.which` rejects a candidate whose stat says directory.
+    """
+    real = os.stat
+    overrides = hostile or {}
+
+    def fake(path, *a, **kw):
+        st = real(path, *a, **kw)
+        key = os.fspath(path) if isinstance(path, (str, os.PathLike)) else None
+        uid, gid, perms = overrides.get(key, (own, 0, 0o755))
+        mode = stat.S_IFMT(st.st_mode) | perms
+        return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, uid, gid,
+                               st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+    return fake
+
+
+def _fake_st(uid: int, gid: int, mode: int) -> os.stat_result:
+    """A bare `os.stat_result` for the ownership predicate, with no filesystem
+    behind it — the predicate reads exactly three fields."""
+    return os.stat_result((mode, 0, 0, 1, uid, gid, 0, 0.0, 0.0, 0.0))
 
 
 class TestParseArgv:
@@ -316,18 +348,21 @@ class TestSanitizedPath:
         sys.platform == "win32",
         reason="plants an extensionless executable; Windows resolves via PATHEXT",
     )
-    def test_refuses_an_ordinary_user_install_by_default(self, tmp_path, monkeypatch):
-        # The deliberate cost of the trusted-chain rule: `~/.local/bin` is owned by
-        # the user, so a `gh` there is NOT probed until an operator says so. The
-        # probe fires mid-keystroke, so a binary in any writable directory would run
-        # before the user could decide not to run it.
-        binder = tmp_path / "home" / ".local" / "bin"
+    def test_admits_an_install_owned_by_the_gateways_own_user(self, tmp_path, monkeypatch):
+        # Homebrew installs into a prefix owned by the installing user, so requiring
+        # uid 0 would leave this tier dead on macOS: only /usr/bin tools would
+        # complete, and `gh`/`docker`/`kubectl` — the ones it exists for — never
+        # would.
+        binder = tmp_path / "brew" / "bin"
         binder.mkdir(parents=True)
         real = binder / "gh"
         real.write_text("#!/bin/sh\n")
         real.chmod(0o755)
+        monkeypatch.setattr(tc.os, "stat", _stat_chain(os.geteuid()))
         monkeypatch.setenv("PATH", str(binder))
-        assert tc._resolve("gh") is None
+        resolved = tc._resolve("gh")
+        assert resolved is not None
+        assert resolved[0] == str(real)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
     def test_a_system_directory_is_trusted_without_any_config(self):
@@ -337,18 +372,150 @@ class TestSanitizedPath:
         assert tc._is_trusted_dir("/usr/bin") is True
 
     @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
-    def test_a_user_owned_directory_is_not_trusted(self, tmp_path):
-        d = tmp_path / "mine"
-        d.mkdir()
-        assert tc._is_trusted_dir(str(d)) is False
+    def test_ownership_accepts_root_and_this_user_but_no_one_else(self):
+        # `_trusted_owner` is fed fabricated stat results on purpose: owner and mode
+        # are its only inputs, so it needs no filesystem — and the real chain above a
+        # temp directory differs per host.
+        own = os.geteuid()
+        assert tc._trusted_owner(_fake_st(0, 0, 0o40755), own) is True
+        assert tc._trusted_owner(_fake_st(own, 0, 0o40755), own) is True
+        # A third account's install is refused however tidy its mode: only root and
+        # the user whose shell this panel already exposes are in scope.
+        assert tc._trusted_owner(_fake_st(own + 4242, 0, 0o40755), own) is False
 
     @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
-    def test_the_whole_chain_must_be_trusted_not_just_the_leaf(self, tmp_path):
-        # A root-owned `bin` inside a user-writable parent can simply be swapped for
-        # a different directory, so the check walks upward — the same reasoning
-        # sudo's secure-path handling applies.
-        leaf = tmp_path / "parent" / "bin"
+    def test_ownership_rejects_world_writable_whoever_owns_it(self):
+        own = os.geteuid()
+        assert tc._trusted_owner(_fake_st(0, 0, 0o41777), own) is False
+        assert tc._trusted_owner(_fake_st(own, 0, 0o40757), own) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
+    def test_ownership_rejects_group_writable_for_an_ordinary_group(self):
+        # An ordinary group can hold accounts that are not administrators, so its
+        # write bit widens who could have planted the binary.
+        own = os.geteuid()
+        assert tc._trusted_owner(_fake_st(own, 20, 0o40775), own) is False
+        assert tc._trusted_owner(_fake_st(0, 0, 0o40775), own) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
+    def test_ownership_accepts_group_writable_only_for_an_administrator_group(self):
+        # macOS `admin` (gid 80) is the group Homebrew leaves on its own `bin`, and
+        # its members can already sudo — so their write access is not an escalation.
+        # Linux has no equivalent (root/wheel membership does not imply sudo rights),
+        # hence a platform-dependent expectation rather than a skip: that the
+        # exemption is macOS-only IS the assertion.
+        own = os.geteuid()
+        assert tc._trusted_owner(_fake_st(own, 80, 0o40775), own) is (
+            sys.platform == "darwin"
+        )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
+    def test_a_root_gateway_gets_no_administrator_group_exemption(self):
+        # A root gateway spawns root children, so a group-writable node would let a
+        # merely-admin account substitute a binary that runs WITH root privileges.
+        # For own_uid 0 the predicate must reduce to root-owned-and-not-group-writable.
+        assert tc._trusted_owner(_fake_st(0, 80, 0o40775), 0) is False
+        assert tc._trusted_owner(_fake_st(0, 80, 0o40755), 0) is True
+
+    def test_ownership_on_a_host_without_uids_keeps_the_administrator_branch(self):
+        # `own_uid=None` is Windows, where every st_uid reads 0.
+        assert tc._trusted_owner(_fake_st(0, 0, 0o40755), None) is True
+        assert tc._trusted_owner(_fake_st(1000, 0, 0o40755), None) is False
+        # And no exemption there either, for the same reason as root.
+        assert tc._trusted_owner(_fake_st(0, 80, 0o40775), None) is False
+
+    def test_drops_path_entries_inside_the_agent_writable_project(
+        self, tmp_path, monkeypatch,
+    ):
+        # A checkout's own `bin/` is owned by the same user as the gateway and holds
+        # no project-local NAME, so only the location test can refuse it — and a
+        # `.envrc` or dev shell typically PREPENDS it, so it would win resolution
+        # over the genuine tool.
+        proj = tmp_path / "repo"
+        (proj / "bin").mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(tc, "_is_trusted_dir", lambda _d: True)
+        monkeypatch.setenv("PATH", os.pathsep.join([str(proj / "bin"), "/usr/bin"]))
+        assert tc._sanitized_path() == "/usr/bin"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="plants an extensionless executable; Windows resolves via PATHEXT",
+    )
+    def test_refuses_a_binary_whose_target_is_inside_the_agent_writable_project(
+        self, tmp_path, monkeypatch,
+    ):
+        # The symlink form of the case above: the ENTRY is outside the checkout, the
+        # target is inside it, and the target is the file that executes.
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        planted = proj / "gh"
+        planted.write_text("#!/bin/sh\n")
+        planted.chmod(0o755)
+        sysbin = tmp_path / "sysbin"
+        sysbin.mkdir()
+        (sysbin / "gh").symlink_to(planted)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(tc.os, "stat", _stat_chain(os.geteuid()))
+        monkeypatch.setenv("PATH", str(sysbin))
+        assert tc._resolve("gh") is None
+
+    def test_a_sibling_of_a_root_is_not_inside_it(self, tmp_path):
+        # `…/workspace-other` starts with the same characters as `…/workspace` but is
+        # a different tree; a bare prefix compare would exclude the whole host's
+        # tooling for anyone whose PATH sits next to their workspace.
+        root = tmp_path / "workspace"
+        root.mkdir()
+        sibling = tmp_path / "workspace-other" / "bin"
+        sibling.mkdir(parents=True)
+        inside = root / "repo" / "bin"
+        inside.mkdir(parents=True)
+        roots = (str(root),)
+        assert tc._within(str(sibling), roots) is False
+        assert tc._within(str(inside), roots) is True
+        assert tc._within(str(root), roots) is True
+
+    def test_an_undetermined_root_set_refuses_every_entry(self, tmp_path, monkeypatch):
+        # Fail CLOSED: a lookup that failed must not quietly drop the root it could
+        # not resolve, because that admits exactly the tree the filter exists for.
+        assert tc._within("/usr/bin", None) is True
+        monkeypatch.setattr(tc, "_agent_writable_roots", lambda: None)
+        monkeypatch.setattr(tc, "_is_trusted_dir", lambda _d: True)
+        monkeypatch.setenv("PATH", "/usr/bin")
+        assert tc._sanitized_path() is None
+
+    def test_a_failing_workspace_lookup_yields_no_roots_rather_than_an_empty_set(
+        self, monkeypatch,
+    ):
+        # The lookup is imported lazily inside the function, so patch the module it
+        # comes from. Raising must produce the None sentinel, not ().
+        import kiro_crew.config.loader as loader
+
+        def boom():
+            raise OSError("workspace unreadable")
+
+        monkeypatch.setattr(loader, "workspace_root", boom)
+        assert tc._agent_writable_roots() is None
+
+    def test_an_uncanonicalizable_root_yields_no_roots(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path / "proj"))
+        monkeypatch.setattr(
+            tc.os.path, "realpath", lambda *_a, **_k: (_ for _ in ()).throw(OSError()),
+        )
+        assert tc._agent_writable_roots() is None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
+    def test_the_whole_chain_must_be_trusted_not_just_the_leaf(self, tmp_path, monkeypatch):
+        # A trusted `bin` inside a parent someone else can write can simply be
+        # swapped for a different directory, so the check walks upward — the same
+        # reasoning sudo's secure-path handling applies.
+        parent = tmp_path / "parent"
+        leaf = parent / "bin"
         leaf.mkdir(parents=True)
+        own = os.geteuid()
+        monkeypatch.setattr(
+            tc.os, "stat", _stat_chain(own, {str(parent): (own + 4242, 0, 0o755)}),
+        )
         assert tc._is_trusted_dir(str(leaf)) is False
 
     def test_a_missing_directory_is_not_trusted(self, tmp_path):
@@ -358,17 +525,21 @@ class TestSanitizedPath:
         sys.platform == "win32",
         reason="plants an extensionless executable; Windows resolves via PATHEXT",
     )
-    @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
-    def test_refuses_a_user_owned_file_inside_a_trusted_directory(self, tmp_path, monkeypatch):
-        # A root-owned directory cannot receive a NEW file from a non-root user, but
-        # a file already inside it can still be user-owned or group/world-writable.
-        # The directory's trust does not transfer to its contents.
+    def test_refuses_a_third_partys_file_inside_a_trusted_directory(
+        self, tmp_path, monkeypatch,
+    ):
+        # A trusted directory cannot receive a NEW file from an account that cannot
+        # write it, but a file already inside can still belong to a third account (a
+        # bad package, a root-created file handed to someone else). The directory's
+        # trust does not transfer to its contents.
         planted = tmp_path / "gh"
         planted.write_text("#!/bin/sh\n")
         planted.chmod(0o755)
+        own = os.geteuid()
+        monkeypatch.setattr(
+            tc.os, "stat", _stat_chain(own, {str(planted): (own + 4242, 0, 0o755)}),
+        )
         monkeypatch.setenv("PATH", str(tmp_path))
-        # Directory check stubbed to isolate the FILE check as the subject.
-        monkeypatch.setattr(tc, "_is_trusted_dir", lambda _d: True)
         assert tc._resolve("gh") is None
 
     @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
