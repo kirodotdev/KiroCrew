@@ -41,6 +41,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
+    _consume_future_exception,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _raise_acp_error,
@@ -237,6 +238,12 @@ class AcpSessionHandle:
         # per-session evidence state (tracked child, counter samples).
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings()
         self._oracle = LivenessOracle(sample_min_secs=self._watchdog.wellness_sample_secs)
+        # Keep the executor future, not an await-scoped flag: wait_for can time
+        # out while the underlying thread continues its /proc walk. A pending
+        # future makes the next watchdog tick answer UNKNOWN instead of
+        # submitting a second job, so a wedged walk cannot stack blocked workers
+        # in the shared subprocess_executor().
+        self._consult_future: asyncio.Future[tuple[str, str]] | None = None
         # Snapshot of the most recent EVENT_TOOL_CALL (title/redacted input/
         # dispatch time/shell flag) — the oracle's attribution key. Cleared on
         # EVENT_TOOL_RESULT alongside _tool_dispatched.
@@ -388,7 +395,7 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._inflight_tool = None
-        self._oracle.reset()
+        self._retire_liveness_state()
         self._working_logged_ts = 0.0
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
@@ -1430,6 +1437,53 @@ class AcpSessionHandle:
             for _m in _buffered:
                 self._queue.put_nowait(_m)
 
+    def _retire_liveness_state(self) -> None:
+        """Release the tracked consult and swap in a fresh, configured oracle.
+
+        Both boundaries that drop the evidence baseline — turn start in
+        ``prompt()`` and each new tool dispatch — retire rather than
+        ``reset()``, because ``_consult_oracle_offloaded`` submits a BOUND oracle
+        method to ``subprocess_executor()``: a walk whose await already timed out
+        keeps running and keeps a reference to the instance it was handed. Samples
+        are keyed ``"io"``/``"cpu"`` with no PID, so clearing in place lets that
+        late writer repopulate the baseline the next generation reads, and since
+        any nonzero delta counts as movement a flat tick then reads WORKING.
+
+        The tool path has a second, sharper version of the same hazard that the
+        capture path does not: ``_check_shell_child`` matches a descendant against
+        the *dispatched* command and stores it as ``_tracked_child`` for exact
+        exit detection on later ticks. A walk carrying the PREVIOUS tool's
+        ``ToolCallState`` therefore writes a child of the previous command into
+        the live oracle, and the new tool's next tick reports
+        ``WORKING "shell child N alive"`` on a process that has nothing to do with
+        it. Retiring confines both writes to an instance nobody reads.
+
+        Retirement is not a semantic change for the cross-tick tracked-child
+        contract itself: ``fresh()`` starts with exactly the state ``reset()``
+        produced (no tracked child, no grace timestamp, no samples), and the
+        consult resolves ``self._oracle`` at submission, so every tick after the
+        boundary binds and accumulates on the new instance the way it did before.
+
+        The future must be retired TOGETHER with the oracle. Replacing only the
+        oracle would leave a walk wedged in the previous generation answering
+        every later tick "prior consult still in flight", so the new generation
+        would never sample its own process — the tool branch would then run on
+        UNKNOWN and end a healthy tool call at the suspect window.
+
+        Releasing the future costs at most one abandoned worker per boundary
+        instead of one per tick. ``fresh()`` rather than a default construction so
+        the per-session ``wellness_sample_secs`` (and an injected /proc root or
+        clock in tests) survives the swap.
+        """
+        prior_consult = self._consult_future
+        self._consult_future = None
+        if prior_consult is not None:
+            if prior_consult.done():
+                _consume_future_exception(prior_consult)
+            else:
+                prior_consult.add_done_callback(_consume_future_exception)
+        self._oracle = self._oracle.fresh()
+
     async def _consult_oracle_offloaded(self, *, model_wait: bool) -> tuple[str, str]:
         """Oracle verdict, offloaded off the event loop.
 
@@ -1439,6 +1493,13 @@ class AcpSessionHandle:
         ``subprocess_executor()`` — same treatment as the runtime's RSS probe —
         bounded so a hung /proc read can't wedge the watchdog itself. Any
         failure degrades to UNKNOWN, never to a kill.
+
+        A timed-out await does not stop its executor thread. The submitted future
+        is tracked and intervening ticks answer UNKNOWN without submitting again,
+        bounding this handle to one outstanding walk per liveness generation
+        instead of one per tick — otherwise a permanently wedged /proc read grows
+        a new blocked worker every ``check_after_secs`` and starves the shared
+        pool that teardown's ``_get_child_pids`` also draws from.
         """
         pid = getattr(self._runtime, "pid", None)
         call: Callable[..., tuple[str, str]]
@@ -1448,15 +1509,38 @@ class AcpSessionHandle:
         else:
             tool = self._inflight_tool
             if tool is None:
+                # Resolved before the in-flight guard on purpose: this answer is
+                # pure handle state and needs no worker, so a wedged walk must
+                # not mask why the tool branch has nothing to check.
                 return VERDICT_UNKNOWN, "no in-flight tool state"
             call = self._oracle.check_tool
             args = (pid, tool)
+
+        prior = self._consult_future
+        if prior is not None:
+            if not prior.done():
+                return VERDICT_UNKNOWN, "prior consult still in flight"
+            # wait_for cancels shield's outer future, and shield detaches its
+            # inner-done callback in exactly that case. The submission-time
+            # callback below covers that normal path; this consume additionally
+            # covers an already-completed future that never went through it.
+            _consume_future_exception(prior)
+
         try:
+            # Submission stays inside the guard: the caller is a watchdog tick, so
+            # a refused executor job (shut down during teardown, thread creation
+            # refused under load) must read as UNKNOWN rather than abort the turn.
             loop = asyncio.get_running_loop()
-            return await asyncio.wait_for(
-                loop.run_in_executor(subprocess_executor(), call, *args),
-                timeout=10.0,
-            )
+            future = loop.run_in_executor(subprocess_executor(), call, *args)
+            # Attach at SUBMISSION, not only where a later tick or a boundary
+            # observes it: a turn that ends on this verdict returns with the walk
+            # still running and may never be consulted again, and CancelledError
+            # is a BaseException so an `except Exception` arm would miss a turn
+            # cancelled mid-walk. Retrieval is not destructive, so the await
+            # below still sees the result.
+            future.add_done_callback(_consume_future_exception)
+            self._consult_future = future
+            return await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
         except Exception:
             logger.debug("oracle consultation failed/timed out", exc_info=True)
             return VERDICT_UNKNOWN, "oracle offload error"
@@ -1777,15 +1861,16 @@ class AcpSessionHandle:
                 self._tool_dispatched = True
                 # Attribution snapshot for the liveness oracle: title + the
                 # already-redacted input + dispatch time + the trusted shell
-                # flag. A new dispatch resets the oracle's tracked child and
-                # counter samples so evidence never bleeds across tools.
+                # flag. A new dispatch retires the oracle so its tracked child
+                # and counter samples never bleed across tools — including from a
+                # walk still running against the previous tool's command.
                 self._inflight_tool = ToolCallState(
                     title=ev.title,
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
                     is_shell=ev.is_shell,
                 )
-                self._oracle.reset()
+                self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:
                 self._tool_dispatched = False
                 self._inflight_tool = None

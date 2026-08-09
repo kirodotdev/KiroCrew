@@ -374,13 +374,11 @@ class LivenessOracle:
         the live baseline — where a late write becomes the next generation's
         starting point and any delta reads as movement. Prefer :meth:`fresh`.
 
-        ``AcpClient`` has no ``reset()`` calls for that reason; it retires the
-        whole instance at each liveness-state boundary. ``AcpSessionHandle`` does
-        still call it, at turn start and on every tool dispatch, and those calls do
-        NOT satisfy the condition above: its ``_consult_oracle_offloaded()`` submits
-        a bound method under a bare ``wait_for`` timeout, so a timed-out probe can
-        outlive the reset. That is a pre-existing gap in the watchdog path, not an
-        endorsement of in-place clearing.
+        Neither in-tree consumer meets that condition: ``AcpClient`` and
+        ``AcpSessionHandle`` both offload their consult, so both retire the whole
+        instance at each liveness-state boundary instead of clearing it. This
+        method remains for an inline caller, which has no detached writer to
+        confine.
         """
         self._tracked_child = None
         self._child_gone_ts = None

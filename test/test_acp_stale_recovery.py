@@ -19,13 +19,21 @@ Covers the two-stage fix:
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from concurrent.futures import Future as ThreadFuture
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.liveness import (
+    VERDICT_DEAD,
+    VERDICT_UNKNOWN,
+    VERDICT_WORKING,
+    ToolCallState,
+)
 from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
+    METHOD_SESSION_UPDATE,
     STOP_REASON_CANCELLED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
@@ -544,3 +552,476 @@ def test_extract_log_redirect_target():
     assert extract_log_redirect_target("cmd 2>&1") == ""  # fd-dup only — no file
     assert extract_log_redirect_target("cmd > /dev/null 2>&1") == ""
     assert extract_log_redirect_target("plain command") == ""
+
+
+# ── Offloaded-consult hygiene: one walk per generation, retire don't reset ────
+#
+# The handle offloads its oracle consult to the shared subprocess_executor(), so
+# a timed-out await leaves the /proc walk running with a bound reference to the
+# oracle it was handed. These cover the two consequences: blocked workers
+# stacking up one per watchdog tick, and a detached walk writing evidence into
+# the generation that replaced it.
+
+
+def _consult_handle(sample_secs: float = 3.0) -> AcpSessionHandle:
+    """A handle with a real oracle and a runtime pid, turn in flight."""
+    rt = MagicMock()
+    rt._last_activity = time.monotonic()
+    rt.pid = 4242
+    rt.is_alive = MagicMock(return_value=True)
+    rt.send_notification = AsyncMock()
+    wd = WatchdogSettings(wellness_sample_secs=sample_secs)
+    handle = AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=wd)
+    handle._turn_done.clear()
+    handle._inflight_tool = ToolCallState(title="bash", command="sleep 1", is_shell=True)
+    return handle
+
+
+def _stub_pool() -> tuple[MagicMock, ThreadFuture]:
+    """An executor whose submitted job never finishes on its own."""
+    thread_future: ThreadFuture = ThreadFuture()
+    thread_future.set_running_or_notify_cancel()
+    pool = MagicMock()
+    pool.submit.return_value = thread_future
+    return pool, thread_future
+
+
+async def _settle() -> None:
+    """Let add_done_callback land — it is scheduled via call_soon."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_consult_skips_while_prior_walk_is_in_flight():
+    """An unfinished walk makes the next tick answer UNKNOWN without submitting.
+
+    Without the guard a permanently wedged /proc read grows one blocked worker
+    per ``check_after_secs`` tick in the shared pool that teardown's
+    ``_get_child_pids`` also draws from.
+    """
+    handle = _consult_handle()
+    handle._oracle = MagicMock()
+    handle._consult_future = asyncio.get_running_loop().create_future()
+
+    assert await handle._consult_oracle_offloaded(model_wait=False) == (
+        VERDICT_UNKNOWN,
+        "prior consult still in flight",
+    )
+    handle._oracle.check_tool.assert_not_called()
+
+    # Once it finishes, the gate reopens and the next tick submits normally.
+    handle._consult_future.set_result((VERDICT_WORKING, "done"))
+    handle._oracle.check_tool.return_value = (VERDICT_DEAD, "child exited")
+    assert await handle._consult_oracle_offloaded(model_wait=False) == (
+        VERDICT_DEAD,
+        "child exited",
+    )
+    handle._oracle.check_tool.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_no_inflight_tool_answer_is_not_masked_by_the_guard():
+    """The pure-state answer is resolved BEFORE the in-flight guard.
+
+    "no in-flight tool state" needs no worker, so gating it behind a wedged walk
+    would replace an accurate reason with an unrelated one — and the tool branch
+    reads the evidence string into its logs and SEL.
+    """
+    handle = _consult_handle()
+    handle._inflight_tool = None
+    handle._consult_future = asyncio.get_running_loop().create_future()
+
+    assert await handle._consult_oracle_offloaded(model_wait=False) == (
+        VERDICT_UNKNOWN,
+        "no in-flight tool state",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_real_submission_is_recorded_and_gates_the_next_tick():
+    """Injecting the future by hand proves nothing about the submission path.
+
+    If the assignment were dropped, every timed-out walk would leave the field
+    ``None`` and the next tick would submit another executor job — the exact
+    starvation this guard exists to stop.
+    """
+    handle = _consult_handle()
+    handle._oracle = MagicMock()
+    pool, thread_future = _stub_pool()
+    _real_wait_for = asyncio.wait_for
+
+    async def _fast_timeout(awaitable, timeout=None):
+        return await _real_wait_for(awaitable, timeout=0.01)
+
+    with (
+        patch("kiro_crew.acp.session_handle.subprocess_executor", return_value=pool),
+        patch("kiro_crew.acp.session_handle.asyncio.wait_for", _fast_timeout),
+    ):
+        assert await handle._consult_oracle_offloaded(model_wait=False) == (
+            VERDICT_UNKNOWN,
+            "oracle offload error",
+        )
+        assert handle._consult_future is not None
+        assert pool.submit.call_count == 1
+
+        assert await handle._consult_oracle_offloaded(model_wait=False) == (
+            VERDICT_UNKNOWN,
+            "prior consult still in flight",
+        )
+        assert pool.submit.call_count == 1
+
+    thread_future.set_exception(OSError("wedged /proc read"))
+    await _settle()
+
+
+@pytest.mark.asyncio
+async def test_failed_submission_reports_unknown_without_latching_the_gate():
+    """A refused executor job must degrade to UNKNOWN and leave the gate open.
+
+    Submission fails for ordinary reasons — a pool shut down during teardown,
+    thread creation refused under load. Recording nothing keeps the guard from
+    latching shut on a walk that never started.
+    """
+    handle = _consult_handle()
+    handle._oracle = MagicMock()
+
+    with patch(
+        "kiro_crew.acp.session_handle.subprocess_executor",
+        side_effect=RuntimeError("cannot schedule new futures after shutdown"),
+    ):
+        assert await handle._consult_oracle_offloaded(model_wait=False) == (
+            VERDICT_UNKNOWN,
+            "oracle offload error",
+        )
+
+    assert handle._consult_future is None
+
+
+@pytest.mark.asyncio
+async def test_pending_walk_exception_is_consumed_without_any_boundary():
+    """The retrieval callback must be attached at SUBMISSION.
+
+    A turn that ends on a tool-stall verdict returns while the walk is still
+    running; if the handle then goes idle, no later tick and no boundary ever
+    observes it, and a walk that raises reaches ``Future.__del__`` unretrieved —
+    reported through the loop exception handler as an unhandled-asyncio crash for
+    an ordinary probe failure.
+    """
+    handle = _consult_handle()
+    handle._oracle = MagicMock()
+    pool, thread_future = _stub_pool()
+    _real_wait_for = asyncio.wait_for
+
+    async def _fast_timeout(awaitable, timeout=None):
+        # Delegate to the REAL wait_for: its cancellation of shield's outer
+        # future is what detaches the inner-done callback. A patched raise would
+        # leave that callback attached and retrieve the exception for us — a
+        # vacuous pass.
+        return await _real_wait_for(awaitable, timeout=0.01)
+
+    with (
+        patch("kiro_crew.acp.session_handle.subprocess_executor", return_value=pool),
+        patch("kiro_crew.acp.session_handle.asyncio.wait_for", _fast_timeout),
+    ):
+        await handle._consult_oracle_offloaded(model_wait=False)
+
+    tracked = handle._consult_future
+    assert tracked is not None and not tracked.done()
+
+    thread_future.set_exception(OSError("wedged /proc read"))
+    await _settle()
+
+    assert tracked.done()
+    # _log_traceback is the flag Future.__del__ consults to decide whether to
+    # report an exception as never retrieved.
+    assert tracked._log_traceback is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_consult_still_consumes_a_later_failure():
+    """Cancellation is what proves the callback is not in the ``except`` arm.
+
+    Attaching it in ``except Exception`` would cover the timeout path and look
+    equivalent — but ``CancelledError`` is a ``BaseException``, so a turn
+    cancelled mid-walk would skip it.
+    """
+    handle = _consult_handle()
+    handle._oracle = MagicMock()
+    pool, thread_future = _stub_pool()
+
+    with patch("kiro_crew.acp.session_handle.subprocess_executor", return_value=pool):
+        task = asyncio.ensure_future(handle._consult_oracle_offloaded(model_wait=False))
+        while handle._consult_future is None:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    tracked = handle._consult_future
+    assert tracked is not None and not tracked.done()
+
+    thread_future.set_exception(OSError("wedged /proc read"))
+    await _settle()
+
+    assert tracked.done()
+    assert tracked._log_traceback is False
+
+
+@pytest.mark.asyncio
+async def test_reopening_the_gate_consumes_a_failed_prior_walk():
+    """A prior walk that already failed must have its exception retrieved.
+
+    ``wait_for`` cancels shield's outer future and shield then detaches the
+    inner-done callback, so a walk that raises after the timeout can arrive with
+    its exception unread.
+    """
+    handle = _consult_handle()
+    handle._oracle = MagicMock()
+    handle._oracle.check_tool.return_value = (VERDICT_DEAD, "child exited")
+
+    prior = asyncio.get_running_loop().create_future()
+    prior.set_exception(OSError("wedged /proc read"))
+    handle._consult_future = prior
+
+    assert await handle._consult_oracle_offloaded(model_wait=False) == (
+        VERDICT_DEAD,
+        "child exited",
+    )
+    assert prior._log_traceback is False
+
+
+@pytest.mark.asyncio
+async def test_retirement_releases_the_walk_and_swaps_the_oracle():
+    """Both halves of the liveness state retire together.
+
+    Retiring only the future would leave a detached walk writing into the live
+    baseline; retiring only the oracle would leave that walk answering every
+    later tick "still in flight", so the new generation never samples its own
+    process and the tool branch acts on UNKNOWN at the suspect window.
+    """
+    handle = _consult_handle()
+    retired = handle._oracle
+    retired._samples["io"] = (0.0, 12_345)
+    retired._samples["cpu"] = (0.0, 678)
+    retired._tracked_child = 9999
+    retired._child_gone_ts = 1.0
+    wedged = asyncio.get_running_loop().create_future()
+    handle._consult_future = wedged
+
+    handle._retire_liveness_state()
+
+    assert handle._consult_future is None
+    assert handle._oracle is not retired
+    assert handle._oracle._samples == {}
+    assert handle._oracle._tracked_child is None
+    assert handle._oracle._child_gone_ts is None
+
+    # A late write from the detached walk reaches the retired instance only.
+    retired._samples["io"] = (0.0, 999_999)
+    assert "io" not in handle._oracle._samples
+
+    # And its eventual failure is not reported as an unhandled crash.
+    wedged.set_exception(OSError("wedged /proc read"))
+    await _settle()
+    assert wedged._log_traceback is False
+
+
+@pytest.mark.asyncio
+async def test_retired_oracle_keeps_the_sessions_sampling_config():
+    """``fresh()`` not ``LivenessOracle()``: the swap must not silently repoint.
+
+    The handle constructs its oracle with the session's
+    ``watchdog.wellness_sample_secs``; a default-constructed replacement would
+    quietly revert the movement-sample interval at the first boundary.
+    """
+    handle = _consult_handle(sample_secs=0.25)
+    configured = handle._oracle
+    assert configured._sample_min_secs == 0.25
+
+    handle._retire_liveness_state()
+
+    assert handle._oracle is not configured
+    assert handle._oracle._sample_min_secs == 0.25
+
+
+@pytest.mark.asyncio
+async def test_the_submitted_walk_is_bound_to_the_oracle_it_sampled():
+    """Retirement isolates a late writer only if the job captured its oracle.
+
+    Handing the executor something that resolved ``self._oracle`` at execution
+    time would make a detached walk write into whatever oracle is live *then*,
+    defeating every retirement here while leaving the other tests green. Guards
+    behaviour that is already correct rather than fixing anything.
+    """
+    handle = _consult_handle()
+    submitted_against = handle._oracle
+    pool, thread_future = _stub_pool()
+    _real_wait_for = asyncio.wait_for
+
+    async def _fast_timeout(awaitable, timeout=None):
+        return await _real_wait_for(awaitable, timeout=0.01)
+
+    with (
+        patch("kiro_crew.acp.session_handle.subprocess_executor", return_value=pool),
+        patch("kiro_crew.acp.session_handle.asyncio.wait_for", _fast_timeout),
+    ):
+        await handle._consult_oracle_offloaded(model_wait=False)
+
+    walk = pool.submit.call_args[0][0]
+    assert getattr(walk, "__self__", None) is submitted_against
+
+    handle._retire_liveness_state()
+    assert handle._oracle is not submitted_against
+    assert walk.__self__ is submitted_against
+
+    thread_future.set_exception(OSError("wedged /proc read"))
+    await _settle()
+
+
+@pytest.mark.asyncio
+async def test_turn_start_retires_the_liveness_state():
+    """``prompt()`` must retire before it sends, not merely clear the oracle.
+
+    A walk left over from the previous turn would otherwise gate this turn's
+    first ticks with "still in flight" while writing the previous process tree's
+    counters into the baseline this turn reads.
+    """
+    handle = _consult_handle()
+    handle._runtime.supports_image_prompt = False
+    handle._runtime.send_request = AsyncMock(side_effect=RuntimeError("stop after retirement"))
+    handle._turn_done.set()  # prompt() refuses a turn that is still active
+    prior_oracle = handle._oracle
+    prior_oracle._samples["io"] = (0.0, 12_345)
+    prior_walk = asyncio.get_running_loop().create_future()
+    handle._consult_future = prior_walk
+
+    with pytest.raises(RuntimeError, match="stop after retirement"):
+        async for _ev in handle.prompt("hi", timeout=1.0):
+            pass
+
+    assert handle._oracle is not prior_oracle
+    assert handle._oracle._samples == {}
+    assert handle._consult_future is None
+
+    prior_walk.set_exception(OSError("wedged /proc read"))
+    await _settle()
+    assert prior_walk._log_traceback is False
+
+
+@pytest.mark.asyncio
+async def test_tool_dispatch_retires_the_liveness_state():
+    """Every new tool dispatch is a liveness generation boundary.
+
+    ``reset()`` here was the site Luca Chang's ``AcpClient`` fix named as the
+    remaining gap: it drops the baseline in place while a walk submitted for the
+    PREVIOUS tool may still be running against it.
+    """
+    handle = _consult_handle()
+    prior_oracle = handle._oracle
+    prior_oracle._samples["cpu"] = (0.0, 678)
+    prior_walk = asyncio.get_running_loop().create_future()
+    handle._consult_future = prior_walk
+
+    handle._handle_update(
+        JsonRpcMessage(
+            method=METHOD_SESSION_UPDATE,
+            params={
+                "sessionId": "sA",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-2",
+                    "title": "bash",
+                    "kind": "execute",
+                    "rawInput": {"command": "make test"},
+                },
+            },
+        )
+    )
+
+    assert handle._tool_dispatched is True
+    assert handle._oracle is not prior_oracle
+    assert handle._oracle._samples == {}
+    assert handle._consult_future is None
+
+    prior_walk.set_exception(OSError("wedged /proc read"))
+    await _settle()
+    assert prior_walk._log_traceback is False
+
+
+@pytest.mark.asyncio
+async def test_a_previous_tools_walk_cannot_claim_the_new_tools_child():
+    """The tool path's sharper version of the stale-write hazard.
+
+    ``_check_shell_child`` matches a descendant against the DISPATCHED command
+    and stores it as ``_tracked_child`` so later ticks get exact exit detection.
+    A walk still running with the previous tool's ``ToolCallState`` matches a
+    child of the previous command; with an in-place ``reset()`` that write lands
+    on the live oracle and the new tool's next tick reports
+    ``WORKING "shell child N alive"`` for a process that has nothing to do with
+    it — deferring recovery of a genuinely stalled tool to the 3h hard cap.
+    """
+    handle = _consult_handle()
+    tool_a_oracle = handle._oracle
+
+    handle._handle_update(
+        JsonRpcMessage(
+            method=METHOD_SESSION_UPDATE,
+            params={
+                "sessionId": "sA",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-b",
+                    "title": "bash",
+                    "kind": "execute",
+                    "rawInput": {"command": "make test"},
+                },
+            },
+        )
+    )
+
+    # Tool A's detached walk finally finishes and writes what it matched.
+    tool_a_oracle._tracked_child = 9999
+    tool_a_oracle._child_gone_ts = None
+
+    assert handle._oracle._tracked_child is None
+    verdict, evidence = handle._oracle.check_tool(4242, handle._inflight_tool)
+    assert "shell child 9999" not in evidence
+    assert verdict != VERDICT_WORKING
+
+
+@pytest.mark.asyncio
+async def test_tracked_child_still_carries_across_ticks_after_retirement():
+    """Retirement must not break the cross-tick contract it sits next to.
+
+    ``check_tool``'s exact-exit detection depends on ``_tracked_child`` surviving
+    from the tick that matched it to the tick that checks it. ``fresh()`` starts
+    in exactly the state ``reset()`` produced and the consult binds
+    ``self._oracle`` at submission, so ticks after a boundary accumulate on the
+    new instance the way they did before — including through the in-flight gate,
+    which releases as soon as a walk completes.
+    """
+    handle = _consult_handle()
+    handle._retire_liveness_state()
+    live = handle._oracle
+
+    # Tick 1: the walk matches a child and writes it into the LIVE oracle.
+    def _match_child(pid, tool):
+        live._tracked_child = 4321
+        return VERDICT_WORKING, "shell child 4321 alive"
+
+    with patch.object(live, "check_tool", _match_child):
+        assert await handle._consult_oracle_offloaded(model_wait=False) == (
+            VERDICT_WORKING,
+            "shell child 4321 alive",
+        )
+
+    # The completed walk released the gate, and tick 2 reads tick 1's match: the
+    # exact-exit branch is reachable ONLY when _tracked_child survived the tick
+    # boundary, and it is what starts the child-gone grace clock.
+    assert handle._consult_future is not None and handle._consult_future.done()
+    assert live._tracked_child == 4321
+    verdict, evidence = await handle._consult_oracle_offloaded(model_wait=False)
+    assert evidence.startswith("shell child exited")
+    assert verdict == VERDICT_UNKNOWN  # inside CHILD_EXIT_GRACE_SECS
+    assert live._child_gone_ts is not None
