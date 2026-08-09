@@ -1178,6 +1178,18 @@ class AgentConfig:
             "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
         ),
     )
+    admission_gate: bool = field(
+        default=True,
+        metadata=_meta(
+            "Posture Admission Gate",
+            "While available memory is at or below resource_critical_gb, defer "
+            "scheduled cron firings to the next tick and refuse new subagent "
+            "spawns until memory frees. Manually triggered cron runs, in-flight "
+            "subagents, and direct chat turns are never gated; an unreadable "
+            "probe admits (fail-open). Set false to make the critical posture "
+            "advisory-only.",
+        ),
+    )
     workflow_run_timeout_secs: int = field(
         default=3600,
         metadata=_meta(
@@ -5434,6 +5446,7 @@ class KiroCrewConfig:
                 ),
                 resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
                 resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
+                admission_gate=_safe_bool(agent_data.get("admission_gate"), True),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
                 subagent_stall_idle_secs=_safe_int(

@@ -66,6 +66,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_RESULT,
     LLMEvent,
 )
+from kiro_crew.resource_status import cached_admission_check
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
@@ -2746,6 +2747,41 @@ class SubagentManager:
             )
             return self._announce_rejection(info)
 
+        # --- Admission gate: refuse NEW spawns while host memory posture is
+        # critical. Complements the absolute spawn_min_memory_gb floor above
+        # with the posture tier (resource_critical_gb) and shares its
+        # off-switch (agent.admission_gate) with the cron scheduler's deferral
+        # gate. This method is sync and runs on the gateway event loop, so it
+        # reads the CACHED off-thread verdict — never inline config/procfs
+        # I/O; bounded staleness is acceptable for pressure-shedding.
+        # In-flight subagents are untouched; direct user chat turns are
+        # not gated; fails open on an unknown posture. ---
+        admission = cached_admission_check()
+        if not admission.admitted:
+            logger.warning("Subagent spawn refused: %s", admission.reason)
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="refused_memory_critical",
+                metadata={
+                    "available_gb": admission.available_gb,
+                    "posture": admission.posture,
+                    "task": _redacted_task[:120],
+                },
+            )
+            info = SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                parent_session_key=parent_session_key,
+                done=True,
+                error=f"spawn refused: {admission.reason}",
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
+            )
+            return self._announce_rejection(info)
+
         # --- CWD validation: reject bad paths before consuming a slot ---
         resolved_cwd = ""
         if cwd:
@@ -3086,7 +3122,10 @@ class SubagentManager:
 
         Non-batch rejections skip the announce: the caller already receives
         the error synchronously in the returned info, and injecting a
-        completion turn for them would double-report.
+        completion turn for them would double-report. That holds for
+        queue-drained non-batch rejections too — ``_drain_queue`` announces
+        those itself off the returned info, so announcing here as well would
+        inject the completion twice.
         """
         if info.batch_id and self._on_done:
             try:
