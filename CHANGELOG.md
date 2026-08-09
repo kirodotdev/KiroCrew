@@ -6,7 +6,8 @@ All notable changes to KiroCrew are documented in this file.
 
 The first feature release after launch: a real browser for the agent, four new
 built-in apps, a native Windows desktop build, Korean and Japanese interfaces,
-and several hundred fixes from the first weeks in the open.
+setup that no longer assumes Slack, and several hundred fixes from the first
+weeks in the open.
 
 ### The agent gets a browser
 
@@ -28,6 +29,11 @@ and several hundred fixes from the first weeks in the open.
 - Installed apps are searchable and launchable from the command palette, and
   third-party apps now run under **per-app trust grants**, with a denial that
   tells you exactly what to do about it.
+- **MCP Apps has its own switch** instead of riding the connection-pooling
+  toggle, and the shared MCP gateway follows it.
+- **Connections** gained a provider registry, so an integration declares what it
+  is asking for and its consent URL is validated before you are sent to it.
+- Code Review Sage works against **GitHub Enterprise Server** hosts.
 
 ### Windows, properly
 
@@ -42,8 +48,9 @@ and several hundred fixes from the first weeks in the open.
   **Storage** screen that reports what sessions cost on disk and reclaims space
   to a trash, with an inventory that no longer calls idle sessions "in use".
 - **Releases tab** — this changelog, rendered per version in Settings.
-- **Webhooks surface** — named tokens, HMAC signing, and a kill switch for
-  inbound automation, managed from Settings.
+- **Webhooks** — named tokens, HMAC signing, and a kill switch for inbound
+  automation. The page is still being finished, so it now sits behind a
+  per-device **Preview pages** toggle under Developer and is hidden by default.
 - Redesigned sidebar folders, drag a session into an open chat to reference it,
   suggested folders for new sessions, consistent empty states with a next step,
   and a notification sound when an approval prompt needs you.
@@ -52,6 +59,30 @@ and several hundred fixes from the first weeks in the open.
   failed restores. Queued messages can be reordered before they send.
 - The terminal panel pops out into its own window, completes subcommands and
   flags (not just paths), and takes a configurable font.
+- **Agent Templates became a two-pane inspector**, and agents defined in the
+  project you are working in are discovered alongside your user-level ones.
+- **Send a copy of a session to another instance** — hand a conversation, with
+  its context, to a different Kiro Crew you run.
+- Jira issue URLs and setting references render as **link chips** you can click
+  straight through.
+- Stale auto-titles refresh in the background, the command palette tells a
+  failed scoped search apart from an empty one, sidebar search keeps its
+  relevance order, and the chat action footer grows to 40px targets on touch
+  devices.
+- Bold, italic, and strikethrough now render correctly in **CJK prose**.
+
+### Channels, and setup that no longer assumes Slack
+
+- **`kirocrew setup` stops asking for Slack tokens.** The wizard finishes on the
+  dashboard and points at the full set of chat channels; walk through the Slack
+  credentials only when you ask for them with `kirocrew setup --slack`. Docs and
+  in-app copy describe Kiro Crew as multi-channel rather than Slack-first.
+- **Telegram** takes **multiple bot accounts per gateway** and accepts inbound
+  attachments — images for vision, documents, and audio that is transcribed on
+  arrival.
+- A sub-agent's completion now reports back into **non-Slack** parent sessions,
+  Discord continues the connected session when a reply arrives, and Slack
+  renders an `OPTIONS` prompt as a real control everywhere it appears.
 
 ### Voice, language, and models
 
@@ -80,9 +111,16 @@ and several hundred fixes from the first weeks in the open.
   paths and credential redaction got faster without getting looser.
 - The ACP runtime survives oversize output frames, worker sessions are no longer
   reaped as orphans, and `kirocrew update` works for wheel and `cli.sh` installs.
+- A refusal from one of **your own** deny patterns can carry your note
+  explaining it, and the seven always-on git-publish rules now render locked in
+  Settings instead of offering a toggle that never took effect.
+- The gateway **refuses to boot when its data home cannot persist state**,
+  rather than running and losing your work silently.
+- The tool-approval window and the watchdog's stall windows are both bounded by
+  the turn ceiling, so neither outlives the turn it belongs to.
 
-Plus roughly 240 further fixes across the dashboard, chat, Slack, ACP transport,
-history consolidation, packaging, and CI.
+Plus roughly 280 further fixes across the dashboard, chat, the chat channels,
+ACP transport, history consolidation, packaging, and CI.
 
 ## [0.1.3] — 2026-08-07
 
