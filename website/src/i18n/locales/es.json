@@ -2313,6 +2313,17 @@
         "low": "Baja",
         "medium": "Media"
       },
+      "transcript": {
+        "empty": "Aún no hay transcripción",
+        "emptyHintLive": "La voz final aparecerá aquí a medida que avance la reunión.",
+        "emptyHintRecorded": "No se grabó ninguna transcripción para esta reunión.",
+        "full": "La transcripción está llena. El audio y los mensajes nuevos ya no se grabarán ni se enviarán a los agentes.",
+        "jumpToLatest": "Ir a lo más reciente",
+        "live": "En vivo",
+        "regionLabel": "Transcripción de la reunión",
+        "title": "Transcripción",
+        "typed": "Escrito"
+      },
       "review": {
         "allDone": "Todo revisado",
         "archive": "Archivar",

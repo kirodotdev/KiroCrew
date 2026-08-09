@@ -2231,6 +2231,17 @@
         "low": "낮음",
         "medium": "보통"
       },
+      "transcript": {
+        "empty": "아직 기록이 없습니다",
+        "emptyHintLive": "회의가 진행되면 확정된 음성이 여기에 표시됩니다.",
+        "emptyHintRecorded": "이 회의에는 기록된 내용이 없습니다.",
+        "full": "기록 용량이 가득 찼습니다. 새로운 음성과 브로드캐스트는 더 이상 기록되거나 에이전트에게 전송되지 않습니다.",
+        "jumpToLatest": "최신 내용으로 이동",
+        "live": "실시간",
+        "regionLabel": "회의 기록",
+        "title": "기록",
+        "typed": "입력됨"
+      },
       "review": {
         "allDone": "검토 완료",
         "archive": "보관",

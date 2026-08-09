@@ -53,6 +53,19 @@
     }
   },
   "apps": {
+    "meetings": {
+      "transcript": {
+        "empty": "No transcript yet",
+        "emptyHintLive": "Final speech will appear here as the meeting continues.",
+        "emptyHintRecorded": "No transcript was recorded for this meeting.",
+        "full": "Transcript is full. New speech and broadcasts are no longer being recorded or sent to agents.",
+        "jumpToLatest": "Jump to latest",
+        "live": "Live",
+        "regionLabel": "Meeting transcript",
+        "title": "Transcript",
+        "typed": "Typed"
+      }
+    },
     "autoResearch": {
       "grillTree": {
         "collapse": "Collapse",

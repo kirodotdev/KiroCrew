@@ -2231,6 +2231,17 @@
         "low": "低",
         "medium": "中"
       },
+      "transcript": {
+        "empty": "暂无转录",
+        "emptyHintLive": "随着会议进行，最终确认的语音内容会显示在这里。",
+        "emptyHintRecorded": "这场会议没有记录转录。",
+        "full": "转录已满。新的语音和广播将不再被记录或发送给代理。",
+        "jumpToLatest": "跳到最新内容",
+        "live": "实时",
+        "regionLabel": "会议转录",
+        "title": "转录",
+        "typed": "文字输入"
+      },
       "review": {
         "allDone": "全部已复核",
         "archive": "归档",

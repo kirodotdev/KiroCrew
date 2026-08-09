@@ -2272,6 +2272,17 @@
         "low": "Niedrig",
         "medium": "Mittel"
       },
+      "transcript": {
+        "empty": "Noch kein Transkript",
+        "emptyHintLive": "Final erkannte Sprache erscheint hier im Verlauf der Besprechung.",
+        "emptyHintRecorded": "Für diese Besprechung wurde kein Transkript aufgezeichnet.",
+        "full": "Das Transkript ist voll. Neue Sprache und Mitteilungen werden nicht mehr aufgezeichnet oder an Agenten gesendet.",
+        "jumpToLatest": "Zum neuesten Eintrag",
+        "live": "Live",
+        "regionLabel": "Besprechungstranskript",
+        "title": "Transkript",
+        "typed": "Eingegeben"
+      },
       "review": {
         "allDone": "Alles geprüft",
         "archive": "Archivieren",

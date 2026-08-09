@@ -2231,6 +2231,17 @@
         "low": "低",
         "medium": "中"
       },
+      "transcript": {
+        "empty": "文字起こしはまだありません",
+        "emptyHintLive": "会議が進むと、確定した発言がここに表示されます。",
+        "emptyHintRecorded": "この会議では文字起こしが記録されませんでした。",
+        "full": "文字起こしが上限に達しました。新しい音声や一斉送信は記録されず、エージェントにも送信されません。",
+        "jumpToLatest": "最新に移動",
+        "live": "ライブ",
+        "regionLabel": "会議の文字起こし",
+        "title": "文字起こし",
+        "typed": "入力"
+      },
       "review": {
         "allDone": "すべてレビュー完了",
         "archive": "アーカイブ",

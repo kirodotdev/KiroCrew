@@ -2313,6 +2313,17 @@
         "low": "Basse",
         "medium": "Moyenne"
       },
+      "transcript": {
+        "empty": "Aucune transcription pour le moment",
+        "emptyHintLive": "Les paroles finalisées apparaîtront ici au fil de la réunion.",
+        "emptyHintRecorded": "Aucune transcription n’a été enregistrée pour cette réunion.",
+        "full": "La transcription est pleine. Les nouvelles paroles et diffusions ne seront plus enregistrées ni envoyées aux agents.",
+        "jumpToLatest": "Aller au plus récent",
+        "live": "En direct",
+        "regionLabel": "Transcription de la réunion",
+        "title": "Transcription",
+        "typed": "Saisi"
+      },
       "review": {
         "allDone": "Tout est passé en revue",
         "archive": "Archiver",

@@ -2313,6 +2313,17 @@
         "low": "Baixa",
         "medium": "Média"
       },
+      "transcript": {
+        "empty": "Ainda não há transcrição",
+        "emptyHintLive": "A fala finalizada aparecerá aqui à medida que a reunião avança.",
+        "emptyHintRecorded": "Nenhuma transcrição foi gravada para esta reunião.",
+        "full": "A transcrição está cheia. Novas falas e transmissões não serão mais gravadas nem enviadas aos agentes.",
+        "jumpToLatest": "Ir para o mais recente",
+        "live": "Ao vivo",
+        "regionLabel": "Transcrição da reunião",
+        "title": "Transcrição",
+        "typed": "Digitado"
+      },
       "review": {
         "allDone": "Tudo revisto",
         "archive": "Arquivar",

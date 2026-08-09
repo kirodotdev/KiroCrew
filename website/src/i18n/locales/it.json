@@ -2313,6 +2313,17 @@
         "low": "Bassa",
         "medium": "Media"
       },
+      "transcript": {
+        "empty": "Nessuna trascrizione per ora",
+        "emptyHintLive": "Il parlato definitivo apparirà qui durante la riunione.",
+        "emptyHintRecorded": "Non è stata registrata alcuna trascrizione per questa riunione.",
+        "full": "La trascrizione è piena. Nuovi interventi e messaggi non verranno più registrati né inviati agli agenti.",
+        "jumpToLatest": "Vai al contenuto più recente",
+        "live": "Live",
+        "regionLabel": "Trascrizione della riunione",
+        "title": "Trascrizione",
+        "typed": "Digitato"
+      },
       "review": {
         "allDone": "Tutto rivisto",
         "archive": "Archivia",

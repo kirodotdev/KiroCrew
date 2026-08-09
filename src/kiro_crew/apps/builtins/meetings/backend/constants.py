@@ -21,6 +21,11 @@ API_BASE = f"/api/apps/{APP_NAME}"
 MAX_SESSION_DURATION = 4 * 3600  # a single meeting may run at most 4 hours
 MAX_CONCURRENT_MEETINGS = 1
 MAX_TRANSCRIPT_CHARS = 4000  # per dispatched transcription line
+#: A four-hour meeting normally produces only a few megabytes of text. This
+#: ceiling prevents an unbounded app-owned file while leaving generous headroom
+#: for unusually dense speech and typed interventions. Reaching it is a loud
+#: 413; accepted segments are never silently truncated.
+MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 MAX_BATCH_CHARS = 60_000  # per flushed agent batch
 MAX_ATTACHMENTS = 25
 MAX_DICTIONARY_TERMS = 500
@@ -87,6 +92,13 @@ DICTIONARY_FILE = "dictionary.toml"
 CALENDAR_CACHE_FILE = "calendar-cache.json"
 SESSION_META_FILE = "session.json"
 TASKS_FILE = "tasks.json"
+TRANSCRIPT_FILE = "transcript.jsonl"
+
+# Durable transcript entry sources. Speech is a finalized STT segment; typed is
+# a line submitted through the broadcast bar.
+TRANSCRIPT_SOURCE_SPEECH = "speech"
+TRANSCRIPT_SOURCE_TYPED = "typed"
+VALID_TRANSCRIPT_SOURCES = (TRANSCRIPT_SOURCE_SPEECH, TRANSCRIPT_SOURCE_TYPED)
 
 # The always-on system agent that maintains ``tasks.json``. Not a configurable
 # entry in ``meeting_agents`` — it is a core feature of the app.

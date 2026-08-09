@@ -186,6 +186,7 @@ class TestMeetingMeta:
         store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Standup"), root)
         store.write_tasks("m1", [{"id": "t1", "description": "Ship it"}], root)
         store.write_agent_output("m1", {"id": "note-taker"}, "# Notes", root)
+        store.append_transcript("m1", "The transcript is durable.", "speech", root)
 
         assert store.delete_meeting("m1", root) is True
         assert not store.meeting_dir("m1", root).exists()
@@ -204,6 +205,100 @@ class TestMeetingMeta:
         with pytest.raises(store.MeetingsPathError):
             store.delete_meeting("alias", root)
         assert store.read_meeting_meta("target", root) is not None
+
+
+class TestTranscript:
+    def test_roundtrip_preserves_order_unicode_and_source(self, root: Path):
+        first = store.append_transcript("m1", "Buongiorno, 世界", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        second = store.append_transcript("m1", "Typed correction", k.TRANSCRIPT_SOURCE_TYPED, root)
+
+        assert first is not None and second is not None
+        entries = store.read_transcript("m1", root)
+        assert [entry["id"] for entry in entries] == [first["id"], second["id"]]
+        assert [entry["text"] for entry in entries] == [
+            "Buongiorno, 世界",
+            "Typed correction",
+        ]
+        assert [entry["source"] for entry in entries] == ["speech", "typed"]
+        assert all(entry["timestamp"].endswith("Z") for entry in entries)
+
+    def test_missing_file_is_a_legacy_empty_transcript(self, root: Path):
+        store.write_meeting_meta("legacy", store.new_meeting_meta("legacy", "Old"), root)
+        assert store.read_transcript("legacy", root) == []
+
+    def test_malformed_rows_do_not_hide_valid_speech(self, root: Path):
+        entry = store.append_transcript("m1", "kept", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert entry is not None
+        with store.transcript_path("m1", root).open("a", encoding="utf-8") as transcript:
+            transcript.write("{unfinished\n")
+
+        assert [row["text"] for row in store.read_transcript("m1", root)] == ["kept"]
+
+    def test_truncated_utf8_tail_does_not_hide_valid_speech(self, root: Path):
+        first = store.append_transcript("m1", "kept", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert first is not None
+        with store.transcript_path("m1", root).open("ab") as transcript:
+            transcript.write(b'{"text":"\xe2\x82')
+
+        second = store.append_transcript("m1", "recovered", k.TRANSCRIPT_SOURCE_SPEECH, root)
+
+        assert second is not None
+        assert [row["text"] for row in store.read_transcript("m1", root)] == [
+            "kept",
+            "recovered",
+        ]
+
+    def test_cursor_reads_only_bytes_appended_after_the_previous_page(self, root: Path):
+        first = store.append_transcript("m1", "first", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert first is not None
+        first_page, cursor = store.read_transcript_page("m1", root=root)
+
+        second = store.append_transcript("m1", "second", k.TRANSCRIPT_SOURCE_TYPED, root)
+        assert second is not None
+        next_page, next_cursor = store.read_transcript_page("m1", cursor, root)
+
+        assert first_page == [first]
+        assert next_page == [second]
+        assert next_cursor > cursor
+
+    def test_cursor_after_a_crash_tail_recovers_the_next_valid_row(self, root: Path):
+        first = store.append_transcript("m1", "first", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert first is not None
+        with store.transcript_path("m1", root).open("ab") as transcript:
+            transcript.write(b'{"unfinished"')
+        first_page, cursor = store.read_transcript_page("m1", root=root)
+
+        second = store.append_transcript("m1", "second", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert second is not None
+        next_page, _next_cursor = store.read_transcript_page("m1", cursor, root)
+
+        assert first_page == [first]
+        assert next_page == [second]
+
+    def test_capacity_is_rejected_without_truncating_existing_rows(
+        self, root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        first = store.append_transcript("m1", "kept", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert first is not None
+        current_size = store.transcript_path("m1", root).stat().st_size
+        monkeypatch.setattr(k, "MAX_TRANSCRIPT_BYTES", current_size + 1)
+
+        assert store.append_transcript("m1", "too large", k.TRANSCRIPT_SOURCE_SPEECH, root) is None
+        assert store.read_transcript("m1", root) == [first]
+
+    def test_capacity_accounts_for_the_crash_tail_separator(
+        self, root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        first = store.append_transcript("m1", "kept", k.TRANSCRIPT_SOURCE_SPEECH, root)
+        assert first is not None
+        path = store.transcript_path("m1", root)
+        with path.open("ab") as transcript:
+            transcript.write(b"{")
+        original = path.read_bytes()
+        monkeypatch.setattr(k, "MAX_TRANSCRIPT_BYTES", len(original) + 1)
+
+        assert store.append_transcript("m1", "too large", k.TRANSCRIPT_SOURCE_SPEECH, root) is None
+        assert path.read_bytes() == original
 
 
 class TestAgentOutputs:
