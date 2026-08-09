@@ -14,7 +14,6 @@ import ssl
 import subprocess
 import tempfile
 import threading
-import time
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -779,7 +778,7 @@ class TestFailOpen:
         """The gateway starts the beacon on a thread and never joins it.
 
         Pins the boot-path contract: even a beacon that hangs far past its own
-        timeout costs the caller only the thread spawn.
+        timeout leaves the caller waiting only for the thread to start.
 
         The hang is RELEASED at the end rather than left running. ``beacon.send``
         resolves state through the module-global ``config_dir``, which
@@ -799,7 +798,6 @@ class TestFailOpen:
             raise OSError("released")
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", hang)
-        start = time.monotonic()
         thread = threading.Thread(
             target=beacon.send,
             args=("https://e.invalid", "1.2.3"),
@@ -807,8 +805,7 @@ class TestFailOpen:
             daemon=True,
         )
         thread.start()
-        elapsed = time.monotonic() - start
-        assert elapsed < 1.0, f"spawning the beacon cost {elapsed:.2f}s"
+        assert thread.is_alive(), "the caller waited for the blocked beacon"
         assert thread.daemon, "must not pin interpreter exit"
         released.set()
         thread.join(timeout=10)
