@@ -9,6 +9,7 @@ back so the caller can open it.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -114,6 +115,38 @@ class TestRepoEndpointWithPullRequest(unittest.IsolatedAsyncioTestCase):
         resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
             {"repo": "https://evil.test/kirodotdev/KiroCrew/pull/777"}))
         self.assertEqual(resp.status, 400)
+
+    def _allow_ghe_host(self):
+        # Write the opt-in host into THIS test's isolated config.json, exercising
+        # the real config path the adapters read.
+        cfg_path = store.data_dir() / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["github_hosts"] = ["github.com", "acme.ghe.com"]
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    async def test_a_ghe_pull_request_cannot_be_pinned(self):
+        # The pinned-repo store carries no host, so pinning would silently target
+        # the wrong instance later; the refusal points at the PR paste flow.
+        self._allow_ghe_host()
+        resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
+            {"repo": "https://acme.ghe.com/o/r/pull/9"}))
+        self.assertEqual(resp.status, 400)
+        self.assertIn("unsupported_repo_host", _text(resp))
+
+    async def test_a_ghe_repo_url_cannot_be_pinned(self):
+        self._allow_ghe_host()
+        resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
+            {"repo": "https://acme.ghe.com/o/r"}))
+        self.assertEqual(resp.status, 400)
+        self.assertIn("unsupported_repo_host", _text(resp))
+
+    async def test_pull_request_ref_keeps_the_ghe_host(self):
+        self._allow_ghe_host()
+        ref = routes._pull_request_ref("https://acme.ghe.com/o/r/pull/9")
+        assert ref is not None
+        self.assertEqual(ref["host"], "acme.ghe.com")
+        self.assertEqual(ref["url"], "https://acme.ghe.com/o/r/pull/9")
+        self.assertEqual(ref["change_id"], "GH-acme.ghe.com-o-r-9")
 
 
 if __name__ == "__main__":  # pragma: no cover

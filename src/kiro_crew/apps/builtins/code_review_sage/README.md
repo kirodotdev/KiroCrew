@@ -59,3 +59,21 @@ Reviewing GitHub PRs requires an authenticated `gh` CLI on the gateway host:
 ```bash
 gh auth login --hostname github.com
 ```
+
+### GitHub Enterprise Server
+
+GitHub Enterprise hosts are opt-in. Add each instance to `github_hosts` in
+`~/.kiro/crew/apps/code-review-sage/data/config.json` (the list replaces the
+default, so keep `github.com` if you still review there) and authenticate `gh`
+for it:
+
+```json
+"github_hosts": ["github.com", "ghe.example.com"]
+```
+
+```bash
+gh auth login --hostname ghe.example.com
+```
+
+Hosts are matched exactly against the parsed URL hostname — never as a
+substring — so lookalike hosts are refused.

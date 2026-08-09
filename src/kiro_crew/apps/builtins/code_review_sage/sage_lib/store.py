@@ -71,6 +71,12 @@ DEFAULT_SENSITIVE_GLOBS: list[str] = [
 # composed at review time. Empty by default (OSS); users can map their own repos.
 DEFAULT_RULE_PACKS: dict[str, str] = {}
 
+# Hostnames accepted as GitHub-API-compatible, matched EXACTLY against the
+# parsed URL hostname (see ``adapters.allowed_hosts``). GitHub Enterprise Server
+# users add their instance here, mirroring ``gh auth login --hostname <host>``;
+# ``gh`` must be authenticated for each listed host.
+DEFAULT_GITHUB_HOSTS: list[str] = ["github.com"]
+
 DEFAULT_CONFIG: dict[str, object] = {
     "schema": "code-review-sage-config",
     "version": 1,
@@ -101,6 +107,8 @@ DEFAULT_CONFIG: dict[str, object] = {
     },
     "sensitive_globs": DEFAULT_SENSITIVE_GLOBS,
     "rule_packs": DEFAULT_RULE_PACKS,
+    # GitHub-compatible hosts (github.com + optional GitHub Enterprise Server).
+    "github_hosts": DEFAULT_GITHUB_HOSTS,
     # Settled-change filtering defaults.
     "exclude_settled_by_default": True,
 }
@@ -381,6 +389,21 @@ def load_config(root: Path | None = None) -> dict:
     if not cfg_path.exists():
         ensure_layout(root)
     return json.loads((data_dir(root) / "config.json").read_text(encoding="utf-8"))
+
+
+def read_config_quiet(root: Path | None = None) -> dict:
+    """Best-effort ``config.json`` read with NO side effects.
+
+    Returns ``{}`` when the file is missing, unreadable, not a JSON object, or
+    refused by the no-follow gate — unlike ``load_config`` it never creates the
+    data layout, so pure parsers (e.g. the adapters' host allowlist) can
+    consult configuration without writing to the user's data dir. The read
+    goes through ``read_json_nolink`` because ``config.json`` sits in the
+    worker-reachable data dir: a planted symlink must be refused, never
+    dereferenced. Callers treat ``{}`` as "no configuration" and fall back to
+    their defaults (``allowed_hosts`` -> ``DEFAULT_GITHUB_HOSTS``), so a
+    refusal can only ever narrow behaviour to the github.com default."""
+    return read_json_nolink(data_dir(root) / "config.json", data_dir(root)) or {}
 
 
 def _main() -> int:

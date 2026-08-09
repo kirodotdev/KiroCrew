@@ -138,6 +138,35 @@ class TestPostRecorded(_Base):
         self.assertIn("stage", out["post_error"])
         self.assertEqual(out["posted_comments"], 0)
 
+    async def test_an_unresolvable_host_aborts_the_post_fail_closed(self):
+        """A link whose host is no longer in `allowed_hosts()` (the GHE host was
+        removed from `github_hosts` between run start and posting) must abort
+        BEFORE any poster runs. A prompt built anyway would carry no
+        `--hostname`, every `gh api` call in it would default to PUBLIC
+        github.com, and the internal enterprise draft would land on a public
+        same-slug PR — so no dispatch may happen at all."""
+        results.write_result(_record(red=1, yellow=0), self.root, "run-a")
+        calls: list = []
+
+        def dispatch(task, timeout=0):
+            calls.append(task)
+            return {"ok": True, "output": "posted", "error": ""}
+
+        with unittest.mock.patch.object(
+                D.pipeline.adapters.store, "read_config_quiet",
+                return_value={"github_hosts": ["github.com"]}):
+            out = await asyncio.to_thread(
+                D.post_recorded, "CR-1", "https://acme.ghe.com/o/r/pull/1",
+                dispatch=dispatch, confirm=_confirmed, root=self.root,
+                run_id="run-a")
+
+        self.assertFalse(out["post_ok"])
+        self.assertIn("refusing to post", out["post_error"])
+        self.assertFalse(calls)               # nothing was ever dispatched
+        # The record survives for a retry once the host is configured again.
+        rec = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertEqual(rec.get("post_error"), out["post_error"])
+
     async def test_no_poster_is_spawned_when_there_is_nothing_to_post(self):
         results.write_result(_record(red=0, yellow=0), self.root, "run-a")
         calls: list = []
@@ -822,8 +851,9 @@ class TestPaginationContract(unittest.TestCase):
 
         calls: list[dict] = []
 
-        def run_gh_json(path, jq=None, *, timeout=0, paginate=False):
-            calls.append({"path": path, "jq": jq, "paginate": paginate})
+        def run_gh_json(path, jq=None, *, timeout=0, paginate=False, host=None):
+            calls.append({"path": path, "jq": jq, "paginate": paginate,
+                          "host": host})
             if "/comments" in path:
                 return [{"path": "src/a.py", "line": 4, "body": "widens scope"}]
             return [{"id": 7, "state": "PENDING", "commit_id": "abc123",
@@ -858,7 +888,7 @@ class TestDraftConfirmed(unittest.TestCase):
 
     def _stub(self, reviews, comments):
         """Answer the two `gh api` reads `_draft_confirmed` makes."""
-        def run_gh_json(path, jq=None, *, paginate=False):
+        def run_gh_json(path, jq=None, *, paginate=False, host=None):
             return comments if "/comments" in path else reviews
         return run_gh_json
 

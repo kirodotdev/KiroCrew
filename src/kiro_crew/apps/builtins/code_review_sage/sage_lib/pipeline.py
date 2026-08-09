@@ -56,9 +56,20 @@ def _redact(text: str) -> str:
 # Entry point (b): batch paste
 # ---------------------------------------------------------------------------
 
+#: Extracts the URL embedded in a pasted token so list markers ("- ", "* "),
+#: markdown link syntax ("[PR](https://...)"), autolink brackets ("<https://...>"),
+#: and leading prose ("see https://...") don't void the hostname when the whole
+#: token is urlparse()d. Extraction only LOCATES the candidate — acceptance is
+#: still decided by ``github_pr_ref``'s parsed-hostname allowlist, so a spoof
+#: like ``https://evil.example/github.com/x/pull/1`` extracts as-is and is then
+#: refused on its parsed host.
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s<>()\[\]\"']+")
+
+
 def parse_batch(text: str) -> list[str]:
     """Split a pasted blob (newline/comma separated) into a de-duplicated,
-    order-preserving list of GitHub PR URLs. Non-PR tokens are dropped."""
+    order-preserving list of PR URLs on allowed GitHub hosts (github.com plus
+    any configured GitHub Enterprise host). Non-PR tokens are dropped."""
     if not text:
         return []
     seen: set[str] = set()
@@ -67,11 +78,17 @@ def parse_batch(text: str) -> list[str]:
         tok = tok.strip()
         if not tok:
             continue
+        # Pasted lists from Slack/issues wrap URLs in bullets, markdown, or
+        # angle brackets; hand the embedded URL (when present) to the parser
+        # instead of the raw token. No match -> raw token, preserving the
+        # schemeless "owner/repo/pull/N" case.
+        m = _EMBEDDED_URL_RE.search(tok)
+        candidate = m.group(0) if m else tok
         try:
-            owner, repo, number = adapters.github_pr_parts(tok)
+            host, owner, repo, number = adapters.github_pr_ref(candidate)
         except adapters.AdapterParseError:
             continue
-        link = f"https://github.com/{owner}/{repo}/pull/{number}"
+        link = f"https://{host}/{owner}/{repo}/pull/{number}"
         key = link.lower()
         if key not in seen:
             seen.add(key)
@@ -79,14 +96,18 @@ def parse_batch(text: str) -> list[str]:
     return out
 
 
-def list_open_prs(owner: str, repo: str, *, timeout: float = 60.0) -> list[dict]:
+def list_open_prs(owner: str, repo: str, *, host: str = "github.com",
+                  timeout: float = 60.0) -> list[dict]:
     """Enumerate a repo's OPEN pull requests via the authenticated ``gh`` CLI.
 
     Deterministic backbone (no LLM): runs ``gh api`` with a LIST argv (never
     ``shell=True``). ``owner``/``repo`` are constrained to ``[^/]+`` by
-    ``adapters.parse_repo_url`` before this is called and are interpolated only
+    ``adapters.parse_repo_ref`` before this is called and are interpolated only
     into the ``gh api`` PATH argument (which `gh` treats as an API path, not a
-    shell command), so there is no shell-injection surface. Returns
+    shell command), so there is no shell-injection surface. ``host`` has passed
+    the same parsed-hostname allowlist; a non-github.com (GitHub Enterprise)
+    host is routed to ITS instance's API via ``--hostname`` (``gh`` must be
+    authenticated for it: ``gh auth login --hostname <host>``). Returns
     ``[{url, number, head_sha, title, author, updated_at, draft}]`` in GitHub's
     order. Raises ``RuntimeError`` (with the stderr tail) if `gh` is missing,
     unauthenticated, times out, or the repo can't be read.
@@ -105,6 +126,13 @@ def list_open_prs(owner: str, repo: str, *, timeout: float = 60.0) -> list[dict]
                 "head_sha: .head.sha, title: .title, author: .user.login, "
                 "updated_at: .updated_at, draft: .draft}",
     ]
+    h = adapters.canonical_host(host)
+    # ALWAYS pin the hostname — including github.com. Omitting the flag lets
+    # the `gh` CLI's configured default host (GH_HOST / `gh auth`) decide, so
+    # a public PR on a machine whose gh defaults to an enterprise instance
+    # would list the WRONG instance's PRs.
+    if h:
+        argv += ["--hostname", h]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True,
                               timeout=timeout, check=False)
@@ -232,9 +260,27 @@ FETCH_SPECS = {
 }
 
 
-def fetch_spec(platform: str) -> str:
-    """FETCH instruction for a platform (GitHub is the only platform)."""
-    return FETCH_SPECS.get(platform, FETCH_SPECS["github"])
+def fetch_spec(platform: str, host: str = "github.com") -> str:
+    """FETCH instruction for a platform (GitHub is the only platform).
+
+    For a GitHub Enterprise host the instruction routes every ``gh api`` call to
+    that instance's API via ``--hostname`` — the host has already passed the
+    adapters' parsed-hostname allowlist, so it is safe to interpolate."""
+    spec = FETCH_SPECS.get(platform, FETCH_SPECS["github"])
+    h = adapters.canonical_host(host)
+    if h:
+        # ALWAYS name the host — including github.com — so the worker's gh
+        # calls can never drift to the CLI's configured default instance.
+        spec += (
+            f". The PR lives on the GitHub host `{h}`: add "
+            f"`--hostname {h}` to EVERY `gh api` call"
+        )
+        if h != "github.com":
+            spec += (
+                f" (`gh` must be authenticated for that host: "
+                f"`gh auth login --hostname {h}`)"
+            )
+    return spec
 
 
 def _comment_body(finding: dict) -> str:

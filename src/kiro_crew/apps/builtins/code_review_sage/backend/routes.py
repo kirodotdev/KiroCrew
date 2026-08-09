@@ -515,7 +515,15 @@ def _run_headline(run: dict) -> str:
         return f"{repo} · {n} PR{'s' if n != 1 else ''}"
     changes = run.get("changes") or []
     if n == 1 and changes:
-        return str(changes[0]).rsplit("github.com/", 1)[-1]
+        link = str(changes[0])
+        try:
+            host, owner, name, number = adapters.github_pr_ref(link)
+        except adapters.AdapterError:
+            return link.rsplit("github.com/", 1)[-1]
+        # github.com stays host-less (the unambiguous common case); a GitHub
+        # Enterprise PR carries its host so two instances' PRs read apart.
+        prefix = "" if host == "github.com" else f"{host}/"
+        return f"{prefix}{owner}/{name}/pull/{number}"
     return f"{n} PR{'s' if n != 1 else ''}"
 
 
@@ -670,12 +678,14 @@ def _record_reviewed(run: dict) -> None:
 
 
 async def _list_repo_prs(repo: str) -> tuple[str, list[dict]]:
-    """Resolve owner/repo from a repo URL and enumerate its OPEN PRs (via `gh`).
-    Returns ``("<owner>/<repo>", prs)``. Raises ValueError for a bad URL and
-    RuntimeError for a `gh` failure (mapped to 400/502 by the handlers)."""
-    owner, name = adapters.parse_repo_url(repo)   # raises on non-GitHub / no owner/repo
-    prs = await asyncio.to_thread(pipeline.list_open_prs, owner, name)
-    return f"{owner}/{name}", prs
+    """Resolve host/owner/repo from a repo URL and enumerate its OPEN PRs (via
+    `gh`). Returns ``("<owner>/<repo>", prs)`` (host-qualified for a GitHub
+    Enterprise host). Raises ValueError for a bad URL and RuntimeError for a
+    `gh` failure (mapped to 400/502 by the handlers)."""
+    host, owner, name = adapters.parse_repo_ref(repo)  # raises on unknown host / no owner/repo
+    prs = await asyncio.to_thread(pipeline.list_open_prs, owner, name, host=host)
+    slug = f"{owner}/{name}" if host == "github.com" else f"{host}/{owner}/{name}"
+    return slug, prs
 
 
 async def _handle_repo_prs(request: web.Request) -> web.Response:
@@ -1369,15 +1379,16 @@ def _pull_request_ref(link: str) -> dict | None:
     if "/pull/" not in (link or ""):
         return None
     try:
-        owner, repo, number = adapters.github_pr_parts(link)
+        host, owner, repo, number = adapters.github_pr_ref(link)
     except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError):
         return None
     return {
+        "host": host,
         "owner": owner,
         "repo": repo,
         "number": int(number),
-        "url": f"https://github.com/{owner}/{repo}/pull/{number}",
-        "change_id": adapters.github_change_id(owner, repo, number),
+        "url": f"https://{host}/{owner}/{repo}/pull/{number}",
+        "change_id": adapters.github_change_id(owner, repo, number, host=host),
     }
 
 
@@ -1414,14 +1425,28 @@ async def _handle_repos(request: web.Request) -> web.Response:
         # Pin the PR's repo and report the PR back so the caller can open it.
         pr = _pull_request_ref(name)
         if pr is not None:
+            # The pinned-repo store carries no host and is enumerated against the
+            # gh default host, so pinning a GitHub Enterprise repo would silently
+            # target the wrong instance later. GHE PRs review fine when pasted in
+            # the PR box; refuse the pin with that pointer instead.
+            if pr.get("host") != "github.com":
+                return web.json_response(
+                    {"code": "unsupported_repo_host",
+                     "error": "GitHub Enterprise repos can't be pinned; paste the "
+                              "PR link in the review box instead"}, status=400)
             owner, name = pr["owner"], pr["repo"]
         else:
             try:
-                owner, name = adapters.parse_repo_url(name)
+                repo_host, owner, name = adapters.parse_repo_ref(name)
             except (adapters.AdapterParseError, adapters.UnsupportedPlatform,
                     ValueError) as e:
                 return web.json_response({"code": "invalid_repo_url", "error": f"invalid repo url: {e}"},
                                          status=400)
+            if repo_host != "github.com":
+                return web.json_response(
+                    {"code": "unsupported_repo_host",
+                     "error": "GitHub Enterprise repos can't be pinned; paste the "
+                              "PR link in the review box instead"}, status=400)
     else:
         return web.json_response(
             {"code": "repo_required", "error": "missing 'owner'+'repo' or a repo url in 'repo'"}, status=400)

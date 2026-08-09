@@ -27,6 +27,53 @@ class TestBatchParse(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(P.parse_batch(""), [])
 
+    def test_a_malformed_link_does_not_sink_the_batch(self):
+        # "https://[::1" makes urlparse raise ValueError. The user-facing failure
+        # this guards: one malformed entry in a pasted batch used to crash the
+        # whole request (HTTP 500), discarding every valid link with it.
+        out = P.parse_batch("https://github.com/o/r/pull/3\n"
+                            "https://[::1\n"
+                            "https://github.com/o/r/pull/4")
+        self.assertEqual(out, ["https://github.com/o/r/pull/3",
+                               "https://github.com/o/r/pull/4"])
+
+    def test_ghe_links_keep_their_host(self):
+        cfg = {"github_hosts": ["github.com", "acme.ghe.com"]}
+        text = ("https://acme.ghe.com/org/repo/pull/9\n"
+                "https://github.com/o/r/pull/3\n"
+                "https://evil.example/github.com/x/y/pull/1")
+        with mock.patch.object(P.adapters.store, "read_config_quiet",
+                               return_value=cfg):
+            out = P.parse_batch(text)
+        # The GHE host survives normalization (flattening it to github.com would
+        # point the review at the wrong instance); the path-spoof is dropped.
+        self.assertEqual(out, ["https://acme.ghe.com/org/repo/pull/9",
+                               "https://github.com/o/r/pull/3"])
+
+    def test_prefixed_tokens_yield_their_embedded_url(self):
+        # Bulleted/markdown lists are the normal clipboard shape from Slack or
+        # an issue. The user-facing failure this guards: every prefixed link
+        # used to be dropped silently, so the batch under-reviewed with no
+        # error. Each shape must yield its embedded PR URL.
+        text = ("- https://github.com/o/r/pull/1\n"
+                "* https://github.com/o/r/pull/2\n"
+                "[PR](https://github.com/o/r/pull/3)\n"
+                "<https://github.com/o/r/pull/4>\n"
+                "see https://github.com/o/r/pull/5\n"
+                "https://github.com/o/r/pull/6")
+        self.assertEqual(P.parse_batch(text),
+                         [f"https://github.com/o/r/pull/{n}"
+                          for n in range(1, 7)])
+
+    def test_prefix_extraction_does_not_weaken_host_matching(self):
+        # Extraction locates the URL; acceptance still runs on the PARSED
+        # hostname. A prefixed path-spoof must stay refused, and a token whose
+        # first URL is hostile must not fall through to a later friendly one.
+        text = ("- https://evil.example/github.com/x/y/pull/1\n"
+                "see https://evil.example/z https://github.com/o/r/pull/2\n"
+                "* https://github.com.evil.example/o/r/pull/3")
+        self.assertEqual(P.parse_batch(text), [])
+
 
 class TestRulePack(unittest.TestCase):
     def test_unmapped_repo_returns_none(self):

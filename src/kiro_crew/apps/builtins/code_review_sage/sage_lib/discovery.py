@@ -160,14 +160,26 @@ def gh_bin() -> str:
 
 def run_gh_json(path: str, jq: str | None = None, *,
                 timeout: float = GH_TIMEOUT_SEC,
-                paginate: bool = False) -> list[dict]:
+                paginate: bool = False, host: str | None = None) -> list[dict]:
     """Run ``gh api <path>`` and parse the result into a list of dicts.
 
     ``path`` is an API path, never a shell string, and the argv is a LIST (no
-    ``shell=True``). With ``jq`` the output is JSONL (one object per line); each
-    unparseable line is skipped, but output that is entirely unparseable raises
-    rather than masquerading as an empty result."""
+    ``shell=True``). A caller-supplied ``host`` is ALWAYS pinned explicitly via
+    ``--hostname`` — including github.com — so the call can never drift to the
+    ``gh`` CLI's configured default host (``GH_HOST`` / ``gh auth``): a public
+    PR must not be read from an enterprise instance and vice versa. Callers
+    derive the host from a URL that already passed the adapters'
+    parsed-hostname allowlist; with no ``host`` the call targets whatever
+    instance the user's ``gh`` is set up for (dashboard browsing calls). With
+    ``jq`` the output is JSONL (one object per line); each unparseable line is
+    skipped, but output that is entirely unparseable raises rather than
+    masquerading as an empty result."""
     argv = [gh_bin(), "api", path]
+    h = (host or "").strip().lower()
+    if h == "www.github.com":
+        h = "github.com"
+    if h:
+        argv += ["--hostname", h]
     if paginate:
         argv.append("--paginate")
     if jq:

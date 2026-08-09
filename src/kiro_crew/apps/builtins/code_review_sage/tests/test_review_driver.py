@@ -5,10 +5,89 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sage_lib import results
 from sage_lib import review_driver as D  # noqa: N812
 from sage_lib import store
+
+
+class TestHostQualifiedIdentity(unittest.TestCase):
+    """Change ids and reviewed keys are the persisted run-scoping keys: a GitHub
+    Enterprise host must qualify them (or two hosts' runs collide in storage),
+    while github.com keys stay byte-identical so old records resolve."""
+
+    GHE_CFG = {"github_hosts": ["github.com", "acme.ghe.com"]}
+
+    def test_github_keys_unchanged(self):
+        self.assertEqual(D.change_id_for("https://github.com/o/r/pull/7"), "GH-o-r-7")
+        self.assertEqual(D.reviewed_key_for("https://github.com/o/r/pull/7"),
+                         "github.com/o/r#7")
+
+    def test_ghe_keys_carry_the_host(self):
+        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
+                               return_value=self.GHE_CFG):
+            self.assertEqual(D.change_id_for("https://acme.ghe.com/o/r/pull/7"),
+                             "GH-acme.ghe.com-o-r-7")
+            self.assertEqual(D.reviewed_key_for("https://acme.ghe.com/o/r/pull/7"),
+                             "acme.ghe.com/o/r#7")
+
+    def test_fetch_and_post_prompts_route_to_the_ghe_api(self):
+        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
+                               return_value=self.GHE_CFG):
+            fetch = D._fetch_instruction("https://acme.ghe.com/o/r/pull/7")
+            post = D.build_post_task("https://acme.ghe.com/o/r/pull/7")
+            gh_fetch = D._fetch_instruction("https://github.com/o/r/pull/7")
+            gh_post = D.build_post_task("https://github.com/o/r/pull/7")
+        self.assertIn("--hostname acme.ghe.com", fetch)
+        self.assertIn("--hostname acme.ghe.com", post)
+        # github.com prompts pin their host EXPLICITLY too — omission would
+        # let the worker's gh CLI default host decide the instance.
+        self.assertIn("--hostname github.com", gh_fetch)
+        self.assertIn("--hostname github.com", gh_post)
+
+    def test_a_bare_change_token_keeps_the_legacy_path(self):
+        # "CR-1" names no host, so there is no GitHub instance to cross to —
+        # builders keep producing default-instruction prompts for it (the
+        # driver's legacy flow relies on this). Only a link that NAMES a host
+        # must resolve-or-refuse.
+        self.assertIn("CR-1", D.build_post_task("CR-1"))
+        self.assertNotIn("--hostname", D.build_post_task("CR-1"))
+        self.assertNotIn("--hostname", D.build_review_task("CR-1"))
+
+    def test_prompt_builders_fail_closed_on_an_unresolvable_host(self):
+        """The leak guard: when the link's host no longer revalidates (e.g. the
+        GHE host was removed from `github_hosts` between run start and this
+        build), every prompt builder must REFUSE — a prompt whose `gh api`
+        calls silently default to public github.com would fetch from, or post
+        an internal enterprise draft onto, a public same-slug PR."""
+        link = "https://acme.ghe.com/o/r/pull/7"
+        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
+                               return_value={"github_hosts": ["github.com"]}):
+            for builder in (D.build_post_task, D._fetch_instruction,
+                            D.build_review_task, D.build_review_followup_task):
+                with self.assertRaises(D.pipeline.adapters.AdapterError):
+                    builder(link)
+                # A scheme is a named host too, even when it cannot be parsed.
+                with self.assertRaises(D.pipeline.adapters.AdapterError):
+                    builder("https://[::1")
+
+    def test_non_github_prompts_always_carry_hostname(self):
+        """The property that prevents the cross-host leak: for a non-github.com
+        link there is no outcome where a prompt exists WITHOUT `--hostname` —
+        either the host revalidates and the flag is embedded, or the builder
+        raises (asserted above). "Resolved as github.com" and "failed to
+        resolve" must never look identical."""
+        with mock.patch.object(D.pipeline.adapters.store, "read_config_quiet",
+                               return_value=self.GHE_CFG):
+            for builder in (D.build_post_task, D._fetch_instruction,
+                            D.build_review_task, D.build_review_followup_task):
+                prompt = builder("https://acme.ghe.com/o/r/pull/7")
+                self.assertIn("--hostname acme.ghe.com", prompt,
+                              f"{builder.__name__} lost the hostname routing")
+                gh = builder("https://github.com/o/r/pull/7")
+                self.assertIn("--hostname github.com", gh,
+                              f"{builder.__name__} left github.com unpinned")
 
 
 def _confirmed(_link, _units):
