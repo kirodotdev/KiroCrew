@@ -58,6 +58,7 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
 )
 from kiro_crew.env import augmented_path
+from kiro_crew.mcp_provenance import without_marker
 from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
@@ -2249,8 +2250,12 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         if isinstance(spec, dict) and name not in managed_names:
             # Copy so config never aliases the source dict — a later update()
             # (kirocrew merge) must not mutate shared_mcp, which is reused as a
-            # fallback candidate during command validation below.
-            config.setdefault("mcpServers", {}).setdefault(name, dict(spec))
+            # fallback candidate during command validation below. The copy also
+            # drops our authorship marker: it records who wrote the entry in a
+            # SHARED file and has no meaning in a spec we render ourselves, so
+            # keeping it would put a key in front of the runtime that says nothing
+            # to it.
+            config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
 
     # Merge shared MCP servers from edition-contributed provider globals (CPP
     # seam) — now LOWER priority than Kiro global; setdefault is a no-op when
@@ -2272,7 +2277,7 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             if name not in managed_names:
                 # Copy (see note above) so the source dict stays pristine for
                 # the fallback-candidate lookup.
-                config.setdefault("mcpServers", {}).setdefault(name, dict(spec))
+                config.setdefault("mcpServers", {}).setdefault(name, without_marker(spec))
 
     # ~/.kiro/crew/mcp.json overrides kiro mcp.json for the kirocrew agent —
     # kirocrew-specific config wins in a tie.

@@ -522,6 +522,50 @@ class TestCarriedKeyRoundTrip:
         finally:
             await client.close()
 
+    async def test_the_authorship_marker_is_the_one_carried_key_not_preserved(
+        self, sandbox, fake_sel
+    ):
+        """A hand-added marker in the store cannot ride a save back out.
+
+        Every other non-allowlisted key round-trips, because dropping one would
+        silently change behaviour the editor does not own. The marker is the
+        exception: it records that Kiro Crew wrote an entry into a file it does
+        NOT own, so it is meaningless in the store, and preserving it here would
+        let a hand-edit volunteer the entry for management on a shared surface.
+        """
+        from kiro_crew.mcp_provenance import MARKER_KEY
+
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {**self._ENTRY, MARKER_KEY: {"managed": True}},
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            got = await (await client.get("/api/mcp/custom/weather")).json()
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": got["spec"]})
+            assert resp.status == 200
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
+            assert MARKER_KEY not in entry
+            assert entry["disabledTools"] == ["dangerous_tool"], "real carried keys still survive"
+
+            # A FRESH add tolerates no such key, so a pasted block cannot claim
+            # management for a server the dashboard has never written.
+            resp = await client.post(
+                "/api/mcp/custom",
+                json={"servers": {"pasted": {"command": "npx", MARKER_KEY: {"managed": True}}}},
+            )
+            assert resp.status == 400
+            assert MARKER_KEY in (await resp.json())["error"]
+        finally:
+            await client.close()
+
     async def test_removing_carried_key_still_preserves_it(self, sandbox, fake_sel):
         self._seed(sandbox)
         client = await _client()
