@@ -265,3 +265,159 @@ export function prepareSendPayload(raw: string, pendingFiles: string[]): SendPay
     imgPaths,
   }
 }
+
+/* ------------------------------------------------------------------------- */
+/* Folder references                                                          */
+/* ------------------------------------------------------------------------- */
+/* A folder reference lives in the composer as an `@rel/` token (trailing
+ * slash), inserted by the file picker or typed by hand. Unlike a file there
+ * is no upload and no side state: the token IS the reference. Staged chips,
+ * the serialized `[attached_dir N] /abs/path` prompt marker, and the
+ * sent-bubble chip all derive from it. This module owns that marker the same
+ * way it owns `[attached_file N]`, so send() and renderUserContent() can
+ * never disagree about the wire format. */
+
+export interface DirToken {
+  /** Relative path exactly as it appears in the token, WITH trailing slash. */
+  rel: string
+  /** The exact composer token including the leading `@`. */
+  token: string
+}
+
+/** Boundary-checked folder token: `@` preceded by start/whitespace, a
+ *  non-whitespace body ending in `/`, followed by whitespace/end. The body
+ *  excludes `@` so an email-like `a@b.c/` never matches mid-word. */
+const DIR_TOKEN_RE = /(^|\s)@([^\s@]*\/)(?=\s|$)/g
+
+/** True when `rel` cannot be a folder reference: URLs (`://`) and
+ *  slash-only bodies (`/`, `//`) carry no path segments to reference. */
+function isNonDirRel(rel: string): boolean {
+  return rel.includes('://') || /^[/\\]+$/.test(rel)
+}
+
+/** Extract folder tokens from composer text, deduped by rel, in appearance
+ *  order. The single source of truth for staged folder chips: what this
+ *  returns is exactly what will serialize on send. */
+export function parseDirTokens(text: string): DirToken[] {
+  const seen = new Set<string>()
+  const out: DirToken[] = []
+  for (const m of text.matchAll(DIR_TOKEN_RE)) {
+    const rel = m[2]
+    if (isNonDirRel(rel) || seen.has(rel)) continue
+    seen.add(rel)
+    out.push({ rel, token: `@${rel}` })
+  }
+  return out
+}
+
+/** Absolute form of a folder token's rel path, WITHOUT trailing slash.
+ *  Separator-aware join mirroring makeRelative in FilePickerMenu: a Windows
+ *  project root joins with `\`. A rel that is already absolute (POSIX `/x` or
+ *  Windows `C:\x` — the picker falls back to the absolute path when a result
+ *  lies outside the project root) is returned as-is. */
+export function dirFullPath(rel: string, project: string): string {
+  const trimmed = rel.replace(/[/\\]+$/, '')
+  if (/^([/\\]|[A-Za-z]:[/\\])/.test(trimmed) || !project) return trimmed || rel
+  const sep = project.includes('\\') && !project.includes('/') ? '\\' : '/'
+  return project.replace(/[/\\]+$/, '') + sep + trimmed
+}
+
+/** Serialize folder tokens for the LLM: each `@rel/` becomes
+ *  `[attached_dir N] /abs/path` (N = 1-based appearance order; a repeated
+ *  token gets the same N). Display text keeps the `@rel/` tokens — the same
+ *  fresh-message split files use (`meta.files` + `@rel` display vs
+ *  `[attached_file N]` wire form). Returns the ordered absolute paths for
+ *  `meta.dirs`, so token N indexes dirPaths[N-1] losslessly on replay. */
+export function serializeDirTokens(raw: string, project: string): { llm: string; dirPaths: string[] } {
+  const tokens = parseDirTokens(raw)
+  if (!tokens.length) return { llm: raw, dirPaths: [] }
+  const dirPaths = tokens.map(t => dirFullPath(t.rel, project))
+  let llm = raw
+  tokens.forEach((t, i) => {
+    const esc = t.token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Replacement via callback so the PATH is inserted literally: a template
+    // string would let `$1`/`$&`/`$$` inside the path expand as replacement
+    // patterns and corrupt the marker (same rule replaceTokens follows for
+    // file paths).
+    llm = llm.replace(new RegExp(`(^|\\s)${esc}(?=\\s|$)`, 'g'), (_m, pre: string) => `${pre}[attached_dir ${i + 1}] ${dirPaths[i]}`)
+  })
+  return { llm, dirPaths }
+}
+
+/** Parse folder paths from message meta or `[attached_dir N]` markers in
+ *  content — the dir counterpart of parseFiles, with the same precedence:
+ *  meta wins (lossless, ordered), markers are the no-meta history fallback. */
+export function parseDirs(content: string, meta?: Record<string, unknown>): string[] {
+  const metaDirs = (meta?.dirs || []) as string[]
+  return metaDirs.length
+    ? metaDirs
+    : (content.match(/\[attached_dir \d+\] (\S+)/g) || []).map(s => s.replace(/\[attached_dir \d+\] /, ''))
+}
+
+export interface ResolvedDirSegment {
+  /** Content with every `[attached_dir N] /path` marker rewritten to `@label/`. */
+  display: string
+  /** `label/` (without the leading @, WITH trailing slash) -> full path. */
+  dirMentionMap: Map<string, string>
+}
+
+/** Rewrite `[attached_dir N] /path` markers back to `@label/` display tokens.
+ *  The dir counterpart of resolveFileSegment's marker pass, sharing its
+ *  lossless indexing rule: N indexes `orderedDirs` 1-based, so a path with
+ *  spaces recovers verbatim when it sits at the marker position; the
+ *  whitespace-bounded capture is only the no-meta fallback. Every folder
+ *  reference renders inline (folders are path references, never upload
+ *  cards), so there is no embedded/standalone split. Labels are
+ *  basename-first, widened until unique via the shared buildFileLabels. */
+export function resolveDirSegment(content: string, orderedDirs: string[]): ResolvedDirSegment {
+  const dirMentionMap = new Map<string, string>()
+  if (!orderedDirs.length && !content.includes('[attached_dir ')) {
+    return { display: content, dirMentionMap }
+  }
+  // buildFileLabels splits on `/` only, so normalize Windows separators for
+  // LABEL computation (a backslash path would otherwise be one giant
+  // "segment" and label as the full absolute path). Map values and tooltips
+  // keep the original path untouched.
+  const norm = (p: string) => p.replace(/\\/g, '/')
+  const labels = buildFileLabels(orderedDirs.map(norm))
+  const markerRe = /\[attached_dir (\d+)\][^\S\n]+/g
+  let display = ''
+  let lastIdx = 0
+  let m: RegExpExecArray | null
+  while ((m = markerRe.exec(content)) !== null) {
+    const n = parseInt(m[1], 10)
+    const pathStart = m.index + m[0].length
+    const indexed = n >= 1 && n <= orderedDirs.length ? orderedDirs[n - 1] : undefined
+    let path: string
+    let pathEnd: number
+    if (indexed && content.startsWith(indexed, pathStart)) {
+      path = indexed
+      pathEnd = pathStart + indexed.length
+    } else {
+      const rest = content.slice(pathStart)
+      const wsIdx = rest.search(/\s/)
+      path = wsIdx === -1 ? rest : rest.slice(0, wsIdx)
+      pathEnd = pathStart + path.length
+    }
+    const label = (labels.get(norm(path)) || path.split(/[/\\]/).pop() || path) + '/'
+    dirMentionMap.set(label, path)
+    display += content.slice(lastIdx, m.index) + `@${label}`
+    lastIdx = pathEnd
+    markerRe.lastIndex = pathEnd
+  }
+  display += content.slice(lastIdx)
+
+  // Recover `@rel/` tokens already in display form (fresh optimistic bubble:
+  // meta.dirs present, no markers). Match each token to its meta path by
+  // suffix so the chip opens the right absolute path.
+  for (const t of parseDirTokens(display)) {
+    if (dirMentionMap.has(t.rel)) continue
+    const relNoSlash = t.rel.replace(/[/\\]+$/, '')
+    const hit = orderedDirs.find(p => {
+      const norm = p.replace(/[/\\]+$/, '')
+      return norm === relNoSlash || norm.endsWith('/' + relNoSlash) || norm.endsWith('\\' + relNoSlash)
+    })
+    if (hit) dirMentionMap.set(t.rel, hit)
+  }
+  return { display, dirMentionMap }
+}

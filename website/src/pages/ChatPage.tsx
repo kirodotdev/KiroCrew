@@ -53,7 +53,7 @@ import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, findUnreferencedAttachments } from '../utils/fileTokens'
+import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment } from '../utils/fileTokens'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
@@ -152,7 +152,7 @@ import { focusComposerAfter } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder } from 'lucide-react'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
@@ -372,7 +372,7 @@ function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens
   )
 }
 
-export function renderUserContent(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void) {
+export function renderUserContent(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, onFolderOpen?: (path: string) => void) {
   // Per-message containment (defense-in-depth): a render crash in a
   // user/inject bubble must degrade to a per-message fallback, not unwind to
   // the root boundary and blank the whole dashboard.
@@ -383,20 +383,31 @@ export function renderUserContent(content: string, meta: Record<string, unknown>
   // context export.)
   return (
     <MessageErrorBoundary rawContent={content}>
-      {renderUserContentInner(content, meta, onFileOpen)}
+      {renderUserContentInner(content, meta, onFileOpen, onFolderOpen)}
     </MessageErrorBoundary>
   )
 }
 
-function renderUserContentInner(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void) {
+function renderUserContentInner(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, onFolderOpen?: (path: string) => void) {
   const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
   const knowledge = meta?.knowledge as { items: number; tokens: number; titles: string[]; content?: { title: string; text: string }[] } | undefined
+
+  // Folder references resolve FIRST, on the whole message: `[attached_dir N]
+  // /path` markers (history replay / steer echo) rewrite to `@label/` display
+  // tokens, and fresh `@rel/` tokens map to their meta.dirs path. One pass
+  // here — before the paste split — so every segment renderer below sees the
+  // token form and one shared label->path map. Dir markers never appear
+  // inside paste blocks (they serialize from the typed text only), so the
+  // rewrite cannot break paste-token ranges recomputed on the result.
+  const { display: dirResolved, dirMentionMap } = resolveDirSegment(content, parseDirs(content, meta))
+  content = dirResolved
 
   const knowledgeBadge = knowledge ? (
     <KnowledgeBubbleChip knowledge={knowledge} />
   ) : null
 
-  if (!pastes.length) return <>{knowledgeBadge}{renderFileSegment(content, meta, onFileOpen, 'seg')}</>
+  if (!pastes.length) return <>{knowledgeBadge}{renderFileSegment(content, meta, onFileOpen, 'seg', dirMentionMap, onFolderOpen)}</>
+
 
   // History load re-serves the fully-EXPANDED content (what the LLM saw), so a
   // message whose bubble was a `[ Paste #N ]` chip when sent comes back as the
@@ -416,7 +427,7 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
       ranges = findTokenRanges(text, pastes)
     }
   }
-  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment(text, meta, onFileOpen, 'seg')}</>
+  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment(text, meta, onFileOpen, 'seg', dirMentionMap, onFolderOpen)}</>
 
   // Paste chips are inline by nature, so to keep them flowing with the
   // surrounding text (e.g. "hey [chip] thanks"), render each text segment
@@ -435,14 +446,14 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
     const trimEnd = text[r.end] === '\n' ? r.end + 1 : r.end
     if (trimStart > lastIdx) {
       const seg = text.slice(lastIdx, trimStart)
-      if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, `t${i}`))
+      if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, `t${i}`, dirMentionMap, onFolderOpen))
     }
     out.push(<PastedChip key={`p${i}-${r.block.id}`} block={r.block} />)
     lastIdx = trimEnd
   })
   if (lastIdx < text.length) {
     const seg = text.slice(lastIdx)
-    if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, 'tend'))
+    if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, 'tend', dirMentionMap, onFolderOpen))
   }
 
   // Attachments never referenced by any segment (e.g. an upload with no inline
@@ -467,12 +478,56 @@ function renderUserContentInner(content: string, meta: Record<string, unknown> |
   return knowledgeBadge ? <>{knowledgeBadge}{out}</> : out
 }
 
+/** Boundary-checked presence of an `@token` in a text segment — the same rule
+ *  the split regex uses, so a key is only offered to a segment that can
+ *  actually match it. */
+function tokenPresent(text: string, token: string): boolean {
+  const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(^|\\s)@${esc}(?=\\s|$)`).test(text)
+}
+
+/** Inline chip for a folder reference in a sent message. Clicking opens the
+ *  directory in the side panel's file tree — the SAME handler assistant-message
+ *  directory chips use (handleFolderOpen -> tabsCtl.openFolder), so a folder is
+ *  equally actionable whichever side of the conversation names it. Shift-click
+ *  reveals in the OS file manager, mirroring MarkdownRenderer's activatePath.
+ *  Without a handler (export used outside ChatPage) it degrades to an inert
+ *  span with the path in the tooltip. */
+function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string; onOpen?: (path: string) => void }) {
+  const body = (
+    <>
+      <Folder size={11} aria-hidden="true" className="shrink-0 lucide-inline" />@{label}
+    </>
+  )
+  if (!onOpen) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded border border-accent/25 bg-accent/10 text-accent text-[12px] font-mono" title={fullPath}>
+        {body}
+      </span>
+    )
+  }
+  return (
+    <Clickable
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
+      title={fullPath}
+      aria-label={i18nT('pages.chatPage.open_folder', { path: fullPath })}
+      onClick={e => {
+        if (e && 'shiftKey' in e && e.shiftKey) { api.revealPath(fullPath); return }
+        onOpen(fullPath)
+      }}
+    >
+      {body}
+    </Clickable>
+  )
+}
+
 /** Inline-flow renderer for a text segment adjacent to a paste chip.
  *  Handles @-file tokens as inline chips; other text is rendered as a
  *  whitespace-preserving span (no markdown). */
-function renderInlineSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, keyBase: string) {
+function renderInlineSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, keyBase: string, dirMap?: Map<string, string>, onFolderOpen?: (path: string) => void) {
   const parsedFiles = parseFiles(content, meta)
-  if (!parsedFiles.length) {
+  const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
+  if (!parsedFiles.length && !dirKeys.length) {
     return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
   }
   // Inline-flow variant (adjacent to a paste chip): keep everything inline.
@@ -482,11 +537,13 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   // inline flow). Never-referenced attachments are handled once at message
   // level. Pass the ORIGINAL ordered list so token indices line up.
   const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
-  if (!mentionMap.size && !cardPaths.length) {
+  if (!mentionMap.size && !cardPaths.length && !dirKeys.length) {
     return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
   }
 
-  const keys = [...mentionMap.keys()].slice(0, 20)
+  // Folder tokens join the same split as file mentions. A dir key always ends
+  // in `/` and a file key never does, so classification below is unambiguous.
+  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys]
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const parts = tokPattern
     ? display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
@@ -496,6 +553,10 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
     <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const tok = part.match(/^@(.+)$/)?.[1]
+        const dirPath = tok && dirMap?.get(tok)
+        if (dirPath) {
+          return <DirChip key={`${keyBase}-d${i}`} label={tok} fullPath={dirPath} onOpen={onFolderOpen} />
+        }
         const fullPath = tok && mentionMap.get(tok)
         if (fullPath) {
           return (
@@ -540,13 +601,22 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
  *  server stores the token form in `content` AND keeps `meta.files` at once.
  *  Files referenced inline stay inline chips; the rest become block cards.
  *  Images keep their inline `![image](path)` markdown and are excluded here. */
-function renderFileSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, keyBase: string) {
+function renderFileSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: (path: string) => void, keyBase: string, dirMap?: Map<string, string>, onFolderOpen?: (path: string) => void) {
   const parsedFiles = parseFiles(content, meta)
+  const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
 
   // No attachments — plain markdown (bold, code, links, etc.).
   // softBreaks: preserve Shift+Enter line breaks as <br> (see MarkdownRenderer).
   // compactImages: this is user-message content, so attached images render small.
-  if (!parsedFiles.length) {
+  //
+  // A folder token routes the message into the inline chip-split body below,
+  // which renders surrounding text as plain whitespace-preserving spans — so
+  // markdown in a folder-referencing message shows literally. This is the
+  // same trade-off inline file mentions already make, accepted here because
+  // the chip must sit inline in the sentence and MarkdownRenderer has no
+  // inline-widget seam; a folder-referencing prompt with block markdown is
+  // the uncommon combination.
+  if (!parsedFiles.length && !dirKeys.length) {
     return <MarkdownRenderer content={content} softBreaks compactImages />
   }
 
@@ -560,6 +630,8 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   // empty-caption bubble whose content carries no token yet). The
   // never-referenced set is computed by the shared findUnreferencedAttachments
   // (same original-list indexing), deduped against tokens already carded here.
+  // Folder references never card: a folder is a path reference, not an upload,
+  // and its token is by construction present in the text.
   const carded = new Set(cardPaths)
   const allCardPaths = [
     ...cardPaths,
@@ -574,8 +646,9 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
     </div>
   ) : null
 
-  // No inline @-mentions: caption (if any) is plain markdown, then the cards.
-  if (!mentionMap.size) {
+  // No inline @-mentions of either kind: caption (if any) is plain markdown,
+  // then the cards.
+  if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
     return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages /> : null}{cards}</>
   }
@@ -586,14 +659,20 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
   // around the chip) and each @token as an inline chip. Block markdown (bold,
   // lists) inside a caption that also carries an inline mention renders as
   // literal text — a rare combination, same trade-off as renderInlineSegment.
-  // Cap tokens to prevent ReDoS from many alternations.
-  const keys = [...mentionMap.keys()].slice(0, 20)
+  // Cap tokens to prevent ReDoS from many alternations. Folder tokens join
+  // the same split; a dir key always ends in `/` and a file key never does,
+  // so classification below is unambiguous.
+  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys]
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const parts = display.split(new RegExp(`(@(?:${tokPattern}))(?=\\s|$)`, 'g'))
   const body = (
     <span key={`${keyBase}-body`} style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const tok = part.match(/^@(.+)$/)?.[1]
+        const dirPath = tok && dirMap?.get(tok)
+        if (dirPath) {
+          return <DirChip key={`${keyBase}-d${i}`} label={tok} fullPath={dirPath} onOpen={onFolderOpen} />
+        }
         const fullPath = tok && mentionMap.get(tok)
         if (fullPath) {
           return (
@@ -1307,12 +1386,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Restore the incoming slot's staged file attachments (copy so the
     // live state array and the stored draft don't share a reference).
     setPendingFiles(activeSlot ? (fileDrafts.current[activeSlot] ?? []).slice() : [])
-    // Staged folder references are per-message only (no per-slot draft store
-    // yet — that lands with the attachment-metadata change), so a slot switch
-    // clears them: without this a folder staged in slot A renders in slot B
-    // and rides along on slot B's next send.
-    setPendingDirs([])
-    dirTokens.current = {}
+    // Staged folder references need no restore of their own: the chips derive
+    // from `@rel/` tokens in the composer text, and the text draft restored
+    // above is per-slot. A folder staged in slot A therefore reappears with
+    // slot A's draft and never bleeds into slot B.
     // Restore the incoming slot's collapsed-paste blocks (deep copy so the live
     // state and the stored draft don't share references). Without this the
     // token text rehydrates from the text draft but its backing block is gone,
@@ -1374,39 +1451,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
-  // Staged folder references, kept separate from pendingFiles because a folder
-  // is a path handed to the agent, never an uploaded attachment. Per-message
-  // only for now: the per-slot draft persistence and prompt-marker
-  // serialization land with the attachment-metadata change.
-  const [pendingDirs, setPendingDirs] = useState<string[]>([])
-  // Exact "@rel/" composer token recorded per staged folder at pick time, so
-  // the chip's remove control can strip precisely the token the pick inserted,
-  // and the sync effect below can tell whether the token is still present.
-  // A ref, not state: it never drives rendering on its own. Cleared alongside
-  // pendingDirs (slot switch, send, steer).
-  const dirTokens = useRef<Record<string, string>>({})
-  // The composer token is the only form of a folder reference the agent
-  // receives, so the chip must never outlive its token: when the user
-  // hand-edits "@rel/" out of the text, drop the chip too — otherwise the
-  // strip claims a folder the agent won't get. Exact boundary-checked match,
-  // the same rule the remove control uses to strip, so the two directions
-  // agree on what counts as "present". A dir with no recorded token is left
-  // alone (fail-open: never silently unstage on uncertainty).
-  useEffect(() => {
-    if (!pendingDirs.length) return
-    const present = (tok: string) => {
-      const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      return new RegExp(`(^|\\s)${esc}(?=\\s|$)`).test(input)
-    }
-    const stale = pendingDirs.filter(p => {
-      const tok = dirTokens.current[p]
-      return tok ? !present(tok) : false
-    })
-    if (stale.length) {
-      setPendingDirs(prev => prev.filter(p => !stale.includes(p)))
-      for (const p of stale) delete dirTokens.current[p]
-    }
-  }, [input, pendingDirs])
+  // Staged folder chips DERIVE from the composer text: an `@rel/` token is the
+  // only form of a folder reference the agent receives, so token presence is
+  // the single source of truth. There is no parallel state to leak across
+  // slots, clear on send, or sync against hand-edits — inserting the token
+  // stages the chip, deleting the token (by any means) unstages it, and the
+  // per-slot text draft persists the reference across slot switches for free.
+  const pendingDirs = useMemo(() => parseDirTokens(input).map(t => t.rel), [input])
+  // Exact `@rel` composer token recorded per PICKER-PICKED file, so the file
+  // chip's remove control can strip precisely the token the pick inserted —
+  // the same remove contract folder chips have. Uploaded/dropped files never
+  // get an entry (they have no token), so their remove stays state-only. A
+  // ref, not state: it never drives rendering. Entries die with their chip.
+  const pickedFileTokens = useRef<Record<string, string>>({})
   const [snipFrame, setSnipFrame] = useState<HTMLCanvasElement | null>(null)
   // The slot that INITIATED the current snip. getDisplayMedia + cropping is
   // async and the user may switch slots meanwhile, so the cropped image must
@@ -3266,6 +3323,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // the PR into pre-existing attachment behaviour.
     const sentSessionRefs = optionText ? [] : pendingSessionsRef.current.slice()
     const { txt: typedTxt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
+    // Folder references serialize like files but from the text alone: each
+    // `@rel/` token becomes `[attached_dir N] /abs/path` in the LLM-facing
+    // text (absolute, so the reference survives a cwd/project mismatch and
+    // history replay), while the display text keeps the `@rel/` token for the
+    // bubble chip — the same fresh-vs-wire split files use. Runs AFTER the
+    // file pass: file tokens never end in `/`, so the two rewrites are
+    // disjoint. `dirPaths` rides `meta.dirs`, ordered so marker N indexes
+    // dirPaths[N-1] losslessly.
+    const { llm: typedTxtDirs, dirPaths } = serializeDirTokens(typedTxt, currentProjectRef.current || '')
     // Staged session references become plain markdown links appended to the
     // message — deliberately a POINTER, not the referenced transcript. Inlining
     // another session's content would spend a large share of THIS session's
@@ -3281,7 +3347,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // is no collapsed form to preserve in the bubble, so what the user sees is
     // exactly what was sent. Appending (never splicing) also means paste-token
     // ranges found earlier in the string are untouched.
-    const txt = appendSessionRefLinks(typedTxt, sentSessionRefs)
+    const txt = appendSessionRefLinks(typedTxtDirs, sentSessionRefs)
     const displayTxt = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
     // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
     // intact so the user bubble can render them as clickable chips.
@@ -3299,7 +3365,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     setPrefillHint(false)
     if (!optionText) {
-      setInput(''); setPendingFiles([]); setPendingDirs([]); dirTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
@@ -3494,6 +3560,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Build meta for persistence (knowledge, files, pastes)
     const meta: Record<string, unknown> = {}
     if (filePaths.length) meta.files = filePaths
+    if (dirPaths.length) meta.dirs = dirPaths
     if (bubblePastes.length) meta.pastes = bubblePastes
     if (knowledgeBlock) meta.knowledge = { items: knowledgeBlock.items.length, tokens: knowledgeBlock.totalTokens, titles: knowledgeBlock.items.map(i => i.title), content: knowledgeBlock.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }
     if (widgetOrigin) meta.origin = 'widget'
@@ -4323,8 +4390,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx])
 
   const renderUserContentCb = useCallback(
-    (c: string, mt: Record<string, unknown> | undefined) => renderUserContent(c, mt, handleFileOpen),
-    [handleFileOpen]
+    (c: string, mt: Record<string, unknown> | undefined) => renderUserContent(c, mt, handleFileOpen, handleFolderOpen),
+    [handleFileOpen, handleFolderOpen]
   )
 
   const cancelTitleRef = useRef(false)
@@ -4649,6 +4716,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       return
     }
     const { txt } = prepareSendPayload(raw, files)
+    // Folder tokens deliberately stay in their `@rel/` form on steer: the
+    // steer transport is TEXT-ONLY (no meta), so a `[attached_dir N] /abs
+    // path` marker would have no meta.dirs index to replay against and the
+    // whitespace-bounded fallback truncates a path containing spaces — the
+    // chip would then open the wrong directory. The raw token is what the
+    // agent resolved before serialization existed, and it stays correct
+    // under replay. Serialize on steer only if that transport ever carries
+    // attachment metadata.
     const activePastes = pasteBlocksRef.current
     const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
     // Optimistically show the steered text immediately. Steer is the default
@@ -4667,7 +4742,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would lose a reference the user cannot recover except by dragging again.
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a restore path.
-    setInput(''); setPendingFiles([]); setPendingDirs([]); dirTokens.current = {}; setPasteBlocks([])
+    setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
   }, [activeSlot, steerMutation, saveDrafts, dispatch])
@@ -5845,35 +5920,44 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               pendingFiles={pendingFiles}
               pendingDirs={pendingDirs}
               resizedInfo={resizedInfo}
-              onRemoveFile={p => setPendingFiles(prev => prev.filter(x => x !== p))}
-              onRemoveDir={p => {
-                setPendingDirs(prev => prev.filter(x => x !== p))
-                // The folder reference is carried by the "@rel/ " token in the
-                // composer text, so removing the chip must also strip the token —
-                // otherwise the agent still receives the folder and the remove
-                // control lies. The exact inserted token was recorded at pick
-                // time (dirTokens); boundary-checked so "@src/pages/" never eats
-                // a longer "@src/pages/sub/" token. On no match (user already
-                // edited the text) the text is left alone — visible and editable
-                // is the safe fallback.
-                const token = dirTokens.current[p]
-                delete dirTokens.current[p]
+              onRemoveFile={p => {
+                setPendingFiles(prev => prev.filter(x => x !== p))
+                // A picker-picked file also inserted an `@rel` token into the
+                // composer, so its remove strips that token too — the same
+                // contract folder chips have, so the two chip kinds cannot
+                // disagree about what "remove" means. The exact token is
+                // recorded at pick time, but the ref is in-memory only: a
+                // restored draft or a failed-send restore re-stages the file
+                // without it. Fall back to deriving the token from the path —
+                // the shortest boundary-checked `@suffix` present in the text
+                // (the same walk buildRelMap uses), which is exactly the form
+                // the picker inserts. Uploaded/dropped files have no token in
+                // the text, so the derivation finds nothing and their remove
+                // stays state-only. On no match the text is left alone —
+                // visible and editable is the safe fallback.
+                const token = pickedFileTokens.current[p] ?? [...buildRelMap([p], inputRef.current).keys()].map(s => `@${s}`)[0]
+                delete pickedFileTokens.current[p]
                 if (!token) return
                 const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
                 setInput(prev => prev.replace(new RegExp(`(^|\\s)${esc}(?: |(?=\\s)|$)`, 'g'), '$1'))
               }}
+              onRemoveDir={rel => {
+                // The chip derives from the `@rel/` token, so removing the
+                // reference IS removing the token. Boundary-checked so
+                // "@src/pages/" never eats a longer "@src/pages/sub/" token.
+                const esc = `@${rel}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                setInput(prev => prev.replace(new RegExp(`(^|\\s)${esc}(?: |(?=\\s)|$)`, 'g'), '$1'))
+              }}
               pendingSessions={pendingSessions}
               onRemoveSessionRef={unstageSessionRef}
-              // A folder is a path reference, not an upload — it must never land
-              // in pendingFiles, where the send path would treat it as an
-              // attachable file and try to read it.
+              // A folder pick is complete once ChatInput inserts its `@rel/`
+              // token — the chip derives from the text, so there is no state
+              // to stage here. Files stay list-backed (uploads have no token)
+              // and additionally record their inserted token for remove.
               onFileSelect={(path, kind, token) => {
-                if (kind === 'dir') {
-                  if (token) dirTokens.current[path] = token
-                  setPendingDirs(prev => prev.includes(path) ? prev : [...prev, path])
-                } else {
-                  setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])
-                }
+                if (kind === 'dir') return
+                if (token) pickedFileTokens.current[path] = token
+                setPendingFiles(prev => prev.includes(path) ? prev : [...prev, path])
               }}
               onFileOpen={handleFileOpen}
               project={currentSlot?.project || ''}

@@ -36,7 +36,10 @@ vi.mock('../api/client', () => ({
     chatSlotProject: vi.fn().mockResolvedValue({ ok: true }),
     fileSearch: vi.fn().mockResolvedValue({
       root: '/repo',
-      results: [{ path: '/repo/src/widgets', name: 'widgets', size: 0, mtime: Math.floor(Date.now() / 1000) - 60, kind: 'dir' }],
+      results: [
+        { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime: Math.floor(Date.now() / 1000) - 60, kind: 'dir' },
+        { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime: Math.floor(Date.now() / 1000) - 60, kind: 'file' },
+      ],
     }),
   },
   SEARCH_MIN_CHARS: 2,
@@ -57,13 +60,14 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
-function makeStore(activeSlot: string, slots: { key: string }[]) {
+function makeStore(activeSlot: string, slots: { key: string; project?: string }[]) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
-        status: null, connected: true, slots: slots.map(s => ({ key: s.key, messages: 1, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
+        status: null, connected: true, slots: slots.map(s => ({ key: s.key, project: s.project, messages: 1, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -84,8 +88,9 @@ function makeStore(activeSlot: string, slots: { key: string }[]) {
 
 async function renderPage(store: ReturnType<typeof makeStore>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  let result!: ReturnType<typeof render>
   await act(async () => {
-    render(
+    result = render(
       <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -96,6 +101,7 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
     )
   })
   await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  return result
 }
 
 /** Type an @-token, wait for the picker's folder row, click it. Returns the textarea. */
@@ -116,7 +122,7 @@ beforeEach(() => {
 })
 
 describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
-  it('clears staged folders on slot switch (no cross-slot leak)', async () => {
+  it('slot switch: staged folders stay with their slot draft (no cross-slot leak)', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderPage(store)
 
@@ -124,9 +130,16 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
 
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
 
-    // Folders are per-message only (no per-slot draft store), so the incoming
-    // slot must not show the outgoing slot's chip.
+    // Chips derive from `@rel/` tokens in the composer text and drafts are
+    // per-slot, so the incoming slot must not show the outgoing slot's chip…
     await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
+
+    // …and switching back restores the token with the text draft, so the chip
+    // reappears with its one-click remove (the restore-path divergence fix).
+    act(() => { store.dispatch(setActiveSlot('slot-a')) })
+    await screen.findByLabelText('Remove folder')
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    expect(ta.value).toContain('@src/widgets/')
   })
 
   it('removing the folder chip also strips its @-token from the composer', async () => {
@@ -149,13 +162,18 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
 
     const ta = await stageFolder()
     // User keeps typing after the pick, including a hand-typed longer token
-    // that shares the staged token as a prefix.
+    // that shares the staged token as a prefix. Both are folder references
+    // now (chips derive from tokens), so two chips render.
     fireEvent.change(ta, { target: { value: ta.value + 'and @src/widgets/sub/ please' } })
+    await waitFor(() => expect(screen.getAllByLabelText('Remove folder')).toHaveLength(2))
 
-    fireEvent.click(screen.getByLabelText('Remove folder'))
+    // Remove the SHORTER one; the boundary-checked strip must not eat the
+    // longer sibling that contains it as a prefix.
+    fireEvent.click(screen.getAllByLabelText('Remove folder')[0])
 
     await waitFor(() => expect(ta.value).not.toMatch(/(^|\s)@src\/widgets\/(\s|$)/))
     expect(ta.value).toContain('@src/widgets/sub/')
+    expect(screen.getAllByLabelText('Remove folder')).toHaveLength(1)
   })
 
   it('hand-editing the token out of the composer drops the orphaned chip', async () => {
@@ -172,16 +190,88 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
   })
 
-  it('a longer token that merely shares the prefix does not keep the chip alive', async () => {
+  it('a hand-typed folder token stages its own chip (token presence is the source of truth)', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderPage(store)
 
     const ta = await stageFolder()
 
-    // "@src/widgets/sub/" contains the staged "@src/widgets/" as a substring,
-    // but the boundary-checked match must not treat it as the staged token.
+    // Replacing the picked token with a DIFFERENT hand-typed one re-derives
+    // the chip set from the text: the picked chip dies with its token, and
+    // the typed token — which WILL serialize on send exactly like a picked
+    // one — gets a chip with a working remove control.
     fireEvent.change(ta, { target: { value: 'look at @src/widgets/sub/ instead' } })
 
-    await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByLabelText('Remove folder')).toHaveLength(1))
+    fireEvent.click(screen.getByLabelText('Remove folder'))
+    await waitFor(() => expect(ta.value).not.toContain('@src/widgets/sub/'))
+  })
+})
+
+describe('ChatPage folder serialization on send', { timeout: 15_000 }, () => {
+  it('send rewrites the token to [attached_dir N] with the absolute path and carries meta.dirs', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+
+    const ta = await stageFolder()
+    fireEvent.change(ta, { target: { value: ta.value + 'summarize it' } })
+
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Enter' }) })
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
+    const call = vi.mocked(api.sendChat).mock.calls[0]
+    const llmText = call[0] as string
+    const meta = call[4] as Record<string, unknown> | undefined
+    // The agent receives the absolute-path marker, never the display token.
+    expect(llmText).toContain('[attached_dir 1] /repo/src/widgets')
+    expect(llmText).not.toContain('@src/widgets/')
+    // meta.dirs is the lossless index for replay rendering (marker N -> dirs[N-1]).
+    expect(meta?.dirs).toEqual(['/repo/src/widgets'])
+  })
+})
+
+describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
+  it('removing a picker-picked file chip strips its inserted @-token from the composer', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: '@mai' } })
+    const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
+    fireEvent.mouseDown(row)
+
+    // The pick inserted the token and staged the file chip.
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const removeBtn = await screen.findByLabelText('Remove')
+
+    // Removing the chip strips the token too — the same contract folder
+    // chips have, so "remove" cannot mean different things per chip kind.
+    fireEvent.click(removeBtn)
+    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+  })
+
+  it('token strip survives a remount: the restored draft has no pick-time ref', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    const first = await renderPage(store)
+
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: '@mai' } })
+    const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
+    fireEvent.mouseDown(row)
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await screen.findByLabelText('Remove')
+
+    // Reload: text + file drafts restore from storage, but the in-memory
+    // pickedFileTokens ref is gone. The remove must DERIVE the token from
+    // the composer text (buildRelMap walk) instead of silently keeping it.
+    first.unmount()
+    const store2 = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store2)
+    const ta2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await waitFor(() => expect(ta2.value).toContain('@src/main.ts'))
+    const removeBtn2 = await screen.findByLabelText('Remove')
+
+    fireEvent.click(removeBtn2)
+    await waitFor(() => expect(ta2.value).not.toContain('@src/main.ts'))
   })
 })

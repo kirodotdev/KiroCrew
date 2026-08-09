@@ -7400,6 +7400,7 @@
       "no_tools": "Sin herramientas",
       "open_activity_panel": "Abrir el panel de actividad",
       "open_file": "Abrir el archivo {{path}}",
+      "open_folder": "Abrir la carpeta {{path}}",
       "plan_from_here_failed_error": "Error al planificar desde aquí: {{error}}",
       "pop_out_session_to_its_own_window": "Abrir la sesión en su propia ventana",
       "pop_out_to_window": "Abrir en ventana",

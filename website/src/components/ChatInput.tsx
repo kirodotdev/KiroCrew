@@ -33,7 +33,7 @@ import ContextBar, { contextTip, contextPctClamped, contextColor } from './Conte
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import FollowUpBar from './FollowUpBar'
 import { dispatchLightbox } from './MarkdownRenderer'
-import { IMG_EXT } from '../utils/fileTokens'
+import { IMG_EXT, buildFileLabels } from '../utils/fileTokens'
 import type { ResizeInfo } from '../utils/resizeImage'
 import type { SubagentActivity } from '../types'
 import { platformShortcut } from '../utils/platform'
@@ -246,13 +246,13 @@ interface ChatInputProps {
   uploading?: boolean
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
-  /** Pending directory references for the preview strip (path handed to the agent, not an upload) */
+  /** Pending folder references for the preview strip: RELATIVE paths with trailing slash, derived from `@rel/` composer tokens (a path reference handed to the agent, not an upload) */
   pendingDirs?: string[]
   /** Resize details keyed by pending-file path; renders a badge on the chip */
   resizedInfo?: Record<string, ResizeInfo>
   /** Remove a pending file by path */
   onRemoveFile?: (path: string) => void
-  /** Remove a pending directory reference by path */
+  /** Remove a pending folder reference by its relative path (strips its composer token) */
   onRemoveDir?: (path: string) => void
   /** Session references staged by dragging a session onto the chat pane.
    *  Rendered as chips above the textarea, the same treatment as attachments.
@@ -473,8 +473,16 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
         </div>
       ))}
       {/* Folder references: a path handed to the agent, not an upload. No
-          /api/file-raw thumbnail is fetched — there is no content to preview. */}
-      {dirs.map(path => (
+          /api/file-raw thumbnail is fetched — there is no content to preview.
+          Labels are basename-first and widen by parent segments on collision
+          (shared buildFileLabels rule), so two staged `pages/` folders from
+          different parents stay tellable apart. */}
+      {(() => {
+        // buildFileLabels splits on `/` only, so normalize Windows separators
+        // for label computation; keys and tooltips keep the original rel.
+        const normDir = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '')
+        const dirLabels = buildFileLabels(dirs.map(normDir))
+        return dirs.map(path => (
         <div
           key={path}
           data-dir-chip=""
@@ -482,12 +490,13 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
           className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text"
         >
           <Folder size={12} aria-label={i18nT('components.filePickerMenu.folder')} className="shrink-0 lucide-inline" />
-          <span>{(path.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || path) + '/'}</span>
+          <span>{(dirLabels.get(normDir(path)) || path) + '/'}</span>
           {onRemoveDir && (
             <button aria-label={i18nT('components.filePickerMenu.remove_folder')} className="text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0" onClick={() => onRemoveDir(path)} title={i18nT('components.filePickerMenu.remove_folder')}><X size={12} /></button>
           )}
         </div>
-      ))}
+        ))
+      })()}
     </div>
   )
 }

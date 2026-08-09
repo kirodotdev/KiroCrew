@@ -7400,6 +7400,7 @@
       "no_tools": "Aucun outil",
       "open_activity_panel": "Ouvrir le panneau d’activité",
       "open_file": "Ouvrir le fichier {{path}}",
+      "open_folder": "Ouvrir le dossier {{path}}",
       "plan_from_here_failed_error": "Échec de la planification à partir d’ici : {{error}}",
       "pop_out_session_to_its_own_window": "Détacher la session dans sa propre fenêtre",
       "pop_out_to_window": "Détacher dans une fenêtre",

@@ -7300,6 +7300,7 @@
       "no_tools": "कोई टूल नहीं",
       "open_activity_panel": "गतिविधि पैनल खोलो",
       "open_file": "फ़ाइल {{path}} खोलें",
+      "open_folder": "फ़ोल्डर {{path}} खोलें",
       "plan_from_here_failed_error": "यहाँ से योजना बनाना विफल: {{error}}",
       "pop_out_session_to_its_own_window": "सत्र को अपनी अलग विंडो में पॉप आउट करें",
       "pop_out_to_window": "विंडो में पॉप आउट करें",

@@ -502,9 +502,10 @@ export default [
               // pattern, so a prefix-only one is inert.
               '/[\\w./-]*(?:\\?[\\w=&%-]*)?$',
               // The attachment wire format a composer writes into the outgoing message,
-              // mirroring core's own convention (`[attached_file N] /path`, `![image](path)`).
+              // mirroring core's own convention (`[attached_file N] /path`,
+              // `[attached_dir N] /path`, `![image](path)`).
               // Machine syntax the agent parses, not copy.
-              '!\\[image\\]\\($', '\\[attached_file$',
+              '!\\[image\\]\\($', '\\[attached_(?:file|dir)$',
               // An escaped newline joining two interpolations. Quasi values are
               // TRIMMED before matching, so this arrives as the two characters
               // backslash and `n` — which the letterless pattern below cannot cover.
