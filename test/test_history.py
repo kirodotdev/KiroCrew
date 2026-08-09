@@ -1404,6 +1404,8 @@ class TestConsolidationDoesNotBlockLoop:
             [{"role": "user", "content": "hi"}], 1, 0
         )
         log.get_metadata.return_value = {}
+        # A fresh span is eligible; _consolidate's inner gate reads this.
+        log.consolidation_retry_state.return_value = (0, 0.0)
 
         memory = MagicMock()
         memory.read_preferences.return_value = ""
@@ -1451,6 +1453,8 @@ class TestConsolidationDoesNotBlockLoop:
             [{"role": "user", "content": "hi"}], 1, 0
         )
         log.get_metadata.return_value = {}
+        # A fresh span is eligible; _consolidate's inner gate reads this.
+        log.consolidation_retry_state.return_value = (0, 0.0)
 
         memory = MagicMock()
         memory.read_preferences.return_value = ""
