@@ -259,6 +259,11 @@ def _strip_caller_meta(msg: dict[str, Any]) -> dict[str, Any]:
 MCP_APPS_EXTENSION_KEY = "io.modelcontextprotocol/ui"
 MCP_APPS_MIME_TYPE = "text/html;profile=mcp-app"
 MCP_APPS_ENV_FLAG = "KIROCREW_MCP_APPS"
+#: Tokens the env flag recognises. Module constants rather than literals inline
+#: in the gate, because the dashboard's write path has to recognise the SAME set
+#: to refuse a config write the env would override — two copies would drift.
+MCP_APPS_ENV_TRUE = ("1", "true", "yes")
+MCP_APPS_ENV_FALSE = ("0", "false", "no", "off")
 
 # Sentinel ``stub_uuid`` for a gateway-originated ``resources/read`` issued to
 # fetch a ui:// app resource. Its response is routed to the parked future in
@@ -272,50 +277,72 @@ _APPS_STUB_SENTINEL = "__apps__"
 _APPS_RESOURCE_READ_TIMEOUT_SECS = 10.0
 
 
+def mcp_apps_env_override() -> bool | None:
+    """The env flag's verdict, or ``None`` when it does not pin the feature.
+
+    Public because the dashboard's write path needs the same answer: with the env
+    pinning this, a config write is inert, and reporting success for an inert
+    write is precisely the false-success the switch exists to prevent.
+
+    Reads the CURRENT process's environment. The dashboard and gatewayd normally
+    agree — ``env_target_resolver`` hands the backend a copy of the gateway's own
+    env and this flag is not a credential, so it is inherited — but an operator
+    who exported it into only one of the two would defeat the check. It is a
+    best-effort guard against the common case, not a proof.
+    """
+    raw = os.environ.get(MCP_APPS_ENV_FLAG, "").strip().lower()
+    if raw in MCP_APPS_ENV_FALSE:
+        return False
+    if raw in MCP_APPS_ENV_TRUE:
+        return True
+    return None
+
+
 def _mcp_apps_enabled() -> bool:
-    """Feature gate for MCP Apps: follows the operator's MCP-pooling opt-in.
+    """Feature gate for MCP Apps. **Tightest-wins**: any explicit off disables.
 
-    Resolution order:
+    1. ``KIROCREW_MCP_APPS`` off -> disabled. Absolute kill switch.
+    2. ``mcp_gateway.apps_enabled = false`` -> disabled, EVEN with the env flag
+       on. This is what makes the dashboard opt-out trustworthy across process
+       boundaries: a daemon that outlives its gateway keeps its own environment,
+       so an env-first precedence let an *adopted* daemon carry on rendering
+       after the user had switched the feature off. Deciding it here, in the
+       process that actually renders, needs no cross-process probe of anyone's
+       environment.
+    3. ``KIROCREW_MCP_APPS`` on -> enabled (explicit override for tests and the
+       e2e harness), having cleared the opt-out above.
+    4. Otherwise ``mcp_gateway.enabled`` — the broker must be running, because
+       the render and callback paths live inside it, so ``apps_enabled`` alone
+       can never grant the feature.
 
-    1. ``KIROCREW_MCP_APPS`` set to ``0``/``false``/``no``/``off`` -> disabled
-       (explicit kill-switch, wins over everything).
-    2. ``KIROCREW_MCP_APPS`` set to ``1``/``true``/``yes`` -> enabled
-       (explicit override, e.g. tests and the e2e harness).
-    3. Unset -> follow ``mcp_gateway.enabled``, read LIVE from config.
-
-    Why config and not "am I running": an earlier version of this gate assumed
-    that executing inside gatewayd implied pooling was enabled. That invariant
-    is FALSE. A restarted gateway *adopts* a surviving daemon, and
-    ``GatewayManager._shutdown_locked`` deliberately refuses to terminate an
-    adopted daemon (ownership discipline -- it must not kill a process it did
-    not spawn, nor unlink a socket a live foreign daemon owns). So disabling
-    ``mcp_gateway`` leaves that survivor serving connected stubs. Keying on
-    "am I running" would have kept intercepting tool results, spooling app
-    payloads (which carry a ``callback_secret``), and rendering server HTML
-    *after the operator explicitly opted out*. Reading the config each call
-    means the survivor observes the opt-out and stands down.
-
-    Read per-call (``KiroCrewConfig.load`` is fingerprint-cached, so this is a
-    dict lookup in the common case) so the gateway reflects a config change
-    without a daemon restart.
+    ``apps_enabled`` defaults True when absent, so step 2 fires only on a value
+    an operator actually wrote: "not configured" is not an opt-out.
 
     Fails CLOSED: if config cannot be read, the feature is disabled. An
     unreadable config in gatewayd is an abnormal state, and silently disabling
     an optional rendering feature is the low-harm outcome versus rendering
     against an operator preference we could not confirm.
+
+    Read per-call (``KiroCrewConfig.load`` is fingerprint-cached, so this is a
+    dict lookup in the common case) so the gateway reflects a config change
+    without a daemon restart — including a daemon this gateway merely adopted
+    and therefore cannot restart.
     """
-    raw = os.environ.get(MCP_APPS_ENV_FLAG, "").strip().lower()
-    if raw in ("0", "false", "no", "off"):
+    override = mcp_apps_env_override()
+    if override is False:
         return False
-    if raw in ("1", "true", "yes"):
-        return True
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return bool(KiroCrewConfig.load().mcp_gateway.enabled)
+        gw = KiroCrewConfig.load().mcp_gateway
     except Exception:  # pragma: no cover - defensive; fail closed
         logger.debug("mcp-apps: config unreadable; treating feature as disabled", exc_info=True)
         return False
+    if not gw.apps_enabled:
+        return False
+    if override is True:
+        return True
+    return bool(gw.enabled)
 
 
 def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:

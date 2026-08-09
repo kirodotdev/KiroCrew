@@ -6,9 +6,39 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { api } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
-type GatewayStatus = { enabled: boolean; running: boolean; ping_ok: boolean; supported: boolean }
+type GatewayStatus = { enabled: boolean; apps_enabled: boolean; running: boolean; ping_ok: boolean; supported: boolean }
 
 type Phase = 'idle' | 'confirm' | 'applying' | 'done' | 'failed'
+
+/** Presentation state of the MCP Apps render switch.
+ *
+ * Pure so the rule is testable without rendering.
+ *
+ * Settable even while the broker is off, which is the point: this is an OPT-OUT
+ * of executing server-authored UI, and `apps_enabled` defaults on, so gating it
+ * behind a running broker would force a cautious user to enable the broker first
+ * — exposing themselves to the capability — and then race to switch it off. The
+ * endpoint writes config only and needs no broker, so recording the preference
+ * early is both possible and the safer order. `needsGateway` drives a separate
+ * line explaining that the stored choice is inert until the broker runs.
+ *
+ * There is no per-state description: the label describes what the switch
+ * CONTROLS, not what is currently happening. A present-tense "renders in chat"
+ * is false whenever the broker is off, and this control exists precisely to
+ * answer "is this rendering?" — so it must not be the thing that misreports it.
+ */
+export function mcpAppsSwitchState(s: {
+  gatewayEnabled: boolean
+  appsEnabled: boolean
+  loading: boolean
+  busy: boolean
+}): { checked: boolean; disabled: boolean; needsGateway: boolean } {
+  return {
+    checked: s.appsEnabled,
+    disabled: s.loading || s.busy,
+    needsGateway: !s.gatewayEnabled,
+  }
+}
 
 export function SharedMcpGatewayToggle() {
   const qc = useQueryClient()
@@ -22,6 +52,51 @@ export function SharedMcpGatewayToggle() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [target, setTarget] = useState(false)
   const busy = phase === 'applying'
+
+  // Optimistic value held only for the duration of the request. The status query
+  // is the source of truth, so the override is DROPPED once the refetch lands —
+  // holding it indefinitely would pin this tab to its own last write and hide a
+  // change made anywhere else.
+  const [appsPending, setAppsPending] = useState<boolean | null>(null)
+  const [appsBusy, setAppsBusy] = useState(false)
+  const [appsError, setAppsError] = useState<string | null>(null)
+  const [appsApplied, setAppsApplied] = useState(false)
+  const appsEnabled = appsPending ?? statusQ.data?.apps_enabled ?? true
+  const appsState = mcpAppsSwitchState({
+    gatewayEnabled: enabled,
+    appsEnabled,
+    loading: statusQ.isLoading,
+    busy: appsBusy,
+  })
+
+  const runApps = async (next: boolean) => {
+    setAppsBusy(true)
+    setAppsError(null)
+    setAppsApplied(false)
+    setAppsPending(next)
+    try {
+      const r = await api.mcpGatewayAppsEnable(next)
+      // Seed the cache from the RESPONSE before invalidating. Dropping the local
+      // override on the way out is only safe if the cache already carries the new
+      // value — otherwise a refetch that fails leaves the switch showing the
+      // stale cached state while config on disk says otherwise.
+      qc.setQueryData(['mcpGatewayStatus'], (prev: GatewayStatus | undefined) =>
+        prev ? { ...prev, apps_enabled: r.enabled } : prev)
+      await qc.invalidateQueries({ queryKey: ['mcpGatewayStatus'] })
+      setAppsApplied(true)
+    } catch (e) {
+      // Prefer the server's message: the refusals this endpoint can return are
+      // actionable ("…is set in config.local.json; edit that file instead") and
+      // collapsing them into one generic line throws away the only instruction
+      // that would let the user fix it. `ApiError.message` carries the response
+      // body's `error` prose. Generic text is the fallback, not the default.
+      const msg = e instanceof Error ? e.message.trim() : ''
+      setAppsError(msg || i18nT('pages.settings.sharedMcpGatewayToggle.mcp_apps_failed'))
+    } finally {
+      setAppsPending(null)
+      setAppsBusy(false)
+    }
+  }
 
   // In-process apply: the POST starts/stops the broker, drops + relinks all
   // agent sessions, and verifies connectivity — no gateway restart, so this
@@ -63,6 +138,38 @@ export function SharedMcpGatewayToggle() {
           disabled={statusQ.isLoading || busy || (!supported && !enabled)}
           onChange={next => { if (!supported && next) return; setTarget(next); setPhase('confirm') }}
         />
+      </SettingsCard>
+
+      {/* Render switch for server-authored UI. Applies instantly with no confirm
+          step: the broker re-reads this flag per tool result, so nothing restarts.
+          Gated on the broker because the render and callback paths live inside it
+          — shown rather than hidden while off, so its stored state stays legible. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.settings.sharedMcpGatewayToggle.mcp_apps')}
+          description={i18nT('pages.settings.sharedMcpGatewayToggle.mcp_apps_capability')}
+          checked={appsState.checked}
+          disabled={appsState.disabled}
+          onChange={next => void runApps(next)}
+        />
+        {/* Rendered OUTSIDE SettingsToggle: as its description it would inherit a
+            disabled row's opacity-40, dimming the line that explains the state. */}
+        {appsState.needsGateway && (
+          <div className="text-[12px] text-text-muted">
+            {i18nT('pages.settings.sharedMcpGatewayToggle.mcp_apps_needs_gateway')}
+          </div>
+        )}
+        {appsApplied && !appsError && (
+          <div className="text-[12px] text-text-muted">
+            {i18nT('pages.settings.sharedMcpGatewayToggle.mcp_apps_applies_to_new')}
+          </div>
+        )}
+        {appsError && (
+          <div className="flex items-start gap-1.5 text-[12px] text-danger">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span>{appsError}</span>
+          </div>
+        )}
       </SettingsCard>
 
       {/* Confirm */}

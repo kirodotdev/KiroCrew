@@ -13,9 +13,11 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.config.loader import config_local_path, config_path, write_config_atomically
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_gateway import is_gateway_supported
+from kiro_crew.mcp_gateway.backend import MCP_APPS_ENV_FLAG, mcp_apps_env_override
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1819,9 +1821,15 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
     manager = getattr(state, "_mcp_gateway_manager", None)
     running = manager is not None and manager.is_running
     ping_ok = manager is not None and running and await manager.ping()
+    cfg = KiroCrewConfig.load().mcp_gateway
     return web.json_response(
         {
-            "enabled": KiroCrewConfig.load().mcp_gateway.enabled,
+            "enabled": cfg.enabled,
+            # Reported independently of ``enabled`` so the UI can show the
+            # render switch's own state while explaining that the broker gates
+            # it — collapsing them here would make an off-broker look like an
+            # opted-out one.
+            "apps_enabled": cfg.apps_enabled,
             "running": bool(running),
             "ping_ok": bool(ping_ok),
             # Whether the broker can run on this OS at all. The UI reads this to
@@ -1830,6 +1838,174 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
             "supported": is_gateway_supported(),
         }
     )
+
+
+def _apps_enabled_overlay_owned() -> bool:
+    """Whether ``config.local.json`` decides ``mcp_gateway.apps_enabled``.
+
+    The overlay deep-merges OVER ``config.json`` at load while this endpoint
+    writes the BASE file, so anything in the overlay that changes how this key
+    resolves makes a successful write have no effect on the value the gateway
+    reads. For a switch that suppresses executing server-authored UI, silently
+    accepting such a write is the worst outcome available: the user is told their
+    opt-out landed while rendering continues.
+
+    Two shapes qualify, and the second is easy to miss:
+
+    * ``mcp_gateway`` is an object containing ``apps_enabled`` — it pins the key
+      directly.
+    * ``mcp_gateway`` is present but NOT an object (``null``, a string, a list).
+      ``_deep_merge`` replaces rather than merges a non-dict value ("All other
+      types in overlay replace base values"), so the base section is wiped
+      wholesale; schema validation then strips the invalid value and the
+      dataclass defaults restore ``apps_enabled=True``. The base file's opt-out
+      is masked without the key ever appearing in the overlay.
+
+    Best-effort: an unreadable or unparseable overlay is reported as "not owned"
+    rather than raising, so a broken overlay cannot wedge the endpoint.
+    """
+    try:
+        path = config_local_path()
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict) or "mcp_gateway" not in data:
+        return False
+    section = data["mcp_gateway"]
+    if not isinstance(section, dict):
+        return True
+    return "apps_enabled" in section
+
+
+async def api_mcp_gateway_apps_enable(request: web.Request) -> web.Response:
+    """POST /api/mcp-gateway/apps-enable — set ``mcp_gateway.apps_enabled``.
+
+    Body: ``{"enabled": bool}``. Returns ``{ok, enabled}``.
+
+    Config-only, with no broker apply step: the daemon reads this flag per
+    tool-result via ``_mcp_apps_enabled()``, so a running broker observes the
+    change on its next call. That also means the flag is honoured by an *adopted*
+    daemon the current gateway did not spawn and cannot restart.
+    """
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular: agents imports mcp
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    # A JSON array or scalar parses fine but has no ``.get``, so the type check
+    # has to precede field access or the handler raises AttributeError -> 500.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_value"}, status=400
+        )
+
+    # Refuse only writes that would be INERT. Two layers outrank the base config
+    # file, but they do not outrank it symmetrically:
+    #   * config.local.json deep-merges over the base, so it owns the key in
+    #     both directions.
+    #   * the env flag is tightest-wins in _mcp_apps_enabled, so an explicit
+    #     apps_enabled=false now takes effect even with the env on — disabling
+    #     is always effective, and only ENABLING against an env "off" is inert.
+    if enabled and mcp_apps_env_override() is False:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="mcp_gateway_apps_enable",
+            outcome="denied",
+            resources="apps_enabled=env_override",
+        )
+        return web.json_response(
+            {
+                "error": f"{MCP_APPS_ENV_FLAG} is set to off in the environment and "
+                "overrides this setting; unset it to enable MCP Apps here",
+                "code": "apps_enabled_env_override",
+            },
+            status=409,
+        )
+
+    if await asyncio.to_thread(_apps_enabled_overlay_owned):
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="mcp_gateway_apps_enable",
+            outcome="denied",
+            resources="apps_enabled=overlay_owned",
+        )
+        return web.json_response(
+            {
+                "error": "mcp_gateway.apps_enabled is set in config.local.json; "
+                "edit that file instead",
+                "code": "apps_enabled_overlay_owned",
+            },
+            status=409,
+        )
+
+    path = config_path()
+    async with _get_config_lock():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            # UnicodeDecodeError is a ValueError, NOT an OSError or a
+            # JSONDecodeError, so invalid UTF-8 bytes escape a tuple naming only
+            # those two and surface as an uncoded 500.
+            return web.json_response(
+                {"error": "config.json is corrupt", "code": "config_corrupt"}, status=500
+            )
+        # A top-level array or scalar is valid JSON but has no ``setdefault``, so
+        # this has to precede the mapping access or the handler raises
+        # AttributeError and the caller sees an uncoded 500.
+        if not isinstance(data, dict):
+            return web.json_response(
+                {"error": "config.json is corrupt", "code": "config_corrupt"}, status=500
+            )
+        section = data.setdefault("mcp_gateway", {})
+        if not isinstance(section, dict):
+            return web.json_response(
+                {"error": "mcp_gateway is not an object", "code": "config_corrupt"}, status=500
+            )
+        section["apps_enabled"] = enabled
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # ``write_config_atomically``, not the generic agent-JSON writer:
+            # config.json can hold inline credentials, and tmp+rename creates a
+            # new inode, so the generic writer's 0644 default for a
+            # not-yet-existing file would leave a fresh config world-readable and
+            # later credential-bearing saves would preserve that mode. This
+            # helper carries an existing file's mode over and defaults a new one
+            # to owner-only.
+            write_config_atomically(path, data)
+        except OSError as exc:
+            # The write is the whole operation: reporting success without it
+            # would tell a user their opt-out landed while server-authored UI
+            # keeps rendering. ``_atomic_json_write`` already re-raises (it only
+            # swallows the temp-file cleanup), so the failure is observable —
+            # what this adds is an AUDITED, coded response instead of an
+            # unstructured 500 from an unhandled exception.
+            sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="mcp_gateway_apps_enable",
+                outcome="error",
+                resources=f"apps_enabled={enabled}",
+                error=str(exc),
+            )
+            return web.json_response(
+                {"error": "could not write config.json", "code": "config_write_failed"},
+                status=500,
+            )
+
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="mcp_gateway_apps_enable",
+        outcome="success",
+        resources=f"apps_enabled={enabled}",
+    )
+    return web.json_response({"ok": True, "enabled": enabled})
 
 
 async def api_mcp_gateway_metrics(request: web.Request) -> web.Response:

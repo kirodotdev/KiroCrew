@@ -29,11 +29,17 @@ def _init_frame(capabilities=None):
 
 
 def _patch_pooling(monkeypatch, *, enabled: bool) -> None:
-    """Force ``mcp_gateway.enabled`` for the config-keyed gate."""
+    """Force both flags the config-keyed gate reads.
+
+    ``apps_enabled`` is pinned alongside ``enabled`` so these tests assert
+    against a known config rather than whatever the host's config.json happens
+    to carry.
+    """
     import kiro_crew.config.loader as loader
 
     real = loader.KiroCrewConfig.load()
     monkeypatch.setattr(real.mcp_gateway, "enabled", enabled, raising=False)
+    monkeypatch.setattr(real.mcp_gateway, "apps_enabled", True, raising=False)
     monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(lambda: real))
 
 

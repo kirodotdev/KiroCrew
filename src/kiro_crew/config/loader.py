@@ -3260,6 +3260,17 @@ class McpGatewayConfig:
             "Route MCP traffic through the shared sidecar broker. Default False — opt-in.",
         ),
     )
+    apps_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "MCP Apps",
+            "Render interactive HTML returned by an MCP server (the MCP Apps "
+            "extension) in chat, and accept callbacks from it. Requires the broker: "
+            "the render and callback paths live inside it, so this grants nothing "
+            "while Enabled is off. Default True — turning it off keeps pooling and "
+            "suppresses only server-authored UI.",
+        ),
+    )
     forward_declared_env: bool = field(
         default=False,
         metadata=_meta(
@@ -5166,6 +5177,17 @@ class KiroCrewConfig:
             ],
             mcp_gateway=McpGatewayConfig(
                 enabled=bool(mcp_gateway_data.get("enabled", False)),
+                # Absent -> True so installs that never configured this keep
+                # rendering. A malformed value cannot be distinguished here: the
+                # schema validator REMOVES an invalid value before the loader
+                # parses (see config/validation.py ``_apply_field_default``), so a
+                # hand-edited ``"false"`` arrives as absent and resolves to True,
+                # with a warning logged naming the field. ``_safe_bool`` is
+                # belt-and-braces for a schema gap, not the acting guard — the
+                # acting guard against a truthy string is the validator, since
+                # ``bool("false")`` is True. The write path is where an opt-out is
+                # actually enforced: the endpoint rejects any non-boolean body.
+                apps_enabled=_safe_bool(mcp_gateway_data.get("apps_enabled", True), True),
                 # Default False AND type-checked: ``bool("false")`` is True, so a
                 # hand-edited string would silently ENABLE forwarding. A
                 # malformed value must mean "do not apply declared env to a

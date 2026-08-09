@@ -177,6 +177,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     _sync_mcp_to_agent,
     api_mcp_active,
     api_mcp_apply,
+    api_mcp_gateway_apps_enable,
     api_mcp_gateway_enable,
     api_mcp_gateway_metrics,
     api_mcp_gateway_servers,

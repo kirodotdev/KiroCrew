@@ -33,7 +33,7 @@ function mount() {
 describe('SharedMcpGatewayToggle', () => {
   beforeEach(() => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue({
-      enabled: false, running: false, ping_ok: false, supported: true,
+      enabled: false, apps_enabled: true, running: false, ping_ok: false, supported: true,
     } as never)
   })
   afterEach(() => {
@@ -54,8 +54,11 @@ describe('SharedMcpGatewayToggle', () => {
     // switch is a <div role="switch">, and jest-dom only considers real form
     // elements disable-able, so it passes vacuously. Wait on `aria-disabled`,
     // which is the attribute Toggle actually sets.
+    //
+    // Selected by accessible name: the section also carries the MCP Apps render
+    // switch, so a bare getByRole('switch') matches two elements.
     const toggle = await waitFor(() => {
-      const el = screen.getByRole('switch')
+      const el = screen.getByRole('switch', { name: 'Shared MCP gateway' })
       expect(el.getAttribute('aria-disabled')).toBeNull()
       return el
     })
