@@ -322,6 +322,10 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
+        # MCP-only (knowledge_add_document tool); no browser caller — the
+        # dashboard ingests via its own cookie-authed knowledge routes. Same
+        # wiring class as "/api/notifications/agent" above.
+        "/api/knowledge/agent-document",
         "/api/mcp/servers",
     }
 )

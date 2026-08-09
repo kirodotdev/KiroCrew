@@ -851,6 +851,39 @@ async def test_sessions_summarize_is_registered_internal_path() -> None:
     assert denied.status == 403
 
 
+@pytest.mark.asyncio
+async def test_knowledge_agent_document_is_registered_internal_path() -> None:
+    """Regression: the MCP-only /api/knowledge/agent-document route
+    (knowledge_add_document tool) MUST be in the strict internal allowlist.
+    Its sole caller authenticates with X-Internal-Secret and sends no browser
+    token, so if the route is missing from the allowlist it falls through to
+    cookie auth and every call is denied with 403 "Token required".
+
+    Drives the REAL _STRICT_INTERNAL_API_PATHS from server.py through the
+    middleware so a future edit that drops the entry fails here."""
+    from kiro_crew.dashboard.server import _STRICT_INTERNAL_API_PATHS
+
+    assert "/api/knowledge/agent-document" in _STRICT_INTERNAL_API_PATHS
+    secret = "test-secret-123"
+    mw = token_auth_middleware(internal_paths=_STRICT_INTERNAL_API_PATHS, internal_secret=secret)
+    # Internal secret on loopback → granted (the MCP _post path).
+    ok = await mw(
+        _make_request(
+            path="/api/knowledge/agent-document",
+            method="POST",
+            headers={"X-Internal-Secret": secret},
+        ),
+        _ok_handler,
+    )
+    assert ok.status == 200
+    # No token / no secret → denied: the fix authenticates the caller, it must
+    # not open an unauthenticated route.
+    denied = await mw(
+        _make_request(path="/api/knowledge/agent-document", method="POST"), _ok_handler
+    )
+    assert denied.status == 403
+
+
 # -- Property 9b: mixed_internal_paths (loopback MCP + non-loopback browser) --
 
 
