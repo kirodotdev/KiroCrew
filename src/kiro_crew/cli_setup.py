@@ -344,6 +344,13 @@ def _setup_impl(
     _setup_sandbox_consent()
 
     if agent_only:
+        # --agent-only returns before the channel steps below, so an explicit
+        # --slack has nothing to act on. Say so instead of dropping it silently.
+        if slack:
+            print(
+                "\n  ⚠️  --slack is ignored with --agent-only. Run "
+                "'kirocrew setup --slack' for the guided Slack setup."
+            )
         print("\n👻 Done! Try: kirocrew gateway")
         return
 

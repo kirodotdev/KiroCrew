@@ -3794,6 +3794,25 @@ class TestSetupChannelGating:
         calls = self._run_setup(monkeypatch, tmp_path, slack=True)
         assert calls == ["slack_tokens", "slash_command"]
 
+    def test_agent_only_with_slack_warns_and_skips_slack_steps(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only --slack: no Slack steps run, but a notice explains why."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True, slack=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--slack is ignored with --agent-only" in out
+        assert "setup --slack" in out
+
+    def test_agent_only_without_slack_prints_no_notice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only alone: the guided-setup pointer is not printed."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--slack is ignored" not in out
+
 
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
