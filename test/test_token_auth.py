@@ -45,10 +45,13 @@ def clear_nonces(tmp_path, monkeypatch):
     clears the nonce store. Uses _state.clear_all() (not revoke_all_sessions)
     so the gen isn't bumped between unrelated tests.
     """
+    import kiro_crew.dashboard.revocation_gen as _rg
     import kiro_crew.dashboard.token_auth as _ta
 
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
-    monkeypatch.setattr(_ta, "_REVOCATION_GEN", 0)
+    # Pin the memoized revocation generation to 0 (skips the lazy disk load)
+    # so no persisted counter from a prior test or the real home leaks in.
+    monkeypatch.setattr(_rg, "_gen", 0)
     # Reset the per-session revoked-nonce store so each test gets a fresh store
     # bound to its own tmp_path config_dir (the singleton would otherwise pin
     # the first test's path and leak revocations across tests).
@@ -56,7 +59,7 @@ def clear_nonces(tmp_path, monkeypatch):
     _ta._state.clear_all()
     _ta._app_perms_cache.clear()
     yield
-    monkeypatch.setattr(_ta, "_REVOCATION_GEN", 0)
+    monkeypatch.setattr(_rg, "_gen", 0)
     monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
     _ta._state.clear_all()
     _ta._app_perms_cache.clear()

@@ -659,8 +659,9 @@ class TestRedactCredentials:
         claims = json.loads(
             base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
         )
-        # `gen` is normalised alongside `sub` because it mirrors the process-global
-        # `_REVOCATION_GEN`, which is LOADED FROM DISK at import. Left ambient, the
+        # `gen` is normalised alongside `sub` because it mirrors the persisted
+        # counter behind `revocation_gen.current_revocation_gen()`, LOADED FROM
+        # DISK on first use. Left ambient, the
         # derived floor would depend on how many times this machine has revoked:
         # the repr widens at 10, moving the floor 145 -> 147, so the pin below would
         # fail on a clean checkout with no code change.

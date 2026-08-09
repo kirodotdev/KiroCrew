@@ -342,15 +342,16 @@ service installer such as `cloudflared service install`).
 > tunnelled browser that keeps rotating stays authenticated for as long as it
 > keeps being used.
 >
-> **`kirocrew logout` does not end that.** It revokes access sessions, but it does
-> not revoke refresh chains, so a browser still holding a valid refresh cookie can
-> obtain a fresh access cookie afterwards. Restarting the gateway does not end them
-> either: a refresh cookie is self-contained and signed with the persistent
-> `token_signing.key`. Only the dashboard's own sign-out
-> (`POST /api/auth/logout`) revokes a chain, and only the chain belonging to the
-> browser that calls it. **To cut off remote access, revoke at the provider's auth
-> layer or tear the tunnel down.** This is a known gap rather than intended
-> behaviour, so check the current release notes before relying on it.
+> **`kirocrew logout` ends those sessions.** It bumps a persisted revocation
+> generation that both access and refresh tokens embed, so established access
+> cookies and refresh chains alike are rejected on their next request. The
+> dashboard's own sign-out (`POST /api/auth/logout`) is the narrower control:
+> it revokes only the chain belonging to the browser that calls it. Restarting
+> the gateway ends nothing: cookies are self-contained, signed with the
+> persistent `token_signing.key`, and the revocation generation is reloaded
+> unchanged. **To cut off remote access entirely, also revoke at the provider's
+> auth layer or tear the tunnel down** — logout ends Kiro Crew's sessions, not
+> the tunnel itself.
 > Note also that config-write and secret-reveal endpoints refuse tunnelled requests:
 > `is_direct_local_request()` treats any request carrying `Forwarded` /
 > `X-Forwarded-*` / `X-Real-IP` as remote, and every standard tunnel and reverse
@@ -405,13 +406,15 @@ an error. `kirocrew token` defaults straight to `20h`. The 5-minute click window
 is not the session length: it only means a link left sitting in a DM overnight is
 dead and you need a fresh one.
 
-**When you do need a fresh link.** Three things end a refresh chain:
+**When you do need a fresh link.** Four things end a refresh chain:
 
 - **30 days idle** — nothing opened the dashboard inside the window.
 - **Signing out in the dashboard** (`POST /api/auth/logout`) — revokes that
-  browser's chain and denylists its access cookie. `kirocrew logout` is **not**
-  equivalent: it ends access sessions globally but leaves refresh chains live, so
-  a browser still holding one mints a fresh access cookie on its next refresh.
+  browser's chain and denylists its access cookie, leaving other browsers'
+  sessions alive.
+- **`kirocrew logout`** — ends **all** sessions globally, refresh chains
+  included: it bumps a persisted revocation generation that every access and
+  refresh token embeds, so tokens minted before the logout are rejected.
 - **Reuse detection** — a consumed refresh token replayed outside a 60-second
   same-IP grace window (`REFRESH_GRACE_SECS`) auto-revokes the entire chain
   (RFC 6819 §5.2.2.3). The frontend reports `refresh_chain_revoked` and stops

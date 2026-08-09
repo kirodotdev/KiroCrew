@@ -1067,6 +1067,7 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
 
     from aiohttp import web
 
+    import kiro_crew.dashboard.revocation_gen as rg
     import kiro_crew.dashboard.token_auth as ta
     from kiro_crew.dashboard.handlers import auth_refresh as ar
     from kiro_crew.dashboard.token_auth import generate_token, validate_token
@@ -1074,7 +1075,7 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
     # Isolate BOTH the refresh store and the token_auth revoked-nonce store to
     # tmp dirs so nothing touches the real ~/.kirocrew.
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
-    monkeypatch.setattr(ta, "_REVOCATION_GEN", 0)
+    monkeypatch.setattr(rg, "_gen", 0)
     monkeypatch.setattr(ta, "_revoked_store_singleton", None)
     refresh_state = RefreshStateManager(state_path=tmp_path / "refresh_chains.json")
 
@@ -1207,3 +1208,275 @@ def test_refresh_leaves_small_jar_untouched(
     # The other live gateway's cookies were not touched (no expiry Set-Cookie).
     assert "mc_token_6821" not in resp.cookies
     assert "mc_refresh_6821" not in resp.cookies
+
+
+# -- Global revocation generation (TR-U-28..31) --------------------------------
+#
+# `kirocrew logout` (revoke_all_sessions) bumps the persisted revocation
+# generation; refresh-token validation rejects any token carrying a lower gen,
+# mirroring the access-cookie semantics — the counter is authoritative over
+# BOTH cookie types.
+
+
+@pytest.fixture()
+def isolated_gen(tmp_path: Path, monkeypatch):
+    """Pin the revocation generation to 0 and isolate its persistence file.
+
+    Yields the revocation_gen module so tests can bump/inspect the counter.
+    """
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(rg, "_gen", 0)
+    yield rg
+
+
+def test_tr_u_28_revoke_all_sessions_kills_refresh_token(
+    isolated_gen, isolated_state: RefreshStateManager, monkeypatch
+):
+    """A refresh token minted before `kirocrew logout` must be rejected.
+
+    revoke_all_sessions() bumps the persisted revocation generation; the
+    pre-logout refresh token carries the old gen and validation rejects it
+    with reason "session revoked" — the same semantics as the access cookie.
+    """
+    import kiro_crew.dashboard.token_auth as ta
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions
+
+    # Fresh revoked-nonce store bound to this test's tmp config_dir.
+    monkeypatch.setattr(ta, "_revoked_store_singleton", None)
+
+    token, chain_id, _jti, exp = generate_refresh_token("alice")
+    valid_before, _, _, _, _, _ = validate_refresh_token(token)
+    assert valid_before is True
+
+    revoke_all_sessions()  # operator `kirocrew logout`
+
+    valid, user, reason, decoded_chain, _jti2, decoded_exp = validate_refresh_token(token)
+    assert valid is False
+    assert reason == "session revoked"
+    # Identity/claims still surfaced for audit, mirroring the other deny paths.
+    assert user == "alice"
+    assert decoded_chain == chain_id
+    assert decoded_exp == exp
+
+
+def test_tr_u_29_refresh_token_minted_after_bump_validates(
+    isolated_gen, isolated_state: RefreshStateManager, monkeypatch
+):
+    """A refresh token minted AFTER the bump embeds the new gen and validates."""
+    import kiro_crew.dashboard.token_auth as ta
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions
+
+    monkeypatch.setattr(ta, "_revoked_store_singleton", None)
+
+    revoke_all_sessions()
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+    valid, user, reason, _cid, _j, _e = validate_refresh_token(token)
+    assert valid is True
+    assert user == "alice"
+    assert reason == ""
+
+
+def test_tr_u_30_legacy_payload_without_gen_fails_closed(
+    isolated_gen, isolated_state: RefreshStateManager
+):
+    """A pre-gen-claim refresh token is valid at gen 0, rejected once gen > 0.
+
+    Tokens minted before the gen claim existed default to gen 0, so they are
+    rejected once any logout has ever bumped the counter — the deliberate
+    fail-closed posture. On installs that never ran a logout (gen still 0),
+    legacy tokens keep validating.
+    """
+    import kiro_crew.dashboard.refresh_tokens as rt
+
+    now = time.time()
+    legacy_payload = {
+        "sub": "alice",
+        "kind": "refresh",
+        "chain_id": "abc123def456",
+        "jti": "a" * 24,
+        "iat": now,
+        "session_exp": now + 3600,
+        # no "gen" claim — pre-upgrade token
+    }
+    raw = json.dumps(legacy_payload, separators=(",", ":")).encode()
+    token = f"{rt._b64url_encode(raw)}.{rt._sign(raw)}"
+
+    valid_at_zero, _, reason_zero, _, _, _ = validate_refresh_token(token)
+    assert valid_at_zero is True, f"legacy token should validate at gen 0: {reason_zero}"
+
+    isolated_gen.bump_revocation_gen()
+
+    valid_after, _, reason_after, _, _, _ = validate_refresh_token(token)
+    assert valid_after is False
+    assert reason_after == "session revoked"
+
+
+def test_tr_u_31_refresh_endpoint_rejects_pre_logout_cookie(
+    isolated_gen, isolated_state: RefreshStateManager, monkeypatch
+):
+    """POST /api/auth/refresh with a pre-logout refresh cookie must 401.
+
+    End-to-end at the handler level: after revoke_all_sessions() the browser's
+    saved `mc_refresh_<port>` cookie can no longer mint a fresh access cookie.
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+
+    import kiro_crew.dashboard.token_auth as ta
+    from kiro_crew.dashboard.handlers import auth_refresh as ar
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions
+
+    monkeypatch.setattr(ta, "_revoked_store_singleton", None)
+
+    token, _chain_id, _jti, _exp = generate_refresh_token("alice")
+    revoke_all_sessions()
+
+    request = MagicMock(spec=web.Request)
+    request.app = {"port": 7777, "allowed_origins": set()}
+    request.cookies = {refresh_cookie_name(7777): token}
+    request.headers = {"Origin": "http://localhost:7777", "Host": "localhost:7777"}
+    request.scheme = "http"
+    request.host = "localhost:7777"
+    request.remote = "127.0.0.1"
+
+    with patch(
+        "kiro_crew.dashboard.handlers.auth_refresh.check_origin", return_value=True
+    ), patch(
+        "kiro_crew.dashboard.handlers.auth_refresh._rate_limited", return_value=False
+    ):
+        resp = asyncio.run(ar.api_auth_refresh(request))
+
+    assert resp.status == 401
+
+
+def test_tr_u_32_failed_gen_load_is_not_memoized(monkeypatch):
+    """A transient counter read failure must not permanently un-revoke sessions.
+
+    If the first disk read fails, current_revocation_gen() answers 0 for that
+    call but leaves the memo unset, so the next call retries and picks up the
+    real persisted counter — a startup read glitch on a host whose counter is
+    above 0 cannot pin the process at gen 0 for its lifetime.
+    """
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    monkeypatch.setattr(rg, "_gen", None)
+    loads = iter([None, 7])  # first read fails, retry succeeds
+    monkeypatch.setattr(rg, "_load_revocation_gen_or_none", lambda: next(loads))
+
+    assert rg.current_revocation_gen() == 0  # failure degrades to 0 for this call
+    assert rg.current_revocation_gen() == 7  # retried — the failure was not memoized
+    assert rg.current_revocation_gen() == 7  # success IS memoized (iterator not consumed)
+
+
+def test_tr_u_33_validator_fails_closed_when_counter_unreadable(
+    isolated_gen, isolated_state: RefreshStateManager, monkeypatch
+):
+    """An unreadable revocation counter must REJECT, never accept.
+
+    If the persisted counter cannot be read, a token cannot be proven
+    un-revoked — degrading to gen 0 would authenticate sessions the operator
+    revoked. Both the refresh and access validators reject with
+    "revocation state unavailable"; the next validation retries the read.
+    """
+    from kiro_crew.dashboard.token_auth import generate_token, validate_token
+
+    refresh_token, _cid, _jti, _exp = generate_refresh_token("alice")  # minted at gen 0
+    access_token = generate_token("alice", ttl_seconds=3600)
+
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    monkeypatch.setattr(rg, "_gen", None)
+    monkeypatch.setattr(rg, "_load_revocation_gen_or_none", lambda: None)
+
+    valid_r, _, reason_r, _, _, _ = validate_refresh_token(refresh_token)
+    assert valid_r is False
+    assert reason_r == "revocation state unavailable"
+
+    valid_a, _, reason_a = validate_token(access_token, use_session_exp=True)
+    assert valid_a is False
+    assert reason_a == "revocation state unavailable"
+
+
+def test_tr_u_34_bump_refuses_unreadable_base(monkeypatch):
+    """bump_revocation_gen must not bump from an assumed base.
+
+    Reading the persisted counter failed: bumping from 0 could persist a LOWER
+    value than on disk (e.g. 5 -> 1), resurrecting revoked sessions after a
+    restart. The bump refuses with OSError instead.
+    """
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    monkeypatch.setattr(rg, "_gen", None)
+    monkeypatch.setattr(rg, "_load_revocation_gen_or_none", lambda: None)
+
+    with pytest.raises(OSError):
+        rg.bump_revocation_gen()
+
+
+def test_tr_u_35_bump_persist_failure_leaves_counter_unchanged(
+    tmp_path: Path, monkeypatch
+):
+    """A failed counter WRITE raises and leaves the generation UNCHANGED.
+
+    The in-memory value is published only after the atomic replace succeeds:
+    a token minted with an unpersisted generation would be reloaded lower
+    after restart and outlive a later successful logout, so a failed persist
+    must not advance what mints observe.
+    """
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    # Point config_dir at a FILE so the mkdir(parents=True) in the persist
+    # path raises — a deterministic write failure confined to tmp_path.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: blocker)
+    monkeypatch.setattr(rg, "_gen", 3)
+
+    with pytest.raises(OSError):
+        rg.bump_revocation_gen()
+
+    # Counter unchanged — no mint can observe a generation that is not durable.
+    assert rg.current_revocation_gen() == 3
+
+
+def test_tr_u_36_empty_counter_file_fails_closed(tmp_path: Path, monkeypatch):
+    """An existing-but-empty counter file is unreadable, not gen 0.
+
+    A write torn by process termination leaves an empty file; interpreting it
+    as 0 would resurrect every revoked session on the next boot. The loader
+    reports it unreadable and validators reject until the state is repaired
+    (or the next successful bump atomically replaces it).
+    """
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    (tmp_path / rg._REVOCATION_FILE).write_text("", encoding="utf-8")
+    monkeypatch.setattr(rg, "_gen", None)
+
+    assert rg._load_revocation_gen_or_none() is None
+
+    token, _cid, _jti, _exp = generate_refresh_token("alice")  # mint degrades to gen 0
+    valid, _, reason, _, _, _ = validate_refresh_token(token)
+    assert valid is False
+    assert reason == "revocation state unavailable"
+
+
+def test_tr_u_37_bump_persists_atomically(tmp_path: Path, monkeypatch):
+    """The bump lands via same-directory tmp + os.replace: the on-disk file
+    always carries a complete value and no tmp residue is left behind."""
+    import kiro_crew.dashboard.revocation_gen as rg
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(rg, "_gen", None)
+
+    assert rg.bump_revocation_gen() == 1
+    assert rg.bump_revocation_gen() == 2
+
+    p = tmp_path / rg._REVOCATION_FILE
+    assert p.read_text(encoding="utf-8") == "2"
+    leftovers = [f.name for f in tmp_path.iterdir() if f.name != rg._REVOCATION_FILE]
+    assert leftovers == []

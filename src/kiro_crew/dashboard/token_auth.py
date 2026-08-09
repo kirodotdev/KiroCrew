@@ -38,6 +38,20 @@ from kiro_crew.dashboard.refresh_tokens import (
     refresh_cookie_name,
 )
 
+# Canonical revocation-generation definitions live in revocation_gen so the
+# refresh-token module can consult the counter without recreating the
+# token_auth <-> refresh_tokens import cycle (same pattern as token_secret
+# below). Re-exported here for backwards compatibility. Both validators read
+# the LIVE value via current_revocation_gen() — never an import-time copy —
+# so a bump is visible to every subsequent validation in-process.
+from kiro_crew.dashboard.revocation_gen import (  # noqa: F401  # re-exports
+    _REVOCATION_FILE,
+    _load_revocation_gen,
+    bump_revocation_gen,
+    current_revocation_gen,
+    current_revocation_gen_or_none,
+)
+
 # Canonical HMAC-secret definitions live in token_secret to break the import
 # cycle between token_auth and refresh_tokens. Re-exported here for backwards
 # compatibility — callers elsewhere import these names from token_auth. The
@@ -55,52 +69,9 @@ from kiro_crew.sel import sel as _sel_fn
 
 logger = logging.getLogger(__name__)
 
-
-_REVOCATION_FILE = "token_revocation.gen"
-
-
-def _load_revocation_gen() -> int:
-    """Return the persisted revocation generation counter (0 if unset).
-
-    Every minted token embeds the current ``gen``; cookie validation rejects a
-    token whose ``gen`` is below the current value. ``revoke_all_sessions()``
-    bumps and persists it, so an operator ``kirocrew logout`` invalidates ALL
-    outstanding tokens/cookies — including established browser cookies, which
-    the nonce store (per-process, cleared on restart) could not. Persisting the
-    counter is what lets it survive a gateway restart WITHOUT logging users out:
-    the gen is reloaded unchanged, so previously-issued cookies still match.
-    """
-    from kiro_crew.config.loader import config_dir
-
-    try:
-        p = config_dir() / _REVOCATION_FILE
-        if p.exists():
-            return int(p.read_text(encoding="utf-8").strip() or "0")
-    except (OSError, ValueError):
-        logger.warning("could not read token revocation counter; assuming 0", exc_info=True)
-    return 0
-
-
-def _bump_revocation_gen() -> int:
-    """Increment and persist the revocation counter. Returns the new value.
-
-    Falls back to an in-memory bump if the file is unwritable (revocation still
-    holds for the life of this process, the pre-existing best-effort behaviour).
-    """
-    global _REVOCATION_GEN
-    _REVOCATION_GEN += 1
-    from kiro_crew.config.loader import config_dir
-
-    try:
-        p = config_dir() / _REVOCATION_FILE
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(_REVOCATION_GEN), encoding="utf-8")
-    except OSError:
-        logger.warning("could not persist token revocation counter", exc_info=True)
-    return _REVOCATION_GEN
-
-
-_REVOCATION_GEN = _load_revocation_gen()
+# Alias of bump_revocation_gen: callers elsewhere import the private name
+# from this module.
+_bump_revocation_gen = bump_revocation_gen
 
 
 # -- Per-session access-cookie revocation -------------------------------------
@@ -698,7 +669,7 @@ def generate_token(
         # Revocation generation: validate_token rejects a token whose gen is
         # below the current persisted value, so revoke_all_sessions() kills
         # established cookies (not just the per-process nonce store).
-        "gen": _REVOCATION_GEN,
+        "gen": current_revocation_gen(),
     }
     if app:
         payload_dict["app"] = app
@@ -744,9 +715,16 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
     # cookie — carries a lower gen and is rejected. This is the ONLY check that
     # invalidates an established cookie (the nonce store is per-process and
     # restart-cleared; the HMAC secret is persisted, not rotated), so it is what
-    # makes "revoke all sessions" actually revoke cookie sessions. Tokens minted
-    # before this field existed default to gen 0, matching the initial counter.
-    if int(data.get("gen", 0)) < _REVOCATION_GEN:
+    # makes "revoke all sessions" actually revoke cookie sessions. Refresh-token
+    # validation applies the same check, so the counter is authoritative over
+    # BOTH cookie types. Tokens minted before this field existed default to
+    # gen 0, matching the initial counter. Fail-closed: when the persisted
+    # counter cannot be read, the token cannot be proven un-revoked, so it is
+    # rejected (the next validation retries the read).
+    current_gen = current_revocation_gen_or_none()
+    if current_gen is None:
+        return False, "", "revocation state unavailable"
+    if int(data.get("gen", 0)) < current_gen:
         return False, "", "session revoked"
     # Nonce is a single-use guard for the one-time LINK click only. For an
     # established session cookie (use_session_exp=True), a valid HMAC signature
@@ -1074,6 +1052,11 @@ def revoke_all_sessions() -> None:
     """Revoke all active dashboard sessions (also used for test isolation).
 
     Emits a SEL audit event before clearing state so the revocation is recorded.
+    Raises ``OSError`` (fail-closed) when the persisted revocation counter
+    cannot be read or the bumped value cannot be written — see
+    ``bump_revocation_gen``. On failure the generation is unchanged (in memory
+    and on disk) so no token is ever minted with an unpersisted generation;
+    the in-memory link/IP/consumed state has still been cleared.
     """
     _sel_fn().log_api_access(
         caller="system",
@@ -1085,8 +1068,9 @@ def revoke_all_sessions() -> None:
     _state.clear_all()
     # Bump the persisted revocation generation so already-issued cookies (which
     # the cleared per-process nonce store cannot touch) are rejected on their
-    # next request. This is what makes logout actually end cookie sessions.
-    _bump_revocation_gen()
+    # next request. Both access-cookie and refresh-token validation check the
+    # gen, so this ends established browser sessions AND their refresh chains.
+    bump_revocation_gen()
 
 
 def parse_duration(s: str) -> int | None:
@@ -1269,6 +1253,9 @@ async def warm_auth_singletons() -> None:
     """
     await asyncio.to_thread(_get_secret)
     await asyncio.to_thread(_get_revoked_store)
+    # The revocation generation is lazy-loaded from disk on first use; prime it
+    # here too so the first token validation never does file I/O on the loop.
+    await asyncio.to_thread(current_revocation_gen)
 
 
 def token_auth_middleware(

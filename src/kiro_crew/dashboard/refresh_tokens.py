@@ -33,6 +33,10 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
+from kiro_crew.dashboard.revocation_gen import (
+    current_revocation_gen,
+    current_revocation_gen_or_none,
+)
 from kiro_crew.dashboard.token_secret import _get_secret
 
 if TYPE_CHECKING:
@@ -267,7 +271,7 @@ class RefreshStateManager:
                     self._grace_replacements.pop(chain_id, None)
 
     def clear_all(self) -> None:
-        """Wipe all state. Used by tests and ``kirocrew logout``."""
+        """Wipe all rotation/revocation state (test-isolation helper)."""
         with self._lock:
             self._consumed_jtis.clear()
             self._revoked_chains.clear()
@@ -432,6 +436,10 @@ def generate_refresh_token(
         "jti": jti,
         "iat": now,
         "session_exp": now + session_ttl,
+        # Revocation generation: validate_refresh_token rejects a token whose
+        # gen is below the current persisted value, so revoke_all_sessions()
+        # (kirocrew logout) ends refresh chains, not just access cookies.
+        "gen": current_revocation_gen(),
     }
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
@@ -442,10 +450,12 @@ def generate_refresh_token(
 def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]:
     """Return ``(valid, user_id, reason, chain_id, jti, session_exp)``.
 
-    Validates HMAC, ``kind=refresh``, ``session_exp``, and that the chain
-    has not been revoked. Does NOT consult the consumed-jti map — callers
-    decide whether to apply consumption semantics (the refresh endpoint
-    does, the ``/auth/me`` peek does not).
+    Validates HMAC, ``kind=refresh``, ``session_exp``, that the chain has not
+    been revoked, and that the token's revocation generation is current (a
+    ``revoke_all_sessions()`` bump rejects it with reason ``"session
+    revoked"``). Does NOT consult the consumed-jti map — callers decide whether
+    to apply consumption semantics (the refresh endpoint does, the ``/auth/me``
+    peek does not).
     """
     parts = token.split(".", 1)
     if len(parts) != 2:
@@ -476,6 +486,21 @@ def validate_refresh_token(token: str) -> tuple[bool, str, str, str, str, float]
     state = _get_state()
     if state.is_chain_revoked(chain_id):
         return False, user_id, "chain revoked", chain_id, jti, session_exp
+    # Revocation generation: mirrors the access-cookie semantics in
+    # validate_token(), making the persisted counter authoritative over BOTH
+    # cookie types — revoke_all_sessions() (kirocrew logout) bumps it once and
+    # every outstanding refresh token is rejected, with no chain enumeration.
+    # Tokens minted before this claim existed default to gen 0, so they are
+    # rejected once any logout has ever bumped the counter (deliberate
+    # fail-closed posture); on installs that never ran a logout, gen is 0 and
+    # legacy tokens keep validating. Fail-closed on I/O too: when the persisted
+    # counter cannot be read, the token cannot be proven un-revoked, so it is
+    # rejected (the next validation retries the read).
+    current_gen = current_revocation_gen_or_none()
+    if current_gen is None:
+        return False, user_id, "revocation state unavailable", chain_id, jti, session_exp
+    if int(payload.get("gen", 0)) < current_gen:
+        return False, user_id, "session revoked", chain_id, jti, session_exp
     return True, user_id, "", chain_id, jti, session_exp
 
 

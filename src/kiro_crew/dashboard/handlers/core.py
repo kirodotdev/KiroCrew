@@ -1986,7 +1986,29 @@ async def api_logout(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
-    revoke_all_sessions()
+    # Fail-closed: bump_revocation_gen raises when the persisted counter
+    # cannot be read (bumping from an assumed base could persist a LOWER
+    # counter, resurrecting revoked sessions after restart) or when the write
+    # fails (the counter is left unchanged, so the revocation did not take
+    # effect). Report the failure instead of a false success.
+    try:
+        revoke_all_sessions()
+    except OSError:
+        logger.warning("logout failed: could not persist session revocation", exc_info=True)
+        _sel().log_api_access(
+            caller=request.remote or "unknown",
+            operation="logout",
+            outcome="error",
+            source="cli",
+            resources="revocation-persist-failed",
+        )
+        return web.json_response(
+            {
+                "error": "could not persist session revocation; logout not completed",
+                "code": "revocation_persist_failed",
+            },
+            status=500,
+        )
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="logout",

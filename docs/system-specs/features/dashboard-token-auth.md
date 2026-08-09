@@ -4,7 +4,7 @@
 
 Token authentication for the Kiro Crew dashboard. The owner mints a time-limited, HMAC-SHA256 signed URL from the CLI (`kirocrew token`) or via the `!dashboard` Slack command (currently the only chat channel that mints links). An aiohttp middleware validates the token on every request (query param or cookie fallback), sets a session cookie on first use, and pins the token to the client's IP. Static assets bypass checks. Loopback access (127.0.0.1) is always trusted regardless of mode — this ensures local processes (mcp-core, doctor, SSH tunnels) work without tokens. All generation and validation events are logged to SEL.
 
-Up to `MAX_CONCURRENT_NONCES` (50) link nonces can be valid concurrently (FIFO eviction via `OrderedDict` when the limit is exceeded), allowing multiple browser tabs and CLI sessions without invalidating each other. All in-memory link-session state is managed by a thread-safe `TokenStateManager`. Auth is **not** purely in-memory: the HMAC signing key is the **persistent** `token_signing.key` (mode `0600`) and revoked access-cookie nonces persist to `token_revoked_nonces.json` (mode `0600`), so signed cookies and per-session logouts both survive a gateway restart. Users can revoke a single session — access cookie **and** its refresh chain — via `POST /api/auth/logout`, or all **access** sessions via `kirocrew logout`. Note that `kirocrew logout` does not revoke refresh chains, so a browser holding a valid refresh cookie can still mint a new access cookie.
+Up to `MAX_CONCURRENT_NONCES` (50) link nonces can be valid concurrently (FIFO eviction via `OrderedDict` when the limit is exceeded), allowing multiple browser tabs and CLI sessions without invalidating each other. All in-memory link-session state is managed by a thread-safe `TokenStateManager`. Auth is **not** purely in-memory: the HMAC signing key is the **persistent** `token_signing.key` (mode `0600`) and revoked access-cookie nonces persist to `token_revoked_nonces.json` (mode `0600`), so signed cookies and per-session logouts both survive a gateway restart. Users can revoke a single session — access cookie **and** its refresh chain — via `POST /api/auth/logout`, or **all** sessions via `kirocrew logout`: the persisted revocation generation (`revocation_gen.py`) is embedded in both access and refresh tokens, and validation of either kind rejects a stale generation, so `kirocrew logout` ends established browser sessions and their refresh chains alike.
 
 The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, HttpOnly, path-restricted to `/api/auth`, up to 30-day TTL) alongside the access cookie on initial token-URL use. The SPA calls `POST /api/auth/refresh` shortly before the access cookie expires to silently rotate both cookies (rotation-on-use), so users only re-run `!dashboard` / `kirocrew token` roughly once per 30 idle days instead of every ~20h. Refresh tokens are HMAC-signed with the same persistent `token_signing.key` and enforce RFC 6819 §5.2.2.3 reuse detection: a consumed `jti` replayed outside a 60s same-IP multi-tab grace window auto-revokes the entire chain.
 
@@ -123,10 +123,11 @@ def try_consume(token: str) -> bool: ...
 
 def revoke_all_sessions() -> None: ...
     # Clears all nonces, IP bindings, and consumed tokens AND bumps the
-    # persisted revocation-generation counter, so every outstanding ACCESS
-    # cookie (for all users) is rejected. Used by `kirocrew logout`. Note this
-    # does NOT revoke refresh chains: validate_refresh_token() never consults
-    # the revocation generation, so a live refresh cookie survives it.
+    # persisted revocation-generation counter, so every outstanding cookie
+    # (for all users) is rejected. Used by `kirocrew logout`. The counter is
+    # authoritative over BOTH cookie types: validate_token() AND
+    # validate_refresh_token() reject a token whose embedded gen is stale, so
+    # the bump ends established access cookies and refresh chains alike.
 
 def revoke_access_cookie(token: str) -> bool: ...
     # Per-session revocation (CWE-613). Validates the token, then adds ITS nonce
@@ -255,7 +256,7 @@ class TokenStateManager:
 
 Up to `MAX_CONCURRENT_NONCES` (**50**) link nonces are valid simultaneously. When the limit is exceeded, the oldest nonce is evicted via `OrderedDict.popitem(last=False)` (O(1)); a successful nonce check also refreshes a nonce's eviction position so an actively-used session isn't evicted by newer grants. The limit was **raised from 5 to 50** specifically so pending Slack link nonces aren't evicted by other token-minting activity (crons, dashboard links, etc.). This allows multiple browser tabs and `kirocrew token` invocations without invalidating prior sessions.
 
-The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a nonce not on the persisted denylist — it never consults the in-memory link-nonce set. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`), so a logged-out cookie stays dead across restarts. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all in-memory sessions via `kirocrew logout` (`revoke_all_sessions()`).
+The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist — it never consults the in-memory link-nonce set. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
 
 #### App-token scope confinement (CWE-269)
 
@@ -482,6 +483,6 @@ HTML 403 page includes instructions to run `!dashboard` in Slack. The middleware
 7. CSRF middleware also trusts loopback — local POST requests (mcp-core API calls) bypass origin checks
 8. Static assets bypass auth — error pages render correctly
 9. Bounded concurrent nonces (max 50; raised from 5 so pending Slack link nonces aren't evicted by other token-minting activity) — prevents unbounded memory growth, limits exposure window; an active session refreshes its eviction position on each check
-10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens
+10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
 12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `host_validation → csrf → token_auth → sel_audit` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
