@@ -59,6 +59,7 @@ from kiro_crew.discord.transport_dispatch import (
 from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
@@ -247,6 +248,20 @@ class FakeSessions:
         *,
         accepts_inbound: bool = False,
     ) -> None:
+        # Interface parity with the real SessionMap: a conversation is exclusive
+        # once it is inbound-committed — this claim is inbound-capable, or an
+        # occupant already is. Two outbound-only mirrors stay allowed. A fake that
+        # accepts what production refuses lets a test go green against a state the
+        # product cannot reach.
+        rivals = [
+            other for other, held in self.mirror_links.items() if other != key and held == link
+        ]
+        if rivals and (
+            accepts_inbound or any(other in self.inbound_mirror_keys for other in rivals)
+        ):
+            raise ConversationOwnershipConflict(
+                f"{getattr(link, 'channel_type', '?')} conversation is already held"
+            )
         self.mirror_links[key] = link
         if accepts_inbound:
             self.inbound_mirror_keys.add(key)
@@ -1604,13 +1619,15 @@ class TestDispatcher:
     @pytest.mark.asyncio
     async def test_unlink_frees_location_in_one_shot_with_resumed_session(self) -> None:
         # A resumed session AND an outbound dashboard mirror can co-occupy a
-        # location (the dashboard mirror-link endpoint performs no occupancy
-        # check). The resumed-session early path must still free the WHOLE
-        # location — one `!unlink`, not two.
+        # location: a session map can hold co-located bindings written before
+        # conversations became exclusive. The resumed-session early path must
+        # still free the WHOLE location — one `!unlink`, not two. The rows go in
+        # directly because `set_mirror_link` refuses to create this state.
         d, cli, sess = _dispatcher({"u1"})
         loc = ChannelLink("discord", channel_id="c1")
-        sess.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
-        sess.set_mirror_link("dashboard:chat-9", loc)
+        sess.mirror_links["dashboard:resumed"] = loc
+        sess.inbound_mirror_keys.add("dashboard:resumed")
+        sess.mirror_links["dashboard:chat-9"] = loc
         await d.handle_message(self._msg("!unlink"))
         assert sess.mirror_links == {}
         assert any("Left the resumed session" in t for t, _ in cli.sent)
@@ -1622,11 +1639,13 @@ class TestDispatcher:
         # Duplicate inbound bindings make the resume resolver fail closed
         # (routing denied), so the resumed-session path cannot release them —
         # the dispatcher sweep is the repair, and the reply says how much it
-        # cleared instead of a bare ✅ that reads as "just yours".
+        # cleared instead of a bare ✅ that reads as "just yours". The rows go in
+        # directly because `set_mirror_link` refuses to create this state.
         d, cli, sess = _dispatcher({"u1"})
         loc = ChannelLink("discord", channel_id="c1")
-        sess.set_mirror_link("dashboard:wedged-a", loc, accepts_inbound=True)
-        sess.set_mirror_link("dashboard:wedged-b", loc, accepts_inbound=True)
+        for wedged in ("dashboard:wedged-a", "dashboard:wedged-b"):
+            sess.mirror_links[wedged] = loc
+            sess.inbound_mirror_keys.add(wedged)
         await d.handle_message(self._msg("!unlink"))
         assert sess.mirror_links == {}
         assert any("Unlinked (2 bindings)" in t for t, _ in cli.sent)
@@ -1635,11 +1654,13 @@ class TestDispatcher:
     async def test_new_frees_whole_location_when_leaving_resumed_session(self) -> None:
         # `!new` releases a resumed session through the same whole-location
         # sweep as `!unlink`: a co-located outbound mirror must not leak into
-        # the fresh conversation the command starts.
+        # the fresh conversation the command starts. The rows go in directly
+        # because `set_mirror_link` refuses to create this state.
         d, cli, sess = _dispatcher({"u1"})
         loc = ChannelLink("discord", channel_id="c1")
-        sess.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
-        sess.set_mirror_link("dashboard:bystander", loc)
+        sess.mirror_links["dashboard:resumed"] = loc
+        sess.inbound_mirror_keys.add("dashboard:resumed")
+        sess.mirror_links["dashboard:bystander"] = loc
         await d.handle_message(self._msg("!new"))
         assert sess.mirror_links == {}
         assert any("left the resumed session" in t for t, _ in cli.sent)

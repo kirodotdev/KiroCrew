@@ -70,6 +70,11 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     max_message_chars=DISCORD_CHUNK_LIMIT,
     max_buttons=5,  # per action row (max 5 rows -> 25 total)
     supports_proactive_send=True,
+    # The one transport whose inbound path resolves the mirror binding: a message
+    # in a bound conversation routes to the owning session via
+    # `DiscordSessionResume.resumed_session`, so a dashboard connect here can
+    # honestly claim `accepts_inbound`.
+    supports_session_resume=True,
 )
 
 

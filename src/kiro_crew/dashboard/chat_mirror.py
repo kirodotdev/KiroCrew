@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from aiohttp import web
 
@@ -38,6 +39,7 @@ from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,27 @@ async def api_channel_targets(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("channel-targets: failed to enumerate %s", channel_type, exc_info=True)
     return web.json_response(targets)
+
+
+def _resumes_inbound(transport: Any) -> bool:
+    """Does a binding on this transport actually route replies back to the session?
+
+    Only a transport whose inbound path resolves the mirror binding may claim
+    ``accepts_inbound``. Discord's dispatcher looks the conversation up; the
+    others build a session key from the route and never consult the binding, so
+    a reply there runs in a SEPARATE session no matter what the binding says.
+    Claiming inbound for them would not make replies come back — it would only
+    make the dashboard say they do, and the slot row would report
+    ``direction: both`` on a promise nothing keeps.
+
+    Reads the capability rather than testing ``channel_type == "discord"``, so a
+    transport earns the claim by declaring it next to its own inbound path. The
+    ``getattr`` chain is the conservative branch: a transport with no capability
+    object at all degrades to outbound-only.
+    """
+    return bool(
+        getattr(getattr(transport, "capabilities", None), "supports_session_resume", False)
+    )
 
 
 async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
@@ -239,6 +262,51 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         thread_id=thread_id,
     )
 
+    # Refuse an occupied conversation BEFORE anything is posted into it. The
+    # authoritative check is the atomic one inside ``set_mirror_link`` at the
+    # bottom, but that fires only after the link notice and the whole catch-up
+    # transcript have already been delivered — and a binding can be unwound
+    # while posted messages cannot. So ask the same question here, at the first
+    # point the real location is known, and answer with the same 409.
+    #
+    # ``accepts_inbound`` is threaded through so this asks the writer's EXACT
+    # question. Without it the precheck would refuse where the writer allows —
+    # rejecting a second outbound-only mirror on transports that cannot resume at
+    # all, whose in-channel link handlers do not translate the refusal because
+    # they can never provoke it.
+    #
+    # Degrades open on anything it cannot interpret: a SessionManager double that
+    # lacks the accessor simply gets no precheck, and the writer still enforces.
+    # That trades a late refusal for a missing one, never a wrong binding.
+    #
+    # The ``isinstance`` is load-bearing, not defensive clutter. A stubbed
+    # SessionManager answers with a Mock, and a Mock is TRUTHY — read as a rival
+    # list it would refuse every connect in every test double's world, and the
+    # refusal would look like a real conflict. Only an actual list is an answer.
+    try:
+        rivals = state.sessions.mirror_claim_blockers(
+            session_key, link, accepts_inbound=_resumes_inbound(transport)
+        )
+    except Exception:
+        logger.debug("mirror-link: occupancy precheck unavailable", exc_info=True)
+        rivals = None
+    occupants = list(rivals) if isinstance(rivals, list) else []
+    if occupants:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.mirror_link",
+            outcome="denied",
+            source="dashboard",
+            resources=f"{slot.key} -> {channel_type}:{conversation_id} (occupied)",
+        )
+        return web.json_response(
+            {
+                "error": "another session is already linked to this conversation",
+                "code": "conversation_occupied",
+            },
+            status=409,
+        )
+
     try:
         # Recheck at the actual send boundary as well: target resolution can
         # yield while governance is updated.
@@ -384,10 +452,37 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         except Exception:
             logger.debug("mirror-link context delivery failed", exc_info=True)
 
-    state.sessions.set_mirror_link(
-        session_key,
-        link,
-    )
+    try:
+        state.sessions.set_mirror_link(
+            session_key,
+            link,
+            # Mark the binding inbound-capable only where the transport's inbound
+            # path actually resolves it. Without this the connect writes an
+            # outbound-only binding, ``resumed_session`` skips it, and the user's
+            # reply starts a brand-new session with none of this transcript.
+            accepts_inbound=_resumes_inbound(transport),
+        )
+    except ConversationOwnershipConflict:
+        # The precheck above covers the common case; this is the genuine race —
+        # someone claimed the conversation while we were delivering. Report the
+        # same conflict rather than a 500, so the client offers "unlink there
+        # first" instead of inviting a retry of a request that is behaving
+        # correctly.
+        logger.info("mirror-link refused: conversation claimed during delivery")
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.mirror_link",
+            outcome="denied",
+            source="dashboard",
+            resources=f"{slot.key} -> {channel_type}:{conversation_id} (raced)",
+        )
+        return web.json_response(
+            {
+                "error": "another session claimed this conversation",
+                "code": "conversation_occupied",
+            },
+            status=409,
+        )
     sel().log_api_access(
         caller="dashboard",
         operation="chat.mirror_link",

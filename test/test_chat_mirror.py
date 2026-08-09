@@ -29,7 +29,9 @@ def _make_mirror_app(state):
     return app
 
 
-def _fake_transport(channel_type="telegram", proactive=True, max_message_chars=4096):
+def _fake_transport(
+    channel_type="telegram", proactive=True, max_message_chars=4096, session_resume=False
+):
     return SimpleNamespace(
         channel_type=channel_type,
         capabilities=SimpleNamespace(
@@ -38,6 +40,7 @@ def _fake_transport(channel_type="telegram", proactive=True, max_message_chars=4
             # backfill chunks to it instead of truncating, so the fake needs it
             # to exercise that path rather than the getattr fallback.
             max_message_chars=max_message_chars,
+            supports_session_resume=session_resume,
         ),
         send_message=AsyncMock(return_value="mid-1"),
         configured_targets=MagicMock(
@@ -669,3 +672,186 @@ class TestMirrorBackfillFidelity:
             "the link was persisted before delivery finished"
         )
         assert order.count("send") >= 3, "announcement + both messages should have been sent"
+
+
+class TestInboundClaimFollowsTheCapability:
+    """Connecting claims INBOUND only where the transport's inbound path honours it.
+
+    This is the fix for the reported bug. Without the claim the connect writes an
+    outbound-only binding, the channel's inbound resolver skips it, and the user's
+    reply starts a brand-new session with none of this transcript.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_resume_capable_transport_gets_an_inbound_binding(
+        self, tmp_path, monkeypatch
+    ):
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(_fake_transport("discord", session_resume=True))
+        state.sessions.set_mirror_link = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+        assert state.sessions.set_mirror_link.call_args.kwargs["accepts_inbound"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_transport_that_cannot_resume_stays_outbound_only(
+        self, tmp_path, monkeypatch
+    ):
+        """Degrade, never over-promise.
+
+        Telegram builds its session key from the route and never consults the
+        binding, so claiming inbound would not make replies come back — it would
+        only make the slot row say they do.
+        """
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(_fake_transport("telegram", session_resume=False))
+        state.sessions.set_mirror_link = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "telegram", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+        assert state.sessions.set_mirror_link.call_args.kwargs["accepts_inbound"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_occupied_conversation_is_refused_before_anything_is_posted(
+        self, tmp_path, monkeypatch
+    ):
+        """A binding can be unwound; posted messages cannot.
+
+        The authoritative check is atomic inside ``set_mirror_link``, but that
+        fires only after the link notice and the whole catch-up transcript have
+        been delivered. So the same question is asked at the first point the real
+        location is known, and nothing is sent into a conversation this session
+        does not get to own.
+        """
+        transport = _fake_transport("discord", session_resume=True)
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(transport)
+        state.sessions.mirror_claim_blockers = MagicMock(return_value=["dashboard:someone-else"])
+        state.sessions.set_mirror_link = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.messages.extend(
+            [
+                {"role": "user", "content": "private"},
+                {"role": "assistant", "content": "transcript"},
+            ]
+        )
+
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:123"},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "conversation_occupied"
+
+        assert transport.send_message.await_count == 0, (
+            "the transcript was delivered into a conversation another session owns"
+        )
+        state.sessions.set_mirror_link.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_stubbed_session_manager_does_not_read_as_occupied(
+        self, tmp_path, monkeypatch
+    ):
+        """A Mock is truthy, and truthy must not mean "taken".
+
+        Read as a rival list, a stubbed accessor's Mock would refuse every connect
+        and the refusal would look like a real conflict. Only an actual list is an
+        answer; anything else means "no precheck", and the writer still enforces.
+        """
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(_fake_transport("discord", session_resume=True))
+        state.sessions.mirror_claim_blockers = MagicMock(return_value=MagicMock())
+        state.sessions.set_mirror_link = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_a_governance_denial_persists_no_inbound_binding(self, tmp_path, monkeypatch):
+        """The write that grants inbound capability must stay behind the gate.
+
+        Persisting is the side effect that matters: a binding written for a
+        message governance went on to deny would leave the conversation connected
+        AND inbound-capable, so the channel would keep resuming a session policy
+        had just refused. The endpoint's existing fail-closed path is what
+        prevents it — this pins that the strengthened write inherits it.
+        """
+        transport = _fake_transport("discord", session_resume=True)
+
+        def _permits(*args, **kwargs):
+            # Keyed on "has anything been delivered yet?", not a call count, so
+            # the denial lands on the first in-loop unit regardless of how many
+            # messages the backfill selects.
+            return SimpleNamespace(
+                permitted=not transport.send_message.await_args_list,
+                rule="",
+                layer="",
+                reason="",
+            )
+
+        monkeypatch.setattr("kiro_crew.platform.governance_profiles.governance_permits", _permits)
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.messages.extend(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+            ]
+        )
+
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:123"},
+            )
+            assert resp.status == 403
+
+        state.sessions.set_mirror_link.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_precheck_asks_the_writers_exact_question(self, tmp_path, monkeypatch):
+        """The precheck must pass the claim's inbound intent, not just the location.
+
+        Drop the argument and the precheck answers a different question from the
+        writer it backs -- refusing where the writer allows, which would newly
+        reject a second outbound-only mirror on transports that cannot resume at
+        all. The sentinel default is what makes omission detectable: a plain
+        ``False`` default would make "passed False" and "not passed" identical, so
+        the test would pass against the very divergence it exists to catch.
+        """
+        sentinel = object()
+        seen: list[object] = []
+
+        def _blockers(key, link, *, accepts_inbound=sentinel):
+            seen.append(accepts_inbound)
+            return []
+
+        state = _prep(tmp_path, monkeypatch)
+        # Discord declares session resume, so a threaded argument is True here and
+        # an omitted one would fall to the default -- two distinguishable states.
+        state.register_channel_transport(_fake_transport("discord", session_resume=True))
+        state.sessions.mirror_claim_blockers = _blockers
+        state.sessions.set_mirror_link = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "discord", "target_id": "user:123"},
+            )
+            assert resp.status == 200
+        assert seen == [True], (
+            f"the precheck did not ask the writer's question with this claim's "
+            f"inbound intent: {seen}"
+        )

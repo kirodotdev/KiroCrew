@@ -10,6 +10,7 @@ from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 
 class _Client:
@@ -102,6 +103,20 @@ class _Sessions:
         *,
         accepts_inbound: bool = False,
     ) -> None:
+        # Interface parity with the real SessionMap: a conversation is exclusive
+        # once it is inbound-committed — this claim is inbound-capable, or an
+        # occupant already is. Two outbound-only mirrors are still allowed.
+        # Without the rule here, the in-channel `!link` refusal path is
+        # unreachable and a test for it would pass against unguarded production
+        # code; with it WIDER than production, a test would pass against a
+        # refusal production never makes.
+        rivals = [
+            other for other, held in self.mirror_links.items() if other != key and held == link
+        ]
+        if rivals and (accepts_inbound or any(other in self.inbound_keys for other in rivals)):
+            raise ConversationOwnershipConflict(
+                f"{link.channel_type} conversation is already held by {rivals[0]}"
+            )
         self.mirror_links[key] = link
         if accepts_inbound:
             self.inbound_keys.add(key)
@@ -1040,13 +1055,15 @@ async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
 
 @pytest.mark.asyncio
 async def test_leave_resumed_session_frees_whole_location() -> None:
-    # The resumed-session release must clear co-located occupants too: the
-    # dashboard mirror-link endpoint performs no occupancy check, so an
-    # outbound mirror can share the location with the resume binding.
+    # The resumed-session release must clear co-located occupants too. A session
+    # map can hold that state — written before conversations became exclusive, or
+    # hand-edited — and the release has to free all of it. `set_mirror_link`
+    # refuses to create it, so the rows go in directly.
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     loc = ChannelLink(channel_type="discord", channel_id="c1")
-    sessions.set_mirror_link("dashboard:resumed", loc, accepts_inbound=True)
-    sessions.set_mirror_link("dashboard:bystander", loc)
+    sessions.mirror_links["dashboard:resumed"] = loc
+    sessions.inbound_keys.add("dashboard:resumed")
+    sessions.mirror_links["dashboard:bystander"] = loc
 
     released = dispatcher._session_resume.leave_resumed_session("c1")
 
@@ -1112,3 +1129,125 @@ async def test_new_leaves_resumed_session_and_advances_native_generation() -> No
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert dispatcher._session_key("u1") != old_key
     assert "left the resumed session" in client.sent[-1][0]
+
+
+class TestDashboardConnectedConversationResumes:
+    """The reported bug: replying to a message from Kiro Crew forked a new session.
+
+    A dashboard session connected to a Discord conversation, sent into it, and
+    the user replied there. Instead of continuing that session, the reply started
+    a brand-new one with no history — so the user was answered by an agent that
+    had never seen the conversation it was replying inside.
+
+    The inbound resolver was never at fault. ``resumed_session`` filters on the
+    binding's inbound marker, and the dashboard's connect never set it, so the
+    resolver correctly found no owner and the dispatcher fell through to Discord's
+    own route-derived session key. These tests pin the marker's effect on routing
+    from both sides.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reply_resumes_the_connected_session(self) -> None:
+        dispatcher, _client, sessions = _dispatcher({"u1"}, _log())
+        # What a dashboard connect leaves behind once the transport declares
+        # `supports_session_resume` — the binding plus its inbound marker.
+        sessions.set_mirror_link(
+            "dashboard:chat-1",
+            ChannelLink(channel_type="discord", channel_id="c1"),
+            accepts_inbound=True,
+        )
+
+        assert dispatcher._session_resume.resumed_session("c1") == "dashboard:chat-1"
+        assert dispatcher._inbound_session_key("u1", "c1") == "dashboard:chat-1"
+
+    @pytest.mark.asyncio
+    async def test_an_outbound_only_binding_still_forks(self) -> None:
+        """The bug's exact mechanism, pinned so the marker cannot be dropped.
+
+        Same binding, no inbound marker — which is all main's connect could
+        write. The reply must NOT resolve to the connected session, and the key
+        the dispatcher falls back to is a Discord-native one, i.e. a different
+        conversation with none of the dashboard transcript. This is the
+        before-state; `accepts_inbound` is the whole difference.
+        """
+        dispatcher, _client, sessions = _dispatcher({"u1"}, _log())
+        sessions.set_mirror_link(
+            "dashboard:chat-1",
+            ChannelLink(channel_type="discord", channel_id="c1"),
+        )
+
+        assert dispatcher._session_resume.resumed_session("c1") is None
+        forked = dispatcher._inbound_session_key("u1", "c1")
+        assert forked != "dashboard:chat-1"
+        assert forked.startswith("discord:")
+
+    @pytest.mark.asyncio
+    async def test_two_owners_route_nowhere_which_is_why_exclusivity_ships_here(
+        self,
+    ) -> None:
+        """Why the ownership rule belongs with the inbound marker.
+
+        "No owner" and "two owners" land on the same ``None``. So setting the
+        inbound marker without enforcing one-session-per-conversation would not
+        fix the fork — it would only move it: a duplicated binding sends the
+        reply to NO session, silently forking exactly as before, and now with no
+        way for the user to tell why.
+        """
+        dispatcher, _client, sessions = _dispatcher({"u1"}, _log())
+        link = ChannelLink(channel_type="discord", channel_id="c1")
+        # Planted past the writer's guard: the state a map file can still hold.
+        sessions.mirror_links["dashboard:chat-1"] = link
+        sessions.inbound_keys.add("dashboard:chat-1")
+        sessions.mirror_links["dashboard:chat-2"] = link
+        sessions.inbound_keys.add("dashboard:chat-2")
+
+        assert dispatcher._session_resume.resumed_session("c1") is None
+        assert dispatcher._inbound_session_key("u1", "c1").startswith("discord:")
+
+    @pytest.mark.asyncio
+    async def test_inchannel_link_reports_the_refusal_instead_of_failing(self) -> None:
+        """`!link` must translate the conflict, not drop the handler task.
+
+        Reaching it takes the ambiguous state, and that is the point. A SINGLE
+        inbound owner is caught by the `resumed_session` precheck at the top of
+        `_handle_link`, which returns early. TWO inbound owners make
+        `resumed_session` return None -- it refuses to pick -- so the precheck
+        waves the command through and `set_mirror_link` is what refuses. Uncaught,
+        that raise propagates out of the command handler: the task is logged and
+        dropped, and the user gets no reply at all to a `!link` they just typed.
+        """
+        dispatcher, client, sessions = _dispatcher({"u1"}, _log())
+        loc = ChannelLink(channel_type="discord", channel_id="c1")
+        # Planted past the writer's guard: the duplicate state a map file can
+        # still hold, and the only state that reaches the handler's writer.
+        for occupant in ("dashboard:chat-7", "dashboard:chat-8"):
+            sessions.mirror_links[occupant] = loc
+            sessions.inbound_keys.add(occupant)
+        assert dispatcher._session_resume.resumed_session("c1") is None, (
+            "setup no longer produces the ambiguous state this test needs"
+        )
+
+        await dispatcher.handle_message(_message("!link"))
+
+        assert any("already linked" in text for text, _ in client.sent), (
+            f"the refusal was not reported to the channel: {client.sent}"
+        )
+        assert set(sessions.mirror_links) == {"dashboard:chat-7", "dashboard:chat-8"}, (
+            "an occupant was displaced, or the link was written anyway"
+        )
+
+    @pytest.mark.asyncio
+    async def test_two_outbound_mirrors_are_still_allowed(self) -> None:
+        """Exclusivity is owed to inbound routing, so it is scoped to it.
+
+        Two outbound-only mirrors on one conversation are merely noisy -- both
+        write out, nobody reads back -- so they stay allowed. Refusing them would
+        reach every transport that cannot resume at all, whose in-channel link
+        handlers do not translate the refusal because they can never provoke it.
+        """
+        _dispatcher_, _client, sessions = _dispatcher({"u1"}, _log())
+        loc = ChannelLink(channel_type="discord", channel_id="c1")
+        sessions.set_mirror_link("dashboard:chat-1", loc)
+        # Must not raise.
+        sessions.set_mirror_link("dashboard:chat-2", loc)
+        assert sessions.find_mirror_sessions(loc, inbound_only=True) == []

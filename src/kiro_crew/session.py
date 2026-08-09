@@ -4010,6 +4010,18 @@ class SessionManager:
             inbound_only=inbound_only,
         )
 
+    def mirror_claim_blockers(
+        self,
+        key: str,
+        link: ChannelLink,
+        *,
+        accepts_inbound: bool = False,
+    ) -> list[str]:
+        """Sessions that must stop *key* from binding *link*, or [] if it is free."""
+        return self._session_map.mirror_claim_blockers(
+            key, link, accepts_inbound=accepts_inbound
+        )
+
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding. Returns True iff present."""
         return self._session_map.clear_mirror_link(key)

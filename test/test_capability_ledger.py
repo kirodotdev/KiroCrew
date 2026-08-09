@@ -33,6 +33,11 @@ ENFORCED = {
     "max_message_chars",
     # Gates mirror-link creation (HTTP 400) and the outbound mirror leg.
     "supports_proactive_send",
+    # Gates whether a dashboard connect marks the binding as an inbound resume
+    # target (``accepts_inbound``) in dashboard/chat_mirror.py, and therefore
+    # whether the slot row reports ``direction: both``. Only a transport whose
+    # inbound path resolves the mirror binding may declare it.
+    "supports_session_resume",
 }
 
 #: Declared honestly, read by nothing yet. The capability-gated interface
@@ -115,3 +120,57 @@ class TestCorrectedDeclarations:
         assert DISCORD_CAPABILITIES.files_outbound is False
         assert SLACK_CAPABILITIES.files_inbound is True
         assert SLACK_CAPABILITIES.files_outbound is True
+
+
+class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
+    """``supports_session_resume`` is a promise the INBOUND path has to keep.
+
+    A dashboard connect on a transport declaring it marks the binding
+    ``accepts_inbound``, and the slot row then reports ``direction: both`` — the
+    dashboard is telling the user that replies come back here. That is only true
+    where the transport's inbound path resolves the mirror binding. Discord's
+    does (``DiscordSessionResume.resumed_session``); every other transport builds
+    a session key from the route alone and never looks the binding up, so a reply
+    there runs in a SEPARATE session with none of this conversation's history.
+
+    This pins the current set. A new transport declaring the flag fails here, and
+    that is the point: the author has to come and confirm its inbound path really
+    resolves the binding rather than inheriting a promise the code cannot keep.
+    """
+
+    def test_discord_declares_it(self) -> None:
+        from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+
+        assert DISCORD_CAPABILITIES.supports_session_resume is True, (
+            "Discord stopped declaring session resume — dashboard connects there "
+            "would silently become outbound-only and replies would stop resuming"
+        )
+
+    def test_no_other_transport_declares_it(self) -> None:
+        from kiro_crew.slack.transport import SLACK_CAPABILITIES
+        from kiro_crew.teams.transport import TEAMS_CAPABILITIES
+        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+        from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+        from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
+
+        others = {
+            "slack": SLACK_CAPABILITIES,
+            "teams": TEAMS_CAPABILITIES,
+            "telegram": TELEGRAM_CAPABILITIES,
+            "webex": WEBEX_CAPABILITIES,
+            "wecom": WECOM_CAPABILITIES,
+            "weixin": WEIXIN_CAPABILITIES,
+        }
+        claiming = [name for name, caps in others.items() if caps.supports_session_resume]
+        assert claiming == [], (
+            f"{claiming} declare session resume, but their inbound paths derive a "
+            "session key from the route and never resolve the mirror binding — the "
+            "dashboard would promise a two-way link that drops replies. Slack is "
+            "separate: it routes inbound through its own thread index and never "
+            "sets `accepts_inbound`."
+        )
+
+    def test_the_default_is_off(self) -> None:
+        """A transport that forgets the flag must degrade to outbound-only."""
+        assert TransportCapabilities().supports_session_resume is False

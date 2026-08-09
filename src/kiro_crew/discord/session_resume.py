@@ -14,6 +14,7 @@ from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
@@ -147,13 +148,13 @@ class DiscordSessionResume:
     def leave_resumed_session(self, channel_id: str) -> str | None:
         key = self.resumed_session(channel_id)
         if key is not None:
-            # Free the LOCATION, not just the resume binding: the dashboard's
-            # mirror-link endpoint performs no occupancy check, so an outbound
-            # mirror can be laid onto a conversation a resumed session already
-            # holds. This early path bypasses the dispatcher's own sweep —
-            # clearing only *key* here would leave that mirror occupying the
-            # location and reproduce the "already attached" refusal after an
-            # apparently successful unlink.
+            # Free the LOCATION, not just the resume binding: a session map can
+            # hold co-located bindings — one written before conversations became
+            # exclusive, or hand-edited — so an outbound mirror can sit on a
+            # conversation a resumed session also holds. This early path bypasses
+            # the dispatcher's own sweep — clearing only *key* here would leave
+            # that mirror occupying the location and reproduce the "already
+            # attached" refusal after an apparently successful unlink.
             cleared = self.sessions.clear_mirror_links_at(self.link_for(channel_id))
             logger.info(
                 "discord: released resumed session %s (cleared bindings: %s)",
@@ -450,6 +451,23 @@ class DiscordSessionResume:
                     accepts_inbound=True,
                 )
                 self._push_slots()
+            except ConversationOwnershipConflict:
+                # `_binding_conflict` already checked, twice — but it and the
+                # dashboard connect endpoint evaluate under different locks, so
+                # this precheck can lose the race. The atomic claim inside
+                # `set_mirror_link` is what catches it. This is an ordinary
+                # conflict, not a fault: say so in the precheck's own words
+                # instead of the generic failure text below, which would send the
+                # user off to retry a command that is working.
+                logger.debug("discord resume: lost the claim race for this conversation")
+                await client.edit_message(
+                    interaction.channel_id,
+                    interaction.message_id,
+                    "🧵 Another session just connected here. "
+                    "Run `!unlink`, then `!sessions` to resume this one.",
+                    components=[],
+                )
+                return
             except Exception:
                 logger.exception("discord resume: failed to persist binding")
                 await client.edit_message(

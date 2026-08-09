@@ -57,6 +57,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -953,7 +954,20 @@ class DiscordDispatcher:
             )
             return
         key = self._session_key(user_id, thread_id)
-        self.sessions.set_mirror_link(key, ChannelLink("discord", channel_id=channel_id))
+        try:
+            self.sessions.set_mirror_link(key, ChannelLink("discord", channel_id=channel_id))
+        except ConversationOwnershipConflict:
+            # The resumed-session check above covers an inbound owner. This
+            # catches an occupant that check cannot see — an outbound-only
+            # dashboard mirror already pointing here. Same instruction either
+            # way, and reporting it beats surfacing a traceback as a generic
+            # command failure.
+            logger.info("discord link refused: conversation already held")
+            await self.client.send_message(
+                channel_id,
+                "⚠️ Another session is already linked here. Send `!unlink` first.",
+            )
+            return
         # Drop any pre-unification row so a stale binding cannot outlive the
         # rebind (reads prefer the channel key, but a leftover row would still
         # answer a clear).
