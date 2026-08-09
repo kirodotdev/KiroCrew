@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from kiro_crew import net_utils
@@ -22,11 +20,13 @@ class DummyStream:
             return chunk
         return b""
 
+
 @pytest.mark.asyncio
 async def test_read_bounded_success():
     stream = DummyStream([b"hello", b" ", b"world"])
     result = await net_utils.read_bounded(stream, max_bytes=100, chunk_size=1024)
     assert result == b"hello world"
+
 
 @pytest.mark.asyncio
 async def test_read_bounded_overflow():
