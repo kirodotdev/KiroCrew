@@ -157,6 +157,12 @@ function createControlPlane(deps) {
 
   let owner = OWNER.NONE;
   let attached = false;
+  // The exact webContents LIGHT's debugger is attached to. Tracked so a stale
+  // attachment can be told apart from a live one: the embedded view can be torn
+  // down and rebuilt under us (panel reopened, session re-keyed), leaving the
+  // owner recorded as LIGHT while `getWebContents()` returns a fresh target the
+  // debugger was never attached to. Compared by identity, never dereferenced.
+  let attachedWc = null;
 
   const audit = (event, detail) => {
     try {
@@ -175,6 +181,7 @@ function createControlPlane(deps) {
   function detachLight() {
     const dbg = debuggerFor();
     attached = false;
+    attachedWc = null;
     if (!dbg) return;
     try {
       if (typeof dbg.isAttached === "function" ? dbg.isAttached() : true) {
@@ -187,16 +194,34 @@ function createControlPlane(deps) {
   }
 
   function attachLight() {
-    const dbg = debuggerFor();
+    const wc = getWebContents();
+    const dbg = wc && wc.debugger ? wc.debugger : null;
     if (!dbg) throw new Error("no browser view to control");
     // Idempotent: re-attaching when we already hold it would throw, and a
     // transition must be safe to re-run.
     if (typeof dbg.isAttached === "function" && dbg.isAttached()) {
       attached = true;
+      attachedWc = wc;
       return;
     }
     dbg.attach(CDP_VERSION);
     attached = true;
+    attachedWc = wc;
+  }
+
+  // True when LIGHT's in-process debugger is still attached to the CURRENT
+  // embedded view. Goes false when the WebContentsView is rebuilt underneath us:
+  // the owner is still recorded as LIGHT, but `getWebContents()` now returns a
+  // different, un-attached target. This is what lets a re-request of LIGHT know
+  // it must re-attach rather than short-circuit as a no-op.
+  function lightAttachmentLive() {
+    if (owner !== OWNER.LIGHT || !attached) return false;
+    const wc = getWebContents();
+    if (!wc || !wc.debugger) return false;
+    if (attachedWc && wc !== attachedWc) return false;
+    const dbg = wc.debugger;
+    if (typeof dbg.isAttached === "function" && !dbg.isAttached()) return false;
+    return true;
   }
 
   async function send(method, params) {
@@ -235,7 +260,28 @@ function createControlPlane(deps) {
           return { owner, changed: false, refused: verdict.reason };
         }
       }
-      if (plan.noop) return { owner, changed: false };
+      if (plan.noop) {
+        // Re-requesting the owner already held is normally a no-op. The one
+        // exception: LIGHT whose attachment went stale because the embedded view
+        // was rebuilt under us. The owner is still LIGHT, but the debugger is now
+        // attached to nothing (or to a target that no longer exists), so the next
+        // CDP send would hit a detached target — the bug that forced users to
+        // fully close the browser before a second agent op. Re-attach to the
+        // current view instead of short-circuiting.
+        if (requested === OWNER.LIGHT && !lightAttachmentLive()) {
+          detachLight();
+          try {
+            attachLight();
+          } catch (err) {
+            owner = OWNER.NONE;
+            audit("browser-control-failed", { requested, error: String(err && err.message) });
+            throw err;
+          }
+          audit("browser-control-reattach", { owner });
+          return { owner, changed: false, reattached: true };
+        }
+        return { owner, changed: false };
+      }
 
       // Order matters: release before acquire, so the two owner classes never
       // overlap even though Chromium would permit it.

@@ -323,3 +323,62 @@ test("plane: a throwing audit sink never breaks a transition", async () => {
   const res = await plane.setOwner(OWNER.LIGHT, ALLOW);
   assert.strictEqual(res.changed, true);
 });
+
+// ── reuse across a view rebuild (the "close before a second op" bug) ──
+
+// A WebContents fake that models Chromium's debugger faithfully: `sendCommand`
+// THROWS unless the debugger is currently attached to THIS target, and each
+// target owns its own attach state. The shared `fakeWc()` above never checks
+// attach state on send, so it cannot surface a stale-attachment bug — this one
+// can. `id` is only for readability in failures.
+function realisticWc(id) {
+  let isAttached = false;
+  return {
+    id,
+    debugger: {
+      isAttached: () => isAttached,
+      attach() {
+        if (isAttached) throw new Error("Debugger is already attached to the target");
+        isAttached = true;
+      },
+      detach() {
+        isAttached = false;
+      },
+      async sendCommand(method) {
+        if (!isAttached) throw new Error("Debugger is not attached to the target");
+        return method === "Runtime.evaluate" ? { result: { value: 7 } } : {};
+      },
+    },
+  };
+}
+
+test("plane: reuse after the embedded view is rebuilt re-attaches instead of hitting a detached target", async () => {
+  // Reproduces the "must close the browser before a second operation" symptom.
+  // The embedded WebContentsView can be torn down and rebuilt under the control
+  // plane (panel reopened, session re-keyed, view recreated). The recorded owner
+  // stays LIGHT, but the debugger that was attached to the OLD view is gone with
+  // it. A second agent op re-requests LIGHT — a planTransition(LIGHT,LIGHT)
+  // no-op — so without re-validating the attachment the next CDP send lands on
+  // the NEW view's detached debugger and throws. Fully closing the panel is what
+  // "fixed" it for users, because that path resets the owner to NONE.
+  let current = realisticWc("A");
+  const plane = createControlPlane({ getWebContents: () => current });
+
+  await plane.setOwner(OWNER.LIGHT, ALLOW);
+  assert.strictEqual(await plane.evaluate("1+1"), 7, "first op drives view A");
+
+  // View A is destroyed; a fresh view B is mounted (new WebContents whose
+  // debugger is NOT attached). The control plane still records owner = LIGHT.
+  current = realisticWc("B");
+
+  // The next agent op re-requests LIGHT, exactly as main.js dispatch does.
+  const again = await plane.setOwner(OWNER.LIGHT, ALLOW);
+  assert.strictEqual(again.changed, false, "same logical owner");
+
+  // Must transparently reuse view B — not require the user to close first.
+  assert.strictEqual(
+    await plane.evaluate("1+1"),
+    7,
+    "second op must reuse the rebuilt view, not hit a detached target",
+  );
+});
