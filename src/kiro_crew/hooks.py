@@ -173,6 +173,11 @@ class UserDeniedPattern:
     id: str = ""
     pattern: str = ""
     enabled: bool = True
+    # Operator-authored explanation shown to the agent when this rule fires,
+    # INSTEAD of leaving it to infer intent from the raw regex. Metadata only —
+    # it never participates in matching. Declared last so existing positional
+    # construction (``UserDeniedPattern("id", "pat", True)``) keeps working.
+    note: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> UserDeniedPattern:
@@ -186,10 +191,19 @@ class UserDeniedPattern:
             # is present because the operator wanted it enforced, so ambiguous
             # junk should keep it ON (fail safe = keep denying).
             enabled=_coerce_bool(data.get("enabled", True), default=True),
+            # A malformed note degrades to "" rather than raising: it is
+            # cosmetic, so junk here must never abort gateway boot nor weaken
+            # the rule it annotates.
+            note=str(data.get("note", "") or ""),
         )
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "pattern": self.pattern, "enabled": self.enabled}
+        return {
+            "id": self.id,
+            "pattern": self.pattern,
+            "enabled": self.enabled,
+            "note": self.note,
+        }
 
 
 @dataclass
@@ -575,12 +589,16 @@ class HookManager:
         ctx = current_context()
         authority = ctx.security
         denied_regexes = self._effective_denied(ctx)
+        denied_notes = self._denied_notes()
         deny_targets = [normalized, tool_name]
         if command:
             deny_targets.append(command)
         for target in deny_targets:
             reason = authority.is_denied(
-                target, self._config.auto_deny_tools, denied_regexes=denied_regexes
+                target,
+                self._config.auto_deny_tools,
+                denied_regexes=denied_regexes,
+                reason_notes=denied_notes,
             )
             if reason:
                 return ToolHookResult.deny(reason)
@@ -688,6 +706,7 @@ class HookManager:
                     canonical_mcp_name,
                     self._config.auto_deny_tools,
                     denied_regexes=denied_regexes,
+                    reason_notes=denied_notes,
                 )
                 if deny_reason:
                     return ToolHookResult.deny(deny_reason)
@@ -783,6 +802,15 @@ class HookManager:
         glob-tier ``auto_deny_tools`` still travel through ``extra_patterns``.
         """
         return resolve_effective_denied_regexes(self._config, ctx)
+
+    def _denied_notes(self) -> dict[str, str]:
+        """Operator notes for the user patterns in the effective denied set.
+
+        Passed alongside ``denied_regexes`` so a refusal can carry the operator's
+        own remediation line. Empty dict when nothing is annotated, which is the
+        pre-existing behavior (reason = the bare pattern).
+        """
+        return resolve_denied_notes(self._config)
 
     def effective_denied_regexes(self) -> list[str]:
         """Public accessor for the effective regex-tier denied set.
@@ -891,6 +919,40 @@ def resolve_effective_denied_regexes(config: "HooksConfig", ctx: object = None) 
         [p.pattern for p in config.denied_commands_user_added if p.enabled],
         _governance_pinned_command_ids(ctx),
     )
+
+
+def resolve_denied_notes(config: "HooksConfig") -> dict[str, str]:
+    """Map each annotated, enabled user pattern to its operator note.
+
+    The note is what the refusal shows INSTEAD of leaving the agent to infer
+    intent from a raw regex — e.g. "use --maxdepth, or rg/fd" rather than a
+    40-character character-class soup. Keyed by pattern because that is the only
+    identity the matcher carries into ``security.is_denied``; ids are not
+    threaded through the regex tier.
+
+    Only enabled rules with a non-blank note appear. Built-in rules are absent
+    on purpose: their ``description`` is catalog documentation aimed at the
+    Settings reader, not remediation aimed at the caller, so promoting it into
+    every refusal would change the text of rules the operator never annotated.
+
+    A note containing :data:`security.DENY_REASON_MATCH_PREFIX` is DROPPED. The
+    note is emitted on its own line, and ``RecoveryCard.tsx`` parses refusals with
+    a GLOBAL per-line regex, so such a note would be read as a second, fabricated
+    deny pattern. The guard uses the COLON-terminated form, not the emitted prefix:
+    the regex treats the space after the colon as optional, so
+    ``"Blocked by security policy:forged"`` parses as a refusal line without
+    containing the emitted prefix. The add endpoint rejects this at write time;
+    this guard is the one that holds for a keystone file the operator edited by
+    hand. Fail-safe direction: lose the note, keep the pattern.
+    """
+    return {
+        p.pattern: p.note.strip()
+        for p in config.denied_commands_user_added
+        if p.enabled
+        and p.pattern
+        and p.note.strip()
+        and security.DENY_REASON_MATCH_PREFIX not in p.note
+    }
 
 
 def effective_denied_regexes_from_config() -> list[str]:

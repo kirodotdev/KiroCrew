@@ -342,7 +342,13 @@ function CategoryGroup({
 function CustomDenyRow({ rule, onToggle, onDelete }: { rule: DeniedUserRule; onToggle: (next: boolean) => void; onDelete: () => void }) {
   return (
     <div className="flex items-center gap-2.5 py-2">
-      <code className="flex-1 min-w-0 overflow-x-auto text-[12px] font-mono text-text whitespace-pre-wrap break-all">{rule.pattern}</code>
+      <div className="flex-1 min-w-0">
+        <code className="block overflow-x-auto text-[12px] font-mono text-text whitespace-pre-wrap break-all">{rule.pattern}</code>
+        {/* The note is what the agent is shown when this rule fires, so surface it
+            next to the pattern it explains rather than hiding it behind an edit
+            affordance that does not exist (rules are create-only). */}
+        {rule.note ? <p className="mt-0.5 text-[11px] text-muted whitespace-pre-wrap break-words">{rule.note}</p> : null}
+      </div>
       <Toggle checked={rule.enabled} onChange={onToggle} label={rule.pattern} />
       <button
         type="button"
@@ -358,11 +364,12 @@ function CustomDenyRow({ rule, onToggle, onDelete }: { rule: DeniedUserRule; onT
 
 /** Add-a-custom-pattern input with client-side RegExp validation (Card B).
  *
- *  `value` is CONTROLLED from the panel shell rather than held here, because the
- *  rules section unmounts when the reader picks another rail section — local
- *  state would silently discard a half-typed deny pattern. `error` stays local:
- *  it is derived from the value and costs nothing to recompute. */
-function AddDenyInput({ value, onChange, onAdd, busy }: { value: string; onChange: (next: string) => void; onAdd: (pattern: string) => void; busy: boolean }) {
+ *  `value` and `note` are CONTROLLED from the panel shell rather than held here,
+ *  because the rules section unmounts when the reader picks another rail section
+ *  — local state would silently discard a half-typed deny pattern or note.
+ *  `error` stays local: it is derived from the value and costs nothing to
+ *  recompute. */
+function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => void; busy: boolean; submitError: string }) {
   const [error, setError] = useState('')
 
   const submit = () => {
@@ -375,8 +382,10 @@ function AddDenyInput({ value, onChange, onAdd, busy }: { value: string; onChang
       return
     }
     setError('')
-    onAdd(pattern)
-    onChange('')
+    // Deliberately does NOT clear the drafts. The server can still reject this
+    // (a note carrying the refusal prefix is a 400), and clearing here would
+    // discard text the operator has to retype. The parent clears on SUCCESS.
+    onAdd(pattern, note.trim())
   }
 
   return (
@@ -394,9 +403,26 @@ function AddDenyInput({ value, onChange, onAdd, busy }: { value: string; onChang
           {i18nT('pages.settings.securityPanel.add')}
         </Btn>
       </div>
+      {/* Optional. Whatever is typed here is what the agent reads instead of the
+          raw regex when the rule fires, so it is remediation ("use --maxdepth"),
+          not a label. Capped server-side at 200 chars; mirrored here so the
+          field stops accepting input rather than 400-ing on submit. */}
+      <div className="mt-1.5">
+        <Input
+          value={note}
+          onChange={e => onNoteChange(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
+          placeholder={i18nT('pages.settings.securityPanel.optional_why_shown_to_the_agent_when_this_rule_fir')}
+          aria-label={i18nT('pages.settings.securityPanel.custom_deny_note')}
+          maxLength={200}
+        />
+      </div>
       {/* Invalid-regex feedback on the input the user is still typing — a form
-          hint, not a failure to diagnose, so no agent hand-off. */}
-      <ErrorNotice message={error} className="mt-1.5" />
+          hint, not a failure to diagnose, so no agent hand-off. `submitError`
+          carries a SERVER rejection (e.g. a note carrying the refusal prefix):
+          without it the 400 is silent, the list does not change, and Add looks
+          like it did nothing. Local hint wins — it is about what is on screen. */}
+      <ErrorNotice message={error || submitError} className="mt-1.5" />
     </div>
   )
 }
@@ -1244,7 +1270,7 @@ function PostureSection() {
  * rules across 10 categories) and there is no reason to build it while the
  * reader is looking at something else.
  */
-function DeniedCommandsSection({ draft, onDraftChange }: { draft: string; onDraftChange: (next: string) => void }) {
+function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftChange }: { draft: string; onDraftChange: (next: string) => void; noteDraft: string; onNoteDraftChange: (next: string) => void }) {
   const qc = useQueryClient()
   const { data: dc } = useQuery<DeniedCommandsData>({ queryKey: ['denied-commands'], queryFn: api.deniedCommands })
 
@@ -1272,8 +1298,28 @@ function DeniedCommandsSection({ draft, onDraftChange }: { draft: string; onDraf
     onSuccess: applySnapshot,
   })
   const addUser = useMutation({
-    mutationFn: (pattern: string) => api.addUserDeniedCommand(pattern),
-    onSuccess: applySnapshot,
+    mutationFn: ({ pattern, note }: { pattern: string; note: string }) =>
+      api.addUserDeniedCommand(pattern, note),
+    // Clear the drafts only once the write landed AND only if the form is still
+    // provably untouched since submit -- BOTH fields matching what was sent. This
+    // is deliberately all-or-nothing rather than per-field:
+    //   - a rejected add (a note carrying the refusal prefix is a 400) must leave
+    //     the operator's text in place to correct, not make them retype it;
+    //   - the inputs stay editable while the add is in flight, so an operator who
+    //     starts the next rule would otherwise have it erased on resolution;
+    //   - clearing per-field loses a note the operator DELIBERATELY reused for the
+    //     next rule while retyping only the pattern.
+    // The condition is closed, not a heuristic: the single state we clear in is
+    // "nothing new was typed", so no newer input can be discarded in any other.
+    // Compared trimmed, because submit() sends the trimmed values.
+    onSuccess: (snap: DeniedCommandsData, vars: { pattern: string; note: string }) => {
+      applySnapshot(snap)
+      const untouched = draft.trim() === vars.pattern && noteDraft.trim() === vars.note
+      if (untouched) {
+        onDraftChange('')
+        onNoteDraftChange('')
+      }
+    },
   })
   const toggleUser = useMutation({
     mutationFn: (v: { id: string; enabled: boolean }) => api.toggleUserDeniedCommand(v.id, v.enabled),
@@ -1480,7 +1526,7 @@ function DeniedCommandsSection({ draft, onDraftChange }: { draft: string; onDraf
             {i18nT('pages.settings.securityPanel.custom_patterns_hidden_by_filter')}
           </div>
         )}
-        <AddDenyInput value={draft} onChange={onDraftChange} onAdd={pattern => addUser.mutate(pattern)} busy={addUser.isPending} />
+        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutate({ pattern, note })} busy={addUser.isPending} submitError={addUser.isError ? trustFailureMessage(addUser.error) : ''} />
       </SettingsCard>
 
       {/* ── Confirm modal (disable a built-in rule / disable all) ── */}
@@ -1997,6 +2043,9 @@ export function SecurityPanel() {
   // silently discarded. The 137-row rule table still unmounts — only the draft
   // string is lifted, so the reason the rail mounts lazily is preserved.
   const [denyDraft, setDenyDraft] = useState('')
+  // Lifted for the same reason as denyDraft: the rules section unmounts on rail
+  // navigation, which would discard a half-typed note.
+  const [denyNoteDraft, setDenyNoteDraft] = useState('')
 
   const rawSection = params.get('section')
   const selectedKey = SECURITY_SECTIONS.some(s => s.key === rawSection)
@@ -2174,7 +2223,7 @@ export function SecurityPanel() {
               <YoloDurationCard />
             </SettingsSection>
           )}
-          {effectiveKey === 'rules' && <DeniedCommandsSection draft={denyDraft} onDraftChange={setDenyDraft} />}
+          {effectiveKey === 'rules' && <DeniedCommandsSection draft={denyDraft} onDraftChange={setDenyDraft} noteDraft={denyNoteDraft} onNoteDraftChange={setDenyNoteDraft} />}
           {effectiveKey === 'tailnet' && (
             <SettingsSection title={i18nT('pages.settings.securityPanel.tailnet_section')}>
               <TailnetOriginCard />

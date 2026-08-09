@@ -1,6 +1,6 @@
 import { ApiError } from '../../api/client'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { useLocation } from 'react-router-dom'
 import { renderWithProviders, createTestStore } from '../../test/helpers'
 import type { DeniedCommandsData } from '../../api/client'
@@ -82,6 +82,23 @@ const PINNED_DESC = 'Blocks EC2 instance termination'
 const TOGGLE_DESC = 'Blocks CloudFormation stack deletion'
 const USER_PATTERN = 'rm -rf /tmp/mine'
 
+/** A second user rule, this one carrying a `note`.
+ *
+ * `note` is optional on `DeniedUserRule` — rules added before the field existed,
+ * and rules added without one, omit it. Keeping BOTH shapes in the one shared
+ * snapshot means the present and absent branches are asserted against the same
+ * render, so "renders the note" and "renders no note" cannot both pass on a row
+ * that unconditionally emits the paragraph. */
+const NOTED_PATTERN = 'curl .* \\| (ba)?sh'
+const USER_NOTE = 'Fetch it, read it, then run it — never pipe a download into a shell.'
+
+/** The note field's copy keys are authored separately from this component, so
+ *  resolve them the way the panel does instead of asserting literal English —
+ *  the same rationale as the `T` block above. The assertion then tracks the
+ *  BEHAVIOUR (this control is wired to that key) and stays green across the
+ *  catalog landing, while still failing if the panel switches keys. */
+const NOTE_LABEL = () => i18nT('pages.settings.securityPanel.custom_deny_note')
+
 /** Default payload for the rail's tailnet read.
  *
  * Every `beforeEach` in this file resolves `api.tailnetStatus` with this. It must
@@ -122,6 +139,7 @@ function snapshot(overrides: Partial<DeniedCommandsData> = {}): DeniedCommandsDa
     ],
     user_added: [
       { id: 'user-1', pattern: USER_PATTERN, enabled: true },
+      { id: 'user-2', pattern: NOTED_PATTERN, enabled: true, note: USER_NOTE },
     ],
     disable_all: false,
     effective_count: 129,
@@ -359,12 +377,168 @@ describe('SecurityPanel — denied commands', () => {
     await screen.findByText(/Invalid regular expression|Unterminated group|Invalid group/i)
     expect(api.addUserDeniedCommand).not.toHaveBeenCalled()
 
-    // A valid pattern clears the error and calls the API.
+    // A valid pattern clears the error and calls the API. The note is untouched
+    // here, so it arrives as the empty string the client defaults to.
     fireEvent.change(input, { target: { value: 'rm -rf /data' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() =>
-      expect(api.addUserDeniedCommand).toHaveBeenCalledWith('rm -rf /data'),
+      expect(api.addUserDeniedCommand).toHaveBeenCalledWith('rm -rf /data', ''),
     )
+  })
+
+  it('add-pattern sends the typed note through to the API and clears both drafts', async () => {
+    await renderPanel()
+
+    fireEvent.change(screen.getByLabelText('Custom deny pattern'), {
+      target: { value: 'find / -delete' },
+    })
+    const note = screen.getByLabelText(NOTE_LABEL())
+    fireEvent.change(note, { target: { value: '  Scope it with -maxdepth first.  ' } })
+    // Enter on the NOTE field submits too — the note is the last thing typed, so
+    // requiring a trip back to the pattern input to commit would lose it.
+    fireEvent.keyDown(note, { key: 'Enter' })
+
+    // Trimmed: this prose is read back to the agent verbatim when the rule fires,
+    // so surrounding whitespace must not survive the submit.
+    await waitFor(() =>
+      expect(api.addUserDeniedCommand).toHaveBeenCalledWith(
+        'find / -delete',
+        'Scope it with -maxdepth first.',
+      ),
+    )
+    // Both drafts clear together. A note left behind would silently attach
+    // itself to the NEXT pattern the reader adds, mislabelling that refusal.
+    expect(screen.getByLabelText('Custom deny pattern')).toHaveValue('')
+    expect(screen.getByLabelText(NOTE_LABEL())).toHaveValue('')
+  })
+
+  it('a REJECTED add keeps both drafts so the operator can correct them', async () => {
+    // The server rejects a note carrying the refusal prefix (400). Clearing on
+    // submit rather than on success would discard text the operator then has to
+    // retype from memory -- and the rejected note is exactly the text they need
+    // in front of them to fix.
+    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('note must not contain'),
+    )
+    await renderPanel()
+
+    const pattern = screen.getByLabelText('Custom deny pattern')
+    const note = screen.getByLabelText(NOTE_LABEL())
+    fireEvent.change(pattern, { target: { value: 'find / -delete' } })
+    fireEvent.change(note, { target: { value: 'Blocked by security policy: nope' } })
+    fireEvent.keyDown(pattern, { key: 'Enter' })
+
+    await waitFor(() => expect(api.addUserDeniedCommand).toHaveBeenCalled())
+    // Both survive the failure.
+    expect(screen.getByLabelText('Custom deny pattern')).toHaveValue('find / -delete')
+    expect(screen.getByLabelText(NOTE_LABEL())).toHaveValue(
+      'Blocked by security policy: nope',
+    )
+    // ...and the rejection is VISIBLE. Keeping the drafts without saying why would
+    // leave Add looking like it silently did nothing.
+    expect(await screen.findByText(/must not contain/i)).toBeInTheDocument()
+  })
+
+  it('a slow add does not erase drafts the operator typed while it was in flight', async () => {
+    // The inputs stay editable while an add is pending, so an operator can start
+    // the NEXT rule before the previous one resolves. Clearing unconditionally on
+    // success would erase that newer text.
+    let release!: (snap: DeniedCommandsData) => void
+    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<DeniedCommandsData>(resolve => { release = resolve }),
+    )
+    await renderPanel()
+
+    const pattern = screen.getByLabelText('Custom deny pattern')
+    const note = screen.getByLabelText(NOTE_LABEL())
+    fireEvent.change(pattern, { target: { value: 'first .*' } })
+    fireEvent.change(note, { target: { value: 'first note' } })
+    fireEvent.keyDown(pattern, { key: 'Enter' })
+    await waitFor(() => expect(api.addUserDeniedCommand).toHaveBeenCalled())
+
+    // Operator moves on to the next rule while the first is still pending.
+    fireEvent.change(pattern, { target: { value: 'second .*' } })
+    fireEvent.change(note, { target: { value: 'second note' } })
+
+    release(snapshot())
+
+    // Flush the resolution INSIDE act: without this the assertions below can pass
+    // on the first poll, before React has processed onSuccess, and the test would
+    // be vacuous -- it would pass with or without the guard it exists to prove.
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // The in-flight add resolving must not touch the newer drafts.
+    expect(screen.getByLabelText('Custom deny pattern')).toHaveValue('second .*')
+    expect(screen.getByLabelText(NOTE_LABEL())).toHaveValue('second note')
+  })
+
+  it('a note deliberately reused for the next rule is not cleared by the previous add', async () => {
+    // Partial reuse: the operator submits (A, N), then retypes only the pattern
+    // because the SAME rationale applies to the next rule. Clearing per-field
+    // would wipe N -- correct by string equality, wrong by intent. Clearing is
+    // all-or-nothing: if either field moved, neither is touched.
+    let release!: (snap: DeniedCommandsData) => void
+    ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<DeniedCommandsData>(resolve => { release = resolve }),
+    )
+    await renderPanel()
+
+    const pattern = screen.getByLabelText('Custom deny pattern')
+    const note = screen.getByLabelText(NOTE_LABEL())
+    fireEvent.change(pattern, { target: { value: 'first .*' } })
+    fireEvent.change(note, { target: { value: 'shared rationale' } })
+    fireEvent.keyDown(pattern, { key: 'Enter' })
+    await waitFor(() => expect(api.addUserDeniedCommand).toHaveBeenCalled())
+
+    // Only the pattern changes; the note is intentionally kept.
+    fireEvent.change(pattern, { target: { value: 'second .*' } })
+
+    release(snapshot())
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.getByLabelText('Custom deny pattern')).toHaveValue('second .*')
+    expect(screen.getByLabelText(NOTE_LABEL())).toHaveValue('shared rationale')
+  })
+
+  it('add-pattern with an untouched note sends an empty string, not undefined', async () => {
+    await renderPanel()
+
+    const input = screen.getByLabelText('Custom deny pattern')
+    fireEvent.change(input, { target: { value: 'shutdown -h now' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // The note is optional to the READER, but the argument is not optional on the
+    // wire: the client posts whatever it is handed, and `undefined` would drop
+    // the field from the body instead of stating "no note". Assert the exact
+    // empty string rather than an arity-free match, so a regression to
+    // `addUserDeniedCommand(pattern)` fails here.
+    await waitFor(() =>
+      expect(api.addUserDeniedCommand).toHaveBeenCalledWith('shutdown -h now', ''),
+    )
+  })
+
+  it('a user rule with a note renders it under its own pattern', async () => {
+    await renderPanel()
+
+    // Scoped to the row: the note explains one specific pattern, so "somewhere
+    // on the card" is not the claim being made.
+    const noted = screen.getByText(NOTED_PATTERN).parentElement!
+    expect(within(noted).getByText(USER_NOTE)).toBeInTheDocument()
+  })
+
+  it('a user rule without a note renders no note paragraph', async () => {
+    await renderPanel()
+
+    // `user-1` carries no note, so the optional slot must emit nothing at all —
+    // an empty <p> would still claim vertical space under the pattern.
+    expect(screen.getByText(USER_PATTERN).parentElement!.querySelector('p')).toBeNull()
+    // Paired with the noted rule from the SAME render, so this cannot pass by the
+    // panel having stopped rendering notes altogether.
+    expect(screen.getByText(NOTED_PATTERN).parentElement!.querySelector('p')).not.toBeNull()
   })
 
   it('delete is only available on user rows', async () => {

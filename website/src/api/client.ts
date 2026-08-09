@@ -342,6 +342,9 @@ export interface DeniedUserRule {
   id: string
   pattern: string
   enabled: boolean
+  /** Operator prose shown in the refusal when this rule fires. Optional: rules
+   *  added before the field existed, and rules added without one, omit it. */
+  note?: string
 }
 
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
@@ -1181,8 +1184,8 @@ export const api = {
     patch('/api/security/denied-commands/builtins/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
   setDeniedCommandsDisableAll: (value: boolean) =>
     patch('/api/security/denied-commands/disable-all', { value }).then(j) as Promise<DeniedCommandsData>,
-  addUserDeniedCommand: (pattern: string) =>
-    post('/api/security/denied-commands/user', { pattern }).then(j) as Promise<DeniedCommandsData>,
+  addUserDeniedCommand: (pattern: string, note = '') =>
+    post('/api/security/denied-commands/user', { pattern, note }).then(j) as Promise<DeniedCommandsData>,
   toggleUserDeniedCommand: (id: string, enabled: boolean) =>
     patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
   deleteUserDeniedCommand: (id: string) =>

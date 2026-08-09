@@ -822,18 +822,141 @@ def _rule_pattern(rule_id: str) -> str:
     return next(r.pattern for r in BUILTIN_DENIED_RULES if r.id == rule_id)
 
 
-def _denied_by(cmd: str) -> "str | None":
+def _denied_by(cmd: str, reason_notes: "dict[str, str] | None" = None) -> "str | None":
     """Return the rule id that denied ``cmd``, or ``None`` if it is allowed.
 
     Goes through the PUBLIC gate (``is_denied``) rather than re-running the
     regex, so these tests survive a refactor of how rules are compiled.
+
+    Only the FIRST line is parsed. An operator note is appended to the refusal on
+    its own second line, so partitioning the whole string would fold that note
+    into the captured pattern and every id lookup would miss. Single-line
+    refusals (every call that passes no ``reason_notes``) are unaffected:
+    ``verdict.splitlines()[0]`` is the verdict itself.
     """
-    verdict = is_denied(cmd)
+    verdict = is_denied(cmd, reason_notes=reason_notes)
     if verdict is None:
         return None
-    _, _, pattern = verdict.partition("Blocked by security policy: ")
+    head = verdict.splitlines()[0]
+    _, _, pattern = head.partition("Blocked by security policy: ")
     by_pattern = {r.pattern: r.id for r in BUILTIN_DENIED_RULES}
     return by_pattern.get(pattern or verdict, f"<unmapped:{verdict}>")
+
+
+class TestDeniedReasonNotes:
+    """``reason_notes`` decorates a refusal; it can never change the verdict.
+
+    The note lands on a SECOND line because the first line is a machine-parsed
+    contract on both sides: ``RecoveryCard.tsx`` extracts the pattern with a
+    per-line, end-anchored regex, and ``_denied_by`` above partitions on the
+    exact ``"Blocked by security policy: "`` separator. Anything appended to the
+    same line would be captured as part of the pattern.
+    """
+
+    _USER_PATTERN = r"frobnicate.*"
+    _CMD = "frobnicate the box"
+    _NOTE = "use --dry-run instead"
+
+    def _plain(self):
+        return is_denied(self._CMD, denied_regexes=[self._USER_PATTERN])
+
+    def _annotated(self, note=None):
+        return is_denied(
+            self._CMD,
+            denied_regexes=[self._USER_PATTERN],
+            reason_notes={self._USER_PATTERN: self._NOTE if note is None else note},
+        )
+
+    def test_first_line_is_byte_identical_to_the_unannotated_form(self):
+        plain = self._plain()
+        annotated = self._annotated()
+        assert plain == f"Blocked by security policy: {self._USER_PATTERN}"
+        assert annotated.splitlines()[0] == plain
+        assert annotated == f"{plain}\n{self._NOTE}"
+        assert annotated.count("\n") == 1  # exactly two lines, no trailing newline
+
+    def test_reason_notes_none_reproduces_todays_exact_string(self):
+        assert (
+            is_denied(self._CMD, denied_regexes=[self._USER_PATTERN], reason_notes=None)
+            == self._plain()
+        )
+
+    def test_empty_map_reproduces_todays_exact_string(self):
+        assert (
+            is_denied(self._CMD, denied_regexes=[self._USER_PATTERN], reason_notes={})
+            == self._plain()
+        )
+
+    def test_pattern_with_no_note_of_its_own_is_unchanged(self):
+        # A note for a DIFFERENT pattern must not leak onto this refusal — the
+        # lookup is keyed, not "any note in the map".
+        assert (
+            is_denied(
+                self._CMD,
+                denied_regexes=[self._USER_PATTERN],
+                reason_notes={"some-other-pattern": "unrelated"},
+            )
+            == self._plain()
+        )
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t", "\n"])
+    def test_blank_note_adds_no_second_line(self, blank):
+        # ``_reason`` strips before deciding, so a blank note cannot append an
+        # empty line the reader would have to skip.
+        assert self._annotated(blank) == self._plain()
+
+    def test_note_never_changes_whether_something_matches(self):
+        # Denied stays denied; allowed stays allowed. A note is presentation
+        # only, so it can neither create nor suppress a match.
+        assert self._annotated() is not None
+        allowed = is_denied(
+            "echo hello",
+            denied_regexes=[self._USER_PATTERN],
+            reason_notes={self._USER_PATTERN: self._NOTE, "echo.*": "would match if notes matched"},
+        )
+        assert allowed is None
+        # And a note attached to a pattern that is NOT in the effective set
+        # cannot re-admit that pattern as a rule.
+        assert (
+            is_denied("echo hello", denied_regexes=[], reason_notes={"echo.*": "not a rule"})
+            is None
+        )
+
+    def test_note_does_not_change_which_pattern_matched(self):
+        # Two rules, note on the one that does NOT match: the reported pattern is
+        # still the matching one, un-annotated.
+        reason = is_denied(
+            self._CMD,
+            denied_regexes=["never-matches-this", self._USER_PATTERN],
+            reason_notes={"never-matches-this": "wrong rule"},
+        )
+        assert reason == self._plain()
+
+    def test_denied_by_resolves_the_rule_id_with_a_note_present(self):
+        # THE regression guard for ``_denied_by``: a note appended to the matched
+        # rule's refusal must not break rule-id resolution. Naively partitioning
+        # the WHOLE verdict yields "<pattern>\n<note>", which is in no lookup
+        # table, so every id-based assertion in this file would silently degrade
+        # to "<unmapped:...>". Parsing the first line keeps the id recoverable.
+        cmd = "aws ec2 terminate-instances --instance-ids i-1"
+        expected_id = _denied_by(cmd)
+        assert expected_id == "aws-destructive-ec2-terminate-instances"
+        pattern = _rule_pattern(expected_id)
+        annotated = {pattern: "open a ticket first"}
+        # Same id, even though the refusal now carries a second line.
+        assert _denied_by(cmd, annotated) == expected_id
+        verdict = is_denied(cmd, reason_notes=annotated)
+        assert verdict.splitlines() == [
+            f"Blocked by security policy: {pattern}",
+            "open a ticket first",
+        ]
+        # A note on an unrelated pattern leaves the id resolution untouched too.
+        assert _denied_by(cmd, {"unrelated-pattern": "ignore me"}) == expected_id
+
+    def test_builtin_refusals_are_single_line_by_default(self):
+        # Nothing annotates built-ins unless a caller passes a map, so the
+        # historical single-line shape is preserved for the whole catalog path.
+        assert "\n" not in is_denied("aws ec2 terminate-instances --instance-ids i-1")
 
 
 class TestBuiltinRuleMatcherShape:

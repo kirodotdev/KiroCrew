@@ -2253,6 +2253,24 @@ _GIT_PUBLISH_SUBST_PROGRAM_RE = re.compile(
 # a git-publish invocation is blocked (the regexes above are the mechanism).
 _GIT_PUBLISH_DENY_LABEL = "git push"
 
+#: The refusal prefix, exported so guards cannot drift from the producer.
+#: ``RecoveryCard.tsx`` parses refusals with
+#: ``/Blocked by security policy:\s*(.+?)\s*$/gm`` — GLOBAL and per-line — so any
+#: line carrying this literal is read as a deny pattern.  An operator note is
+#: emitted on its own line, which means a note containing this literal would be
+#: parsed as a SECOND, fabricated pattern.  Callers that accept operator text
+#: reject or drop it on this constant (see ``hooks.resolve_denied_notes`` and the
+#: dashboard add handler) rather than hardcoding the string again.
+DENY_REASON_PREFIX = "Blocked by security policy: "
+
+#: The form to GUARD against, which is NOT the form we emit. ``RecoveryCard``'s
+#: regex is ``Blocked by security policy:\s*`` — the whitespace after the colon is
+#: optional — so ``"Blocked by security policy:forged"`` parses as a refusal line
+#: while NOT containing :data:`DENY_REASON_PREFIX` (which carries a trailing
+#: space). Guarding on the full prefix therefore leaves a bypass. Derived from the
+#: same string so the two can never drift apart.
+DENY_REASON_MATCH_PREFIX = DENY_REASON_PREFIX.rstrip()
+
 
 # ── Self-protection floor (argv-structural, not a regex) ──
 # The two self-protection rules below are enforced by TOKENIZING the command
@@ -6495,6 +6513,7 @@ def is_denied(
     extra_patterns: list[str] | None = None,
     *,
     denied_regexes: list[str] | None = None,
+    reason_notes: dict[str, str] | None = None,
 ) -> str | None:
     """Check tool name against the built-in/effective + extra deny patterns.
 
@@ -6556,12 +6575,35 @@ def is_denied(
             ``auto_deny_tools`` + companion overlay).
         denied_regexes: The effective enabled rule regexes (regex tier).  When
             ``None``, fails closed to all built-in rules enabled.
+        reason_notes: Optional ``{pattern: operator note}`` map.  When the pattern
+            that matched has a note, the note is appended to the refusal on its
+            OWN line.  Presentation only — it never affects whether something is
+            denied.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or
         ``None`` if the input is allowed.
     """
     lower = tool_name.lower()
+
+    def _reason(matched: str) -> str:
+        """Refusal text for *matched*, with the operator note on a SECOND line.
+
+        The first line is byte-for-byte what it has always been. That is load
+        bearing, not stylistic: ``RecoveryCard.tsx`` extracts the pattern with
+        ``/Blocked by security policy:\\s*(.+?)\\s*$/gm`` — per-line and
+        end-anchored — so anything appended to the SAME line is captured as part
+        of the pattern, and ``_denied_by`` in the test suite partitions on the
+        exact ``"Blocked by security policy: "`` separator.  A note therefore
+        goes on its own line, where both readers ignore it.
+
+        Built-in rules never carry a note (the map holds user patterns only), so
+        for them this returns exactly the historical string.
+        """
+        head = f"{DENY_REASON_PREFIX}{matched}"
+        note = (reason_notes or {}).get(matched, "").strip()
+        return f"{head}\n{note}" if note else head
+
     glob_patterns = list(extra_patterns or [])
     if denied_regexes is None:
         regex_patterns = compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ())
@@ -6600,7 +6642,7 @@ def is_denied(
             try:
                 if re.search(interpreter_pattern, joined, re.IGNORECASE):
                     _emit_deny_event(tool_name, interpreter_pattern, lower)
-                    return f"Blocked by security policy: {interpreter_pattern}"
+                    return _reason(interpreter_pattern)
             except re.error:  # pragma: no cover - patterns are validated at load
                 continue
     # Ordered (pattern, is_regex) pairs so the two passes share one code path;
@@ -6626,7 +6668,7 @@ def is_denied(
     if _is_git_publish(lower):
         if _is_push_to_protected_branch(lower):
             _emit_deny_event(tool_name, _GIT_PUBLISH_DENY_LABEL, lower)
-            return f"Blocked by security policy: {_GIT_PUBLISH_DENY_LABEL}"
+            return _reason(_GIT_PUBLISH_DENY_LABEL)
         push_allow_pending = True
 
     # ── Self-protection floor (argv-structural, not a glob) ──
@@ -6646,7 +6688,7 @@ def is_denied(
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id.
             _emit_deny_event(tool_name, pattern, lower)
-            return f"Blocked by security policy: {pattern}"
+            return _reason(pattern)
 
     # ── Pass 1: whole-string deny ──
     # If any pattern matches the full input AND no exception matches the
@@ -6666,7 +6708,7 @@ def is_denied(
             )
             if not whole_string_exception_match:
                 _emit_deny_event(tool_name, pattern, lower)
-                return f"Blocked by security policy: {pattern}"
+                return _reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -6686,14 +6728,14 @@ def is_denied(
                 if exceptions and any(fnmatch.fnmatch(seg_lower, e.lower()) for e in exceptions):
                     if not _emit_deny_exception_event(tool_name, pattern):
                         _emit_deny_event(tool_name, pattern, seg_lower)
-                        return f"Blocked by security policy: {pattern}"
+                        return _reason(pattern)
                     # Exception granted for this pattern on this segment;
                     # continue to evaluate any remaining patterns against
                     # the same segment (a different pattern without an
                     # exception must still cause a deny).
                     continue
                 _emit_deny_event(tool_name, pattern, seg_lower)
-                return f"Blocked by security policy: {pattern}"
+                return _reason(pattern)
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     if push_allow_pending:
