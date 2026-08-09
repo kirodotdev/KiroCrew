@@ -3,8 +3,9 @@
 ## Overview
 
 `src/kiro_crew/session_storage.py` measures what conversations cost on disk and
-reclaims that space when a user asks. `src/kiro_crew/dashboard/handlers/session_storage.py`
-exposes it over HTTP. Reclaiming stages files under `<data home>/trash/sessions/`
+reclaims that space when a user asks. `src/kiro_crew/session_digest.py` reads a
+single session's content for the detail view. `src/kiro_crew/dashboard/handlers/session_storage.py`
+exposes both over HTTP. Reclaiming stages files under `<data home>/trash/sessions/`
 rather than unlinking them; emptying that trash is the only irreversible step and
 the only one that returns space to the filesystem.
 
@@ -22,7 +23,8 @@ A conversation's bytes live in two places, owned by two programs:
 
 That split is an implementation detail. `StorageReport` carries no per-store
 breakdown and the HTTP payload has no field from which one could be derived, so a
-client can only present a session as one thing with one size.
+client can only present a session as one thing with one size. An inventory row
+likewise carries a single `bytes`.
 `test_session_storage_api.py::TestReport::test_payload_never_splits_the_two_stores`
 pins the absence.
 
@@ -189,6 +191,104 @@ gateway both read `~/.kiro/sessions/cli` — so in-process exclusion would exclu
 nothing. `platform_compat.file_lock` fails closed, so a lock that cannot be taken
 raises instead of running the section unserialized.
 
+## The inventory
+
+A user reclaiming space acts on named conversations, not on an age threshold, so
+the surface is a list of sessions rather than a report of totals. Each row is one
+session — the two stores stay collapsed into one item with one size — carrying
+`uid`, `title`, `origin`, `bytes`, `mtime`, `active`, `live` and `background`. The
+screen is `website/src/pages/system/SessionStorageScreen.tsx`.
+
+### `active` means resumable; `live` means a turn is running
+
+These are two different facts and the module keeps them apart, because a badge that
+conflates them tells the user something they can disprove by reading the date next
+to it.
+
+`active` is membership in the session map: the product could resume this
+conversation. It is what refuses a reclaim, and its meaning is unchanged — no
+refusal logic was rewritten to add the inventory. `live` is a separate, additive
+signal populated from `DashboardState.running_session_keys()`: a turn is in flight
+*right now*. A session idle for three weeks is `active` and not `live`.
+
+Both are still refused. The distinction only decides what the user is told —
+`in_use` for `live`, `resumable` for merely `active` — and a reason a user can
+verify is the difference between a guard and an unexplained failure.
+`TestWhyAReclaimIsRefused` pins both halves:
+`test_an_idle_recorded_session_is_refused_as_resumable_not_in_use` and
+`test_the_row_reports_running_separately_from_resumable`.
+
+`running_session_keys()` snapshots `self._slots.values()` into a list before
+iterating. It is called through `asyncio.to_thread` while the event loop can still
+mutate that dict, and iterating it directly raises `RuntimeError: dictionary changed
+size during iteration`.
+
+Each check is by sid **or** by stem, because a unit's own sid can be empty. A
+transcript-only unit is caught through `active_stems` / `live_stems`, which
+`SessionIndex` derives by mapping `stem_to_sid` through the respective sid set:
+`active = sid in index.active_sids or any(stem in active_stems for stem in owned)`.
+
+`live` is serialized as a plain boolean, so an install with no running-state signal
+at all reports `live: false` for every row — the payload has no third "unknown"
+state. `false` therefore means *no running turn was observed*, not *provably idle*,
+and it is safe to render only because it never loosens a refusal: `active` alone
+still refuses, and `live` only chooses which reason is shown.
+
+### The list is cheap; the detail is not
+
+The split between the two read endpoints is a cost boundary, not a taste.
+
+A row needs a title, which `list_sessions()` takes from the transcript's first
+metadata line, cached on mtime. A session that never got a title falls back to a
+**bounded re-read** — up to the first 21 lines, looking for the first user message —
+also cached on mtime. So a list costs roughly one `readline()` per titled session
+and a short bounded scan per untitled one. A detail needs the first message,
+the turn count and the image count, which requires reading the **whole** file.
+Those are orders of magnitude apart on a large conversation, and a store with
+612 sessions cannot serve a full read of every one of them when a screen opens. The
+detail endpoint is therefore per-uid and lazy, and must never be called in a loop
+over the list.
+
+`session_digest.digest()` streams line by line and never raises on malformed,
+truncated or binary input: a store that has been interrupted mid-write is the
+normal case, not the exception, and one bad file must not blank the screen.
+
+**Turns are counted, not estimated.** `history.list_sessions()` exposes a
+`messages` field that is `st_size / 200`; presenting that as a turn count would be
+a silent lie, so the digest counts records.
+
+### `background` is the absence of a transcript, not absence from the map
+
+`background` is `not unit.stems` — the session has no transcript half, which is
+what an unregistered subagent run looks like. Keying it on the session map instead
+sweeps titled-but-retired conversations into the anonymous group, and those are
+exactly the rows worth showing, since being unmapped is also what makes them
+reclaimable.
+
+### Transcript-derived text is redacted before it leaves the process
+
+`title` and `first_message` are conversation content, so they pass
+`redact_exfiltration_urls()` then `redact_credentials()` — the same order
+`_serialize_artifact` uses. `origin` gets the same treatment: a session id is
+rendered, `_UNIT_ID_RE` admits the alphanumeric shape of an access-key id, and a
+credential pasted into an id would otherwise reach the dashboard verbatim.
+
+The boundary also accepts only strings: `isinstance(row["title"], str)` guards a
+non-string title, which otherwise reaches the redactor and raises `TypeError:
+expected string or bytes-like object`.
+
+Refusals resolve to the session's already-scrubbed title rather than printing the
+raw uid. A uid is the action handle, so omitting an unsafe row would make that
+session's space both unreclaimable *and* invisible; the fix is that uids stop being
+display text, not that rows disappear.
+
+`dashboard/handlers/session_storage.py` is registered in `_REDACTION_SINKS`
+(`security_posture.py`). The registry is a ratchet — adding a redactor call without
+registering the module fails
+`test_every_redactor_call_site_is_a_registered_sink_or_allowlisted`.
+`TestTranscriptContentIsRedacted` covers both surfaces, and
+`TestAMalformedTitleCannotCrashTheList` covers the type guard.
+
 ## The trash
 
 Staged batches live at `<data home>/trash/sessions/<batch id>/`, with each file
@@ -341,30 +441,82 @@ and out-of-store cases.
 
 ## APIs
 
-All three mutations are gated on `_is_restricted_session` and audited through the
+All four mutations are gated on `_is_restricted_session` and audited through the
 SEL. Every non-2xx body carries a machine-readable `code`.
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/system/session-storage` | Totals, age buckets, and the staged batches |
+| GET | `/api/system/session-storage/sessions` | One row per session, biggest first; scan plus one `readline()` each |
+| GET | `/api/system/session-storage/sessions/{uid}` | Lazy per-row detail: `first_message`, `turns`, `images` |
 | POST | `/api/system/session-storage/cleanup` | Stage sessions older than a threshold; `dry_run` reports without moving |
+| POST | `/api/system/session-storage/trash` | Stage an explicit selection of `uids`; reports `refused` per uid |
 | POST | `/api/system/session-storage/restore` | Return a batch, or named sessions within it |
 | POST | `/api/system/session-storage/empty` | Delete staged batches for good; needs `batch_ids` or `all: true` |
+
+Rows are sorted biggest-first on the **units**, before the payload is built:
+sorting heterogeneous dicts does not type-check.
 
 The GET is uncached: it walks both stores, so it is meant to be fetched when a
 screen opens or after an action, not on a poll. Every operation is offloaded with
 `asyncio.to_thread` because a store reaching six figures of files is far too much
 filesystem work for the event loop.
 
-Error codes: `restricted_session` (403), `invalid_body`, `invalid_threshold`,
-`cleanup_refused`, `invalid_batch`, `nothing_specified`, `restore_refused`,
-`empty_refused` (400).
+Error codes: `restricted_session` (403), `unknown` (404, no such uid on the detail
+route), `invalid_body`, `invalid_threshold`, `cleanup_refused`, `invalid_batch`,
+`invalid_uid`, `invalid_selection`, `selection_too_large`, `nothing_specified`,
+`trash_refused`, `restore_refused`, `empty_refused` (400).
 
 A selection larger than `_MAX_SELECTION` stages the **oldest** that many sessions
 and returns `remaining` rather than refusing. Refusing would dead-end the install
 the feature exists for — a store already at six figures cannot get under the cap by
 any threshold a client could pick — and oldest-first makes repeating the call
 monotonic progress.
+
+### A selection is pre-classified so one live row cannot void the whole request
+
+`move_to_trash()` is all-or-nothing by design: one live or too-fresh session in the
+list and the entire call raises, moving nothing. That is the right guarantee for the
+module — a selection either happens or it does not — but it makes a bulk screen
+useless, because a single row going live while the user reads the list would discard
+the other forty-nine.
+
+`_classify()` therefore splits the selection outside the lock and hands over only
+the eligible uids, so on a settled store the module's refusal does not fire and the
+per-row reasons reach the client. Each rejected uid comes back in `refused` with a
+reason: `in_use`, `resumable`, `too_fresh`, or `unknown`.
+
+**A residual window remains, and it is all-or-nothing.** A session that becomes
+mapped or goes live *between* the pre-pass and the in-lock `refresh` is caught by
+`move_to_trash`, which raises — and that raise takes the **whole** batch: the
+handler answers 400 `trash_refused` and nothing moves, with no per-uid breakdown.
+That is the conservative direction (never a wrong move), but a client cannot
+distinguish it from a malformed request without reading the code, and retrying is
+the only recovery.
+
+**The guarantee is not weakened.** `move_to_trash()` still re-reads the session map
+inside the mutation lock and still unions the active sets, so the pre-pass can only
+ever be more conservative than the authority, never less. Doing less than the user
+asked *without saying so* is the defect this avoids — hence `refused` rather than a
+silent drop.
+
+`uids` has no widening default on this route. An omitted or empty selection is a
+400 `nothing_specified`, because the endpoint exists to act on named rows and there
+is no meaningful default for which rows those would be.
+
+### A refusal is audited, including a partial one
+
+Any non-empty `refused` emits a `denied` SEL event listing each uid and its reason.
+Someone asked to remove specific conversations and was told no; that is a
+security-relevant outcome, not a quiet detail of a 200. It fires on **partial**
+refusal too — otherwise a request that took nine of ten sessions would leave the
+tenth's protection unrecorded.
+
+The resource string is **truncated at 512 characters**, so a large refusal loses its
+tail: roughly a dozen uid-and-reason pairs fill it. The event still records that a
+denial happened and how it was reasoned; it is not a complete manifest of a bulk
+refusal. `TestRefusalsAreAudited` covers the fully-refused and the partial case
+(`test_a_partial_refusal_is_audited_alongside_the_success`).
 
 ### Omitted is not the same as malformed, and destroying takes explicit intent
 
@@ -420,15 +572,28 @@ instead of the trash over-deleting. `TestEmptyTrash` and
   is destroyed without a second explicit action — but closing this fully requires the
   session/slot code and this module to share one lock, which is a wider change than
   this surface.
-- Reclaiming is offered by age only. Selecting an individual session to reclaim is
-  not exposed, so a single large conversation cannot be targeted.
+- Reclaiming is offered both by age (`cleanup`) and by explicit selection
+  (`trash`). Neither can take a session the map still lists, so targeting one large
+  conversation only works if that conversation is unmapped.
 - The trash never expires. It grows until a user empties it, which means reclaiming
   space takes two deliberate actions rather than one.
 - `measure()` walks both stores on every call with no caching, so a store with
   hundreds of thousands of files makes the endpoint slow to answer.
-- A session reclaimed while its mapping still exists is refused rather than having
-  its mapping cleaned up first, so a stale map entry blocks reclaiming until
-  `SessionMap.prune()` removes it.
+- **Every mapped session is unreclaimable, and on a long-lived install that is most
+  of what a user recognises.** `active_sids` is `frozenset(mapping.values())`, so
+  being *paired* in the session map and being *resumable* are read as the same fact,
+  and nothing retires a map entry while its files exist. The invariant: a mapped
+  session is always refused as `resumable`, so the reclaimable space is dominated by
+  replay logs that never had a transcript half. A session is refused rather than
+  having its mapping cleaned up first, so a stale entry blocks reclaiming until
+  `SessionMap.prune()` removes it — and `prune()` checks `<sid>.json`, which kiro-cli
+  never deletes, so it rarely fires. Fixing this needs a retire-then-move ordering
+  with a crash-safe tombstone, so that an interruption leaves an ordinary orphan
+  rather than a map entry pointing at missing files. (For scale, one install measured
+  in 2026-08 had 121 mapped sessions holding 198 MB against 166,476 unpaired replay
+  logs holding 27.3 GB. Illustrative only — the ratio drifts as an install ages.)
+- The detail route reads whole files, so a client that calls it per row instead of on
+  expand converts a cheap screen into a full scan of both stores.
 - A session's size counts its identifying `.json` / `.jsonl` pair and its transcript
   files. A kiro-cli sidecar is *reclaimed* with its session but its bytes are not
   attributed to it, so the reported total slightly under-counts a store holding
