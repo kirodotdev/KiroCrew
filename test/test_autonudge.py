@@ -545,8 +545,9 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
     # Self-heal: a NEW timer is armed and parked on the gated backoff sleep.
     assert loop.id in svc._timers
     assert not svc._timers[loop.id].done()
-    # First sleep used the full idle; the re-arm used the shorter backoff.
-    assert sleep_calls[0] == 60
+    # First sleep used the (deadline-anchored) full idle; the re-arm used the
+    # shorter backoff.
+    assert sleep_calls[0] == pytest.approx(60, abs=1)
     assert _an._REARM_BACKOFF_SECS in sleep_calls
     svc._cancel_timer(loop.id)  # cleanup
 
@@ -628,8 +629,8 @@ async def test_rearm_backoff_escalates_on_consecutive_failures(svc, monkeypatch)
         if nxt is None or nxt is task:
             break
         task = nxt
-    # First sleep = full idle; then exponential backoff per failure.
-    assert sleep_calls == [10000, 15, 30, 60, 120]
+    # First sleep = (deadline-anchored) full idle; then exponential backoff per failure.
+    assert sleep_calls == [pytest.approx(10000, abs=1), 15, 30, 60, 120]
     assert svc._loops[loop.id].active is True
     assert svc._rearm_fail_count[loop.id] == 4
     svc._cancel_timer(loop.id)
@@ -718,7 +719,7 @@ async def test_failure_streak_resets_on_delivery(svc, monkeypatch):
         task = nxt
     # 2 skips escalated (15, 30), then delivery bumped cycle_count and the
     # delivered happy-path does not re-arm, so the chain stops at 3 sleeps.
-    assert sleep_calls == [10000, 15, 30]
+    assert sleep_calls == [pytest.approx(10000, abs=1), 15, 30]
     assert svc._loops[loop.id].cycle_count == 1
     assert loop.id not in svc._rearm_fail_count  # streak cleared on delivery
 
@@ -761,7 +762,7 @@ async def test_fire_removed_loop_does_not_rearm_orphan(svc, monkeypatch):
     assert loop.id not in svc._timers
     assert loop.id not in svc._rearm_fail_count
     # Only the initial idle sleep ran; no backoff re-arm fired.
-    assert sleep_calls == [60]
+    assert sleep_calls == [pytest.approx(60, abs=1)]
 
 
 @pytest.mark.asyncio
@@ -853,11 +854,13 @@ async def test_channel_loop_self_rearms_after_delivered_fire(svc, monkeypatch):
     assert len(fired) == 1
     # The re-armed second run hits the cycle cap and deactivates the loop —
     # proof the channel loop re-armed itself. A dashboard loop would idle
-    # forever here waiting for notify_turn_complete.
-    for _ in range(100):
+    # forever here waiting for notify_turn_complete. Poll with real time (not
+    # bare yields): the re-arm's deadline bookkeeping awaits a locked persist
+    # on an executor thread before the cap check can run.
+    for _ in range(200):
         if not svc._loops[loop.id].active:
             break
-        await _real_sleep(0)
+        await _real_sleep(0.01)
     assert not svc._loops[loop.id].active
     assert len(fired) == 1  # cap check runs before firing — no second delivery
     svc.stop()

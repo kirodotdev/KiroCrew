@@ -9,17 +9,18 @@ tags: [skill, kirocrew, monitor, babysit, autonudge, loop]
 ## Overview
 
 `monitor_start(message, interval_secs?, max_cycles?)` binds a monitoring loop
-to **your current session**. After each of your turns completes and the
-session sits idle for `interval_secs`, the message is re-injected as your
-next turn. You keep the full conversation context, memory, and tools on every
-cycle. Loops persist to `~/.kiro/crew/autonudge.json` and survive gateway
-restarts.
+to **your current session**. Every `interval_secs` the message is re-injected
+as your next turn. User messages defer a due fire until their turn ends but do
+NOT restart the countdown, so the loop stays on schedule even in a session the
+user is actively chatting in. You keep the full conversation context, memory,
+and tools on every cycle. Loops persist to `~/.kiro/crew/autonudge.json` and
+survive gateway restarts (the countdown resumes where it left off).
 
 Works from:
 
 | Surface | Binding | Cadence |
 |---|---|---|
-| Dashboard chat | bare slot key | idle timer (re-armed after every turn) |
+| Dashboard chat | bare slot key | deadline timer (user turns defer, never reset) |
 | Slack thread | `slack:<thread_ts>` | fixed interval after each unattended turn |
 | Discord DM | `discord:{agent}:direct:{user}` | fixed interval after each unattended turn |
 
@@ -29,12 +30,13 @@ revises the loop already bound to this session in place, keeping its cycle
 count — use it when the instruction you armed has gone stale, or to raise the
 cap on a loop that is still doing useful work.
 
-### `interval_secs` is an idle gap, not a period
+### `interval_secs` counts between the loop's own cycles
 
-The timer arms when your turn **ends**, so the real cadence is
-`interval_secs` + however long each cycle's work takes. A 300s interval with
-5-minute checks wakes you roughly every 10 minutes. Size it for the gap you
-want *between* cycles.
+Each delivered cycle's countdown starts when that cycle's turn **ends**, so
+the real cadence is `interval_secs` + however long each cycle's work takes. A
+300s interval with 5-minute checks wakes you roughly every 10 minutes. Size it
+for the gap you want *between* cycles. User messages in the session never
+stretch this: a due fire waits for the user's turn to end, then delivers.
 
 ### You must stop the loop yourself
 

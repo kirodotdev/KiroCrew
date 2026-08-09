@@ -168,7 +168,8 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         cap += f", wall-clock budget {max_runtime_secs}s"
     return (
         f"Monitor loop {getattr(loop, 'id', '?')} started on this session: the "
-        f"message re-injects {idle_secs}s after each turn ENDS (idle gap){cap}. "
+        f"message re-injects every {idle_secs}s (user messages defer a due fire "
+        f"to their turn's end without restarting the countdown){cap}. "
         "End your turn now — the loop wakes you. Call autonudge_stop when the "
         "exit condition is met."
     )

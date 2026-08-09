@@ -1659,15 +1659,17 @@ def _list_tools() -> list[dict[str, Any]]:
         {
             "name": "monitor_start",
             "description": (
-                "Start a monitoring loop on YOUR CURRENT session: after each of "
-                "your turns completes and the session sits idle for "
-                "interval_secs, the given message is re-injected into this same "
+                "Start a monitoring loop on YOUR CURRENT session: every "
+                "interval_secs the given message is re-injected into this same "
                 "session as your next turn — same context, same tools, same "
-                "conversation. Works from dashboard chat, Slack threads, and "
-                "Discord DMs. Use when the user asks to babysit / monitor / "
-                "keep checking something (a PR, CI run, ticket, deployment): "
-                "put the check instructions and the exit condition in the "
-                "message, then END YOUR TURN — the loop wakes you on the "
+                "conversation. The countdown is deadline-preserving: user "
+                "messages defer a due fire until their turn ends but do NOT "
+                "restart the interval, so checks stay on schedule even in an "
+                "actively-used session. Works from dashboard chat, Slack "
+                "threads, and Discord DMs. Use when the user asks to babysit / "
+                "monitor / keep checking something (a PR, CI run, ticket, "
+                "deployment): put the check instructions and the exit condition "
+                "in the message, then END YOUR TURN — the loop wakes you on the "
                 "interval. When the exit condition is met (or the user says "
                 "stop), call autonudge_stop — reaching max_cycles is a runaway "
                 "backstop, NOT a successful finish. Use monitor_update to "
@@ -1690,11 +1692,13 @@ def _list_tools() -> list[dict[str, Any]]:
                     "interval_secs": {
                         "type": "integer",
                         "description": (
-                            "IDLE seconds between cycles, measured from when your "
-                            "turn ENDS — not a fixed period. Real cadence is "
-                            "interval_secs + however long each turn takes, so a "
-                            "300s interval with 5-minute checks wakes you roughly "
-                            "every 10 minutes (15-86400, default 300)"
+                            "Seconds between cycles, counted from the loop's "
+                            "last cycle (its own turn's end) toward a fixed "
+                            "deadline. User messages defer a due fire to their "
+                            "turn's end without restarting the countdown. A "
+                            "cycle whose own work runs long still pushes the "
+                            "next deadline out, so real cadence is at least "
+                            "interval_secs + turn time (15-86400, default 300)"
                         ),
                     },
                     "max_cycles": {
@@ -1714,7 +1718,7 @@ def _list_tools() -> list[dict[str, Any]]:
                             "the loop is armed (0 = unlimited, the default; "
                             "max 604800 = 7 days). Unlike max_cycles this "
                             "bounds elapsed TIME, so a loop with slow turns or "
-                            "a long idle gap still stops on schedule. The "
+                            "a long interval still stops on schedule. The "
                             "budget gates when turns START and re-checks the "
                             "moment a turn ends — an already-running turn is "
                             "never cancelled, so the loop can overshoot by at "
@@ -3140,7 +3144,7 @@ def _delete(path: str, body: dict | None = None) -> dict:
 # unbounded loop only ever stops when the model volunteers autonudge_stop, and
 # real loop stores show that is unreliable — observed babysit loops ran to 24/24
 # and 20/20 delivered cycles and stopped only because a cap was set. 24 cycles
-# is ~2h at the default 300s idle gap: long enough for a CI/review cycle, short
+# is ~2h at the default 300s interval: long enough for a CI/review cycle, short
 # enough that a forgotten loop dies on its own.
 _MONITOR_DEFAULT_MAX_CYCLES = 24
 
@@ -5793,7 +5797,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             },
             (
                 "Monitor loop requested on this session: the message will "
-                f"re-inject {interval_secs}s after each turn ENDS (idle gap)"
+                f"re-inject every {interval_secs}s (user messages defer a due "
+                "fire to their turn's end without restarting the countdown)"
                 + (
                     f", stopping after {max_cycles} cycles"
                     if max_cycles
@@ -5805,7 +5810,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     else ""
                 )
                 + ". End your turn now; once the loop is armed it wakes you on "
-                "that idle gap — but arming happens when this turn's result is "
+                "that interval — but arming happens when this turn's result is "
                 "processed, and only a live dashboard/Slack/Discord session can "
                 "host a loop, so do NOT assume it armed. Call autonudge_stop when "
                 "the exit condition is met; hitting the cap is a runaway backstop, "
