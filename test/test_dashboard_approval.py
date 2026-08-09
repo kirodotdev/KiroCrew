@@ -20,7 +20,7 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.history import ConversationLog
-from kiro_crew.hooks import ToolHookResult
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ToolHookResult
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -1225,3 +1225,287 @@ class TestPreToolUseHookBlockRecovery:
         ]
         assert blocked, "expected a hook_blocked audit record"
         assert all(secret not in c.get("tool_name", "") for c in blocked), blocked
+
+
+# ── Deny-row title redaction (all permission paths) ──
+
+
+def _raising_hook_store(message: str) -> MagicMock:
+    """Hook store whose PreToolUse fire raises, driving the hook-error deny.
+
+    Only PreToolUse raises: ``_fire`` re-raises hook errors for that event
+    alone, and the other hook events fired during a turn must stay healthy so
+    the turn actually reaches the permission path under test.
+    """
+    hs = _make_hook_store()
+
+    async def _fire(event: str, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if event == HOOK_EVENT_PRE_TOOL_USE:
+            raise RuntimeError(message)
+        return []
+
+    hs.fire = AsyncMock(side_effect=_fire)
+    return hs
+
+
+async def _drive_deny_turn(
+    state,
+    client,
+    slot,
+    *,
+    title: str,
+    tool_input: str = "",
+    approve_prompt: bool = False,
+) -> None:
+    """Run one turn whose only tool call lands on the deny path under test.
+
+    Only the first stream yields the permission request so any recovery
+    continuation completes instead of denying again. ``approve_prompt``
+    answers the interactive permission future, which is the only way to reach
+    the validation/hook code that runs after the user approves.
+    """
+    client.context_usage_pct = MagicMock(return_value=0.0)
+    client._client = client
+    client.last_prompt_stats = None
+    calls = {"n": 0}
+
+    def _stream(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _async_iter(
+                [
+                    LLMEvent(
+                        kind=EVENT_PERMISSION_REQUEST,
+                        title=title,
+                        tool_kind="edit",
+                        request_id="req-1",
+                        tool_input=tool_input,
+                    ),
+                    _complete_event(),
+                ]
+            )
+        return _async_iter([_complete_event()])
+
+    client.stream = MagicMock(side_effect=_stream)
+
+    approver = None
+    if approve_prompt:
+
+        async def _answer() -> None:
+            for _ in range(600):
+                fut = slot._approval_futures.get("req-1")
+                if fut is not None:
+                    if not fut.done():
+                        fut.set_result("approved")
+                    return
+                await asyncio.sleep(0.01)
+
+        approver = asyncio.get_event_loop().create_task(_answer())
+
+    with _patch_stats():
+        await _run_chat(state, slot, "hello")
+        if slot.task:
+            await slot.task
+
+    if approver is not None:
+        await _drain(approver)
+
+
+def _assert_deny_surfaces_redacted(slot, audit, secret: str, *, row_suffix: str) -> None:
+    """The secret must reach no transcript row and no audit ``tool_name``."""
+    rows = [m.get("content", "") for m in slot.messages]
+    assert not any(secret in row for row in rows), rows
+    assert any("[REDACTED: credential]" in row and row_suffix in row for row in rows), rows
+    for call in audit.log_tool_invocation.call_args_list:
+        assert secret not in call.kwargs.get("tool_name", ""), call.kwargs
+
+
+class TestDenyRowTitleRedaction:
+    """Every deny surface must publish the model-authored title redacted.
+
+    ``event.title`` prefers the model's own ``description`` field
+    (``_select_tool_title``), so a credential the model plants there must
+    never reach a transcript row (broadcast to the dashboard AND persisted to
+    the ConversationLog) or a SEL audit ``tool_name``. Each permission path
+    denies through its own control flow, so each gets a behavioral test; the
+    structural test keeps a future path from inlining a raw interpolation.
+
+    Two triggers per path where the path has both: an invalid tool name
+    (length cap — the title is over ``MAX_TOOL_NAME_LEN`` with the credential
+    embedded) and a hook-fire error (title passes validation, PreToolUse
+    raises).
+    """
+
+    # Assembled at runtime, never as one literal: the redactor only fires on
+    # credential-SHAPED input, and a real key shape in the source trips the
+    # source-text scanners (`scripts/scrub-lint.sh`, Semgrep).
+    _SECRET = "AKIA" + "1234567890ABCDEF"
+
+    def _invalid_title(self) -> str:
+        # Over MAX_TOOL_NAME_LEN with is_shell False, so _validate_tool_name
+        # raises the length error while the credential sits in the title.
+        return f"Deploy with {self._SECRET} " + "x" * 300
+
+    def _valid_title(self) -> str:
+        return f"Deploy with {self._SECRET} now"
+
+    def _assert_audit_redacted(self, audit, outcome: str) -> None:
+        recs = [
+            call.kwargs
+            for call in audit.log_tool_invocation.call_args_list
+            if call.kwargs.get("outcome") == outcome
+        ]
+        assert recs, f"expected a {outcome} audit record"
+        assert all("[REDACTED: credential]" in c.get("tool_name", "") for c in recs), recs
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_invalid_name_redacts(self, tmp_path):
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(ToolHookResult.auto_approve())
+        )
+        slot = _make_slot()
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(state, client, slot, title=self._invalid_title())
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
+        self._assert_audit_redacted(audit, "denied")
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_hook_error_redacts(self, tmp_path):
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(ToolHookResult.auto_approve()),
+            hook_store=_raising_hook_store("hook exploded"),
+        )
+        slot = _make_slot()
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(state, client, slot, title=self._valid_title())
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(hook error)")
+        self._assert_audit_redacted(audit, "hook_error")
+
+    @pytest.mark.asyncio
+    async def test_gated_path_invalid_name_redacts(self, tmp_path):
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(state, client, slot, title=self._invalid_title())
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
+        self._assert_audit_redacted(audit, "denied")
+
+    @pytest.mark.asyncio
+    async def test_gated_path_hook_error_redacts(self, tmp_path):
+        state, client = _make_state(
+            tmp_path,
+            context_builder=_context_builder(),
+            hook_store=_raising_hook_store("hook exploded"),
+        )
+        slot = _make_slot()
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(state, client, slot, title=self._valid_title())
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(hook error)")
+        self._assert_audit_redacted(audit, "hook_error")
+
+    @pytest.mark.asyncio
+    async def test_trust_reads_invalid_name_redacts(self, tmp_path):
+        """Trust-reads denies on a redacted row with an audited SEL record."""
+        state, client = _make_state(tmp_path)
+        slot = _make_slot()
+        slot._trust_reads = True
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state,
+                client,
+                slot,
+                title=self._invalid_title(),
+                tool_input='{"command": "ls"}',
+            )
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
+        self._assert_audit_redacted(audit, "denied")
+        denied = [
+            call.kwargs
+            for call in audit.log_tool_invocation.call_args_list
+            if call.kwargs.get("outcome") == "denied"
+        ]
+        assert any(
+            (c.get("metadata") or {}).get("reason") == "trust_reads" for c in denied
+        ), denied
+
+    @pytest.mark.asyncio
+    async def test_trust_mode_invalid_name_redacts(self, tmp_path):
+        state, client = _make_state(tmp_path)
+        slot = _make_slot(trust=True)
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(state, client, slot, title=self._invalid_title())
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
+        self._assert_audit_redacted(audit, "denied")
+
+    @pytest.mark.asyncio
+    async def test_trust_mode_hook_error_redacts(self, tmp_path):
+        state, client = _make_state(tmp_path, hook_store=_raising_hook_store("hook exploded"))
+        slot = _make_slot(trust=True)
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(state, client, slot, title=self._valid_title())
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(hook error)")
+        self._assert_audit_redacted(audit, "hook_error")
+
+    @pytest.mark.asyncio
+    async def test_interactive_approved_invalid_name_redacts(self, tmp_path):
+        state, client = _make_state(tmp_path)
+        slot = _make_slot()
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state, client, slot, title=self._invalid_title(), approve_prompt=True
+            )
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
+        self._assert_audit_redacted(audit, "denied")
+
+    @pytest.mark.asyncio
+    async def test_interactive_approved_hook_error_redacts(self, tmp_path):
+        state, client = _make_state(tmp_path, hook_store=_raising_hook_store("hook exploded"))
+        slot = _make_slot()
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+            audit = MagicMock()
+            mock_sel.return_value = audit
+            await _drive_deny_turn(
+                state, client, slot, title=self._valid_title(), approve_prompt=True
+            )
+        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(hook error)")
+        self._assert_audit_redacted(audit, "hook_error")
+
+    def test_no_deny_surface_interpolates_the_raw_title(self) -> None:
+        """No module code may interpolate the raw title into a row or audit.
+
+        The behavioral cases above each cover one existing path. This one is
+        structural, and it is why the shared helpers exist: a permission path
+        added later that inlines ``reject`` + row + audit would publish the
+        raw model-authored title again while every behavioral assertion still
+        passes. Rendering each deny shape in exactly one place (its helper)
+        makes that omission unrepresentable.
+        """
+        source = Path(chat_runner.__file__).read_text(encoding="utf-8")
+        assert source.count("🚫 {event.title}") == 0, (
+            "a transcript row interpolates the raw model-authored title -- "
+            "route the deny through _reject_invalid_tool/_reject_hook_error"
+        )
+        assert source.count("tool_name=event.title") == 0, (
+            "a SEL audit passes the raw model-authored title -- redact it "
+            "(reuse an in-scope redacted variable or _redact_display_text)"
+        )
+        # Each deny shape is rendered in exactly one place — its helper.
+        assert source.count('f"🚫 {title} (invalid: {error})"') == 1
+        assert source.count('f"🚫 {title} (hook error)"') == 1

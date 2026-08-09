@@ -348,13 +348,27 @@ def _pre_tool_block_reason(pre_hook_results: Any) -> str:
     return "blocked by a PreToolUse policy hook"
 
 
+def _redact_display_text(text: str) -> str:
+    """Redact model-authored display text for an external surface.
+
+    ``event.title`` prefers the model's own ``description`` field
+    (``_select_tool_title``), so any surface it reaches — a transcript row that
+    is broadcast to the dashboard AND persisted to the ConversationLog, or a
+    SEL audit ``tool_name`` — must see it only through this helper. Both
+    redactors return their input unchanged when nothing matches, so clean
+    titles pass through byte-identical.
+    """
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text
+
+
 def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
     """Build a redacted ``(tool title, hook reason)`` recovery entry."""
-    title, _ = redact_exfiltration_urls(event.title)
-    title, _ = redact_credentials(title)
-    reason, _ = redact_exfiltration_urls(_pre_tool_block_reason(pre_hook_results))
-    reason, _ = redact_credentials(reason)
-    return title, reason
+    return (
+        _redact_display_text(event.title),
+        _redact_display_text(_pre_tool_block_reason(pre_hook_results)),
+    )
 
 
 async def _reject_hook_blocked(
@@ -396,6 +410,74 @@ async def _reject_hook_blocked(
         metadata=metadata,
     )
     refusal_reasons.append((title, reason))
+
+
+async def _reject_invalid_tool(
+    client: Any,
+    slot: Any,
+    event: Any,
+    *,
+    session_key: str,
+    error: Exception,
+    metadata: dict | None = None,
+) -> None:
+    """Deny a tool whose display name failed validation, on redacted surfaces.
+
+    Reject, blocked row, and audit live together so a permission path added
+    later cannot publish the raw model-authored title by omission: the title
+    is redacted once here and used for both the transcript row (broadcast to
+    the dashboard AND persisted to the ConversationLog) and the audit
+    ``tool_name``. The validation *error* needs no redaction —
+    ``_validate_tool_name`` raises only fixed messages that never echo the
+    offending name.
+    """
+    title = _redact_display_text(event.title)
+    await client.reject_tool(event.request_id)
+    slot.append("tool", f"🚫 {title} (invalid: {error})", "msg msg-tool")
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="denied",
+        request_id=event.request_id,
+        error=f"validation_failed: {error}",
+        metadata=metadata,
+    )
+
+
+async def _reject_hook_error(
+    client: Any,
+    slot: Any,
+    event: Any,
+    *,
+    session_key: str,
+    error: str,
+    metadata: dict | None = None,
+) -> None:
+    """Deny a tool whose PreToolUse hook fire raised, on redacted surfaces.
+
+    Same chokepoint shape as :func:`_reject_invalid_tool`: the model-authored
+    title is redacted once and reaches the blocked row and the audit only in
+    that form. *error* is the hook exception text; hooks are fired with the
+    tool name and parsed input, so an exception that wraps its inputs can
+    carry model-authored text — redact it before the audit too.
+    """
+    title = _redact_display_text(event.title)
+    await client.reject_tool(event.request_id)
+    slot.append("tool", f"🚫 {title} (hook error)", "msg msg-tool")
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="hook_error",
+        request_id=event.request_id,
+        error=_redact_display_text(error),
+        metadata=metadata,
+    )
 
 
 def _is_bedrock_profile_id(model: str) -> bool:
@@ -3938,7 +4020,7 @@ async def _run_chat(
                     session_key=session_key,
                     agent=slot.agent or "kirocrew",
                     source="dashboard",
-                    tool_name=event.title,
+                    tool_name=_redact_display_text(event.title),
                     tool_kind=event.tool_kind,
                     outcome="invoked",
                 )
@@ -4371,8 +4453,7 @@ async def _run_chat(
                         # than an opaque "(blocked)" (or, on the claude provider,
                         # a cryptic "Tool use aborted" with no explanation).
                         _deny_reason = (tool_result.reason or "blocked").strip()
-                        _deny_title, _ = redact_exfiltration_urls(event.title)
-                        _deny_title, _ = redact_credentials(_deny_title)
+                        _deny_title = _redact_display_text(event.title)
                         _deny_msg, _ = redact_exfiltration_urls(_deny_reason)
                         _deny_msg, _ = redact_credentials(_deny_msg)
                         slot.append(
@@ -4395,7 +4476,7 @@ async def _run_chat(
                             session_key=session_key,
                             agent=slot.agent or "kirocrew",
                             source="dashboard",
-                            tool_name=event.title,
+                            tool_name=_deny_title,
                             tool_kind=event.tool_kind,
                             outcome="denied",
                             request_id=event.request_id,
@@ -4415,17 +4496,8 @@ async def _run_chat(
                                 event.title, is_shell=event.is_shell
                             )
                         except ValueError as e:
-                            await client.reject_tool(event.request_id)
-                            slot.append("tool", f"🚫 {event.title} (invalid: {e})", "msg msg-tool")
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=event.title,
-                                tool_kind=event.tool_kind,
-                                outcome="denied",
-                                request_id=event.request_id,
-                                error=f"validation_failed: {e}",
+                            await _reject_invalid_tool(
+                                client, slot, event, session_key=session_key, error=e
                             )
                         else:
                             # Declarative auto-approve must NOT bypass scripted
@@ -4444,20 +4516,11 @@ async def _run_chat(
                                     tool_input=_parsed_input,
                                 )
                             except Exception as hook_exc:
-                                await client.reject_tool(event.request_id)
-                                slot.append(
-                                    "tool",
-                                    f"🚫 {event.title} (hook error)",
-                                    "msg msg-tool",
-                                )
-                                sel().log_tool_invocation(
+                                await _reject_hook_error(
+                                    client,
+                                    slot,
+                                    event,
                                     session_key=session_key,
-                                    agent=slot.agent or "kirocrew",
-                                    source="dashboard",
-                                    tool_name=event.title,
-                                    tool_kind=event.tool_kind,
-                                    outcome="hook_error",
-                                    request_id=event.request_id,
                                     error=str(hook_exc),
                                 )
                                 continue
@@ -4501,17 +4564,8 @@ async def _run_chat(
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (invalid: {e})", "msg msg-tool")
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="denied",
-                            request_id=event.request_id,
-                            error=f"validation_failed: {e}",
+                        await _reject_invalid_tool(
+                            client, slot, event, session_key=session_key, error=e
                         )
                         continue
                     try:
@@ -4525,17 +4579,8 @@ async def _run_chat(
                             tool_input=_parsed_input,
                         )
                     except Exception as hook_exc:
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (hook error)", "msg msg-tool")
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="hook_error",
-                            request_id=event.request_id,
-                            error=str(hook_exc),
+                        await _reject_hook_error(
+                            client, slot, event, session_key=session_key, error=str(hook_exc)
                         )
                         continue
                     if _pre_tool_hooks_should_block(pre_hook_results):
@@ -4616,8 +4661,7 @@ async def _run_chat(
                             )
                         except ValueError as e:
                             await client.reject_tool(event.request_id)
-                            _safe, _ = redact_exfiltration_urls(event.title)
-                            _safe, _ = redact_credentials(_safe)
+                            _safe = _redact_display_text(event.title)
                             slot.append(
                                 "tool",
                                 f"🚫 {_safe} (invalid: {e})",
@@ -4627,7 +4671,7 @@ async def _run_chat(
                                 session_key=session_key,
                                 agent=slot.agent or "kirocrew",
                                 source="dashboard",
-                                tool_name=event.title,
+                                tool_name=_safe,
                                 tool_kind=event.tool_kind,
                                 outcome="rejected",
                                 request_id=event.request_id,
@@ -4677,11 +4721,13 @@ async def _run_chat(
                                 event.title, is_shell=event.is_shell
                             )
                         except ValueError as e:
-                            await client.reject_tool(event.request_id)
-                            slot.append(
-                                "tool",
-                                f"🚫 {event.title} (invalid: {e})",
-                                "msg msg-tool",
+                            await _reject_invalid_tool(
+                                client,
+                                slot,
+                                event,
+                                session_key=session_key,
+                                error=e,
+                                metadata={"reason": "trust_reads"},
                             )
                             continue
                         await client.approve_tool(event.request_id)
@@ -4696,7 +4742,7 @@ async def _run_chat(
                             session_key=session_key,
                             agent=slot.agent or "kirocrew",
                             source="dashboard",
-                            tool_name=event.title,
+                            tool_name=_redact_display_text(event.title),
                             tool_kind=event.tool_kind,
                             outcome="auto_approved",
                             request_id=event.request_id,
@@ -4708,17 +4754,8 @@ async def _run_chat(
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (invalid: {e})", "msg msg-tool")
-                        sel().log_tool_invocation(
-                            session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="denied",
-                            request_id=event.request_id,
-                            error=f"validation_failed: {e}",
+                        await _reject_invalid_tool(
+                            client, slot, event, session_key=session_key, error=e
                         )
                         continue
                     if not _pre_tool_hooks_fired:
@@ -4735,17 +4772,8 @@ async def _run_chat(
                                 tool_input=_parsed_input,
                             )
                         except Exception as hook_exc:
-                            await client.reject_tool(event.request_id)
-                            slot.append("tool", f"🚫 {event.title} (hook error)", "msg msg-tool")
-                            sel().log_tool_invocation(
-                                session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=event.title,
-                                tool_kind=event.tool_kind,
-                                outcome="hook_error",
-                                request_id=event.request_id,
-                                error=str(hook_exc),
+                            await _reject_hook_error(
+                                client, slot, event, session_key=session_key, error=str(hook_exc)
                             )
                             continue
                         if _pre_tool_hooks_should_block(pre_hook_results):
@@ -4779,8 +4807,7 @@ async def _run_chat(
                 # Auto-reject remaining tools after one rejection in a batch
                 if getattr(slot, "_batch_rejected", False):
                     await client.reject_tool(event.request_id)
-                    _title, _ = redact_exfiltration_urls(event.title)
-                    _title, _ = redact_credentials(_title)
+                    _title = _redact_display_text(event.title)
                     slot.append(
                         "tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event)
                     )
@@ -4795,7 +4822,7 @@ async def _run_chat(
                         session_key=session_key,
                         agent=slot.agent or "kirocrew",
                         source="dashboard",
-                        tool_name=event.title,
+                        tool_name=_title,
                         tool_kind=event.tool_kind,
                         outcome="rejected",
                         request_id=event.request_id,
@@ -4986,17 +5013,12 @@ async def _run_chat(
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (invalid: {e})", "msg msg-tool")
-                        sel().log_tool_invocation(
+                        await _reject_invalid_tool(
+                            client,
+                            slot,
+                            event,
                             session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="denied",
-                            request_id=event.request_id,
-                            error=f"validation_failed: {e}",
+                            error=e,
                             metadata={"reason": "interactive"},
                         )
                         break
@@ -5011,16 +5033,11 @@ async def _run_chat(
                             tool_input=_parsed_input,
                         )
                     except Exception as hook_exc:
-                        await client.reject_tool(event.request_id)
-                        slot.append("tool", f"🚫 {event.title} (hook error)", "msg msg-tool")
-                        sel().log_tool_invocation(
+                        await _reject_hook_error(
+                            client,
+                            slot,
+                            event,
                             session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=event.title,
-                            tool_kind=event.tool_kind,
-                            outcome="hook_error",
-                            request_id=event.request_id,
                             error=str(hook_exc),
                             metadata={"reason": "interactive"},
                         )
@@ -5037,8 +5054,7 @@ async def _run_chat(
                         )
                     else:
                         await client.approve_tool(event.request_id)
-                        _approved_title, _ = redact_exfiltration_urls(event.title)
-                        _approved_title, _ = redact_credentials(_approved_title)
+                        _approved_title = _redact_display_text(event.title)
                         slot.append(
                             "tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event)
                         )
@@ -5046,7 +5062,7 @@ async def _run_chat(
                             session_key=session_key,
                             agent=slot.agent or "kirocrew",
                             source="dashboard",
-                            tool_name=event.title,
+                            tool_name=_approved_title,
                             tool_kind=event.tool_kind,
                             outcome="approved",
                             request_id=event.request_id,
