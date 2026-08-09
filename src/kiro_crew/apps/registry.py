@@ -973,6 +973,54 @@ def _enrich_with_install_status(
     return entries
 
 
+def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stamp server-computed ``provenance`` and ``verified`` on every row.
+
+    SECURITY CONTRACT: these two fields are the API trust boundary for
+    ``GET /api/apps/registry``. They are computed here — where the
+    server-attached ``_registry`` tag is authoritative — and OVERWRITE any
+    value an index entry may have published, so an external registry can
+    never spoof them. Client code must read these fields and must not
+    re-derive trust from the absence of ``_registry``, an internal tagging
+    detail. ``_registry`` stays in the payload: the external-source label
+    text, older clients, ``appManifest.ts::keysFor`` (first-party copy
+    gate), and ``pickFeatured``'s legacy arm all still read it — do not
+    stop emitting or rename it without migrating those dependants.
+
+    Per row:
+
+    - ``provenance``: ``"external"`` when ``_registry`` is set (the tag is
+      applied server-side per configured registry and cannot be forged by
+      index content); otherwise ``"builtin"`` when ``origin == "builtin"``,
+      else ``"core"`` (bundled ``app-registry.json`` or edition entry).
+    - ``verified``: ``True`` only when provenance is NOT ``"external"`` AND
+      (``origin == "builtin"`` or the INDEX-declared author — snapshotted
+      into ``_index_author`` by ``list_registry`` before the manifest merge
+      — is "kirocrew", case-insensitively). The badge asserts first-party
+      provenance next to an Install button that runs setup code with
+      gateway privileges, so it is never awardable from index-published
+      trust keys or from the repo-fetched ``app.json``: a third-party core
+      repo publishing ``"author": "kirocrew"`` in its manifest does not
+      mint it (the merged ``author`` display field is deliberately NOT
+      consulted).
+    - ``featured``: dropped entirely from external rows so an external index
+      can never self-flag into the Discover spotlight, regardless of client
+      logic. Core-entry ``featured`` flags are preserved.
+    """
+    for entry in entries:
+        index_author = entry.pop("_index_author", None)
+        author_lower = index_author.lower() if isinstance(index_author, str) else ""
+        if entry.get("_registry"):
+            entry["provenance"] = "external"
+            entry["verified"] = False
+            entry.pop("featured", None)
+        else:
+            builtin = entry.get("origin") == "builtin"
+            entry["provenance"] = "builtin" if builtin else "core"
+            entry["verified"] = builtin or author_lower == "kirocrew"
+    return entries
+
+
 def _version_newer(registry_ver: str, installed_ver: str) -> bool:
     """Return True if registry version is strictly newer than installed.
 
@@ -1504,6 +1552,8 @@ async def list_registry() -> list[dict[str, Any]]:
     3. Fetch each app's app.json (cached, 24h TTL) for display info
     4. Run detectInstalled commands for external installs
     5. Enrich with install status from KiroCrew's app manager
+    6. Stamp server-computed trust fields (``provenance``/``verified``) and
+       strip ``featured`` from external rows — see ``_apply_trust_fields``
     """
     entries = await asyncio.to_thread(_load_registry_file)
 
@@ -1518,6 +1568,16 @@ async def list_registry() -> list[dict[str, Any]]:
 
     installed = await asyncio.to_thread(list_installed_apps)
     installed_map = {a["name"]: a for a in installed}
+
+    # Snapshot the INDEX-declared author before the manifest merge below
+    # overwrites ``author`` with the repo-fetched app.json value.
+    # ``_apply_trust_fields`` derives ``verified`` from this snapshot only:
+    # the bundled/edition index is trusted content, the fetched manifest is
+    # the app author's — a repo publishing ``"author": "kirocrew"`` in its
+    # app.json must not mint the badge. Unconditional assignment also
+    # neutralizes an index that pre-seeds the key itself.
+    for entry in entries:
+        entry["_index_author"] = entry.get("author")
 
     # Fetch manifests in parallel for all entries
     resolved = await asyncio.gather(
@@ -1558,7 +1618,9 @@ async def list_registry() -> list[dict[str, Any]]:
         except (asyncio.TimeoutError, OSError):
             pass  # detection failed, treat as not installed
 
-    return _enrich_with_install_status(entries, installed_map, detected)
+    return _apply_trust_fields(
+        _enrich_with_install_status(entries, installed_map, detected)
+    )
 
 
 def get_server_platform() -> dict[str, str]:

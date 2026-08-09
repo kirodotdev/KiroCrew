@@ -67,8 +67,13 @@ function initialTab(): Tab {
  */
 export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
   const rank = (f: RegistryApp['featured']) => (typeof f === 'number' ? f : 1e9)
+  // "Not external" via the server-computed field, falling back to the
+  // server-attached ``_registry`` tag for rows from older gateways. Either
+  // signal marks the row external — belt-and-braces with the server, which
+  // also strips ``featured`` from external rows entirely.
+  const external = (a: RegistryApp) => a.provenance === 'external' || !!a._registry
   const flagged = apps
-    .filter(a => !a._registry && a.featured !== undefined && a.featured !== false)
+    .filter(a => !external(a) && a.featured !== undefined && a.featured !== false)
     .sort((a, b) => rank(a.featured) - rank(b.featured) || a.displayName.localeCompare(b.displayName))
   const rest = apps
     .filter(a => !flagged.includes(a))
@@ -165,6 +170,10 @@ export default function AppsPage() {
         enabled: a.enabled,
         origin: 'builtin',
         lifecycle: 'locked',
+        // Client-synthesized rows never pass through /api/apps/registry, so
+        // speak the server trust contract (_apply_trust_fields) directly.
+        provenance: 'builtin',
+        verified: true,
       }))
     const builtinNames = new Set(builtinEntries.map(a => a.name))
     const enriched = registry.filter(r => !builtinNames.has(r.name)).map(r => {

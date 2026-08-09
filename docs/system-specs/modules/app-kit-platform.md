@@ -56,12 +56,26 @@ unrecoverable.
 
 Frontend badges and affordances read the same three fields
 (`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
-`lifecycle !== 'locked'`). Provenance LABELS are a separate question: they must
-test the server-attached `_registry` tag FIRST, because `origin` and `author` are
-copied verbatim from an index entry for a not-yet-installed app, so an added
-registry could otherwise publish `origin: "builtin"` and self-award the
-first-party mark next to a button that runs its setup code with gateway
-privileges.
+`lifecycle !== 'locked'`). Provenance LABELS and the verified badge are a
+separate question: `/api/apps/registry` rows carry server-computed
+`provenance` (`"core" | "external" | "builtin"`) and `verified` fields,
+stamped by `_apply_trust_fields` in `registry.py` where the server-attached
+`_registry` tag is authoritative. The helper OVERWRITES anything an index
+publishes, and derives `verified` from the INDEX-declared author snapshotted
+before the app.json merge — never from the repo-fetched manifest — because
+`origin` and `author` are otherwise copied verbatim from index or manifest
+content for a not-yet-installed app: deriving trust from either let an added
+registry publish `origin: "builtin"`, or a third-party core repo publish
+`author: "KiroCrew"`, and self-award the first-party mark next to a button
+that runs its setup code with gateway privileges. The client
+(`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
+reads the server fields, still rejects a `_registry`-tagged row first (so
+nothing smuggled through an older gateway can relabel an external row), and
+falls back to the legacy `origin`/`author` derivation only for rows from
+older gateways that emit neither field. `_registry` itself must keep being
+emitted: besides the external-source label and older clients,
+`appManifest.ts::keysFor` (first-party copy gate) and `pickFeatured`'s
+legacy arm still read it.
 
 ## 1. App MCP servers land in KiroCrew's agent config, never the shared kiro file
 
@@ -434,11 +448,15 @@ Curator control over the Discover editorial layer is the registry entry's
 `featured` flag, and it is honored **only** for core-registry entries. The
 spotlight is the store's most persuasive install surface and its action runs
 third-party setup code with gateway privileges, so an external registry cannot
-flag itself into that slot. With nothing flagged, selection falls back to a
+flag itself into that slot: `_apply_trust_fields` strips `featured` from
+external rows server-side, and `pickFeatured` additionally excludes any row
+whose `provenance` (or legacy `_registry` tag) marks it external. With nothing
+flagged, selection falls back to a
 deterministic order (hero art, then verified publishers, then name), so the
 surface is never empty and never arbitrary.
 
 Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
-`register_builtin_apps`), `apps/discovery.py::discover_builtin_apps`;
+`register_builtin_apps`), `apps/discovery.py::discover_builtin_apps`,
+`apps/registry.py::_apply_trust_fields`;
 consumers: `website/src/pages/AppsPage.tsx` (`pickFeatured`),
 `website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).

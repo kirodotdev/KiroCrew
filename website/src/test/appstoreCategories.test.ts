@@ -134,6 +134,65 @@ describe('provenance helpers', () => {
   })
 })
 
+describe('server-computed trust fields (issue #580)', () => {
+  it('isVerified prefers the server verified field over client derivation', () => {
+    // Server verified:false wins over a spoofed author/origin — the server
+    // computed it where _registry is authoritative.
+    expect(isVerified({ author: 'KiroCrew', verified: false })).toBe(false)  // brand-ok: author-spoof fixture
+    expect(isVerified({ origin: 'builtin', verified: false })).toBe(false)
+    // Server verified:true wins over an author that would fail the fallback.
+    expect(isVerified({ author: 'random', verified: true })).toBe(true)
+  })
+
+  it('isVerified still rejects _registry rows even with a smuggled verified:true', () => {
+    // The server never emits verified:true on a _registry-tagged row, so this
+    // combination can only be index content passed through an OLDER gateway
+    // that computes nothing — it must lose.
+    expect(isVerified({ author: 'x', _registry: 'evil', verified: true })).toBe(false)
+  })
+
+  it('sourceLabel prefers the server provenance field', () => {
+    expect(sourceLabel({ provenance: 'builtin' })).toBe('Built-in')
+    expect(sourceLabel({ provenance: 'core', origin: 'builtin' })).toBe('Kiro Crew registry')
+    expect(sourceLabel({ provenance: 'external', _registry: 'labs' })).toBe('labs')
+  })
+
+  it('sourceLabel keeps the _registry name even with a smuggled provenance', () => {
+    // Same older-gateway smuggling window: a tagged row is external by
+    // construction, so provenance:"core" from index content cannot relabel it.
+    expect(sourceLabel({ provenance: 'core', _registry: 'evil' })).toBe('evil')
+  })
+
+  it('pickFeatured excludes provenance:"external" rows from curator flags', () => {
+    const apps = [
+      app({ name: 'external-shouty', featured: 1, provenance: 'external', _registry: 'evil' }),
+      app({ name: 'core-app', featured: 2, provenance: 'core' }),
+    ]
+    expect(pickFeatured(apps)[0].name).toBe('core-app')
+  })
+
+  it('pickFeatured excludes external rows signalled by EITHER field', () => {
+    // Belt-and-braces: provenance without _registry (new gateway contract)
+    // and _registry without provenance (older gateway) are both external.
+    const apps = [
+      app({ name: 'prov-only', featured: 1, provenance: 'external' }),
+      app({ name: 'tag-only', featured: 1, _registry: 'labs' }),
+      app({ name: 'core-app', featured: 5 }),
+    ]
+    expect(pickFeatured(apps)[0].name).toBe('core-app')
+  })
+
+  it('legacy rows (older gateway, no server fields) derive exactly as before', () => {
+    // Back-compat proof: without provenance/verified, results match the
+    // pre-#580 client derivation (the untouched suites above double as this).
+    expect(isVerified({ author: 'KiroCrew' })).toBe(true)  // brand-ok: author-spoof fixture
+    expect(isVerified({ origin: 'builtin', author: 'x' })).toBe(true)
+    expect(isVerified({ author: 'random' })).toBe(false)
+    expect(sourceLabel({ origin: 'builtin' })).toBe('Built-in')
+    expect(sourceLabel({})).toBe('Kiro Crew registry')
+  })
+})
+
 describe('gradientFor', () => {
   it('is deterministic per name and returns a css gradient', () => {
     expect(gradientFor('code-review-sage')).toBe(gradientFor('code-review-sage'))

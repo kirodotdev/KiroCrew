@@ -234,8 +234,10 @@ async def test_list_registry_reaps_detect_probe_tree_on_timeout(monkeypatch):
         return e
 
     monkeypatch.setattr(registry, "_resolve_manifest", _resolve)
+    # Return the entries themselves: list_registry's tail now feeds this
+    # result into _apply_trust_fields, which iterates rows as dicts.
     monkeypatch.setattr(
-        registry, "_enrich_with_install_status", lambda e, m, d: {"detected": sorted(d)}
+        registry, "_enrich_with_install_status", lambda e, m, d: e
     )
 
     proc = _TimeoutProc()
@@ -1196,3 +1198,142 @@ class TestMinimalEnvHonorsWindowsCaseInsensitivity:
         env = registry.minimal_env()
         assert env["PATH"] == "/usr/bin"
         assert "Path" not in env
+
+
+class TestApplyTrustFields:
+    """``_apply_trust_fields`` is the API trust boundary of
+    ``GET /api/apps/registry`` (issue #580): ``provenance``/``verified`` are
+    computed server-side where the ``_registry`` tag is authoritative, and
+    ``featured`` is stripped from external rows. Every branch below mirrors a
+    spoof that used to be blocked only by scattered client-side checks.
+    """
+
+    def test_external_entry_is_never_verified_despite_spoofed_fields(self):
+        """An external index publishing author/origin/featured spoofs gains
+        nothing: the row is external because the server tagged it."""
+        entry = {
+            "name": "evil-app",
+            "_registry": "evil-registry",
+            "author": "KiroCrew",       # brand-ok: author-spoof fixture
+            "origin": "builtin",        # origin spoof
+            "featured": True,           # spotlight self-flag
+        }
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "external"
+        assert out["verified"] is False
+        assert "featured" not in out
+
+    def test_external_entry_cannot_pre_seed_trust_fields(self):
+        """Index-published ``provenance``/``verified`` values are OVERWRITTEN,
+        not merely defaulted — otherwise an index could ship them directly."""
+        entry = {
+            "name": "evil-app",
+            "_registry": "evil-registry",
+            "provenance": "core",
+            "verified": True,
+        }
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "external"
+        assert out["verified"] is False
+
+    def test_core_kirocrew_index_author_is_verified(self):
+        """``verified`` derives from the INDEX-declared author snapshot
+        (``_index_author``, taken by ``list_registry`` pre-merge)."""
+        entry = {"name": "good-app", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "core"
+        assert out["verified"] is True
+
+    def test_manifest_author_alone_never_mints_verified(self):
+        """A third-party core repo publishing ``"author": "kirocrew"`` in its
+        app.json gains nothing: the merged ``author`` display field is not
+        consulted, only the pre-merge index snapshot is."""
+        entry = {"name": "sneaky", "author": "KiroCrew"}  # merged, no snapshot  # brand-ok: author-spoof fixture
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["verified"] is False
+        entry = {"name": "sneaky2", "author": "KiroCrew", "_index_author": "third-party"}  # brand-ok: author-spoof fixture
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["verified"] is False
+
+    def test_core_third_party_author_is_not_verified_and_keeps_featured(self):
+        entry = {"name": "community-app", "_index_author": "someone", "featured": 2}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "core"
+        assert out["verified"] is False
+        assert out["featured"] == 2  # curator flag preserved for core entries
+
+    def test_builtin_origin_is_verified_builtin(self):
+        entry = {"name": "builtin-app", "origin": "builtin", "author": "x"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "builtin"
+        assert out["verified"] is True
+
+    def test_non_string_index_author_does_not_crash_and_is_not_verified(self):
+        """External registries are user-supplied JSON; a mistyped author must
+        degrade to unverified, not raise."""
+        entry = {"name": "weird", "_index_author": 42}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["provenance"] == "core"
+        assert out["verified"] is False
+
+    def test_index_author_snapshot_never_leaks_into_payload(self):
+        entry = {"name": "x", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
+        (out,) = registry._apply_trust_fields([entry])
+        assert "_index_author" not in out
+
+    def test_registry_tag_is_kept_in_payload(self):
+        """``_registry`` stays in the row — the external-source label text and
+        older clients still need it. The change ADDS fields only."""
+        entry = {"name": "ext", "_registry": "labs"}
+        (out,) = registry._apply_trust_fields([entry])
+        assert out["_registry"] == "labs"
+
+    @pytest.mark.asyncio
+    async def test_list_registry_stamps_trust_fields(self, monkeypatch):
+        """End-to-end: every row returned by ``list_registry`` carries the
+        server-computed fields; external spoofs and a manifest-published
+        ``author: "kirocrew"`` are all neutralized."""
+        core = {"name": "core-app", "author": "KiroCrew", "featured": 1}  # brand-ok: author-spoof fixture
+        # Third-party core entry whose REPO manifest claims the first-party
+        # author (index declares none) — must not mint the badge.
+        sneaky = {"name": "sneaky-app"}
+        # Index entry trying to pre-seed the internal snapshot key directly.
+        preseed = {"name": "preseed-app", "_index_author": "KiroCrew"}  # brand-ok: author-spoof fixture
+        ext = {
+            "name": "ext-app",
+            "_registry": "labs",
+            "author": "KiroCrew",  # brand-ok: author-spoof fixture
+            "origin": "builtin",
+            "featured": True,
+        }
+        monkeypatch.setattr(
+            registry, "_load_registry_file", lambda: [core, sneaky, preseed]
+        )
+
+        async def _fake_external():
+            return [ext]
+
+        async def _fake_resolve(entry):
+            # Simulate the app.json merge overwriting the display author.
+            if entry["name"] == "sneaky-app":
+                return {**entry, "author": "KiroCrew"}  # brand-ok: author-spoof fixture
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        rows = {r["name"]: r for r in await registry.list_registry()}
+        assert rows["core-app"]["provenance"] == "core"
+        assert rows["core-app"]["verified"] is True
+        assert rows["core-app"]["featured"] == 1
+        # Manifest-published author does not mint the badge.
+        assert rows["sneaky-app"]["verified"] is False
+        # Pre-seeded snapshot key is overwritten from the entry's own author
+        # (absent here) before the manifest merge.
+        assert rows["preseed-app"]["verified"] is False
+        assert rows["ext-app"]["provenance"] == "external"
+        assert rows["ext-app"]["verified"] is False
+        assert "featured" not in rows["ext-app"]
+        # The internal snapshot key never leaks into the API payload.
+        assert all("_index_author" not in r for r in rows.values())
