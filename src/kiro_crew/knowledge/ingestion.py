@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -42,6 +43,35 @@ DUPLICATE_JOB_STATUS = 'skipped_duplicate'
 
 DEFAULT_MAX_INGEST_FILE_MB = 100.0
 _MB = 1024 * 1024
+
+
+async def run_to_completion(fn: Callable[[], None]) -> None:
+    """Run ``fn`` on a worker thread, guaranteed to run even if cancelled.
+
+    A bare ``await asyncio.to_thread(fn)`` can drop ``fn`` entirely: when
+    cancellation arrives while the work item is still QUEUED in the executor,
+    the wrapped future is cancelled before ``fn`` ever starts. The ingestion
+    finalizers pair a committed delete with its state finalization, so a
+    skipped finalizer strands committed data (the next scan re-ingests
+    alongside it -> duplicates). Shield the worker task; on cancellation,
+    wait for it to finish, then re-raise.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # The finalizer is bounded sync DB work: drain it even under repeated
+        # cancellation, then let the cancellation proceed.
+        while not task.done():
+            try:
+                await asyncio.wait([task])
+            except asyncio.CancelledError:
+                continue
+        exc = task.exception()
+        if exc is not None:
+            # Retrieve + surface the failure; the CancelledError still wins.
+            logger.error("Finalizer failed during cancellation: %s", exc)
+        raise
 
 
 class FileTooLargeError(RuntimeError):
@@ -506,29 +536,45 @@ class IngestionPipeline:
 
         # 6. Finalize
         now = datetime.now().isoformat()
+
+        def _finalize() -> None:
+            # Runs OFF the loop as ONE hop: delete_items_batch rebuilds the entire
+            # entity graph (store._load_graph) inside its own BEGIN/COMMIT, which
+            # wedged the event loop past the stall watchdog on large libraries.
+            # The delete and the state finalization travel together so a
+            # cancellation (gateway shutdown) lands entirely before or entirely
+            # after this hop -- a delete that commits while sync_status/job
+            # finalization is skipped would make the next scan re-ingest
+            # alongside the already-committed new items (duplicates). The
+            # worker's thread-local connection is autocommit
+            # (isolation_level=None), so no enclosing transaction spans this,
+            # and WAL + busy_timeout=10000 rides out write-lock contention.
+            if processed == total:
+                self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
+                if existing:
+                    self.store.update_source(source_id, properties=json.dumps({**props, 'content_hash': content_hash, **meta}))
+                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
+                self.store.update_source(source_id, last_synced=now)
+            elif processed < total:
+                # Partial failure: remove only items created during THIS ingestion call
+                after_ids = {r["id"] for r in self.store.db.execute(
+                    "SELECT id FROM items WHERE source_id = ?", (source_id,),
+                ).fetchall()}
+                self.store.delete_items_batch(list(after_ids - _before_ids))
+                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+            self.store.db.execute(
+                "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
+                (_job_status(processed, total), processed, now, job_id))
+            self.store.db.commit()
+
+        await run_to_completion(_finalize)
         if processed == total:
-            self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-            if existing:
-                self.store.update_source(source_id, properties=json.dumps({**props, 'content_hash': content_hash, **meta}))
-            self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
-            self.store.update_source(source_id, last_synced=now)
-            # Generate file-level summary from chunk summaries
+            # File-level summary from chunk summaries. Best-effort, and AFTER the
+            # finalize hop so a failure or cancel here cannot strand the job row.
             try:
                 await self.generate_source_summary(source_id)
             except Exception:
                 logger.debug("Source summary generation skipped for %s", source_id, exc_info=True)
-        elif processed < total:
-            # Partial failure: remove only items created during THIS ingestion call
-            after_ids = {r["id"] for r in self.store.db.execute(
-                "SELECT id FROM items WHERE source_id = ?", (source_id,),
-            ).fetchall()}
-            new_ids = list(after_ids - _before_ids)
-            self.store.delete_items_batch(new_ids)
-            self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
-        self.store.db.execute(
-            "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-            (_job_status(processed, total), processed, now, job_id))
-        self.store.db.commit()
         # Cross-source dedup for whole-source ingests (upload / remote / chat). Folder-file
         # ingests (old_item_ids is a list) are swept by FolderWatcher at end of scan.
         if processed == total and old_item_ids is None:
@@ -642,26 +688,40 @@ class IngestionPipeline:
                 logger.exception("Failed to process chunk %d of text '%s'", i, title)
 
         now = datetime.now().isoformat()
+
+        def _finalize() -> None:
+            # ONE off-loop hop for the delete + state finalization, mirroring
+            # _ingest_file_body: delete_items_batch rebuilds the entity graph and
+            # cannot run on the loop, and splitting it from the finalization
+            # would let a cancellation commit the delete while leaving the job
+            # 'processing' and the source unsynced (re-ingest -> duplicates).
+            # Worker connection is autocommit; WAL + busy_timeout absorb
+            # write-lock contention.
+            if processed == total:
+                self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
+                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
+                self.store.update_source(source_id, last_synced=now)
+            elif processed < total:
+                # Partial failure: remove only items created during THIS call so we
+                # never delete another item group sharing this source_id.
+                after_ids = {r["id"] for r in self.store.db.execute(
+                    "SELECT id FROM items WHERE source_id = ?", (source_id,),
+                ).fetchall()}
+                self.store.delete_items_batch(list(after_ids - _before_ids))
+                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+            self.store.db.execute(
+                "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
+                (_job_status(processed, total), total, processed, now, job_id))
+            self.store.db.commit()
+
+        await run_to_completion(_finalize)
         if processed == total:
-            self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-            self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
-            self.store.update_source(source_id, last_synced=now)
+            # Best-effort, and AFTER the finalize hop so a failure or cancel here
+            # cannot strand the job row.
             try:
                 await self.generate_source_summary(source_id)
             except Exception:
                 logger.debug("Source summary generation skipped for %s", source_id, exc_info=True)
-        elif processed < total:
-            # Partial failure: remove only items created during THIS call so we
-            # never delete another item group sharing this source_id.
-            after_ids = {r["id"] for r in self.store.db.execute(
-                "SELECT id FROM items WHERE source_id = ?", (source_id,),
-            ).fetchall()}
-            self.store.delete_items_batch(list(after_ids - _before_ids))
-            self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
-        self.store.db.execute(
-            "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-            (_job_status(processed, total), total, processed, now, job_id))
-        self.store.db.commit()
         # Cross-source dedup for whole-source ingests (upload / remote / chat).
         # Group-level replaces (old_item_ids provided -- e.g. a single artifact's
         # group within the aggregate Artifacts source) defer to the folder-scan
