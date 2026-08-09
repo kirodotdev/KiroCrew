@@ -3143,3 +3143,156 @@ class TestProbeSandboxUnavailable:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1, [r.getMessage() for r in warnings]
         assert "probe skipped" in warnings[0].getMessage()
+
+
+class TestFirstPartyManagedArgv:
+    """The probe passes ``first_party_fixed_argv`` ONLY for a self-derived argv.
+
+    The flag buys an unconfined spawn on a backend-less host (issue #1563
+    carve-out), so it must key on the INVOCATION this package derives for its
+    own managed servers — never on the server name alone, which an mcp.json
+    scope could pair with user-config command text.
+    """
+
+    _INVOCATION = ("/opt/kirocrew/bin/kirocrew", ["mcp-core"])
+
+    def _patch_invocation(self, monkeypatch) -> None:
+        import kiro_crew.mcp_discovery as md
+
+        monkeypatch.setattr(
+            md, "_resolved_managed_invocation", {"kirocrew-core": self._INVOCATION}
+        )
+        # Default install: the package-derived managed env is empty.
+        monkeypatch.setattr("kiro_crew.agent._managed_mcp_env", lambda: {})
+
+    def test_self_derived_managed_argv_is_first_party(self, monkeypatch) -> None:
+        import kiro_crew.mcp_discovery as md
+
+        self._patch_invocation(monkeypatch)
+        assert md._is_first_party_managed_argv(
+            "kirocrew-core", self._INVOCATION[0], list(self._INVOCATION[1]), {}
+        )
+
+    def test_customized_command_under_a_managed_name_is_not(self, monkeypatch) -> None:
+        """A managed NAME with user-config command text (the mcp.json-sourced
+        case, which ``_fix_stale_managed_command`` never re-resolves) must keep
+        the full fail-close + opt-in behavior."""
+        import kiro_crew.mcp_discovery as md
+
+        self._patch_invocation(monkeypatch)
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core", "/home/user/evil-shim", list(self._INVOCATION[1]), {}
+        )
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core", self._INVOCATION[0], ["mcp-core", "--extra"], {}
+        )
+
+    def test_spec_env_under_a_managed_name_is_not_first_party(self, monkeypatch) -> None:
+        """Env is an execution vector for the SAME argv (``LD_PRELOAD`` decides
+        what code runs), and ``probe_server`` merges the spec's env into the
+        child environment — so any key this package did not derive disqualifies
+        the spec from the unconfined carve-out."""
+        import kiro_crew.mcp_discovery as md
+
+        self._patch_invocation(monkeypatch)
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core",
+            self._INVOCATION[0],
+            list(self._INVOCATION[1]),
+            {"LD_PRELOAD": "/tmp/evil.so"},
+        )
+
+    def test_the_package_derived_home_pin_still_matches(self, monkeypatch) -> None:
+        """Under an override home the managed spec legitimately carries exactly
+        the ``KIROCREW_HOME`` pin this package derived — that must still count
+        as first-party, and any EXTRA key alongside it must not."""
+        import kiro_crew.mcp_discovery as md
+
+        self._patch_invocation(monkeypatch)
+        pin = {"KIROCREW_HOME": "/data/override-home"}
+        monkeypatch.setattr("kiro_crew.agent._managed_mcp_env", lambda: dict(pin))
+        assert md._is_first_party_managed_argv(
+            "kirocrew-core", self._INVOCATION[0], list(self._INVOCATION[1]), dict(pin)
+        )
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core",
+            self._INVOCATION[0],
+            list(self._INVOCATION[1]),
+            {**pin, "LD_PRELOAD": "/tmp/evil.so"},
+        )
+        # A spec MISSING the derived pin is also not the derived invocation.
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core", self._INVOCATION[0], list(self._INVOCATION[1]), {}
+        )
+
+    def test_the_interpreter_fallback_is_never_first_party(self, monkeypatch) -> None:
+        """`python -m kiro_crew` prepends the child's CWD to sys.path (3.10 has
+        no -P), so a planted `kiro_crew/` tree in an untrusted cwd would shadow
+        the install — only a resolved console-script binary qualifies."""
+        import sys
+
+        import kiro_crew.mcp_discovery as md
+
+        fallback = (sys.executable, ["-m", "kiro_crew", "mcp-core"])
+        monkeypatch.setattr(md, "_resolved_managed_invocation", {"kirocrew-core": fallback})
+        monkeypatch.setattr("kiro_crew.agent._managed_mcp_env", lambda: {})
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core", fallback[0], list(fallback[1]), {}
+        )
+
+    def test_third_party_server_is_never_first_party(self, monkeypatch) -> None:
+        import kiro_crew.mcp_discovery as md
+
+        self._patch_invocation(monkeypatch)
+        assert not md._is_first_party_managed_argv("playwright-mcp", "node", [], {})
+
+    def test_resolution_failure_fails_toward_not_first_party(self, monkeypatch) -> None:
+        import kiro_crew.mcp_discovery as md
+
+        monkeypatch.setattr(md, "_resolved_managed_invocation", {})
+
+        def _boom(subcommand):
+            raise RuntimeError("no install")
+
+        monkeypatch.setattr("kiro_crew.agent._kirocrew_mcp_invocation", _boom)
+        assert not md._is_first_party_managed_argv(
+            "kirocrew-core", self._INVOCATION[0], list(self._INVOCATION[1]), {}
+        )
+
+    @pytest.mark.asyncio
+    async def test_probe_passes_the_flag_for_a_self_derived_managed_server(
+        self, monkeypatch
+    ) -> None:
+        self._patch_invocation(monkeypatch)
+        seen: dict[str, bool] = {}
+
+        def _capture(argv, **kwargs):
+            seen["flag"] = kwargs.get("first_party_fixed_argv", False)
+            raise RuntimeError("stop at the wrap")
+
+        server = McpServerInfo(
+            name="kirocrew-core", command=self._INVOCATION[0], args=list(self._INVOCATION[1])
+        )
+        with patch("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _capture), patch(
+            "kiro_crew.mcp_discovery.shutil.which", return_value=self._INVOCATION[0]
+        ):
+            await probe_server(server)
+
+        assert seen["flag"] is True
+
+    @pytest.mark.asyncio
+    async def test_probe_passes_false_for_a_third_party_server(self, monkeypatch) -> None:
+        self._patch_invocation(monkeypatch)
+        seen: dict[str, bool] = {}
+
+        def _capture(argv, **kwargs):
+            seen["flag"] = kwargs.get("first_party_fixed_argv", True)
+            raise RuntimeError("stop at the wrap")
+
+        server = McpServerInfo(name="playwright-mcp", command="node")
+        with patch("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _capture), patch(
+            "kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/node"
+        ):
+            await probe_server(server)
+
+        assert seen["flag"] is False

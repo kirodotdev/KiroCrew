@@ -1861,6 +1861,23 @@ def sandbox_exec_argv(
     )
 
 
+def _sandbox_env_scrub_keys(sandbox_level: str, strip_python_env: bool) -> list[str]:
+    """Names of the live environment keys to scrub for a given sandbox level.
+
+    The single source of the per-level scrub set, shared by
+    :func:`_sandbox_env_unset_args` (which renders it as ``env -u`` flags) and
+    the first-party no-backend carve-out in :func:`wrap_argv` (which hands the
+    keys to :func:`_unset_env_argv` for a trusted-absolute-path ``env`` prefix),
+    so the two paths can never scrub different sets.
+    """
+    prefixes = list(_SENSITIVE_ENV_PREFIXES)
+    if sandbox_level in ("cc", "strict"):
+        prefixes.extend(_AGENT_DENIED_ENV_KEYS)
+    if strip_python_env:
+        prefixes.extend(_PYTHON_ENV_PREFIXES)
+    return [key for key in os.environ if any(key.startswith(p) for p in prefixes)]
+
+
 def _sandbox_env_unset_args(sandbox_level: str, strip_python_env: bool) -> list[str]:
     """``env -u`` flags scrubbing sensitive vars for a sandboxed/delegated spawn.
 
@@ -1869,17 +1886,9 @@ def _sandbox_env_unset_args(sandbox_level: str, strip_python_env: bool) -> list[
     env-scrub guarantee is identical whether or not KiroCrew's own seatbelt is
     the active isolation layer.
     """
-    prefixes = list(_SENSITIVE_ENV_PREFIXES)
-    if sandbox_level in ("cc", "strict"):
-        prefixes.extend(_AGENT_DENIED_ENV_KEYS)
-    if strip_python_env:
-        prefixes.extend(_PYTHON_ENV_PREFIXES)
     unset_args: list[str] = []
-    for key in os.environ:
-        for prefix in prefixes:
-            if key.startswith(prefix):
-                unset_args.extend(["-u", key])
-                break
+    for key in _sandbox_env_scrub_keys(sandbox_level, strip_python_env):
+        unset_args.extend(["-u", key])
     return unset_args
 
 
@@ -2467,6 +2476,94 @@ def _warn_mode_off_unconfined(argv: list[str], is_kiro_spawn: bool) -> None:
     _warn_mode_off_unconfined._warned_set = _warned_set  # type: ignore[attr-defined]
 
 
+def _warn_first_party_unconfined_once(argv: list[str]) -> None:
+    """One-shot loud SECURITY warning for the first-party no-backend carve-out.
+
+    Per-process sentinel, mirroring :func:`_warn_mode_off_unconfined`'s latch
+    style: the trigger is the HOST having no backend, so without the latch every
+    managed MCP probe would repeat the same paragraph on every discovery cycle.
+    """
+    if getattr(_warn_first_party_unconfined_once, "_warned", False):
+        return
+    _warn_first_party_unconfined_once._warned = True  # type: ignore[attr-defined]
+    logger.warning(
+        "SECURITY: no OS-level sandbox backend on this host — spawning a "
+        "first-party fixed-argv Kiro Crew helper UNCONFINED (its full command "
+        "line is derived inside this package with no agent, repo, or "
+        "user-config input; the credential environment is scrubbed). "
+        "Hostile-input spawn paths are unaffected: they keep failing closed "
+        "and still require agent.sandbox_allow_unsandboxed_exec=true. "
+        "Command: %s",
+        argv[0] if argv else "unknown",
+    )
+
+
+def _first_party_no_backend_passthrough(
+    argv: list[str], sandbox_level: str, strip_python_env: bool
+) -> tuple[list[str], str | None]:
+    """Allowed path of the first-party carve-out in :func:`wrap_argv`.
+
+    Reached only when the caller passed ``first_party_fixed_argv=True``, the
+    backend unavailability class is ``no_backend``, and no governance
+    ``sandbox.min_level`` floor is active (all checked by the caller). Applies
+    the same env scrub as the other unconfined-but-deliberate paths, warns
+    loudly once per process, and SEL-audits with a DISTINCT third outcome:
+    ``unconfined`` — deliberately neither ``denied`` (nothing was refused) nor
+    the nested-passthrough ``allowed`` (nothing confines this spawn).
+
+    SEL failure here is log-and-proceed, matching the ``mode="off"`` delegation
+    precedent: the spawn is first-party with a package-derived argv, and the
+    alternative is bricking built-in tooling on audit hiccups.
+
+    Deliberately NOT ``critical=True``: unlike the fail-closed ``denied`` and
+    nested-passthrough ``allowed`` audits — rare, one-per-condition events —
+    this fires for every managed-server probe on every discovery cycle of a
+    backend-less host, and the critical path drains + flushes SYNCHRONOUSLY on
+    the caller's thread, which here is the gateway event loop (async
+    ``probe_server``). A best-effort async write keeps the loop responsive; the
+    tamper-evident record still lands via the background writer.
+    """
+    _warn_first_party_unconfined_once(argv)
+    try:
+        from kiro_crew.sel import sel  # circular import: sandbox is low-level
+
+        sel().log_tool_invocation(
+            session_key="sandbox",
+            agent="system",
+            source="sandbox.wrap_argv",
+            tool_name=argv[0] if argv else "unknown",
+            tool_kind="subprocess",
+            outcome="unconfined",
+            resources="first-party fixed argv, no sandbox backend (issue #1563 carve-out)",
+        )
+    except Exception:
+        logger.warning(
+            "SEL audit failed for first-party unconfined spawn — proceeding "
+            "unaudited: the argv is package-derived and denying the spawn "
+            "would brick built-in tooling whenever SEL hiccups (matches the "
+            "mode=off delegation posture). Command: %s",
+            argv[0] if argv else "unknown",
+            exc_info=True,
+        )
+    # Same env scrub as the seatbelt / delegation paths, via the trusted
+    # absolute-path ``env`` binary (never a PATH-resolved shim). Where no such
+    # binary exists — Windows, the main no-backend host — the argv-level scrub
+    # cannot run; that is acceptable ONLY because every ratchet-allowlisted
+    # caller routes through ``sandboxed_spawn_argv``, whose ``scrub_env`` drops
+    # a superset of these keys from the child environment it returns.
+    scrub_keys = _sandbox_env_scrub_keys(sandbox_level, strip_python_env)
+    if scrub_keys:
+        env_argv = _unset_env_argv(tuple(scrub_keys))
+        if env_argv is not None:
+            return [*env_argv, *argv], None
+        logger.warning(
+            "first-party unconfined spawn: no trusted `env` binary for the "
+            "argv-level scrub; relying on the chokepoint's scrub_env for the "
+            "child environment"
+        )
+    return list(argv), None
+
+
 def detect_backend(config_mode: str = "auto") -> str:
     """Detect the best available sandbox backend.
 
@@ -2559,8 +2656,44 @@ def reset_backend() -> None:
 _SANDBOX_MODE_ALIASES = {"auto": "standard"}
 
 
+def _governance_sandbox_floor() -> str | None:
+    """Read the governed ``sandbox.min_level`` floor, or ``None`` when ungoverned.
+
+    ``wrap_argv`` performs this read ONCE per call and reuses the value for
+    both the mode clamp and the first-party carve-out condition, so the two can
+    never disagree about whether the same host is governed and the (potentially
+    profile-walking) resolve is never duplicated.
+
+    Error posture (every caller inherits it): a ``PlatformCompositionError`` (a
+    non-standalone host that could not compose) propagates — the sandbox floor
+    must never silently downgrade from DENY to ALLOW on the very host that is
+    supposed to be governed.  Any OTHER (transient) error reads as "floor
+    absent" (a missing tighten is backstopped by the always-on controls).
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        from kiro_crew.platform.governance_profiles import governance_floor_ordinal
+
+        return governance_floor_ordinal("sandbox.min_level")
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        return None
+
+
 def _clamp_sandbox_mode(mode: str) -> str:
-    """Clamp *mode* UP to the governed ``sandbox.min_level`` floor, if any.
+    """Read the governance floor and clamp *mode* up to it.
+
+    Convenience wrapper preserving the read-then-clamp contract for callers and
+    tests; :func:`wrap_argv` reads the floor itself (once) and calls
+    :func:`_clamp_sandbox_mode_to_floor` directly.
+    """
+    return _clamp_sandbox_mode_to_floor(mode, _governance_sandbox_floor())
+
+
+def _clamp_sandbox_mode_to_floor(mode: str, floor: str | None) -> str:
+    """Clamp *mode* UP to an already-read ``sandbox.min_level`` *floor*, if any.
 
     Derives strictness ranking from the enforcer-owned ordinal registry
     (``OrdinalControl`` over ``_ORDINAL_SCALES['sandbox']``) — NOT a private
@@ -2568,24 +2701,13 @@ def _clamp_sandbox_mode(mode: str) -> str:
     the scale.  Returns *mode* unchanged when there is no governance opinion or
     the floor is already satisfied.
 
-    Fail-closed: a ``PlatformCompositionError`` (a non-standalone host that could
-    not compose) propagates — the sandbox floor must never silently downgrade
-    from DENY to ALLOW on the very host that is supposed to be governed.  Any
-    OTHER (transient) error leaves *mode* as-is (a missing tighten is backstopped
-    by the always-on controls), and an unknown floor/mode value raises rather
+    Fail-closed posture lives in the READ (:func:`_governance_sandbox_floor`):
+    a ``PlatformCompositionError`` propagates, any other (transient) error
+    reads as "floor absent".  Here, an unknown floor/mode value raises rather
     than ranking it as 0 (which would fail open).
     """
-    from kiro_crew.platform.context import PlatformCompositionError
     from kiro_crew.platform.governance import _ORDINAL_SCALES, OrdinalControl
 
-    try:
-        from kiro_crew.platform.governance_profiles import governance_floor_ordinal
-
-        floor = governance_floor_ordinal("sandbox.min_level")
-    except PlatformCompositionError:
-        raise
-    except Exception:
-        return mode
     if not floor:
         return mode
     scale = _ORDINAL_SCALES["sandbox"]
@@ -2610,6 +2732,7 @@ def wrap_argv(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
+    first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], str | None]:
     """Wrap a command argv with OS-level sandbox if available.
 
@@ -2624,6 +2747,16 @@ def wrap_argv(
         is_kiro_cli: Explicit executable classification for descriptor-backed
             Kiro snapshots whose launch path no longer has a ``kiro-cli``
             basename. ``None`` retains basename detection for other callers.
+        first_party_fixed_argv: True ONLY for spawns whose full argv is derived
+            inside this package with zero agent/repo/user-config influence;
+            every passing site must be allowlisted in
+            ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``. On a host with
+            genuinely no sandbox backend (``no_backend`` — never a transient
+            probe failure or a foreign outer sandbox) and no governance
+            ``sandbox.min_level`` floor, such a spawn proceeds unconfined
+            (env-scrubbed, loudly warned, SEL ``outcome="unconfined"``) instead
+            of fail-closing. Inert whenever a backend exists or
+            ``sandbox_allow_unsandboxed_exec`` is set.
 
     Returns:
         (wrapped_argv, cleanup_path_or_None).
@@ -2633,7 +2766,8 @@ def wrap_argv(
 
     Raises:
         RuntimeError: When no sandbox backend is available, mode is not "off",
-            and ``agent.sandbox_allow_unsandboxed_exec`` is False (default).
+            ``agent.sandbox_allow_unsandboxed_exec`` is False (default), and
+            the first-party carve-out above does not apply.
             This is the fail-closed behavior — the agent subprocess is NOT
             allowed to run without OS-level isolation unless explicitly opted in.
     """
@@ -2641,7 +2775,12 @@ def wrap_argv(
     # tier (off < standard < cc < strict).  Clamp the requested mode up to that
     # floor before resolving the level — so an enterprise "min_level: cc" makes
     # even a mode="off" call run confined.  Cheap no-op when ungoverned.
-    mode = _clamp_sandbox_mode(mode)
+    #
+    # ONE read per wrap_argv call, reused by the first-party carve-out below:
+    # the (potentially profile-walking) resolve runs once, and the clamp and
+    # the carve-out condition can never disagree about the same host.
+    governance_floor = _governance_sandbox_floor()
+    mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The
@@ -2867,6 +3006,29 @@ def wrap_argv(
                 "no probe detail recorded",
                 "",
             )
+            # First-party carve-out (issue #1563): a spawn whose full argv is
+            # derived inside this package (never agent/repo/user-config text)
+            # may proceed unconfined on a host that GENUINELY has no backend.
+            # All three preconditions, structurally:
+            #   * the caller vouched via ``first_party_fixed_argv`` — a reviewed
+            #     property, ratcheted by test_spawn_audit.py::FIRST_PARTY_SPAWNS;
+            #   * the unavailability class is ``no_backend``: a ``transient``
+            #     failure still raises (it self-heals on the next spawn and must
+            #     not buy a bypass) and ``foreign_sandbox`` still raises (the
+            #     host's sandbox is fine; the remedy is config, not bypass);
+            #   * no governance ``sandbox.min_level`` floor is active — reuses
+            #     the ONE floor read taken at the top of this call (the same
+            #     value the clamp used), so no second profile walk runs and the
+            #     two checks cannot disagree; a governed host keeps fail-closing
+            #     for first-party spawns too.
+            if (
+                first_party_fixed_argv
+                and _classify_unavailable(transient) == "no_backend"
+                and not governance_floor
+            ):
+                return _first_party_no_backend_passthrough(
+                    argv, sandbox_level, strip_python_env
+                )
             if transient:
                 # The mechanism follows the retry advice rather than leading it: the
                 # cap case is permanently reported transient, so withholding it here
@@ -3045,6 +3207,7 @@ def sandboxed_spawn_argv(
     strip_python_env: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], dict[str, str], str | None]:
     """Single chokepoint for agent-influenced subprocess spawns.
 
@@ -3071,6 +3234,11 @@ def sandboxed_spawn_argv(
             hidden in both the macOS Seatbelt and Linux namespace profiles.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them.
+        first_party_fixed_argv: Threaded to :func:`wrap_argv`. True ONLY for
+            spawns whose full argv is derived inside this package with zero
+            agent/repo/user-config influence; every passing site must be
+            allowlisted in ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``.
+            See :func:`wrap_argv` for the no-backend carve-out it gates.
 
     Returns:
         ``(wrapped_argv, scrubbed_env, cleanup_path_or_None)``. The caller MUST
@@ -3084,12 +3252,14 @@ def sandboxed_spawn_argv(
             strip_python_env=strip_python_env,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
+            first_party_fixed_argv=first_party_fixed_argv,
         )
     else:
         wrapped, cleanup = wrap_argv(
             argv,
             mode=mode,
             strip_python_env=strip_python_env,
+            first_party_fixed_argv=first_party_fixed_argv,
         )
     # ``wrap_argv`` only strips PYTHONPATH/PYTHONHOME inside the launcher script,
     # so on the fail-open path (no sandbox backend, opted-in unsandboxed exec) it

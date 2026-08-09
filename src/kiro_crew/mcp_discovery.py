@@ -150,11 +150,14 @@ def _warn_managed_in_process_once(name: str) -> None:
     # and the default log level is WARNING — at info the substitution would be
     # invisible on exactly the hosts where it always happens.
     logger.warning(
-        "MCP probe [%s]: no OS-level sandbox backend, so the tool list is read from "
-        "this package's own declaration instead of a handshake. The tools are "
-        "correct (it is the same declaration the server serves), but this does NOT "
-        "verify the server can start. Set agent.sandbox_allow_unsandboxed_exec=true "
-        "to probe it for real.",
+        "MCP probe [%s]: the tool list is read from this package's own "
+        "declaration instead of a handshake. The tools are correct (it is the "
+        "same declaration the server serves), but this does NOT verify the "
+        "server can start. A self-derived managed command is normally probed "
+        "for real even with no sandbox backend (the first-party carve-out), so "
+        "reaching this fallback means that probe could not run here: a "
+        "transient sandbox failure, a foreign outer sandbox, a governance "
+        "sandbox floor, or a customized command/args for this server.",
         name,
     )
 
@@ -746,6 +749,62 @@ def _fix_stale_managed_command(name: str, spec: dict) -> None:
         spec["args"] = args
 
 
+def _is_first_party_managed_argv(
+    name: str, command: str | None, args: list[str], env: dict[str, str] | None
+) -> bool:
+    """True when (*command*, *args*, *env*) IS the self-derived managed invocation.
+
+    Gates the ``first_party_fixed_argv`` carve-out on the probe spawn. The
+    managed NAME alone is deliberately not enough: only agent-config entries are
+    force-re-resolved through :func:`_fix_stale_managed_command`, so a row
+    introduced from an mcp.json scope could carry user-config command text under
+    a managed name. Requiring equality against the freshly re-resolved
+    invocation (:func:`kiro_crew.agent._kirocrew_mcp_invocation`, the single
+    source of truth) makes "the argv is derived inside this package" a checked
+    property rather than an assumption — any customized command or args compares
+    unequal and keeps the full fail-close + opt-in behavior.
+
+    *env* must equal the package-derived managed env too
+    (:func:`kiro_crew.agent._managed_mcp_env` — ``{}`` on a default install, the
+    ``KIROCREW_HOME`` pin under an override home). ``probe_server`` merges the
+    spec's ``env`` into the child environment, and env is an execution vector in
+    its own right (``LD_PRELOAD``/``LD_LIBRARY_PATH`` change WHAT CODE runs for
+    the same argv), so a spec carrying any key this package did not derive is
+    not first-party — it keeps the full fail-close + opt-in behavior.
+    """
+    subcommand = _MANAGED_SERVER_SUBCOMMANDS.get(name)
+    if subcommand is None:
+        return False
+    invocation = _resolved_managed_invocation.get(name)
+    try:
+        # circular import: agent is loaded during package init
+        from kiro_crew.agent import _kirocrew_mcp_invocation, _managed_mcp_env
+
+        expected_env = _managed_mcp_env()
+        if invocation is None:
+            invocation = _kirocrew_mcp_invocation(subcommand)
+            _resolved_managed_invocation[name] = invocation
+    except Exception:
+        # Fail toward "not first-party": the spawn then keeps the ordinary
+        # fail-close path, which is the safe direction.
+        logger.debug("managed MCP invocation resolution failed", exc_info=True)
+        return False
+    expected_command, expected_args = invocation
+    # Refuse the interpreter fallback (`<python> -m kiro_crew <sub>`): `python
+    # -m` prepends the child's CWD to sys.path (this package supports 3.10, so
+    # `-P`/PYTHONSAFEPATH cannot be assumed), and the probe child inherits the
+    # gateway's cwd — a planted `kiro_crew/` tree there would shadow the
+    # installed package and run unconfined. Only a resolved console-script
+    # binary, whose entrypoint imports from its own install, qualifies.
+    if expected_args[:2] == ["-m", "kiro_crew"]:
+        return False
+    return (
+        command == expected_command
+        and list(args) == list(expected_args)
+        and dict(env or {}) == expected_env
+    )
+
+
 def list_servers() -> list[McpServerInfo]:
     """Return all known MCP servers from agent config + mcp.json + CC global.
 
@@ -1145,11 +1204,23 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         # credential-scrubbed environment (on top of the augmented PATH built
         # above). ``strip_python_env`` keeps KiroCrew's PYTHONPATH/PYTHONHOME out
         # of a foreign Python MCP server. See the related security-review finding.
+        #
+        # ``first_party_fixed_argv`` is True ONLY when command+args+env EQUAL
+        # the invocation this package derives for its own managed servers
+        # (``agent._kirocrew_mcp_invocation`` + ``agent._managed_mcp_env`` via
+        # ``_is_first_party_managed_argv``) — self-derived, not user-config text
+        # — so on a host with genuinely no sandbox backend the "can the server
+        # start?" probe runs for real instead of fail-closing. Third-party
+        # probes (and any customized managed command/args/env) pass False and
+        # keep the full fail-close + opt-in behavior.
         wrapped_argv, env, sandbox_cleanup = sandboxed_spawn_argv(
             [resolved, *(server.args or [])],
             mode="standard",
             env=env,
             strip_python_env=True,
+            first_party_fixed_argv=_is_first_party_managed_argv(
+                server.name, server.command, server.args or [], server.env or {}
+            ),
         )
         proc = await create_subprocess_limited(
             *wrapped_argv,
@@ -1279,7 +1350,12 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         # shim answers ``tools/list`` from), so read it directly. That is what
         # keeps the built-in tools listed on a host with no sandbox backend (any
         # Windows host, macOS >= 26) without asking the operator for an
-        # ``agent.sandbox_allow_unsandboxed_exec`` opt-in for a read-only listing.
+        # ``agent.sandbox_allow_unsandboxed_exec`` opt-in for a read-only
+        # listing. A managed server whose command+args are self-derived normally
+        # never reaches here on such a host — the first-party carve-out lets its
+        # probe spawn for real — so this fallback covers the residual cases: a
+        # transient sandbox failure, a foreign outer sandbox, a governance
+        # sandbox floor, or a customized command.
         #
         # Deliberately a FALLBACK, not the primary path. Two reasons:
         #   * the spawn is the only thing that proves the server can actually
