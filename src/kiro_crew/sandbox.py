@@ -1095,6 +1095,7 @@ def _build_launcher_script(
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
+    sandbox_level_json = json.dumps(sandbox_level)
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
     )
@@ -1146,6 +1147,7 @@ ENV_PREFIXES = {env_prefixes_json}
 SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
+SANDBOX_LEVEL = {sandbox_level_json}
 
 def main():
     argv = sys.argv[1:]
@@ -1296,6 +1298,10 @@ def main():
         # isolation is already active (nested unshare is seccomp-denied).
         # Set AFTER the scrub loop so a scrubbed prefix cannot delete it.
         os.environ["KIROCREW_SANDBOX_ACTIVE"] = "1"
+        # Record WHICH tier this sandbox was built at, so an in-sandbox
+        # wrap_argv passthrough can detect a requested-vs-active tier
+        # downgrade. Same non-scrubbable placement as the marker above.
+        os.environ["KIROCREW_SANDBOX_LEVEL"] = SANDBOX_LEVEL
 
         # Fix /etc/ssh/ssh_config.d/ ownership issue: root-owned files
         # appear as nobody:nobody inside the user namespace because UID 0
@@ -1855,8 +1861,12 @@ def sandbox_exec_argv(
     # fail-closes every app-backend and MCP spawn on the host. Set as an ``env``
     # assignment so it lands AFTER the ``-u`` flags and cannot be dropped by them.
     marker = f"{_IN_SANDBOX_MARKER}=1"
+    # Record the tier beside the marker, in the same after-the-``-u``-flags
+    # position so the scrub cannot drop it — an in-sandbox wrap_argv
+    # passthrough compares it against the requested tier to detect downgrades.
+    level_assign = f"{_IN_SANDBOX_LEVEL_VAR}={sandbox_level}"
     return (
-        ["env", *unset_args, marker, "sandbox-exec", "-f", path, *resolved_argv],
+        ["env", *unset_args, marker, level_assign, "sandbox-exec", "-f", path, *resolved_argv],
         path,
     )
 
@@ -2110,6 +2120,39 @@ def configured_sandbox_mode() -> str:
 # below safe for callers that use ``wrap_argv`` directly rather than
 # ``sandboxed_spawn_argv``.
 _IN_SANDBOX_MARKER = "KIROCREW_SANDBOX_ACTIVE"
+
+# Companion to ``_IN_SANDBOX_MARKER``: records WHICH tier the outer sandbox was
+# built at (``standard``/``cc``/``strict``), exported at the same two launcher
+# sites and with the same non-droppable placement (after each platform's env
+# scrub / ``-u`` flags). The marker alone proves "a Kiro Crew sandbox is active"
+# but not its tier; without this record the nested passthrough is tier-blind —
+# an in-sandbox caller requesting ``strict`` under a ``standard`` outer sandbox
+# silently runs at ``standard``. The passthrough compares this against the
+# requested tier so a downgrade is audited and warned about rather than
+# invisible. Absent for trees launched by an older build — readers treat that
+# as ``unknown``.
+_IN_SANDBOX_LEVEL_VAR = "KIROCREW_SANDBOX_LEVEL"
+
+# Confinement ordering for downgrade detection: a request is a downgrade only
+# when its ordinal exceeds the active tier's. ``unknown`` (absent/unrecognized
+# level var) is deliberately NOT in this table: it carries no ordinal claim, so
+# no downgrade can be *proven* against it.
+_TIER_ORDINALS: dict[str, int] = {"standard": 1, "cc": 2, "strict": 3}
+
+
+def _mode_to_level(mode: str) -> str:
+    """Map a ``wrap_argv`` mode to the sandbox tier it resolves to.
+
+    ``"auto"``/``"standard"`` (and anything unrecognized) resolve to
+    ``standard``; ``"cc"`` and ``"strict"`` map to themselves. Shared by the
+    nested-passthrough tier comparison and the backend-wrap level resolution so
+    the two sites can never diverge.
+    """
+    if mode == "strict":
+        return "strict"
+    if mode == "cc":
+        return "cc"
+    return "standard"
 
 
 def _bundled_cli_invocation() -> str | None:
@@ -2721,6 +2764,32 @@ def wrap_argv(
                 "spawning within the existing isolation boundary rather than "
                 "fail-closing on a nesting artifact"
             )
+        # Compare the tier the caller asked for against the tier the OUTER
+        # sandbox was built at. The passthrough is unavoidable (a nested
+        # re-wrap is denied by design on both platforms), but a tier
+        # downgrade must be visible, not silent. ``unknown`` = launcher
+        # predates the level export (or the value is unrecognized); it has no
+        # ordinal, so no downgrade can be proven against it.
+        requested_level = _mode_to_level(mode)
+        active_level = os.environ.get(_IN_SANDBOX_LEVEL_VAR) or "unknown"
+        if active_level not in _TIER_ORDINALS:
+            active_level = "unknown"
+        tier_downgrade = (
+            active_level in _TIER_ORDINALS
+            and _TIER_ORDINALS[requested_level] > _TIER_ORDINALS[active_level]
+        )
+        if tier_downgrade:
+            # Loud and per-call (not once-only like the info log above): every
+            # downgraded spawn is a distinct security-relevant event.
+            logger.warning(
+                "SECURITY: nested-sandbox passthrough tier downgrade — caller "
+                "requested %r but the outer sandbox runs at %r, so %s executes "
+                "at the weaker tier (a nested re-wrap is impossible by design). "
+                "Applying the stricter tier's env scrub to the passthrough.",
+                requested_level,
+                active_level,
+                argv[0] if argv else "unknown",
+            )
         # Emit an SEL audit event for this security-relevant passthrough so the
         # decision to spawn without a *fresh* wrap is tamper-evidently recorded,
         # mirroring the ``denied`` event on the fail-closed path. Outcome is
@@ -2753,7 +2822,17 @@ def wrap_argv(
                 tool_name=argv[0] if argv else "unknown",
                 tool_kind="subprocess",
                 outcome="allowed",
-                metadata={"reason": "nested_sandbox_passthrough", "mode": mode},
+                metadata={
+                    "reason": "nested_sandbox_passthrough",
+                    "mode": mode,
+                    "requested_tier": requested_level,
+                    "active_tier": active_level,
+                    # tier_known separates "proven no downgrade" from
+                    # "unprovable": tier_downgrade=False alone cannot tell a
+                    # consumer which of the two it is looking at.
+                    "tier_known": active_level in _TIER_ORDINALS,
+                    "tier_downgrade": tier_downgrade,
+                },
                 critical=True,
             )
         except Exception:
@@ -2764,6 +2843,33 @@ def wrap_argv(
                 "SEL is down",
                 exc_info=True,
             )
+        if tier_downgrade:
+            # The one slice of the stricter tier that IS enforceable without a
+            # nested wrap: its env scrub. A standard outer sandbox scrubbed
+            # only _SENSITIVE_ENV_PREFIXES, so agent-denied credential keys
+            # (Slack tokens, owner id) are still in this environment; prefix
+            # the child with the requested tier's ``env -u`` scrub so it does
+            # not inherit them (a delta in practice — the outer launcher
+            # already removed the shared prefixes). File-level hides still run
+            # at the outer tier — that residual gap is exactly what the audit
+            # above records. The ``env`` binary is resolved at a trusted
+            # absolute path only (:func:`_unset_env_argv`): this environment
+            # can carry a PATH that leads with user-writable directories, and
+            # a planted ``env`` there would receive exactly the credentials
+            # this scrub exists to withhold. No trusted binary → keep the
+            # plain passthrough (never fail closed) and say so.
+            unset_args = _sandbox_env_unset_args(requested_level, strip_python_env)
+            if unset_args:
+                scrub_keys = tuple(unset_args[1::2])
+                env_prefix = _unset_env_argv(scrub_keys)
+                if env_prefix is not None:
+                    return [*env_prefix, *argv], None
+                logger.warning(
+                    "SECURITY: no trusted env binary (%s) — the requested "
+                    "tier's env scrub cannot be applied to this passthrough; "
+                    "spawning without it",
+                    ", ".join(_ENV_BINARY_CANDIDATES),
+                )
         return argv, None
     if _inside_kirocrew_sandbox():
         # Marker present, kernel says NOT sandboxed: the marker can only have been
@@ -2779,12 +2885,7 @@ def wrap_argv(
     # "auto"/"standard" allows git-over-SSH, AWS CLI, kubectl.
     # "cc" hides .aws (exposes only .aws/config for Bedrock credential_process).
     # "strict" hides everything.
-    if mode == "strict":
-        sandbox_level = "strict"
-    elif mode == "cc":
-        sandbox_level = "cc"
-    else:
-        sandbox_level = "standard"
+    sandbox_level = _mode_to_level(mode)
 
     # macOS sandbox mutual exclusion: kiro-cli >= 2.13's internal sandbox cannot
     # initialize nested inside KiroCrew's seatbelt (kernel EPERM even under an

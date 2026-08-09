@@ -882,8 +882,12 @@ def main() -> None:
     # entrypoint, so a value present here can only be forged/inherited from the
     # gateway's own environment; trusting it would let an operator env-inject a
     # full sandbox bypass for every agent/tool spawn. Drop it so only the
-    # launcher's in-namespace set is ever honored.
+    # launcher's in-namespace set is ever honored. Its companion tier record
+    # KIROCREW_SANDBOX_LEVEL gets the same treatment: a stale inherited value
+    # would be read as the ACTIVE tier by a descendant's passthrough and
+    # corrupt its downgrade audit.
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
+    os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
 
     # Validate KIROCREW_PORT early — fail fast before anything else loads.
     # Range as well as type: an in-range check that lives only in the binder

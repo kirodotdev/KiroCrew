@@ -962,7 +962,7 @@ class TestRunProbe:
         # — a NEW name appearing here should fail this and be looked at.
         ours = {"TERM", "NO_COLOR", "PAGER", "GIT_PAGER", "PATH", "LANG", "LC_ALL", "LC_CTYPE"}
         sandbox_injected = {"KIROCREW_HOST_PID", "KIROCREW_SANDBOX_ACTIVE",
-                            "KIROCREW_SPAWNED", "GIT_SSH_COMMAND"}
+                            "KIROCREW_SANDBOX_LEVEL", "KIROCREW_SPAWNED", "GIT_SSH_COMMAND"}
         shell_added = {"PWD", "SHLVL", "_"}
         names = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
         assert names <= ours | sandbox_injected | shell_added, names

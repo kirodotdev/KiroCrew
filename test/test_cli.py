@@ -1101,6 +1101,10 @@ class TestSandboxActiveMarkerCleared:
         import sys
 
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # The companion tier record must be dropped with it: a stale inherited
+        # level would be read as the ACTIVE tier by a descendant's passthrough
+        # and corrupt its downgrade audit.
+        monkeypatch.setenv("KIROCREW_SANDBOX_LEVEL", "strict")
         # A trivial subcommand so main() dispatches and returns cleanly; assert
         # the marker was popped before dispatch (patch the target to observe).
         argv = ["kirocrew", "cron", "list"]
@@ -1108,13 +1112,16 @@ class TestSandboxActiveMarkerCleared:
 
         def _capture(_ns):
             seen["marker"] = os.environ.get("KIROCREW_SANDBOX_ACTIVE")
+            seen["level"] = os.environ.get("KIROCREW_SANDBOX_LEVEL")
 
         with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron", _capture):
             from kiro_crew.cli import main
 
             main()
         assert seen.get("marker") is None
+        assert seen.get("level") is None
         assert os.environ.get("KIROCREW_SANDBOX_ACTIVE") is None
+        assert os.environ.get("KIROCREW_SANDBOX_LEVEL") is None
 
 
 class TestDirectCliOverrideAttestation:
