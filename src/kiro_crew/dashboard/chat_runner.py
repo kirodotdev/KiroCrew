@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
 )
+from kiro_crew.connections import get_visible_providers
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -160,6 +161,7 @@ from kiro_crew.llm_helpers import (
     run_bg_oneliner,
     transient_retry_delay,
 )
+from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import SLACK_NAMESPACE, telemetry_channel_of
 from kiro_crew.messaging.renderer import chunk_text
@@ -1083,7 +1085,11 @@ def _oauth_url_contains_credential(url: str) -> bool:
 
 
 def _emit_mcp_oauth_request(
-    state: "DashboardState", slot: "_ChatSlot", server_name: str, oauth_url: str
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    server_name: str,
+    oauth_url: str,
+    card_owned: bool = False,
 ) -> None:
     """Append an mcp_oauth banner so the user can authorize an MCP server.
 
@@ -1091,6 +1097,17 @@ def _emit_mcp_oauth_request(
     pattern, surface a *rejected* banner explaining why instead of silently
     dropping.  Otherwise the user has no idea their MCP server failed to
     authenticate, and they can't escalate to whoever owns that server.
+
+    ``card_owned`` records that some other surface owns this request's consent
+    flow end to end — see :func:`_connections_managed_mcp_names`. It is an
+    annotation, not a filter: the message is appended either way, because it is
+    also the data feed that surface reads its approval URL out of. Only the
+    render layer may act on it. Left off, the meta key is absent and the message
+    is byte-identical to an unannotated one.
+
+    Deliberately annotates the authorize banner only. A rejected URL is a
+    security notice rather than a consent prompt — no card can act on it — so it
+    stays unconditionally visible wherever banners render.
     """
     safe_name = _redact_acp_string(server_name)
     label = safe_name or "MCP server"
@@ -1130,12 +1147,106 @@ def _emit_mcp_oauth_request(
         )
         return
     content = f"🔐 {label} requires authentication."
+    meta: dict[str, Any] = {"server_name": safe_name, "oauth_url": oauth_url}
+    if card_owned:
+        meta["card_owned"] = True
     slot.append(
         "mcp_oauth",
         content,
         "msg msg-info",
-        meta={"server_name": safe_name, "oauth_url": oauth_url},
+        meta=meta,
     )
+
+
+def _connections_managed_mcp_names() -> frozenset[str]:
+    """Servers whose OAuth consent a rendered Connections card owns end to end.
+
+    Membership is an ownership FACT, not a decision about what the user sees: it
+    only tells the caller that a card surface drives this server's consent flow,
+    so a request for it can be tagged ``card_owned`` and the render layer given
+    something to act on. Nothing here suppresses anything.
+
+    Two conditions, both required, each consumed from the facility that already
+    decides it rather than re-derived here:
+
+    * :func:`kirocrew_managed_names` -- our own MCP store wrote the entry. This is
+      the single ownership discriminator, shared with the agent-spec emit path and
+      the config-sync gate, so ownership means one thing everywhere.
+    * :func:`get_visible_providers` -- the name is a Connections provider with a
+      rendered card. Connect keys the store by provider slug and the card reads it
+      back by slug, so the slug is the join between the two.
+
+    Ownership ALONE is not enough. The dashboard's add-custom-server API writes to
+    the same store, so a hand-added remote is every bit as "ours" while having no
+    card anywhere. A provider whose launch gate is closed has no card either.
+    Requiring a card keeps the annotation on servers that genuinely have a second
+    surface, so the render layer never has to second-guess it.
+
+    Registry slugs are slash-free, so ``mcp_server_alias`` is the identity on this
+    set and kiro-cli's ``serverName`` is the slug verbatim -- no alias widening is
+    needed. What remains open is an exact-slug collision: a server hand-added
+    under a real slug is annotated, though it still renders on that provider's
+    card, so a surface survives.
+
+    Does blocking file I/O (store read + registry read) -- callers on the event
+    loop must hand it to a worker thread.
+
+    FAILS OPEN to the empty set on any error: nothing is annotated and every
+    surface renders every banner, which is exactly today's behavior.
+    """
+    try:
+        managed = kirocrew_managed_names()
+        carded = {provider["slug"] for provider in get_visible_providers()}
+    except Exception:
+        logger.warning("Cannot resolve Connections-owned MCP names", exc_info=True)
+        return frozenset()
+    return frozenset(managed & carded)
+
+
+async def _drain_session_init_oauth_requests(
+    state: "DashboardState", slot: "_ChatSlot", client: Any
+) -> None:
+    """Surface the MCP OAuth requests kiro-cli buffered during session init.
+
+    kiro-cli emits ``_kiro.dev/mcp/oauth_request`` while bringing MCP servers up;
+    ``AcpClient`` collects them into ``pending_oauth_requests``. EVERY one is
+    emitted as an ``mcp_oauth`` message, with no exceptions — that message is not
+    just a banner, it is the state feed the Connections card reads its approval
+    URL out of, so dropping one costs the user their only way to authorize.
+
+    Requests for a server a Connections card owns are tagged ``card_owned`` (see
+    :func:`_connections_managed_mcp_names`) purely so the render layer can decide
+    whether chat needs to repeat a prompt the card already shows. That is a
+    presentation question and it is answered where the flag that governs the card
+    is known — not here.
+
+    Async because resolving ownership reads files; the lookup runs in a worker
+    thread and only when there is something to tag.
+    """
+    acp_client = getattr(client, "client", None)
+    pop_pending = getattr(acp_client, "pop_pending_oauth_requests", None)
+    if not callable(pop_pending):
+        return
+    pending = pop_pending() or []
+    if not pending:
+        # Resolve ownership only when there is something to tag — this runs on
+        # every session init and the common case is zero requests.
+        return
+    managed = await asyncio.to_thread(_connections_managed_mcp_names)
+    for req in pending:
+        if not isinstance(req, dict):
+            continue
+        server_name = req.get("serverName") or ""
+        # Raw (unredacted) name on purpose: store keys are raw and this is a
+        # set-membership test, so an untrusted value can only miss. Redaction
+        # happens inside _emit_mcp_oauth_request.
+        _emit_mcp_oauth_request(
+            state,
+            slot,
+            server_name,
+            req.get("oauthUrl") or "",
+            card_owned=bool(server_name) and server_name in managed,
+        )
 
 
 def _mark_mcp_oauth_completed(
@@ -3528,16 +3639,11 @@ async def _run_chat(
         # Drain MCP OAuth requests captured during session init. kiro-cli
         # buffers `_kiro.dev/mcp/oauth_request` notifications during MCP
         # server bring-up; the AcpClient collected them into
-        # `pending_oauth_requests`. Surface each as an inline banner so the
-        # user can authorize the affected MCP server.
+        # `pending_oauth_requests`. Every one is emitted; the ones a
+        # Connections card owns are tagged so the render layer can avoid
+        # repeating a prompt that card already shows.
         try:
-            acp_client = getattr(client, "client", None)
-            pop_pending = getattr(acp_client, "pop_pending_oauth_requests", None)
-            if callable(pop_pending):
-                for req in pop_pending():
-                    _emit_mcp_oauth_request(
-                        state, slot, req.get("serverName", ""), req.get("oauthUrl", "")
-                    )
+            await _drain_session_init_oauth_requests(state, slot, client)
         except Exception:  # pragma: no cover — never let UI surfacing kill chat init
             logger.warning("Failed to surface pending MCP OAuth requests", exc_info=True)
 

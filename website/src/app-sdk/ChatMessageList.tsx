@@ -40,6 +40,11 @@ export interface ChatMessageListProps {
    *  ChatPane) render the full slot-aware ToolCallLine while this component stays
    *  dependency-free for the embed SDK. When omitted, the bare ToolCallPill is used. */
   renderTool?: (message: ChatMessage) => React.ReactNode
+  /** Drop mcp_oauth messages a Connections card owns (`meta.card_owned`). A prop
+   *  rather than a config read so this component stays query-free for the embed
+   *  SDK; the dashboard host passes its `connections_ui` flag. Default renders
+   *  every banner, which is correct for any surface with no cards. */
+  hideCardOwnedOAuth?: boolean
 }
 
 // ── Stable helpers (outside component) ──
@@ -189,6 +194,7 @@ const ChatMessageList = memo(function ChatMessageList({
   onApprove,
   onFileOpen,
   renderTool,
+  hideCardOwnedOAuth = false,
 }: ChatMessageListProps) {
 
   // Phase 1: Build raw items — skip permissions, group thinking
@@ -387,7 +393,7 @@ const ChatMessageList = memo(function ChatMessageList({
     if (m.role === 'file') return null // TODO: file download links
 
     if (m.role === 'mcp_oauth') {
-      const banner = renderMcpOAuthMessage(m)
+      const banner = renderMcpOAuthMessage(m, hideCardOwnedOAuth)
       if (!banner) return null
       return (
         <div key={key} className="px-5 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
@@ -397,7 +403,7 @@ const ChatMessageList = memo(function ChatMessageList({
     }
 
     return null
-  }, [messages, running, contentWidth, onFileOpen, renderTool, autoDeniedIds])
+  }, [messages, running, contentWidth, onFileOpen, renderTool, autoDeniedIds, hideCardOwnedOAuth])
 
   // Render a TurnItem (single or group)
   const renderItem = useCallback((item: TurnItem, _i: number) => {

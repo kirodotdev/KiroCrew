@@ -1,11 +1,10 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useQuery } from '@tanstack/react-query'
 import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Compass } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import RestartButton from '../components/RestartButton'
 import { useProvider } from '../providers'
-import { api } from '../api/client'
+import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import AgentsPage from './AgentsPage'
 import KiroCrewAgentsPage from './KiroCrewAgentsPage'
 import HooksPage from './HooksPage'
@@ -25,22 +24,15 @@ import { SkillsTab, PromptsTab, SteeringTab } from './overview'
  * A flag rather than a revert because the team asked to keep the code on main
  * and test from there: set `connections_ui: true` in the running instance's
  * `$KIROCREW_HOME/config.json` to exercise the gallery locally. Config is read
- * live, so no gateway restart is needed.
+ * live, so no gateway restart is needed. The predicate lives in
+ * hooks/useConnectionsUi so chat's banner gate reads the same answer.
  */
-const CONNECTIONS_UI_FLAG = 'connections_ui'
 
 export default function CapabilitiesPage() {
   const provider = useProvider()
   const { t } = useTranslation()
 
-  // Absent config, a failed fetch, and a non-boolean value all resolve to
-  // false: the gallery is reachable only on an explicit opt-in.
-  const { data: kirocrewConfig } = useQuery({
-    queryKey: ['kirocrew-config', CONNECTIONS_UI_FLAG],
-    queryFn: () => api.kirocrewConfig(),
-  })
-  const connectionsUiEnabled =
-    (kirocrewConfig as Record<string, unknown> | undefined)?.[CONNECTIONS_UI_FLAG] === true
+  const connectionsUiEnabled = useConnectionsUiEnabled()
 
   const tabs = useMemo(() => {
     return [

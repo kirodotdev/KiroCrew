@@ -183,6 +183,7 @@ import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/Work
 import SubagentCompletionCard from './chat/SubagentCompletionCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { renderMcpOAuthMessage } from './chat/McpOAuthBanner'
+import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
@@ -3480,6 +3481,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // stable primitive so it can sit in the transcript renderer's dep list — flipping
   // the toggle has to re-render already-rendered messages, not just the next one.
   const linkPreviewsOn = dashCfg?.link_previews === true
+  // Connections cards own consent for the providers they render, so chat drops
+  // the duplicate OAuth banner — but only while that gallery is reachable.
+  const connectionsUiOn = useConnectionsUiEnabled()
   // Pop-out state for the title-bar control (shared singleton — same channel the menus use).
   const { isPoppedOut: isSlotPoppedOut, open: openActivePopout, focus: focusActivePopout, returnSelfToMain } = useChatPopouts()
   const activePoppedOut = !!activeSlot && isSlotPoppedOut(activeSlot)
@@ -5549,7 +5553,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null
     if (m.role === 'mcp_oauth') {
-      const banner = renderMcpOAuthMessage(m)
+      const banner = renderMcpOAuthMessage(m, connectionsUiOn)
       return banner ? <div key={key}>{banner}</div> : null
     }
     // An injected workflow completion event renders as a compact status card
@@ -5637,7 +5641,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected

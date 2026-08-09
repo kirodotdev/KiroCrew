@@ -18,6 +18,7 @@ import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
@@ -53,6 +54,9 @@ export default function ChatPane({
 }) {
   const dispatch = useAppDispatch()
   const provider = useProvider()
+  // Same gate the main chat uses: hide a Connections-owned OAuth banner only
+  // while the card that owns that flow is reachable.
+  const connectionsUiOn = useConnectionsUiEnabled()
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   const [dragOver, setDragOver] = useState(false)
@@ -329,7 +333,7 @@ export default function ChatPane({
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
-          <ChatMessageList messages={messages} running={running} renderTool={renderTool} />
+          <ChatMessageList messages={messages} running={running} renderTool={renderTool} hideCardOwnedOAuth={connectionsUiOn} />
           <div ref={endRef} />
         </div>
 
