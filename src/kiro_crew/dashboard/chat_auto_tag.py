@@ -31,6 +31,15 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
+# Basenames that carry no useful signal — suppress auto-tagging for these.
+# Includes the default workspace dir names plus trivial path components.
+_TRIVIAL_BASENAMES = frozenset({
+    ".", "~",
+    "workspace", "workspaces", "workplace",
+    "kirocrew-workspace",
+    "default",
+})
+
 
 async def maybe_auto_tag(state: Any, slot: Any) -> None:
     """Derive a tag from the slot's project directory and apply it.
@@ -64,7 +73,7 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
     if not project:
         return
     tag_name = os.path.basename(project)
-    if not tag_name or tag_name in (".", "~"):
+    if not tag_name or tag_name in _TRIVIAL_BASENAMES:
         return
 
     # Redact credential/exfiltration patterns from derived name, then apply

@@ -137,6 +137,18 @@ class TestAutoTagDerivation:
         assert len(state._tags) == 1
         assert state._tags[0]["name"] == "DisapereBackend"
 
+    @pytest.mark.parametrize("name", ["workspace", "workspaces", "workplace", "kirocrew-workspace", "default"])
+    async def test_trivial_workspace_basenames_are_noop(self, patch_save_slot, name):
+        """Default/generic workspace dir names carry no signal — suppress them."""
+        state = _make_state()
+        slot = _make_slot(project=f"/home/user/.kiro/crew/{name}")
+
+        await maybe_auto_tag(state, slot)
+
+        assert len(state._tags) == 0
+        assert len(slot.tags) == 0
+        patch_save_slot.assert_not_awaited()
+
 
 # ── Idempotency ─────────────────────────────────────────────────────────────
 
